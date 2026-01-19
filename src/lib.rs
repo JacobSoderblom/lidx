@@ -1,0 +1,17 @@
+pub mod cli;
+pub mod config;
+pub mod db;
+pub mod diagnostics;
+pub mod gather_context;
+pub mod git_mining;
+pub mod impact;
+pub mod indexer;
+pub mod mcp;
+pub mod metrics;
+pub mod model;
+pub mod repo_map;
+pub mod rpc;
+pub mod search;
+pub mod subgraph;
+pub mod util;
+pub mod watch;

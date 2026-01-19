@@ -1,0 +1,558 @@
+//! Impact analysis engine for refactoring assistance
+//!
+//! Answers "what breaks if I change this?" by traversing the symbol graph
+//! and tracking relationship paths.
+
+use crate::db::Db;
+use crate::model::{
+    Edge, FileImpact, ImpactConfig, ImpactEntry, ImpactPath, ImpactResult, ImpactSummary, PathStep,
+    Symbol,
+};
+use anyhow::Result;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
+
+/// Direction to traverse the symbol graph
+#[derive(Debug, Clone, Copy)]
+pub enum TraversalDirection {
+    /// Follow incoming edges (who calls/imports this)
+    Upstream,
+    /// Follow outgoing edges (what does this call/import)
+    Downstream,
+    /// Follow all edges
+    Both,
+}
+
+impl Default for TraversalDirection {
+    fn default() -> Self {
+        TraversalDirection::Both
+    }
+}
+
+impl From<&str> for TraversalDirection {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "upstream" | "up" | "callers" | "in" => TraversalDirection::Upstream,
+            "downstream" | "down" | "callees" | "out" => TraversalDirection::Downstream,
+            _ => TraversalDirection::Both,
+        }
+    }
+}
+
+/// Determine the next symbol to visit based on edge direction
+fn next_symbol(edge: &Edge, current_id: i64, direction: TraversalDirection) -> Option<i64> {
+    match direction {
+        TraversalDirection::Upstream => {
+            if edge.target_symbol_id == Some(current_id) {
+                edge.source_symbol_id
+            } else {
+                None
+            }
+        }
+        TraversalDirection::Downstream => {
+            if edge.source_symbol_id == Some(current_id) {
+                edge.target_symbol_id
+            } else {
+                None
+            }
+        }
+        TraversalDirection::Both => {
+            if edge.source_symbol_id == Some(current_id) {
+                edge.target_symbol_id
+            } else if edge.target_symbol_id == Some(current_id) {
+                edge.source_symbol_id
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Check if a file path appears to be a test file
+fn is_test_file(path: &str) -> bool {
+    let path_lower = path.to_lowercase();
+    path_lower.contains("/test/")
+        || path_lower.contains("/tests/")
+        || path_lower.contains("/_test/")
+        || path_lower.contains("/__tests__/")
+        || path_lower.contains("/spec/")
+        || path_lower.contains("test_")
+        || path_lower.contains("_test.")
+        || path_lower.contains(".test.")
+        || path_lower.contains(".spec.")
+        || path_lower.ends_with("_test.rs")
+        || path_lower.ends_with("_test.py")
+        || path_lower.ends_with(".test.ts")
+        || path_lower.ends_with(".test.tsx")
+        || path_lower.ends_with(".spec.ts")
+        || path_lower.ends_with(".spec.tsx")
+        || path_lower.ends_with("_spec.rb")
+        || path_lower.ends_with("test.java")
+}
+
+/// Check if an edge matches the filtering criteria
+fn edge_matches_filter(edge: &Edge, kinds: &HashSet<String>, include_tests: bool) -> bool {
+    // Check edge kind
+    if !kinds.is_empty() && !kinds.contains(&edge.kind) {
+        return false;
+    }
+    // Check test file
+    if !include_tests && is_test_file(&edge.file_path) {
+        return false;
+    }
+    true
+}
+
+/// Reconstruct path from seed to target symbol using parent map
+fn reconstruct_path(
+    parent_map: &HashMap<i64, (i64, Edge)>,
+    symbol_id: i64,
+    seeds: &HashSet<i64>,
+    symbol_cache: &HashMap<i64, Symbol>,
+) -> ImpactPath {
+    let mut steps = Vec::new();
+    let mut current = symbol_id;
+
+    while !seeds.contains(&current) {
+        if let Some((parent_id, edge)) = parent_map.get(&current) {
+            let from_symbol = symbol_cache
+                .get(parent_id)
+                .map(|s| s.qualname.clone())
+                .unwrap_or_else(|| format!("symbol#{}", parent_id));
+            let to_symbol = symbol_cache
+                .get(&current)
+                .map(|s| s.qualname.clone())
+                .unwrap_or_else(|| format!("symbol#{}", current));
+
+            steps.push(PathStep {
+                edge_kind: edge.kind.clone(),
+                from_symbol,
+                to_symbol,
+            });
+            current = *parent_id;
+        } else {
+            break;
+        }
+    }
+
+    steps.reverse();
+    ImpactPath { steps }
+}
+
+/// Get relationship type for a symbol based on how it was reached
+fn get_relationship(
+    symbol_id: i64,
+    parent_map: &HashMap<i64, (i64, Edge)>,
+    seeds: &HashSet<i64>,
+) -> String {
+    if seeds.contains(&symbol_id) {
+        "SEED".to_string()
+    } else if let Some((_, edge)) = parent_map.get(&symbol_id) {
+        edge.kind.clone()
+    } else {
+        "UNKNOWN".to_string()
+    }
+}
+
+/// Aggregate affected symbols by file
+fn aggregate_by_file(entries: &[ImpactEntry]) -> Vec<FileImpact> {
+    let mut by_file: HashMap<String, Vec<String>> = HashMap::new();
+
+    for entry in entries {
+        by_file
+            .entry(entry.symbol.file_path.clone())
+            .or_default()
+            .push(entry.symbol.qualname.clone());
+    }
+
+    let mut result: Vec<FileImpact> = by_file
+        .into_iter()
+        .map(|(path, symbols)| FileImpact {
+            path,
+            symbol_count: symbols.len(),
+            symbols,
+        })
+        .collect();
+
+    result.sort_by(|a, b| b.symbol_count.cmp(&a.symbol_count));
+    result
+}
+
+/// Build complete impact summary
+fn build_summary(entries: &[ImpactEntry]) -> ImpactSummary {
+    let by_file = aggregate_by_file(entries);
+
+    let mut by_relationship: HashMap<String, usize> = HashMap::new();
+    for entry in entries {
+        *by_relationship
+            .entry(entry.relationship.clone())
+            .or_insert(0) += 1;
+    }
+
+    let mut by_distance: HashMap<usize, usize> = HashMap::new();
+    for entry in entries {
+        *by_distance.entry(entry.distance).or_insert(0) += 1;
+    }
+
+    ImpactSummary {
+        by_file,
+        by_relationship,
+        by_distance,
+        total_affected: entries.len(),
+    }
+}
+
+/// Cache symbols in bulk to avoid N+1 queries
+fn cache_symbols(
+    db: &Db,
+    cache: &mut HashMap<i64, Symbol>,
+    checked: &mut HashSet<i64>,
+    ids: &[i64],
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> Result<()> {
+    let mut missing: Vec<i64> = ids
+        .iter()
+        .copied()
+        .filter(|id| !checked.contains(id))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    missing.sort_unstable();
+    missing.dedup();
+    let symbols = db.symbols_by_ids(&missing, languages, graph_version)?;
+    for symbol in symbols {
+        cache.insert(symbol.id, symbol);
+    }
+    for id in missing {
+        checked.insert(id);
+    }
+    Ok(())
+}
+
+/// Main impact analysis function
+///
+/// Performs BFS traversal from seed symbols to find all affected symbols within
+/// the specified constraints. Returns impact analysis with paths and summary.
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_impact(
+    db: &Db,
+    seed_ids: &[i64],
+    max_depth: usize,
+    direction: TraversalDirection,
+    kinds: &HashSet<String>,
+    include_tests: bool,
+    include_paths: bool,
+    limit: usize,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> Result<ImpactResult> {
+    let start = Instant::now();
+    let timeout = Duration::from_secs(5);
+
+    // Initialize BFS data structures
+    let mut queue: VecDeque<(i64, usize)> = VecDeque::new();
+    let mut visited: HashSet<i64> = HashSet::new();
+    let mut parent_map: HashMap<i64, (i64, Edge)> = HashMap::new();
+    let mut symbol_cache: HashMap<i64, Symbol> = HashMap::new();
+    let mut symbol_checked: HashSet<i64> = HashSet::new();
+    let mut distance_map: HashMap<i64, usize> = HashMap::new();
+
+    // Load and cache seed symbols
+    let seed_set: HashSet<i64> = seed_ids.iter().copied().collect();
+    cache_symbols(
+        db,
+        &mut symbol_cache,
+        &mut symbol_checked,
+        seed_ids,
+        languages,
+        graph_version,
+    )?;
+
+    // Filter seeds by language if specified
+    let valid_seeds: Vec<i64> = seed_ids
+        .iter()
+        .copied()
+        .filter(|id| symbol_cache.contains_key(id))
+        .collect();
+
+    // Build seeds result
+    let seeds: Vec<Symbol> = valid_seeds
+        .iter()
+        .filter_map(|id| symbol_cache.get(id).cloned())
+        .collect();
+
+    // Seed the queue
+    for &id in &valid_seeds {
+        queue.push_back((id, 0));
+        visited.insert(id);
+        distance_map.insert(id, 0);
+    }
+
+    let mut truncated = false;
+
+    // BFS traversal with level-by-level batch queries
+    while !queue.is_empty() {
+        // Check timeout
+        if start.elapsed() > timeout {
+            truncated = true;
+            break;
+        }
+
+        // Check limit
+        if visited.len() >= limit {
+            truncated = true;
+            break;
+        }
+
+        // Collect all symbols at current level
+        let mut current_level = Vec::new();
+        let mut current_distance = usize::MAX;
+
+        while let Some((id, distance)) = queue.front() {
+            if current_distance == usize::MAX {
+                current_distance = *distance;
+            } else if *distance != current_distance {
+                break;
+            }
+            current_level.push(*id);
+            queue.pop_front();
+        }
+
+        // Don't expand beyond max depth
+        if current_distance >= max_depth {
+            continue;
+        }
+
+        // Batch fetch edges for all symbols at this level
+        let edges_by_symbol = db.edges_for_symbols(&current_level, languages, graph_version)?;
+
+        // Collect all neighbor IDs for batch symbol loading
+        let mut neighbor_ids = Vec::new();
+        for current_id in &current_level {
+            if let Some(edges) = edges_by_symbol.get(current_id) {
+                for edge in edges {
+                    if !edge_matches_filter(edge, kinds, include_tests) {
+                        continue;
+                    }
+
+                    if let Some(next_id) = next_symbol(edge, *current_id, direction) {
+                        if !visited.contains(&next_id) {
+                            neighbor_ids.push(next_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Batch load neighbor symbols
+        cache_symbols(
+            db,
+            &mut symbol_cache,
+            &mut symbol_checked,
+            &neighbor_ids,
+            languages,
+            graph_version,
+        )?;
+
+        // Process edges and update BFS state
+        for current_id in &current_level {
+            if let Some(edges) = edges_by_symbol.get(current_id) {
+                for edge in edges {
+                    if !edge_matches_filter(edge, kinds, include_tests) {
+                        continue;
+                    }
+
+                    let next_id = match next_symbol(edge, *current_id, direction) {
+                        Some(id) => id,
+                        None => continue,
+                    };
+
+                    // Skip if already visited
+                    if !visited.insert(next_id) {
+                        continue;
+                    }
+
+                    // Only queue if symbol was successfully loaded
+                    if !symbol_cache.contains_key(&next_id) {
+                        continue;
+                    }
+
+                    // Cache parent for path reconstruction
+                    parent_map.insert(next_id, (*current_id, edge.clone()));
+                    distance_map.insert(next_id, current_distance + 1);
+                    queue.push_back((next_id, current_distance + 1));
+
+                    // Check limit
+                    if visited.len() >= limit {
+                        truncated = true;
+                        break;
+                    }
+                }
+
+                if truncated {
+                    break;
+                }
+            }
+        }
+
+        if truncated {
+            break;
+        }
+    }
+
+    // Build affected entries (exclude seeds)
+    let mut affected: Vec<ImpactEntry> = Vec::new();
+    for (&symbol_id, symbol) in &symbol_cache {
+        if seed_set.contains(&symbol_id) {
+            continue; // Skip seed symbols
+        }
+
+        let distance = *distance_map.get(&symbol_id).unwrap_or(&0);
+        let relationship = get_relationship(symbol_id, &parent_map, &seed_set);
+        let path = if include_paths {
+            Some(reconstruct_path(
+                &parent_map,
+                symbol_id,
+                &seed_set,
+                &symbol_cache,
+            ))
+        } else {
+            None
+        };
+
+        affected.push(ImpactEntry {
+            symbol: symbol.clone(),
+            distance,
+            relationship,
+            path,
+        });
+    }
+
+    // Sort by distance, then by qualname for determinism
+    affected.sort_by(|a, b| {
+        a.distance
+            .cmp(&b.distance)
+            .then_with(|| a.symbol.qualname.cmp(&b.symbol.qualname))
+    });
+
+    // Build summary
+    let summary = build_summary(&affected);
+
+    // Build config for response
+    let config = ImpactConfig {
+        max_depth,
+        direction: format!("{:?}", direction),
+        relationship_types: kinds.iter().cloned().collect(),
+        include_tests,
+        limit,
+    };
+
+    Ok(ImpactResult {
+        seeds,
+        affected,
+        summary,
+        truncated,
+        config,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direction_from_string() {
+        assert!(matches!(
+            TraversalDirection::from("upstream"),
+            TraversalDirection::Upstream
+        ));
+        assert!(matches!(
+            TraversalDirection::from("DOWNSTREAM"),
+            TraversalDirection::Downstream
+        ));
+        assert!(matches!(
+            TraversalDirection::from("both"),
+            TraversalDirection::Both
+        ));
+        assert!(matches!(
+            TraversalDirection::from("invalid"),
+            TraversalDirection::Both
+        ));
+    }
+
+    #[test]
+    fn test_file_detection() {
+        assert!(is_test_file("src/tests/foo.rs"));
+        assert!(is_test_file("src/__tests__/foo.js"));
+        assert!(is_test_file("spec/foo_spec.rb"));
+        assert!(is_test_file("foo_test.py"));
+        assert!(is_test_file("foo.spec.ts"));
+        assert!(!is_test_file("src/main.rs"));
+        assert!(!is_test_file("testimony.py"));
+    }
+
+    #[test]
+    fn edge_filter_respects_kinds() {
+        let edge = Edge {
+            id: 1,
+            file_path: "src/main.rs".to_string(),
+            kind: "CALL".to_string(),
+            source_symbol_id: Some(1),
+            target_symbol_id: Some(2),
+            target_qualname: None,
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: None,
+            graph_version: 1,
+            commit_sha: None,
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        };
+
+        let mut kinds = HashSet::new();
+        kinds.insert("CALL".to_string());
+        assert!(edge_matches_filter(&edge, &kinds, true));
+
+        kinds.clear();
+        kinds.insert("IMPORT".to_string());
+        assert!(!edge_matches_filter(&edge, &kinds, true));
+
+        // Empty kinds means no filtering
+        kinds.clear();
+        assert!(edge_matches_filter(&edge, &kinds, true));
+    }
+
+    #[test]
+    fn edge_filter_respects_test_files() {
+        let mut edge = Edge {
+            id: 1,
+            file_path: "src/test/foo.rs".to_string(),
+            kind: "CALL".to_string(),
+            source_symbol_id: Some(1),
+            target_symbol_id: Some(2),
+            target_qualname: None,
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: None,
+            graph_version: 1,
+            commit_sha: None,
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        };
+
+        let kinds = HashSet::new();
+        assert!(!edge_matches_filter(&edge, &kinds, false));
+        assert!(edge_matches_filter(&edge, &kinds, true));
+
+        edge.file_path = "src/main.rs".to_string();
+        assert!(edge_matches_filter(&edge, &kinds, false));
+    }
+}

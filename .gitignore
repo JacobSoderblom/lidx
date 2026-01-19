@@ -1,0 +1,9 @@
+/target
+/.lidx
+/.fastembed_cache
+/vendor
+
+# Feature workspace pattern (local only, not committed)
+worktrees/
+.agents/
+.claude/
