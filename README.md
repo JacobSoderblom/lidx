@@ -45,7 +45,7 @@ lidx builds a symbol graph from your code and exposes it through a single MCP to
 
 ### Supported languages
 
-Python, C#, TypeScript, JavaScript, Rust, SQL, Proto, Markdown
+Python, C#, TypeScript, JavaScript, Rust, Go, SQL, PostgreSQL (PL/pgSQL), Proto, Markdown
 
 ### Key capabilities
 
