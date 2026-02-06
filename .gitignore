@@ -6,4 +6,4 @@
 # Feature workspace pattern (local only, not committed)
 worktrees/
 .agents/
-.claude/
+.claude/settings.local.json
