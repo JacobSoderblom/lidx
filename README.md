@@ -75,6 +75,65 @@ All queries go through the `lidx_query` MCP tool with a `method` and optional `p
 
 Every result includes `next_hops` — pre-computed follow-up queries so your AI assistant knows what to explore next.
 
+## Example prompts
+
+These are things you can say to your AI assistant once lidx is connected. The assistant will automatically call the right lidx queries behind the scenes.
+
+### Discovery
+
+- "Give me an overview of this repo"
+- "What languages are in this project?"
+- "Show me the most complex functions in the codebase"
+- "Are there any duplicated code blocks?"
+
+### Finding code
+
+- "Find the UserService class"
+- "Search for anything related to authentication"
+- "Find all gRPC service definitions"
+- "Search for TODO comments across the repo"
+
+### Understanding code
+
+- "Explain what the OrderProcessor class does — its callers, callees, and dependencies"
+- "What does the register_user function call?"
+- "Show me all the callers of validate_email"
+- "What imports does this module depend on?"
+
+### Impact analysis
+
+- "If I change the User model, what else is affected?"
+- "What's the blast radius of modifying the payment processing function?"
+- "Show me the impact of this diff" (with a git diff or file changes)
+- "What tests cover the authentication module?"
+
+### Tracing across services
+
+- "Trace the flow starting from the /api/orders HTTP endpoint"
+- "How does a message published to the order-created topic get processed?"
+- "Show me the full request path from the API gateway through gRPC to the database"
+- "What services are connected to the UserUpdated message bus channel?"
+
+### Navigation
+
+- "Show me the neighbors of the PaymentGateway class"
+- "Expand the call graph around processOrder, 3 levels deep"
+- "What are the HTTP routes in this project and who calls them?"
+- "Show me all cross-language references between C# and SQL"
+
+### Code quality
+
+- "Run diagnostics on the Python code"
+- "What are the most complex functions? Any above complexity 10?"
+- "Find dead symbols — functions that are never called"
+- "Are there any unused imports?"
+
+### Context for tasks
+
+- "Gather context about the authentication system — I need to add OAuth support"
+- "Pull together everything related to the order processing pipeline"
+- "I need to understand the database schema and all functions that touch the users table"
+
 ## CLI usage
 
 ```bash
