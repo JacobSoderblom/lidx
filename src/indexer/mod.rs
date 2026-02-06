@@ -15,6 +15,7 @@ pub mod extract;
 pub mod go;
 pub mod http;
 pub mod javascript;
+pub mod lua;
 pub mod markdown;
 pub mod postgres;
 pub mod proto;
@@ -68,6 +69,7 @@ impl Indexer {
         extractors.insert("tsx".into(), Box::new(javascript::TsxExtractor::new()?));
         extractors.insert("csharp".into(), Box::new(csharp::CSharpExtractor::new()?));
         extractors.insert("go".into(), Box::new(go::GoExtractor::new()?));
+        extractors.insert("lua".into(), Box::new(lua::LuaExtractor::new()?));
         extractors.insert("sql".into(), Box::new(sql::SqlExtractor::new()?));
         extractors.insert("postgres".into(), Box::new(postgres::PostgresExtractor::new()?));
         extractors.insert("tsql".into(), Box::new(sql::SqlExtractor::new()?));

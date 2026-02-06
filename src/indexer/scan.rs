@@ -93,6 +93,10 @@ static LANGUAGE_SPECS: &[LanguageSpec] = &[
         name: "go",
         extensions: &["go"],
     },
+    LanguageSpec {
+        name: "lua",
+        extensions: &["lua"],
+    },
 ];
 
 static LANGUAGE_FILTERS: &[LanguageFilter] = &[
@@ -223,6 +227,10 @@ static LANGUAGE_FILTERS: &[LanguageFilter] = &[
     LanguageFilter {
         name: "golang",
         languages: &["go"],
+    },
+    LanguageFilter {
+        name: "lua",
+        languages: &["lua"],
     },
 ];
 
