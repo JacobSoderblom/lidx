@@ -1,4 +1,5 @@
 use lidx::indexer::csharp::CSharpExtractor;
+use lidx::indexer::extract::LanguageExtractor;
 use lidx::indexer::javascript::JavascriptExtractor;
 use lidx::indexer::python::PythonExtractor;
 use lidx::indexer::rust::RustExtractor;

@@ -1,3 +1,4 @@
+use lidx::indexer::extract::LanguageExtractor;
 use lidx::indexer::python::{PythonExtractor, module_name_from_rel_path};
 
 #[test]

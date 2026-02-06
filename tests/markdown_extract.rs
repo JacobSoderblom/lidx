@@ -1,3 +1,4 @@
+use lidx::indexer::extract::LanguageExtractor;
 use lidx::indexer::markdown::{MarkdownExtractor, module_name_from_rel_path};
 
 #[test]

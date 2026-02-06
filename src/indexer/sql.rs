@@ -19,8 +19,14 @@ impl SqlExtractor {
         parser.set_language(&language.into())?;
         Ok(Self { parser })
     }
+}
 
-    pub fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
+impl crate::indexer::extract::LanguageExtractor for SqlExtractor {
+    fn module_name_from_rel_path(&self, rel_path: &str) -> String {
+        module_name_from_rel_path(rel_path)
+    }
+
+    fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
         let mut output = ExtractedFile::default();
         let tree = match self.parser.parse(source, None) {
             Some(tree) => tree,

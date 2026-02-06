@@ -65,9 +65,25 @@ impl JavascriptExtractor {
         parser.set_language(&language.into())?;
         Ok(Self { parser })
     }
+}
 
-    pub fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
+impl crate::indexer::extract::LanguageExtractor for JavascriptExtractor {
+    fn module_name_from_rel_path(&self, rel_path: &str) -> String {
+        module_name_from_rel_path(rel_path)
+    }
+
+    fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
         extract_with_parser(&mut self.parser, source, module_name)
+    }
+
+    fn resolve_imports(
+        &self,
+        repo_root: &Path,
+        file_rel_path: &str,
+        module_name: &str,
+        edges: &mut Vec<crate::indexer::extract::EdgeInput>,
+    ) {
+        resolve_import_file_edges(repo_root, file_rel_path, module_name, edges);
     }
 }
 
@@ -78,9 +94,25 @@ impl TypescriptExtractor {
         parser.set_language(&language.into())?;
         Ok(Self { parser })
     }
+}
 
-    pub fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
+impl crate::indexer::extract::LanguageExtractor for TypescriptExtractor {
+    fn module_name_from_rel_path(&self, rel_path: &str) -> String {
+        module_name_from_rel_path(rel_path)
+    }
+
+    fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
         extract_with_parser(&mut self.parser, source, module_name)
+    }
+
+    fn resolve_imports(
+        &self,
+        repo_root: &Path,
+        file_rel_path: &str,
+        module_name: &str,
+        edges: &mut Vec<crate::indexer::extract::EdgeInput>,
+    ) {
+        resolve_import_file_edges(repo_root, file_rel_path, module_name, edges);
     }
 }
 
@@ -91,9 +123,25 @@ impl TsxExtractor {
         parser.set_language(&language.into())?;
         Ok(Self { parser })
     }
+}
 
-    pub fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
+impl crate::indexer::extract::LanguageExtractor for TsxExtractor {
+    fn module_name_from_rel_path(&self, rel_path: &str) -> String {
+        module_name_from_rel_path(rel_path)
+    }
+
+    fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
         extract_with_parser(&mut self.parser, source, module_name)
+    }
+
+    fn resolve_imports(
+        &self,
+        repo_root: &Path,
+        file_rel_path: &str,
+        module_name: &str,
+        edges: &mut Vec<crate::indexer::extract::EdgeInput>,
+    ) {
+        resolve_import_file_edges(repo_root, file_rel_path, module_name, edges);
     }
 }
 
@@ -2006,6 +2054,7 @@ fn line_count(source: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::JavascriptExtractor;
+    use crate::indexer::extract::LanguageExtractor;
     use crate::indexer::http;
     use crate::indexer::proto;
 

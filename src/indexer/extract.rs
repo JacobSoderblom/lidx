@@ -36,3 +36,19 @@ pub struct ExtractedFile {
     pub symbol_metrics: Vec<SymbolMetricsInput>,
 }
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
+use anyhow::Result;
+use std::path::Path;
+
+pub trait LanguageExtractor {
+    fn module_name_from_rel_path(&self, rel_path: &str) -> String;
+    fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile>;
+    fn resolve_imports(
+        &self,
+        _repo_root: &Path,
+        _file_rel_path: &str,
+        _module_name: &str,
+        _edges: &mut Vec<EdgeInput>,
+    ) {
+        // default no-op
+    }
+}

@@ -89,6 +89,10 @@ static LANGUAGE_SPECS: &[LanguageSpec] = &[
         name: "proto",
         extensions: &["proto"],
     },
+    LanguageSpec {
+        name: "go",
+        extensions: &["go"],
+    },
 ];
 
 static LANGUAGE_FILTERS: &[LanguageFilter] = &[
@@ -211,6 +215,14 @@ static LANGUAGE_FILTERS: &[LanguageFilter] = &[
     LanguageFilter {
         name: "grpc",
         languages: &["proto"],
+    },
+    LanguageFilter {
+        name: "go",
+        languages: &["go"],
+    },
+    LanguageFilter {
+        name: "golang",
+        languages: &["go"],
     },
 ];
 

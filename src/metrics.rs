@@ -134,6 +134,10 @@ fn complexity_for(language: &str, snippet: &str) -> i64 {
             &["if", "for", "foreach", "while", "case", "catch", "switch"][..],
             &["&&", "||", "?"][..],
         ),
+        "go" => (
+            &["if", "for", "switch", "case", "select"][..],
+            &["&&", "||"][..],
+        ),
         _ => (&[][..], &[][..]),
     };
     let keyword_hits = count_keyword_hits(snippet, keywords);
@@ -194,9 +198,10 @@ fn comment_style(
 ) {
     match language {
         "python" => (Some("#"), None, None),
-        "rust" | "javascript" | "typescript" | "tsx" | "csharp" => {
+        "rust" | "javascript" | "typescript" | "tsx" | "csharp" | "go" => {
             (Some("//"), Some("/*"), Some("*/"))
         }
+        "postgres" | "sql" | "tsql" => (Some("--"), Some("/*"), Some("*/")),
         _ => (None, None, None),
     }
 }

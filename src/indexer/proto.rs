@@ -65,8 +65,14 @@ impl ProtoExtractor {
     pub fn new() -> Result<Self> {
         Ok(Self)
     }
+}
 
-    pub fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
+impl crate::indexer::extract::LanguageExtractor for ProtoExtractor {
+    fn module_name_from_rel_path(&self, rel_path: &str) -> String {
+        module_name_from_rel_path(rel_path)
+    }
+
+    fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
         let mut output = ExtractedFile::default();
         output
             .symbols
@@ -506,6 +512,7 @@ fn line_count(source: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{ProtoExtractor, RPC_ROUTE_KIND};
+    use crate::indexer::extract::LanguageExtractor;
 
     #[test]
     fn extracts_proto_services_and_rpcs() {

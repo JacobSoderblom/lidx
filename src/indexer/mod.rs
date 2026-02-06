@@ -12,9 +12,11 @@ pub mod channel;
 pub mod csharp;
 pub mod differ;
 pub mod extract;
+pub mod go;
 pub mod http;
 pub mod javascript;
 pub mod markdown;
+pub mod postgres;
 pub mod proto;
 pub mod python;
 pub mod rust;
@@ -23,16 +25,6 @@ pub mod sql;
 pub mod stable_id;
 pub mod test_detection;
 pub mod xref;
-
-enum LanguageKind {
-    Python,
-    Rust,
-    Javascript,
-    CSharp,
-    Sql,
-    Markdown,
-    Proto,
-}
 
 #[derive(Debug, Default)]
 pub(crate) struct SyncStats {
@@ -50,15 +42,7 @@ pub struct Indexer {
     scan_options: scan::ScanOptions,
     graph_version: i64,
     commit_sha: Option<String>,
-    python_extractor: python::PythonExtractor,
-    rust_extractor: rust::RustExtractor,
-    javascript_extractor: javascript::JavascriptExtractor,
-    typescript_extractor: javascript::TypescriptExtractor,
-    tsx_extractor: javascript::TsxExtractor,
-    csharp_extractor: csharp::CSharpExtractor,
-    sql_extractor: sql::SqlExtractor,
-    markdown_extractor: markdown::MarkdownExtractor,
-    proto_extractor: proto::ProtoExtractor,
+    extractors: HashMap<String, Box<dyn extract::LanguageExtractor>>,
 }
 
 impl Indexer {
@@ -75,15 +59,20 @@ impl Indexer {
         let db = Db::new(&db_path)?;
         let graph_version = db.current_graph_version()?;
         let commit_sha = db.graph_version_commit(graph_version)?;
-        let python_extractor = python::PythonExtractor::new()?;
-        let rust_extractor = rust::RustExtractor::new()?;
-        let javascript_extractor = javascript::JavascriptExtractor::new()?;
-        let typescript_extractor = javascript::TypescriptExtractor::new()?;
-        let tsx_extractor = javascript::TsxExtractor::new()?;
-        let csharp_extractor = csharp::CSharpExtractor::new()?;
-        let sql_extractor = sql::SqlExtractor::new()?;
-        let markdown_extractor = markdown::MarkdownExtractor::new()?;
-        let proto_extractor = proto::ProtoExtractor::new()?;
+
+        let mut extractors: HashMap<String, Box<dyn extract::LanguageExtractor>> = HashMap::new();
+        extractors.insert("python".into(), Box::new(python::PythonExtractor::new()?));
+        extractors.insert("rust".into(), Box::new(rust::RustExtractor::new()?));
+        extractors.insert("javascript".into(), Box::new(javascript::JavascriptExtractor::new()?));
+        extractors.insert("typescript".into(), Box::new(javascript::TypescriptExtractor::new()?));
+        extractors.insert("tsx".into(), Box::new(javascript::TsxExtractor::new()?));
+        extractors.insert("csharp".into(), Box::new(csharp::CSharpExtractor::new()?));
+        extractors.insert("go".into(), Box::new(go::GoExtractor::new()?));
+        extractors.insert("sql".into(), Box::new(sql::SqlExtractor::new()?));
+        extractors.insert("postgres".into(), Box::new(postgres::PostgresExtractor::new()?));
+        extractors.insert("tsql".into(), Box::new(sql::SqlExtractor::new()?));
+        extractors.insert("markdown".into(), Box::new(markdown::MarkdownExtractor::new()?));
+        extractors.insert("proto".into(), Box::new(proto::ProtoExtractor::new()?));
 
         Ok(Self {
             repo_root,
@@ -91,15 +80,7 @@ impl Indexer {
             scan_options,
             graph_version,
             commit_sha,
-            python_extractor,
-            rust_extractor,
-            javascript_extractor,
-            typescript_extractor,
-            tsx_extractor,
-            csharp_extractor,
-            sql_extractor,
-            markdown_extractor,
-            proto_extractor,
+            extractors,
         })
     }
 
@@ -452,88 +433,14 @@ impl Indexer {
     }
 
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {
-        let (module_name, extracted, language_kind) = match file.language.as_str() {
-            "python" => {
-                let module_name = python::module_name_from_rel_path(&file.rel_path);
-                let extracted = self.python_extractor.extract(source, &module_name);
-                (module_name, extracted, LanguageKind::Python)
-            }
-            "rust" => {
-                let module_name = rust::module_name_from_rel_path(&file.rel_path);
-                let extracted = self.rust_extractor.extract(source, &module_name);
-                (module_name, extracted, LanguageKind::Rust)
-            }
-            "javascript" => {
-                let module_name = javascript::module_name_from_rel_path(&file.rel_path);
-                let extracted = self.javascript_extractor.extract(source, &module_name);
-                (module_name, extracted, LanguageKind::Javascript)
-            }
-            "typescript" => {
-                let module_name = javascript::module_name_from_rel_path(&file.rel_path);
-                let extracted = self.typescript_extractor.extract(source, &module_name);
-                (module_name, extracted, LanguageKind::Javascript)
-            }
-            "tsx" => {
-                let module_name = javascript::module_name_from_rel_path(&file.rel_path);
-                let extracted = self.tsx_extractor.extract(source, &module_name);
-                (module_name, extracted, LanguageKind::Javascript)
-            }
-            "csharp" => {
-                let module_name = csharp::module_name_from_rel_path(&file.rel_path);
-                let extracted = self.csharp_extractor.extract(source, &module_name);
-                (module_name, extracted, LanguageKind::CSharp)
-            }
-            "sql" | "postgres" | "tsql" => {
-                let module_name = sql::module_name_from_rel_path(&file.rel_path);
-                let extracted = self.sql_extractor.extract(source, &module_name);
-                (module_name, extracted, LanguageKind::Sql)
-            }
-            "markdown" => {
-                let module_name = markdown::module_name_from_rel_path(&file.rel_path);
-                let extracted = self.markdown_extractor.extract(source, &module_name);
-                (module_name, extracted, LanguageKind::Markdown)
-            }
-            "proto" => {
-                let module_name = proto::module_name_from_rel_path(&file.rel_path);
-                let extracted = self.proto_extractor.extract(source, &module_name);
-                (module_name, extracted, LanguageKind::Proto)
-            }
-            other => {
-                return Err(anyhow!("skip {}: unknown language {other}", file.rel_path));
-            }
-        };
-        let mut extracted = extracted
+        let extractor = self.extractors.get_mut(file.language.as_str())
+            .ok_or_else(|| anyhow!("skip {}: unknown language {}", file.rel_path, file.language))?;
+        let module_name = extractor.module_name_from_rel_path(&file.rel_path);
+        let mut extracted = extractor.extract(source, &module_name)
             .map_err(|err| anyhow!("extract error {} ({module_name}): {err}", file.rel_path))?;
-        match language_kind {
-            LanguageKind::Rust => {
-                rust::resolve_module_file_edges(
-                    &self.repo_root,
-                    &file.rel_path,
-                    &module_name,
-                    &mut extracted.edges,
-                );
-            }
-            LanguageKind::Python => {
-                python::resolve_import_file_edges(
-                    &self.repo_root,
-                    &file.rel_path,
-                    &module_name,
-                    &mut extracted.edges,
-                );
-            }
-            LanguageKind::Javascript => {
-                javascript::resolve_import_file_edges(
-                    &self.repo_root,
-                    &file.rel_path,
-                    &module_name,
-                    &mut extracted.edges,
-                );
-            }
-            LanguageKind::CSharp
-            | LanguageKind::Sql
-            | LanguageKind::Markdown
-            | LanguageKind::Proto => {}
-        }
+        // Re-borrow immutably for resolve_imports (extract's &mut borrow is released)
+        let extractor = self.extractors.get(file.language.as_str()).unwrap();
+        extractor.resolve_imports(&self.repo_root, &file.rel_path, &module_name, &mut extracted.edges);
         Ok(extracted)
     }
 

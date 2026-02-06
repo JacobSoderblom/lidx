@@ -26,8 +26,14 @@ impl MarkdownExtractor {
     pub fn new() -> Result<Self> {
         Ok(Self)
     }
+}
 
-    pub fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
+impl crate::indexer::extract::LanguageExtractor for MarkdownExtractor {
+    fn module_name_from_rel_path(&self, rel_path: &str) -> String {
+        module_name_from_rel_path(rel_path)
+    }
+
+    fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
         let mut output = ExtractedFile::default();
         let lines = collect_lines(source);
         let total_lines = lines.len();
