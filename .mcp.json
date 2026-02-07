@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "lidx": {
-      "command": "/Users/jacob/work/lidx/target/release/lidx",
-      "args": ["mcp-serve"]
-    }
-  }
-}
