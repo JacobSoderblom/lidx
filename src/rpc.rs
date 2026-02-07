@@ -204,7 +204,7 @@ struct RpcError {
     message: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct FindSymbolParams {
     #[serde(alias = "symbol", alias = "name")]
     query: String,
@@ -215,7 +215,7 @@ struct FindSymbolParams {
     format: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct OpenSymbolParams {
     id: Option<i64>,
     qualname: Option<String>,
@@ -227,7 +227,7 @@ struct OpenSymbolParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct OpenFileParams {
     path: String,
     start_line: Option<i64>,
@@ -235,7 +235,7 @@ struct OpenFileParams {
     max_bytes: Option<usize>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct OverviewParams {
     summary: Option<bool>,
     fields: Option<Vec<String>>,
@@ -244,7 +244,7 @@ struct OverviewParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct ReindexParams {
     summary: Option<bool>,
     fields: Option<Vec<String>>,
@@ -252,7 +252,7 @@ struct ReindexParams {
     mine_git: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct ModuleMapParams {
     depth: Option<usize>,
     include_edges: Option<bool>,
@@ -263,7 +263,7 @@ struct ModuleMapParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct RepoMapParams {
     max_bytes: Option<usize>,
     path: Option<String>,
@@ -273,7 +273,7 @@ struct RepoMapParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct InsightsParams {
     complexity_limit: Option<usize>,
     min_complexity: Option<i64>,
@@ -294,7 +294,7 @@ struct InsightsParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct TopComplexityParams {
     limit: Option<usize>,
     min_complexity: Option<i64>,
@@ -305,7 +305,7 @@ struct TopComplexityParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct DuplicateGroupsParams {
     limit: Option<usize>,
     min_count: Option<i64>,
@@ -318,7 +318,7 @@ struct DuplicateGroupsParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct TopCouplingParams {
     limit: Option<usize>,
     direction: Option<String>,
@@ -329,7 +329,7 @@ struct TopCouplingParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct CoChangesParams {
     path: Option<String>,
     paths: Option<Vec<String>>,
@@ -340,7 +340,7 @@ struct CoChangesParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct DeadSymbolsParams {
     limit: Option<usize>,
     languages: Option<Vec<String>>,
@@ -350,7 +350,7 @@ struct DeadSymbolsParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct UnusedImportsParams {
     limit: Option<usize>,
     languages: Option<Vec<String>>,
@@ -360,7 +360,7 @@ struct UnusedImportsParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct OrphanTestsParams {
     limit: Option<usize>,
     languages: Option<Vec<String>>,
@@ -370,12 +370,12 @@ struct OrphanTestsParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct DiagnosticsImportParams {
     path: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct DiagnosticsListParams {
     limit: Option<usize>,
     offset: Option<usize>,
@@ -387,7 +387,7 @@ struct DiagnosticsListParams {
     languages: Option<Vec<String>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct DiagnosticsSummaryParams {
     path: Option<String>,
     paths: Option<Vec<String>>,
@@ -397,7 +397,7 @@ struct DiagnosticsSummaryParams {
     languages: Option<Vec<String>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct DiagnosticsRunParams {
     tools: Option<Vec<String>>,
     tool: Option<String>,
@@ -405,7 +405,7 @@ struct DiagnosticsRunParams {
     output_dir: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct NeighborsParams {
     id: i64,
     languages: Option<Vec<String>>,
@@ -414,7 +414,7 @@ struct NeighborsParams {
     format: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct SubgraphParams {
     start_ids: Option<Vec<i64>>,
     #[serde(alias = "roots", alias = "start_qualnames", alias = "qualnames")]
@@ -430,7 +430,7 @@ struct SubgraphParams {
     format: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct SearchParams {
     #[serde(alias = "pattern", alias = "text", alias = "q")]
     query: String,
@@ -448,7 +448,7 @@ struct SearchParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct GrepParams {
     #[serde(alias = "pattern", alias = "text", alias = "q")]
     query: String,
@@ -467,7 +467,7 @@ struct GrepParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct ReferencesParams {
     id: Option<i64>,
     qualname: Option<String>,
@@ -482,7 +482,7 @@ struct ReferencesParams {
     format: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct FindTestsForParams {
     id: Option<i64>,
     qualname: Option<String>,
@@ -495,7 +495,7 @@ struct FindTestsForParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct AnalyzeImpactParams {
     id: Option<i64>,
     qualname: Option<String>,
@@ -517,7 +517,7 @@ struct AnalyzeImpactParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct AnalyzeDiffParams {
     /// Git diff text (unified diff format)
     diff: Option<String>,
@@ -536,7 +536,7 @@ struct AnalyzeDiffParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct EdgesParams {
     kind: Option<String>,
     kinds: Option<Vec<String>>,
@@ -560,7 +560,7 @@ struct EdgesParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct RgParams {
     #[serde(alias = "pattern", alias = "text", alias = "q")]
     query: String,
@@ -580,7 +580,7 @@ struct RgParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct SuggestQualNamesParams {
     #[serde(alias = "query", alias = "pattern", alias = "name")]
     query: String,
@@ -590,35 +590,35 @@ struct SuggestQualNamesParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct ChangedFilesParams {
     languages: Option<Vec<String>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct IndexStatusParams {
     languages: Option<Vec<String>>,
     include_paths: Option<bool>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, schemars::JsonSchema)]
 struct OnboardParams {
     languages: Option<Vec<String>>,
     #[serde(alias = "as_of", alias = "version")]
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, schemars::JsonSchema)]
 struct ReflectParams {
     text: Option<String>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, schemars::JsonSchema)]
 struct ChangedSinceParams {
     commit: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct RouteRefsParams {
     query: String,
     limit: Option<usize>,
@@ -631,7 +631,7 @@ struct RouteRefsParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct FlowStatusParams {
     limit: Option<usize>,
     edge_limit: Option<usize>,
@@ -644,7 +644,7 @@ struct FlowStatusParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct GatherContextParams {
     /// Starting points: symbol qualnames, file paths, or search queries
     #[serde(default)]
@@ -673,7 +673,7 @@ struct GatherContextParams {
     strategy: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContextSeed {
     Symbol {
@@ -690,18 +690,18 @@ pub enum ContextSeed {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct GraphVersionsParams {
     limit: Option<usize>,
     offset: Option<usize>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, schemars::JsonSchema)]
 struct ListMethodsParams {
     format: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct ExplainSymbolParams {
     id: Option<i64>,
     qualname: Option<String>,
@@ -715,7 +715,7 @@ struct ExplainSymbolParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct TraceFlowParams {
     start_id: Option<i64>,
     start_qualname: Option<String>,
@@ -778,7 +778,7 @@ struct ToolRunResult {
 /// Hard cap on result count to prevent huge responses that blow LLM context windows.
 const MAX_RESPONSE_LIMIT: usize = 500;
 
-const METHOD_LIST: &[&str] = &[
+pub const METHOD_LIST: &[&str] = &[
     // -- Workflow methods (recommended for LLM use) --
     "explain_symbol",   // One-call deep understanding of any symbol
     "analyze_diff",     // Diff-aware impact + test coverage + risk
@@ -842,6 +842,149 @@ const METHOD_ALIASES: &[(&str, &str)] = &[
     ("xrefs", "list_xrefs"),
     ("graph_versions", "list_graph_versions"),
 ];
+
+// --- Per-method JSON Schema generation ---
+
+fn schema_value<T: schemars::JsonSchema>() -> Value {
+    let schema = schemars::schema_for!(T);
+    let raw = serde_json::to_value(schema).unwrap_or_else(|_| json!({"type": "object"}));
+    simplify_schema(raw)
+}
+
+/// Return a simplified JSON Schema for the params struct of the given method.
+pub fn method_param_schema(method: &str) -> Value {
+    match method {
+        "find_symbol" => schema_value::<FindSymbolParams>(),
+        "open_symbol" => schema_value::<OpenSymbolParams>(),
+        "open_file" => schema_value::<OpenFileParams>(),
+        "explain_symbol" => schema_value::<ExplainSymbolParams>(),
+        "repo_overview" => schema_value::<OverviewParams>(),
+        "reindex" => schema_value::<ReindexParams>(),
+        "module_map" => schema_value::<ModuleMapParams>(),
+        "repo_map" => schema_value::<RepoMapParams>(),
+        "repo_insights" => schema_value::<InsightsParams>(),
+        "top_complexity" => schema_value::<TopComplexityParams>(),
+        "duplicate_groups" => schema_value::<DuplicateGroupsParams>(),
+        "top_coupling" => schema_value::<TopCouplingParams>(),
+        "co_changes" => schema_value::<CoChangesParams>(),
+        "dead_symbols" => schema_value::<DeadSymbolsParams>(),
+        "unused_imports" => schema_value::<UnusedImportsParams>(),
+        "orphan_tests" => schema_value::<OrphanTestsParams>(),
+        "neighbors" => schema_value::<NeighborsParams>(),
+        "subgraph" => schema_value::<SubgraphParams>(),
+        "search" | "search_text" => schema_value::<SearchParams>(),
+        "grep" => schema_value::<GrepParams>(),
+        "search_rg" => schema_value::<RgParams>(),
+        "references" => schema_value::<ReferencesParams>(),
+        "find_tests_for" => schema_value::<FindTestsForParams>(),
+        "analyze_impact" => schema_value::<AnalyzeImpactParams>(),
+        "analyze_diff" => schema_value::<AnalyzeDiffParams>(),
+        "list_edges" | "list_xrefs" => schema_value::<EdgesParams>(),
+        "suggest_qualnames" => schema_value::<SuggestQualNamesParams>(),
+        "changed_files" => schema_value::<ChangedFilesParams>(),
+        "index_status" => schema_value::<IndexStatusParams>(),
+        "route_refs" => schema_value::<RouteRefsParams>(),
+        "flow_status" => schema_value::<FlowStatusParams>(),
+        "gather_context" => schema_value::<GatherContextParams>(),
+        "list_graph_versions" => schema_value::<GraphVersionsParams>(),
+        "list_methods" => schema_value::<ListMethodsParams>(),
+        "trace_flow" => schema_value::<TraceFlowParams>(),
+        "onboard" => schema_value::<OnboardParams>(),
+        "reflect" => schema_value::<ReflectParams>(),
+        "changed_since" => schema_value::<ChangedSinceParams>(),
+        "diagnostics_run" => schema_value::<DiagnosticsRunParams>(),
+        "diagnostics_import" => schema_value::<DiagnosticsImportParams>(),
+        "diagnostics_list" => schema_value::<DiagnosticsListParams>(),
+        "diagnostics_summary" => schema_value::<DiagnosticsSummaryParams>(),
+        // Paramless methods
+        _ => json!({"type": "object"}),
+    }
+}
+
+/// Post-process schemars output into compact, LLM-friendly JSON Schema.
+fn simplify_schema(mut schema: Value) -> Value {
+    // 1. Collect definitions for inlining $ref
+    let definitions = schema
+        .get("definitions")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+
+    // 2. Recursively inline $ref and clean up
+    inline_refs(&mut schema, &definitions);
+
+    // 3. Strip root-level noise
+    if let Some(obj) = schema.as_object_mut() {
+        obj.remove("$schema");
+        obj.remove("definitions");
+        obj.remove("title");
+    }
+
+    schema
+}
+
+/// Recursively inline `$ref` references and collapse `Option<T>` patterns.
+fn inline_refs(value: &mut Value, definitions: &Value) {
+    match value {
+        Value::Object(map) => {
+            // Handle $ref: inline the definition
+            if let Some(ref_val) = map.get("$ref").cloned() {
+                if let Some(ref_str) = ref_val.as_str() {
+                    // Extract definition name from "#/definitions/Name"
+                    if let Some(name) = ref_str.strip_prefix("#/definitions/") {
+                        if let Some(def) = definitions.get(name) {
+                            let mut inlined = def.clone();
+                            inline_refs(&mut inlined, definitions);
+                            *value = inlined;
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Handle anyOf with null (Option<T> pattern): collapse to inner schema
+            if let Some(any_of) = map.get("anyOf").cloned() {
+                if let Some(variants) = any_of.as_array() {
+                    if variants.len() == 2 {
+                        let null_idx = variants.iter().position(|v| {
+                            v.get("type").and_then(|t| t.as_str()) == Some("null")
+                        });
+                        if let Some(idx) = null_idx {
+                            let inner_idx = 1 - idx;
+                            let mut inner = variants[inner_idx].clone();
+                            inline_refs(&mut inner, definitions);
+                            *value = inner;
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Recurse into all values
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for key in keys {
+                if let Some(v) = map.get_mut(&key) {
+                    inline_refs(v, definitions);
+                }
+            }
+
+            // Strip format on integers (e.g. "format": "uint", "format": "int64")
+            if map.get("type").and_then(|t| t.as_str()) == Some("integer") {
+                map.remove("format");
+                map.remove("minimum");
+            }
+            // Strip format on numbers
+            if map.get("type").and_then(|t| t.as_str()) == Some("number") {
+                map.remove("format");
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                inline_refs(item, definitions);
+            }
+        }
+        _ => {}
+    }
+}
 
 struct MethodDoc {
     name: &'static str,
@@ -6421,6 +6564,166 @@ mod tests {
 
         let context = extract_protocol_context(&call_edge);
         assert!(context.is_none());
+    }
+
+    // --- Schema generation tests ---
+
+    #[test]
+    fn all_methods_have_param_schema() {
+        for method in super::METHOD_LIST {
+            let schema = super::method_param_schema(method);
+            assert!(
+                schema.is_object(),
+                "method '{}' did not produce an object schema",
+                method
+            );
+            // Every schema should either have "type":"object" or be the paramless default
+            let obj = schema.as_object().unwrap();
+            let has_type = obj.get("type").and_then(|v| v.as_str()) == Some("object");
+            let has_one_of = obj.contains_key("oneOf");
+            assert!(
+                has_type || has_one_of,
+                "method '{}' schema has neither type:object nor oneOf: {:?}",
+                method,
+                obj.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn param_schema_has_required_fields() {
+        // find_symbol requires "query"
+        let schema = super::method_param_schema("find_symbol");
+        let required = schema.get("required").and_then(|v| v.as_array());
+        assert!(required.is_some(), "find_symbol should have required fields");
+        let required: Vec<&str> = required
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            required.contains(&"query"),
+            "find_symbol should require 'query', got: {:?}",
+            required
+        );
+
+        // neighbors requires "id"
+        let schema = super::method_param_schema("neighbors");
+        let required = schema.get("required").and_then(|v| v.as_array());
+        assert!(required.is_some(), "neighbors should have required fields");
+        let required: Vec<&str> = required
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            required.contains(&"id"),
+            "neighbors should require 'id', got: {:?}",
+            required
+        );
+    }
+
+    #[test]
+    fn param_schema_no_refs() {
+        fn check_no_refs(value: &serde_json::Value, path: &str) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    assert!(
+                        !map.contains_key("$ref"),
+                        "$ref found at {}: {:?}",
+                        path,
+                        map.get("$ref")
+                    );
+                    for (k, v) in map {
+                        check_no_refs(v, &format!("{}.{}", path, k));
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    for (i, v) in arr.iter().enumerate() {
+                        check_no_refs(v, &format!("{}[{}]", path, i));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for method in super::METHOD_LIST {
+            let schema = super::method_param_schema(method);
+            check_no_refs(&schema, method);
+        }
+    }
+
+    #[test]
+    fn param_schema_no_null_types() {
+        fn check_no_null(value: &serde_json::Value, path: &str) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    if map.get("type").and_then(|v| v.as_str()) == Some("null") {
+                        panic!("type:null found at {}", path);
+                    }
+                    for (k, v) in map {
+                        check_no_null(v, &format!("{}.{}", path, k));
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    for (i, v) in arr.iter().enumerate() {
+                        check_no_null(v, &format!("{}[{}]", path, i));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for method in super::METHOD_LIST {
+            let schema = super::method_param_schema(method);
+            check_no_null(&schema, method);
+        }
+    }
+
+    #[test]
+    fn param_schema_total_size_cap() {
+        let mut total = 0;
+        for method in super::METHOD_LIST {
+            let schema = super::method_param_schema(method);
+            let serialized = serde_json::to_string(&schema).unwrap();
+            total += serialized.len();
+        }
+        assert!(
+            total < 25_000,
+            "Total schema size {} exceeds 25KB cap",
+            total
+        );
+    }
+
+    #[test]
+    fn context_seed_schema_is_clean() {
+        let schema = super::method_param_schema("gather_context");
+        // Navigate to seeds.items — should have oneOf with 3 variants
+        let seeds_schema = schema
+            .get("properties")
+            .and_then(|p| p.get("seeds"))
+            .and_then(|s| s.get("items"));
+        assert!(seeds_schema.is_some(), "gather_context should have seeds.items");
+        let seeds_items = seeds_schema.unwrap();
+        let one_of = seeds_items.get("oneOf");
+        assert!(one_of.is_some(), "seeds.items should have oneOf: {}", seeds_items);
+        let variants = one_of.unwrap().as_array().unwrap();
+        assert_eq!(
+            variants.len(),
+            3,
+            "ContextSeed should have 3 variants (symbol, file, search), got {}",
+            variants.len()
+        );
+        // Each variant should have a type discriminator property
+        for variant in variants {
+            let props = variant.get("properties");
+            assert!(props.is_some(), "variant should have properties: {}", variant);
+            assert!(
+                props.unwrap().get("type").is_some(),
+                "variant should have 'type' discriminator property: {}",
+                variant
+            );
+        }
     }
 }
 

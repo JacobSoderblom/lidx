@@ -190,6 +190,18 @@ Scope values: code, docs, tests, examples, all."
 }
 
 fn tool_spec() -> Value {
+    // Build oneOf array: one schema variant per method
+    let one_of: Vec<Value> = rpc::METHOD_LIST
+        .iter()
+        .map(|&method| {
+            let mut schema = rpc::method_param_schema(method);
+            if let Some(obj) = schema.as_object_mut() {
+                obj.insert("title".to_string(), json!(method));
+            }
+            schema
+        })
+        .collect();
+
     json!({
         "name": TOOL_NAME,
         "description": "Query the lidx code index using a method + params payload.",
@@ -198,58 +210,11 @@ fn tool_spec() -> Value {
             "properties": {
                 "method": {
                     "type": "string",
-                    "enum": [
-                        "help",
-                        "list_methods",
-                        "list_languages",
-                        "list_graph_versions",
-                        "repo_overview",
-                        "repo_insights",
-                        "top_complexity",
-                        "top_coupling",
-                        "co_changes",
-                        "duplicate_groups",
-                        "dead_symbols",
-                        "unused_imports",
-                        "orphan_tests",
-                        "find_symbol",
-                        "suggest_qualnames",
-                        "open_symbol",
-                        "explain_symbol",
-                        "open_file",
-                        "neighbors",
-                        "subgraph",
-                        "references",
-                        "list_edges",
-                        "list_xrefs",
-                        "route_refs",
-                        "flow_status",
-                        "search_rg",
-                        "grep",
-                        "search_text",
-                        "search",
-                        "analyze_diff",
-                        "analyze_impact",
-                        "find_tests_for",
-                        "trace_flow",
-                        "repo_map",
-                        "module_map",
-                        "gather_context",
-                        "changed_files",
-                        "index_status",
-                        "reindex",
-                        "diagnostics_run",
-                        "diagnostics_import",
-                        "diagnostics_list",
-                        "diagnostics_summary",
-                        "onboard",
-                        "reflect",
-                        "changed_since"
-                    ],
+                    "enum": rpc::METHOD_LIST,
                     "description": "lidx RPC method name."
                 },
                 "params": {
-                    "type": "object",
+                    "oneOf": one_of,
                     "description": "Method parameters (object). Call with method: help for full parameter docs per method."
                 },
                 "repo": {
