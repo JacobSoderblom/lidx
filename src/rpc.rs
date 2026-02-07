@@ -601,6 +601,23 @@ struct IndexStatusParams {
     include_paths: Option<bool>,
 }
 
+#[derive(Deserialize, Default)]
+struct OnboardParams {
+    languages: Option<Vec<String>>,
+    #[serde(alias = "as_of", alias = "version")]
+    graph_version: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
+struct ReflectParams {
+    text: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct ChangedSinceParams {
+    commit: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct RouteRefsParams {
     query: String,
@@ -813,6 +830,10 @@ const METHOD_LIST: &[&str] = &[
     "diagnostics_import",
     "diagnostics_list",
     "diagnostics_summary",
+    // -- Agent workflow --
+    "onboard",
+    "reflect",
+    "changed_since",
 ];
 
 const METHOD_ALIASES: &[(&str, &str)] = &[
@@ -1241,6 +1262,22 @@ const METHOD_DOCS: &[MethodDoc] = &[
         name: "diagnostics_summary",
         summary: "Diagnostics counts by severity and tool.",
         key_params: &["path|paths", "severity", "rule_id", "tool", "languages"],
+    },
+    // -- Agent workflow --
+    MethodDoc {
+        name: "onboard",
+        summary: "One-call project orientation: overview, modules, languages, index status, suggested queries.",
+        key_params: &["languages", "graph_version|as_of"],
+    },
+    MethodDoc {
+        name: "reflect",
+        summary: "Echo text back. Use to structure reasoning before acting.",
+        key_params: &["text"],
+    },
+    MethodDoc {
+        name: "changed_since",
+        summary: "Files changed since a git commit. Useful for multi-session continuity.",
+        key_params: &["commit"],
     },
 ];
 
@@ -4458,6 +4495,145 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
             )?;
 
             json!(result)
+        }
+        "reflect" => {
+            let params: ReflectParams = serde_json::from_value(params)?;
+            let text = params.text.unwrap_or_default();
+            if text.len() > 50_000 {
+                anyhow::bail!("reflect text exceeds 50KB limit");
+            }
+            json!({ "reflected": text })
+        }
+        "onboard" => {
+            let params: OnboardParams = serde_json::from_value(params)?;
+            let languages = scan::normalize_language_filter(params.languages.as_deref())?;
+            let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+
+            // 1. Repo overview (compact)
+            let overview = indexer.db().repo_overview(
+                indexer.repo_root().clone(),
+                languages.as_deref(),
+                graph_version,
+            )?;
+
+            // 2. Module summary (depth=1)
+            let modules = indexer.db().module_summary(
+                1,
+                languages.as_deref(),
+                None,
+                graph_version,
+            )?;
+            let module_nodes: Vec<Value> = modules
+                .into_iter()
+                .map(|m| json!({
+                    "path": m.path,
+                    "file_count": m.file_count,
+                    "symbol_count": m.symbol_count,
+                    "languages": m.languages,
+                }))
+                .collect();
+
+            // 3. Languages
+            let lang_list: Vec<String> = scan::language_specs()
+                .iter()
+                .map(|s| s.name.to_string())
+                .collect();
+
+            // 4. Index status
+            let changed = indexer.changed_files(languages.as_deref())?;
+            let stale = !changed.added.is_empty()
+                || !changed.modified.is_empty()
+                || !changed.deleted.is_empty();
+            let last_indexed = indexer.db().get_meta_i64("last_indexed")?;
+            let hint = if last_indexed.is_none() {
+                "index missing; run reindex"
+            } else if stale {
+                "reindex needed"
+            } else {
+                "index current"
+            };
+
+            // 5. Suggested queries
+            let suggested = json!([
+                { "method": "explain_symbol", "params": { "query": "<symbol_name>" }, "why": "Understand any symbol deeply" },
+                { "method": "repo_map", "params": { "max_bytes": 8000 }, "why": "Get architecture text overview" },
+                { "method": "search", "params": { "query": "<topic>" }, "why": "Search by concept" },
+                { "method": "analyze_diff", "params": { "paths": ["<file>"] }, "why": "Assess change impact" },
+            ]);
+
+            json!({
+                "overview": overview,
+                "languages": lang_list,
+                "modules": module_nodes,
+                "index_status": { "stale": stale, "hint": hint },
+                "suggested_queries": suggested,
+            })
+        }
+        "changed_since" => {
+            let params: ChangedSinceParams = serde_json::from_value(params)?;
+            let repo_root = indexer.repo_root();
+
+            // Determine the base commit
+            let since_commit = match params.commit {
+                Some(ref c) => {
+                    // Validate: allow alphanumeric, ~, ^, -, . (for HEAD~5, tags, etc)
+                    if c.len() > 100 || !c.chars().all(|ch| ch.is_alphanumeric() || "~^-._/".contains(ch)) {
+                        anyhow::bail!("invalid commit reference: must be alphanumeric with ~^-._/ allowed, max 100 chars");
+                    }
+                    c.clone()
+                }
+                None => {
+                    // Use the commit from the current graph version
+                    let gv = indexer.db().current_graph_version()?;
+                    match indexer.db().graph_version_commit(gv)? {
+                        Some(sha) => sha,
+                        None => anyhow::bail!("no commit parameter provided and no commit recorded in current graph version"),
+                    }
+                }
+            };
+
+            // Get current HEAD
+            let current_commit = crate::util::git_head_sha(repo_root)
+                .ok_or_else(|| anyhow::anyhow!("failed to get git HEAD sha — is this a git repository?"))?;
+
+            // Run git diff
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo_root)
+                .arg("diff")
+                .arg("--name-only")
+                .arg(format!("{}..HEAD", since_commit))
+                .output()
+                .map_err(|e| anyhow::anyhow!("failed to run git diff: {e}"))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!("git diff failed: {stderr}");
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let files: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+            let file_count = files.len();
+
+            // Build suggested queries
+            let paths_for_diff: Vec<&str> = files.iter().take(20).copied().collect();
+            let suggested = if file_count > 0 {
+                json!([{
+                    "method": "analyze_diff",
+                    "params": { "paths": paths_for_diff },
+                    "why": "Analyze impact of these changes"
+                }])
+            } else {
+                json!([])
+            };
+
+            json!({
+                "since_commit": since_commit,
+                "current_commit": current_commit,
+                "files_changed": files,
+                "file_count": file_count,
+                "suggested_queries": suggested,
+            })
         }
         other => {
             return Err(anyhow::anyhow!("unknown method: {other}"));

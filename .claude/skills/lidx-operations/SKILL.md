@@ -45,7 +45,7 @@ description: "Operations and troubleshooting workflows for lidx. Use when debugg
 
 **Binary caching**: Claude Desktop and Claude Code cache the lidx binary. To test new builds, use `cargo run --release -- mcp-serve` directly.
 
-**Tool not showing up**: The MCP server exposes one tool `lidx_query`. If the client doesn't see methods, check the `tools/list` response.
+**Tool not showing up**: The MCP server exposes one tool `lidx`. If the client doesn't see methods, check the `tools/list` response.
 
 **Wrong repo path**: Use absolute paths. `~/work/repo` is treated as relative. Use `/Users/name/work/repo`.
 

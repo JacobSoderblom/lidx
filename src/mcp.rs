@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-const TOOL_NAME: &str = "lidx_query";
+const TOOL_NAME: &str = "lidx";
 
 struct Defaults {
     repo_root: PathBuf,
@@ -172,59 +172,17 @@ fn initialize_result(message: &Value) -> Value {
             "version": env!("CARGO_PKG_VERSION"),
         },
         "instructions": format!(
-            "Use the {TOOL_NAME} tool with method: help, list_methods, list_languages, list_graph_versions, \
+            "Use the {TOOL_NAME} tool to query a code index. Call method: help for full docs, examples, and parameter reference. \
+\n\nSTART HERE: explain_symbol for deep symbol understanding (one call replaces 5+). \
+analyze_diff for change impact. find_tests_for for test coverage. trace_flow for call chains. \
+repo_map for architecture overview. gather_context for LLM-ready context. search for text search. search_rg for regex. \
+\n\nOther methods: find_symbol, open_symbol, open_file, references, subgraph, neighbors, \
+module_map, analyze_impact, list_edges, list_xrefs, route_refs, flow_status, \
 repo_overview, repo_insights, top_complexity, top_coupling, co_changes, duplicate_groups, \
-dead_symbols, unused_imports, orphan_tests, \
-find_symbol, suggest_qualnames, open_symbol, explain_symbol, open_file, \
-neighbors, subgraph, references, list_edges, list_xrefs, route_refs, flow_status, \
-search_rg, grep, search_text, search, \
-analyze_diff, analyze_impact, find_tests_for, trace_flow, \
-repo_map, module_map, gather_context, \
-changed_files, index_status, reindex, \
+dead_symbols, unused_imports, orphan_tests, grep, suggest_qualnames, \
+changed_files, index_status, reindex, onboard, reflect, changed_since, \
 diagnostics_run, diagnostics_import, diagnostics_list, diagnostics_summary. \
-\n\nSTART HERE: Use explain_symbol for deep understanding of any symbol (one call replaces 5+). \
-Use analyze_diff to assess impact of code changes. Use find_tests_for to find test coverage. \
-Use trace_flow to follow call chains. Use repo_map for quick architecture overview. \
-Use module_map for detailed architecture DAG. Use gather_context to assemble LLM-ready context with budget control. \
-For text search use search (ranked fuzzy). For regex use search_rg. \
-For raw edges use references. For cross-language links use list_xrefs. \
-\n\nOptional arguments: repo, db, set_default, text_mode, include_structured. \
-\n\nCommon params: \
-explain_symbol {{id|qualname|query, max_bytes, sections (source|callers|callees|tests|implements), max_refs, languages, graph_version|as_of}}; \
-analyze_diff {{diff|paths, max_depth, include_tests, include_risk, max_bytes, languages, graph_version|as_of}}; \
-find_tests_for {{id|qualname|query, include_indirect, indirect_depth, limit, languages, graph_version|as_of}}; \
-trace_flow {{start_id|start_qualname, end_id|end_qualname, direction (downstream|upstream), max_hops, kinds, include_snippets, graph_version|as_of}}; \
-repo_map {{max_bytes, languages, path|paths, graph_version|as_of}}; \
-module_map {{depth, include_edges, languages, path|paths, graph_version|as_of}}; \
-gather_context {{seeds, max_bytes, depth, max_nodes, include_snippets, include_related, dry_run, languages, graph_version|as_of}}; \
-find_symbol {{query, limit, languages, graph_version|as_of}}; \
-suggest_qualnames {{query, limit, languages, graph_version|as_of}}; \
-open_symbol {{id|qualname, include_snippet, max_snippet_bytes, include_symbol, snippet_only, graph_version|as_of}}; \
-open_file {{path, start_line, end_line, max_bytes}}; \
-neighbors {{id, languages, graph_version|as_of}}; \
-subgraph {{start_ids|roots, depth, max_nodes, languages, kinds, exclude_kinds, resolved_only, graph_version|as_of}}; \
-references {{id|qualname, direction (in|out), kinds, limit, include_symbols, include_snippet, languages, graph_version|as_of}}; \
-analyze_impact {{id|qualname, enable_direct, enable_test, enable_historical, max_depth, direction, kinds, include_tests, include_paths, limit, min_confidence, languages, graph_version|as_of}}; \
-list_edges {{kind|kinds, path|paths, limit, offset, languages, source_id|source_qualname, target_id|target_qualname, resolved_only, min_confidence, trace_id, event_after, event_before, include_symbols, include_snippet, graph_version|as_of}}; \
-list_xrefs {{path|paths, limit, offset, languages, source_id|source_qualname, target_id|target_qualname, resolved_only, min_confidence, trace_id, event_after, event_before, include_symbols, include_snippet, graph_version|as_of}}; \
-route_refs {{query, path|paths, limit, languages, include_symbols, include_snippet, graph_version|as_of}}; \
-flow_status {{limit, edge_limit, include_routes, include_calls, path|paths, languages, graph_version|as_of}}; \
-search_rg {{query, path|paths, limit, context_lines, include_text, include_symbol, globs, case_sensitive, fixed_string, hidden, no_ignore, follow, graph_version|as_of}}; \
-grep {{query, path|paths, limit, include_text, languages, scope, exclude_generated, rank, no_ignore, context_lines, include_symbol, graph_version|as_of}}; \
-search_text|search {{query, path|paths, limit, languages, scope, exclude_generated, rank, no_ignore, context_lines, include_symbol, graph_version|as_of}}; \
-repo_overview {{summary, fields, languages, graph_version|as_of}}; \
-repo_insights {{languages, path|paths, complexity_limit, min_complexity, duplicate_limit, duplicate_min_count, duplicate_min_loc, duplicate_per_group_limit, graph_version|as_of}}; \
-top_complexity {{limit, min_complexity, languages, path|paths, graph_version|as_of}}; \
-top_coupling {{limit, direction (in|out|both), languages, path|paths, graph_version|as_of}}; \
-co_changes {{path|paths|qualname, limit, min_confidence, graph_version|as_of}}; \
-duplicate_groups {{limit, min_count, min_loc, per_group_limit, languages, path|paths, graph_version|as_of}}; \
-dead_symbols {{limit, languages, path|paths, graph_version|as_of}}; \
-unused_imports {{limit, languages, path|paths, graph_version|as_of}}; \
-orphan_tests {{limit, languages, path|paths, graph_version|as_of}}; \
-changed_files {{languages}}; index_status {{languages, include_paths}}; reindex {{summary, fields}}; \
-diagnostics_run {{tools|tool, languages, output_dir}}; diagnostics_import {{path}}; \
-diagnostics_list {{limit, offset, path|paths, severity, rule_id, tool, languages}}; \
-diagnostics_summary {{path|paths, severity, rule_id, tool, languages}}. \
+\n\nOptional tool params: repo, db, set_default, text_mode (compact|pretty|none), include_structured. \
 \n\nEdge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, XREF, MODULE_FILE, IMPORTS_FILE. \
 Scope values: code, docs, tests, examples, all."
         ),
@@ -283,13 +241,16 @@ fn tool_spec() -> Value {
                         "diagnostics_run",
                         "diagnostics_import",
                         "diagnostics_list",
-                        "diagnostics_summary"
+                        "diagnostics_summary",
+                        "onboard",
+                        "reflect",
+                        "changed_since"
                     ],
                     "description": "lidx RPC method name."
                 },
                 "params": {
                     "type": "object",
-                    "description": "Method parameters (object). Examples: list_languages {}; list_graph_versions {{limit, offset}}; find_symbol {{query, limit, languages, graph_version|as_of}}; suggest_qualnames {{query, limit, languages, graph_version|as_of}}; open_symbol {{id|qualname, include_snippet, max_snippet_bytes, include_symbol, snippet_only, graph_version|as_of}}; explain_symbol {{id|qualname|query, max_bytes, sections (source|callers|callees|tests|implements), max_refs, languages, graph_version|as_of}}; open_file {{path, start_line, end_line, max_bytes}}; neighbors {{id, languages, graph_version|as_of}}; subgraph {{start_ids|roots, depth, max_nodes, languages, kinds, exclude_kinds, resolved_only, graph_version|as_of}}; references {{id|qualname, direction, kinds, limit, include_symbols, include_snippet, languages, graph_version|as_of}}; analyze_diff {{diff|paths, max_depth, include_tests, include_risk, max_bytes, languages, graph_version|as_of}}; analyze_impact {{id|qualname, enable_direct, enable_test, enable_historical, max_depth, direction, kinds, include_tests, include_paths, limit, min_confidence, languages, graph_version|as_of}}; find_tests_for {{id|qualname|query, include_indirect, indirect_depth, limit, languages, graph_version|as_of}}; trace_flow {{start_id|start_qualname, end_id|end_qualname, direction (downstream|upstream), max_hops, kinds, include_snippets, graph_version|as_of}}; module_map {{depth, include_edges, languages, path|paths, graph_version|as_of}}; gather_context {{seeds, max_bytes, depth, max_nodes, include_snippets, include_related, dry_run, languages, graph_version|as_of}}; list_edges {{kind|kinds, path|paths, limit, offset, languages, source_id|source_qualname, target_id|target_qualname, resolved_only, min_confidence, trace_id, event_after, event_before, include_symbols, include_snippet, graph_version|as_of}}; list_xrefs {{path|paths, limit, offset, languages, source_id|source_qualname, target_id|target_qualname, resolved_only, min_confidence, trace_id, event_after, event_before, include_symbols, include_snippet, graph_version|as_of}}; route_refs {{query, path|paths, limit, languages, include_symbols, include_snippet, graph_version|as_of}}; flow_status {{limit, edge_limit, include_routes, include_calls, path|paths, languages, graph_version|as_of}}; search_rg {{query, path|paths, limit, context_lines, include_text, include_symbol, globs, case_sensitive, fixed_string, hidden, no_ignore, follow, graph_version|as_of}}; grep {{query, path|paths, limit, include_text, languages, scope, exclude_generated, rank, no_ignore, context_lines, include_symbol, graph_version|as_of}}; search_text|search {{query, path|paths, limit, languages, scope, exclude_generated, rank, no_ignore, context_lines, include_symbol, graph_version|as_of}}; repo_overview {{summary, fields, languages, graph_version|as_of}}; repo_insights {{languages, path|paths, complexity_limit, min_complexity, duplicate_limit, duplicate_min_count, duplicate_min_loc, duplicate_per_group_limit, graph_version|as_of}}; top_complexity {{limit, min_complexity, languages, path|paths, graph_version|as_of}}; top_coupling {{limit, direction (in|out|both), languages, path|paths, graph_version|as_of}}; duplicate_groups {{limit, min_count, min_loc, per_group_limit, languages, path|paths, graph_version|as_of}}; changed_files {{languages}}; index_status {{languages, include_paths}}; reindex {{summary, fields}}; diagnostics_run {{tools|tool, languages, output_dir}}; diagnostics_import {{path}}; diagnostics_list {{limit, offset, path|paths, severity, rule_id, tool, languages}}; diagnostics_summary {{path|paths, severity, rule_id, tool, languages}}. Scope values: code, docs, tests, examples, all."
+                    "description": "Method parameters (object). Call with method: help for full parameter docs per method."
                 },
                 "repo": {
                     "type": "string",
@@ -487,7 +448,8 @@ fn text_mode_from_args(arguments: &Value) -> TextMode {
     match arguments.get("text_mode").and_then(|value| value.as_str()) {
         Some("none") => TextMode::None,
         Some("compact") => TextMode::Compact,
-        _ => TextMode::Pretty,
+        Some("pretty") => TextMode::Pretty,
+        _ => TextMode::Compact,
     }
 }
 
@@ -555,7 +517,7 @@ mod tests {
 
     #[test]
     fn text_mode_parsing() {
-        assert!(matches!(text_mode_from_args(&json!({})), TextMode::Pretty));
+        assert!(matches!(text_mode_from_args(&json!({})), TextMode::Compact));
         assert!(matches!(
             text_mode_from_args(&json!({ "text_mode": "compact" })),
             TextMode::Compact

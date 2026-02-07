@@ -37,7 +37,7 @@ That's it. Your AI assistant can now query your codebase through lidx.
 
 ## What it does
 
-lidx builds a symbol graph from your code and exposes it through a single MCP tool (`lidx_query`) with ~30 query methods. The graph captures:
+lidx builds a symbol graph from your code and exposes it through a single MCP tool (`lidx`) with ~30 query methods. The graph captures:
 
 - **Symbols** — functions, classes, methods, modules, routes, SQL tables
 - **Edges** — CALLS, IMPORTS, INHERITS, TYPE_REF, HTTP_CALL/HTTP_ROUTE, RPC_CALL/RPC_IMPL, CHANNEL_PUBLISH/CHANNEL_SUBSCRIBE
@@ -61,7 +61,7 @@ Python, C#, TypeScript, JavaScript, Rust, Go, Lua, SQL, PostgreSQL (PL/pgSQL), P
 
 ## Query methods
 
-All queries go through the `lidx_query` MCP tool with a `method` and optional `params`.
+All queries go through the `lidx` MCP tool with a `method` and optional `params`.
 
 | Category | Methods |
 |----------|---------|

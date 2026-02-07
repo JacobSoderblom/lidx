@@ -25,7 +25,7 @@ src/
   model.rs           -- All response/output types (Symbol, Edge, etc.)
 
   rpc.rs             -- JSONL RPC dispatch: handle_method() with ~30 methods
-  mcp.rs             -- MCP stdio server: wraps rpc as single "lidx_query" tool
+  mcp.rs             -- MCP stdio server: wraps rpc as single "lidx" tool
 
   db/
     mod.rs           -- Db struct, r2d2 pool, all SQL queries as methods
