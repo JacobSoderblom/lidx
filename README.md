@@ -20,20 +20,13 @@ Add `.lidx` to your repo's `.gitignore`:
 echo ".lidx" >> .gitignore
 ```
 
-Add lidx to your repo's `.mcp.json`:
+The install script automatically registers lidx as a global MCP server. If you need to do it manually:
 
-```json
-{
-  "mcpServers": {
-    "lidx": {
-      "command": "lidx",
-      "args": ["mcp-serve", "--repo", "."]
-    }
-  }
-}
+```bash
+claude mcp add --transport stdio -s user lidx -- lidx mcp-serve
 ```
 
-That's it. Your AI assistant can now query your codebase through lidx.
+That's it. lidx is now available in all Claude Code sessions, auto-detecting the project from your working directory.
 
 ## What it does
 

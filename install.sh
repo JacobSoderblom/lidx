@@ -63,14 +63,17 @@ echo "Add .lidx to your repo's .gitignore:"
 echo ""
 echo '  echo ".lidx" >> .gitignore'
 echo ""
-echo "Add lidx to your repo's .mcp.json:"
-echo ""
-echo '  {'
-echo '    "mcpServers": {'
-echo '      "lidx": {'
-echo '        "command": "lidx",'
-echo '        "args": ["mcp-serve", "--repo", "."]'
-echo '      }'
-echo '    }'
-echo '  }'
-echo ""
+
+# Register as global MCP server if claude CLI is available
+if command -v claude >/dev/null 2>&1; then
+    echo "==> Registering lidx as global MCP server..."
+    claude mcp add --transport stdio -s user lidx -- lidx mcp-serve 2>/dev/null \
+        && echo "==> Done. lidx is now available in all Claude Code sessions." \
+        || echo "WARNING: Failed to register MCP server. You can do it manually:"
+    echo ""
+else
+    echo "To register lidx as a global MCP server, run:"
+    echo ""
+    echo "  claude mcp add --transport stdio -s user lidx -- lidx mcp-serve"
+    echo ""
+fi
