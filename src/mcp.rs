@@ -84,13 +84,9 @@ impl State {
 pub fn serve(repo_root: PathBuf, db_path: PathBuf, watch_config: watch::WatchConfig) -> Result<()> {
     let defaults = Defaults {
         repo_root: repo_root.clone(),
-        db_path: db_path.clone()
+        db_path: db_path.clone(),
     };
     let mut state = State::new(defaults, watch_config);
-    let watch_repo = state.defaults.repo_root.clone();
-    let watch_db = state.defaults.db_path.clone();
-    let _ = state.ensure_watch(&watch_repo, &watch_db)?;
-
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -276,21 +272,17 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
     let text_mode = text_mode_from_args(&arguments);
     let include_structured = include_structured_from_args(&arguments);
     let (repo_root, db_path) = repo_and_db(&arguments, &state.defaults);
-    if arguments
+    let set_default = arguments
         .get("set_default")
         .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+    // Start watcher lazily on first call (or when defaults change)
+    if set_default || state.watcher.is_none() {
         if let Err(err) = state.ensure_watch(&repo_root, &db_path) {
-            return jsonrpc_result(
-                id,
-                call_result_error(
-                    &format!("watch error: {err}"),
-                    text_mode,
-                    include_structured,
-                ),
-            );
+            eprintln!("watch error: {err}");
         }
+    }
+    if set_default {
         state.set_defaults(repo_root.clone(), db_path.clone());
     }
 

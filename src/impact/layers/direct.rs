@@ -134,6 +134,91 @@ fn cache_symbols(
     Ok(())
 }
 
+/// Resolve the next symbol ID to visit from an edge, trying multiple fallback strategies:
+/// 1. Direct symbol ID from edge (source/target based on direction)
+/// 2. Downstream: resolve unresolved target via qualname lookup
+/// 3. Upstream: use source_symbol_id when target is unresolved
+fn resolve_next_id(
+    edge: &Edge,
+    current_id: i64,
+    direction: TraversalDirection,
+    resolved_qualnames: &HashMap<String, i64>,
+) -> Option<i64> {
+    next_symbol(edge, current_id, direction)
+        .or_else(|| {
+            if edge.source_symbol_id == Some(current_id) {
+                edge.target_qualname
+                    .as_ref()
+                    .and_then(|qn| resolved_qualnames.get(qn).copied())
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            if matches!(
+                direction,
+                TraversalDirection::Upstream | TraversalDirection::Both
+            ) && edge.target_symbol_id.is_none()
+                && edge.source_symbol_id.is_some()
+                && edge.source_symbol_id != Some(current_id)
+            {
+                edge.source_symbol_id
+            } else {
+                None
+            }
+        })
+}
+
+/// Follow cross-service edges via bridge complements (CHANNEL_PUBLISH↔SUBSCRIBE, RPC_CALL↔IMPL, etc.)
+///
+/// Returns true if the limit was hit (truncated).
+fn resolve_bridge_targets(
+    db: &Db,
+    bridge_targets: &[(String, String)],
+    visited: &mut HashSet<i64>,
+    symbol_cache: &mut HashMap<i64, Symbol>,
+    symbol_checked: &mut HashSet<i64>,
+    distance_map: &mut HashMap<i64, usize>,
+    queue: &mut VecDeque<(i64, usize)>,
+    current_distance: usize,
+    limit: usize,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> Result<bool> {
+    for (tq, edge_kind) in bridge_targets {
+        if let Some(complement_kinds) = crate::indexer::channel::bridge_complement(edge_kind) {
+            let bridged = db
+                .edges_by_target_qualname_and_kinds(tq, complement_kinds, languages, graph_version)
+                .unwrap_or_default();
+            for bridged_edge in &bridged {
+                let Some(bridged_id) = bridged_edge.source_symbol_id else {
+                    continue;
+                };
+                if !visited.insert(bridged_id) {
+                    continue;
+                }
+                cache_symbols(
+                    db,
+                    symbol_cache,
+                    symbol_checked,
+                    &[bridged_id],
+                    languages,
+                    graph_version,
+                )?;
+                if !symbol_cache.contains_key(&bridged_id) {
+                    continue;
+                }
+                distance_map.insert(bridged_id, current_distance + 1);
+                queue.push_back((bridged_id, current_distance + 1));
+                if visited.len() >= limit {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Analyze direct impact using BFS traversal
 ///
 /// This is the core Layer 1 implementation that performs breadth-first search
@@ -290,30 +375,7 @@ pub fn analyze_direct_impact(
                     if !edge_matches_filter(edge, kinds, include_tests) {
                         continue;
                     }
-
-                    let next_id = next_symbol(edge, *current_id, direction)
-                        .or_else(|| {
-                            // Downstream: resolve unresolved target via qualname
-                            if edge.source_symbol_id == Some(*current_id) {
-                                edge.target_qualname.as_ref()
-                                    .and_then(|qn| resolved_qualnames.get(qn).copied())
-                            } else {
-                                None
-                            }
-                        })
-                        .or_else(|| {
-                            // Upstream: edge has source but unresolved target — use source as caller
-                            if matches!(direction, TraversalDirection::Upstream | TraversalDirection::Both)
-                                && edge.target_symbol_id.is_none()
-                                && edge.source_symbol_id.is_some()
-                                && edge.source_symbol_id != Some(*current_id)
-                            {
-                                edge.source_symbol_id
-                            } else {
-                                None
-                            }
-                        });
-                    if let Some(id) = next_id {
+                    if let Some(id) = resolve_next_id(edge, *current_id, direction, &resolved_qualnames) {
                         if !visited.contains(&id) {
                             neighbor_ids.push(id);
                         }
@@ -350,45 +412,20 @@ pub fn analyze_direct_impact(
                         }
                     }
 
-                    let next_id = match next_symbol(edge, *current_id, direction)
-                        .or_else(|| {
-                            if edge.source_symbol_id == Some(*current_id) {
-                                edge.target_qualname.as_ref()
-                                    .and_then(|qn| resolved_qualnames.get(qn).copied())
-                            } else {
-                                None
-                            }
-                        })
-                        .or_else(|| {
-                            if matches!(direction, TraversalDirection::Upstream | TraversalDirection::Both)
-                                && edge.target_symbol_id.is_none()
-                                && edge.source_symbol_id.is_some()
-                                && edge.source_symbol_id != Some(*current_id)
-                            {
-                                edge.source_symbol_id
-                            } else {
-                                None
-                            }
-                        }) {
-                        Some(id) => id,
-                        None => continue,
+                    let Some(next_id) = resolve_next_id(edge, *current_id, direction, &resolved_qualnames) else {
+                        continue;
                     };
 
-                    // Skip if already visited
                     if !visited.insert(next_id) {
                         continue;
                     }
-
-                    // Only queue if symbol was successfully loaded
                     if !symbol_cache.contains_key(&next_id) {
                         continue;
                     }
 
-                    // Track distance
                     distance_map.insert(next_id, current_distance + 1);
                     queue.push_back((next_id, current_distance + 1));
 
-                    // Check limit
                     if visited.len() >= limit {
                         truncated = true;
                         break;
@@ -403,27 +440,19 @@ pub fn analyze_direct_impact(
 
         // Bridge pass: follow cross-service edges via bridge complements
         if !truncated {
-            for (tq, edge_kind) in &bridge_targets {
-                if let Some(complement_kinds) = crate::indexer::channel::bridge_complement(edge_kind) {
-                    let bridged = db.edges_by_target_qualname_and_kinds(
-                        tq, complement_kinds, languages, graph_version
-                    ).unwrap_or_default();
-                    for bridged_edge in &bridged {
-                        let Some(bridged_id) = bridged_edge.source_symbol_id else { continue };
-                        if !visited.insert(bridged_id) { continue; }
-                        // Load and cache the bridged symbol
-                        cache_symbols(db, &mut symbol_cache, &mut symbol_checked, &[bridged_id], languages, graph_version)?;
-                        if !symbol_cache.contains_key(&bridged_id) { continue; }
-                        distance_map.insert(bridged_id, current_distance + 1);
-                        queue.push_back((bridged_id, current_distance + 1));
-                        if visited.len() >= limit {
-                            truncated = true;
-                            break;
-                        }
-                    }
-                    if truncated { break; }
-                }
-            }
+            truncated = resolve_bridge_targets(
+                db,
+                &bridge_targets,
+                &mut visited,
+                &mut symbol_cache,
+                &mut symbol_checked,
+                &mut distance_map,
+                &mut queue,
+                current_distance,
+                limit,
+                languages,
+                graph_version,
+            )?;
         }
 
         if truncated {
