@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 pub mod batch;
+pub mod bicep;
 pub mod channel;
 pub mod csharp;
 pub mod differ;
@@ -26,6 +27,7 @@ pub mod sql;
 pub mod stable_id;
 pub mod test_detection;
 pub mod xref;
+pub mod yaml;
 
 #[derive(Debug, Default)]
 pub(crate) struct SyncStats {
@@ -75,6 +77,8 @@ impl Indexer {
         extractors.insert("tsql".into(), Box::new(sql::SqlExtractor::new()?));
         extractors.insert("markdown".into(), Box::new(markdown::MarkdownExtractor::new()?));
         extractors.insert("proto".into(), Box::new(proto::ProtoExtractor::new()?));
+        extractors.insert("yaml".into(), Box::new(yaml::YamlExtractor::new()?));
+        extractors.insert("bicep".into(), Box::new(bicep::BicepExtractor::new()?));
 
         Ok(Self {
             repo_root,

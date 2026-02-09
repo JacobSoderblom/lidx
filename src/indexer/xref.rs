@@ -64,7 +64,7 @@ pub fn link_cross_language_refs(
 }
 
 fn should_scan_file(file: &ScannedFile) -> bool {
-    file.language != "markdown"
+    file.language != "markdown" && file.language != "yaml" && file.language != "bicep"
 }
 
 fn collect_xref_edges(

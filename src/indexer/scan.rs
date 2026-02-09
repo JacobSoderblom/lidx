@@ -97,6 +97,14 @@ static LANGUAGE_SPECS: &[LanguageSpec] = &[
         name: "lua",
         extensions: &["lua"],
     },
+    LanguageSpec {
+        name: "yaml",
+        extensions: &["yaml", "yml"],
+    },
+    LanguageSpec {
+        name: "bicep",
+        extensions: &["bicep", "bicepparam"],
+    },
 ];
 
 static LANGUAGE_FILTERS: &[LanguageFilter] = &[
@@ -231,6 +239,34 @@ static LANGUAGE_FILTERS: &[LanguageFilter] = &[
     LanguageFilter {
         name: "lua",
         languages: &["lua"],
+    },
+    LanguageFilter {
+        name: "yaml",
+        languages: &["yaml"],
+    },
+    LanguageFilter {
+        name: "yml",
+        languages: &["yaml"],
+    },
+    LanguageFilter {
+        name: "k8s",
+        languages: &["yaml"],
+    },
+    LanguageFilter {
+        name: "kubernetes",
+        languages: &["yaml"],
+    },
+    LanguageFilter {
+        name: "bicep",
+        languages: &["bicep"],
+    },
+    LanguageFilter {
+        name: "arm",
+        languages: &["bicep"],
+    },
+    LanguageFilter {
+        name: "azure",
+        languages: &["bicep"],
     },
 ];
 
