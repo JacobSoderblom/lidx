@@ -1401,6 +1401,8 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     let direction = params.direction.as_deref().unwrap_or("downstream");
     let include_snippets = params.include_snippets.unwrap_or(true);
     let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
+    let trace_offset = params.trace_offset.unwrap_or(0);
+    let compact_mode = params.format.as_deref() == Some("compact");
     let allowed_kinds: Vec<String> = params.kinds.clone().unwrap_or_else(||
         vec![
             "CALLS".into(), "RPC_IMPL".into(), "RPC_CALL".into(), "XREF".into(),
@@ -1431,12 +1433,31 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         None
     };
 
-    // BFS from start
+    // If start symbol is a container, also seed BFS with its members
+    let is_container = matches!(start.kind.as_str(), "class" | "module" | "resource");
+    let mut seed_ids: Vec<i64> = vec![start.id];
+    if is_container {
+        if let Ok(file_symbols) = indexer.db().get_symbols_for_file(&start.file_path, graph_version) {
+            for s in &file_symbols {
+                if s.id != start.id
+                    && s.start_line >= start.start_line
+                    && s.end_line <= start.end_line
+                    && matches!(s.kind.as_str(), "method" | "function" | "resource" | "var" | "param" | "output")
+                {
+                    seed_ids.push(s.id);
+                }
+            }
+        }
+    }
+
+    // BFS from start (seeded with container members if applicable)
     let mut trace = Vec::new();
     let mut visited = std::collections::HashSet::new();
-    visited.insert(start.id);
     let mut queue = std::collections::VecDeque::new();
-    queue.push_back((start.id, 0usize, start.file_path.clone()));
+    for &sid in &seed_ids {
+        visited.insert(sid);
+        queue.push_back((sid, 0usize, start.file_path.clone()));
+    }
     let mut used_bytes = 0;
     let mut truncated = false;
     let mut reached_target = false;
@@ -1551,14 +1572,15 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
                     protocol_context,
                 };
 
-                let hop_size = serde_json::to_string(&hop).unwrap_or_default().len();
-                used_bytes += hop_size;
+                let hop_size = estimate_hop_size(&hop, compact_mode);
+                let hop_idx = trace.len();
                 trace.push(hop);
-
-                // Check budget immediately after adding hop
-                if used_bytes >= max_bytes {
-                    truncated = true;
-                    break;
+                if hop_idx >= trace_offset {
+                    used_bytes += hop_size;
+                    if used_bytes >= max_bytes {
+                        truncated = true;
+                        break;
+                    }
                 }
 
                 // Check if we reached the target
@@ -1598,10 +1620,13 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
                                 boundary_detail: Some(b_detail),
                                 protocol_context: p_context,
                             };
-                            let hop_size = serde_json::to_string(&hop).unwrap_or_default().len();
-                            used_bytes += hop_size;
+                            let hop_size = estimate_hop_size(&hop, compact_mode);
+                            let hop_idx = trace.len();
                             trace.push(hop);
-                            if used_bytes >= max_bytes { truncated = true; break; }
+                            if hop_idx >= trace_offset {
+                                used_bytes += hop_size;
+                                if used_bytes >= max_bytes { truncated = true; break; }
+                            }
                             if end_id == Some(bridged_id) { reached_target = true; break; }
                             queue.push_back((bridged_id, dist + 1, bridged_sym.file_path.clone()));
                         }
@@ -1614,17 +1639,47 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         if reached_target || truncated { break; }
     }
 
-    // Sort trace by distance
+    // Sort trace by distance, then apply offset pagination
     trace.sort_by_key(|h| h.distance);
+    let trace: Vec<TraceHop> = trace.into_iter().skip(trace_offset).collect();
 
     let end_sym = if let Some(eid) = end_id {
         indexer.db().get_symbol_by_id(eid)?
     } else { None };
 
-    let next_hops = trace.iter().take(3).map(|h| {
-        json!({"method": "explain_symbol", "params": {"id": h.symbol.id},
-               "description": format!("Explain {}", h.symbol.name)})
-    }).collect::<Vec<_>>();
+    // Build next_hops with continuation when truncated
+    let mut next_hops: Vec<serde_json::Value> = Vec::new();
+    if truncated {
+        let next_offset = trace_offset + trace.len();
+        let mut continue_params = json!({
+            "max_hops": max_hops,
+            "include_snippets": include_snippets,
+            "trace_offset": next_offset,
+        });
+        if let Some(ref qn) = params.start_qualname {
+            continue_params["start_qualname"] = json!(qn);
+        } else if let Some(id) = params.start_id {
+            continue_params["start_id"] = json!(id);
+        }
+        if let Some(ref k) = params.kinds {
+            continue_params["kinds"] = json!(k);
+        }
+        if let Some(ref f) = params.format {
+            continue_params["format"] = json!(f);
+        }
+        next_hops.push(json!({
+            "method": "trace_flow",
+            "params": continue_params,
+            "description": format!("Continue trace (offset {})", next_offset),
+        }));
+    }
+    for h in trace.iter().take(3) {
+        next_hops.push(json!({
+            "method": "explain_symbol",
+            "params": {"id": h.symbol.id},
+            "description": format!("Explain {}", h.symbol.name),
+        }));
+    }
 
     // Calculate paths_found: 0 if empty and no target reached, 1 if target reached, else count leaf nodes
     let paths_found = if trace.is_empty() {
@@ -1652,7 +1707,12 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         next_hops,
     };
 
-    Ok(serde_json::to_value(&result)?)
+    let mut value = serde_json::to_value(&result)?;
+    let format = params.format.as_deref().unwrap_or("full");
+    if format == "compact" {
+        value = apply_compact_format(value);
+    }
+    Ok(value)
 }
 
 pub(super) fn handle_route_refs(indexer: &mut Indexer, params: Value) -> Result<Value> {

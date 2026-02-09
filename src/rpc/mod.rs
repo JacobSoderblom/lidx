@@ -141,6 +141,21 @@ fn compact_symbol_value(symbol_value: &serde_json::Value) -> serde_json::Value {
 }
 
 /// Apply compact format to a response value by converting all symbol objects
+/// Estimate serialized size of a TraceHop, using compact symbol size when in compact mode.
+fn estimate_hop_size(hop: &crate::model::TraceHop, compact: bool) -> usize {
+    if compact {
+        let mut hop_val = serde_json::to_value(hop).unwrap_or_default();
+        if let Some(sym) = hop_val.get("symbol").cloned() {
+            if let Some(obj) = hop_val.as_object_mut() {
+                obj.insert("symbol".to_string(), compact_symbol_value(&sym));
+            }
+        }
+        serde_json::to_string(&hop_val).unwrap_or_default().len()
+    } else {
+        serde_json::to_string(hop).unwrap_or_default().len()
+    }
+}
+
 fn apply_compact_format(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Array(arr) => {
@@ -164,7 +179,7 @@ fn apply_compact_format(value: serde_json::Value) -> serde_json::Value {
         }
         serde_json::Value::Object(mut map) => {
             // Process known array fields
-            for key in ["results", "nodes", "incoming", "outgoing", "edges"] {
+            for key in ["results", "nodes", "incoming", "outgoing", "edges", "trace"] {
                 if let Some(arr) = map.remove(key) {
                     map.insert(key.to_string(), apply_compact_format(arr));
                 }
@@ -175,6 +190,16 @@ fn apply_compact_format(value: serde_json::Value) -> serde_json::Value {
                     map.insert("symbol".to_string(), compact_symbol_value(&sym));
                 } else {
                     map.insert("symbol".to_string(), sym);
+                }
+            }
+            // Process start/end symbol fields (trace_flow)
+            for key in ["start", "end"] {
+                if let Some(sym) = map.remove(key) {
+                    if sym.is_object() && sym.get("qualname").is_some() {
+                        map.insert(key.to_string(), compact_symbol_value(&sym));
+                    } else {
+                        map.insert(key.to_string(), sym);
+                    }
                 }
             }
             serde_json::Value::Object(map)
@@ -731,6 +756,8 @@ struct TraceFlowParams {
     kinds: Option<Vec<String>>,
     /// Include source snippets
     include_snippets: Option<bool>,
+    format: Option<String>,
+    trace_offset: Option<usize>,
     max_bytes: Option<usize>,
     languages: Option<Vec<String>>,
     #[serde(alias = "as_of", alias = "version")]
@@ -1788,6 +1815,11 @@ fn truncate_response(value: serde_json::Value, max_bytes: usize) -> (serde_json:
     }
 }
 
+/// Default response size cap (30KB ≈ 7,500 tokens).
+/// Applied when caller doesn't specify max_response_bytes/max_tokens.
+/// Methods that manage their own budgets or intentionally return large content are exempt.
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 30_000;
+
 pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Result<Value> {
     let start = Instant::now();
     // Extract token budget before params is moved
@@ -1877,8 +1909,10 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
         eprintln!("lidx: Slow query: {} took {:?}", method, elapsed);
     }
 
-    // Apply token budget truncation if requested
-    if let Some(max_bytes) = max_response_bytes {
+    // Apply response size cap: explicit param > default (exempt methods get no cap)
+    let exempt = matches!(method, "gather_context" | "open_file" | "help" | "onboard" | "reflect");
+    let effective_max = max_response_bytes.or_else(|| if exempt { None } else { Some(DEFAULT_MAX_RESPONSE_BYTES) });
+    if let Some(max_bytes) = effective_max {
         let (truncated_value, was_truncated, total_available) = truncate_response(value, max_bytes);
         if was_truncated {
             let mut response = json!({
