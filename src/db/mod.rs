@@ -1226,21 +1226,40 @@ impl Db {
         languages: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<Symbol>> {
-        let pattern = format!("%{}%", query);
-        let query_lower = query.to_lowercase();
+        let tokens: Vec<&str> = query.split_whitespace().collect();
+        // Build per-token LIKE patterns
+        let patterns: Vec<String> = tokens.iter().map(|t| format!("%{}%", t)).collect();
+        // For ORDER BY exact-name match, use the longest token
+        let longest_token = tokens.iter().max_by_key(|t| t.len()).unwrap_or(&query);
+        let longest_lower = longest_token.to_lowercase();
         let limit = limit as i64;
+
         let mut sql = String::from(
             "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                     s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                     s.graph_version, s.commit_sha, s.stable_id
              FROM symbols s
              JOIN files f ON s.file_id = f.id
-             WHERE (s.name LIKE ? OR s.qualname LIKE ?)
-               AND s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+             WHERE ",
         );
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&pattern, &pattern, &graph_version, &graph_version];
+
+        // Each token must match name OR qualname (AND across tokens)
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        for (i, pat) in patterns.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(" AND ");
+            }
+            sql.push_str("(s.name LIKE ? OR s.qualname LIKE ?)");
+            params.push(Box::new(pat.clone()));
+            params.push(Box::new(pat.clone()));
+        }
+
+        sql.push_str(
+            " AND s.graph_version = ? AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+        );
+        params.push(Box::new(graph_version));
+        params.push(Box::new(graph_version));
+
         if let Some(languages) = languages {
             if !languages.is_empty() {
                 sql.push_str(" AND f.language IN (");
@@ -1252,12 +1271,12 @@ impl Db {
                 }
                 sql.push(')');
                 for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
+                    params.push(Box::new(language.clone()));
                 }
             }
         }
         // Relevance-based ordering:
-        // 1. Exact name match first
+        // 1. Exact name match (longest token) first
         // 2. Code symbols before doc/heading symbols
         // 3. Demote changelog/migration files
         // 4. Shorter qualnames (less nesting) first
@@ -1273,12 +1292,14 @@ impl Db {
              s.name \
              LIMIT ?",
         );
-        params.push(&query_lower);
-        params.push(&limit);
+        params.push(Box::new(longest_lower));
+        params.push(Box::new(limit));
+
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| symbol_from_row(row))?;
+        let rows = stmt.query_map(&*param_refs, |row| symbol_from_row(row))?;
 
         let mut results = Vec::new();
         for row in rows {

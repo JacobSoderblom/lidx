@@ -4,6 +4,76 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
+// Shared helper: resolve a symbol from a fuzzy query string
+// ---------------------------------------------------------------------------
+
+/// Resolve a symbol from a free-text query. Tries with language filter first,
+/// then without. On failure, returns "did you mean" suggestions.
+fn resolve_symbol_by_query(
+    indexer: &Indexer,
+    query: &str,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> Result<Symbol> {
+    // Try with language filter first
+    let results = indexer
+        .db()
+        .find_symbols(query, 5, languages, graph_version)?;
+    if let Some(sym) = results.into_iter().next() {
+        return Ok(sym);
+    }
+
+    // Retry without language filter
+    if languages.is_some() {
+        let results = indexer
+            .db()
+            .find_symbols(query, 5, None, graph_version)?;
+        if let Some(sym) = results.into_iter().next() {
+            return Ok(sym);
+        }
+    }
+
+    // Try interpreting query as a config key (env var name or secret name)
+    let config_uris: Vec<String> = [
+        crate::indexer::config::normalize_env_var_name(query),
+        crate::indexer::config::normalize_secret_name(query),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    for uri in &config_uris {
+        let ids = indexer
+            .db()
+            .source_symbols_for_config_uri(uri, &[], graph_version)?;
+        if let Some(&first_id) = ids.first() {
+            if let Some(sym) = indexer.db().get_symbol_by_id(first_id)? {
+                return Ok(sym);
+            }
+        }
+    }
+
+    // Build "did you mean" suggestions — for multi-word queries, search by longest token
+    // so we can suggest related symbols even when the AND combination fails
+    let suggestion_query = query
+        .split_whitespace()
+        .max_by_key(|t| t.len())
+        .unwrap_or(query);
+    let suggestions = indexer
+        .db()
+        .find_symbols(suggestion_query, 10, None, graph_version)
+        .unwrap_or_default();
+    if !suggestions.is_empty() {
+        let names: Vec<String> = suggestions.into_iter().map(|s| s.qualname).collect();
+        anyhow::bail!(
+            "Symbol '{}' not found. Did you mean: {}?",
+            query,
+            names.join(", ")
+        );
+    }
+    anyhow::bail!("no symbol found for query: {}", query);
+}
+
+// ---------------------------------------------------------------------------
 // GROUP 1 -- Symbol query handlers
 // ---------------------------------------------------------------------------
 
@@ -51,9 +121,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         indexer.db().get_symbol_by_qualname(qn, graph_version)?
             .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", qn))?
     } else if let Some(ref query) = params.query {
-        let results = indexer.db().find_symbols(query, 1, languages.as_deref(), graph_version)?;
-        results.into_iter().next()
-            .ok_or_else(|| anyhow::anyhow!("no symbol found for query: {}", query))?
+        resolve_symbol_by_query(indexer, query, languages.as_deref(), graph_version)?
     } else {
         anyhow::bail!("explain_symbol requires id, qualname, or query");
     };
@@ -599,9 +667,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
                 .ok_or_else(|| anyhow::anyhow!("start symbol not found"))?
         }
     } else if let Some(ref query) = params.query {
-        let results = indexer.db().find_symbols(query, 1, languages.as_deref(), graph_version)?;
-        results.into_iter().next()
-            .ok_or_else(|| anyhow::anyhow!("no symbol found for query: {}", query))?
+        resolve_symbol_by_query(indexer, query, languages.as_deref(), graph_version)?
     } else {
         anyhow::bail!("trace_flow requires start_id, start_qualname, or query");
     };
@@ -965,9 +1031,163 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
 // GROUP 3 -- Analysis handlers
 // ---------------------------------------------------------------------------
 
+/// Build a MultiLayerConfig from AnalyzeImpactParams with a given limit.
+fn build_impact_config(
+    params: &AnalyzeImpactParams,
+    limit: usize,
+) -> crate::impact::config::MultiLayerConfig {
+    let mut config = crate::impact::config::MultiLayerConfig::builder()
+        .max_depth(params.max_depth.unwrap_or(3).min(10))
+        .direction(params.direction.clone().unwrap_or_else(|| "both".to_string()))
+        .include_tests(params.include_tests.unwrap_or(false))
+        .include_paths(params.include_paths.unwrap_or(true))
+        .limit(limit)
+        .min_confidence(params.min_confidence.unwrap_or(0.0))
+        .build();
+
+    if let Some(enable_direct) = params.enable_direct {
+        config.direct.enabled = enable_direct;
+    }
+    if let Some(enable_test) = params.enable_test {
+        config.test.enabled = enable_test;
+    }
+    if let Some(enable_historical) = params.enable_historical {
+        config.historical.enabled = enable_historical;
+    }
+    if let Some(languages) = params.languages.as_ref() {
+        if let Ok(normalized) = scan::normalize_language_filter(Some(languages.as_slice())) {
+            config.direct.languages = normalized;
+        }
+    }
+    if let Some(ref kinds) = params.kinds {
+        config.direct.kinds = kinds.clone();
+    }
+    config
+}
+
+/// Resolve a single qualname (or config URI) to seed IDs and run impact analysis.
+fn resolve_and_analyze_single(
+    indexer: &mut Indexer,
+    qualname: &str,
+    config: &crate::impact::config::MultiLayerConfig,
+    graph_version: i64,
+) -> Result<crate::impact::types::UnifiedImpactResult> {
+    let dir = config.direct.direction.as_str();
+
+    let seed_ids = if crate::indexer::config::is_config_uri(qualname) {
+        let uri_kinds: &[&str] = match dir {
+            "downstream" => &["CONFIG_SOURCE"],
+            "upstream" => &["CONFIG_READ", "CONFIG_BIND"],
+            _ => &[],
+        };
+        let ids = indexer.db().source_symbols_for_config_uri(qualname, uri_kinds, graph_version)?;
+        if ids.is_empty() {
+            return Err(anyhow::anyhow!("no symbols found for config URI: {}", qualname));
+        }
+        ids
+    } else {
+        let symbol = indexer
+            .db()
+            .get_symbol_by_qualname(qualname, graph_version)?
+            .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", qualname))?;
+        vec![symbol.id]
+    };
+
+    crate::impact::analyze_impact_multi_layer(
+        indexer.db(),
+        &seed_ids,
+        config.clone(),
+        graph_version,
+    )
+}
+
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: AnalyzeImpactParams = serde_json::from_value(params)?;
     let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+
+    // ---- Batch path: multiple qualnames in one call ----
+    if let Some(ref qualnames) = params.qualnames {
+        if qualnames.is_empty() {
+            return Err(anyhow::anyhow!("qualnames array must not be empty"));
+        }
+
+        // Build config once (shared across all seeds)
+        let total_limit = params.limit.unwrap_or(500).min(2000);
+        let per_seed_limit = (total_limit / qualnames.len()).max(50);
+
+        let base_config = build_impact_config(&params, per_seed_limit);
+
+        let mut results = Vec::with_capacity(qualnames.len());
+        let mut total_affected: usize = 0;
+        let mut all_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for qn in qualnames {
+            let entry = match resolve_and_analyze_single(
+                indexer, qn, &base_config, graph_version,
+            ) {
+                Ok(result) => {
+                    total_affected += result.summary.total_affected;
+                    for fi in &result.summary.by_file {
+                        all_files.insert(fi.path.clone());
+                    }
+                    crate::impact::types::BatchImpactEntry {
+                        seed_qualname: qn.clone(),
+                        seeds: result.seeds,
+                        affected: result.affected,
+                        summary: result.summary,
+                        truncated: result.truncated,
+                        layers: result.layers,
+                    }
+                }
+                Err(e) => {
+                    // Include error entry rather than failing the whole batch
+                    crate::impact::types::BatchImpactEntry {
+                        seed_qualname: qn.clone(),
+                        seeds: vec![],
+                        affected: vec![],
+                        summary: crate::impact::types::ImpactSummary {
+                            by_file: vec![],
+                            by_relationship: std::collections::HashMap::new(),
+                            by_distance: std::collections::HashMap::new(),
+                            total_affected: 0,
+                        },
+                        truncated: false,
+                        layers: crate::impact::types::LayerMetadata {
+                            direct: Some(crate::impact::types::LayerStats {
+                                enabled: false,
+                                duration_ms: 0,
+                                result_count: 0,
+                                truncated: false,
+                                error: Some(e.to_string()),
+                            }),
+                            test: None,
+                            historical: None,
+                        },
+                    }
+                }
+            };
+            results.push(entry);
+        }
+
+        let config_display = crate::impact::types::ImpactConfig {
+            max_depth: base_config.direct.max_depth,
+            direction: base_config.direct.direction.clone(),
+            relationship_types: base_config.direct.kinds.clone(),
+            include_tests: base_config.direct.include_tests,
+            limit: total_limit,
+        };
+
+        let batch = crate::impact::types::BatchImpactResult {
+            results,
+            config: config_display,
+            total_affected,
+            total_files: all_files.len(),
+        };
+
+        return Ok(json!(batch));
+    }
+
+    // ---- Single-seed path (unchanged) ----
 
     // Check for config URI in qualname (e.g., "secret://datamgr-db-conn-str", "env://DATABASE")
     // Direction-aware: downstream seeds from providers (CONFIG_SOURCE),
@@ -997,48 +1217,37 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         seed_ids
     } else {
         let symbol = if let Some(id) = params.id {
-            indexer.db().get_symbol_by_id(id)?
+            indexer
+                .db()
+                .get_symbol_by_id(id)?
+                .ok_or_else(|| anyhow::anyhow!("symbol not found: id={}", id))?
         } else if let Some(qualname) = params.qualname.as_deref() {
             indexer
                 .db()
                 .get_symbol_by_qualname(qualname, graph_version)?
+                .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", qualname))?
         } else if let Some(ref query) = params.query {
             let langs = scan::normalize_language_filter(params.languages.as_deref())?;
-            let results = indexer
-                .db()
-                .find_symbols(query, 1, langs.as_deref(), graph_version)?;
-            results.into_iter().next()
+            resolve_symbol_by_query(indexer, query, langs.as_deref(), graph_version)?
         } else {
             return Err(anyhow::anyhow!(
                 "analyze_impact requires id, qualname, or query"
             ));
         };
 
-        let symbol = symbol.ok_or_else(|| {
-            let search_term = params
-                .qualname
-                .as_deref()
-                .or(params.query.as_deref())
-                .unwrap_or("?");
-            if let Ok(suggestions) =
-                indexer
-                    .db()
-                    .find_symbols(search_term, 10, None, graph_version)
-            {
-                if !suggestions.is_empty() {
-                    let names: Vec<String> =
-                        suggestions.into_iter().map(|s| s.qualname).collect();
-                    return anyhow::anyhow!(
-                        "Symbol '{}' not found. Did you mean: {}?",
-                        search_term,
-                        names.join(", ")
-                    );
+        // Property→parent expansion: if the seed is a property/field/attribute/const,
+        // also add the parent class so CONFIG_BIND consumers are reachable
+        let mut ids = vec![symbol.id];
+        if matches!(symbol.kind.as_str(), "property" | "field" | "attribute" | "const") {
+            if let Some(parent_qn) = symbol.qualname.rsplit_once('.').map(|(p, _)| p) {
+                if let Ok(Some(parent)) = indexer.db().get_symbol_by_qualname(parent_qn, graph_version) {
+                    if !ids.contains(&parent.id) {
+                        ids.push(parent.id);
+                    }
                 }
             }
-            anyhow::anyhow!("symbol not found")
-        })?;
-
-        vec![symbol.id]
+        }
+        ids
     };
 
     // Build multi-layer configuration

@@ -283,6 +283,8 @@ struct AnalyzeImpactParams {
     qualname: Option<String>,
     /// Fuzzy search query to find symbol (alternative to id/qualname)
     query: Option<String>,
+    /// Batch mode: multiple qualnames or config URIs to analyze in one call
+    qualnames: Option<Vec<String>>,
     /// Multi-layer configuration
     enable_direct: Option<bool>,
     enable_test: Option<bool>,

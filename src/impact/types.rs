@@ -229,6 +229,26 @@ pub struct UnifiedImpactResult {
     pub layers: LayerMetadata,
 }
 
+/// A single entry in a batch impact result
+#[derive(Debug, Serialize)]
+pub struct BatchImpactEntry {
+    pub seed_qualname: String,
+    pub seeds: Vec<SymbolCompact>,
+    pub affected: Vec<ImpactEntry>,
+    pub summary: ImpactSummary,
+    pub truncated: bool,
+    pub layers: LayerMetadata,
+}
+
+/// Result of batch impact analysis (multiple seeds in one call)
+#[derive(Debug, Serialize)]
+pub struct BatchImpactResult {
+    pub results: Vec<BatchImpactEntry>,
+    pub config: ImpactConfig,
+    pub total_affected: usize,
+    pub total_files: usize,
+}
+
 /// Metadata about layer execution
 #[derive(Debug, Clone, Serialize)]
 pub struct LayerMetadata {

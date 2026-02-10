@@ -44,6 +44,7 @@ struct Context {
     fn_depth: usize,
     current_scope: String,
     route_prefix: Option<String>,
+    router_aliases: Vec<String>,
     grpc_clients: HashMap<String, GrpcService>,
 }
 
@@ -297,6 +298,7 @@ fn extract_with_parser(
         fn_depth: 0,
         current_scope: module_name.to_string(),
         route_prefix: None,
+        router_aliases: Vec::new(),
         grpc_clients,
     };
     walk_node(root, &ctx, source, &mut output);
@@ -650,6 +652,7 @@ fn walk_class_body(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
 }
 
 fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    fastify_register_walk(node, ctx, source, output);
     for edge in http_route_edges(node, ctx, source) {
         output.edges.push(edge);
     }
@@ -1318,17 +1321,23 @@ fn express_direct_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Opt
     if !HTTP_METHOD_NAMES.contains(&method_name.as_str()) {
         return None;
     }
-    if !is_router_receiver(&receiver) {
+    if !is_router_receiver(&receiver, ctx) {
         return None;
     }
     let args = call_arguments(node);
     let raw_path = args
         .get(0)
         .and_then(|arg| extract_string_literal(*arg, source))?;
-    let normalized = http::normalize_path(&raw_path)?;
+    let prefix = ctx.route_prefix.as_deref().unwrap_or("/");
+    let full_path = http::join_paths(prefix, &raw_path);
+    // normalize_path rejects "/" (no alpha chars) — but for known route definitions
+    // we accept any path starting with "/"
+    let normalized = http::normalize_path(&full_path)
+        .or_else(|| if full_path.starts_with('/') { Some(full_path.clone()) } else { None })?;
     let method = http::normalize_method(&method_name)?;
     let handler = handler_from_args(&args[1..], ctx, source);
-    let detail = http::build_route_detail(&method, &normalized, &raw_path, "express");
+    let framework = if receiver == "fastify" { "fastify" } else { "express" };
+    let detail = http::build_route_detail(&method, &normalized, &full_path, framework);
     Some(EdgeInput {
         kind: http::HTTP_ROUTE_KIND.to_string(),
         source_qualname: Some(handler),
@@ -1369,7 +1378,8 @@ fn express_route_chain_edge(node: Node<'_>, ctx: &Context, source: &str) -> Opti
     let raw_path = route_args
         .get(0)
         .and_then(|arg| extract_string_literal(*arg, source))?;
-    let normalized = http::normalize_path(&raw_path)?;
+    let normalized = http::normalize_path(&raw_path)
+        .or_else(|| if raw_path.starts_with('/') { Some(raw_path.clone()) } else { None })?;
     let method = http::normalize_method(&method_name)?;
     let args = call_arguments(node);
     let handler = handler_from_args(&args, ctx, source);
@@ -1394,7 +1404,7 @@ fn fastify_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeI
     let Some((receiver, method_name)) = member_receiver_and_method(target_node, source) else {
         return edges;
     };
-    if method_name != "route" || receiver != "fastify" {
+    if method_name != "route" || !is_router_receiver(&receiver, ctx) {
         return edges;
     }
     let args = call_arguments(node);
@@ -1409,7 +1419,11 @@ fn fastify_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeI
     let Some(raw_path) = raw_path else {
         return edges;
     };
-    let normalized = match http::normalize_path(&raw_path) {
+    let prefix = ctx.route_prefix.as_deref().unwrap_or("/");
+    let full_path = http::join_paths(prefix, &raw_path);
+    let normalized = match http::normalize_path(&full_path)
+        .or_else(|| if full_path.starts_with('/') { Some(full_path.clone()) } else { None })
+    {
         Some(value) => value,
         None => return edges,
     };
@@ -1418,7 +1432,7 @@ fn fastify_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeI
     let handler = handler.unwrap_or_else(|| ctx.current_scope.clone());
     let methods = object_property_methods(config, source);
     for method in methods {
-        let detail = http::build_route_detail(&method, &normalized, &raw_path, "fastify");
+        let detail = http::build_route_detail(&method, &normalized, &full_path, "fastify");
         edges.push(EdgeInput {
             kind: http::HTTP_ROUTE_KIND.to_string(),
             source_qualname: Some(handler.clone()),
@@ -1431,6 +1445,176 @@ fn fastify_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeI
         });
     }
     edges
+}
+
+/// Walk up to the root (program) node.
+fn root_node(node: Node<'_>) -> Node<'_> {
+    let mut n = node;
+    while let Some(p) = n.parent() {
+        n = p;
+    }
+    n
+}
+
+/// Find a top-level declaration's value by name.
+/// Returns the function_declaration itself, or the value node of a variable_declarator.
+fn find_declaration_value<'a>(root: Node<'a>, name: &str, source: &str) -> Option<Node<'a>> {
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        match child.kind() {
+            "function_declaration" | "generator_function_declaration" => {
+                if let Some(n) = child.child_by_field_name("name") {
+                    if node_text(n, source) == name {
+                        return Some(child);
+                    }
+                }
+            }
+            "lexical_declaration" | "variable_declaration" => {
+                let mut c = child.walk();
+                for decl in child.named_children(&mut c) {
+                    if decl.kind() == "variable_declarator" {
+                        if let Some(n) = decl.child_by_field_name("name") {
+                            if node_text(n, source) == name {
+                                return decl.child_by_field_name("value");
+                            }
+                        }
+                    }
+                }
+            }
+            "export_statement" | "export_declaration" => {
+                if let Some(found) = find_declaration_value(child, name, source) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Resolve a node to a function node, following identifiers and unwrapping
+/// call wrappers like `fp(callback)` or `fastifyPlugin(callback)`.
+fn resolve_to_function<'a>(
+    node: Node<'a>,
+    root: Node<'a>,
+    source: &str,
+    depth: usize,
+) -> Option<Node<'a>> {
+    if depth > 3 {
+        return None;
+    }
+    match node.kind() {
+        "arrow_function" | "function_expression" | "function"
+        | "function_declaration" | "generator_function_declaration" => Some(node),
+        "identifier" => {
+            let name = node_text(node, source);
+            let value = find_declaration_value(root, &name, source)?;
+            resolve_to_function(value, root, source, depth + 1)
+        }
+        "call_expression" => {
+            // Unwrap wrappers like fp(callback), fastifyPlugin(callback)
+            let args = call_arguments(node);
+            for arg in args {
+                if let Some(f) = resolve_to_function(arg, root, source, depth + 1) {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Extract the name of a function's first parameter, handling TypeScript typed params.
+fn first_param_name(func: Node<'_>, source: &str) -> Option<String> {
+    if let Some(params) = func.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        if let Some(first) = params.named_children(&mut cursor).next() {
+            // TypeScript typed params: required_parameter { pattern: identifier }
+            let name_node = first.child_by_field_name("pattern").unwrap_or(first);
+            let name = node_text(name_node, source);
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    } else if let Some(param) = func.child_by_field_name("parameter") {
+        // Arrow functions with single unparenthesized param
+        let name = node_text(param, source);
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn fastify_register_walk(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) -> bool {
+    let Some(target_node) = call_target_node(node) else {
+        return false;
+    };
+    let Some((receiver, method_name)) = member_receiver_and_method(target_node, source) else {
+        return false;
+    };
+    if method_name != "register" || !is_router_receiver(&receiver, ctx) {
+        return false;
+    }
+    let args = call_arguments(node);
+    let root = root_node(node);
+    let callback = args
+        .iter()
+        .find_map(|a| resolve_to_function(*a, root, source, 0));
+    let Some(callback) = callback else {
+        return false;
+    };
+    let prefix_str = args.iter().find_map(|a| {
+        if a.kind() == "object" {
+            object_property_string(a, "prefix", source)
+        } else {
+            None
+        }
+    });
+    let mut next_ctx = ctx.clone();
+    if let Some(prefix) = prefix_str {
+        let existing = ctx.route_prefix.as_deref().unwrap_or("/");
+        next_ctx.route_prefix = Some(http::join_paths(existing, &prefix));
+    }
+    // The callback's first parameter is the Fastify instance — treat it as a router receiver
+    if let Some(name) = first_param_name(callback, source) {
+        if !is_router_receiver_static(&name) {
+            next_ctx.router_aliases.push(name);
+        }
+    }
+    // For function_declarations, handle_function already walked the body and may have
+    // emitted HTTP_ROUTE edges (without prefix). Remove those — we'll re-emit with the
+    // correct prefix from the register context.
+    if matches!(
+        callback.kind(),
+        "function_declaration" | "generator_function_declaration"
+    ) {
+        if let Some(name_node) = callback.child_by_field_name("name") {
+            let func_name = node_text(name_node, source);
+            if !func_name.is_empty() {
+                let func_qualname =
+                    build_qualname(&ctx.module, &ctx.class_stack, &func_name);
+                output.edges.retain(|e| {
+                    !(e.kind == http::HTTP_ROUTE_KIND
+                        && e.source_qualname.as_deref() == Some(&func_qualname))
+                });
+            }
+        }
+    }
+    let body = callback.child_by_field_name("body");
+    if let Some(body) = body {
+        let mut cursor = body.walk();
+        for child in body.named_children(&mut cursor) {
+            walk_node(child, &next_ctx, source, output);
+        }
+    }
+    true
 }
 
 fn fetch_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
@@ -1575,9 +1759,14 @@ fn member_object_and_method<'a>(node: Node<'a>, source: &str) -> Option<(Node<'a
     Some((object, method))
 }
 
-fn is_router_receiver(raw: &str) -> bool {
+fn is_router_receiver_static(raw: &str) -> bool {
     let head = raw.split('.').next().unwrap_or(raw);
     ROUTER_RECEIVERS.contains(&head)
+}
+
+fn is_router_receiver(raw: &str, ctx: &Context) -> bool {
+    let head = raw.split('.').next().unwrap_or(raw);
+    ROUTER_RECEIVERS.contains(&head) || ctx.router_aliases.iter().any(|a| a == head)
 }
 
 fn handler_from_args(args: &[Node<'_>], ctx: &Context, source: &str) -> String {

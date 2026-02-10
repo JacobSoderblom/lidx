@@ -418,3 +418,89 @@ fn rust_module_linking_and_subgraph_are_consistent() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+#[test]
+fn find_symbols_multi_word_query() {
+    let (repo_root, db_path) = setup_repo("py_mvp");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let db = indexer.db();
+    let graph_version = db.current_graph_version().unwrap();
+
+    // Multi-word query: both tokens appear in qualname "pkg.core.Greeter" and "pkg.core.Greeter.greet"
+    let results = db.find_symbols("Greeter greet", 5, None, graph_version).unwrap();
+    assert!(!results.is_empty(), "multi-word query should match");
+    // Both "Greeter" and "greet" must appear as substrings in the qualname
+    assert!(
+        results.iter().any(|s| s.qualname.contains("Greeter") && s.qualname.contains("greet")),
+        "should find symbol matching both tokens, got: {:?}",
+        results.iter().map(|s| &s.qualname).collect::<Vec<_>>()
+    );
+
+    // Multi-word query: "core make_greeter" matches "pkg.core.make_greeter"
+    let results = db.find_symbols("core make_greeter", 5, None, graph_version).unwrap();
+    assert!(!results.is_empty(), "multi-word query should match");
+    assert!(results[0].qualname.contains("make_greeter"));
+
+    // Multi-word query with nonexistent token returns empty
+    let results = db.find_symbols("Greeter nonexistent", 5, None, graph_version).unwrap();
+    assert!(results.is_empty(), "query with nonexistent token should return empty");
+
+    // Single-word query still works
+    let results = db.find_symbols("Greeter", 5, None, graph_version).unwrap();
+    assert!(!results.is_empty(), "single-word query should still work");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn explain_symbol_multi_word_query() {
+    let (repo_root, db_path) = setup_repo("py_mvp");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Multi-word query through explain_symbol — should find a symbol matching both tokens
+    let response = rpc::call(
+        repo_root.clone(),
+        db_path.clone(),
+        "explain_symbol".to_string(),
+        r#"{"query":"Greeter greet"}"#,
+        "1",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let qn = value["result"]["symbol"]["qualname"].as_str().unwrap();
+    assert!(
+        qn.contains("Greeter"),
+        "explain_symbol should resolve multi-word query, got: {}",
+        qn
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn explain_symbol_bad_query_shows_suggestions() {
+    let (repo_root, db_path) = setup_repo("py_mvp");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Query that partially matches — should show "did you mean" suggestions
+    let response = rpc::call(
+        repo_root.clone(),
+        db_path.clone(),
+        "explain_symbol".to_string(),
+        r#"{"query":"Greeter nonexistent"}"#,
+        "1",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let error_msg = value["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        error_msg.contains("not found") || error_msg.contains("no symbol"),
+        "bad query should return error, got: {}",
+        error_msg
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}

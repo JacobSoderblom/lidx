@@ -1033,3 +1033,120 @@ fn analyze_impact_v2_all_four_layers() {
     let affected = result["affected"].as_array().unwrap();
     assert!(!affected.is_empty(), "Should have affected symbols");
 }
+
+// ============================================================================
+// Batch analyze_impact tests
+// ============================================================================
+
+#[test]
+fn analyze_impact_batch_basic() {
+    let temp = TempRepo::new("py_mvp");
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Batch with two qualnames
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "analyze_impact".to_string(),
+        r#"{"qualnames":["pkg.core.Greeter","pkg.core.make_greeter"],"max_depth":2}"#,
+        "1",
+    )
+    .unwrap();
+
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let result = value["result"].as_object().unwrap();
+
+    // Should have results array with 2 entries
+    let results = result["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "Should have 2 batch entries");
+
+    // First entry should be for Greeter
+    assert_eq!(
+        results[0]["seed_qualname"].as_str().unwrap(),
+        "pkg.core.Greeter"
+    );
+    let seeds0 = results[0]["seeds"].as_array().unwrap();
+    assert!(!seeds0.is_empty(), "Greeter should have seeds");
+    let affected0 = results[0]["affected"].as_array().unwrap();
+    assert!(!affected0.is_empty(), "Greeter should have affected symbols");
+
+    // Second entry should be for make_greeter
+    assert_eq!(
+        results[1]["seed_qualname"].as_str().unwrap(),
+        "pkg.core.make_greeter"
+    );
+    let seeds1 = results[1]["seeds"].as_array().unwrap();
+    assert!(!seeds1.is_empty(), "make_greeter should have seeds");
+
+    // Should have top-level config
+    let config = result["config"].as_object().unwrap();
+    assert_eq!(config["max_depth"].as_u64().unwrap(), 2);
+
+    // Should have top-level totals
+    assert!(result.contains_key("total_affected"));
+    assert!(result.contains_key("total_files"));
+    let total_affected = result["total_affected"].as_u64().unwrap();
+    assert!(total_affected > 0, "Should have some affected symbols total");
+}
+
+#[test]
+fn analyze_impact_batch_with_error_entry() {
+    let temp = TempRepo::new("py_mvp");
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Batch with one valid and one invalid qualname
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "analyze_impact".to_string(),
+        r#"{"qualnames":["pkg.core.Greeter","pkg.nonexistent.Symbol"],"max_depth":2}"#,
+        "1",
+    )
+    .unwrap();
+
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let result = value["result"].as_object().unwrap();
+
+    // Should still have 2 entries (one success, one error)
+    let results = result["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "Should have 2 batch entries even with error");
+
+    // First entry should succeed
+    let affected0 = results[0]["affected"].as_array().unwrap();
+    assert!(!affected0.is_empty(), "Valid entry should have results");
+
+    // Second entry should be an error (empty affected, error in layers)
+    let affected1 = results[1]["affected"].as_array().unwrap();
+    assert_eq!(affected1.len(), 0, "Error entry should have no affected");
+    let layers1 = results[1]["layers"].as_object().unwrap();
+    let direct1 = layers1["direct"].as_object().unwrap();
+    assert!(
+        direct1.get("error").is_some() && !direct1["error"].is_null(),
+        "Error entry should have error message"
+    );
+}
+
+#[test]
+fn analyze_impact_batch_empty_qualnames_errors() {
+    let temp = TempRepo::new("py_mvp");
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Empty qualnames array should error
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "analyze_impact".to_string(),
+        r#"{"qualnames":[]}"#,
+        "1",
+    )
+    .unwrap();
+
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert!(
+        value.get("error").is_some(),
+        "Empty qualnames should return error"
+    );
+}
