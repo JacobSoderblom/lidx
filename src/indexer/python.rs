@@ -1,4 +1,5 @@
 use crate::indexer::channel;
+use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -224,6 +225,11 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     if node.kind() == "call" {
         handle_call(node, ctx, source, output);
     }
+    if node.kind() == "subscript" {
+        if let Some(edge) = config_read_subscript_edge(node, ctx, source) {
+            output.edges.push(edge);
+        }
+    }
     match node.kind() {
         "class_definition" => {
             if ctx.fn_depth > 0 {
@@ -395,6 +401,9 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = channel_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
+    if let Some(edge) = config_read_call_edge(node, ctx, source) {
+        output.edges.push(edge);
+    }
     let Some(function_node) = node.child_by_field_name("function") else {
         return;
     };
@@ -416,6 +425,66 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_end_line: Some(end_line),
         ..Default::default()
     });
+}
+
+/// Detect os.getenv("KEY"), os.environ.get("KEY") → CONFIG_READ
+fn config_read_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let function_node = node.child_by_field_name("function")?;
+    let (base, name) = attribute_base_and_name(function_node, source)?;
+
+    // os.getenv("KEY") or os.environ.get("KEY")
+    let is_env_read = (base == "os" && name == "getenv")
+        || (base == "os.environ" && name == "get");
+
+    if !is_env_read {
+        return None;
+    }
+
+    let args = parse_call_arguments(node, source);
+    let key_node = args.positional.first()?;
+    let key = extract_string_literal(*key_node, source)?;
+    let key = unquote_string_literal(&key).unwrap_or(key);
+    let env_uri = config::normalize_env_var_name(&key)?;
+    let detail = config::build_config_read_detail("env", &env_uri, &key, "python");
+    let (start_line, _, end_line, _, _, _) = span(node);
+    Some(EdgeInput {
+        kind: config::CONFIG_READ_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(env_uri),
+        detail: Some(detail),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    })
+}
+
+/// Detect os.environ["KEY"] subscript access → CONFIG_READ
+fn config_read_subscript_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    // Tree-sitter-python "subscript" node has fields "value" and "subscript"
+    let value_node = node.child_by_field_name("value")?;
+    let subscript_node = node.child_by_field_name("subscript")
+        .or_else(|| {
+            // Some tree-sitter versions use "slice" instead of "subscript"
+            node.child_by_field_name("slice")
+        })?;
+    let base = node_text(value_node, source);
+    if base != "os.environ" {
+        return None;
+    }
+    let key = extract_string_literal(subscript_node, source)?;
+    let key = unquote_string_literal(&key).unwrap_or(key);
+    let env_uri = config::normalize_env_var_name(&key)?;
+    let detail = config::build_config_read_detail("env", &env_uri, &key, "python");
+    let (start_line, _, end_line, _, _, _) = span(node);
+    Some(EdgeInput {
+        kind: config::CONFIG_READ_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(env_uri),
+        detail: Some(detail),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    })
 }
 
 fn handle_decorated_definition(

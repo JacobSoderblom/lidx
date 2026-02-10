@@ -10,6 +10,7 @@ use std::time::Instant;
 pub mod batch;
 pub mod bicep;
 pub mod channel;
+pub mod config;
 pub mod csharp;
 pub mod differ;
 pub mod extract;

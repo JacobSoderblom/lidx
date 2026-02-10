@@ -86,3 +86,35 @@ func caller() { helper() }
             .any(|e| e.target_qualname.as_deref() == Some("pkg/models/user.helper"))
     );
 }
+
+#[test]
+fn extract_os_getenv_config_read() {
+    let source = r#"
+package main
+
+import "os"
+
+func main() {
+    dbUrl := os.Getenv("DATABASE_URL")
+    apiKey, _ := os.LookupEnv("API_KEY")
+    _ = dbUrl
+    _ = apiKey
+}
+"#;
+    let module = module_name_from_rel_path("cmd/main.go");
+    let mut extractor = GoExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let config_reads: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_READ")
+        .collect();
+    assert!(config_reads.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("env://DATABASE_URL")
+    }), "expected CONFIG_READ for env://DATABASE_URL, found: {:?}",
+    config_reads.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+    assert!(config_reads.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("env://API_KEY")
+    }), "expected CONFIG_READ for env://API_KEY");
+}

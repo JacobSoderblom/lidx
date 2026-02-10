@@ -230,3 +230,135 @@ metadata:
     assert!(doc.contains("app=frontend"));
     assert!(doc.contains("tier=web"));
 }
+
+#[test]
+fn extract_deployment_env_secret_key_ref() {
+    let source = r#"apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: datamgr
+spec:
+  template:
+    spec:
+      containers:
+        - name: datamgr
+          image: datamgr:latest
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: datamgr-db-conn
+                  key: connection-string
+            - name: APP_PORT
+              value: "8080"
+"#;
+    let module = module_name_from_rel_path("k8s/deploy.yaml");
+    let mut extractor = YamlExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    // CONFIG_SOURCE for DATABASE_URL env var
+    let config_sources: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_SOURCE")
+        .collect();
+    assert!(config_sources.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("env://DATABASE_URL")
+    }), "expected CONFIG_SOURCE for env://DATABASE_URL, found: {:?}",
+    config_sources.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+
+    // CONFIG_READ for secret://datamgr-db-conn
+    let config_reads: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_READ")
+        .collect();
+    assert!(config_reads.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("secret://datamgr-db-conn")
+    }), "expected CONFIG_READ for secret://datamgr-db-conn, found: {:?}",
+    config_reads.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+
+    // CONFIG_SOURCE for APP_PORT (plain value)
+    assert!(config_sources.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("env://APP_PORT")
+    }), "expected CONFIG_SOURCE for env://APP_PORT");
+}
+
+#[test]
+fn extract_deployment_env_from_secret_ref() {
+    let source = r#"apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          image: api:latest
+          envFrom:
+            - secretRef:
+                name: api-secrets
+"#;
+    let module = module_name_from_rel_path("k8s/deploy.yaml");
+    let mut extractor = YamlExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let config_reads: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_READ")
+        .collect();
+    assert!(config_reads.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("secret://api-secrets")
+    }), "expected CONFIG_READ for secret://api-secrets");
+}
+
+#[test]
+fn extract_secret_provider_class() {
+    let source = r#"apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: azure-kv-secrets
+spec:
+  provider: azure
+  parameters:
+    objects: |
+      - objectName: datamgr-db-conn
+        objectType: secret
+      - objectName: api-key
+        objectType: secret
+  secretObjects:
+    - secretName: datamgr-secrets
+      type: Opaque
+      data:
+        - objectName: datamgr-db-conn
+          key: connection-string
+"#;
+    let module = module_name_from_rel_path("k8s/spc.yaml");
+    let mut extractor = YamlExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    // CONFIG_READ for each objectName in parameters.objects
+    let config_reads: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_READ")
+        .collect();
+    assert!(config_reads.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("secret://datamgr-db-conn")
+    }), "expected CONFIG_READ for secret://datamgr-db-conn");
+    assert!(config_reads.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("secret://api-key")
+    }), "expected CONFIG_READ for secret://api-key");
+
+    // CONFIG_SOURCE for secretObjects[].secretName
+    let config_sources: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_SOURCE")
+        .collect();
+    assert!(config_sources.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("secret://datamgr-secrets")
+    }), "expected CONFIG_SOURCE for secret://datamgr-secrets");
+}

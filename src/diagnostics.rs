@@ -181,6 +181,61 @@ fn normalize_uri(uri: &str, repo_root: &Path) -> Option<String> {
     Some(util::normalize_path(Path::new(cleaned)))
 }
 
+/// Parse cargo-audit JSON output into diagnostics.
+///
+/// cargo-audit outputs: `{"vulnerabilities": {"list": [{"advisory": {...}, "package": {...}}]}}`
+pub fn parse_cargo_audit_json(source: &str) -> Result<Vec<DiagnosticInput>> {
+    let root: Value = serde_json::from_str(source).with_context(|| "parse cargo-audit JSON")?;
+    let vulns = root
+        .get("vulnerabilities")
+        .and_then(|v| v.get("list"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut diagnostics = Vec::new();
+    for vuln in vulns {
+        let advisory = match vuln.get("advisory") {
+            Some(a) => a,
+            None => continue,
+        };
+        let id = advisory
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let title = advisory
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown vulnerability");
+        let severity = advisory
+            .get("severity")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_lowercase());
+        let pkg_name = vuln
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let pkg_version = vuln
+            .get("package")
+            .and_then(|p| p.get("version"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        diagnostics.push(DiagnosticInput {
+            path: Some("Cargo.lock".to_string()),
+            line: None,
+            column: None,
+            end_line: None,
+            end_column: None,
+            severity,
+            message: format!("{pkg_name}: {title} ({pkg_version})"),
+            rule_id: Some(id.to_string()),
+            tool: Some("cargo-audit".to_string()),
+            snippet: None,
+        });
+    }
+    Ok(diagnostics)
+}
+
 fn push_opt_str(hasher: &mut Hasher, value: Option<&str>) {
     match value {
         Some(value) => push_str(hasher, value),

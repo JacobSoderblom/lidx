@@ -36,16 +36,14 @@ fn get_relationship(distance: usize) -> String {
     }
 }
 
-/// Reconstruct path from seed to target symbol
-/// This is a simplified version for the refactored code
+/// Reconstruct path from seed to target symbol (v1 API — simplified, no parent tracking)
 fn reconstruct_path(
     _symbol_id: i64,
     _seed_ids: &HashSet<i64>,
     _symbol_cache: &HashMap<i64, Symbol>,
 ) -> ImpactPath {
-    // TODO(future): Implement path reconstruction showing how impact propagates
-    // This is a Phase 2 enhancement - see architecture/implementation-plan.md Phase 2
-    // For now, return empty path
+    // v1 API does not have parent tracking in its BFS.
+    // Use analyze_impact_multi_layer (v2) with include_paths=true for full path reconstruction.
     ImpactPath { steps: Vec::new() }
 }
 

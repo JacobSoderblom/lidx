@@ -1,4 +1,5 @@
 use crate::indexer::channel;
+use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -401,6 +402,23 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     if node.kind() == "call_expression" || node.kind() == "new_expression" {
         handle_call(node, ctx, source, output);
     }
+    // const { DB_URL } = process.env (destructuring)
+    if node.kind() == "variable_declarator" {
+        for edge in process_env_destructuring_edges(node, ctx, source) {
+            output.edges.push(edge);
+        }
+    }
+    // process.env.KEY (member_expression) or process.env["KEY"] (subscript_expression)
+    if node.kind() == "member_expression" || node.kind() == "optional_member_expression" {
+        if let Some(edge) = process_env_member_edge(node, ctx, source) {
+            output.edges.push(edge);
+        }
+    }
+    if node.kind() == "subscript_expression" {
+        if let Some(edge) = process_env_subscript_edge(node, ctx, source) {
+            output.edges.push(edge);
+        }
+    }
     if is_nested_function_node(node.kind()) {
         return;
     }
@@ -430,7 +448,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         }
         "lexical_declaration" | "variable_declaration" => {
             handle_variable_declaration(node, ctx, source, output);
-            return;
+            // Don't return — fall through to recurse into children for call/config edges
         }
         "import_statement" | "import_declaration" => {
             handle_import(node, ctx, source, output, true);
@@ -668,6 +686,104 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_end_line: Some(end_line),
         ..Default::default()
     });
+}
+
+/// Detect process.env.KEY → CONFIG_READ
+fn process_env_member_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let (receiver, property) = member_receiver_and_method(node, source)?;
+    if receiver != "process.env" {
+        return None;
+    }
+    // property is the env var name
+    let env_uri = config::normalize_env_var_name(&property)?;
+    let detail = config::build_config_read_detail("env", &env_uri, &property, "node");
+    let (start_line, _, end_line, _, _, _) = span(node);
+    Some(EdgeInput {
+        kind: config::CONFIG_READ_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(env_uri),
+        detail: Some(detail),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    })
+}
+
+/// Detect process.env["KEY"] → CONFIG_READ
+fn process_env_subscript_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let obj_node = node.child_by_field_name("object")?;
+    let obj_text = node_text(obj_node, source);
+    if obj_text != "process.env" {
+        return None;
+    }
+    let index_node = node.child_by_field_name("index")?;
+    let key = extract_string_literal(index_node, source)?;
+    let env_uri = config::normalize_env_var_name(&key)?;
+    let detail = config::build_config_read_detail("env", &env_uri, &key, "node");
+    let (start_line, _, end_line, _, _, _) = span(node);
+    Some(EdgeInput {
+        kind: config::CONFIG_READ_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(env_uri),
+        detail: Some(detail),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    })
+}
+
+/// Detect `const { DB_URL, API_KEY } = process.env` → CONFIG_READ edges
+fn process_env_destructuring_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
+    let mut edges = Vec::new();
+    if node.kind() != "variable_declarator" {
+        return edges;
+    }
+    let Some(value_node) = node.child_by_field_name("value") else {
+        return edges;
+    };
+    if node_text(value_node, source) != "process.env" {
+        return edges;
+    }
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return edges;
+    };
+    if name_node.kind() != "object_pattern" {
+        return edges;
+    }
+    let (start_line, _, end_line, _, _, _) = span(node);
+    let mut cursor = name_node.walk();
+    for child in name_node.named_children(&mut cursor) {
+        let env_name = match child.kind() {
+            // const { DATABASE_URL } = process.env
+            "shorthand_property_identifier_pattern" => node_text(child, source),
+            // const { DB_URL: dbUrl } = process.env
+            "pair_pattern" => {
+                if let Some(key) = child.child_by_field_name("key") {
+                    node_text(key, source)
+                } else {
+                    continue;
+                }
+            }
+            _ => continue,
+        };
+        if env_name.is_empty() {
+            continue;
+        }
+        let Some(env_uri) = config::normalize_env_var_name(&env_name) else {
+            continue;
+        };
+        let detail = config::build_config_read_detail("env", &env_uri, &env_name, "node");
+        edges.push(EdgeInput {
+            kind: config::CONFIG_READ_KIND.to_string(),
+            source_qualname: Some(ctx.current_scope.clone()),
+            target_qualname: Some(env_uri),
+            detail: Some(detail),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            ..Default::default()
+        });
+    }
+    edges
 }
 
 fn http_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {

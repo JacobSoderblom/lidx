@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::indexer::channel::is_bridge_edge_kind;
 use crate::diagnostics::DiagnosticInput;
 use crate::indexer::differ::SymbolDiff;
 use crate::indexer::extract::{EdgeInput, SymbolInput};
@@ -894,17 +895,37 @@ impl Db {
             )?;
             let mut exact_lookup_stmt =
                 tx.prepare("SELECT id FROM symbols WHERE qualname = ? LIMIT 1")?;
-            let mut fuzzy_lookup_stmt = tx.prepare(
+            // Same-language fuzzy lookup: prefer symbols from files matching source language
+            let mut fuzzy_same_lang_stmt = tx.prepare(
                 "SELECT s.id
                  FROM symbols s
                  JOIN files f ON s.file_id = f.id
-                 WHERE s.qualname LIKE ?
-                   AND s.kind IN ('method', 'function')
+                 WHERE (s.qualname = ? OR s.qualname LIKE ?)
+                   AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                    AND s.graph_version = ?
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                 ORDER BY LENGTH(s.qualname) ASC
+                   AND f.language = ?
+                 ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
                  LIMIT 1"
             )?;
+            // Cross-language fuzzy lookup: fallback for bridge edges only
+            let mut fuzzy_any_lang_stmt = tx.prepare(
+                "SELECT s.id
+                 FROM symbols s
+                 JOIN files f ON s.file_id = f.id
+                 WHERE (s.qualname = ? OR s.qualname LIKE ?)
+                   AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
+                   AND s.graph_version = ?
+                   AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+                 ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
+                 LIMIT 1"
+            )?;
+            // Look up the source file's language for same-language preference
+            let source_lang: String = tx.query_row(
+                "SELECT language FROM files WHERE id = ?",
+                params![file_id],
+                |row| row.get(0),
+            ).unwrap_or_else(|_| "unknown".to_string());
 
             for edge in edges {
                 let source_id =
@@ -914,15 +935,29 @@ impl Db {
                     symbol_map,
                     &mut exact_lookup_stmt,
                 )?.or_else(|| {
-                    // Fuzzy fallback: try suffix match
+                    // Fuzzy fallback: try same-language first, then cross-language for bridge edges only
                     edge.target_qualname.as_ref().and_then(|qn| {
                         let method_name = qn.split('.').last().unwrap_or(qn);
                         let pattern = format!("%.{}", method_name);
-                        fuzzy_lookup_stmt
-                            .query_row(params![&pattern, graph_version, graph_version], |row| row.get(0))
+                        // Try same-language first
+                        let same_lang = fuzzy_same_lang_stmt
+                            .query_row(params![method_name, &pattern, graph_version, graph_version, &source_lang, method_name], |row| row.get(0))
                             .optional()
                             .ok()
-                            .flatten()
+                            .flatten();
+                        if same_lang.is_some() {
+                            return same_lang;
+                        }
+                        // Cross-language fallback only for bridge edge kinds
+                        if is_bridge_edge_kind(&edge.kind) {
+                            fuzzy_any_lang_stmt
+                                .query_row(params![method_name, &pattern, graph_version, graph_version, method_name], |row| row.get(0))
+                                .optional()
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        }
                     })
                 });
 
@@ -981,18 +1016,19 @@ impl Db {
             let mut conn = self.conn();
             let tx = conn.transaction()?;
 
-            // Find batch of unresolved edges
-            let unresolved: Vec<(i64, String)> = {
+            // Find batch of unresolved edges (include source file language and edge kind)
+            let unresolved: Vec<(i64, String, String, String)> = {
                 let mut stmt = tx.prepare(
-                    "SELECT id, target_qualname
-                     FROM edges
-                     WHERE target_symbol_id IS NULL
-                     AND target_qualname IS NOT NULL
-                     AND graph_version = ?
+                    "SELECT e.id, e.target_qualname, COALESCE(f.language, 'unknown'), e.kind
+                     FROM edges e
+                     JOIN files f ON e.file_id = f.id
+                     WHERE e.target_symbol_id IS NULL
+                     AND e.target_qualname IS NOT NULL
+                     AND e.graph_version = ?
                      LIMIT ?"
                 )?;
                 let rows = stmt.query_map(params![graph_version, BATCH_SIZE], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()?
             };
@@ -1003,15 +1039,29 @@ impl Db {
 
             let mut count = 0;
             {
-                let mut fuzzy_stmt = tx.prepare(
+                // Same-language fuzzy lookup
+                let mut fuzzy_same_lang_stmt = tx.prepare(
                     "SELECT s.id
                      FROM symbols s
                      JOIN files f ON s.file_id = f.id
-                     WHERE s.qualname LIKE ?
-                       AND s.kind IN ('method', 'function')
+                     WHERE (s.qualname = ? OR s.qualname LIKE ?)
+                       AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                        AND s.graph_version = ?
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                     ORDER BY LENGTH(s.qualname) ASC
+                       AND f.language = ?
+                     ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
+                     LIMIT 1"
+                )?;
+                // Cross-language fuzzy lookup (for bridge edges only)
+                let mut fuzzy_any_lang_stmt = tx.prepare(
+                    "SELECT s.id
+                     FROM symbols s
+                     JOIN files f ON s.file_id = f.id
+                     WHERE (s.qualname = ? OR s.qualname LIKE ?)
+                       AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
+                       AND s.graph_version = ?
+                       AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+                     ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
                      LIMIT 1"
                 )?;
 
@@ -1019,19 +1069,33 @@ impl Db {
                     "UPDATE edges SET target_symbol_id = ? WHERE id = ?"
                 )?;
 
-                for (edge_id, target_qualname) in &unresolved {
+                for (edge_id, target_qualname, source_lang, edge_kind) in &unresolved {
                     let method_name = target_qualname.split('.').last().unwrap_or(target_qualname);
                     let pattern = format!("%.{}", method_name);
 
-                    if let Some(symbol_id) = fuzzy_stmt
-                        .query_row(params![&pattern, graph_version, graph_version], |row| row.get::<_, i64>(0))
+                    // Try same-language first
+                    let resolved = fuzzy_same_lang_stmt
+                        .query_row(params![method_name, &pattern, graph_version, graph_version, source_lang, method_name], |row| row.get::<_, i64>(0))
                         .optional()?
-                    {
+                        .or_else(|| {
+                            // Cross-language fallback only for bridge edges
+                            if is_bridge_edge_kind(edge_kind) {
+                                fuzzy_any_lang_stmt
+                                    .query_row(params![method_name, &pattern, graph_version, graph_version, method_name], |row| row.get::<_, i64>(0))
+                                    .optional()
+                                    .ok()
+                                    .flatten()
+                            } else {
+                                None
+                            }
+                        });
+
+                    if let Some(symbol_id) = resolved {
                         update_stmt.execute(params![symbol_id, edge_id])?;
                         count += 1;
                     }
                 }
-            } // fuzzy_stmt and update_stmt dropped here
+            } // stmts dropped here
 
             tx.commit()?;
             total_resolved += count;
@@ -1473,13 +1537,13 @@ impl Db {
             "SELECT s.id, s.qualname, LENGTH(s.qualname) as qn_len
              FROM symbols s
              JOIN files f ON s.file_id = f.id
-             WHERE s.qualname LIKE ?
-               AND s.kind IN ('method', 'function')
+             WHERE (s.qualname = ? OR s.qualname LIKE ?)
+               AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                AND s.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
 
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&pattern, &graph_version, &graph_version];
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&name, &pattern, &graph_version, &graph_version];
 
         if let Some(languages) = languages {
             if !languages.is_empty() {
@@ -1576,8 +1640,9 @@ impl Db {
         languages: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<Edge>> {
-        // Search for edges where target_qualname ends with '.<symbol_name>'
+        // Search for edges where target_qualname ends with '.<symbol_name>' or equals it exactly
         let pattern = format!("%.{}", symbol_name);
+        let exact = symbol_name.to_string();
 
         let mut sql = String::from(
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
@@ -1586,14 +1651,14 @@ impl Db {
                     e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
              FROM edges e
              JOIN files f ON e.file_id = f.id
-             WHERE e.target_qualname LIKE ?
+             WHERE (e.target_qualname LIKE ? OR e.target_qualname = ?)
                AND e.kind = ?
                AND e.source_symbol_id IS NOT NULL
                AND e.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
 
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&pattern, &kind, &graph_version, &graph_version];
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&pattern, &exact, &kind, &graph_version, &graph_version];
 
         if let Some(languages) = languages {
             if !languages.is_empty() {
@@ -1687,6 +1752,29 @@ impl Db {
             edges.push(row?);
         }
         Ok(edges)
+    }
+
+    /// Find unique source symbol IDs from edges targeting a config URI.
+    /// If `kinds` is empty, searches all CONFIG edge kinds.
+    pub fn source_symbols_for_config_uri(
+        &self,
+        uri: &str,
+        kinds: &[&str],
+        graph_version: i64,
+    ) -> Result<Vec<i64>> {
+        let default_kinds: &[&str] = &["CONFIG_SOURCE", "CONFIG_READ", "CONFIG_BIND"];
+        let search_kinds = if kinds.is_empty() { default_kinds } else { kinds };
+        let edges = self.edges_by_target_qualname_and_kinds(uri, search_kinds, None, graph_version)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut ids = Vec::new();
+        for e in &edges {
+            if let Some(id) = e.source_symbol_id {
+                if seen.insert(id) {
+                    ids.push(id);
+                }
+            }
+        }
+        Ok(ids)
     }
 
     pub fn edges_for_symbols(

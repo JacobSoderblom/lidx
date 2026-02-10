@@ -441,7 +441,7 @@ fn analyze_impact_missing_required_param() {
     };
 
     assert!(
-        error_str.contains("requires id or qualname"),
+        error_str.contains("requires id") && error_str.contains("qualname"),
         "Error message should mention requirement, got: {}",
         error_str
     );

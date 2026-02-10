@@ -1,4 +1,5 @@
 use crate::indexer::channel;
+use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -562,6 +563,10 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = channel_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
+    // Config/env read detection
+    if let Some(edge) = config_read_edge(node, ctx, source) {
+        output.edges.push(edge);
+    }
 
     // General CALLS edge
     let Some(function_node) = node.child_by_field_name("function") else {
@@ -585,6 +590,44 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_end_line: Some(end_line),
         ..Default::default()
     });
+}
+
+/// Detect os.Getenv("KEY"), os.LookupEnv("KEY"), viper.GetString("key"), viper.Get("key") → CONFIG_READ
+fn config_read_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let function_node = node.child_by_field_name("function")?;
+    let (receiver, method) = split_selector_expr(function_node, source)?;
+
+    let (framework, source_type) = if receiver == "os" && (method == "Getenv" || method == "LookupEnv") {
+        ("go", "env")
+    } else if receiver == "viper" || receiver.ends_with(".viper") {
+        match method.as_str() {
+            "GetString" | "Get" | "GetBool" | "GetInt" | "GetFloat64" | "GetDuration" => {
+                ("viper", "config")
+            }
+            _ => return None,
+        }
+    } else {
+        return None;
+    };
+
+    let args = call_arguments(node);
+    let key_node = args.first()?;
+    let key = extract_string_literal(*key_node, source);
+    if key.is_empty() {
+        return None;
+    }
+    let env_uri = config::normalize_env_var_name(&key)?;
+    let detail = config::build_config_read_detail(source_type, &env_uri, &key, framework);
+    let (start_line, _, end_line, _, _, _) = span(node);
+    Some(EdgeInput {
+        kind: config::CONFIG_READ_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(env_uri),
+        detail: Some(detail),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    })
 }
 
 fn http_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {

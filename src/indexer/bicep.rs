@@ -1,4 +1,5 @@
 use crate::indexer::channel::{CHANNEL_PUBLISH_KIND, CHANNEL_SUBSCRIBE_KIND};
+use crate::indexer::config::{self, CONFIG_SOURCE_KIND};
 use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor, SymbolInput};
 use anyhow::Result;
 use serde_json::json;
@@ -113,6 +114,31 @@ impl LanguageExtractor for BicepExtractor {
                                     ..Default::default()
                                 });
                             }
+                        }
+                    }
+                }
+            }
+
+            // Key Vault secret → CONFIG_SOURCE
+            if let Some(ref azure_type) = decl.type_or_path {
+                if is_keyvault_secret(azure_type) {
+                    if let Some(ref resource_name) = decl.resource_name {
+                        if let Some(secret_uri) = config::normalize_secret_name(resource_name) {
+                            let detail = config::build_config_source_detail(
+                                "secret",
+                                &secret_uri,
+                                resource_name,
+                                Some(&json!({ "provider": "azure-keyvault" })),
+                            );
+                            output.edges.push(EdgeInput {
+                                kind: CONFIG_SOURCE_KIND.to_string(),
+                                source_qualname: Some(qualname.clone()),
+                                target_qualname: Some(secret_uri),
+                                detail: Some(detail),
+                                evidence_start_line: Some(decl.start_line),
+                                evidence_end_line: Some(decl.end_line),
+                                ..Default::default()
+                            });
                         }
                     }
                 }
@@ -768,6 +794,11 @@ fn normalize_azure_channel_name(azure_name: &str) -> Option<String> {
         return None;
     }
     Some(format!("channel://{normalized}"))
+}
+
+/// Check if an Azure resource type is a Key Vault secret.
+fn is_keyvault_secret(azure_type: &str) -> bool {
+    azure_type.to_lowercase().contains("keyvault/vaults/secrets")
 }
 
 /// Check if an Azure resource type is a Service Bus topic or queue (not a topic subscription).

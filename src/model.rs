@@ -15,9 +15,12 @@ pub struct Symbol {
     pub end_col: i64,
     pub start_byte: i64,
     pub end_byte: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub docstring: Option<String>,
     pub graph_version: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_sha: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stable_id: Option<String>,
@@ -68,17 +71,28 @@ pub struct Edge {
     pub id: i64,
     pub file_path: String,
     pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_symbol_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub target_symbol_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub target_qualname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_start_line: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_end_line: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
     pub graph_version: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<String>,
     pub event_ts: Option<i64>,
 }
@@ -202,6 +216,7 @@ pub struct RpcSuggestion {
 pub struct SearchHit {
     pub path: String,
     pub line: usize,
+    #[serde(skip)]
     pub column: usize,
     pub line_text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -210,9 +225,9 @@ pub struct SearchHit {
     pub enclosing_symbol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub reasons: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub engine: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_hops: Option<Vec<RpcSuggestion>>,
@@ -222,6 +237,7 @@ pub struct SearchHit {
 pub struct GrepHit {
     pub path: String,
     pub line: usize,
+    #[serde(skip)]
     pub column: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_text: Option<String>,
@@ -231,9 +247,9 @@ pub struct GrepHit {
     pub enclosing_symbol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub reasons: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub engine: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_hops: Option<Vec<RpcSuggestion>>,
@@ -598,6 +614,8 @@ pub struct ExplainSymbolResult {
     pub budget: BudgetInfo,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub next_hops: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

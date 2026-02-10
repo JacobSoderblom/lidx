@@ -9,11 +9,11 @@ use crate::impact::confidence::fuse_evidence;
 use crate::impact::layers::{analyze_direct_impact, HistoricalImpactLayer, TestImpactLayer};
 use crate::impact::types::{
     ImpactEntry, ImpactSource, ImpactSummary, LayerMetadata, LayerResult,
-    LayerStats, UnifiedImpactResult,
+    LayerStats, PathStep, UnifiedImpactResult,
 };
 use crate::model::{Symbol, SymbolCompact};
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -523,8 +523,14 @@ impl<'a> MultiLayerOrchestrator<'a> {
         let mut symbol_evidence: HashMap<i64, Vec<ImpactSource>> = HashMap::new();
         let mut any_truncated = false;
 
+        // Merge parent maps from all layers (direct layer is primary)
+        let mut merged_parents: HashMap<i64, (i64, String)> = HashMap::new();
         for layer_result in &layer_results {
             any_truncated = any_truncated || layer_result.truncated;
+
+            for (child, parent_info) in &layer_result.parent_map {
+                merged_parents.entry(*child).or_insert_with(|| parent_info.clone());
+            }
 
             for (symbol_id, _confidence) in &layer_result.impacts {
                 if let Some(evidence) = layer_result.evidence.get(symbol_id) {
@@ -583,9 +589,12 @@ impl<'a> MultiLayerOrchestrator<'a> {
                     format!("INDIRECT_{}", distance)
                 };
 
-                // Build path if requested
+                // Build path if requested — reconstruct from parent_map
                 let path = if self.config.include_paths {
-                    Some(crate::impact::types::ImpactPath { steps: Vec::new() })
+                    let steps = reconstruct_path_steps(
+                        symbol_id, &seed_set, &merged_parents, &symbol_map,
+                    );
+                    Some(crate::impact::types::ImpactPath { steps })
                 } else {
                     None
                 };
@@ -599,6 +608,11 @@ impl<'a> MultiLayerOrchestrator<'a> {
                 });
             }
         }
+
+        // Filter out module/namespace-level symbols that add noise
+        affected.retain(|entry| {
+            !matches!(entry.symbol.kind.as_str(), "module" | "namespace" | "package")
+        });
 
         // Sort by distance, then by qualname for determinism
         affected.sort_by(|a, b| {
@@ -629,6 +643,42 @@ impl<'a> MultiLayerOrchestrator<'a> {
             limit: self.config.limit,
         }
     }
+}
+
+/// Walk parent chain from a symbol back to a seed, returning path steps in root-to-leaf order.
+fn reconstruct_path_steps(
+    symbol_id: i64,
+    seed_set: &HashSet<i64>,
+    parent_map: &HashMap<i64, (i64, String)>,
+    symbol_map: &HashMap<i64, Symbol>,
+) -> Vec<PathStep> {
+    let mut steps = Vec::new();
+    let mut current = symbol_id;
+    // Walk parent chain back to seed, max 20 hops to avoid loops
+    for _ in 0..20 {
+        if seed_set.contains(&current) {
+            break;
+        }
+        let Some((parent_id, edge_kind)) = parent_map.get(&current) else {
+            break;
+        };
+        let from_qn = symbol_map
+            .get(parent_id)
+            .map(|s| s.qualname.clone())
+            .unwrap_or_default();
+        let to_qn = symbol_map
+            .get(&current)
+            .map(|s| s.qualname.clone())
+            .unwrap_or_default();
+        steps.push(PathStep {
+            edge_kind: edge_kind.clone(),
+            from_symbol: from_qn,
+            to_symbol: to_qn,
+        });
+        current = *parent_id;
+    }
+    steps.reverse(); // Root-to-leaf order
+    steps
 }
 
 #[cfg(test)]

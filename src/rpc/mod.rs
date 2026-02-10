@@ -2,17 +2,19 @@ mod handlers;
 
 use crate::config::Config;
 use crate::diagnostics;
-use crate::indexer::{Indexer, http, proto, scan, test_detection, xref};
+use crate::indexer::{Indexer, channel::is_bridge_edge_kind, scan, test_detection};
 use crate::model::{
-    AnalyzeDiffResult, BudgetInfo, ChangedSymbol, ContextLine, DiffImpactEntry, Edge, EdgeReference,
-    ExplainRef, ExplainSymbolResult, FindTestsResult, FlowStatusEntry, FlowStatusResult, GrepHit,
-    IndexChangeCounts, IndexStatus, ModuleEdge, ModuleMapResult, ModuleNode, ReferencesMetadata,
-    ReferencesResult, RepoInsights, RiskAssessment, RiskFactor, RouteRefsResult, RpcSuggestion,
-    SearchHit, Subgraph, Symbol, SymbolCompact, TestCoverageEntry, TestMatch, TestRef, TestSummary, TraceFlowResult,
+    AnalyzeDiffResult, BudgetInfo, ChangedSymbol, ContextLine, DiffImpactEntry, Edge,
+    ExplainRef, ExplainSymbolResult, GrepHit,
+    ModuleEdge, ModuleNode,
+    RiskAssessment, RiskFactor,
+    Symbol, TestCoverageEntry, TestRef, TraceFlowResult,
     TraceHop, ValidationResult,
 };
+#[cfg(test)]
+use crate::model::{FlowStatusEntry, FlowStatusResult};
 use crate::watch;
-use crate::{search, subgraph, util};
+use crate::util;
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
@@ -179,7 +181,7 @@ fn apply_compact_format(value: serde_json::Value) -> serde_json::Value {
         }
         serde_json::Value::Object(mut map) => {
             // Process known array fields
-            for key in ["results", "nodes", "incoming", "outgoing", "edges", "trace"] {
+            for key in ["results", "nodes", "incoming", "outgoing", "edges", "trace", "items", "affected"] {
                 if let Some(arr) = map.remove(key) {
                     map.insert(key.to_string(), apply_compact_format(arr));
                 }
@@ -231,45 +233,6 @@ struct RpcError {
     message: String,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
-struct FindSymbolParams {
-    #[serde(alias = "symbol", alias = "name")]
-    query: String,
-    limit: Option<usize>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-    format: Option<String>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct OpenSymbolParams {
-    id: Option<i64>,
-    qualname: Option<String>,
-    include_snippet: Option<bool>,
-    max_snippet_bytes: Option<usize>,
-    include_symbol: Option<bool>,
-    snippet_only: Option<bool>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct OpenFileParams {
-    path: String,
-    start_line: Option<i64>,
-    end_line: Option<i64>,
-    max_bytes: Option<usize>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct OverviewParams {
-    summary: Option<bool>,
-    fields: Option<Vec<String>>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ReindexParams {
@@ -279,47 +242,6 @@ struct ReindexParams {
     mine_git: Option<bool>,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
-struct ModuleMapParams {
-    depth: Option<usize>,
-    include_edges: Option<bool>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct RepoMapParams {
-    max_bytes: Option<usize>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct InsightsParams {
-    complexity_limit: Option<usize>,
-    min_complexity: Option<i64>,
-    duplicate_limit: Option<usize>,
-    duplicate_min_count: Option<i64>,
-    duplicate_min_loc: Option<i64>,
-    duplicate_per_group_limit: Option<usize>,
-    coupling_limit: Option<usize>,
-    include_staleness: Option<bool>,
-    staleness_limit: Option<usize>,
-    include_coupling_hotspots: Option<bool>,
-    coupling_hotspots_limit: Option<usize>,
-    coupling_hotspots_min_confidence: Option<f64>,
-    languages: Option<Vec<String>>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct TopComplexityParams {
@@ -332,206 +254,42 @@ struct TopComplexityParams {
     graph_version: Option<i64>,
 }
 
+
 #[derive(Deserialize, schemars::JsonSchema)]
-struct DuplicateGroupsParams {
-    limit: Option<usize>,
-    min_count: Option<i64>,
-    min_loc: Option<i64>,
-    per_group_limit: Option<usize>,
-    languages: Option<Vec<String>>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
+pub(super) struct DiagnosticsRunParams {
+    pub(super) tools: Option<Vec<String>>,
+    pub(super) tool: Option<String>,
+    pub(super) languages: Option<Vec<String>>,
+    pub(super) output_dir: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub(super) struct SecurityScanParams {
+    pub(super) languages: Option<Vec<String>>,
+    pub(super) tools: Option<Vec<String>>,
     #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    pub(super) graph_version: Option<i64>,
+    /// Max upstream traversal depth for reachability (default: 5, max: 10)
+    pub(super) max_depth: Option<usize>,
+    /// Only include findings reachable from public APIs
+    pub(super) public_only: Option<bool>,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
-struct TopCouplingParams {
-    limit: Option<usize>,
-    direction: Option<String>,
-    languages: Option<Vec<String>>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
 
-#[derive(Deserialize, schemars::JsonSchema)]
-struct CoChangesParams {
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    qualname: Option<String>,
-    limit: Option<usize>,
-    min_confidence: Option<f64>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct DeadSymbolsParams {
-    limit: Option<usize>,
-    languages: Option<Vec<String>>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct UnusedImportsParams {
-    limit: Option<usize>,
-    languages: Option<Vec<String>>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct OrphanTestsParams {
-    limit: Option<usize>,
-    languages: Option<Vec<String>>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct DiagnosticsImportParams {
-    path: String,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct DiagnosticsListParams {
-    limit: Option<usize>,
-    offset: Option<usize>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    severity: Option<String>,
-    rule_id: Option<String>,
-    tool: Option<String>,
-    languages: Option<Vec<String>>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct DiagnosticsSummaryParams {
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    severity: Option<String>,
-    rule_id: Option<String>,
-    tool: Option<String>,
-    languages: Option<Vec<String>>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct DiagnosticsRunParams {
-    tools: Option<Vec<String>>,
-    tool: Option<String>,
-    languages: Option<Vec<String>>,
-    output_dir: Option<String>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct NeighborsParams {
-    id: i64,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-    format: Option<String>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct SubgraphParams {
-    start_ids: Option<Vec<i64>>,
-    #[serde(alias = "roots", alias = "start_qualnames", alias = "qualnames")]
-    start_qualnames: Option<Vec<String>>,
-    depth: Option<usize>,
-    max_nodes: Option<usize>,
-    languages: Option<Vec<String>>,
-    kinds: Option<Vec<String>>,
-    exclude_kinds: Option<Vec<String>>,
-    resolved_only: Option<bool>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-    format: Option<String>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct SearchParams {
-    #[serde(alias = "pattern", alias = "text", alias = "q")]
-    query: String,
-    limit: Option<usize>,
-    languages: Option<Vec<String>>,
-    scope: Option<String>,
-    exclude_generated: Option<bool>,
-    rank: Option<bool>,
-    no_ignore: Option<bool>,
-    context_lines: Option<usize>,
-    include_symbol: Option<bool>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct GrepParams {
-    #[serde(alias = "pattern", alias = "text", alias = "q")]
-    query: String,
-    limit: Option<usize>,
-    include_text: Option<bool>,
-    languages: Option<Vec<String>>,
-    scope: Option<String>,
-    exclude_generated: Option<bool>,
-    rank: Option<bool>,
-    no_ignore: Option<bool>,
-    context_lines: Option<usize>,
-    include_symbol: Option<bool>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct ReferencesParams {
-    id: Option<i64>,
-    qualname: Option<String>,
-    direction: Option<String>,
-    kinds: Option<Vec<String>>,
-    limit: Option<usize>,
-    include_symbols: Option<bool>,
-    include_snippet: Option<bool>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-    format: Option<String>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct FindTestsForParams {
-    id: Option<i64>,
-    qualname: Option<String>,
-    query: Option<String>,
-    include_indirect: Option<bool>,
-    indirect_depth: Option<usize>,
-    limit: Option<usize>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
-
+// Active param structs used by the 13 consolidated methods
 #[derive(Deserialize, schemars::JsonSchema)]
 struct AnalyzeImpactParams {
     id: Option<i64>,
     qualname: Option<String>,
+    /// Fuzzy search query to find symbol (alternative to id/qualname)
+    query: Option<String>,
     /// Multi-layer configuration
     enable_direct: Option<bool>,
     enable_test: Option<bool>,
     enable_historical: Option<bool>,
     /// Direct layer configuration
     max_depth: Option<usize>,
+    /// "upstream" (find consumers/callers), "downstream" (follow calls), or "both" (default). Use "upstream" for "what depends on this?"
     direction: Option<String>,
     kinds: Option<Vec<String>>,
     include_tests: Option<bool>,
@@ -563,29 +321,6 @@ struct AnalyzeDiffParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
-struct EdgesParams {
-    kind: Option<String>,
-    kinds: Option<Vec<String>>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    languages: Option<Vec<String>>,
-    source_id: Option<i64>,
-    source_qualname: Option<String>,
-    target_id: Option<i64>,
-    target_qualname: Option<String>,
-    resolved_only: Option<bool>,
-    min_confidence: Option<f64>,
-    trace_id: Option<String>,
-    event_after: Option<i64>,
-    event_before: Option<i64>,
-    limit: Option<usize>,
-    offset: Option<usize>,
-    include_symbols: Option<bool>,
-    include_snippet: Option<bool>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RgParams {
@@ -607,26 +342,6 @@ struct RgParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
-struct SuggestQualNamesParams {
-    #[serde(alias = "query", alias = "pattern", alias = "name")]
-    query: String,
-    limit: Option<usize>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct ChangedFilesParams {
-    languages: Option<Vec<String>>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-struct IndexStatusParams {
-    languages: Option<Vec<String>>,
-    include_paths: Option<bool>,
-}
 
 #[derive(Deserialize, Default, schemars::JsonSchema)]
 struct OnboardParams {
@@ -635,41 +350,44 @@ struct OnboardParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize, Default, schemars::JsonSchema)]
-struct ReflectParams {
-    text: Option<String>,
-}
-
-#[derive(Deserialize, Default, schemars::JsonSchema)]
-struct ChangedSinceParams {
-    commit: Option<String>,
-}
 
 #[derive(Deserialize, schemars::JsonSchema)]
-struct RouteRefsParams {
-    query: String,
-    limit: Option<usize>,
-    languages: Option<Vec<String>>,
+struct OrientParams {
+    /// "overview", "map", "modules", or "all" (default: "all")
+    view: Option<String>,
     path: Option<String>,
     paths: Option<Vec<String>>,
-    include_symbols: Option<bool>,
-    include_snippet: Option<bool>,
+    depth: Option<usize>,
+    max_bytes: Option<usize>,
+    languages: Option<Vec<String>>,
     #[serde(alias = "as_of", alias = "version")]
     graph_version: Option<i64>,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
-struct FlowStatusParams {
-    limit: Option<usize>,
-    edge_limit: Option<usize>,
-    include_routes: Option<bool>,
-    include_calls: Option<bool>,
+#[derive(Deserialize, Default, schemars::JsonSchema)]
+struct ChangesParams {
+    /// Commit hash to diff against. If omitted, shows changes vs index.
+    since: Option<String>,
     languages: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Default, schemars::JsonSchema)]
+struct DiagnosticsParams {
+    /// "run" (default), "list", or "summary"
+    action: Option<String>,
+    tools: Option<Vec<String>>,
+    tool: Option<String>,
+    languages: Option<Vec<String>>,
+    output_dir: Option<String>,
+    // list/summary filters
     path: Option<String>,
     paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    severity: Option<String>,
+    rule_id: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
 }
+
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct GatherContextParams {
@@ -717,16 +435,6 @@ pub enum ContextSeed {
     },
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
-struct GraphVersionsParams {
-    limit: Option<usize>,
-    offset: Option<usize>,
-}
-
-#[derive(Deserialize, Default, schemars::JsonSchema)]
-struct ListMethodsParams {
-    format: Option<String>,
-}
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ExplainSymbolParams {
@@ -746,6 +454,9 @@ struct ExplainSymbolParams {
 struct TraceFlowParams {
     start_id: Option<i64>,
     start_qualname: Option<String>,
+    /// Fuzzy search query to find start symbol (alternative to start_id/start_qualname)
+    #[serde(alias = "start_query")]
+    query: Option<String>,
     end_id: Option<i64>,
     end_qualname: Option<String>,
     /// "downstream" (follow calls) or "upstream" (follow callers). Default: "downstream"
@@ -765,7 +476,7 @@ struct TraceFlowParams {
 }
 
 #[derive(Serialize)]
-struct DiagnosticsRunResult {
+pub(super) struct DiagnosticsRunResult {
     repo_root: String,
     output_dir: String,
     languages: Vec<String>,
@@ -808,68 +519,19 @@ struct ToolRunResult {
 const MAX_RESPONSE_LIMIT: usize = 500;
 
 pub const METHOD_LIST: &[&str] = &[
-    // -- Workflow methods (recommended for LLM use) --
-    "explain_symbol",   // One-call deep understanding of any symbol
-    "analyze_diff",     // Diff-aware impact + test coverage + risk
-    "find_tests_for",   // Find tests covering a symbol
-    "trace_flow",       // Trace call chains end-to-end
-    "module_map",       // Architecture overview DAG
-    "repo_map",         // Compact architecture digest
-    "gather_context",   // Budget-aware context assembly
-    // -- Discovery --
-    "find_symbol",
-    "suggest_qualnames",
     "search",
-    "search_text",
-    "grep",
-    "search_rg",
-    // -- Symbol & file access --
-    "open_symbol",
-    "open_file",
-    // -- Graph traversal --
-    "references",
-    "neighbors",
-    "subgraph",
-    "list_edges",
-    "list_xrefs",
-    // -- Impact & quality --
+    "explain_symbol",
+    "trace_flow",
     "analyze_impact",
-    "repo_insights",
-    "top_complexity",
-    "top_coupling",
-    "co_changes",
-    "duplicate_groups",
-    "dead_symbols",
-    "unused_imports",
-    "orphan_tests",
-    // -- Cross-language & routes --
-    "route_refs",
-    "flow_status",
-    // -- Repository info --
-    "repo_overview",
-    "help",
-    "list_methods",
-    "list_languages",
-    "list_graph_versions",
-    "changed_files",
-    "index_status",
-    "reindex",
-    // -- Diagnostics --
-    "diagnostics_run",
-    "diagnostics_import",
-    "diagnostics_list",
-    "diagnostics_summary",
-    // -- Agent workflow --
+    "analyze_diff",
+    "gather_context",
+    "orient",
     "onboard",
-    "reflect",
-    "changed_since",
-];
-
-const METHOD_ALIASES: &[(&str, &str)] = &[
-    ("search", "search_text"),
-    ("edges", "list_edges"),
-    ("xrefs", "list_xrefs"),
-    ("graph_versions", "list_graph_versions"),
+    "reindex",
+    "changes",
+    "diagnostics",
+    "security_scan",
+    "top_complexity",
 ];
 
 // --- Per-method JSON Schema generation ---
@@ -883,49 +545,19 @@ fn schema_value<T: schemars::JsonSchema>() -> Value {
 /// Return a simplified JSON Schema for the params struct of the given method.
 pub fn method_param_schema(method: &str) -> Value {
     match method {
-        "find_symbol" => schema_value::<FindSymbolParams>(),
-        "open_symbol" => schema_value::<OpenSymbolParams>(),
-        "open_file" => schema_value::<OpenFileParams>(),
+        "search" => schema_value::<RgParams>(),
         "explain_symbol" => schema_value::<ExplainSymbolParams>(),
-        "repo_overview" => schema_value::<OverviewParams>(),
-        "reindex" => schema_value::<ReindexParams>(),
-        "module_map" => schema_value::<ModuleMapParams>(),
-        "repo_map" => schema_value::<RepoMapParams>(),
-        "repo_insights" => schema_value::<InsightsParams>(),
-        "top_complexity" => schema_value::<TopComplexityParams>(),
-        "duplicate_groups" => schema_value::<DuplicateGroupsParams>(),
-        "top_coupling" => schema_value::<TopCouplingParams>(),
-        "co_changes" => schema_value::<CoChangesParams>(),
-        "dead_symbols" => schema_value::<DeadSymbolsParams>(),
-        "unused_imports" => schema_value::<UnusedImportsParams>(),
-        "orphan_tests" => schema_value::<OrphanTestsParams>(),
-        "neighbors" => schema_value::<NeighborsParams>(),
-        "subgraph" => schema_value::<SubgraphParams>(),
-        "search" | "search_text" => schema_value::<SearchParams>(),
-        "grep" => schema_value::<GrepParams>(),
-        "search_rg" => schema_value::<RgParams>(),
-        "references" => schema_value::<ReferencesParams>(),
-        "find_tests_for" => schema_value::<FindTestsForParams>(),
+        "trace_flow" => schema_value::<TraceFlowParams>(),
         "analyze_impact" => schema_value::<AnalyzeImpactParams>(),
         "analyze_diff" => schema_value::<AnalyzeDiffParams>(),
-        "list_edges" | "list_xrefs" => schema_value::<EdgesParams>(),
-        "suggest_qualnames" => schema_value::<SuggestQualNamesParams>(),
-        "changed_files" => schema_value::<ChangedFilesParams>(),
-        "index_status" => schema_value::<IndexStatusParams>(),
-        "route_refs" => schema_value::<RouteRefsParams>(),
-        "flow_status" => schema_value::<FlowStatusParams>(),
         "gather_context" => schema_value::<GatherContextParams>(),
-        "list_graph_versions" => schema_value::<GraphVersionsParams>(),
-        "list_methods" => schema_value::<ListMethodsParams>(),
-        "trace_flow" => schema_value::<TraceFlowParams>(),
+        "orient" => schema_value::<OrientParams>(),
         "onboard" => schema_value::<OnboardParams>(),
-        "reflect" => schema_value::<ReflectParams>(),
-        "changed_since" => schema_value::<ChangedSinceParams>(),
-        "diagnostics_run" => schema_value::<DiagnosticsRunParams>(),
-        "diagnostics_import" => schema_value::<DiagnosticsImportParams>(),
-        "diagnostics_list" => schema_value::<DiagnosticsListParams>(),
-        "diagnostics_summary" => schema_value::<DiagnosticsSummaryParams>(),
-        // Paramless methods
+        "reindex" => schema_value::<ReindexParams>(),
+        "changes" => schema_value::<ChangesParams>(),
+        "diagnostics" => schema_value::<DiagnosticsParams>(),
+        "security_scan" => schema_value::<SecurityScanParams>(),
+        "top_complexity" => schema_value::<TopComplexityParams>(),
         _ => json!({"type": "object"}),
     }
 }
@@ -1015,639 +647,6 @@ fn inline_refs(value: &mut Value, definitions: &Value) {
     }
 }
 
-struct MethodDoc {
-    name: &'static str,
-    summary: &'static str,
-    key_params: &'static [&'static str],
-}
-
-const METHOD_DOCS: &[MethodDoc] = &[
-    MethodDoc {
-        name: "help",
-        summary: "Show RPC help, aliases, and examples.",
-        key_params: &[],
-    },
-    MethodDoc {
-        name: "list_methods",
-        summary: "List supported methods with short descriptions.",
-        key_params: &["format (details|names)"],
-    },
-    MethodDoc {
-        name: "list_languages",
-        summary: "List supported languages and extension filters.",
-        key_params: &[],
-    },
-    MethodDoc {
-        name: "list_graph_versions",
-        summary: "List indexed graph versions.",
-        key_params: &["limit", "offset"],
-    },
-    MethodDoc {
-        name: "repo_overview",
-        summary: "Repo counts and last indexed metadata.",
-        key_params: &["summary", "fields", "languages", "graph_version|as_of"],
-    },
-    MethodDoc {
-        name: "repo_insights",
-        summary: "Complexity, duplicates, diagnostics snapshot.",
-        key_params: &[
-            "languages",
-            "path|paths",
-            "complexity_limit",
-            "duplicate_limit",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "module_map",
-        summary: "Compact DAG of modules/packages with edge counts and metrics.",
-        key_params: &[
-            "depth",
-            "include_edges",
-            "languages",
-            "path|paths",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "repo_map",
-        summary: "Single text block architecture overview with modules, dependencies, and key symbols.",
-        key_params: &[
-            "max_bytes",
-            "languages",
-            "path|paths",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "top_complexity",
-        summary: "Return most complex symbols.",
-        key_params: &[
-            "limit",
-            "min_complexity",
-            "languages",
-            "path|paths",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "duplicate_groups",
-        summary: "Return groups of duplicated symbols.",
-        key_params: &[
-            "limit",
-            "min_count",
-            "min_loc",
-            "per_group_limit",
-            "languages",
-            "path|paths",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "top_coupling",
-        summary: "Return symbols with highest fan-in (most callers) or fan-out (most callees).",
-        key_params: &[
-            "limit",
-            "direction (in|out|both)",
-            "languages",
-            "path|paths",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "co_changes",
-        summary: "Find files that frequently change together in git history (requires reindex with mine_git=true).",
-        key_params: &[
-            "path|paths|qualname",
-            "limit",
-            "min_confidence",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "dead_symbols",
-        summary: "Find symbols with no references (potentially unused code).",
-        key_params: &[
-            "limit",
-            "languages",
-            "path|paths",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "unused_imports",
-        summary: "Find import statements with no usage in the file.",
-        key_params: &[
-            "limit",
-            "languages",
-            "path|paths",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "orphan_tests",
-        summary: "Find test functions whose target no longer exists.",
-        key_params: &[
-            "limit",
-            "languages",
-            "path|paths",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "find_symbol",
-        summary: "Find symbols by name or qualname.",
-        key_params: &["query", "limit", "languages", "graph_version|as_of"],
-    },
-    MethodDoc {
-        name: "suggest_qualnames",
-        summary: "Suggest symbol qualnames with fuzzy matching for typo correction.",
-        key_params: &["query", "limit", "languages", "graph_version|as_of"],
-    },
-    MethodDoc {
-        name: "open_symbol",
-        summary: "Return symbol metadata and snippet.",
-        key_params: &[
-            "id|qualname",
-            "include_snippet",
-            "include_symbol",
-            "snippet_only",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "explain_symbol",
-        summary: "Complete context for a symbol: source, callers, callees, tests, implements (budget-aware).",
-        key_params: &[
-            "id|qualname|query",
-            "max_bytes",
-            "sections",
-            "max_refs",
-            "languages",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "analyze_diff",
-        summary: "Analyze impact of a code diff or changed files. Returns affected symbols, test coverage, risk assessment, and callers. Provide either 'diff' (unified diff text) or 'paths' (changed file paths).",
-        key_params: &[
-            "diff|paths",
-            "max_depth",
-            "include_tests",
-            "include_risk",
-            "max_bytes",
-            "languages",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "open_file",
-        summary: "Read file content or line slice.",
-        key_params: &["path", "start_line", "end_line", "max_bytes"],
-    },
-    MethodDoc {
-        name: "neighbors",
-        summary: "Adjacent symbols and edges for a symbol id.",
-        key_params: &["id", "languages", "graph_version|as_of"],
-    },
-    MethodDoc {
-        name: "subgraph",
-        summary: "Traverse edges from root ids or qualnames.",
-        key_params: &[
-            "start_ids|roots",
-            "depth",
-            "max_nodes",
-            "kinds",
-            "exclude_kinds",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "analyze_impact",
-        summary: "Multi-layer impact analysis. Answers \"what breaks if I change this?\" using direct graph traversal, test discovery, and historical co-change patterns. Each layer can be enabled/disabled. Results include confidence scores (0.0-1.0).",
-        key_params: &[
-            "id|qualname",
-            "enable_direct",
-            "enable_test",
-            "enable_historical",
-            "max_depth",
-            "direction",
-            "limit",
-            "min_confidence",
-            "include_paths",
-            "languages",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "find_tests_for",
-        summary: "Find direct and indirect test callers for a symbol. Replaces 3+ manual calls (references + test file filtering + caller-of-caller lookups).",
-        key_params: &[
-            "id|qualname|query",
-            "include_indirect",
-            "indirect_depth",
-            "limit",
-            "languages",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "references",
-        summary: "Incoming/outgoing edges for a symbol.",
-        key_params: &[
-            "id|qualname",
-            "direction",
-            "kinds",
-            "limit",
-            "include_symbols",
-            "include_snippet",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "trace_flow",
-        summary: "Trace call chain from start symbol (replaces iterative references calls).",
-        key_params: &[
-            "start_id|start_qualname",
-            "end_id|end_qualname",
-            "direction (downstream|upstream)",
-            "max_hops",
-            "kinds",
-            "include_snippets",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "list_edges",
-        summary: "Query edges by kind, path, or symbol.",
-        key_params: &[
-            "kind|kinds",
-            "path|paths",
-            "limit",
-            "offset",
-            "min_confidence",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "list_xrefs",
-        summary: "Query cross-language edges.",
-        key_params: &[
-            "path|paths",
-            "limit",
-            "offset",
-            "min_confidence",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "route_refs",
-        summary: "Route/URL string references grouped by normalized path.",
-        key_params: &[
-            "query",
-            "path|paths",
-            "limit",
-            "languages",
-            "include_symbols",
-            "include_snippet",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "flow_status",
-        summary: "Find routes without calls and calls without routes.",
-        key_params: &[
-            "limit",
-            "edge_limit",
-            "include_routes",
-            "include_calls",
-            "path|paths",
-            "languages",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "gather_context",
-        summary: "Assemble LLM-ready context from symbols, files, and searches.",
-        key_params: &[
-            "seeds",
-            "max_bytes",
-            "depth",
-            "max_nodes",
-            "include_snippets",
-            "include_related",
-            "languages",
-            "path|paths",
-            "graph_version|as_of",
-        ],
-    },
-    MethodDoc {
-        name: "search_rg",
-        summary: "Raw ripgrep regex search with context lines. Best for regex patterns (e.g. 'def\\s+trigger'). Returns raw text matches with optional surrounding context.",
-        key_params: &[
-            "query",
-            "path|paths",
-            "limit",
-            "context_lines",
-            "include_text",
-            "include_symbol",
-            "globs",
-            "case_sensitive",
-        ],
-    },
-    MethodDoc {
-        name: "grep",
-        summary: "Literal text search with scope filtering and symbol resolution. Best for exact string matching within code/tests/docs scopes. Use search_rg for regex.",
-        key_params: &[
-            "query",
-            "path|paths",
-            "limit",
-            "include_text",
-            "scope (code|tests|docs|examples|all)",
-            "rank",
-            "include_symbol",
-        ],
-    },
-    MethodDoc {
-        name: "search_text",
-        summary: "Ranked text search with fuzzy matching and scope filtering. Default search method — use this for natural language queries and concept search. Alias: search.",
-        key_params: &[
-            "query",
-            "path|paths",
-            "limit",
-            "scope (code|tests|docs|examples|all)",
-            "rank",
-            "include_symbol",
-        ],
-    },
-    MethodDoc {
-        name: "search",
-        summary: "Alias for search_text. Ranked fuzzy text search — the default search method for finding code by concept or keyword.",
-        key_params: &[
-            "query",
-            "path|paths",
-            "limit",
-            "scope (code|tests|docs|examples|all)",
-            "rank",
-            "include_symbol",
-        ],
-    },
-    MethodDoc {
-        name: "changed_files",
-        summary: "List changed files vs the index.",
-        key_params: &["languages"],
-    },
-    MethodDoc {
-        name: "index_status",
-        summary: "Index freshness and reindex hint.",
-        key_params: &["languages", "include_paths"],
-    },
-    MethodDoc {
-        name: "reindex",
-        summary: "Reindex repository and return stats. Optionally resolve unresolved edges.",
-        key_params: &["summary", "fields", "resolve_edges"],
-    },
-    MethodDoc {
-        name: "diagnostics_run",
-        summary: "Run analyzers and import SARIF diagnostics.",
-        key_params: &["tools|tool", "languages", "output_dir"],
-    },
-    MethodDoc {
-        name: "diagnostics_import",
-        summary: "Import SARIF diagnostics file.",
-        key_params: &["path"],
-    },
-    MethodDoc {
-        name: "diagnostics_list",
-        summary: "List diagnostics with filters.",
-        key_params: &[
-            "limit",
-            "offset",
-            "path|paths",
-            "severity",
-            "rule_id",
-            "tool",
-            "languages",
-        ],
-    },
-    MethodDoc {
-        name: "diagnostics_summary",
-        summary: "Diagnostics counts by severity and tool.",
-        key_params: &["path|paths", "severity", "rule_id", "tool", "languages"],
-    },
-    // -- Agent workflow --
-    MethodDoc {
-        name: "onboard",
-        summary: "One-call project orientation: overview, modules, languages, index status, suggested queries.",
-        key_params: &["languages", "graph_version|as_of"],
-    },
-    MethodDoc {
-        name: "reflect",
-        summary: "Echo text back. Use to structure reasoning before acting.",
-        key_params: &["text"],
-    },
-    MethodDoc {
-        name: "changed_since",
-        summary: "Files changed since a git commit. Useful for multi-session continuity.",
-        key_params: &["commit"],
-    },
-];
-
-fn alias_map() -> serde_json::Map<String, Value> {
-    let mut aliases = serde_json::Map::new();
-    for (alias, target) in METHOD_ALIASES {
-        aliases.insert((*alias).to_string(), Value::String((*target).to_string()));
-    }
-    aliases
-}
-
-fn alias_for_map() -> HashMap<&'static str, &'static str> {
-    let mut map = HashMap::new();
-    for (alias, target) in METHOD_ALIASES {
-        map.insert(*alias, *target);
-    }
-    map
-}
-
-fn alias_reverse_map() -> HashMap<&'static str, Vec<&'static str>> {
-    let mut map: HashMap<&'static str, Vec<&'static str>> = HashMap::new();
-    for (alias, target) in METHOD_ALIASES {
-        map.entry(*target).or_default().push(*alias);
-    }
-    map
-}
-
-fn method_docs_json() -> Vec<Value> {
-    let alias_for = alias_for_map();
-    let alias_reverse = alias_reverse_map();
-    METHOD_DOCS
-        .iter()
-        .map(|doc| {
-            let mut entry = serde_json::Map::new();
-            entry.insert("name".to_string(), Value::String(doc.name.to_string()));
-            entry.insert(
-                "summary".to_string(),
-                Value::String(doc.summary.to_string()),
-            );
-            if !doc.key_params.is_empty() {
-                entry.insert("key_params".to_string(), json!(doc.key_params));
-            }
-            if let Some(target) = alias_for.get(doc.name) {
-                entry.insert(
-                    "alias_for".to_string(),
-                    Value::String((*target).to_string()),
-                );
-            }
-            if let Some(aliases) = alias_reverse.get(doc.name) {
-                entry.insert("aliases".to_string(), json!(aliases));
-            }
-            Value::Object(entry)
-        })
-        .collect()
-}
-
-fn method_help() -> Value {
-    let aliases = alias_map();
-    let method_docs = method_docs_json();
-    json!({
-        "summary": "lidx indexes a repo into sqlite and serves JSONL RPC over stdin/stdout.",
-        "start_here": "Use explain_symbol to deeply understand any symbol (one call replaces 5+). Use analyze_diff for change impact. Use find_tests_for for test coverage. Use trace_flow for call chains. Use repo_map for quick architecture overview. Use module_map for detailed architecture DAG. Use gather_context for budget-aware context assembly.",
-        "global_params": {
-            "max_response_bytes": "Optional: Truncate response to fit within byte budget (default: unlimited)",
-            "max_tokens": "Optional: Truncate response to fit within token budget (~4 bytes per token, default: unlimited). When truncated, response becomes {data, truncated: true, max_response_bytes}",
-        },
-        "decision_guide": {
-            "understand a symbol": "explain_symbol — returns source, callers, callees, tests, implements in one call",
-            "assess change impact": "analyze_diff — provide diff text or changed file paths, get affected symbols + test coverage + risk",
-            "find test coverage": "find_tests_for — finds direct and indirect test callers for any symbol",
-            "trace call chain": "trace_flow — follow calls downstream or upstream, optionally to a target",
-            "quick architecture overview": "repo_map — single text block with modules, dependencies, and key symbols",
-            "detailed architecture": "module_map — DAG of modules/packages with edge counts",
-            "assemble context": "gather_context — budget-aware context from symbol/file/search seeds",
-            "find a symbol by name": "find_symbol — search by name/qualname, returns signatures",
-            "search code by concept": "search — ranked fuzzy text search with scope filtering",
-            "search by regex": "search_rg — raw ripgrep regex with context lines",
-            "search exact text": "grep — literal text search with scope filtering",
-            "read symbol source": "open_symbol — metadata + source snippet",
-            "read file contents": "open_file — full file or line range",
-            "explore call graph": "references — raw incoming/outgoing edges for a symbol",
-            "expand graph neighborhood": "subgraph — BFS from root symbols with edge kind filtering",
-            "cross-language links": "list_xrefs — edges crossing language boundaries (e.g. C#→Proto, Python→SQL)",
-            "HTTP route mapping": "route_refs — find route definitions and their callers",
-            "refactoring impact": "analyze_impact — multi-layer impact analysis with direct, test, and historical layers",
-            "code quality": "repo_insights / top_complexity / top_coupling / duplicate_groups",
-        },
-        "edge_kinds": [
-            "CALLS — function/method call",
-            "IMPORTS — import/using statement",
-            "CONTAINS — parent contains child (module→class, class→method)",
-            "EXTENDS — class inheritance",
-            "IMPLEMENTS — interface implementation",
-            "INHERITS — base class relationship",
-            "RPC_IMPL — gRPC service implementation (C#/Python method implements Proto service)",
-            "RPC_CALL — gRPC client call",
-            "RPC_ROUTE — Proto service definition",
-            "HTTP_ROUTE — HTTP endpoint definition (controller action, Flask route)",
-            "HTTP_CALL — HTTP client call (HttpClient, requests)",
-            "CHANNEL_PUBLISH — message bus publish (Azure Service Bus, RabbitMQ, etc.)",
-            "CHANNEL_SUBSCRIBE — message bus subscribe/handler",
-            "XREF — cross-language reference",
-            "MODULE_FILE — module maps to file",
-            "IMPORTS_FILE — file imports another file",
-        ],
-        "enum_values": {
-            "scope": ["code", "tests", "docs", "examples", "all"],
-            "direction (references)": ["in", "out"],
-            "direction (trace_flow)": ["downstream", "upstream"],
-            "direction (analyze_impact)": ["downstream", "upstream"],
-            "direction (top_coupling)": ["in", "out", "both"],
-            "sections (explain_symbol)": ["source", "callers", "callees", "tests", "implements"],
-            "format (explain_symbol)": ["full", "signatures"],
-        },
-        "methods": METHOD_LIST,
-        "method_docs": method_docs,
-        "aliases": aliases,
-        "examples": [
-            { "method": "explain_symbol", "params": { "query": "DataProduct", "max_bytes": 40000 } },
-            { "method": "explain_symbol", "params": { "qualname": "mymodule.MyClass", "sections": ["source", "callers"], "format": "signatures" } },
-            { "method": "analyze_diff", "params": { "paths": ["src/models/data_product.py"], "include_tests": true, "include_risk": true } },
-            { "method": "find_tests_for", "params": { "query": "DataProduct", "include_indirect": true } },
-            { "method": "trace_flow", "params": { "start_qualname": "mymodule.trigger_pipeline", "direction": "downstream", "max_hops": 5 } },
-            { "method": "trace_flow", "params": { "start_qualname": "mymodule.save_result", "direction": "upstream", "max_hops": 3 } },
-            { "method": "repo_map", "params": { "max_bytes": 8000 } },
-            { "method": "module_map", "params": { "depth": 2, "include_edges": true } },
-            { "method": "gather_context", "params": { "seeds": [{"type": "symbol", "qualname": "mymodule.MyClass"}, {"type": "search", "query": "data product", "limit": 3}], "max_bytes": 50000, "depth": 2 } },
-            { "method": "repo_overview", "params": { "summary": true } },
-            { "method": "find_symbol", "params": { "query": "Indexer", "limit": 10 } },
-            { "method": "search", "params": { "query": "handle_method", "limit": 20, "scope": "code" } },
-            { "method": "open_symbol", "params": { "qualname": "crate::indexer::Indexer::reindex", "include_snippet": true } },
-            { "method": "analyze_impact", "params": { "qualname": "crate::db::Db::read_conn", "max_depth": 3, "direction": "upstream" } },
-            { "method": "references", "params": { "qualname": "crate::indexer::Indexer::reindex", "direction": "out", "kinds": ["CALLS"] } },
-            { "method": "subgraph", "params": { "roots": ["mymodule.MyClass"], "depth": 2, "max_nodes": 30, "kinds": ["CALLS", "RPC_IMPL"] } },
-            { "method": "list_xrefs", "params": { "min_confidence": 0.8, "limit": 50 } },
-            { "method": "route_refs", "params": { "query": "/api/users/123" } },
-            { "method": "search_rg", "params": { "query": "def\\s+greet", "context_lines": 8 } },
-            { "method": "index_status", "params": { "include_paths": false } },
-            { "method": "diagnostics_run", "params": { "languages": ["python"], "tools": ["ruff"] } }
-        ],
-        "cli_examples": [
-            "lidx reindex --repo .",
-            r#"lidx request --method repo_overview --params '{"summary":true}'"#,
-            r#"lidx request --method list_languages --params '{}'"#,
-            r#"lidx request --method list_graph_versions --params '{"limit":5}'"#,
-            r#"lidx request --method search --params '{"query":"Indexer","limit":10}'"#,
-            r#"lidx request --method references --params '{"qualname":"crate::indexer::Indexer::reindex","direction":"out","kinds":["CALLS"]}'"#,
-            r#"lidx request --method list_xrefs --params '{"min_confidence":0.8,"limit":50}'"#,
-            r#"lidx request --method route_refs --params '{"query":"/api/users/123"}'"#,
-            r#"lidx request --method flow_status --params '{"limit":50,"include_routes":false,"include_calls":false}'"#,
-            r#"lidx request --method index_status --params '{"include_paths":false}'"#,
-            "lidx diagnostics-run --repo . --tool ruff --language python",
-            r#"lidx request --method search_rg --params '{"query":"def\\s+greet","context_lines":8}'"#,
-            "lidx serve --repo . --watch auto",
-            "lidx mcp-serve --repo ."
-        ]
-    })
-}
-
-fn method_list(params: Value) -> Result<Value> {
-    let params = if params.is_null() {
-        ListMethodsParams::default()
-    } else {
-        serde_json::from_value(params)?
-    };
-    let format = params
-        .format
-        .as_deref()
-        .unwrap_or("details")
-        .trim()
-        .to_ascii_lowercase();
-    if format == "names" || format == "name" || format == "list" {
-        return Ok(json!(METHOD_LIST));
-    }
-    Ok(json!({
-        "methods": method_docs_json(),
-        "aliases": alias_map(),
-        "names": METHOD_LIST,
-    }))
-}
-
-fn method_list_languages() -> Value {
-    let mut languages = Vec::new();
-    for spec in scan::language_specs() {
-        languages.push(json!({
-            "name": spec.name,
-            "extensions": spec.extensions,
-        }));
-    }
-    let mut filters = serde_json::Map::new();
-    for filter in scan::language_filters() {
-        filters.insert(filter.name.to_string(), json!(filter.languages));
-    }
-    json!({
-        "languages": languages,
-        "filters": filters,
-    })
-}
 
 pub fn serve(repo_root: PathBuf, db_path: PathBuf, watch_config: watch::WatchConfig) -> Result<()> {
     let watch_repo = repo_root.clone();
@@ -1822,95 +821,32 @@ const DEFAULT_MAX_RESPONSE_BYTES: usize = 30_000;
 
 pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Result<Value> {
     let start = Instant::now();
-    // Extract token budget before params is moved
     let max_response_bytes = extract_max_response_bytes(&params);
     let value = match method {
-        "help" => method_help(),
-        "list_methods" => method_list(params)?,
-        "list_languages" => method_list_languages(),
-        "list_graph_versions" => {
-            let params: GraphVersionsParams = serde_json::from_value(params)?;
-            let limit = params.limit.unwrap_or(50);
-            let offset = params.offset.unwrap_or(0);
-            let versions = indexer.db().list_graph_versions(limit, offset)?;
-            json!(versions)
-        }
-        "repo_overview" => handlers::handle_repo_overview(indexer, params)?,
-        "repo_insights" => handlers::handle_repo_insights(indexer, params)?,
-        "module_map" => handlers::handle_module_map(indexer, params)?,
-        "repo_map" => handlers::handle_repo_map(indexer, params)?,
-        "top_complexity" => handlers::handle_top_complexity(indexer, params)?,
-        "duplicate_groups" => handlers::handle_duplicate_groups(indexer, params)?,
-        "top_coupling" => handlers::handle_top_coupling(indexer, params)?,
-        "co_changes" => handlers::handle_co_changes(indexer, params)?,
-        "dead_symbols" => handlers::handle_dead_symbols(indexer, params)?,
-        "unused_imports" => handlers::handle_unused_imports(indexer, params)?,
-        "orphan_tests" => handlers::handle_orphan_tests(indexer, params)?,
-        "find_symbol" => handlers::handle_find_symbol(indexer, params)?,
-        "suggest_qualnames" => handlers::handle_suggest_qualnames(indexer, params)?,
-        "open_symbol" => handlers::handle_open_symbol(indexer, params)?,
+        "search" => handlers::handle_search_rg(indexer, params)?,
         "explain_symbol" => handlers::handle_explain_symbol(indexer, params)?,
-        "open_file" => handlers::handle_open_file(indexer, params)?,
-        "neighbors" => handlers::handle_neighbors(indexer, params)?,
-        "subgraph" => handlers::handle_subgraph(indexer, params)?,
-        "find_tests_for" => handlers::handle_find_tests_for(indexer, params)?,
+        "trace_flow" => handlers::handle_trace_flow(indexer, params)?,
         "analyze_impact" => handlers::handle_analyze_impact(indexer, params)?,
         "analyze_diff" => handlers::handle_analyze_diff(indexer, params)?,
-        "references" => handlers::handle_references(indexer, params)?,
-        "trace_flow" => handlers::handle_trace_flow(indexer, params)?,
-        "list_edges" => {
-            let params: EdgesParams = serde_json::from_value(params)?;
-            list_edges_response(indexer, params, None, false, false)?
-        }
-        "list_xrefs" => {
-            let params: EdgesParams = serde_json::from_value(params)?;
-            list_edges_response(indexer, params, Some("XREF"), true, true)?
-        }
-        "route_refs" => handlers::handle_route_refs(indexer, params)?,
-        "flow_status" => handlers::handle_flow_status(indexer, params)?,
-        "search_rg" => handlers::handle_search_rg(indexer, params)?,
-        "search" | "search_text" => handlers::handle_search_text(indexer, params)?,
-        "grep" => handlers::handle_grep(indexer, params)?,
-        "changed_files" => {
-            let params: ChangedFilesParams = serde_json::from_value(params)?;
-            let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-            let changed = indexer.changed_files(languages.as_deref())?;
-            json!(changed)
-        }
-        "index_status" => handlers::handle_index_status(indexer, params)?,
-        "reindex" => handlers::handle_reindex(indexer, params)?,
-        "diagnostics_run" => {
-            let params: DiagnosticsRunParams = serde_json::from_value(params)?;
-            let result = diagnostics_run(indexer, params)?;
-            json!(result)
-        }
-        "diagnostics_import" => handlers::handle_diagnostics_import(indexer, params)?,
-        "diagnostics_list" => handlers::handle_diagnostics_list(indexer, params)?,
-        "diagnostics_summary" => handlers::handle_diagnostics_summary(indexer, params)?,
         "gather_context" => handlers::handle_gather_context(indexer, params)?,
-        "reflect" => {
-            let params: ReflectParams = serde_json::from_value(params)?;
-            let text = params.text.unwrap_or_default();
-            if text.len() > 50_000 {
-                anyhow::bail!("reflect text exceeds 50KB limit");
-            }
-            json!({ "reflected": text })
-        }
+        "orient" => handlers::handle_orient(indexer, params)?,
         "onboard" => handlers::handle_onboard(indexer, params)?,
-        "changed_since" => handlers::handle_changed_since(indexer, params)?,
+        "reindex" => handlers::handle_reindex(indexer, params)?,
+        "changes" => handlers::handle_changes(indexer, params)?,
+        "diagnostics" => diagnostics_dispatch(indexer, params)?,
+        "security_scan" => handlers::handle_security_scan(indexer, params)?,
+        "top_complexity" => handlers::handle_top_complexity(indexer, params)?,
         other => {
             return Err(anyhow::anyhow!("unknown method: {other}"));
         }
     };
 
-    // Log slow queries
     let elapsed = start.elapsed();
     if elapsed.as_millis() > 100 {
         eprintln!("lidx: Slow query: {} took {:?}", method, elapsed);
     }
 
-    // Apply response size cap: explicit param > default (exempt methods get no cap)
-    let exempt = matches!(method, "gather_context" | "open_file" | "help" | "onboard" | "reflect");
+    let exempt = matches!(method, "gather_context" | "onboard" | "orient" | "security_scan");
     let effective_max = max_response_bytes.or_else(|| if exempt { None } else { Some(DEFAULT_MAX_RESPONSE_BYTES) });
     if let Some(max_bytes) = effective_max {
         let (truncated_value, was_truncated, total_available) = truncate_response(value, max_bytes);
@@ -1929,6 +865,52 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
         }
     } else {
         Ok(value)
+    }
+}
+
+fn diagnostics_dispatch(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let p: DiagnosticsParams = serde_json::from_value(params)?;
+    let action = p.action.as_deref().unwrap_or("run");
+    match action {
+        "run" => {
+            let run_params = DiagnosticsRunParams {
+                tools: p.tools,
+                tool: p.tool,
+                languages: p.languages,
+                output_dir: p.output_dir,
+            };
+            let result = diagnostics_run(indexer, run_params)?;
+            Ok(json!(result))
+        }
+        "list" => {
+            let limit = p.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
+            let offset = p.offset.unwrap_or(0);
+            let languages = scan::normalize_language_filter(p.languages.as_deref())?;
+            let paths = normalize_search_paths(indexer.repo_root(), p.path, p.paths)?;
+            let diagnostics = indexer.db().list_diagnostics(
+                limit,
+                offset,
+                languages.as_deref(),
+                paths.as_deref(),
+                p.severity.as_ref(),
+                p.rule_id.as_ref(),
+                p.tool.as_ref(),
+            )?;
+            Ok(json!(diagnostics))
+        }
+        "summary" => {
+            let languages = scan::normalize_language_filter(p.languages.as_deref())?;
+            let paths = normalize_search_paths(indexer.repo_root(), p.path, p.paths)?;
+            let summary = indexer.db().diagnostics_summary(
+                languages.as_deref(),
+                paths.as_deref(),
+                p.severity.as_ref(),
+                p.rule_id.as_ref(),
+                p.tool.as_ref(),
+            )?;
+            Ok(json!(summary))
+        }
+        other => Err(anyhow::anyhow!("unknown diagnostics action: {other}. Use run, list, or summary")),
     }
 }
 
@@ -1977,11 +959,7 @@ where
     Value::Object(filtered)
 }
 
-fn normalize_context_lines(value: Option<usize>, default: usize) -> usize {
-    value.unwrap_or(default).min(5)
-}
-
-fn resolve_graph_version(indexer: &Indexer, value: Option<i64>) -> Result<i64> {
+pub(super) fn resolve_graph_version(indexer: &Indexer, value: Option<i64>) -> Result<i64> {
     if let Some(version) = value {
         return Ok(version);
     }
@@ -2016,6 +994,7 @@ fn detect_boundary_type(edge_kind: &str, source_lang: &str, target_lang: &str) -
         "RPC_IMPL" | "RPC_CALL" | "RPC_ROUTE" => "grpc".to_string(),
         "HTTP_CALL" | "HTTP_ROUTE" => "http".to_string(),
         "CHANNEL_PUBLISH" | "CHANNEL_SUBSCRIBE" => "message_bus".to_string(),
+        "CONFIG_SOURCE" | "CONFIG_READ" => "config".to_string(),
         "XREF" if source_lang == "csharp" && target_lang == "sql" => "stored_procedure".to_string(),
         "XREF" if source_lang == "sql" && target_lang == "csharp" => "stored_procedure".to_string(),
         "XREF" => "xref".to_string(),
@@ -2036,6 +1015,7 @@ fn build_boundary_detail(boundary_type: &str, source_lang: &str, target_lang: &s
         "grpc" => format!("{} → {} via gRPC", source_display, target_display),
         "http" => format!("{} → {} via HTTP", source_display, target_display),
         "message_bus" => format!("{} → {} via message bus", source_display, target_display),
+        "config" => format!("{} → {} via config/env", source_display, target_display),
         "stored_procedure" => format!("{} → {} via stored procedure", source_display, target_display),
         "xref" => format!("{} → {} via cross-reference", source_display, target_display),
         _ => format!("{} → {}", source_display, target_display),
@@ -2067,6 +1047,16 @@ fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
             Some(json!({
                 "framework": framework,
                 "channel": channel_name,
+                "role": role,
+            }))
+        }
+        "CONFIG_SOURCE" | "CONFIG_READ" => {
+            let config_uri = detail.get("config_uri").and_then(|c| c.as_str());
+            let source_type = detail.get("source_type").and_then(|s| s.as_str()).unwrap_or("env");
+            let role = detail.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+            Some(json!({
+                "source_type": source_type,
+                "config_uri": config_uri,
                 "role": role,
             }))
         }
@@ -2107,13 +1097,6 @@ struct RgSearchOptions {
     follow: bool,
     globs: Vec<String>,
     paths: Vec<PathBuf>,
-}
-
-#[derive(Clone, Copy)]
-enum EdgeDirection {
-    In,
-    Out,
-    Both,
 }
 
 /// Represents a changed line range from a diff hunk
@@ -2217,23 +1200,6 @@ fn parse_hunk_range(range: &str) -> Option<(i64, i64)> {
     }
 }
 
-fn parse_edge_direction(raw: Option<&str>) -> Result<EdgeDirection> {
-    let Some(raw) = raw else {
-        return Ok(EdgeDirection::Both);
-    };
-    let value = raw.trim().to_ascii_lowercase();
-    if value.is_empty() {
-        return Ok(EdgeDirection::Both);
-    }
-    let direction = match value.as_str() {
-        "in" | "incoming" | "inbound" => EdgeDirection::In,
-        "out" | "outgoing" | "outbound" => EdgeDirection::Out,
-        "both" | "all" | "any" => EdgeDirection::Both,
-        _ => anyhow::bail!("unknown direction: {raw}"),
-    };
-    Ok(direction)
-}
-
 fn normalize_search_paths(
     repo_root: &PathBuf,
     path: Option<String>,
@@ -2271,7 +1237,7 @@ fn normalize_search_paths(
     Ok(Some(normalized))
 }
 
-fn diagnostics_run(
+pub(super) fn diagnostics_run(
     indexer: &mut Indexer,
     params: DiagnosticsRunParams,
 ) -> Result<DiagnosticsRunResult> {
@@ -2304,6 +1270,9 @@ fn diagnostics_run(
             "semgrep" => run_semgrep(indexer, &output_dir, &language_set),
             "dotnet" => run_dotnet(indexer, &output_dir, &language_set),
             "clippy" => run_clippy(indexer, &output_dir, &language_set),
+            "bandit" => run_bandit(indexer, &output_dir, &language_set),
+            "gosec" => run_gosec(indexer, &output_dir, &language_set),
+            "cargo-audit" => run_cargo_audit(indexer, &output_dir, &language_set),
             other => ToolRunResult {
                 name: other.to_string(),
                 status: ToolRunStatus::Skipped,
@@ -2406,9 +1375,14 @@ fn default_tools_for_languages(languages: &[String]) -> Vec<String> {
     }
     if has("python") {
         push("ruff");
+        push("bandit");
     }
     if has("rust") {
         push("clippy");
+        push("cargo-audit");
+    }
+    if has("go") {
+        push("gosec");
     }
     if has("csharp") {
         push("dotnet");
@@ -2889,6 +1863,219 @@ fn run_clippy(
     }
 }
 
+fn run_bandit(
+    indexer: &mut Indexer,
+    output_dir: &Path,
+    languages: &HashSet<String>,
+) -> ToolRunResult {
+    let name = "bandit";
+    if !has_language(languages, &["python"]) {
+        return tool_skipped(name, "no_language_match", "No Python files detected.", None);
+    }
+    let cmd_path = resolve_python_tool(indexer.repo_root(), "bandit")
+        .unwrap_or_else(|| OsString::from("bandit"));
+    let sarif_path = output_dir.join("bandit.sarif");
+    let mut cmd = Command::new(&cmd_path);
+    cmd.current_dir(indexer.repo_root());
+    cmd.arg("-f")
+        .arg("sarif")
+        .arg("-o")
+        .arg(&sarif_path)
+        .arg("-r")
+        .arg(".");
+    let command_display = vec![
+        cmd_path.to_string_lossy().to_string(),
+        "-f".to_string(),
+        "sarif".to_string(),
+        "-o".to_string(),
+        sarif_path.to_string_lossy().to_string(),
+        "-r".to_string(),
+        ".".to_string(),
+    ];
+    run_sarif_command(
+        indexer,
+        name,
+        cmd,
+        command_display,
+        &sarif_path,
+        "bandit not found on PATH or .venv/venv.",
+        Some("Install with pipx install bandit."),
+    )
+}
+
+fn run_gosec(
+    indexer: &mut Indexer,
+    output_dir: &Path,
+    languages: &HashSet<String>,
+) -> ToolRunResult {
+    let name = "gosec";
+    if !has_language(languages, &["go"]) {
+        return tool_skipped(name, "no_language_match", "No Go files detected.", None);
+    }
+    let gosec = OsString::from("gosec");
+    if !command_available(&gosec) {
+        return tool_skipped(
+            name,
+            "not_installed",
+            "gosec not found on PATH.",
+            Some("Install with go install github.com/securego/gosec/v2/cmd/gosec@latest."),
+        );
+    }
+    let sarif_path = output_dir.join("gosec.sarif");
+    let mut cmd = Command::new(&gosec);
+    cmd.current_dir(indexer.repo_root());
+    cmd.arg("-fmt")
+        .arg("sarif")
+        .arg("-out")
+        .arg(&sarif_path)
+        .arg("./...");
+    let command_display = vec![
+        "gosec".to_string(),
+        "-fmt".to_string(),
+        "sarif".to_string(),
+        "-out".to_string(),
+        sarif_path.to_string_lossy().to_string(),
+        "./...".to_string(),
+    ];
+    run_sarif_command(
+        indexer,
+        name,
+        cmd,
+        command_display,
+        &sarif_path,
+        "gosec not found on PATH.",
+        Some("Install with go install github.com/securego/gosec/v2/cmd/gosec@latest."),
+    )
+}
+
+fn run_cargo_audit(
+    indexer: &mut Indexer,
+    _output_dir: &Path,
+    languages: &HashSet<String>,
+) -> ToolRunResult {
+    let name = "cargo-audit";
+    if !has_language(languages, &["rust"]) {
+        return tool_skipped(name, "no_language_match", "No Rust files detected.", None);
+    }
+    if !indexer.repo_root().join("Cargo.lock").is_file() {
+        return tool_skipped(
+            name,
+            "config_missing",
+            "No Cargo.lock found.",
+            Some("Run cargo generate-lockfile first."),
+        );
+    }
+    let cargo_audit = OsString::from("cargo-audit");
+    if !command_available(&cargo_audit) {
+        return tool_skipped(
+            name,
+            "not_installed",
+            "cargo-audit not found on PATH.",
+            Some("Install with cargo install cargo-audit."),
+        );
+    }
+    let start = Instant::now();
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(indexer.repo_root());
+    cmd.arg("audit").arg("--json");
+    let output = match cmd.output() {
+        Ok(value) => value,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return tool_skipped(
+                name,
+                "not_installed",
+                "cargo not found on PATH.",
+                Some("Install Rust toolchain and ensure cargo is on PATH."),
+            );
+        }
+        Err(err) => {
+            return tool_failed(
+                name,
+                Some(format!("Failed to run cargo audit: {err}")),
+                Some(vec![
+                    "cargo".to_string(),
+                    "audit".to_string(),
+                    "--json".to_string(),
+                ]),
+                None,
+                Some(start.elapsed().as_millis()),
+                None,
+                None,
+            );
+        }
+    };
+    let duration_ms = start.elapsed().as_millis();
+    let exit_code = output.status.code();
+    let stderr = truncate_output(&output.stderr, 2000);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match diagnostics::parse_cargo_audit_json(&stdout) {
+        Ok(diags) => {
+            let count = diags.len();
+            match indexer.db_mut().insert_diagnostics(&diags) {
+                Ok(imported) => ToolRunResult {
+                    name: name.to_string(),
+                    status: ToolRunStatus::Ok,
+                    reason: None,
+                    message: if count == 0 {
+                        Some("No vulnerabilities found.".to_string())
+                    } else {
+                        None
+                    },
+                    hint: None,
+                    command: Some(vec![
+                        "cargo".to_string(),
+                        "audit".to_string(),
+                        "--json".to_string(),
+                    ]),
+                    sarif_path: None,
+                    imported: Some(imported),
+                    exit_code,
+                    duration_ms: Some(duration_ms),
+                    stderr: if stderr.is_empty() {
+                        None
+                    } else {
+                        Some(stderr)
+                    },
+                },
+                Err(err) => tool_failed(
+                    name,
+                    Some(format!("Failed to insert diagnostics: {err}")),
+                    Some(vec![
+                        "cargo".to_string(),
+                        "audit".to_string(),
+                        "--json".to_string(),
+                    ]),
+                    exit_code,
+                    Some(duration_ms),
+                    if stderr.is_empty() {
+                        None
+                    } else {
+                        Some(stderr)
+                    },
+                    None,
+                ),
+            }
+        }
+        Err(err) => tool_failed(
+            name,
+            Some(format!("Failed to parse cargo-audit output: {err}")),
+            Some(vec![
+                "cargo".to_string(),
+                "audit".to_string(),
+                "--json".to_string(),
+            ]),
+            exit_code,
+            Some(duration_ms),
+            if stderr.is_empty() {
+                None
+            } else {
+                Some(stderr)
+            },
+            None,
+        ),
+    }
+}
+
 fn run_sarif_command(
     indexer: &mut Indexer,
     name: &str,
@@ -3211,247 +2398,7 @@ fn command_available(cmd: &OsString) -> bool {
         .is_ok()
 }
 
-fn normalize_edge_kinds(kinds: &[String]) -> Option<HashSet<String>> {
-    if kinds.is_empty() {
-        return Some(HashSet::new());
-    }
-    let mut set = HashSet::new();
-    for raw in kinds {
-        let Some(normalized) = normalize_edge_kind(raw) else {
-            continue;
-        };
-        if normalized == "*" || normalized == "ALL" || normalized == "ANY" {
-            return None;
-        }
-        set.insert(normalized);
-    }
-    Some(set)
-}
-
-fn normalize_edge_kinds_exclude(kinds: &[String]) -> (HashSet<String>, bool) {
-    if kinds.is_empty() {
-        return (HashSet::new(), false);
-    }
-    let mut set = HashSet::new();
-    for raw in kinds {
-        let Some(normalized) = normalize_edge_kind(raw) else {
-            continue;
-        };
-        if normalized == "*" || normalized == "ALL" || normalized == "ANY" {
-            return (HashSet::new(), true);
-        }
-        set.insert(normalized);
-    }
-    (set, false)
-}
-
-fn normalize_edge_kind(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed == "*" {
-        return Some("*".to_string());
-    }
-    let mut out = String::new();
-    let mut last_was_sep = false;
-    for ch in trimmed.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_uppercase());
-            last_was_sep = false;
-        } else if ch == '-' || ch == '_' || ch.is_whitespace() {
-            if !last_was_sep {
-                out.push('_');
-                last_was_sep = true;
-            }
-        }
-    }
-    let normalized = out.trim_matches('_').to_string();
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
-fn edge_kind_matches(kind: &str, filter: &Option<HashSet<String>>) -> bool {
-    let Some(filter) = filter else {
-        return true;
-    };
-    if filter.is_empty() {
-        return false;
-    }
-    let normalized = normalize_edge_kind(kind).unwrap_or_else(|| kind.trim().to_ascii_uppercase());
-    filter.contains(&normalized)
-}
-
-fn normalize_edge_kind_list(
-    kind: Option<String>,
-    kinds: Option<Vec<String>>,
-    force_kind: Option<&str>,
-) -> Option<Vec<String>> {
-    let mut values = Vec::new();
-    if let Some(force_kind) = force_kind {
-        values.push(force_kind.to_string());
-    }
-    if let Some(kind) = kind {
-        values.push(kind);
-    }
-    if let Some(kinds) = kinds {
-        values.extend(kinds);
-    }
-    if values.is_empty() {
-        return None;
-    }
-    let mut normalized = Vec::new();
-    for raw in values {
-        let Some(value) = normalize_edge_kind(&raw) else {
-            continue;
-        };
-        if value == "*" || value == "ALL" || value == "ANY" {
-            return None;
-        }
-        normalized.push(value);
-    }
-    if normalized.is_empty() {
-        return Some(Vec::new());
-    }
-    normalized.sort();
-    normalized.dedup();
-    Some(normalized)
-}
-
-fn list_edges_response(
-    indexer: &mut Indexer,
-    params: EdgesParams,
-    force_kind: Option<&str>,
-    default_include_symbols: bool,
-    default_include_snippet: bool,
-) -> Result<Value> {
-    let limit = params.limit.unwrap_or(200).min(MAX_RESPONSE_LIMIT);
-    let offset = params.offset.unwrap_or(0);
-    let include_symbols = params.include_symbols.unwrap_or(default_include_symbols);
-    let include_snippet = params.include_snippet.unwrap_or(default_include_snippet);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    let kinds = normalize_edge_kind_list(params.kind, params.kinds, force_kind);
-    let resolved_only = params.resolved_only.unwrap_or(false);
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-
-    let source_id = match (params.source_id, params.source_qualname.as_deref()) {
-        (Some(id), _) => Some(id),
-        (None, Some(qualname)) => {
-            let qualname = qualname.trim();
-            if qualname.is_empty() {
-                None
-            } else {
-                indexer.db().lookup_symbol_id_filtered(
-                    qualname,
-                    languages.as_deref(),
-                    graph_version,
-                )?
-            }
-        }
-        _ => None,
-    };
-    if params.source_qualname.is_some() && source_id.is_none() {
-        return Ok(json!([]));
-    }
-
-    let mut target_id = params.target_id;
-    let mut target_qualname = None;
-    if target_id.is_none() {
-        if let Some(raw) = params.target_qualname.as_deref() {
-            let raw = raw.trim();
-            if !raw.is_empty() {
-                let resolved = indexer.db().lookup_symbol_id_filtered(
-                    raw,
-                    languages.as_deref(),
-                    graph_version,
-                )?;
-                if let Some(id) = resolved {
-                    target_id = Some(id);
-                } else {
-                    target_qualname = Some(raw.to_string());
-                }
-            }
-        }
-    }
-
-    let edges = indexer.db().list_edges(
-        limit,
-        offset,
-        languages.as_deref(),
-        paths.as_deref(),
-        kinds.as_deref(),
-        source_id,
-        target_id,
-        target_qualname.as_ref(),
-        resolved_only,
-        params.min_confidence,
-        graph_version,
-        params.trace_id.as_ref(),
-        params.event_after,
-        params.event_before,
-    )?;
-
-    let mut symbol_map = HashMap::new();
-    if include_symbols {
-        let mut ids = HashSet::new();
-        for edge in &edges {
-            if let Some(id) = edge.source_symbol_id {
-                ids.insert(id);
-            }
-            if let Some(id) = edge.target_symbol_id {
-                ids.insert(id);
-            }
-        }
-        if !ids.is_empty() {
-            let mut id_list: Vec<i64> = ids.into_iter().collect();
-            id_list.sort_unstable();
-            let symbols = indexer.db().symbols_by_ids(&id_list, None, graph_version)?;
-            for symbol in symbols {
-                symbol_map.insert(symbol.id, symbol);
-            }
-        }
-    }
-    let refs = build_edge_references(edges, &symbol_map, include_symbols, include_snippet);
-    Ok(json!(refs))
-}
-
-fn build_edge_references(
-    edges: Vec<crate::model::Edge>,
-    symbols: &HashMap<i64, crate::model::Symbol>,
-    include_symbols: bool,
-    include_snippet: bool,
-) -> Vec<EdgeReference> {
-    edges
-        .into_iter()
-        .map(|mut edge| {
-            if !include_snippet {
-                edge.evidence_snippet = None;
-            }
-            let source = if include_symbols {
-                edge.source_symbol_id
-                    .and_then(|id| symbols.get(&id).cloned())
-            } else {
-                None
-            };
-            let target = if include_symbols {
-                edge.target_symbol_id
-                    .and_then(|id| symbols.get(&id).cloned())
-            } else {
-                None
-            };
-            EdgeReference {
-                edge,
-                source,
-                target,
-            }
-        })
-        .collect()
-}
-
+#[cfg(test)]
 fn build_flow_status(
     routes: Vec<Edge>,
     calls: Vec<Edge>,
@@ -3714,10 +2661,10 @@ mod tests {
 
     #[test]
     fn param_schema_has_required_fields() {
-        // find_symbol requires "query"
-        let schema = super::method_param_schema("find_symbol");
+        // search requires "query"
+        let schema = super::method_param_schema("search");
         let required = schema.get("required").and_then(|v| v.as_array());
-        assert!(required.is_some(), "find_symbol should have required fields");
+        assert!(required.is_some(), "search should have required fields");
         let required: Vec<&str> = required
             .unwrap()
             .iter()
@@ -3725,24 +2672,16 @@ mod tests {
             .collect();
         assert!(
             required.contains(&"query"),
-            "find_symbol should require 'query', got: {:?}",
+            "search should require 'query', got: {:?}",
             required
         );
 
-        // neighbors requires "id"
-        let schema = super::method_param_schema("neighbors");
+        // gather_context requires "seeds"
+        let schema = super::method_param_schema("gather_context");
         let required = schema.get("required").and_then(|v| v.as_array());
-        assert!(required.is_some(), "neighbors should have required fields");
-        let required: Vec<&str> = required
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        assert!(
-            required.contains(&"id"),
-            "neighbors should require 'id', got: {:?}",
-            required
-        );
+        // Note: seeds has a default, so it may not be in required array
+        // Just check the schema is valid
+        assert!(schema.is_object(), "gather_context should have valid schema");
     }
 
     #[test]
@@ -3847,10 +2786,6 @@ mod tests {
             );
         }
     }
-}
-
-fn resolve_repo_path(repo_root: &PathBuf, raw_path: &str) -> Result<(PathBuf, String)> {
-    resolve_repo_path_for_op(repo_root, raw_path, "open_file")
 }
 
 fn resolve_repo_path_for_op(
@@ -4050,77 +2985,11 @@ fn rg_flag_unsupported(output: &std::process::Output, flag: &str) -> bool {
     stderr.contains(flag)
 }
 
-const DEFAULT_JUMP_CONTEXT_LINES: usize = 3;
-
 fn push_reason(reasons: &mut Option<Vec<String>>, reason: &str) {
     match reasons {
         Some(values) => values.push(reason.to_string()),
         None => *reasons = Some(vec![reason.to_string()]),
     }
-}
-
-fn push_next_hop(next_hops: &mut Option<Vec<RpcSuggestion>>, hop: RpcSuggestion) {
-    match next_hops {
-        Some(values) => values.push(hop),
-        None => *next_hops = Some(vec![hop]),
-    }
-}
-
-fn build_open_file_hop(path: &str, line: usize, context_lines: usize) -> RpcSuggestion {
-    let context = if context_lines > 0 {
-        context_lines
-    } else {
-        DEFAULT_JUMP_CONTEXT_LINES
-    };
-    let start_line = line.saturating_sub(context).max(1) as i64;
-    let end_line = line.saturating_add(context).max(1) as i64;
-    RpcSuggestion {
-        method: "open_file".to_string(),
-        params: json!({
-            "path": path,
-            "start_line": start_line,
-            "end_line": end_line,
-        }),
-        label: Some("Open file around hit".to_string()),
-    }
-}
-
-fn build_open_symbol_hop(symbol: &Symbol) -> RpcSuggestion {
-    RpcSuggestion {
-        method: "open_symbol".to_string(),
-        params: json!({
-            "id": symbol.id,
-            "include_snippet": true,
-        }),
-        label: Some("Open enclosing symbol".to_string()),
-    }
-}
-
-fn build_reference_hops(symbol: &Symbol, graph_version: i64) -> Vec<RpcSuggestion> {
-    vec![
-        RpcSuggestion {
-            method: "references".to_string(),
-            params: json!({
-                "id": symbol.id,
-                "direction": "in",
-                "kinds": ["CALLS"],
-                "limit": 50,
-                "graph_version": graph_version,
-            }),
-            label: Some("Callers".to_string()),
-        },
-        RpcSuggestion {
-            method: "references".to_string(),
-            params: json!({
-                "id": symbol.id,
-                "direction": "out",
-                "kinds": ["CALLS"],
-                "limit": 50,
-                "graph_version": graph_version,
-            }),
-            label: Some("Calls".to_string()),
-        },
-    ]
 }
 
 fn query_tokens(query: &str) -> Vec<String> {
@@ -4151,54 +3020,6 @@ fn symbol_matches_query(symbol: &Symbol, query: &str) -> bool {
         .any(|token| name.contains(token) || qualname.contains(token))
 }
 
-fn annotate_search_hits(
-    indexer: &Indexer,
-    hits: &mut [SearchHit],
-    context_lines: usize,
-    include_symbol: bool,
-    graph_version: i64,
-    query: Option<&str>,
-) -> Result<()> {
-    let repo_root = indexer.repo_root();
-    let mut cache: HashMap<String, Vec<String>> = HashMap::new();
-    for hit in hits {
-        push_next_hop(
-            &mut hit.next_hops,
-            build_open_file_hop(&hit.path, hit.line, context_lines),
-        );
-        if context_lines > 0 {
-            let lines = cache
-                .entry(hit.path.clone())
-                .or_insert_with(|| read_lines(repo_root, &hit.path).unwrap_or_default());
-            if let Some(line_text) = lines.get(hit.line.saturating_sub(1)) {
-                hit.line_text = line_text.clone();
-            }
-            if let Some(context) = build_context(lines, hit.line, context_lines) {
-                hit.context = Some(context);
-            }
-        }
-        if include_symbol {
-            if let Some(symbol) =
-                indexer
-                    .db()
-                    .enclosing_symbol_for_line(&hit.path, hit.line as i64, graph_version)?
-            {
-                hit.enclosing_symbol = Some(format!("{} {}", symbol.kind, symbol.qualname));
-                push_next_hop(&mut hit.next_hops, build_open_symbol_hop(&symbol));
-                for hop in build_reference_hops(&symbol, graph_version) {
-                    push_next_hop(&mut hit.next_hops, hop);
-                }
-                if let Some(query) = query {
-                    if symbol_matches_query(&symbol, query) {
-                        push_reason(&mut hit.reasons, "symbol_name");
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 fn annotate_grep_hits(
     indexer: &Indexer,
     hits: &mut [GrepHit],
@@ -4210,10 +3031,6 @@ fn annotate_grep_hits(
     let repo_root = indexer.repo_root();
     let mut cache: HashMap<String, Vec<String>> = HashMap::new();
     for hit in hits {
-        push_next_hop(
-            &mut hit.next_hops,
-            build_open_file_hop(&hit.path, hit.line, context_lines),
-        );
         if context_lines > 0 {
             let lines = cache
                 .entry(hit.path.clone())
@@ -4228,11 +3045,7 @@ fn annotate_grep_hits(
                     .db()
                     .enclosing_symbol_for_line(&hit.path, hit.line as i64, graph_version)?
             {
-                hit.enclosing_symbol = Some(format!("{} {}", symbol.kind, symbol.qualname));
-                push_next_hop(&mut hit.next_hops, build_open_symbol_hop(&symbol));
-                for hop in build_reference_hops(&symbol, graph_version) {
-                    push_next_hop(&mut hit.next_hops, hop);
-                }
+                hit.enclosing_symbol = Some(symbol.qualname.clone());
                 if let Some(query) = query {
                     if symbol_matches_query(&symbol, query) {
                         push_reason(&mut hit.reasons, "symbol_name");

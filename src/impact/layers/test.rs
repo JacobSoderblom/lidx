@@ -102,6 +102,7 @@ impl<'a> TestImpactLayer<'a> {
             evidence,
             duration_ms,
             truncated: false,
+            parent_map: HashMap::new(),
         })
     }
 

@@ -446,3 +446,28 @@ fn no_channel_edges_for_topic_subscription() {
         e.kind == "CHANNEL_PUBLISH" || e.kind == "CHANNEL_SUBSCRIBE"
     }));
 }
+
+#[test]
+fn extract_keyvault_secret_config_source() {
+    let source = r#"resource dbSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  name: 'datamgr-db-conn'
+  parent: keyVault
+  properties: {
+    value: connectionString
+  }
+}
+"#;
+    let module = module_name_from_rel_path("infra/bicep/secrets.bicep");
+    let mut extractor = BicepExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let config_sources: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_SOURCE")
+        .collect();
+    assert!(config_sources.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("secret://datamgr-db-conn")
+    }), "expected CONFIG_SOURCE for secret://datamgr-db-conn, found: {:?}",
+    config_sources.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+}

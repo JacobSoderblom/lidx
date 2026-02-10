@@ -66,3 +66,135 @@ public class Impl : Base, Greeter {
             .any(|edge| edge.target_qualname.as_deref() == Some("Acme.App.Impl.Helper"))
     );
 }
+
+#[test]
+fn extract_environment_get_variable_config_read() {
+    let source = r#"
+using System;
+
+namespace Acme.App;
+
+public class Startup {
+    public void Configure() {
+        var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/Startup.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let config_reads: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_READ")
+        .collect();
+    assert!(config_reads.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("env://DATABASE_URL")
+    }), "expected CONFIG_READ for env://DATABASE_URL, found: {:?}",
+    config_reads.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+}
+
+#[test]
+fn extract_config_bind_from_constructor_injection() {
+    let source = r#"
+namespace Acme.Data;
+
+public class MssqlRepositoryBase {
+    public MssqlRepositoryBase(IOptions<DatabaseOptions> options) {
+        _options = options;
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/MssqlRepositoryBase.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let config_binds: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_BIND")
+        .collect();
+    assert_eq!(config_binds.len(), 1, "expected 1 CONFIG_BIND edge, found: {:?}",
+        config_binds.iter().map(|e| (&e.source_qualname, &e.target_qualname)).collect::<Vec<_>>());
+    assert_eq!(config_binds[0].source_qualname.as_deref(), Some("Acme.Data.MssqlRepositoryBase"));
+    assert_eq!(config_binds[0].target_qualname.as_deref(), Some("DatabaseOptions"));
+}
+
+#[test]
+fn extract_config_bind_multiple_wrappers() {
+    let source = r#"
+namespace Acme.App;
+
+public class MyService {
+    public MyService(IOptions<DatabaseOptions> db, IOptionsMonitor<LoggingOptions> log) {
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/MyService.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let config_binds: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_BIND")
+        .collect();
+    assert_eq!(config_binds.len(), 2, "expected 2 CONFIG_BIND edges, found: {:?}",
+        config_binds.iter().map(|e| (&e.source_qualname, &e.target_qualname)).collect::<Vec<_>>());
+    assert!(config_binds.iter().any(|e| e.target_qualname.as_deref() == Some("DatabaseOptions")));
+    assert!(config_binds.iter().any(|e| e.target_qualname.as_deref() == Some("LoggingOptions")));
+}
+
+#[test]
+fn extract_config_bind_from_configure_call() {
+    let source = r#"
+namespace Acme.App;
+
+public class Startup {
+    public void ConfigureServices(IServiceCollection services) {
+        services.Configure<DatabaseOptions>(config.GetSection("Database"));
+        services.AddOptions<LoggingOptions>();
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/Startup.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let config_binds: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_BIND")
+        .collect();
+    assert_eq!(config_binds.len(), 2, "expected 2 CONFIG_BIND edges, found: {:?}",
+        config_binds.iter().map(|e| (&e.source_qualname, &e.target_qualname)).collect::<Vec<_>>());
+    assert!(config_binds.iter().any(|e| e.target_qualname.as_deref() == Some("DatabaseOptions")));
+    assert!(config_binds.iter().any(|e| e.target_qualname.as_deref() == Some("LoggingOptions")));
+}
+
+#[test]
+fn extract_bind_configuration_config_read() {
+    let source = r#"
+namespace Acme.App;
+
+public class Startup {
+    public void ConfigureServices(IServiceCollection services) {
+        services.AddOptions<DatabaseOptions>().BindConfiguration("Database");
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/Startup.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let config_reads: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_READ")
+        .collect();
+    assert!(config_reads.iter().any(|e| {
+        e.target_qualname.as_deref() == Some("env://DATABASE")
+    }), "expected CONFIG_READ for env://DATABASE, found: {:?}",
+    config_reads.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+}

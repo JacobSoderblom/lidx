@@ -118,6 +118,8 @@ pub struct LayerResult {
     pub duration_ms: u64,
     /// Whether this layer was truncated
     pub truncated: bool,
+    /// Parent tracking for path reconstruction: child_id -> (parent_id, edge_kind)
+    pub parent_map: HashMap<i64, (i64, String)>,
 }
 
 /// Configuration for multi-layer impact analysis

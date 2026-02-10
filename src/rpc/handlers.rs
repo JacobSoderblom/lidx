@@ -7,232 +7,6 @@ use super::*;
 // GROUP 1 -- Symbol query handlers
 // ---------------------------------------------------------------------------
 
-pub(super) fn handle_find_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: FindSymbolParams = serde_json::from_value(params)?;
-    if params.query.trim().is_empty() {
-        return Err(anyhow::anyhow!("find_symbol requires a non-empty query"));
-    }
-    let limit = params.limit.unwrap_or(50).min(MAX_RESPONSE_LIMIT);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let symbols = indexer.db().find_symbols(
-        &params.query,
-        limit,
-        languages.as_deref(),
-        graph_version,
-    )?;
-
-    // Check format param
-    let format = params.format.as_deref().unwrap_or("full");
-    Ok(if format == "signatures" {
-        // For signatures format, wrap in consistent shape
-        let compact_symbols = apply_compact_format(json!(symbols));
-        let next_hops: Vec<serde_json::Value> = if let Some(first_symbol) = symbols.first() {
-            vec![
-                json!({
-                    "method": "open_symbol",
-                    "params": {"id": first_symbol.id},
-                    "label": format!("Open {}", first_symbol.name)
-                })
-            ]
-        } else {
-            vec![]
-        };
-        json!({
-            "data": compact_symbols,
-            "next_hops": next_hops
-        })
-    } else {
-        // Full format returns bare array for backward compatibility
-        json!(symbols)
-    })
-}
-
-pub(super) fn handle_suggest_qualnames(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    // Helper: Extract 3-character trigrams from a string
-    fn extract_trigrams(s: &str) -> Vec<String> {
-        let chars: Vec<char> = s.chars().collect();
-        chars
-            .windows(3)
-            .map(|w| w.iter().collect::<String>())
-            .collect()
-    }
-
-    // Helper: Split camelCase/PascalCase into components
-    fn split_camel_case(s: &str) -> Vec<String> {
-        let mut components = Vec::new();
-        let mut current = String::new();
-        for c in s.chars() {
-            if c.is_uppercase() && !current.is_empty() {
-                components.push(current);
-                current = String::new();
-            }
-            current.push(c);
-        }
-        if !current.is_empty() {
-            components.push(current);
-        }
-        components
-    }
-
-    let params: SuggestQualNamesParams = serde_json::from_value(params)?;
-    let limit = params.limit.unwrap_or(10).min(MAX_RESPONSE_LIMIT);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-
-    // Fast path: try exact substring match first
-    let symbols = indexer.db().find_symbols(
-        &params.query,
-        limit,
-        languages.as_deref(),
-        graph_version,
-    )?;
-
-    let symbols = if symbols.is_empty() && params.query.len() >= 3 {
-        // Fuzzy path: search by name prefix (starts-with), then rank by
-        // Levenshtein distance against the full query.
-        // Use progressively shorter prefixes to find candidates.
-        let mut candidates = Vec::new();
-        for prefix_len in (3..=params.query.len()).rev() {
-            let prefix = &params.query[..prefix_len];
-            candidates = indexer.db().find_symbols_by_name_prefix(
-                prefix,
-                limit * 20,
-                languages.as_deref(),
-                graph_version,
-            )?;
-            if !candidates.is_empty() {
-                break;
-            }
-        }
-
-        // Strategy 2: Trigram search
-        // Extract 3-character substrings and search for symbols matching each
-        let trigrams = extract_trigrams(&params.query);
-        for trigram in trigrams.iter().take(5) {
-            let more = indexer.db().find_symbols_by_name_prefix(
-                trigram,
-                limit * 10,
-                languages.as_deref(),
-                graph_version,
-            )?;
-            candidates.extend(more);
-        }
-
-        // Strategy 3: CamelCase component search
-        // Split query into camelCase components and search for each
-        let components = split_camel_case(&params.query);
-        if components.len() > 1 {
-            for component in &components {
-                if component.len() >= 3 {
-                    let more = indexer.db().find_symbols_by_name_prefix(
-                        component,
-                        limit * 5,
-                        languages.as_deref(),
-                        graph_version,
-                    )?;
-                    candidates.extend(more);
-                }
-            }
-        }
-
-        // Deduplicate candidates by symbol ID
-        candidates.sort_by_key(|s| s.id);
-        candidates.dedup_by_key(|s| s.id);
-
-        // Score candidates using case-insensitive Levenshtein distance
-        let query_lower = params.query.to_lowercase();
-        let max_dist = (params.query.len() / 4).max(2);
-        let mut scored: Vec<(crate::model::Symbol, usize)> = candidates
-            .into_iter()
-            .filter_map(|s| {
-                let name_lower = s.name.to_lowercase();
-                let dist = search::levenshtein_distance(
-                    query_lower.as_bytes(),
-                    name_lower.as_bytes(),
-                );
-                if dist <= max_dist {
-                    Some((s, dist))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        scored.sort_by_key(|(_, dist)| *dist);
-        scored.truncate(limit);
-        scored.into_iter().map(|(s, _)| s).collect()
-    } else {
-        symbols
-    };
-
-    // Return just the qualnames with metadata
-    let suggestions: Vec<serde_json::Value> = symbols
-        .into_iter()
-        .map(|s| {
-            json!({
-                "qualname": s.qualname,
-                "kind": s.kind,
-                "file_path": s.file_path,
-            })
-        })
-        .collect();
-
-    Ok(json!(suggestions))
-}
-
-pub(super) fn handle_open_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: OpenSymbolParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let symbol = if let Some(id) = params.id {
-        indexer.db().get_symbol_by_id(id)?
-    } else if let Some(qualname) = params.qualname {
-        indexer
-            .db()
-            .get_symbol_by_qualname(&qualname, graph_version)?
-    } else {
-        return Err(anyhow::anyhow!("open_symbol requires id or qualname"));
-    };
-    let symbol = symbol.ok_or_else(|| anyhow::anyhow!("symbol not found"))?;
-    let include_snippet = params.include_snippet.unwrap_or(true);
-    let include_symbol = if params.snippet_only.unwrap_or(false) {
-        false
-    } else {
-        params.include_symbol.unwrap_or(true)
-    };
-    let max_snippet_bytes = params.max_snippet_bytes;
-    let snippet = if include_snippet {
-        let path = indexer.repo_root().join(&symbol.file_path);
-        let content = util::read_to_string(&path)
-            .with_context(|| format!("read {}", symbol.file_path))?;
-        let snippet = util::slice_bytes(&content, symbol.start_byte, symbol.end_byte)
-            .unwrap_or_else(|| {
-                util::slice_lines(&content, symbol.start_line, symbol.end_line)
-            });
-        match max_snippet_bytes {
-            Some(max) => util::truncate_str_bytes(&snippet, max),
-            None => snippet,
-        }
-    } else {
-        String::new()
-    };
-    let mut payload = serde_json::Map::new();
-    if include_symbol {
-        payload.insert("symbol".to_string(), json!(symbol));
-    }
-    if include_snippet {
-        payload.insert("snippet".to_string(), json!(snippet));
-    }
-    let next_hops = if params.snippet_only.unwrap_or(false) {
-        Vec::new()
-    } else {
-        build_reference_hops(&symbol, graph_version)
-    };
-    if !next_hops.is_empty() {
-        payload.insert("next_hops".to_string(), json!(next_hops));
-    }
-    Ok(Value::Object(payload))
-}
-
 pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: ExplainSymbolParams = serde_json::from_value(params)?;
     let graph_version = resolve_graph_version(indexer, params.graph_version)?;
@@ -240,9 +14,34 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
     let max_bytes = params.max_bytes.unwrap_or(40_000).min(200_000);
     let max_refs = params.max_refs.unwrap_or(10);
-    let sections = params.sections.clone().unwrap_or_else(||
+
+    // Normalize sections: resolve aliases and warn on unknowns
+    let known_sections: &[&str] = &["source", "callers", "callees", "tests", "implements"];
+    let aliases: &[(&str, &str)] = &[
+        ("dependencies", "callees"),
+        ("dependents", "callers"),
+        ("summary", "source"),
+        ("body", "source"),
+    ];
+    let raw_sections = params.sections.clone().unwrap_or_else(||
         vec!["source".into(), "callers".into(), "callees".into(), "tests".into(), "implements".into()]
     );
+    let mut warnings: Vec<String> = Vec::new();
+    let sections: Vec<String> = raw_sections.iter().map(|s| {
+        let lower = s.to_lowercase();
+        for (alias, canonical) in aliases {
+            if lower == *alias {
+                return canonical.to_string();
+            }
+        }
+        if !known_sections.contains(&lower.as_str()) {
+            warnings.push(format!(
+                "Unknown section '{}'. Valid: source, callers, callees, tests, implements (aliases: dependencies\u{2192}callees, dependents\u{2192}callers, summary/body\u{2192}source)",
+                s
+            ));
+        }
+        lower
+    }).collect();
 
     // 1. Resolve symbol
     let symbol = if let Some(id) = params.id {
@@ -645,189 +444,78 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             truncated,
         },
         next_hops,
+        warnings,
     };
 
     Ok(serde_json::to_value(&result)?)
-}
-
-pub(super) fn handle_open_file(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: OpenFileParams = serde_json::from_value(params)?;
-    let (abs_path, rel_path) = resolve_repo_path(indexer.repo_root(), &params.path)?;
-    let content = util::read_to_string(&abs_path)?;
-    let mut text = if params.start_line.is_some() || params.end_line.is_some() {
-        let total_lines = content.lines().count() as i64;
-        let start_line = params.start_line.unwrap_or(1);
-        let end_line = params.end_line.unwrap_or(total_lines);
-        util::slice_lines(&content, start_line, end_line)
-    } else {
-        content
-    };
-    if let Some(max_bytes) = params.max_bytes {
-        text = util::truncate_str_bytes(&text, max_bytes);
-    }
-    Ok(json!({ "path": rel_path, "text": text }))
 }
 
 // ---------------------------------------------------------------------------
 // GROUP 4 -- Metrics handlers
 // ---------------------------------------------------------------------------
 
-pub(super) fn handle_repo_overview(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: OverviewParams = serde_json::from_value(params)?;
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
+pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let params: OrientParams = serde_json::from_value(params)?;
+    let view = params.view.as_deref().unwrap_or("all");
     let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let overview = indexer.db().repo_overview(
-        indexer.repo_root().clone(),
-        languages.as_deref(),
-        graph_version,
-    )?;
-    Ok(apply_field_filters(
-        json!(overview),
-        params.summary.unwrap_or(false),
-        params.fields.as_deref(),
-        &["files", "symbols", "edges"],
-    ))
-}
-
-pub(super) fn handle_repo_insights(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: InsightsParams = serde_json::from_value(params)?;
     let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
     let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    let complexity_limit = params.complexity_limit.unwrap_or(10);
-    let min_complexity = params.min_complexity.unwrap_or(1);
-    let duplicate_limit = params.duplicate_limit.unwrap_or(10);
-    let duplicate_min_count = params.duplicate_min_count.unwrap_or(2);
-    let duplicate_min_loc = params.duplicate_min_loc.unwrap_or(5);
-    let duplicate_per_group_limit = params.duplicate_per_group_limit.unwrap_or(10);
-    let call_edges = indexer.db().call_edge_count(
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
-    )?;
-    let top_complexity = indexer.db().top_complexity(
-        complexity_limit,
-        min_complexity,
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
-    )?;
-    let duplicate_groups = indexer.db().duplicate_groups(
-        duplicate_limit,
-        duplicate_min_count,
-        duplicate_min_loc,
-        duplicate_per_group_limit,
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
-    )?;
-    let coupling_limit = params.coupling_limit.unwrap_or(10);
-    let top_fan_in = indexer.db().top_fan_in(
-        coupling_limit,
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
-    )?;
-    let top_fan_out = indexer.db().top_fan_out(
-        coupling_limit,
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
-    )?;
-    let diagnostics = indexer.db().diagnostics_summary(
-        languages.as_deref(),
-        paths.as_deref(),
-        None,
-        None,
-        None,
-    )?;
-    let staleness = if params.include_staleness.unwrap_or(false) {
-        let staleness_limit = params.staleness_limit.unwrap_or(1000);
-        let dead_symbols_list = indexer.db().dead_symbols(
-            staleness_limit,
+
+    let mut result = serde_json::Map::new();
+
+    let include_overview = matches!(view, "all" | "overview");
+    let include_map = matches!(view, "all" | "map");
+    let include_modules = matches!(view, "all" | "modules");
+
+    if include_overview {
+        let overview = indexer.db().repo_overview(
+            indexer.repo_root().clone(),
+            languages.as_deref(),
+            graph_version,
+        )?;
+        result.insert("overview".to_string(), json!(overview));
+    }
+
+    if include_map {
+        let max_bytes = params.max_bytes.unwrap_or(8000).max(1000).min(50000);
+        let config = crate::repo_map::RepoMapConfig {
+            max_bytes,
+            languages: languages.clone(),
+            paths: paths.clone(),
+            graph_version,
+        };
+        let map_result = crate::repo_map::build_repo_map(indexer.db(), &config)?;
+        result.insert("map".to_string(), json!({
+            "text": map_result.text,
+            "modules": map_result.modules,
+            "symbols": map_result.symbols,
+            "bytes": map_result.bytes,
+        }));
+    }
+
+    if include_modules {
+        let depth = params.depth.unwrap_or(1).max(1).min(5);
+        let summary = indexer.db().module_summary(
+            depth,
             languages.as_deref(),
             paths.as_deref(),
             graph_version,
         )?;
-        let dead_symbols_count = dead_symbols_list.iter().filter(|s| !is_test_symbol(s)).count() as i64;
-        let unused_imports_count = indexer.db().unused_imports(
-            staleness_limit,
-            languages.as_deref(),
-            paths.as_deref(),
-            graph_version,
-        )?.len() as i64;
-        let orphan_tests_count = indexer.db().orphan_tests(
-            staleness_limit,
-            languages.as_deref(),
-            paths.as_deref(),
-            graph_version,
-        )?.len() as i64;
-        Some(crate::model::StalenessMetrics {
-            dead_symbols: dead_symbols_count,
-            unused_imports: unused_imports_count,
-            orphan_tests: orphan_tests_count,
-        })
-    } else {
-        None
-    };
-    let coupling_hotspots = if params.include_coupling_hotspots.unwrap_or(false) {
-        let hotspots_limit = params.coupling_hotspots_limit.unwrap_or(10);
-        let min_confidence = params.coupling_hotspots_min_confidence.unwrap_or(0.5);
-        Some(indexer.db().coupling_hotspots(hotspots_limit, min_confidence)?)
-    } else {
-        None
-    };
-    let last_indexed = indexer.db().get_meta_i64("last_indexed")?;
-    let commit_sha = indexer.db().graph_version_commit(graph_version)?;
-    let insights = RepoInsights {
-        repo_root: indexer.repo_root().to_string_lossy().to_string(),
-        call_edges,
-        top_complexity,
-        duplicate_groups,
-        top_fan_in,
-        top_fan_out,
-        coupling_hotspots,
-        diagnostics,
-        staleness,
-        last_indexed,
-        graph_version: Some(graph_version),
-        commit_sha,
-    };
-    Ok(json!(insights))
-}
-
-pub(super) fn handle_module_map(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: ModuleMapParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let depth = params.depth.unwrap_or(1).max(1).min(5);
-    let include_edges = params.include_edges.unwrap_or(true);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-
-    let summary = indexer.db().module_summary(
-        depth,
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
-    )?;
-
-    let modules: Vec<ModuleNode> = summary
-        .into_iter()
-        .map(|m| ModuleNode {
-            path: m.path,
-            file_count: m.file_count,
-            symbol_count: m.symbol_count,
-            languages: m.languages,
-        })
-        .collect();
-
-    let edges = if include_edges {
-        let edge_data = indexer.db().module_edges(
+        let modules: Vec<ModuleNode> = summary
+            .into_iter()
+            .map(|m| ModuleNode {
+                path: m.path,
+                file_count: m.file_count,
+                symbol_count: m.symbol_count,
+                languages: m.languages,
+            })
+            .collect();
+        let edges = indexer.db().module_edges(
             depth,
             languages.as_deref(),
             graph_version,
         )?;
-        edge_data
+        let module_edges: Vec<ModuleEdge> = edges
             .into_iter()
             .map(|(src, dst, calls, imports)| ModuleEdge {
                 source_module: src,
@@ -835,67 +523,12 @@ pub(super) fn handle_module_map(indexer: &mut Indexer, params: Value) -> Result<
                 call_count: calls,
                 import_count: imports,
             })
-            .collect()
-    } else {
-        vec![]
-    };
+            .collect();
+        result.insert("modules".to_string(), json!(modules));
+        result.insert("module_edges".to_string(), json!(module_edges));
+    }
 
-    let next_hops: Vec<serde_json::Value> = modules
-        .iter()
-        .take(5)
-        .map(|m| {
-            json!({
-                "method": "find_symbol",
-                "params": {"query": &m.path, "limit": 20},
-                "description": format!("Explore {}", m.path)
-            })
-        })
-        .collect();
-
-    let result = ModuleMapResult {
-        modules,
-        edges,
-        next_hops,
-    };
-    Ok(json!(result))
-}
-
-pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: RepoMapParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let max_bytes = params.max_bytes.unwrap_or(8000).max(1000).min(50000);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-
-    let config = crate::repo_map::RepoMapConfig {
-        max_bytes,
-        languages,
-        paths,
-        graph_version,
-    };
-
-    let result = crate::repo_map::build_repo_map(indexer.db(), &config)?;
-
-    let next_hops: Vec<serde_json::Value> = vec![
-        json!({
-            "method": "module_map",
-            "params": {"depth": 2, "include_edges": true},
-            "description": "Explore full module DAG"
-        }),
-        json!({
-            "method": "search",
-            "params": {"query": "main entry", "limit": 10},
-            "description": "Find entry points"
-        }),
-    ];
-
-    Ok(json!({
-        "text": result.text,
-        "modules": result.modules,
-        "symbols": result.symbols,
-        "bytes": result.bytes,
-        "next_hops": next_hops,
-    }))
+    Ok(Value::Object(result))
 }
 
 pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Result<Value> {
@@ -915,483 +548,9 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
     Ok(json!(results))
 }
 
-pub(super) fn handle_duplicate_groups(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: DuplicateGroupsParams = serde_json::from_value(params)?;
-    let limit = params.limit.unwrap_or(10);
-    let min_count = params.min_count.unwrap_or(2);
-    let min_loc = params.min_loc.unwrap_or(5);
-    let per_group_limit = params.per_group_limit.unwrap_or(10);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    let groups = indexer.db().duplicate_groups(
-        limit,
-        min_count,
-        min_loc,
-        per_group_limit,
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
-    )?;
-    Ok(json!(groups))
-}
-
-pub(super) fn handle_top_coupling(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: TopCouplingParams = serde_json::from_value(params)?;
-    let limit = params.limit.unwrap_or(10);
-    let direction = params.direction.as_deref().unwrap_or("both");
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-
-    let result = match direction {
-        "in" => {
-            let fan_in = indexer.db().top_fan_in(
-                limit,
-                languages.as_deref(),
-                paths.as_deref(),
-                graph_version,
-            )?;
-            json!({
-                "fan_in": fan_in,
-            })
-        }
-        "out" => {
-            let fan_out = indexer.db().top_fan_out(
-                limit,
-                languages.as_deref(),
-                paths.as_deref(),
-                graph_version,
-            )?;
-            json!({
-                "fan_out": fan_out,
-            })
-        }
-        "both" => {
-            let fan_in = indexer.db().top_fan_in(
-                limit,
-                languages.as_deref(),
-                paths.as_deref(),
-                graph_version,
-            )?;
-            let fan_out = indexer.db().top_fan_out(
-                limit,
-                languages.as_deref(),
-                paths.as_deref(),
-                graph_version,
-            )?;
-            json!({
-                "fan_in": fan_in,
-                "fan_out": fan_out,
-            })
-        }
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Invalid direction: {}. Must be 'in', 'out', or 'both'",
-                direction
-            ));
-        }
-    };
-    Ok(result)
-}
-
-pub(super) fn handle_co_changes(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: CoChangesParams = serde_json::from_value(params)?;
-    let limit = params.limit.unwrap_or(50).min(MAX_RESPONSE_LIMIT);
-    let min_confidence = params.min_confidence.unwrap_or(0.3);
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-
-    // Get paths from either path/paths params or qualname
-    let paths = if params.path.is_some() || params.paths.is_some() {
-        normalize_search_paths(indexer.repo_root(), params.path, params.paths)?
-    } else if let Some(ref qualname) = params.qualname {
-        // Resolve qualname to file path
-        if let Some(symbol) = indexer.db().get_symbol_by_qualname(qualname, graph_version)? {
-            Some(vec![symbol.file_path])
-        } else {
-            return Err(anyhow::anyhow!("Symbol not found: {}", qualname));
-        }
-    } else {
-        return Err(anyhow::anyhow!("Must provide either path, paths, or qualname"));
-    };
-
-    let results = if let Some(ref paths) = paths {
-        if paths.len() == 1 {
-            indexer.db().co_changes_for_file(&paths[0], limit, min_confidence, graph_version)?
-        } else {
-            indexer.db().co_changes_for_files(paths, limit, min_confidence, graph_version)?
-        }
-    } else {
-        Vec::new()
-    };
-
-    // Generate next_hops
-    let mut next_hops = Vec::new();
-    if let Some(ref paths) = paths {
-        let first_path = &paths[0];
-        for (i, result) in results.iter().take(3).enumerate() {
-            let other_file = if &result.file_a == first_path {
-                &result.file_b
-            } else {
-                &result.file_a
-            };
-            next_hops.push(json!({
-                "method": "open_file",
-                "params": {
-                    "path": other_file,
-                },
-                "label": format!("Open co-changed file #{}", i + 1),
-            }));
-        }
-    }
-
-    Ok(json!({
-        "results": results,
-        "next_hops": next_hops,
-    }))
-}
-
-pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: DeadSymbolsParams = serde_json::from_value(params)?;
-    let limit = params.limit.unwrap_or(50).min(MAX_RESPONSE_LIMIT);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    let mut results = indexer.db().dead_symbols(
-        limit,
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
-    )?;
-    // Filter out test symbols
-    results.retain(|s| !is_test_symbol(s));
-    let compact: Vec<SymbolCompact> = results.into_iter().map(|s| s.into()).collect();
-    Ok(json!(compact))
-}
-
-pub(super) fn handle_unused_imports(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: UnusedImportsParams = serde_json::from_value(params)?;
-    let limit = params.limit.unwrap_or(50).min(MAX_RESPONSE_LIMIT);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    let results = indexer.db().unused_imports(
-        limit,
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
-    )?;
-    Ok(json!(results))
-}
-
-pub(super) fn handle_orphan_tests(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: OrphanTestsParams = serde_json::from_value(params)?;
-    let limit = params.limit.unwrap_or(50).min(MAX_RESPONSE_LIMIT);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    let results = indexer.db().orphan_tests(
-        limit,
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
-    )?;
-    let compact: Vec<SymbolCompact> = results.into_iter().map(|s| s.into()).collect();
-    Ok(json!(compact))
-}
-
 // ---------------------------------------------------------------------------
 // GROUP 2 -- Graph handlers
 // ---------------------------------------------------------------------------
-
-pub(super) fn handle_neighbors(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: NeighborsParams = serde_json::from_value(params)?;
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let edges =
-        indexer
-            .db()
-            .edges_for_symbol(params.id, languages.as_deref(), graph_version)?;
-    let mut ids = std::collections::HashSet::new();
-    ids.insert(params.id);
-    for edge in &edges {
-        if edge.source_symbol_id == Some(params.id) {
-            if let Some(id) = edge.target_symbol_id {
-                ids.insert(id);
-            }
-        } else if let Some(id) = edge.source_symbol_id {
-            ids.insert(id);
-        }
-    }
-    let mut id_list: Vec<i64> = ids.into_iter().collect();
-    id_list.sort_unstable();
-    let nodes =
-        indexer
-            .db()
-            .symbols_by_ids(&id_list, languages.as_deref(), graph_version)?;
-    let allowed: std::collections::HashSet<i64> =
-        nodes.iter().map(|symbol| symbol.id).collect();
-    let filtered_edges: Vec<_> = if languages.is_some() && allowed.is_empty() {
-        Vec::new()
-    } else {
-        edges
-            .into_iter()
-            .filter(|edge| {
-                let source_ok = edge
-                    .source_symbol_id
-                    .map(|id| allowed.contains(&id))
-                    .unwrap_or(true);
-                let target_ok = edge
-                    .target_symbol_id
-                    .map(|id| allowed.contains(&id))
-                    .unwrap_or(true);
-                source_ok && target_ok
-            })
-            .collect()
-    };
-    let mut value = json!(Subgraph {
-        nodes,
-        edges: filtered_edges,
-    });
-
-    // Check format param
-    let format = params.format.as_deref().unwrap_or("full");
-    if format == "signatures" {
-        value = apply_compact_format(value);
-    }
-
-    Ok(value)
-}
-
-pub(super) fn handle_subgraph(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: SubgraphParams = serde_json::from_value(params)?;
-    let depth = params.depth.unwrap_or(2);
-    let max_nodes = params.max_nodes.unwrap_or(50);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let mut start_ids = params.start_ids.unwrap_or_default();
-    let mut missing = Vec::new();
-    if let Some(roots) = params.start_qualnames {
-        for raw in roots {
-            let qualname = raw.trim();
-            if qualname.is_empty() {
-                continue;
-            }
-            let id = indexer.db().lookup_symbol_id_filtered(
-                qualname,
-                languages.as_deref(),
-                graph_version,
-            )?;
-            match id {
-                Some(id) => start_ids.push(id),
-                None => missing.push(qualname.to_string()),
-            }
-        }
-    }
-    if start_ids.is_empty() {
-        return Err(anyhow::anyhow!("subgraph requires start_ids or roots"));
-    }
-    if !missing.is_empty() {
-        return Err(anyhow::anyhow!(
-            "subgraph roots not found: {}",
-            missing.join(", ")
-        ));
-    }
-    start_ids.sort_unstable();
-    start_ids.dedup();
-    let include_kinds = match params.kinds.as_deref() {
-        Some(kinds) => normalize_edge_kinds(kinds),
-        None => None,
-    };
-    let (exclude_kinds, exclude_all) = match params.exclude_kinds.as_deref() {
-        Some(kinds) => normalize_edge_kinds_exclude(kinds),
-        None => (HashSet::new(), false),
-    };
-    let filter = subgraph::EdgeFilter {
-        include: include_kinds,
-        exclude: exclude_kinds,
-        exclude_all,
-        resolved_only: params.resolved_only.unwrap_or(false),
-    };
-    let graph = subgraph::build_subgraph_filtered(
-        indexer.db(),
-        &start_ids,
-        depth,
-        max_nodes,
-        languages.as_deref(),
-        graph_version,
-        Some(&filter),
-    )?;
-    let mut value = json!(graph);
-
-    // Check format param
-    let format = params.format.as_deref().unwrap_or("full");
-    if format == "signatures" {
-        value = apply_compact_format(value);
-    }
-
-    Ok(value)
-}
-
-pub(super) fn handle_references(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: ReferencesParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let symbol = if let Some(id) = params.id {
-        indexer.db().get_symbol_by_id(id)?
-    } else if let Some(qualname) = params.qualname.as_deref() {
-        indexer
-            .db()
-            .get_symbol_by_qualname(qualname, graph_version)?
-    } else {
-        return Err(anyhow::anyhow!("references requires id or qualname"));
-    };
-    let symbol = symbol.ok_or_else(|| anyhow::anyhow!("symbol not found"))?;
-    let direction = parse_edge_direction(params.direction.as_deref())?;
-    let limit = params.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
-    let include_symbols = params.include_symbols.unwrap_or(true);
-    let include_snippet = params.include_snippet.unwrap_or(true);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let kinds = params.kinds.unwrap_or_else(|| vec!["CALLS".to_string()]);
-    let kind_filter = normalize_edge_kinds(&kinds);
-
-    // Detect if this is a container type (class, struct, interface, etc.)
-    let is_container = matches!(
-        symbol.kind.as_str(),
-        "class" | "interface" | "struct" | "enum" | "trait" | "service"
-    );
-
-    // Build target_ids list: start with the symbol itself
-    let mut target_ids = vec![symbol.id];
-    let mut member_count = 0;
-
-    // If it's a container, find all members via CONTAINS edges
-    if is_container {
-        let container_edges = indexer
-            .db()
-            .edges_for_symbol(symbol.id, languages.as_deref(), graph_version)?;
-        for edge in &container_edges {
-            if edge.kind == "CONTAINS" && edge.source_symbol_id == Some(symbol.id) {
-                if let Some(target_id) = edge.target_symbol_id {
-                    target_ids.push(target_id);
-                    member_count += 1;
-                }
-            }
-        }
-    }
-
-    // Query edges for all target IDs (class + members)
-    let all_edges = if target_ids.len() > 1 {
-        // Use batch query for multiple symbols
-        let edges_by_symbol = indexer
-            .db()
-            .edges_for_symbols(&target_ids, languages.as_deref(), graph_version)?;
-        // Flatten the HashMap into a single Vec, deduplicating by edge ID
-        let mut edge_map: HashMap<i64, Edge> = HashMap::new();
-        for edges in edges_by_symbol.values() {
-            for edge in edges {
-                edge_map.insert(edge.id, edge.clone());
-            }
-        }
-        edge_map.into_values().collect()
-    } else {
-        // Use single-symbol query (existing path)
-        indexer
-            .db()
-            .edges_for_symbol(symbol.id, languages.as_deref(), graph_version)?
-    };
-
-    let mut incoming = Vec::new();
-    let mut outgoing = Vec::new();
-    let wants_in = matches!(direction, EdgeDirection::In | EdgeDirection::Both);
-    let wants_out = matches!(direction, EdgeDirection::Out | EdgeDirection::Both);
-    for edge in all_edges {
-        if !edge_kind_matches(&edge.kind, &kind_filter) {
-            continue;
-        }
-        // Filter out CONTAINS edges from the results when showing incoming references
-        if edge.kind == "CONTAINS" {
-            continue;
-        }
-        let is_out = edge
-            .source_symbol_id
-            .map_or(false, |id| target_ids.contains(&id));
-        let is_in = edge
-            .target_symbol_id
-            .map_or(false, |id| target_ids.contains(&id));
-        let include_out = wants_out && is_out;
-        let include_in = wants_in && is_in;
-        match (include_in, include_out) {
-            (true, true) => {
-                incoming.push(edge.clone());
-                outgoing.push(edge);
-            }
-            (true, false) => incoming.push(edge),
-            (false, true) => outgoing.push(edge),
-            (false, false) => {}
-        }
-    }
-    if limit == 0 {
-        incoming.clear();
-        outgoing.clear();
-    } else {
-        incoming.truncate(limit);
-        outgoing.truncate(limit);
-    }
-
-    let mut symbol_map = HashMap::new();
-    if include_symbols {
-        let mut ids = HashSet::new();
-        for edge in incoming.iter().chain(outgoing.iter()) {
-            if let Some(id) = edge.source_symbol_id {
-                ids.insert(id);
-            }
-            if let Some(id) = edge.target_symbol_id {
-                ids.insert(id);
-            }
-        }
-        if !ids.is_empty() {
-            let mut id_list: Vec<i64> = ids.into_iter().collect();
-            id_list.sort_unstable();
-            let symbols = indexer.db().symbols_by_ids(&id_list, None, graph_version)?;
-            for symbol in symbols {
-                symbol_map.insert(symbol.id, symbol);
-            }
-        }
-    }
-
-    let incoming =
-        build_edge_references(incoming, &symbol_map, include_symbols, include_snippet);
-    let outgoing =
-        build_edge_references(outgoing, &symbol_map, include_symbols, include_snippet);
-
-    // Add metadata if we aggregated members
-    let metadata = if member_count > 0 {
-        Some(ReferencesMetadata {
-            aggregated_members: member_count,
-            note: format!(
-                "Includes references to {} member methods/fields",
-                member_count
-            ),
-        })
-    } else {
-        None
-    };
-
-    let mut value = json!(ReferencesResult {
-        symbol,
-        incoming,
-        outgoing,
-        metadata,
-    });
-
-    // Check format param
-    let format = params.format.as_deref().unwrap_or("full");
-    if format == "signatures" {
-        value = apply_compact_format(value);
-    }
-
-    Ok(value)
-}
 
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: TraceFlowParams = serde_json::from_value(params)?;
@@ -1408,20 +567,43 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             "CALLS".into(), "RPC_IMPL".into(), "RPC_CALL".into(), "XREF".into(),
             "CHANNEL_PUBLISH".into(), "CHANNEL_SUBSCRIBE".into(),
             "HTTP_CALL".into(), "HTTP_ROUTE".into(),
+            "CONFIG_SOURCE".into(), "CONFIG_READ".into(), "CONFIG_BIND".into(),
         ]
     );
+
+    // Config URI resolution: find all symbols connected to the URI
+    let config_uri_seeds: Vec<i64> = if let Some(ref qn) = params.start_qualname {
+        if crate::indexer::config::is_config_uri(qn) {
+            indexer.db().source_symbols_for_config_uri(qn, &[], graph_version)?
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
 
     // Resolve start symbol
     let start = if let Some(id) = params.start_id {
         indexer.db().get_symbol_by_id(id)?
             .ok_or_else(|| anyhow::anyhow!("start symbol not found: id={}", id))?
     } else if let Some(ref qn) = params.start_qualname {
-        let id = indexer.db().lookup_symbol_id(qn, graph_version)?
-            .ok_or_else(|| anyhow::anyhow!("start symbol not found: {}", qn))?;
-        indexer.db().get_symbol_by_id(id)?
-            .ok_or_else(|| anyhow::anyhow!("start symbol not found"))?
+        if crate::indexer::config::is_config_uri(qn) {
+            let first_id = config_uri_seeds.first()
+                .ok_or_else(|| anyhow::anyhow!("no symbols found for config URI: {}", qn))?;
+            indexer.db().get_symbol_by_id(*first_id)?
+                .ok_or_else(|| anyhow::anyhow!("start symbol not found"))?
+        } else {
+            let id = indexer.db().lookup_symbol_id(qn, graph_version)?
+                .ok_or_else(|| anyhow::anyhow!("start symbol not found: {}", qn))?;
+            indexer.db().get_symbol_by_id(id)?
+                .ok_or_else(|| anyhow::anyhow!("start symbol not found"))?
+        }
+    } else if let Some(ref query) = params.query {
+        let results = indexer.db().find_symbols(query, 1, languages.as_deref(), graph_version)?;
+        results.into_iter().next()
+            .ok_or_else(|| anyhow::anyhow!("no symbol found for query: {}", query))?
     } else {
-        anyhow::bail!("trace_flow requires start_id or start_qualname");
+        anyhow::bail!("trace_flow requires start_id, start_qualname, or query");
     };
 
     // Resolve optional end symbol
@@ -1436,6 +618,12 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     // If start symbol is a container, also seed BFS with its members
     let is_container = matches!(start.kind.as_str(), "class" | "module" | "resource");
     let mut seed_ids: Vec<i64> = vec![start.id];
+    // Add config URI seeds (other symbols connected to the same config URI)
+    for id in &config_uri_seeds {
+        if *id != start.id && !seed_ids.contains(id) {
+            seed_ids.push(*id);
+        }
+    }
     if is_container {
         if let Ok(file_symbols) = indexer.db().get_symbols_for_file(&start.file_path, graph_version) {
             for s in &file_symbols {
@@ -1527,9 +715,24 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
                 None => {
                     // Try fuzzy resolve on target_qualname if available
                     if let Some(ref qn) = edge.target_qualname {
-                        match indexer.db().lookup_symbol_id_fuzzy(qn, languages.as_deref(), graph_version) {
-                            Ok(Some(id)) => id,
-                            _ => continue,
+                        // Prefer same-language resolution to avoid false cross-language matches
+                        // (e.g., C# .Add() matching Python add() or TS Add())
+                        let prev_lang = detect_language(&prev_file);
+                        let same_lang = vec![prev_lang];
+                        let resolved = indexer.db().lookup_symbol_id_fuzzy(qn, Some(&same_lang), graph_version)
+                            .ok().flatten()
+                            .or_else(|| {
+                                // Cross-language fallback ONLY for bridge edge kinds
+                                if is_bridge_edge_kind(&edge.kind) {
+                                    indexer.db().lookup_symbol_id_fuzzy(qn, languages.as_deref(), graph_version)
+                                        .ok().flatten()
+                                } else {
+                                    None
+                                }
+                            });
+                        match resolved {
+                            Some(id) => id,
+                            None => continue,
                         }
                     } else {
                         continue;
@@ -1673,12 +876,54 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             "description": format!("Continue trace (offset {})", next_offset),
         }));
     }
+    if truncated && params.kinds.is_none() {
+        // Suggest narrowing by edge kind when trace was truncated and no filter was used
+        let mut narrow_params = json!({"max_bytes": (max_bytes * 2).min(200_000)});
+        if let Some(ref qn) = params.start_qualname {
+            narrow_params["start_qualname"] = json!(qn);
+        } else if let Some(id) = params.start_id {
+            narrow_params["start_id"] = json!(id);
+        }
+        narrow_params["kinds"] = json!(["CONFIG_BIND", "CONFIG_SOURCE", "CONFIG_READ"]);
+        next_hops.push(json!({
+            "method": "trace_flow",
+            "params": narrow_params,
+            "description": "Re-trace with only CONFIG edges (avoids truncation)",
+        }));
+    }
     for h in trace.iter().take(3) {
         next_hops.push(json!({
             "method": "explain_symbol",
             "params": {"id": h.symbol.id},
             "description": format!("Explain {}", h.symbol.name),
         }));
+    }
+    // When trace is empty, suggest analyze_impact as an alternative
+    if trace.is_empty() {
+        let mut impact_params = json!({"id": start.id, "direction": "upstream"});
+        if matches!(start.kind.as_str(), "class" | "property") {
+            impact_params["kinds"] = json!(["CONFIG_BIND", "CONFIG_SOURCE", "CONFIG_READ", "CALLS"]);
+        }
+        next_hops.push(json!({
+            "method": "analyze_impact",
+            "params": impact_params,
+            "description": format!("Try analyze_impact on {} (finds consumers via CONFIG/DI edges)", start.name),
+        }));
+        // Also suggest with CONFIG-only kinds if default kinds were used
+        if params.kinds.is_none() {
+            let mut retry_params = json!({"include_snippets": include_snippets});
+            if let Some(ref qn) = params.start_qualname {
+                retry_params["start_qualname"] = json!(qn);
+            } else {
+                retry_params["start_id"] = json!(start.id);
+            }
+            retry_params["kinds"] = json!(["CONFIG_SOURCE", "CONFIG_READ", "CONFIG_BIND"]);
+            next_hops.push(json!({
+                "method": "trace_flow",
+                "params": retry_params,
+                "description": "Re-trace with CONFIG edges only (useful for config/property symbols)",
+            }));
+        }
     }
 
     // Calculate paths_found: 0 if empty and no target reached, 1 if target reached, else count leaf nodes
@@ -1715,451 +960,86 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     Ok(value)
 }
 
-pub(super) fn handle_route_refs(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: RouteRefsParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let limit = params.limit.unwrap_or(200).min(MAX_RESPONSE_LIMIT);
-    let include_symbols = params.include_symbols.unwrap_or(true);
-    let include_snippet = params.include_snippet.unwrap_or(true);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    // Try HTTP route first, fall back to partial matching, then gRPC RPC_IMPL
-    let (mut edges, normalized) =
-        if let Some(norm) = xref::normalize_route_literal(&params.query) {
-            let kinds = Some(vec!["ROUTE".to_string()]);
-            let edges = indexer.db().list_edges(
-                limit, 0, languages.as_deref(), paths.as_deref(),
-                kinds.as_deref(), None, None, Some(&norm),
-                false, None, graph_version, None, None, None,
-            )?;
-            (edges, norm)
-        } else {
-            // Fall back to gRPC service lookup via RPC_IMPL edges.
-            // Fetch all RPC_IMPL edges and filter by query (case-insensitive).
-            let kinds = Some(vec!["RPC_IMPL".to_string()]);
-            let all_rpc = indexer.db().list_edges(
-                500, 0, languages.as_deref(), paths.as_deref(),
-                kinds.as_deref(), None, None, None,
-                false, None, graph_version, None, None, None,
-            )?;
-            let query_lower = params.query.to_lowercase();
-            let edges: Vec<_> = all_rpc
-                .into_iter()
-                .filter(|e| {
-                    e.target_qualname
-                        .as_ref()
-                        .map_or(false, |qn| qn.to_lowercase().contains(&query_lower))
-                })
-                .take(limit)
-                .collect();
-            (edges, params.query.clone())
-        };
-
-    // If exact match failed and we have a normalized route, try partial/prefix matching
-    if edges.is_empty() {
-        if let Some(norm) = xref::normalize_route_literal(&params.query) {
-            // Try partial matching on ROUTE and HTTP_ROUTE edges
-            let kinds = Some(vec!["ROUTE".to_string(), "HTTP_ROUTE".to_string()]);
-            let all_routes = indexer.db().list_edges(
-                2000, 0, languages.as_deref(), paths.as_deref(),
-                kinds.as_deref(), None, None, None,
-                false, None, graph_version, None, None, None,
-            )?;
-            let query_lower = norm.to_lowercase();
-            edges = all_routes
-                .into_iter()
-                .filter(|e| {
-                    e.target_qualname
-                        .as_ref()
-                        .map_or(false, |qn| qn.to_lowercase().contains(&query_lower))
-                })
-                .take(limit)
-                .collect();
-        }
-    }
-    let mut symbol_map = HashMap::new();
-    if include_symbols {
-        let mut ids = HashSet::new();
-        for edge in &edges {
-            if let Some(id) = edge.source_symbol_id {
-                ids.insert(id);
-            }
-            if let Some(id) = edge.target_symbol_id {
-                ids.insert(id);
-            }
-        }
-        if !ids.is_empty() {
-            let mut id_list: Vec<i64> = ids.into_iter().collect();
-            id_list.sort_unstable();
-            let symbols = indexer.db().symbols_by_ids(&id_list, None, graph_version)?;
-            for symbol in symbols {
-                symbol_map.insert(symbol.id, symbol);
-            }
-        }
-    }
-    let references =
-        build_edge_references(edges, &symbol_map, include_symbols, include_snippet);
-    Ok(json!(RouteRefsResult {
-        query: params.query,
-        normalized,
-        references,
-    }))
-}
-
-pub(super) fn handle_flow_status(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: FlowStatusParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let limit = params.limit.unwrap_or(200).min(MAX_RESPONSE_LIMIT);
-    let edge_limit = params.edge_limit.unwrap_or(50_000);
-    let include_routes = params.include_routes.unwrap_or(true);
-    let include_calls = params.include_calls.unwrap_or(true);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    let route_kinds = vec![
-        http::HTTP_ROUTE_KIND.to_string(),
-        proto::RPC_IMPL_KIND.to_string(),
-    ];
-    let call_kinds = vec![http::HTTP_CALL_KIND.to_string()];
-    let routes = indexer.db().list_edges(
-        edge_limit,
-        0,
-        languages.as_deref(),
-        paths.as_deref(),
-        Some(&route_kinds),
-        None,
-        None,
-        None,
-        false,
-        None,
-        graph_version,
-        None,
-        None,
-        None,
-    )?;
-    let calls = indexer.db().list_edges(
-        edge_limit,
-        0,
-        languages.as_deref(),
-        paths.as_deref(),
-        Some(&call_kinds),
-        None,
-        None,
-        None,
-        false,
-        None,
-        graph_version,
-        None,
-        None,
-        None,
-    )?;
-    let result = build_flow_status(
-        routes,
-        calls,
-        include_routes,
-        include_calls,
-        limit,
-        edge_limit,
-    );
-    Ok(json!(result))
-}
 
 // ---------------------------------------------------------------------------
 // GROUP 3 -- Analysis handlers
 // ---------------------------------------------------------------------------
 
-pub(super) fn handle_find_tests_for(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: FindTestsForParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let languages = params.languages.clone();
-    let include_indirect = params.include_indirect.unwrap_or(true);
-    let indirect_depth = params.indirect_depth.unwrap_or(1).min(5);
-    let limit = params.limit.unwrap_or(20).min(100);
-
-    // Resolve symbol by id, qualname, or query
-    let symbol = if let Some(id) = params.id {
-        indexer.db().get_symbol_by_id(id)?
-    } else if let Some(qualname) = params.qualname.as_deref() {
-        indexer.db().get_symbol_by_qualname(qualname, graph_version)?
-    } else if let Some(query) = params.query.as_deref() {
-        // Find symbols matching the query, preferring production symbols over test symbols
-        let mut results = indexer.db().find_symbols(query, 10, languages.as_deref(), graph_version)?;
-        // Sort to deprioritize test symbols (put them at the end)
-        results.sort_by_key(|s| is_test_symbol(s));
-        results.into_iter().next()
-    } else {
-        return Err(anyhow::anyhow!("find_tests_for requires id, qualname, or query"));
-    };
-
-    let symbol = symbol.ok_or_else(|| {
-        if let Some(query) = params.query.as_deref() {
-            if let Ok(suggestions) = indexer.db().find_symbols(query, 5, languages.as_deref(), graph_version) {
-                if !suggestions.is_empty() {
-                    let names: Vec<String> = suggestions.into_iter().map(|s| s.qualname).collect();
-                    return anyhow::anyhow!(
-                        "Symbol '{}' not found. Did you mean: {}?",
-                        query,
-                        names.join(", ")
-                    );
-                }
-            }
-        }
-        anyhow::anyhow!("symbol not found")
-    })?;
-
-    // For proto service symbols, find RPC_IMPL edges by service name in detail JSON
-    let mut impl_symbols: Vec<Symbol> = Vec::new();
-    if symbol.kind == "service" {
-        // Extract service name (last segment of qualname, e.g., "TriggerService")
-        let service_name = symbol.name.clone();
-
-        // Find all RPC_IMPL edges and match by service name in detail field
-        let rpc_impl_edges = indexer.db().list_edges(
-            100, 0, languages.as_deref(), None,
-            Some(&["RPC_IMPL".to_string()]), None, None, None,
-            false, None, graph_version, None, None, None,
-        )?;
-
-        for edge in &rpc_impl_edges {
-            if let Some(ref detail_str) = edge.detail {
-                if let Ok(detail) = serde_json::from_str::<serde_json::Value>(detail_str) {
-                    if detail.get("service").and_then(|v| v.as_str()) == Some(&service_name) {
-                        if let Some(src_id) = edge.source_symbol_id {
-                            if let Ok(Some(impl_sym)) = indexer.db().get_symbol_by_id(src_id) {
-                                impl_symbols.push(impl_sym);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Build list of symbols to search tests for
-    let search_symbols: Vec<&Symbol> = if impl_symbols.is_empty() {
-        vec![&symbol]
-    } else {
-        impl_symbols.iter().collect()
-    };
-
-    // Find direct test callers and non-test callers across all search symbols
-    let mut direct_tests = Vec::new();
-    let mut non_test_callers = Vec::new();
-    let mut test_files = HashSet::new();
-    let mut seen_caller_ids = HashSet::new();
-
-    for search_symbol in &search_symbols {
-        // Get all incoming CALLS edges for the search symbol (resolved edges)
-        let edges = indexer.db().edges_for_symbol(
-            search_symbol.id,
-            languages.as_deref(),
-            graph_version
-        )?;
-
-        // Also get unresolved edges by qualname pattern
-        let unresolved_edges = indexer.db().incoming_edges_by_qualname_pattern(
-            &search_symbol.name,
-            "CALLS",
-            languages.as_deref(),
-            graph_version
-        )?;
-
-        // Process resolved edges
-        for edge in &edges {
-            if edge.kind == "CALLS" && edge.target_symbol_id == Some(search_symbol.id) {
-                if let Some(source_id) = edge.source_symbol_id {
-                    if seen_caller_ids.insert(source_id) {
-                        if let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id) {
-                            let is_test = is_test_symbol(&caller);
-                            if is_test {
-                                test_files.insert(caller.file_path.clone());
-                                direct_tests.push(TestMatch {
-                                    test_symbol: caller.into(),
-                                    match_type: "direct".to_string(),
-                                    via_symbol: None,
-                                    relevance: 1.0,
-                                });
-                            } else {
-                                non_test_callers.push(caller);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Process unresolved edges (target_qualname matches)
-        for edge in &unresolved_edges {
-            if let Some(target_qn) = &edge.target_qualname {
-                let matches = target_qn == &search_symbol.qualname
-                    || target_qn.ends_with(&format!(".{}", search_symbol.name));
-
-                if matches {
-                    if let Some(source_id) = edge.source_symbol_id {
-                        if seen_caller_ids.insert(source_id) {
-                            if let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id) {
-                                let is_test = is_test_symbol(&caller);
-                                if is_test {
-                                    test_files.insert(caller.file_path.clone());
-                                    direct_tests.push(TestMatch {
-                                        test_symbol: caller.into(),
-                                        match_type: "direct".to_string(),
-                                        via_symbol: None,
-                                        relevance: 0.9,
-                                    });
-                                } else {
-                                    non_test_callers.push(caller);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Find indirect test callers via multi-level BFS (depth controlled by indirect_depth)
-    let mut indirect_tests = Vec::new();
-    if include_indirect {
-        let mut current_callers = non_test_callers.clone();
-        let mut all_seen_ids: HashSet<i64> = seen_caller_ids.clone();
-        let mut base_relevance = 0.7;
-
-        for _level in 0..indirect_depth {
-            let mut next_level_callers = Vec::new();
-
-            for caller in &current_callers {
-                // Get resolved edges for this caller
-                let caller_edges = indexer.db().edges_for_symbol(
-                    caller.id,
-                    languages.as_deref(),
-                    graph_version
-                )?;
-
-                // Get unresolved edges for this caller
-                let unresolved_caller_edges = indexer.db().incoming_edges_by_qualname_pattern(
-                    &caller.name,
-                    "CALLS",
-                    languages.as_deref(),
-                    graph_version
-                )?;
-
-                // Process resolved edges
-                for edge in &caller_edges {
-                    if edge.kind == "CALLS" && edge.target_symbol_id == Some(caller.id) {
-                        if let Some(source_id) = edge.source_symbol_id {
-                            if all_seen_ids.insert(source_id) {
-                                if let Ok(Some(upstream)) = indexer.db().get_symbol_by_id(source_id) {
-                                    if is_test_symbol(&upstream) {
-                                        test_files.insert(upstream.file_path.clone());
-                                        indirect_tests.push(TestMatch {
-                                            test_symbol: upstream.into(),
-                                            match_type: "indirect".to_string(),
-                                            via_symbol: Some(caller.clone().into()),
-                                            relevance: base_relevance,
-                                        });
-                                    } else {
-                                        next_level_callers.push(upstream);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Process unresolved edges
-                for edge in &unresolved_caller_edges {
-                    if let Some(target_qn) = &edge.target_qualname {
-                        let matches = target_qn == &caller.qualname
-                            || target_qn.ends_with(&format!(".{}", caller.name));
-
-                        if matches {
-                            if let Some(source_id) = edge.source_symbol_id {
-                                if all_seen_ids.insert(source_id) {
-                                    if let Ok(Some(upstream)) = indexer.db().get_symbol_by_id(source_id) {
-                                        if is_test_symbol(&upstream) {
-                                            test_files.insert(upstream.file_path.clone());
-                                            indirect_tests.push(TestMatch {
-                                                test_symbol: upstream.into(),
-                                                match_type: "indirect".to_string(),
-                                                via_symbol: Some(caller.clone().into()),
-                                                relevance: base_relevance * 0.9,
-                                            });
-                                        } else {
-                                            next_level_callers.push(upstream);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if next_level_callers.is_empty() { break; }
-            current_callers = next_level_callers;
-            base_relevance *= 0.7; // Decay relevance per level
-        }
-    }
-
-    // Truncate to limit
-    direct_tests.truncate(limit);
-    indirect_tests.truncate(limit);
-
-    let summary = TestSummary {
-        direct_count: direct_tests.len(),
-        indirect_count: indirect_tests.len(),
-        test_files: test_files.into_iter().collect(),
-    };
-
-    let next_hops = vec![
-        json!({"method": "explain_symbol", "params": {"id": symbol.id}, "description": "Full symbol explanation"}),
-        json!({"method": "analyze_impact", "params": {"id": symbol.id}, "description": "Impact analysis"}),
-    ];
-
-    let result = FindTestsResult {
-        symbol: symbol.into(),
-        direct_tests,
-        indirect_tests,
-        summary,
-        next_hops,
-    };
-
-    Ok(serde_json::to_value(&result)?)
-}
-
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: AnalyzeImpactParams = serde_json::from_value(params)?;
     let graph_version = resolve_graph_version(indexer, params.graph_version)?;
 
-    // Resolve symbol by id or qualname
-    let symbol = if let Some(id) = params.id {
-        indexer.db().get_symbol_by_id(id)?
-    } else if let Some(qualname) = params.qualname.as_deref() {
-        indexer
-            .db()
-            .get_symbol_by_qualname(qualname, graph_version)?
+    // Check for config URI in qualname (e.g., "secret://datamgr-db-conn-str", "env://DATABASE")
+    // Direction-aware: downstream seeds from providers (CONFIG_SOURCE),
+    // upstream seeds from consumers (CONFIG_READ), both uses all.
+    let seed_ids: Vec<i64> = if let Some(qualname) = params.qualname.as_deref() {
+        if crate::indexer::config::is_config_uri(qualname) {
+            let dir = params.direction.as_deref().unwrap_or("both");
+            let uri_kinds: &[&str] = match dir {
+                "downstream" => &["CONFIG_SOURCE"],
+                "upstream" => &["CONFIG_READ", "CONFIG_BIND"],
+                _ => &[],
+            };
+            let ids = indexer.db().source_symbols_for_config_uri(qualname, uri_kinds, graph_version)?;
+            if ids.is_empty() {
+                return Err(anyhow::anyhow!("no symbols found for config URI: {}", qualname));
+            }
+            ids
+        } else {
+            vec![]
+        }
     } else {
-        return Err(anyhow::anyhow!("analyze_impact requires id or qualname"));
+        vec![]
     };
 
-    let symbol = symbol.ok_or_else(|| {
-        if let Some(qualname) = params.qualname.as_deref() {
+    // Resolve symbol by id, qualname, or fuzzy query (skip if config URI already resolved)
+    let seed_ids = if !seed_ids.is_empty() {
+        seed_ids
+    } else {
+        let symbol = if let Some(id) = params.id {
+            indexer.db().get_symbol_by_id(id)?
+        } else if let Some(qualname) = params.qualname.as_deref() {
+            indexer
+                .db()
+                .get_symbol_by_qualname(qualname, graph_version)?
+        } else if let Some(ref query) = params.query {
+            let langs = scan::normalize_language_filter(params.languages.as_deref())?;
+            let results = indexer
+                .db()
+                .find_symbols(query, 1, langs.as_deref(), graph_version)?;
+            results.into_iter().next()
+        } else {
+            return Err(anyhow::anyhow!(
+                "analyze_impact requires id, qualname, or query"
+            ));
+        };
+
+        let symbol = symbol.ok_or_else(|| {
+            let search_term = params
+                .qualname
+                .as_deref()
+                .or(params.query.as_deref())
+                .unwrap_or("?");
             if let Ok(suggestions) =
-                indexer.db().find_symbols(qualname, 10, None, graph_version)
+                indexer
+                    .db()
+                    .find_symbols(search_term, 10, None, graph_version)
             {
                 if !suggestions.is_empty() {
                     let names: Vec<String> =
                         suggestions.into_iter().map(|s| s.qualname).collect();
                     return anyhow::anyhow!(
                         "Symbol '{}' not found. Did you mean: {}?",
-                        qualname,
+                        search_term,
                         names.join(", ")
                     );
                 }
             }
-        }
-        anyhow::anyhow!("symbol not found")
-    })?;
+            anyhow::anyhow!("symbol not found")
+        })?;
+
+        vec![symbol.id]
+    };
 
     // Build multi-layer configuration
     let config = crate::impact::config::MultiLayerConfig::builder()
@@ -2198,7 +1078,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     // Perform multi-layer impact analysis
     let result = crate::impact::analyze_impact_multi_layer(
         indexer.db(),
-        &[symbol.id],
+        &seed_ids,
         config,
         graph_version,
     )?;
@@ -2650,128 +1530,9 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
     Ok(json!(results))
 }
 
-pub(super) fn handle_search_text(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: SearchParams = serde_json::from_value(params)?;
-    validate_pattern_length(&params.query, "search_text")?;
-    let limit = params.limit.unwrap_or(50).min(MAX_RESPONSE_LIMIT);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let scope = search::parse_scope(params.scope.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    let options = search::SearchOptions {
-        languages: languages.as_deref(),
-        scope,
-        exclude_generated: params.exclude_generated.unwrap_or(false),
-        rank: params.rank.unwrap_or(true),
-        no_ignore: params.no_ignore.unwrap_or(false),
-        paths: paths.as_deref(),
-    };
-    let mut results =
-        search::search_text(indexer.repo_root(), &params.query, limit, options)?;
-    for hit in &mut results {
-        hit.engine = Some("search_text".to_string());
-    }
-    let context_lines = normalize_context_lines(params.context_lines, 2);
-    let include_symbol = params.include_symbol.unwrap_or(true);
-    annotate_search_hits(
-        indexer,
-        &mut results,
-        context_lines,
-        include_symbol,
-        graph_version,
-        Some(&params.query),
-    )?;
-    // Add capped metadata to response
-    let capped = results.len() >= limit;
-    Ok(json!({
-        "results": results,
-        "capped": capped,
-        "total_returned": results.len(),
-    }))
-}
-
-pub(super) fn handle_grep(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: GrepParams = serde_json::from_value(params)?;
-    validate_pattern_length(&params.query, "grep")?;
-    let limit = params.limit.unwrap_or(50).min(MAX_RESPONSE_LIMIT);
-    let include_text = params.include_text.unwrap_or(false);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let scope = search::parse_scope(params.scope.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    let options = search::SearchOptions {
-        languages: languages.as_deref(),
-        scope,
-        exclude_generated: params.exclude_generated.unwrap_or(false),
-        rank: params.rank.unwrap_or(true),
-        no_ignore: params.no_ignore.unwrap_or(false),
-        paths: paths.as_deref(),
-    };
-    let mut results = search::grep_text(
-        indexer.repo_root(),
-        &params.query,
-        limit,
-        include_text,
-        options,
-    )?;
-    for hit in &mut results {
-        hit.engine = Some("grep".to_string());
-    }
-    let context_lines = normalize_context_lines(params.context_lines, 0);
-    let include_symbol = params.include_symbol.unwrap_or(false);
-    annotate_grep_hits(
-        indexer,
-        &mut results,
-        context_lines,
-        include_symbol,
-        graph_version,
-        Some(&params.query),
-    )?;
-    // Add capped metadata to response
-    let capped = results.len() >= limit;
-    Ok(json!({
-        "results": results,
-        "capped": capped,
-        "total_returned": results.len(),
-    }))
-}
-
 // ---------------------------------------------------------------------------
 // GROUP 6 -- Index/meta handlers
 // ---------------------------------------------------------------------------
-
-pub(super) fn handle_index_status(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: IndexStatusParams = serde_json::from_value(params)?;
-    let include_paths = params.include_paths.unwrap_or(false);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let changed = indexer.changed_files(languages.as_deref())?;
-    let counts = IndexChangeCounts {
-        added: changed.added.len(),
-        modified: changed.modified.len(),
-        deleted: changed.deleted.len(),
-    };
-    let stale = counts.added > 0 || counts.modified > 0 || counts.deleted > 0;
-    let last_indexed = indexer.db().get_meta_i64("last_indexed")?;
-    let hint = if last_indexed.is_none() {
-        "index missing; run reindex".to_string()
-    } else if stale {
-        "reindex needed".to_string()
-    } else {
-        "index current".to_string()
-    };
-    let commit_sha = indexer.db().graph_version_commit(indexer.graph_version())?;
-    let status = IndexStatus {
-        repo_root: indexer.repo_root().to_string_lossy().to_string(),
-        last_indexed,
-        graph_version: Some(indexer.graph_version()),
-        commit_sha,
-        stale,
-        hint,
-        counts,
-        changed_files: if include_paths { Some(changed) } else { None },
-    };
-    Ok(json!(status))
-}
 
 pub(super) fn handle_reindex(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: ReindexParams = serde_json::from_value(params)?;
@@ -2947,8 +1708,8 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
     // 5. Suggested queries
     let suggested = json!([
         { "method": "explain_symbol", "params": { "query": "<symbol_name>" }, "why": "Understand any symbol deeply" },
-        { "method": "repo_map", "params": { "max_bytes": 8000 }, "why": "Get architecture text overview" },
-        { "method": "search", "params": { "query": "<topic>" }, "why": "Search by concept" },
+        { "method": "orient", "params": { "view": "map" }, "why": "Get architecture text overview" },
+        { "method": "search", "params": { "query": "<topic>" }, "why": "Search code by pattern" },
         { "method": "analyze_diff", "params": { "paths": ["<file>"] }, "why": "Assess change impact" },
     ]);
 
@@ -2961,117 +1722,471 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
     }))
 }
 
-pub(super) fn handle_changed_since(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: ChangedSinceParams = serde_json::from_value(params)?;
-    let repo_root = indexer.repo_root();
+pub(super) fn handle_changes(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let params: ChangesParams = serde_json::from_value(params)?;
+    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
 
-    // Determine the base commit
-    let since_commit = match params.commit {
-        Some(ref c) => {
-            // Validate: allow alphanumeric, ~, ^, -, . (for HEAD~5, tags, etc)
-            if c.len() > 100 || !c.chars().all(|ch| ch.is_alphanumeric() || "~^-._/".contains(ch)) {
+    match params.since {
+        Some(ref commit) => {
+            // Git diff since commit (changed_since logic)
+            let repo_root = indexer.repo_root();
+            if commit.len() > 100 || !commit.chars().all(|ch| ch.is_alphanumeric() || "~^-._/".contains(ch)) {
                 anyhow::bail!("invalid commit reference: must be alphanumeric with ~^-._/ allowed, max 100 chars");
             }
-            c.clone()
+
+            let current_commit = crate::util::git_head_sha(repo_root)
+                .ok_or_else(|| anyhow::anyhow!("failed to get git HEAD sha — is this a git repository?"))?;
+
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo_root)
+                .arg("diff")
+                .arg("--name-only")
+                .arg(format!("{}..HEAD", commit))
+                .output()
+                .map_err(|e| anyhow::anyhow!("failed to run git diff: {e}"))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!("git diff failed: {stderr}");
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let files: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+            let file_count = files.len();
+
+            Ok(json!({
+                "since_commit": commit,
+                "current_commit": current_commit,
+                "files_changed": files,
+                "file_count": file_count,
+            }))
         }
         None => {
-            // Use the commit from the current graph version
-            let gv = indexer.db().current_graph_version()?;
-            match indexer.db().graph_version_commit(gv)? {
-                Some(sha) => sha,
-                None => anyhow::bail!("no commit parameter provided and no commit recorded in current graph version"),
-            }
+            // Working tree changes vs index (changed_files logic)
+            let changed = indexer.changed_files(languages.as_deref())?;
+            Ok(json!(changed))
         }
-    };
+    }
+}
 
-    // Get current HEAD
-    let current_commit = crate::util::git_head_sha(repo_root)
-        .ok_or_else(|| anyhow::anyhow!("failed to get git HEAD sha — is this a git repository?"))?;
+// ---------------------------------------------------------------------------
+// GROUP 8 -- Security scanning with graph-based reachability
+// ---------------------------------------------------------------------------
 
-    // Run git diff
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .arg("diff")
-        .arg("--name-only")
-        .arg(format!("{}..HEAD", since_commit))
-        .output()
-        .map_err(|e| anyhow::anyhow!("failed to run git diff: {e}"))?;
+/// Security tools: tools whose findings represent potential security issues.
+const SECURITY_TOOLS: &[&str] = &["bandit", "gosec", "cargo-audit"];
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git diff failed: {stderr}");
+pub(super) fn handle_security_scan(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let params: SecurityScanParams = serde_json::from_value(params)?;
+    let max_depth = params.max_depth.unwrap_or(5).min(10);
+    let public_only = params.public_only.unwrap_or(false);
+    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+
+    // Step 1: Determine which security tools to run
+    let security_tools: Vec<String> = params
+        .tools
+        .unwrap_or_else(|| SECURITY_TOOLS.iter().map(|s| s.to_string()).collect());
+
+    // Step 2: Run security tools via diagnostics_run
+    let run_result = diagnostics_run(
+        indexer,
+        DiagnosticsRunParams {
+            tools: Some(security_tools.clone()),
+            tool: None,
+            languages: params.languages.clone(),
+            output_dir: None,
+        },
+    )?;
+
+    // Step 3: Query all diagnostics from security tools
+    let tool_filter: HashSet<String> = security_tools.iter().cloned().collect();
+    let mut all_findings = Vec::new();
+    for tool_name in &security_tools {
+        let diags = indexer.db().list_diagnostics(
+            5000, // high limit to get all security findings
+            0,
+            None,
+            None,
+            None,
+            None,
+            Some(tool_name),
+        )?;
+        all_findings.extend(diags);
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let files: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
-    let file_count = files.len();
+    // Step 4: Group findings by (path, enclosing symbol) to avoid redundant traversals
+    let mut symbol_cache: HashMap<(String, i64), Option<i64>> = HashMap::new();
+    let mut impact_cache: HashMap<i64, Vec<EntryPoint>> = HashMap::new();
 
-    // Build suggested queries
-    let paths_for_diff: Vec<&str> = files.iter().take(20).copied().collect();
-    let suggested = if file_count > 0 {
-        json!([{
-            "method": "analyze_diff",
-            "params": { "paths": paths_for_diff },
-            "why": "Analyze impact of these changes"
-        }])
-    } else {
-        json!([])
-    };
+    let mut enriched: Vec<Value> = Vec::new();
+    let mut summary_by_severity: HashMap<String, usize> = HashMap::new();
+    let mut summary_by_tool: HashMap<String, usize> = HashMap::new();
+    let mut reachability_public = 0usize;
+    let mut reachability_internal = 0usize;
+    let mut reachability_unreachable = 0usize;
+    let mut high_risk_count = 0usize;
+
+    for diag in &all_findings {
+        let tool = diag.tool.as_deref().unwrap_or("unknown");
+        if !tool_filter.contains(tool) {
+            continue;
+        }
+
+        let severity = diag.severity.as_deref().unwrap_or("unknown");
+        *summary_by_severity
+            .entry(severity.to_string())
+            .or_insert(0) += 1;
+        *summary_by_tool.entry(tool.to_string()).or_insert(0) += 1;
+
+        // Find enclosing symbol
+        let symbol_id = if let (Some(path), Some(line)) = (&diag.path, diag.line) {
+            let cache_key = (path.clone(), line);
+            if let Some(cached) = symbol_cache.get(&cache_key) {
+                *cached
+            } else {
+                let sym = indexer
+                    .db()
+                    .enclosing_symbol_for_line(path, line, graph_version)
+                    .ok()
+                    .flatten();
+                let id = sym.as_ref().map(|s| s.id);
+                symbol_cache.insert(cache_key, id);
+                id
+            }
+        } else {
+            None
+        };
+
+        // Run reachability analysis (cached per symbol)
+        let entry_points = if let Some(sid) = symbol_id {
+            if let Some(cached) = impact_cache.get(&sid) {
+                cached.clone()
+            } else {
+                let eps = find_entry_points(indexer, sid, max_depth, graph_version);
+                impact_cache.insert(sid, eps.clone());
+                eps
+            }
+        } else {
+            Vec::new()
+        };
+
+        // Classify reachability
+        let has_public = entry_points
+            .iter()
+            .any(|ep| ep.entry_type == "http_route" || ep.entry_type == "rpc_endpoint");
+        let has_any = !entry_points.is_empty();
+
+        if has_public {
+            reachability_public += 1;
+        } else if has_any {
+            reachability_internal += 1;
+        } else {
+            reachability_unreachable += 1;
+        }
+
+        // Score risk
+        let (risk_score, risk_factors) =
+            compute_risk_score(severity, &entry_points, diag.rule_id.as_deref());
+
+        if public_only && !has_public {
+            continue;
+        }
+
+        if risk_score >= 0.7 {
+            high_risk_count += 1;
+        }
+
+        // Build symbol info
+        let symbol_value = if let Some(_sid) = symbol_id {
+            if let Ok(Some(sym)) = indexer
+                .db()
+                .enclosing_symbol_for_line(
+                    diag.path.as_deref().unwrap_or(""),
+                    diag.line.unwrap_or(0),
+                    graph_version,
+                )
+            {
+                json!({
+                    "id": sym.id,
+                    "qualname": sym.qualname,
+                    "kind": sym.kind,
+                })
+            } else {
+                json!(null)
+            }
+        } else {
+            json!(null)
+        };
+
+        let entry_points_json: Vec<Value> = entry_points
+            .iter()
+            .map(|ep| {
+                json!({
+                    "entry_type": ep.entry_type,
+                    "identifier": ep.identifier,
+                    "distance": ep.distance,
+                    "symbol_id": ep.symbol_id,
+                })
+            })
+            .collect();
+
+        enriched.push(json!({
+            "diagnostic": {
+                "path": diag.path,
+                "line": diag.line,
+                "severity": severity,
+                "message": diag.message,
+                "rule_id": diag.rule_id,
+                "tool": tool,
+            },
+            "symbol": symbol_value,
+            "reachable_from": entry_points_json,
+            "risk_score": (risk_score * 100.0).round() / 100.0,
+            "risk_factors": risk_factors,
+        }));
+    }
+
+    // Sort by risk_score descending
+    enriched.sort_by(|a, b| {
+        let sa = a["risk_score"].as_f64().unwrap_or(0.0);
+        let sb = b["risk_score"].as_f64().unwrap_or(0.0);
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let total = enriched.len();
 
     Ok(json!({
-        "since_commit": since_commit,
-        "current_commit": current_commit,
-        "files_changed": files,
-        "file_count": file_count,
-        "suggested_queries": suggested,
+        "findings": enriched,
+        "summary": {
+            "total": total,
+            "by_severity": summary_by_severity,
+            "by_reachability": {
+                "public": reachability_public,
+                "internal": reachability_internal,
+                "unreachable": reachability_unreachable,
+            },
+            "by_tool": summary_by_tool,
+            "high_risk_count": high_risk_count,
+        },
+        "tools_run": json!(run_result),
     }))
 }
 
-// ---------------------------------------------------------------------------
-// GROUP 7 -- Diagnostics
-// ---------------------------------------------------------------------------
-
-pub(super) fn handle_diagnostics_import(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: DiagnosticsImportParams = serde_json::from_value(params)?;
-    // Security fix: Use resolve_repo_path_for_op to validate path
-    let (abs, _rel) =
-        resolve_repo_path_for_op(indexer.repo_root(), &params.path, "diagnostics_import")?;
-    let content = util::read_to_string(&abs)
-        .with_context(|| format!("read diagnostics {}", abs.display()))?;
-    let diagnostics = diagnostics::parse_sarif(&content, indexer.repo_root())?;
-    let imported = indexer.db_mut().insert_diagnostics(&diagnostics)?;
-    Ok(json!({ "imported": imported }))
+#[derive(Clone)]
+struct EntryPoint {
+    entry_type: String,
+    identifier: String,
+    distance: usize,
+    symbol_id: i64,
 }
 
-pub(super) fn handle_diagnostics_list(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: DiagnosticsListParams = serde_json::from_value(params)?;
-    let limit = params.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
-    let offset = params.offset.unwrap_or(0);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    let diagnostics = indexer.db().list_diagnostics(
-        limit,
-        offset,
-        languages.as_deref(),
-        paths.as_deref(),
-        params.severity.as_ref(),
-        params.rule_id.as_ref(),
-        params.tool.as_ref(),
-    )?;
-    Ok(json!(diagnostics))
+/// Walk upstream from a symbol to find public entry points (HTTP routes, RPC endpoints, channel subscribers).
+fn find_entry_points(
+    indexer: &mut Indexer,
+    symbol_id: i64,
+    max_depth: usize,
+    graph_version: i64,
+) -> Vec<EntryPoint> {
+    let config = crate::impact::config::MultiLayerConfig::builder()
+        .max_depth(max_depth)
+        .direction("upstream".to_string())
+        .include_tests(false)
+        .include_paths(false)
+        .limit(200)
+        .enable_test_layer(false)
+        .enable_historical_layer(false)
+        .build();
+
+    let result = match crate::impact::analyze_impact_multi_layer(
+        indexer.db(),
+        &[symbol_id],
+        config,
+        graph_version,
+    ) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    let entry_kinds: &[&str] = &["HTTP_ROUTE", "RPC_IMPL", "CHANNEL_SUBSCRIBE"];
+    let entry_kind_strings: Vec<String> = entry_kinds.iter().map(|s| s.to_string()).collect();
+    let mut entry_points = Vec::new();
+
+    for affected in &result.affected {
+        // Check if this upstream symbol has entry-point edges
+        let edges = match indexer.db().list_edges(
+            50,
+            0,
+            None,
+            None,
+            Some(&entry_kind_strings),
+            Some(affected.symbol.id),
+            None,
+            None,
+            false,
+            None,
+            graph_version,
+            None,
+            None,
+            None,
+        ) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for edge in &edges {
+            let entry_type = match edge.kind.as_str() {
+                "HTTP_ROUTE" => "http_route",
+                "RPC_IMPL" => "rpc_endpoint",
+                "CHANNEL_SUBSCRIBE" => "channel_subscriber",
+                _ => continue,
+            };
+            let identifier = edge
+                .target_qualname
+                .as_deref()
+                .or(edge.detail.as_deref())
+                .unwrap_or(&affected.symbol.qualname)
+                .to_string();
+            entry_points.push(EntryPoint {
+                entry_type: entry_type.to_string(),
+                identifier,
+                distance: affected.distance,
+                symbol_id: affected.symbol.id,
+            });
+        }
+    }
+
+    // Also check the seed symbol itself (distance 0)
+    if let Ok(edges) = indexer.db().list_edges(
+        50,
+        0,
+        None,
+        None,
+        Some(&entry_kind_strings),
+        Some(symbol_id),
+        None,
+        None,
+        false,
+        None,
+        graph_version,
+        None,
+        None,
+        None,
+    ) {
+        for edge in &edges {
+            let entry_type = match edge.kind.as_str() {
+                "HTTP_ROUTE" => "http_route",
+                "RPC_IMPL" => "rpc_endpoint",
+                "CHANNEL_SUBSCRIBE" => "channel_subscriber",
+                _ => continue,
+            };
+            let identifier = edge
+                .target_qualname
+                .as_deref()
+                .or(edge.detail.as_deref())
+                .unwrap_or("")
+                .to_string();
+            entry_points.push(EntryPoint {
+                entry_type: entry_type.to_string(),
+                identifier,
+                distance: 0,
+                symbol_id,
+            });
+        }
+    }
+
+    // Deduplicate by symbol_id + entry_type, keeping shortest distance
+    let mut seen: HashMap<(i64, String), usize> = HashMap::new();
+    let mut deduped = Vec::new();
+    for ep in entry_points {
+        let key = (ep.symbol_id, ep.entry_type.clone());
+        match seen.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                if ep.distance < *e.get() {
+                    *e.get_mut() = ep.distance;
+                    // Update in deduped - find and replace
+                    if let Some(existing) = deduped.iter_mut().find(|d: &&mut EntryPoint| {
+                        d.symbol_id == ep.symbol_id && d.entry_type == ep.entry_type
+                    }) {
+                        existing.distance = ep.distance;
+                        existing.identifier = ep.identifier;
+                    }
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(ep.distance);
+                deduped.push(ep);
+            }
+        }
+    }
+
+    deduped
 }
 
-pub(super) fn handle_diagnostics_summary(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: DiagnosticsSummaryParams = serde_json::from_value(params)?;
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
-    let summary = indexer.db().diagnostics_summary(
-        languages.as_deref(),
-        paths.as_deref(),
-        params.severity.as_ref(),
-        params.rule_id.as_ref(),
-        params.tool.as_ref(),
-    )?;
-    Ok(json!(summary))
+/// Compute a risk score (0.0 to 1.0) based on severity, reachability, and rule type.
+fn compute_risk_score(
+    severity: &str,
+    entry_points: &[EntryPoint],
+    rule_id: Option<&str>,
+) -> (f64, Vec<String>) {
+    let mut score = 0.0f64;
+    let mut factors = Vec::new();
+
+    // Severity score
+    match severity.to_lowercase().as_str() {
+        "error" | "high" => {
+            score += 0.4;
+            factors.push("high_severity".to_string());
+        }
+        "warning" | "medium" => {
+            score += 0.2;
+            factors.push("medium_severity".to_string());
+        }
+        _ => {
+            score += 0.1;
+            factors.push("low_severity".to_string());
+        }
+    }
+
+    // Reachability score
+    let min_distance = entry_points.iter().map(|ep| ep.distance).min();
+    let has_http = entry_points.iter().any(|ep| ep.entry_type == "http_route");
+    let has_rpc = entry_points.iter().any(|ep| ep.entry_type == "rpc_endpoint");
+    let has_channel = entry_points
+        .iter()
+        .any(|ep| ep.entry_type == "channel_subscriber");
+
+    if has_http {
+        score += 0.4;
+        factors.push("http_api_reachable".to_string());
+    } else if has_rpc {
+        score += 0.3;
+        factors.push("rpc_endpoint_reachable".to_string());
+    } else if has_channel {
+        score += 0.2;
+        factors.push("channel_subscriber_reachable".to_string());
+    }
+
+    // Proximity score
+    if let Some(dist) = min_distance {
+        if dist <= 2 {
+            score += 0.2;
+            factors.push("close_to_entry_point".to_string());
+        } else if dist <= 5 {
+            score += 0.1;
+            factors.push("moderate_distance_to_entry_point".to_string());
+        }
+    }
+
+    // Rule type bonus for security-critical patterns
+    if let Some(rid) = rule_id {
+        let rid_lower = rid.to_lowercase();
+        let dangerous = ["sql", "injection", "xss", "deserial", "b608", "b601", "g201", "g202"];
+        if dangerous.iter().any(|pat| rid_lower.contains(pat)) {
+            score += 0.1;
+            factors.push("security_critical_rule".to_string());
+        }
+    }
+
+    (score.min(1.0), factors)
 }

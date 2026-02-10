@@ -168,25 +168,24 @@ fn initialize_result(message: &Value) -> Value {
             "version": env!("CARGO_PKG_VERSION"),
         },
         "instructions": format!(
-            "Use the {TOOL_NAME} tool to query a code index. Call method: help for full docs, examples, and parameter reference. \
-\n\nSTART HERE: explain_symbol for deep symbol understanding (one call replaces 5+). \
-analyze_diff for change impact. find_tests_for for test coverage. trace_flow for call chains. \
-repo_map for architecture overview. gather_context for LLM-ready context. search for text search. search_rg for regex. \
-\n\nOther methods: find_symbol, open_symbol, open_file, references, subgraph, neighbors, \
-module_map, analyze_impact, list_edges, list_xrefs, route_refs, flow_status, \
-repo_overview, repo_insights, top_complexity, top_coupling, co_changes, duplicate_groups, \
-dead_symbols, unused_imports, orphan_tests, grep, suggest_qualnames, \
-changed_files, index_status, reindex, onboard, reflect, changed_since, \
-diagnostics_run, diagnostics_import, diagnostics_list, diagnostics_summary. \
-\n\nOptional tool params: repo, db, set_default, text_mode (compact|pretty|none), include_structured. \
-\n\nEdge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, XREF, MODULE_FILE, IMPORTS_FILE. \
-Scope values: code, docs, tests, examples, all."
+            "Use the {TOOL_NAME} tool to query a code index. Call with method: help for docs.\n\
+\n\
+START HERE: explain_symbol for deep symbol understanding (one call replaces 5+). \
+analyze_diff for change impact. trace_flow for call chains. \
+orient for architecture overview. search for regex. \
+gather_context for LLM-ready context.\n\
+\n\
+Other methods: analyze_impact, onboard, reindex, changes, diagnostics, security_scan, top_complexity.\n\
+\n\
+Edge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, \
+HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, \
+XREF, MODULE_FILE, IMPORTS_FILE. Scope values: code, docs, tests, examples, all."
         ),
     })
 }
 
 fn tool_spec() -> Value {
-    // Build oneOf array: one schema variant per method
+    // Build oneOf array: one schema variant per method (all 13 get full schemas)
     let one_of: Vec<Value> = rpc::METHOD_LIST
         .iter()
         .map(|&method| {
