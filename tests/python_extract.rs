@@ -62,3 +62,67 @@ func(1, 2)
             .any(|edge| edge.target_qualname.as_deref() == Some("pkg.mod.func"))
     );
 }
+
+#[test]
+fn extract_os_getenv_config_read() {
+    let source = r#"
+import os
+
+def main():
+    db_url = os.getenv("DATABASE_URL")
+    api_key = os.environ.get("API_KEY")
+"#;
+    let module = module_name_from_rel_path("app/config.py");
+    let mut extractor = PythonExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let config_reads: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_READ")
+        .collect();
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://DATABASE_URL") }),
+        "expected CONFIG_READ for env://DATABASE_URL, found: {:?}",
+        config_reads
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://API_KEY") }),
+        "expected CONFIG_READ for env://API_KEY"
+    );
+}
+
+#[test]
+fn extract_os_environ_subscript_config_read() {
+    let source = r#"
+import os
+
+secret = os.environ["SECRET_KEY"]
+"#;
+    let module = module_name_from_rel_path("app/config.py");
+    let mut extractor = PythonExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let config_reads: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_READ")
+        .collect();
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://SECRET_KEY") }),
+        "expected CONFIG_READ for env://SECRET_KEY, found: {:?}",
+        config_reads
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
+}

@@ -58,13 +58,14 @@ All queries go through the `lidx` MCP tool with a `method` and optional `params`
 
 | Category | Methods |
 |----------|---------|
-| **Discovery** | `help`, `list_methods`, `list_languages`, `repo_overview`, `repo_insights` |
-| **Search** | `find_symbol`, `suggest_qualnames`, `search_text`, `search_rg`, `grep` |
-| **Navigation** | `open_symbol`, `open_file`, `neighbors`, `subgraph`, `references` |
-| **Analysis** | `gather_context`, `analyze_impact`, `analyze_diff`, `trace_flow` |
-| **Routes** | `route_refs`, `flow_status` |
-| **Index** | `changed_files`, `index_status`, `reindex` |
-| **Quality** | `top_complexity`, `duplicate_groups`, `diagnostics_run`, `diagnostics_list`, `diagnostics_summary` |
+| **Search** | `search` |
+| **Symbol** | `explain_symbol` |
+| **Graph** | `trace_flow` |
+| **Impact** | `analyze_impact`, `analyze_diff` |
+| **Context** | `gather_context`, `context` |
+| **Discovery** | `orient`, `onboard`, `repo_map` |
+| **Management** | `reindex` |
+| **Quality** | `top_complexity`, `dead_symbols` |
 
 Every result includes `next_hops` — pre-computed follow-up queries so your AI assistant knows what to explore next.
 
@@ -116,7 +117,6 @@ These are things you can say to your AI assistant once lidx is connected. The as
 
 ### Code quality
 
-- "Run diagnostics on the Python code"
 - "What are the most complex functions? Any above complexity 10?"
 - "Find dead symbols — functions that are never called"
 - "Are there any unused imports?"

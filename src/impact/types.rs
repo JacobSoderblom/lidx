@@ -88,13 +88,10 @@ pub type ConfidenceScore = f32;
 #[serde(tag = "type")]
 pub enum ImpactSource {
     /// Direct graph edge (CALL, IMPORT, etc.)
-    DirectEdge {
-        edge_kind: String,
-        distance: usize,
-    },
+    DirectEdge { edge_kind: String, distance: usize },
     /// Test relationship
     TestLink {
-        strategy: String, // "import", "call", "naming", "proximity"
+        strategy: String,  // "import", "call", "naming", "proximity"
         test_type: String, // "unit", "integration", "e2e"
     },
     /// Historical co-change pattern
@@ -118,6 +115,8 @@ pub struct LayerResult {
     pub duration_ms: u64,
     /// Whether this layer was truncated
     pub truncated: bool,
+    /// Parent tracking for path reconstruction: child_id -> (parent_id, edge_kind)
+    pub parent_map: HashMap<i64, (i64, String)>,
 }
 
 /// Configuration for multi-layer impact analysis
@@ -150,7 +149,7 @@ impl Default for MultiLayerConfig {
 pub struct DirectConfig {
     pub enabled: bool,
     pub max_depth: usize,
-    pub direction: String, // "upstream", "downstream", "both"
+    pub direction: String,  // "upstream", "downstream", "both"
     pub kinds: Vec<String>, // Edge kinds to follow (empty = all)
     pub include_tests: bool,
     pub languages: Option<Vec<String>>,
@@ -173,7 +172,7 @@ impl Default for DirectConfig {
 #[derive(Debug, Clone)]
 pub struct TestConfig {
     pub enabled: bool,
-    pub min_priority: f32, // Minimum test priority to include
+    pub min_priority: f32,       // Minimum test priority to include
     pub test_types: Vec<String>, // "unit", "integration", "e2e" (empty = all)
 }
 
@@ -225,6 +224,26 @@ pub struct UnifiedImpactResult {
     pub config: ImpactConfig,
     /// Layer-specific metadata
     pub layers: LayerMetadata,
+}
+
+/// A single entry in a batch impact result
+#[derive(Debug, Serialize)]
+pub struct BatchImpactEntry {
+    pub seed_qualname: String,
+    pub seeds: Vec<SymbolCompact>,
+    pub affected: Vec<ImpactEntry>,
+    pub summary: ImpactSummary,
+    pub truncated: bool,
+    pub layers: LayerMetadata,
+}
+
+/// Result of batch impact analysis (multiple seeds in one call)
+#[derive(Debug, Serialize)]
+pub struct BatchImpactResult {
+    pub results: Vec<BatchImpactEntry>,
+    pub config: ImpactConfig,
+    pub total_affected: usize,
+    pub total_files: usize,
 }
 
 /// Metadata about layer execution

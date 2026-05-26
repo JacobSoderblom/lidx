@@ -1,4 +1,5 @@
 use crate::indexer::channel;
+use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -335,7 +336,12 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     }
 }
 
-fn handle_type_declaration(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn handle_type_declaration(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() == "type_spec" {
@@ -392,7 +398,12 @@ fn handle_type_spec(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
     });
 }
 
-fn handle_const_declaration(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn handle_const_declaration(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         let name = if child.kind() == "const_spec" {
@@ -478,20 +489,19 @@ fn handle_import(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     }
 }
 
-fn extract_imports_from_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn extract_imports_from_node(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
     if node.kind() == "import_spec" {
         if let Some(path_node) = node.child_by_field_name("path") {
             let import_path = extract_string_literal(path_node, source);
             if !import_path.is_empty() {
-                let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) =
-                    span(node);
-                let snippet = util::edge_evidence_snippet(
-                    source,
-                    start_byte,
-                    end_byte,
-                    start_line,
-                    end_line,
-                );
+                let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+                let snippet =
+                    util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
                 output.edges.push(EdgeInput {
                     kind: "IMPORTS".to_string(),
                     source_qualname: Some(ctx.module.clone()),
@@ -562,6 +572,10 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = channel_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
+    // Config/env read detection
+    if let Some(edge) = config_read_edge(node, ctx, source) {
+        output.edges.push(edge);
+    }
 
     // General CALLS edge
     let Some(function_node) = node.child_by_field_name("function") else {
@@ -585,6 +599,45 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_end_line: Some(end_line),
         ..Default::default()
     });
+}
+
+/// Detect os.Getenv("KEY"), os.LookupEnv("KEY"), viper.GetString("key"), viper.Get("key") → CONFIG_READ
+fn config_read_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let function_node = node.child_by_field_name("function")?;
+    let (receiver, method) = split_selector_expr(function_node, source)?;
+
+    let (framework, source_type) =
+        if receiver == "os" && (method == "Getenv" || method == "LookupEnv") {
+            ("go", "env")
+        } else if receiver == "viper" || receiver.ends_with(".viper") {
+            match method.as_str() {
+                "GetString" | "Get" | "GetBool" | "GetInt" | "GetFloat64" | "GetDuration" => {
+                    ("viper", "config")
+                }
+                _ => return None,
+            }
+        } else {
+            return None;
+        };
+
+    let args = call_arguments(node);
+    let key_node = args.first()?;
+    let key = extract_string_literal(*key_node, source);
+    if key.is_empty() {
+        return None;
+    }
+    let env_uri = config::normalize_env_var_name(&key)?;
+    let detail = config::build_config_read_detail(source_type, &env_uri, &key, framework);
+    let (start_line, _, end_line, _, _, _) = span(node);
+    Some(EdgeInput {
+        kind: config::CONFIG_READ_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(env_uri),
+        detail: Some(detail),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    })
 }
 
 fn http_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
@@ -706,8 +759,7 @@ fn grpc_impl_edge(
 ) -> Option<EdgeInput> {
     // Check if the receiver type is a known gRPC server
     let server_info = ctx.grpc_servers.get(receiver_type)?;
-    let (raw_path, normalized) =
-        proto::normalize_rpc_path(None, &server_info.service, rpc_name)?;
+    let (raw_path, normalized) = proto::normalize_rpc_path(None, &server_info.service, rpc_name)?;
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     let detail = json!({
@@ -959,7 +1011,9 @@ fn extract_function_signature(node: Node<'_>, source: &str) -> Option<String> {
     let params = node
         .child_by_field_name("parameters")
         .map(|n| node_text(n, source));
-    let result = node.child_by_field_name("result").map(|n| node_text(n, source));
+    let result = node
+        .child_by_field_name("result")
+        .map(|n| node_text(n, source));
     match (params, result) {
         (Some(p), Some(r)) => Some(format!("{} -> {}", p, r)),
         (Some(p), None) => Some(p),
@@ -970,11 +1024,7 @@ fn extract_function_signature(node: Node<'_>, source: &str) -> Option<String> {
 fn extract_name_from_spec(node: Node<'_>, source: &str) -> Option<String> {
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source);
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 fn split_selector_expr(node: Node<'_>, source: &str) -> Option<(String, String)> {
@@ -1079,11 +1129,7 @@ fn node_text(node: Node<'_>, source: &str) -> String {
 
 fn line_count(source: &str) -> i64 {
     let count = source.lines().count();
-    if count == 0 {
-        1
-    } else {
-        count as i64
-    }
+    if count == 0 { 1 } else { count as i64 }
 }
 
 #[cfg(test)]
@@ -1205,9 +1251,6 @@ func subscriber() {
             .filter(|e| e.kind == channel::CHANNEL_SUBSCRIBE_KIND)
             .collect();
         assert!(!pub_edges.is_empty(), "should have CHANNEL_PUBLISH edges");
-        assert!(
-            !sub_edges.is_empty(),
-            "should have CHANNEL_SUBSCRIBE edges"
-        );
+        assert!(!sub_edges.is_empty(), "should have CHANNEL_SUBSCRIBE edges");
     }
 }

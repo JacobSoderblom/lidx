@@ -1,11 +1,12 @@
 pub mod cli;
 pub mod config;
+pub mod context;
 pub mod db;
-pub mod diagnostics;
 pub mod gather_context;
 pub mod git_mining;
 pub mod impact;
 pub mod indexer;
+pub mod init;
 pub mod mcp;
 pub mod metrics;
 pub mod model;

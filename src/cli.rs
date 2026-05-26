@@ -111,29 +111,29 @@ pub enum Command {
         #[arg(long, default_value_t = 1000)]
         watch_batch_max: usize,
     },
-    /// Import SARIF diagnostics into the database.
-    DiagnosticsImport {
+    /// Show compact cross-file context for a file.
+    Context {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         #[arg(long)]
         db: Option<PathBuf>,
-        #[arg(long)]
-        path: PathBuf,
+        /// Output format: text (default) or json.
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// File path to analyze (relative to repo root).
+        path: String,
     },
-    /// Run diagnostics tools and import SARIF into the database.
-    DiagnosticsRun {
+    /// Initialize lidx: index repo, install hooks, update gitignore.
+    Init {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         #[arg(long)]
         db: Option<PathBuf>,
-        /// Restrict diagnostics to specific languages.
-        #[arg(long = "language", value_delimiter = ',')]
-        languages: Vec<String>,
-        /// Restrict diagnostics to specific tools.
-        #[arg(long = "tool", value_delimiter = ',')]
-        tools: Vec<String>,
-        /// Output directory for generated SARIF files.
+        /// Skip indexing.
         #[arg(long)]
-        output_dir: Option<PathBuf>,
+        skip_index: bool,
+        /// Skip hook installation.
+        #[arg(long)]
+        skip_hooks: bool,
     },
 }

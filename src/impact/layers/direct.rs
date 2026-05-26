@@ -6,9 +6,7 @@
 
 use crate::db::Db;
 use crate::impact::confidence::apply_distance_decay;
-use crate::impact::types::{
-    ConfidenceScore, ImpactSource, LayerResult,
-};
+use crate::impact::types::{ConfidenceScore, ImpactSource, LayerResult};
 use crate::model::{Edge, Symbol};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -174,18 +172,19 @@ fn resolve_next_id(
 /// Returns true if the limit was hit (truncated).
 fn resolve_bridge_targets(
     db: &Db,
-    bridge_targets: &[(String, String)],
+    bridge_targets: &[(String, String, i64)], // (qualname, edge_kind, source_symbol_id)
     visited: &mut HashSet<i64>,
     symbol_cache: &mut HashMap<i64, Symbol>,
     symbol_checked: &mut HashSet<i64>,
     distance_map: &mut HashMap<i64, usize>,
+    parent_map: &mut HashMap<i64, (i64, String)>,
     queue: &mut VecDeque<(i64, usize)>,
     current_distance: usize,
     limit: usize,
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<bool> {
-    for (tq, edge_kind) in bridge_targets {
+    for (tq, edge_kind, source_id) in bridge_targets {
         if let Some(complement_kinds) = crate::indexer::channel::bridge_complement(edge_kind) {
             let bridged = db
                 .edges_by_target_qualname_and_kinds(tq, complement_kinds, languages, graph_version)
@@ -209,6 +208,9 @@ fn resolve_bridge_targets(
                     continue;
                 }
                 distance_map.insert(bridged_id, current_distance + 1);
+                parent_map
+                    .entry(bridged_id)
+                    .or_insert((*source_id, edge_kind.clone()));
                 queue.push_back((bridged_id, current_distance + 1));
                 if visited.len() >= limit {
                     return Ok(true);
@@ -271,6 +273,7 @@ pub fn analyze_direct_impact(
     }
 
     let mut truncated = false;
+    let mut parent_map: HashMap<i64, (i64, String)> = HashMap::new();
 
     // BFS traversal with level-by-level batch queries
     while !queue.is_empty() {
@@ -310,20 +313,36 @@ pub fn analyze_direct_impact(
 
         // For upstream/both directions, also fetch incoming edges via qualname pattern
         // This catches callers where target_symbol_id is NULL but target_qualname matches
-        if matches!(direction, TraversalDirection::Upstream | TraversalDirection::Both) {
+        if matches!(
+            direction,
+            TraversalDirection::Upstream | TraversalDirection::Both
+        ) {
             for &current_id in &current_level {
                 if let Some(sym) = symbol_cache.get(&current_id) {
-                    let incoming = db.incoming_edges_by_qualname_pattern(
-                        &sym.name, "CALLS", languages, graph_version
+                    // Search for CALLS and CONFIG_BIND edges targeting this symbol
+                    let mut all_incoming = db.incoming_edges_by_qualname_pattern(
+                        &sym.name,
+                        "CALLS",
+                        languages,
+                        graph_version,
                     )?;
-                    if !incoming.is_empty() {
+                    let config_bind_incoming = db.incoming_edges_by_qualname_pattern(
+                        &sym.name,
+                        "CONFIG_BIND",
+                        languages,
+                        graph_version,
+                    )?;
+                    all_incoming.extend(config_bind_incoming);
+                    if !all_incoming.is_empty() {
                         let entry = edges_by_symbol.entry(current_id).or_default();
                         let existing_ids: HashSet<i64> = entry.iter().map(|e| e.id).collect();
-                        for edge in incoming {
+                        for edge in all_incoming {
                             if !existing_ids.contains(&edge.id) {
                                 // Verify qualname actually matches this symbol
                                 let matches = edge.target_qualname.as_ref().map_or(false, |qn| {
-                                    qn == &sym.qualname || qn.ends_with(&format!(".{}", sym.name))
+                                    qn == &sym.qualname
+                                        || qn == &sym.name
+                                        || qn.ends_with(&format!(".{}", sym.name))
                                 });
                                 if matches {
                                     entry.push(edge);
@@ -347,7 +366,10 @@ pub fn analyze_direct_impact(
                         if let Some(ref qn) = edge.target_qualname {
                             // For downstream/both: resolve target when source is current
                             if edge.source_symbol_id == Some(*current_id)
-                                && matches!(direction, TraversalDirection::Downstream | TraversalDirection::Both)
+                                && matches!(
+                                    direction,
+                                    TraversalDirection::Downstream | TraversalDirection::Both
+                                )
                             {
                                 unresolved_qualnames.push(qn.clone());
                             }
@@ -361,7 +383,7 @@ pub fn analyze_direct_impact(
         let mut resolved_qualnames: HashMap<String, i64> = HashMap::new();
         for qn in &unresolved_qualnames {
             if !resolved_qualnames.contains_key(qn) {
-                if let Ok(Some(id)) = db.lookup_symbol_id_fuzzy(qn, None, graph_version) {
+                if let Ok(Some(id)) = db.lookup_symbol_id_fuzzy(qn, languages, graph_version) {
                     resolved_qualnames.insert(qn.clone(), id);
                 }
             }
@@ -375,7 +397,9 @@ pub fn analyze_direct_impact(
                     if !edge_matches_filter(edge, kinds, include_tests) {
                         continue;
                     }
-                    if let Some(id) = resolve_next_id(edge, *current_id, direction, &resolved_qualnames) {
+                    if let Some(id) =
+                        resolve_next_id(edge, *current_id, direction, &resolved_qualnames)
+                    {
                         if !visited.contains(&id) {
                             neighbor_ids.push(id);
                         }
@@ -395,7 +419,7 @@ pub fn analyze_direct_impact(
         )?;
 
         // Collect bridgeable edges for cross-service traversal
-        let mut bridge_targets: Vec<(String, String)> = Vec::new();
+        let mut bridge_targets: Vec<(String, String, i64)> = Vec::new();
 
         // Process edges and update BFS state
         for current_id in &current_level {
@@ -408,11 +432,13 @@ pub fn analyze_direct_impact(
                     // Collect bridge targets
                     if let Some(ref tq) = edge.target_qualname {
                         if crate::indexer::channel::bridge_complement(&edge.kind).is_some() {
-                            bridge_targets.push((tq.clone(), edge.kind.clone()));
+                            bridge_targets.push((tq.clone(), edge.kind.clone(), *current_id));
                         }
                     }
 
-                    let Some(next_id) = resolve_next_id(edge, *current_id, direction, &resolved_qualnames) else {
+                    let Some(next_id) =
+                        resolve_next_id(edge, *current_id, direction, &resolved_qualnames)
+                    else {
                         continue;
                     };
 
@@ -424,6 +450,9 @@ pub fn analyze_direct_impact(
                     }
 
                     distance_map.insert(next_id, current_distance + 1);
+                    parent_map
+                        .entry(next_id)
+                        .or_insert((*current_id, edge.kind.clone()));
                     queue.push_back((next_id, current_distance + 1));
 
                     if visited.len() >= limit {
@@ -447,6 +476,7 @@ pub fn analyze_direct_impact(
                 &mut symbol_cache,
                 &mut symbol_checked,
                 &mut distance_map,
+                &mut parent_map,
                 &mut queue,
                 current_distance,
                 limit,
@@ -495,6 +525,7 @@ pub fn analyze_direct_impact(
         evidence,
         duration_ms,
         truncated,
+        parent_map,
     })
 }
 
@@ -504,10 +535,19 @@ mod tests {
 
     #[test]
     fn direction_from_string() {
-        assert_eq!(TraversalDirection::from("upstream"), TraversalDirection::Upstream);
-        assert_eq!(TraversalDirection::from("DOWNSTREAM"), TraversalDirection::Downstream);
+        assert_eq!(
+            TraversalDirection::from("upstream"),
+            TraversalDirection::Upstream
+        );
+        assert_eq!(
+            TraversalDirection::from("DOWNSTREAM"),
+            TraversalDirection::Downstream
+        );
         assert_eq!(TraversalDirection::from("both"), TraversalDirection::Both);
-        assert_eq!(TraversalDirection::from("invalid"), TraversalDirection::Both);
+        assert_eq!(
+            TraversalDirection::from("invalid"),
+            TraversalDirection::Both
+        );
     }
 
     #[test]

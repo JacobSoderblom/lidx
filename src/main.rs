@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
-use lidx::{cli, db, diagnostics, indexer, mcp, rpc, watch};
-use serde_json::{Value, json};
+use lidx::{cli, context, db, indexer, init, mcp, rpc, watch};
+use serde_json;
 use std::path::PathBuf;
 
 fn default_db_path(repo: &PathBuf) -> PathBuf {
@@ -106,53 +106,42 @@ fn main() -> Result<()> {
             );
             mcp::serve(repo, db_path, watch_config)
         }
-        cli::Command::DiagnosticsImport { repo, db, path } => {
-            let db_path = db.unwrap_or_else(|| default_db_path(&repo));
-            let abs = if path.is_absolute() {
-                path
-            } else {
-                repo.join(path)
-            };
-            let content = std::fs::read_to_string(&abs)?;
-            let diagnostics = diagnostics::parse_sarif(&content, &repo)?;
-            let mut db = db::Db::new(&db_path)?;
-            let imported = db.insert_diagnostics(&diagnostics)?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({ "imported": imported }))?
-            );
-            Ok(())
-        }
-        cli::Command::DiagnosticsRun {
+        cli::Command::Context {
             repo,
             db,
-            languages,
-            tools,
-            output_dir,
+            format,
+            path,
         } => {
             let db_path = db.unwrap_or_else(|| default_db_path(&repo));
-            let mut indexer = indexer::Indexer::new_with_options(
-                repo.clone(),
-                db_path,
-                indexer::scan::ScanOptions::default(),
-            )?;
-            let mut params = serde_json::Map::new();
-            if !languages.is_empty() {
-                params.insert("languages".to_string(), json!(languages));
+            if !db_path.exists() {
+                // No index yet — silent exit for hooks
+                return Ok(());
             }
-            if !tools.is_empty() {
-                params.insert("tools".to_string(), json!(tools));
+            let db = db::Db::new(&db_path)?;
+            let graph_version = db.current_graph_version()?;
+            let ctx = context::build_file_context(&db, &repo, &path, graph_version)?;
+            match format.as_str() {
+                "json" => {
+                    let json = context::format_json(&ctx);
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                _ => {
+                    let text = context::format_text(&ctx);
+                    if !text.is_empty() {
+                        print!("{text}");
+                    }
+                }
             }
-            if let Some(dir) = output_dir {
-                params.insert(
-                    "output_dir".to_string(),
-                    json!(dir.to_string_lossy().to_string()),
-                );
-            }
-            let result =
-                rpc::handle_method(&mut indexer, "diagnostics_run", Value::Object(params))?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
             Ok(())
+        }
+        cli::Command::Init {
+            repo,
+            db,
+            skip_index,
+            skip_hooks,
+        } => {
+            let db_path = db.unwrap_or_else(|| default_db_path(&repo));
+            init::run_init(&repo, &db_path, skip_index, skip_hooks)
         }
     }
 }

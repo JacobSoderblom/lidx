@@ -10,14 +10,13 @@ use std::time::Instant;
 pub mod batch;
 pub mod bicep;
 pub mod channel;
+pub mod config;
 pub mod csharp;
 pub mod differ;
 pub mod extract;
 pub mod go;
 pub mod http;
 pub mod javascript;
-pub mod lua;
-pub mod markdown;
 pub mod postgres;
 pub mod proto;
 pub mod python;
@@ -66,16 +65,23 @@ impl Indexer {
         let mut extractors: HashMap<String, Box<dyn extract::LanguageExtractor>> = HashMap::new();
         extractors.insert("python".into(), Box::new(python::PythonExtractor::new()?));
         extractors.insert("rust".into(), Box::new(rust::RustExtractor::new()?));
-        extractors.insert("javascript".into(), Box::new(javascript::JavascriptExtractor::new()?));
-        extractors.insert("typescript".into(), Box::new(javascript::TypescriptExtractor::new()?));
+        extractors.insert(
+            "javascript".into(),
+            Box::new(javascript::JavascriptExtractor::new()?),
+        );
+        extractors.insert(
+            "typescript".into(),
+            Box::new(javascript::TypescriptExtractor::new()?),
+        );
         extractors.insert("tsx".into(), Box::new(javascript::TsxExtractor::new()?));
         extractors.insert("csharp".into(), Box::new(csharp::CSharpExtractor::new()?));
         extractors.insert("go".into(), Box::new(go::GoExtractor::new()?));
-        extractors.insert("lua".into(), Box::new(lua::LuaExtractor::new()?));
         extractors.insert("sql".into(), Box::new(sql::SqlExtractor::new()?));
-        extractors.insert("postgres".into(), Box::new(postgres::PostgresExtractor::new()?));
+        extractors.insert(
+            "postgres".into(),
+            Box::new(postgres::PostgresExtractor::new()?),
+        );
         extractors.insert("tsql".into(), Box::new(sql::SqlExtractor::new()?));
-        extractors.insert("markdown".into(), Box::new(markdown::MarkdownExtractor::new()?));
         extractors.insert("proto".into(), Box::new(proto::ProtoExtractor::new()?));
         extractors.insert("yaml".into(), Box::new(yaml::YamlExtractor::new()?));
         extractors.insert("bicep".into(), Box::new(bicep::BicepExtractor::new()?));
@@ -386,9 +392,6 @@ impl Indexer {
         Ok(stats)
     }
 
-
-
-
     fn index_scanned_file(&mut self, file: &scan::ScannedFile) -> Result<(usize, usize)> {
         // Phase 6: Check file size before reading (skip very large files)
         const MAX_FILE_SIZE_MB: u64 = 10;
@@ -439,14 +442,22 @@ impl Indexer {
     }
 
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {
-        let extractor = self.extractors.get_mut(file.language.as_str())
+        let extractor = self
+            .extractors
+            .get_mut(file.language.as_str())
             .ok_or_else(|| anyhow!("skip {}: unknown language {}", file.rel_path, file.language))?;
         let module_name = extractor.module_name_from_rel_path(&file.rel_path);
-        let mut extracted = extractor.extract(source, &module_name)
+        let mut extracted = extractor
+            .extract(source, &module_name)
             .map_err(|err| anyhow!("extract error {} ({module_name}): {err}", file.rel_path))?;
         // Re-borrow immutably for resolve_imports (extract's &mut borrow is released)
         let extractor = self.extractors.get(file.language.as_str()).unwrap();
-        extractor.resolve_imports(&self.repo_root, &file.rel_path, &module_name, &mut extracted.edges);
+        extractor.resolve_imports(
+            &self.repo_root,
+            &file.rel_path,
+            &module_name,
+            &mut extracted.edges,
+        );
         Ok(extracted)
     }
 
@@ -495,5 +506,4 @@ impl Indexer {
 
         Ok((symbols.len(), edges_count))
     }
-
 }

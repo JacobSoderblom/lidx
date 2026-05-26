@@ -426,11 +426,7 @@ fn extract_function_name_after(text: &str) -> Option<String> {
         }
     }
 
-    if !name.is_empty() {
-        Some(name)
-    } else {
-        None
-    }
+    if !name.is_empty() { Some(name) } else { None }
 }
 
 fn extract_execute_function(text: &str) -> Option<String> {
@@ -452,12 +448,52 @@ fn extract_execute_function(text: &str) -> Option<String> {
 fn extract_general_function_calls(line: &str) -> Vec<String> {
     let mut results = Vec::new();
     let sql_keywords = [
-        "SELECT", "INSERT", "UPDATE", "DELETE", "FROM", "WHERE", "AND", "OR",
-        "NOT", "IN", "EXISTS", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
-        "ON", "AS", "INTO", "VALUES", "SET", "CASE", "WHEN", "THEN", "ELSE",
-        "END", "BEGIN", "IF", "WHILE", "LOOP", "FOR", "RETURN", "DECLARE",
-        "CREATE", "ALTER", "DROP", "TABLE", "VIEW", "INDEX", "TRIGGER",
-        "FUNCTION", "PROCEDURE", "PERFORM", "EXECUTE", "RAISE", "EXCEPTION",
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "FROM",
+        "WHERE",
+        "AND",
+        "OR",
+        "NOT",
+        "IN",
+        "EXISTS",
+        "JOIN",
+        "LEFT",
+        "RIGHT",
+        "INNER",
+        "OUTER",
+        "ON",
+        "AS",
+        "INTO",
+        "VALUES",
+        "SET",
+        "CASE",
+        "WHEN",
+        "THEN",
+        "ELSE",
+        "END",
+        "BEGIN",
+        "IF",
+        "WHILE",
+        "LOOP",
+        "FOR",
+        "RETURN",
+        "DECLARE",
+        "CREATE",
+        "ALTER",
+        "DROP",
+        "TABLE",
+        "VIEW",
+        "INDEX",
+        "TRIGGER",
+        "FUNCTION",
+        "PROCEDURE",
+        "PERFORM",
+        "EXECUTE",
+        "RAISE",
+        "EXCEPTION",
     ];
 
     let chars: Vec<char> = line.chars().collect();
@@ -551,11 +587,7 @@ fn extract_table_name(text: &str) -> Option<String> {
         }
     }
 
-    if !name.is_empty() {
-        Some(name)
-    } else {
-        None
-    }
+    if !name.is_empty() { Some(name) } else { None }
 }
 
 fn extract_do_blocks(source: &str, module_name: &str, output: &mut ExtractedFile) {
@@ -634,9 +666,21 @@ $$ LANGUAGE plpgsql;
         let mut extractor = PostgresExtractor::new().unwrap();
         let file = extractor.extract(source, "migrations/001_orders").unwrap();
         let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
-        assert!(calls.iter().any(|e| e.target_qualname.as_deref() == Some("validate_order")));
-        assert!(calls.iter().any(|e| e.target_qualname.as_deref() == Some("update_inventory")));
-        assert!(calls.iter().any(|e| e.target_qualname.as_deref() == Some("get_order_details")));
+        assert!(
+            calls
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("validate_order"))
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("update_inventory"))
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("get_order_details"))
+        );
     }
 
     #[test]
@@ -658,15 +702,27 @@ CREATE TRIGGER order_status_trigger
 "#;
         let mut extractor = PostgresExtractor::new().unwrap();
         let file = extractor.extract(source, "triggers").unwrap();
-        let symbols: Vec<_> = file.symbols.iter().map(|s| (s.kind.as_str(), s.name.as_str())).collect();
+        let symbols: Vec<_> = file
+            .symbols
+            .iter()
+            .map(|s| (s.kind.as_str(), s.name.as_str()))
+            .collect();
         assert!(symbols.iter().any(|s| s == &("table", "orders")));
-        assert!(symbols.iter().any(|s| s == &("function", "notify_order_change")));
-        assert!(symbols.iter().any(|s| s == &("trigger", "order_status_trigger")));
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s == &("function", "notify_order_change"))
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s == &("trigger", "order_status_trigger"))
+        );
         // Trigger should reference the function
         let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
         assert!(calls.iter().any(|e| {
-            e.source_qualname.as_deref() == Some("order_status_trigger") &&
-            e.target_qualname.as_deref() == Some("notify_order_change")
+            e.source_qualname.as_deref() == Some("order_status_trigger")
+                && e.target_qualname.as_deref() == Some("notify_order_change")
         }));
     }
 
@@ -686,14 +742,18 @@ CREATE TABLE orders (
 "#;
         let mut extractor = PostgresExtractor::new().unwrap();
         let file = extractor.extract(source, "schema").unwrap();
-        let refs: Vec<_> = file.edges.iter().filter(|e| e.kind == "REFERENCES").collect();
+        let refs: Vec<_> = file
+            .edges
+            .iter()
+            .filter(|e| e.kind == "REFERENCES")
+            .collect();
         assert!(refs.iter().any(|e| {
-            e.source_qualname.as_deref() == Some("orders") &&
-            e.target_qualname.as_deref() == Some("users")
+            e.source_qualname.as_deref() == Some("orders")
+                && e.target_qualname.as_deref() == Some("users")
         }));
         assert!(refs.iter().any(|e| {
-            e.source_qualname.as_deref() == Some("orders") &&
-            e.target_qualname.as_deref() == Some("products")
+            e.source_qualname.as_deref() == Some("orders")
+                && e.target_qualname.as_deref() == Some("products")
         }));
     }
 
@@ -709,11 +769,23 @@ $$;
 "#;
         let mut extractor = PostgresExtractor::new().unwrap();
         let file = extractor.extract(source, "init").unwrap();
-        let do_blocks: Vec<_> = file.symbols.iter().filter(|s| s.kind == "do_block").collect();
+        let do_blocks: Vec<_> = file
+            .symbols
+            .iter()
+            .filter(|s| s.kind == "do_block")
+            .collect();
         assert_eq!(do_blocks.len(), 1);
         let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
-        assert!(calls.iter().any(|e| e.target_qualname.as_deref() == Some("setup_schema")));
-        assert!(calls.iter().any(|e| e.target_qualname.as_deref() == Some("load_initial_data")));
+        assert!(
+            calls
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("setup_schema"))
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("load_initial_data"))
+        );
     }
 
     #[test]
@@ -728,8 +800,16 @@ $$ LANGUAGE plpgsql;
         let mut extractor = PostgresExtractor::new().unwrap();
         let file = extractor.extract(source, "math").unwrap();
         let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
-        assert!(calls.iter().any(|e| e.target_qualname.as_deref() == Some("add_one")));
-        assert!(calls.iter().any(|e| e.target_qualname.as_deref() == Some("multiply_two")));
+        assert!(
+            calls
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("add_one"))
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("multiply_two"))
+        );
     }
 
     #[test]

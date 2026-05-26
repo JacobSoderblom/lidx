@@ -103,11 +103,8 @@ pub fn build_subgraph_filtered(
                     let resolved = if let Some(cached) = calls_target_cache.get(target_qualname) {
                         *cached
                     } else {
-                        let id = db.lookup_symbol_id_fuzzy(
-                            target_qualname,
-                            languages,
-                            graph_version,
-                        )?;
+                        let id =
+                            db.lookup_symbol_id_fuzzy(target_qualname, languages, graph_version)?;
                         calls_target_cache.insert(target_qualname.to_string(), id);
                         id
                     };

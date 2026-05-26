@@ -1,3 +1,4 @@
+use crate::indexer::config::{self, CONFIG_READ_KIND, CONFIG_SOURCE_KIND};
 use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor, SymbolInput};
 use anyhow::Result;
 use serde_yaml_ng::Value;
@@ -34,14 +35,7 @@ impl LanguageExtractor for YamlExtractor {
             let Some(resource) = parse_k8s_resource(&value) else {
                 continue;
             };
-            resource_to_symbols(
-                &resource,
-                &value,
-                module_name,
-                doc,
-                source,
-                &mut output,
-            );
+            resource_to_symbols(&resource, &value, module_name, doc, source, &mut output);
         }
 
         Ok(output)
@@ -67,9 +61,7 @@ fn parse_k8s_resource(value: &Value) -> Option<K8sResource> {
     }
     let kind = map.get(&Value::String("kind".into()))?.as_str()?;
     let metadata = map.get(&Value::String("metadata".into()))?.as_mapping()?;
-    let name = metadata
-        .get(&Value::String("name".into()))?
-        .as_str()?;
+    let name = metadata.get(&Value::String("name".into()))?.as_str()?;
     let namespace = metadata
         .get(&Value::String("namespace".into()))
         .and_then(|v| v.as_str())
@@ -158,8 +150,7 @@ fn resource_to_symbols(
     // Extract containers
     let containers = find_containers(&kind_lower, value);
     for container in containers {
-        let container_qualname =
-            format!("{}/container/{}", qualname, container.name);
+        let container_qualname = format!("{}/container/{}", qualname, container.name);
         let container_symbol = SymbolInput {
             kind: "container".to_string(),
             name: container.name.clone(),
@@ -177,9 +168,23 @@ fn resource_to_symbols(
         output.edges.push(EdgeInput {
             kind: "CONTAINS".to_string(),
             source_qualname: Some(qualname.clone()),
-            target_qualname: Some(container_qualname),
+            target_qualname: Some(container_qualname.clone()),
             ..Default::default()
         });
+
+        // Extract config/env edges from container spec
+        extract_config_edges(
+            &container_qualname,
+            &container.raw,
+            start_line,
+            end_line,
+            output,
+        );
+    }
+
+    // SecretProviderClass handling
+    if resource.kind == "SecretProviderClass" {
+        extract_secret_provider_edges(&qualname, value, start_line, end_line, output);
     }
 }
 
@@ -221,6 +226,7 @@ fn build_docstring(
 struct ContainerInfo {
     name: String,
     image: Option<String>,
+    raw: Value,
 }
 
 fn find_containers(kind: &str, value: &Value) -> Vec<ContainerInfo> {
@@ -262,16 +268,329 @@ fn find_containers(kind: &str, value: &Value) -> Vec<ContainerInfo> {
         if let Some(list) = pod_spec.get(*key).and_then(|v| v.as_sequence()) {
             for item in list {
                 if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
-                    let image = item.get("image").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let image = item
+                        .get("image")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     containers.push(ContainerInfo {
                         name: name.to_string(),
                         image,
+                        raw: item.clone(),
                     });
                 }
             }
         }
     }
     containers
+}
+
+// --- Config edge extraction ---
+
+/// For env vars with `__` separators (e.g., .NET `Database__ConnectionString`),
+/// emit additional CONFIG_SOURCE edges for each section prefix so that
+/// `GetSection("Database")` → `env://DATABASE` matches the K8s env declaration.
+fn emit_section_prefix_edges(
+    container_qualname: &str,
+    env_name: &str,
+    start_line: i64,
+    end_line: i64,
+    output: &mut ExtractedFile,
+) {
+    let upper = env_name.to_uppercase();
+    // Emit a CONFIG_SOURCE for each `__`-delimited prefix level
+    let mut pos = 0;
+    while let Some(idx) = upper[pos..].find("__") {
+        let prefix = &upper[..pos + idx];
+        if !prefix.is_empty() {
+            let section_uri = format!("env://{prefix}");
+            let detail = config::build_config_source_detail(
+                "env_section",
+                &section_uri,
+                &env_name[..pos + idx],
+                None,
+            );
+            output.edges.push(EdgeInput {
+                kind: CONFIG_SOURCE_KIND.to_string(),
+                source_qualname: Some(container_qualname.to_string()),
+                target_qualname: Some(section_uri),
+                detail: Some(detail),
+                evidence_start_line: Some(start_line),
+                evidence_end_line: Some(end_line),
+                ..Default::default()
+            });
+        }
+        pos += idx + 2; // skip past "__"
+    }
+}
+
+fn extract_config_edges(
+    container_qualname: &str,
+    container_value: &Value,
+    start_line: i64,
+    end_line: i64,
+    output: &mut ExtractedFile,
+) {
+    // Handle env[]
+    if let Some(env_list) = container_value.get("env").and_then(|v| v.as_sequence()) {
+        for env_entry in env_list {
+            let Some(env_name) = env_entry.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(env_uri) = config::normalize_env_var_name(env_name) else {
+                continue;
+            };
+
+            // Check for valueFrom.secretKeyRef
+            if let Some(value_from) = env_entry.get("valueFrom") {
+                if let Some(secret_ref) = value_from.get("secretKeyRef") {
+                    let secret_name = secret_ref
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let secret_key = secret_ref.get("key").and_then(|v| v.as_str()).unwrap_or("");
+
+                    // CONFIG_SOURCE: container → env://NAME
+                    let detail = config::build_config_source_detail(
+                        "env",
+                        &env_uri,
+                        env_name,
+                        Some(&serde_json::json!({
+                            "secret": secret_name,
+                            "key": secret_key,
+                        })),
+                    );
+                    output.edges.push(EdgeInput {
+                        kind: CONFIG_SOURCE_KIND.to_string(),
+                        source_qualname: Some(container_qualname.to_string()),
+                        target_qualname: Some(env_uri.clone()),
+                        detail: Some(detail),
+                        evidence_start_line: Some(start_line),
+                        evidence_end_line: Some(end_line),
+                        ..Default::default()
+                    });
+                    emit_section_prefix_edges(
+                        container_qualname,
+                        env_name,
+                        start_line,
+                        end_line,
+                        output,
+                    );
+
+                    // CONFIG_READ: container → secret://secret-name
+                    if let Some(secret_uri) = config::normalize_secret_name(secret_name) {
+                        let detail = config::build_config_read_detail(
+                            "secret",
+                            &secret_uri,
+                            secret_name,
+                            "kubernetes",
+                        );
+                        output.edges.push(EdgeInput {
+                            kind: CONFIG_READ_KIND.to_string(),
+                            source_qualname: Some(container_qualname.to_string()),
+                            target_qualname: Some(secret_uri),
+                            detail: Some(detail),
+                            evidence_start_line: Some(start_line),
+                            evidence_end_line: Some(end_line),
+                            ..Default::default()
+                        });
+                    }
+                    continue;
+                }
+
+                if let Some(cm_ref) = value_from.get("configMapKeyRef") {
+                    let cm_name = cm_ref.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let cm_key = cm_ref.get("key").and_then(|v| v.as_str()).unwrap_or("");
+
+                    let detail = config::build_config_source_detail(
+                        "env",
+                        &env_uri,
+                        env_name,
+                        Some(&serde_json::json!({
+                            "configmap": cm_name,
+                            "key": cm_key,
+                        })),
+                    );
+                    output.edges.push(EdgeInput {
+                        kind: CONFIG_SOURCE_KIND.to_string(),
+                        source_qualname: Some(container_qualname.to_string()),
+                        target_qualname: Some(env_uri),
+                        detail: Some(detail),
+                        evidence_start_line: Some(start_line),
+                        evidence_end_line: Some(end_line),
+                        ..Default::default()
+                    });
+                    emit_section_prefix_edges(
+                        container_qualname,
+                        env_name,
+                        start_line,
+                        end_line,
+                        output,
+                    );
+                    continue;
+                }
+            }
+
+            // Plain env value (literal)
+            if env_entry.get("value").is_some() {
+                let detail = config::build_config_source_detail("env", &env_uri, env_name, None);
+                output.edges.push(EdgeInput {
+                    kind: CONFIG_SOURCE_KIND.to_string(),
+                    source_qualname: Some(container_qualname.to_string()),
+                    target_qualname: Some(env_uri),
+                    detail: Some(detail),
+                    evidence_start_line: Some(start_line),
+                    evidence_end_line: Some(end_line),
+                    ..Default::default()
+                });
+                emit_section_prefix_edges(
+                    container_qualname,
+                    env_name,
+                    start_line,
+                    end_line,
+                    output,
+                );
+            }
+        }
+    }
+
+    // Handle envFrom[]
+    if let Some(env_from_list) = container_value.get("envFrom").and_then(|v| v.as_sequence()) {
+        for entry in env_from_list {
+            if let Some(secret_ref) = entry.get("secretRef") {
+                if let Some(name) = secret_ref.get("name").and_then(|v| v.as_str()) {
+                    if let Some(secret_uri) = config::normalize_secret_name(name) {
+                        let detail = config::build_config_read_detail(
+                            "secret",
+                            &secret_uri,
+                            name,
+                            "kubernetes",
+                        );
+                        output.edges.push(EdgeInput {
+                            kind: CONFIG_READ_KIND.to_string(),
+                            source_qualname: Some(container_qualname.to_string()),
+                            target_qualname: Some(secret_uri),
+                            detail: Some(detail),
+                            evidence_start_line: Some(start_line),
+                            evidence_end_line: Some(end_line),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+            if let Some(cm_ref) = entry.get("configMapRef") {
+                if let Some(name) = cm_ref.get("name").and_then(|v| v.as_str()) {
+                    let uri = format!("configmap://{}", name.to_lowercase());
+                    let detail =
+                        config::build_config_read_detail("configmap", &uri, name, "kubernetes");
+                    output.edges.push(EdgeInput {
+                        kind: CONFIG_READ_KIND.to_string(),
+                        source_qualname: Some(container_qualname.to_string()),
+                        target_qualname: Some(uri),
+                        detail: Some(detail),
+                        evidence_start_line: Some(start_line),
+                        evidence_end_line: Some(end_line),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn extract_secret_provider_edges(
+    qualname: &str,
+    value: &Value,
+    start_line: i64,
+    end_line: i64,
+    output: &mut ExtractedFile,
+) {
+    let spec = match value.get("spec") {
+        Some(v) => v,
+        None => return,
+    };
+
+    // Parse spec.parameters.objects — this is a YAML string embedded in YAML.
+    // Azure CSI driver format uses triple-nesting: the `objects` field is a YAML string
+    // containing `array: [items...]` where each item may itself be a pipe-block string
+    // that needs yet another YAML parse to extract `objectName`.
+    if let Some(objects_str) = spec
+        .get("parameters")
+        .and_then(|p| p.get("objects"))
+        .and_then(|o| o.as_str())
+    {
+        if let Ok(objects_value) = serde_yaml_ng::from_str::<Value>(objects_str) {
+            // Handle both formats:
+            // 1. Direct sequence: [{objectName: ..., objectType: ...}, ...]
+            // 2. Azure CSI `array:` wrapper: {array: [string, string, ...]}
+            let items_owned: Vec<Value>;
+            let items: &[Value] =
+                if let Some(arr) = objects_value.get("array").and_then(|a| a.as_sequence()) {
+                    // Azure CSI format: array items may be strings needing another YAML parse
+                    items_owned = arr
+                        .iter()
+                        .filter_map(|item| {
+                            if let Some(s) = item.as_str() {
+                                serde_yaml_ng::from_str::<Value>(s).ok()
+                            } else {
+                                Some(item.clone())
+                            }
+                        })
+                        .collect();
+                    &items_owned
+                } else {
+                    match &objects_value {
+                        Value::Sequence(seq) => seq.as_slice(),
+                        _ => std::slice::from_ref(&objects_value),
+                    }
+                };
+            for item in items {
+                if let Some(obj_name) = item.get("objectName").and_then(|v| v.as_str()) {
+                    if let Some(secret_uri) = config::normalize_secret_name(obj_name) {
+                        let detail = config::build_config_read_detail(
+                            "secret",
+                            &secret_uri,
+                            obj_name,
+                            "csi-secrets-store",
+                        );
+                        output.edges.push(EdgeInput {
+                            kind: CONFIG_READ_KIND.to_string(),
+                            source_qualname: Some(qualname.to_string()),
+                            target_qualname: Some(secret_uri),
+                            detail: Some(detail),
+                            evidence_start_line: Some(start_line),
+                            evidence_end_line: Some(end_line),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse spec.secretObjects[].secretName → CONFIG_SOURCE to secret://
+    if let Some(secret_objects) = spec.get("secretObjects").and_then(|v| v.as_sequence()) {
+        for so in secret_objects {
+            if let Some(secret_name) = so.get("secretName").and_then(|v| v.as_str()) {
+                if let Some(secret_uri) = config::normalize_secret_name(secret_name) {
+                    let detail = config::build_config_source_detail(
+                        "secret",
+                        &secret_uri,
+                        secret_name,
+                        Some(&serde_json::json!({ "provider": "csi-secrets-store" })),
+                    );
+                    output.edges.push(EdgeInput {
+                        kind: CONFIG_SOURCE_KIND.to_string(),
+                        source_qualname: Some(qualname.to_string()),
+                        target_qualname: Some(secret_uri),
+                        detail: Some(detail),
+                        evidence_start_line: Some(start_line),
+                        evidence_end_line: Some(end_line),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
 }
 
 // --- Multi-document splitting ---
@@ -306,9 +625,8 @@ fn split_documents(source: &str) -> Vec<YamlDocument> {
                 // Find end of separator line
                 let sep_end = find_line_end(source, next);
                 current_start = sep_end;
-                current_line = current_line
-                    + doc_text.bytes().filter(|b| *b == b'\n').count() as i64
-                    + 1; // +1 for the separator line
+                current_line =
+                    current_line + doc_text.bytes().filter(|b| *b == b'\n').count() as i64 + 1; // +1 for the separator line
                 i = sep_end;
                 continue;
             }
@@ -386,10 +704,7 @@ fn span_whole(source: &str) -> (i64, i64, i64, i64, i64, i64) {
     (1, 1, lines, 1, 0, source.len() as i64)
 }
 
-fn module_symbol_with_span(
-    module_name: &str,
-    span: (i64, i64, i64, i64, i64, i64),
-) -> SymbolInput {
+fn module_symbol_with_span(module_name: &str, span: (i64, i64, i64, i64, i64, i64)) -> SymbolInput {
     let name = module_name
         .rsplit('/')
         .next()

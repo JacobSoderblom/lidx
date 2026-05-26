@@ -3,9 +3,7 @@
 //! This module provides configuration types and builders for controlling
 //! multi-layer impact analysis behavior.
 
-pub use crate::impact::types::{
-    DirectConfig, HistoricalConfig, MultiLayerConfig, TestConfig,
-};
+pub use crate::impact::types::{DirectConfig, HistoricalConfig, MultiLayerConfig, TestConfig};
 
 impl MultiLayerConfig {
     /// Create a builder for fluent configuration

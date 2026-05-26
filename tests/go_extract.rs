@@ -4,9 +4,18 @@ use lidx::indexer::go::{GoExtractor, module_name_from_rel_path};
 #[test]
 fn module_name_from_path() {
     assert_eq!(module_name_from_rel_path("main.go"), "main");
-    assert_eq!(module_name_from_rel_path("cmd/server/main.go"), "cmd/server/main");
-    assert_eq!(module_name_from_rel_path("pkg/auth/handler.go"), "pkg/auth/handler");
-    assert_eq!(module_name_from_rel_path("internal/models/user.go"), "internal/models/user");
+    assert_eq!(
+        module_name_from_rel_path("cmd/server/main.go"),
+        "cmd/server/main"
+    );
+    assert_eq!(
+        module_name_from_rel_path("pkg/auth/handler.go"),
+        "pkg/auth/handler"
+    );
+    assert_eq!(
+        module_name_from_rel_path("internal/models/user.go"),
+        "internal/models/user"
+    );
 }
 
 #[test]
@@ -72,8 +81,16 @@ func caller() { helper() }
         .iter()
         .filter(|e| e.kind == "IMPORTS")
         .collect();
-    assert!(imports.iter().any(|e| e.target_qualname.as_deref() == Some("fmt")));
-    assert!(imports.iter().any(|e| e.target_qualname.as_deref() == Some("net/http")));
+    assert!(
+        imports
+            .iter()
+            .any(|e| e.target_qualname.as_deref() == Some("fmt"))
+    );
+    assert!(
+        imports
+            .iter()
+            .any(|e| e.target_qualname.as_deref() == Some("net/http"))
+    );
 
     let calls: Vec<_> = extracted
         .edges
@@ -84,5 +101,46 @@ func caller() { helper() }
         calls
             .iter()
             .any(|e| e.target_qualname.as_deref() == Some("pkg/models/user.helper"))
+    );
+}
+
+#[test]
+fn extract_os_getenv_config_read() {
+    let source = r#"
+package main
+
+import "os"
+
+func main() {
+    dbUrl := os.Getenv("DATABASE_URL")
+    apiKey, _ := os.LookupEnv("API_KEY")
+    _ = dbUrl
+    _ = apiKey
+}
+"#;
+    let module = module_name_from_rel_path("cmd/main.go");
+    let mut extractor = GoExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let config_reads: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONFIG_READ")
+        .collect();
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://DATABASE_URL") }),
+        "expected CONFIG_READ for env://DATABASE_URL, found: {:?}",
+        config_reads
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://API_KEY") }),
+        "expected CONFIG_READ for env://API_KEY"
     );
 }

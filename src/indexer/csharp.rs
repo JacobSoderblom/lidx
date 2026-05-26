@@ -1,4 +1,5 @@
 use crate::indexer::channel;
+use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -190,6 +191,12 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     if node.kind() == "invocation_expression" || node.kind() == "object_creation_expression" {
         handle_call(node, ctx, source, output);
     }
+    // Configuration["KEY"] — element_access_expression
+    if node.kind() == "element_access_expression" {
+        if let Some(edge) = config_indexer_read_edge(node, ctx, source) {
+            output.edges.push(edge);
+        }
+    }
     if is_nested_function_node(node.kind()) {
         return;
     }
@@ -220,6 +227,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         }
         "method_declaration" => {
             handle_method(node, ctx, source, output);
+            return;
+        }
+        "constructor_declaration" => {
+            handle_constructor(node, ctx, source, output);
             return;
         }
         "property_declaration" => {
@@ -406,6 +417,62 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     }
 }
 
+fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let qualname = build_qualname(ctx, ".ctor");
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    let signature = method_signature(node, source);
+    output.symbols.push(SymbolInput {
+        kind: "method".to_string(),
+        name: ".ctor".to_string(),
+        qualname: qualname.clone(),
+        start_line,
+        start_col,
+        end_line,
+        end_col,
+        start_byte,
+        end_byte,
+        signature: signature.clone(),
+        docstring: None,
+    });
+    output.edges.push(EdgeInput {
+        kind: "CONTAINS".to_string(),
+        source_qualname: Some(container_qualname(ctx)),
+        target_qualname: Some(qualname.clone()),
+        detail: None,
+        evidence_snippet: None,
+        ..Default::default()
+    });
+
+    // Detect IOptions<T> constructor injection → CONFIG_BIND edges
+    if let Some(ref sig) = signature {
+        let class_qualname = container_qualname(ctx);
+        for (options_type, wrapper_type) in extract_di_options_types_from_params(sig) {
+            let detail = config::build_config_bind_detail(
+                &options_type,
+                &wrapper_type,
+                "constructor_injection",
+                "dotnet",
+            );
+            output.edges.push(EdgeInput {
+                kind: config::CONFIG_BIND_KIND.to_string(),
+                source_qualname: Some(class_qualname.clone()),
+                target_qualname: Some(options_type),
+                detail: Some(detail),
+                evidence_start_line: Some(start_line),
+                evidence_end_line: Some(end_line),
+                ..Default::default()
+            });
+        }
+    }
+
+    if let Some(body) = node.child_by_field_name("body") {
+        let mut next_ctx = ctx.clone();
+        next_ctx.fn_depth += 1;
+        next_ctx.current_scope = qualname;
+        walk_node(body, &next_ctx, source, output);
+    }
+}
+
 fn handle_property(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     let Some(name_node) = node.child_by_field_name("name") else {
         return;
@@ -553,6 +620,12 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = channel_subscribe_edge(node, ctx, source) {
         output.edges.push(edge);
     }
+    if let Some(edge) = config_read_edge(node, ctx, source) {
+        output.edges.push(edge);
+    }
+    if let Some(edge) = config_bind_call_edge(node, ctx, source) {
+        output.edges.push(edge);
+    }
     let Some(target_node) = call_target_node(node) else {
         return;
     };
@@ -574,6 +647,134 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_end_line: Some(end_line),
         ..Default::default()
     });
+}
+
+fn config_read_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let target_node = call_target_node(node)?;
+    let ct = call_target_parts(target_node, source)?;
+    let receiver = ct.receiver.as_deref().unwrap_or("");
+
+    // Environment.GetEnvironmentVariable("KEY")
+    if ct.name == "GetEnvironmentVariable"
+        && (receiver == "Environment" || receiver.ends_with(".Environment"))
+    {
+        let args = call_arguments(node);
+        let key = args
+            .first()
+            .and_then(|a| extract_string_literal(*a, source))?;
+        let env_uri = config::normalize_env_var_name(&key)?;
+        let detail = config::build_config_read_detail("env", &env_uri, &key, "dotnet");
+        let (start_line, _, end_line, _, _, _) = span(node);
+        return Some(EdgeInput {
+            kind: config::CONFIG_READ_KIND.to_string(),
+            source_qualname: Some(ctx.current_scope.clone()),
+            target_qualname: Some(env_uri),
+            detail: Some(detail),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            ..Default::default()
+        });
+    }
+
+    // IConfiguration.GetValue<T>("KEY") or GetValue("KEY")
+    // Also: .BindConfiguration("Section") for options pattern
+    if ct.name == "GetValue"
+        || ct.name == "GetSection"
+        || ct.name == "GetConnectionString"
+        || ct.name == "BindConfiguration"
+    {
+        let args = call_arguments(node);
+        let key = args
+            .first()
+            .and_then(|a| extract_string_literal(*a, source))?;
+        let env_uri = config::normalize_env_var_name(&key)?;
+        let detail = config::build_config_read_detail("config", &env_uri, &key, "dotnet-config");
+        let (start_line, _, end_line, _, _, _) = span(node);
+        return Some(EdgeInput {
+            kind: config::CONFIG_READ_KIND.to_string(),
+            source_qualname: Some(ctx.current_scope.clone()),
+            target_qualname: Some(env_uri),
+            detail: Some(detail),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            ..Default::default()
+        });
+    }
+
+    None
+}
+
+/// Detect Configure<T>(), AddOptions<T>(), GetRequiredService<IOptions<T>>() calls.
+fn config_bind_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let target_node = call_target_node(node)?;
+    let ct = call_target_parts(target_node, source)?;
+
+    // services.Configure<T>(...) or services.AddOptions<T>()
+    let method_base = ct.name.split('<').next().unwrap_or(&ct.name);
+    let is_config_method = matches!(method_base, "Configure" | "AddOptions");
+
+    let options_type = if is_config_method {
+        extract_generic_type_arg(&ct.name)
+    } else if method_base == "GetRequiredService" || method_base == "GetService" {
+        // GetRequiredService<IOptions<T>>() → unwrap IOptions
+        let inner = extract_generic_type_arg(&ct.name)?;
+        extract_options_type(&inner).or(Some(inner))
+    } else {
+        None
+    }?;
+
+    let detail =
+        config::build_config_bind_detail(&options_type, method_base, "configure_call", "dotnet");
+    let (start_line, _, end_line, _, _, _) = span(node);
+    Some(EdgeInput {
+        kind: config::CONFIG_BIND_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(options_type),
+        detail: Some(detail),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    })
+}
+
+/// Detect Configuration["KEY"] or ConfigurationManager.AppSettings["KEY"] indexer access.
+fn config_indexer_read_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    // element_access_expression has "expression" (the object) and "argument_list" (the bracket args)
+    let expr_node = node.child_by_field_name("expression")?;
+    let receiver_text = node_text(expr_node, source);
+    let receiver_lower = receiver_text.to_ascii_lowercase();
+
+    // Match configuration["key"], _configuration["key"], Configuration["key"]
+    let is_config = receiver_lower.ends_with("configuration")
+        || receiver_lower.ends_with("appsettings")
+        || receiver_lower.contains("configurationmanager.appsettings")
+        || receiver_lower.contains("configurationmanager.connectionstrings");
+
+    if !is_config {
+        return None;
+    }
+
+    // Extract the string key from the bracket list
+    let arg_list = node.child_by_field_name("argument_list")?;
+    let mut cursor = arg_list.walk();
+    for child in arg_list.named_children(&mut cursor) {
+        if let Some(key) = extract_string_literal(child, source) {
+            let env_uri = config::normalize_env_var_name(&key)?;
+            let detail =
+                config::build_config_read_detail("config", &env_uri, &key, "dotnet-config");
+            let (start_line, _, end_line, _, _, _) = span(node);
+            return Some(EdgeInput {
+                kind: config::CONFIG_READ_KIND.to_string(),
+                source_qualname: Some(ctx.current_scope.clone()),
+                target_qualname: Some(env_uri),
+                detail: Some(detail),
+                evidence_start_line: Some(start_line),
+                evidence_end_line: Some(end_line),
+                ..Default::default()
+            });
+        }
+    }
+    None
 }
 
 #[derive(Clone)]
@@ -1514,6 +1715,117 @@ fn unquote_string_literal(raw: &str) -> Option<String> {
     None
 }
 
+/// Extract content between outermost `<>` with nesting support.
+/// `"Configure<DatabaseOptions>"` → `Some("DatabaseOptions")`
+fn extract_generic_type_arg(text: &str) -> Option<String> {
+    let start = text.find('<')?;
+    let mut depth = 0;
+    let mut end = None;
+    for (i, ch) in text.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = end?;
+    let inner = text[start + 1..end].trim();
+    if inner.is_empty() {
+        return None;
+    }
+    Some(inner.to_string())
+}
+
+/// Check if type_text is IOptions<T>, IOptionsMonitor<T>, or IOptionsSnapshot<T>.
+/// Returns the inner type T.
+fn extract_options_type(type_text: &str) -> Option<String> {
+    let trimmed = type_text.trim();
+    for prefix in &["IOptions<", "IOptionsMonitor<", "IOptionsSnapshot<"] {
+        if trimmed.starts_with(prefix) {
+            return extract_generic_type_arg(trimmed);
+        }
+    }
+    None
+}
+
+/// Split a string on commas, respecting nested `<>` brackets.
+fn split_respecting_brackets(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, ch) in text.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(text[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(text[start..].to_string());
+    parts
+}
+
+/// Extract the type part from a parameter declaration like `IOptions<DatabaseOptions> db`.
+/// Returns just the type (everything before the last whitespace-separated token).
+fn param_type_part(param: &str) -> Option<String> {
+    let trimmed = param.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Find last space that's not inside <>
+    let mut depth = 0;
+    let mut last_space = None;
+    for (i, ch) in trimmed.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ' ' | '\t' if depth == 0 => last_space = Some(i),
+            _ => {}
+        }
+    }
+    let type_part = match last_space {
+        Some(idx) => &trimmed[..idx],
+        None => trimmed,
+    };
+    let type_part = type_part.trim();
+    if type_part.is_empty() {
+        return None;
+    }
+    Some(type_part.to_string())
+}
+
+/// Parse raw constructor parameter text and extract IOptions<T> matches.
+/// Returns `(options_type, wrapper_type)` pairs.
+fn extract_di_options_types_from_params(param_text: &str) -> Vec<(String, String)> {
+    let text = param_text
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')');
+    let mut results = Vec::new();
+    for part in split_respecting_brackets(text) {
+        if let Some(type_text) = param_type_part(&part) {
+            if let Some(options_type) = extract_options_type(&type_text) {
+                let wrapper = type_text
+                    .split('<')
+                    .next()
+                    .unwrap_or(&type_text)
+                    .to_string();
+                results.push((options_type, wrapper));
+            }
+        }
+    }
+    results
+}
+
 fn http_client_label(receiver: Option<&str>, full: &str) -> Option<&'static str> {
     let full_lower = full.to_ascii_lowercase();
     let receiver_lower = receiver.unwrap_or("").to_ascii_lowercase();
@@ -1585,6 +1897,15 @@ fn walk_declaration_list(node: Node<'_>, ctx: &Context, source: &str, output: &m
     }
 }
 
+/// C# convention: interface names start with `I` followed by an uppercase letter.
+/// Uses the last segment of a potentially qualified name (e.g., `Foo.IBar` → `IBar`).
+fn is_likely_interface_name(name: &str) -> bool {
+    let last = name.rsplit('.').next().unwrap_or(name);
+    let last = last.split('<').next().unwrap_or(last);
+    let mut chars = last.chars();
+    matches!(chars.next(), Some('I')) && matches!(chars.next(), Some(c) if c.is_uppercase())
+}
+
 fn handle_base_list(
     node: Node<'_>,
     qualname: &str,
@@ -1607,8 +1928,15 @@ fn handle_base_list(
         TypeKind::Class | TypeKind::Record => {
             let mut iter = bases.into_iter();
             if let Some(base) = iter.next() {
+                // C# convention: interfaces start with I + uppercase letter.
+                // If the first base looks like an interface, emit IMPLEMENTS.
+                let edge_kind = if is_likely_interface_name(&base) {
+                    "IMPLEMENTS"
+                } else {
+                    "EXTENDS"
+                };
                 output.edges.push(EdgeInput {
-                    kind: "EXTENDS".to_string(),
+                    kind: edge_kind.to_string(),
                     source_qualname: Some(qualname.to_string()),
                     target_qualname: Some(base),
                     detail: None,
@@ -1795,7 +2123,7 @@ fn line_count(source: &str) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::CSharpExtractor;
+    use super::*;
     use crate::indexer::extract::LanguageExtractor;
     use crate::indexer::http;
     use crate::indexer::proto;
@@ -1895,5 +2223,128 @@ client.SayHelloAsync(new HelloRequest());
                 .iter()
                 .any(|edge| edge.target_qualname.as_deref() == Some("/greeter/sayhello"))
         );
+    }
+
+    #[test]
+    fn is_likely_interface_name_detects_i_prefix() {
+        assert!(is_likely_interface_name("IKeyVaultCredentialStore"));
+        assert!(is_likely_interface_name("IOptions"));
+        assert!(is_likely_interface_name("Foo.Bar.IDisposable"));
+        assert!(is_likely_interface_name("IEnumerable<T>"));
+        assert!(!is_likely_interface_name("BaseClass"));
+        assert!(!is_likely_interface_name("Integer"));
+        // "I" alone or "Iota" (lowercase after I) are not interfaces
+        assert!(!is_likely_interface_name("I"));
+    }
+
+    #[test]
+    fn class_implementing_interface_gets_implements_edge() {
+        let source = r#"
+namespace Acme;
+public class MyService : IMyService {
+    public void DoWork() {}
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let implements = file
+            .edges
+            .iter()
+            .filter(|e| e.kind == "IMPLEMENTS")
+            .collect::<Vec<_>>();
+        let extends = file
+            .edges
+            .iter()
+            .filter(|e| e.kind == "EXTENDS")
+            .collect::<Vec<_>>();
+        assert!(
+            implements
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("IMyService")),
+            "expected IMPLEMENTS edge to IMyService"
+        );
+        assert!(
+            extends.is_empty(),
+            "expected no EXTENDS edges, found: {:?}",
+            extends
+                .iter()
+                .map(|e| e.target_qualname.as_deref())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn class_extending_class_then_interface() {
+        let source = r#"
+namespace Acme;
+public class MyService : BaseService, IMyService {
+    public void DoWork() {}
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let extends = file
+            .edges
+            .iter()
+            .filter(|e| e.kind == "EXTENDS")
+            .collect::<Vec<_>>();
+        let implements = file
+            .edges
+            .iter()
+            .filter(|e| e.kind == "IMPLEMENTS")
+            .collect::<Vec<_>>();
+        assert!(
+            extends
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("BaseService")),
+            "expected EXTENDS edge to BaseService"
+        );
+        assert!(
+            implements
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("IMyService")),
+            "expected IMPLEMENTS edge to IMyService"
+        );
+    }
+
+    #[test]
+    fn extract_generic_type_arg_simple() {
+        assert_eq!(
+            extract_generic_type_arg("Configure<DatabaseOptions>"),
+            Some("DatabaseOptions".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_generic_type_arg_nested() {
+        assert_eq!(
+            extract_generic_type_arg("GetRequiredService<IOptions<DatabaseOptions>>"),
+            Some("IOptions<DatabaseOptions>".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_options_type_variants() {
+        assert_eq!(
+            extract_options_type("IOptions<DatabaseOptions>"),
+            Some("DatabaseOptions".to_string())
+        );
+        assert_eq!(
+            extract_options_type("IOptionsMonitor<LoggingOptions>"),
+            Some("LoggingOptions".to_string())
+        );
+        assert_eq!(extract_options_type("ILogger<Foo>"), None);
+    }
+
+    #[test]
+    fn extract_di_options_from_mixed_params() {
+        let result = extract_di_options_types_from_params(
+            "(IOptions<DatabaseOptions> db, ILogger<Foo> logger, IOptionsMonitor<CacheOptions> cache)",
+        );
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].0, "DatabaseOptions");
+        assert_eq!(result[0].1, "IOptions");
+        assert_eq!(result[1].0, "CacheOptions");
+        assert_eq!(result[1].1, "IOptionsMonitor");
     }
 }

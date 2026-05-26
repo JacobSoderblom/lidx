@@ -1,4 +1,5 @@
 use crate::indexer::channel;
+use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -598,6 +599,9 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = channel_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
+    if let Some(edge) = config_read_edge(node, ctx, source) {
+        output.edges.push(edge);
+    }
     let Some(function_node) = node.child_by_field_name("function") else {
         return;
     };
@@ -619,6 +623,44 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_end_line: Some(end_line),
         ..Default::default()
     });
+}
+
+/// Detect std::env::var("KEY"), env::var("KEY"), env::var_os("KEY"), dotenvy::var("KEY") → CONFIG_READ
+fn config_read_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let function_node = node.child_by_field_name("function")?;
+    let raw_fn = node_text(function_node, source);
+
+    // Match env::var, std::env::var, env::var_os, std::env::var_os, dotenvy::var
+    let is_env_var = raw_fn == "env::var"
+        || raw_fn == "std::env::var"
+        || raw_fn == "env::var_os"
+        || raw_fn == "std::env::var_os"
+        || raw_fn == "dotenvy::var";
+
+    if !is_env_var {
+        return None;
+    }
+
+    let args = call_arguments(node);
+    let key_node = args.first()?;
+    let key = extract_string_literal(*key_node, source)?;
+    let env_uri = config::normalize_env_var_name(&key)?;
+    let framework = if raw_fn.starts_with("dotenvy") {
+        "dotenvy"
+    } else {
+        "rust-std"
+    };
+    let detail = config::build_config_read_detail("env", &env_uri, &key, framework);
+    let (start_line, _, end_line, _, _, _) = span(node);
+    Some(EdgeInput {
+        kind: config::CONFIG_READ_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(env_uri),
+        detail: Some(detail),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    })
 }
 
 fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {

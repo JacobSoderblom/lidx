@@ -1,6 +1,5 @@
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct Symbol {
@@ -15,9 +14,12 @@ pub struct Symbol {
     pub end_col: i64,
     pub start_byte: i64,
     pub end_byte: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub docstring: Option<String>,
     pub graph_version: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_sha: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stable_id: Option<String>,
@@ -68,17 +70,28 @@ pub struct Edge {
     pub id: i64,
     pub file_path: String,
     pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_symbol_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub target_symbol_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub target_qualname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_start_line: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_end_line: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
     pub graph_version: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<String>,
     pub event_ts: Option<i64>,
 }
@@ -104,7 +117,6 @@ pub struct RepoInsights {
     pub top_fan_out: Vec<SymbolCoupling>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coupling_hotspots: Option<Vec<CouplingHotspot>>,
-    pub diagnostics: DiagnosticsSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub staleness: Option<StalenessMetrics>,
     pub last_indexed: Option<i64>,
@@ -156,28 +168,6 @@ pub struct DuplicateGroup {
     pub symbols: Vec<Symbol>,
 }
 
-#[derive(Debug, Serialize, Clone)]
-pub struct Diagnostic {
-    pub id: i64,
-    pub path: Option<String>,
-    pub line: Option<i64>,
-    pub column: Option<i64>,
-    pub end_line: Option<i64>,
-    pub end_column: Option<i64>,
-    pub severity: Option<String>,
-    pub message: String,
-    pub rule_id: Option<String>,
-    pub tool: Option<String>,
-    pub snippet: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DiagnosticsSummary {
-    pub total: i64,
-    pub by_severity: BTreeMap<String, i64>,
-    pub by_tool: BTreeMap<String, i64>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct OpenSymbolResult {
     pub symbol: Symbol,
@@ -202,6 +192,7 @@ pub struct RpcSuggestion {
 pub struct SearchHit {
     pub path: String,
     pub line: usize,
+    #[serde(skip)]
     pub column: usize,
     pub line_text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -210,9 +201,9 @@ pub struct SearchHit {
     pub enclosing_symbol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub reasons: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub engine: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_hops: Option<Vec<RpcSuggestion>>,
@@ -222,6 +213,7 @@ pub struct SearchHit {
 pub struct GrepHit {
     pub path: String,
     pub line: usize,
+    #[serde(skip)]
     pub column: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_text: Option<String>,
@@ -231,9 +223,9 @@ pub struct GrepHit {
     pub enclosing_symbol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub reasons: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub engine: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_hops: Option<Vec<RpcSuggestion>>,
@@ -598,6 +590,8 @@ pub struct ExplainSymbolResult {
     pub budget: BudgetInfo,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub next_hops: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -690,7 +684,7 @@ pub struct AnalyzeDiffResult {
 #[derive(Debug, Serialize)]
 pub struct ChangedSymbol {
     pub symbol: Symbol,
-    pub change_type: String,  // "modified", "signature_changed", "added", "deleted"
+    pub change_type: String, // "modified", "signature_changed", "added", "deleted"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -700,7 +694,7 @@ pub struct ChangedSymbol {
 #[derive(Debug, Serialize)]
 pub struct DiffImpactEntry {
     pub symbol: Symbol,
-    pub relationship: String,  // "calls", "imports", "extends"
+    pub relationship: String, // "calls", "imports", "extends"
     pub distance: usize,
     pub confidence: f64,
 }
@@ -709,19 +703,19 @@ pub struct DiffImpactEntry {
 pub struct TestCoverageEntry {
     pub symbol_qualname: String,
     pub tests: Vec<TestRef>,
-    pub status: String,  // "covered", "uncovered"
+    pub status: String, // "covered", "uncovered"
 }
 
 #[derive(Debug, Serialize)]
 pub struct TestRef {
     pub test_qualname: String,
     pub test_file: String,
-    pub coverage_type: String,  // "direct", "indirect"
+    pub coverage_type: String, // "direct", "indirect"
 }
 
 #[derive(Debug, Serialize)]
 pub struct RiskAssessment {
-    pub level: String,  // "low", "medium", "high", "critical"
+    pub level: String, // "low", "medium", "high", "critical"
     pub factors: Vec<RiskFactor>,
     pub focus_areas: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -732,7 +726,7 @@ pub struct RiskAssessment {
 pub struct RiskFactor {
     pub factor: String,
     pub description: String,
-    pub severity: String,  // "low", "medium", "high"
+    pub severity: String, // "low", "medium", "high"
 }
 
 // trace_flow types

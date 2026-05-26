@@ -121,10 +121,7 @@ pub fn confidence_from_source(source: &ImpactSource) -> ConfidenceScore {
 
 /// Fuse evidence from multiple sources for a single symbol
 pub fn fuse_evidence(sources: &[ImpactSource]) -> ConfidenceScore {
-    let confidences: Vec<ConfidenceScore> = sources
-        .iter()
-        .map(confidence_from_source)
-        .collect();
+    let confidences: Vec<ConfidenceScore> = sources.iter().map(confidence_from_source).collect();
 
     fuse_confidence_with_dampening(&confidences)
 }

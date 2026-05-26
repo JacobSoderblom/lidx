@@ -212,246 +212,6 @@ fn python_incremental_updates_are_detected() {
 }
 
 #[test]
-fn python_open_symbol_returns_exact_text() {
-    let (repo_root, db_path) = setup_repo("py_mvp");
-    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-
-    let db = indexer.db();
-    let graph_version = db.current_graph_version().unwrap();
-    let symbol = db
-        .get_symbol_by_qualname("pkg.core.Greeter.greet", graph_version)
-        .unwrap()
-        .unwrap();
-    assert_eq!(symbol.kind, "method");
-    assert_eq!(symbol.docstring.as_deref(), Some("Greets someone."));
-    assert_eq!(
-        symbol.signature.as_deref(),
-        Some("(self, name: str) -> str")
-    );
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "open_symbol".to_string(),
-        r#"{"qualname":"pkg.core.Greeter.greet"}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let snippet = value["result"]["snippet"].as_str().unwrap();
-
-    let content = std::fs::read_to_string(repo_root.join("pkg/core.py")).unwrap();
-    let expected = content
-        .get(symbol.start_byte as usize..symbol.end_byte as usize)
-        .unwrap();
-
-    assert_eq!(snippet, expected);
-    assert!(snippet.starts_with("def greet"));
-    assert!(snippet.contains("return f\"Hi {name}\""));
-
-    let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-#[test]
-fn python_open_symbol_respects_limits() {
-    let (repo_root, db_path) = setup_repo("py_mvp");
-    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "open_symbol".to_string(),
-        r#"{"qualname":"pkg.core.Greeter.greet","include_snippet":false}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    assert!(value["result"].get("snippet").is_none());
-
-    let max_bytes = 16usize;
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "open_symbol".to_string(),
-        &format!("{{\"qualname\":\"pkg.core.Greeter.greet\",\"max_snippet_bytes\":{max_bytes}}}"),
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let snippet = value["result"]["snippet"].as_str().unwrap();
-    assert!(snippet.len() <= max_bytes);
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "open_symbol".to_string(),
-        r#"{"qualname":"pkg.core.Greeter.greet","include_symbol":false}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    assert!(value["result"].get("symbol").is_none());
-    assert!(value["result"]["snippet"].as_str().is_some());
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "open_symbol".to_string(),
-        r#"{"qualname":"pkg.core.Greeter.greet","snippet_only":true}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    assert!(value["result"].get("symbol").is_none());
-    assert!(value["result"]["snippet"].as_str().is_some());
-
-    let db = indexer.db();
-    let graph_version = db.current_graph_version().unwrap();
-    let symbol = db
-        .get_symbol_by_qualname("pkg.core.Greeter.greet", graph_version)
-        .unwrap()
-        .unwrap();
-    let content = std::fs::read_to_string(repo_root.join("pkg/core.py")).unwrap();
-    let full_snippet = content
-        .get(symbol.start_byte as usize..symbol.end_byte as usize)
-        .unwrap();
-    assert!(full_snippet.starts_with(snippet));
-
-    let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-#[test]
-fn rpc_open_file_reads_ranges_and_limits() {
-    let (repo_root, db_path) = setup_repo("py_mvp");
-    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "open_file".to_string(),
-        r#"{"path":"pkg/core.py","start_line":1,"end_line":4}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let result = value["result"].as_object().unwrap();
-    assert_eq!(result["path"].as_str().unwrap(), "pkg/core.py");
-    let text = result["text"].as_str().unwrap();
-    assert!(text.contains("Core module doc."));
-    assert!(text.contains("from . import utils"));
-    assert!(!text.contains("class Greeter"));
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "open_file".to_string(),
-        r#"{"path":"pkg/core.py","max_bytes":12}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let text = value["result"]["text"].as_str().unwrap();
-    assert!(text.len() <= 12);
-
-    let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-#[test]
-fn rpc_open_file_reports_missing_path() {
-    let (repo_root, db_path) = setup_repo("py_mvp");
-    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "open_file".to_string(),
-        r#"{"path":"missing.py"}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let message = value["error"]["message"].as_str().unwrap();
-    assert_eq!(message, "open_file path not found: missing.py");
-
-    let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-#[test]
-fn rpc_query_aliases_and_path_filters_work() {
-    let (repo_root, db_path) = setup_repo("py_mvp");
-    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "find_symbol".to_string(),
-        r#"{"symbol":"Greeter","limit":5}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let results = value["result"].as_array().unwrap();
-    assert!(!results.is_empty());
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "grep".to_string(),
-        r#"{"pattern":"Greeter","path":"pkg/core.py","limit":10}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let hits = value["result"]["results"].as_array().unwrap();
-    assert!(!hits.is_empty());
-    assert!(
-        hits.iter()
-            .all(|hit| hit.get("path").and_then(|v| v.as_str()) == Some("pkg/core.py"))
-    );
-
-    let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-#[test]
-fn rpc_references_returns_call_edges() {
-    let (repo_root, db_path) = setup_repo("py_mvp");
-    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "references".to_string(),
-        r#"{"qualname":"pkg.core.make_greeter","direction":"out"}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let result = value["result"].as_object().unwrap();
-    assert_eq!(
-        result["symbol"]["qualname"].as_str().unwrap(),
-        "pkg.core.make_greeter"
-    );
-
-    let outgoing = result["outgoing"].as_array().unwrap();
-    assert!(!outgoing.is_empty());
-    let edge = outgoing.iter().find(|edge| {
-        edge["edge"]["kind"].as_str() == Some("CALLS")
-            && edge["edge"]["target_qualname"].as_str() == Some("pkg.core.Greeter")
-    });
-    assert!(edge.is_some());
-    let target = edge.unwrap()["target"]["qualname"].as_str();
-    assert_eq!(target, Some("pkg.core.Greeter"));
-
-    let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-#[test]
 fn rpc_search_rg_returns_regex_matches() {
     if std::process::Command::new("rg")
         .arg("--version")
@@ -467,7 +227,7 @@ fn rpc_search_rg_returns_regex_matches() {
     let response = rpc::call(
         repo_root.clone(),
         db_path.clone(),
-        "search_rg".to_string(),
+        "search".to_string(),
         r#"{"query":"def\\s+greet","limit":5}"#,
         "1",
     )
@@ -537,67 +297,6 @@ fn xref_links_cross_language_strings() {
 }
 
 #[test]
-fn rpc_list_xrefs_includes_line_numbers() {
-    let (repo_root, db_path) = setup_repo("poly_mvp");
-    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "list_xrefs".to_string(),
-        r#"{"paths":["Service.cs"],"min_confidence":0.7,"limit":20}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let edges = value["result"].as_array().unwrap();
-    assert!(!edges.is_empty());
-    let entry = edges.iter().find(|entry| {
-        entry["edge"]["kind"].as_str() == Some("XREF")
-            && entry["edge"]["target_qualname"].as_str() == Some("dbo.get_user")
-    });
-    let entry = entry.unwrap();
-    assert_eq!(entry["edge"]["evidence_start_line"].as_i64(), Some(5));
-    assert_eq!(entry["edge"]["evidence_end_line"].as_i64(), Some(5));
-    assert!(entry["edge"]["confidence"].as_f64().unwrap_or(0.0) >= 0.7);
-
-    let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-#[test]
-fn rpc_subgraph_accepts_roots_and_kind_filters() {
-    let (repo_root, db_path) = setup_repo("py_mvp");
-    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "subgraph".to_string(),
-        r#"{"roots":["pkg.a.call"],"kinds":["CALLS"],"depth":2,"max_nodes":5}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let nodes = value["result"]["nodes"].as_array().unwrap();
-    assert!(
-        nodes
-            .iter()
-            .any(|node| node["qualname"].as_str() == Some("pkg.a.call"))
-    );
-    let edges = value["result"]["edges"].as_array().unwrap();
-    assert!(!edges.is_empty());
-    assert!(
-        edges
-            .iter()
-            .all(|edge| edge["kind"].as_str() == Some("CALLS"))
-    );
-
-    let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-#[test]
 fn rpc_summary_and_fields_filter_results() {
     let (repo_root, db_path) = setup_repo("py_mvp");
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
@@ -606,31 +305,15 @@ fn rpc_summary_and_fields_filter_results() {
     let response = rpc::call(
         repo_root.clone(),
         db_path.clone(),
-        "repo_overview".to_string(),
-        r#"{"summary":true}"#,
+        "orient".to_string(),
+        r#"{"view":"overview"}"#,
         "1",
     )
     .unwrap();
     let value: serde_json::Value = serde_json::from_str(&response).unwrap();
     let result = value["result"].as_object().unwrap();
-    assert!(result.contains_key("files"));
-    assert!(result.contains_key("symbols"));
-    assert!(result.contains_key("edges"));
-    assert!(!result.contains_key("repo_root"));
-    assert!(!result.contains_key("last_indexed"));
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "repo_overview".to_string(),
-        r#"{"fields":["files"]}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let result = value["result"].as_object().unwrap();
-    assert!(result.contains_key("files"));
-    assert_eq!(result.len(), 1);
+    // orient with view=overview returns overview section
+    assert!(result.contains_key("overview"));
 
     let response = rpc::call(
         repo_root.clone(),
@@ -663,72 +346,6 @@ fn rpc_summary_and_fields_filter_results() {
     assert!(result.contains_key("indexed"));
     assert!(result.contains_key("deleted"));
     assert_eq!(result.len(), 2);
-
-    let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-#[test]
-fn rpc_list_graph_versions_returns_current() {
-    let (repo_root, db_path) = setup_repo("py_mvp");
-    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-    let current = indexer.db().current_graph_version().unwrap();
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "list_graph_versions".to_string(),
-        r#"{"limit":5}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let versions = value["result"].as_array().unwrap();
-    assert!(!versions.is_empty());
-    assert!(
-        versions
-            .iter()
-            .any(|version| version["id"].as_i64() == Some(current))
-    );
-
-    let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-#[test]
-fn rpc_grep_returns_compact_hits() {
-    let (repo_root, db_path) = setup_repo("py_mvp");
-    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "grep".to_string(),
-        r#"{"query":"Greeter","limit":5}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let hits = value["result"]["results"].as_array().unwrap();
-    assert!(!hits.is_empty());
-    let first = hits[0].as_object().unwrap();
-    assert!(first.contains_key("path"));
-    assert!(first.contains_key("line"));
-    assert!(first.contains_key("column"));
-    assert!(!first.contains_key("line_text"));
-
-    let response = rpc::call(
-        repo_root.clone(),
-        db_path.clone(),
-        "grep".to_string(),
-        r#"{"query":"Greeter","limit":1,"include_text":true}"#,
-        "1",
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let hits = value["result"]["results"].as_array().unwrap();
-    let first = hits[0].as_object().unwrap();
-    assert!(first.get("line_text").and_then(|v| v.as_str()).is_some());
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -788,6 +405,103 @@ fn rust_module_linking_and_subgraph_are_consistent() {
     assert!(limited_names.contains(&"crate"));
     assert!(limited_names.contains(&"crate::api"));
     assert!(!limited_names.contains(&"crate::missing"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn find_symbols_multi_word_query() {
+    let (repo_root, db_path) = setup_repo("py_mvp");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let db = indexer.db();
+    let graph_version = db.current_graph_version().unwrap();
+
+    // Multi-word query: both tokens appear in qualname "pkg.core.Greeter" and "pkg.core.Greeter.greet"
+    let results = db
+        .find_symbols("Greeter greet", 5, None, graph_version)
+        .unwrap();
+    assert!(!results.is_empty(), "multi-word query should match");
+    // Both "Greeter" and "greet" must appear as substrings in the qualname
+    assert!(
+        results
+            .iter()
+            .any(|s| s.qualname.contains("Greeter") && s.qualname.contains("greet")),
+        "should find symbol matching both tokens, got: {:?}",
+        results.iter().map(|s| &s.qualname).collect::<Vec<_>>()
+    );
+
+    // Multi-word query: "core make_greeter" matches "pkg.core.make_greeter"
+    let results = db
+        .find_symbols("core make_greeter", 5, None, graph_version)
+        .unwrap();
+    assert!(!results.is_empty(), "multi-word query should match");
+    assert!(results[0].qualname.contains("make_greeter"));
+
+    // Multi-word query with nonexistent token returns empty
+    let results = db
+        .find_symbols("Greeter nonexistent", 5, None, graph_version)
+        .unwrap();
+    assert!(
+        results.is_empty(),
+        "query with nonexistent token should return empty"
+    );
+
+    // Single-word query still works
+    let results = db.find_symbols("Greeter", 5, None, graph_version).unwrap();
+    assert!(!results.is_empty(), "single-word query should still work");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn explain_symbol_multi_word_query() {
+    let (repo_root, db_path) = setup_repo("py_mvp");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Multi-word query through explain_symbol — should find a symbol matching both tokens
+    let response = rpc::call(
+        repo_root.clone(),
+        db_path.clone(),
+        "explain_symbol".to_string(),
+        r#"{"query":"Greeter greet"}"#,
+        "1",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let qn = value["result"]["symbol"]["qualname"].as_str().unwrap();
+    assert!(
+        qn.contains("Greeter"),
+        "explain_symbol should resolve multi-word query, got: {}",
+        qn
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn explain_symbol_bad_query_shows_suggestions() {
+    let (repo_root, db_path) = setup_repo("py_mvp");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Query that partially matches — should show "did you mean" suggestions
+    let response = rpc::call(
+        repo_root.clone(),
+        db_path.clone(),
+        "explain_symbol".to_string(),
+        r#"{"query":"Greeter nonexistent"}"#,
+        "1",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let error_msg = value["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        error_msg.contains("not found") || error_msg.contains("no symbol"),
+        "bad query should return error, got: {}",
+        error_msg
+    );
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }

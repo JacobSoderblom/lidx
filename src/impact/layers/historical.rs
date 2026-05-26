@@ -112,6 +112,7 @@ impl<'a> HistoricalImpactLayer<'a> {
                 evidence: HashMap::new(),
                 duration_ms: start.elapsed().as_millis() as u64,
                 truncated: false,
+                parent_map: HashMap::new(),
             });
         }
 
@@ -119,7 +120,8 @@ impl<'a> HistoricalImpactLayer<'a> {
         let time_window = time_window_days.min(MAX_TIME_WINDOW_DAYS);
 
         // Find co-change patterns
-        let patterns = self.find_co_changes(&conn, &seed_stable_ids, time_window, min_occurrences)?;
+        let patterns =
+            self.find_co_changes(&conn, &seed_stable_ids, time_window, min_occurrences)?;
 
         // Convert patterns to impacts
         let mut impacts: HashMap<i64, ConfidenceScore> = HashMap::new();
@@ -128,9 +130,11 @@ impl<'a> HistoricalImpactLayer<'a> {
         // Resolve stable_ids back to current symbol IDs
         for pattern in patterns {
             // Only include pattern.symbol_b (the co-changed symbol, not the seed)
-            if let Some(symbol_id) =
-                self.resolve_stable_id_to_current(&conn, &pattern.symbol_b_stable_id, graph_version)?
-            {
+            if let Some(symbol_id) = self.resolve_stable_id_to_current(
+                &conn,
+                &pattern.symbol_b_stable_id,
+                graph_version,
+            )? {
                 // Skip if this is a seed symbol
                 if seed_ids.contains(&symbol_id) {
                     continue;
@@ -143,13 +147,14 @@ impl<'a> HistoricalImpactLayer<'a> {
                     .or_insert(pattern.confidence);
 
                 // Add evidence
-                evidence.entry(symbol_id).or_default().push(
-                    ImpactSource::CoChange {
+                evidence
+                    .entry(symbol_id)
+                    .or_default()
+                    .push(ImpactSource::CoChange {
                         frequency: pattern.confidence,
                         co_change_count: pattern.co_change_count,
                         last_cochange: None,
-                    },
-                );
+                    });
             }
         }
 
@@ -162,6 +167,7 @@ impl<'a> HistoricalImpactLayer<'a> {
             evidence,
             duration_ms,
             truncated: false,
+            parent_map: HashMap::new(),
         })
     }
 
@@ -221,7 +227,14 @@ impl<'a> HistoricalImpactLayer<'a> {
             let total_b: i64 = row.get(4)?;
             let confidence: f64 = row.get(5)?;
 
-            Ok((file_a, file_b, co_change_count, total_a, total_b, confidence))
+            Ok((
+                file_a,
+                file_b,
+                co_change_count,
+                total_a,
+                total_b,
+                confidence,
+            ))
         })?;
 
         let mut file_pairs = Vec::new();
@@ -283,7 +296,11 @@ impl<'a> HistoricalImpactLayer<'a> {
     }
 
     /// Get file paths for given stable IDs
-    fn get_files_for_stable_ids(&self, conn: &rusqlite::Connection, stable_ids: &[String]) -> Result<Vec<String>> {
+    fn get_files_for_stable_ids(
+        &self,
+        conn: &rusqlite::Connection,
+        stable_ids: &[String],
+    ) -> Result<Vec<String>> {
         let placeholders = stable_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT DISTINCT f.path
@@ -294,7 +311,10 @@ impl<'a> HistoricalImpactLayer<'a> {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::ToSql> = stable_ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let params: Vec<&dyn rusqlite::ToSql> = stable_ids
+            .iter()
+            .map(|s| s as &dyn rusqlite::ToSql)
+            .collect();
 
         let rows = stmt.query_map(&*params, |row| row.get::<_, String>(0))?;
 
@@ -307,12 +327,16 @@ impl<'a> HistoricalImpactLayer<'a> {
     }
 
     /// Get stable IDs for symbols in a given file
-    fn get_stable_ids_for_file(&self, conn: &rusqlite::Connection, file_path: &str) -> Result<Vec<String>> {
+    fn get_stable_ids_for_file(
+        &self,
+        conn: &rusqlite::Connection,
+        file_path: &str,
+    ) -> Result<Vec<String>> {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT s.stable_id
              FROM symbols s
              JOIN files f ON s.file_id = f.id
-             WHERE f.path = ? AND s.stable_id IS NOT NULL"
+             WHERE f.path = ? AND s.stable_id IS NOT NULL",
         )?;
 
         let rows = stmt.query_map(rusqlite::params![file_path], |row| row.get::<_, String>(0))?;
@@ -424,12 +448,7 @@ impl<'a> HistoricalImpactLayer<'a> {
         symbol_ids: &[i64],
         graph_version: i64,
     ) -> Result<Vec<String>> {
-
-        let placeholders = symbol_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = symbol_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
         let query = format!(
             "SELECT DISTINCT stable_id FROM symbols WHERE id IN ({}) AND graph_version = ? AND stable_id IS NOT NULL",
@@ -438,8 +457,10 @@ impl<'a> HistoricalImpactLayer<'a> {
 
         let mut stmt = conn.prepare(&query)?;
 
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            symbol_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let mut params: Vec<&dyn rusqlite::ToSql> = symbol_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
         params.push(&graph_version);
 
         let stable_ids = stmt
@@ -471,8 +492,11 @@ impl<'a> HistoricalImpactLayer<'a> {
 
     /// Get all graph versions within time window (days back from latest)
     #[allow(dead_code)]
-    fn get_graph_versions_in_window(&self, conn: &rusqlite::Connection, days_back: i64) -> Result<Vec<i64>> {
-
+    fn get_graph_versions_in_window(
+        &self,
+        conn: &rusqlite::Connection,
+        days_back: i64,
+    ) -> Result<Vec<i64>> {
         // Calculate cutoff timestamp (days back from now)
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -502,7 +526,6 @@ impl<'a> HistoricalImpactLayer<'a> {
         _version_a: i64,
         version_b: i64,
     ) -> Result<HashSet<String>> {
-
         let mut changed = HashSet::new();
 
         // Symbols added in version_b
@@ -511,9 +534,7 @@ impl<'a> HistoricalImpactLayer<'a> {
              WHERE graph_version = ? AND stable_id IS NOT NULL",
         )?;
 
-        let added = stmt.query_map(rusqlite::params![version_b], |row| {
-            row.get::<_, String>(0)
-        })?;
+        let added = stmt.query_map(rusqlite::params![version_b], |row| row.get::<_, String>(0))?;
 
         for stable_id in added {
             if let Ok(id) = stable_id {
