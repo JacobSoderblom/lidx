@@ -616,6 +616,27 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
     Ok(json!(results))
 }
 
+pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    #[derive(Deserialize)]
+    struct ContextParams {
+        path: String,
+        format: Option<String>,
+        graph_version: Option<i64>,
+    }
+    let params: ContextParams = serde_json::from_value(params)?;
+    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    let ctx = crate::context::build_file_context(
+        indexer.db(),
+        indexer.repo_root(),
+        &params.path,
+        graph_version,
+    )?;
+    match params.format.as_deref() {
+        Some("json") => Ok(crate::context::format_json(&ctx)),
+        _ => Ok(json!({ "context": crate::context::format_text(&ctx) })),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // GROUP 2 -- Graph handlers
 // ---------------------------------------------------------------------------
@@ -1378,6 +1399,24 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         }
     }
 
+    // Step 2b: Deduplicate containment — when a hunk overlaps both a method and its
+    // parent class/interface, keep only the more specific (child) symbol. A parent is
+    // removed if any other matched symbol's range is strictly within it.
+    if changed_symbols.len() > 1 {
+        let ranges: Vec<(i64, i64, i64)> = changed_symbols
+            .iter()
+            .map(|cs| (cs.symbol.id, cs.symbol.start_line, cs.symbol.end_line))
+            .collect();
+        changed_symbols.retain(|cs| {
+            !ranges.iter().any(|(id, start, end)| {
+                *id != cs.symbol.id
+                    && *start >= cs.symbol.start_line
+                    && *end <= cs.symbol.end_line
+                    && (*start > cs.symbol.start_line || *end < cs.symbol.end_line)
+            })
+        });
+    }
+
     // Step 3: Compute downstream impact via multi-level BFS (depth controlled by max_depth)
     let seed_ids: Vec<i64> = changed_symbols.iter().map(|cs| cs.symbol.id).collect();
     let mut downstream = Vec::new();
@@ -1575,13 +1614,18 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             }
         }
 
-        // 3. Interface/trait changes = HIGH risk
+        // 3. Interface/trait signature changes = HIGH risk
+        //    Only flag when the signature actually changed, not just because the
+        //    interface appeared in the changed list (e.g. due to a method body edit
+        //    in the same file).
         for cs in &changed_symbols {
-            if matches!(cs.symbol.kind.as_str(), "interface" | "trait" | "abstract_class") {
+            if matches!(cs.symbol.kind.as_str(), "interface" | "trait" | "abstract_class")
+                && cs.change_type == "signature_changed"
+            {
                 factors.push(RiskFactor {
                     factor: "Interface/contract change".to_string(),
                     description: format!(
-                        "{} {} changed",
+                        "{} {} signature changed",
                         cs.symbol.kind, cs.symbol.qualname
                     ),
                     severity: "high".to_string(),

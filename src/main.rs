@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use lidx::{cli, db, diagnostics, indexer, mcp, rpc, watch};
+use lidx::{cli, context, db, diagnostics, indexer, init, mcp, rpc, watch};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -105,6 +105,43 @@ fn main() -> Result<()> {
                 no_ignore,
             );
             mcp::serve(repo, db_path, watch_config)
+        }
+        cli::Command::Context {
+            repo,
+            db,
+            format,
+            path,
+        } => {
+            let db_path = db.unwrap_or_else(|| default_db_path(&repo));
+            if !db_path.exists() {
+                // No index yet — silent exit for hooks
+                return Ok(());
+            }
+            let db = db::Db::new(&db_path)?;
+            let graph_version = db.current_graph_version()?;
+            let ctx = context::build_file_context(&db, &repo, &path, graph_version)?;
+            match format.as_str() {
+                "json" => {
+                    let json = context::format_json(&ctx);
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                _ => {
+                    let text = context::format_text(&ctx);
+                    if !text.is_empty() {
+                        print!("{text}");
+                    }
+                }
+            }
+            Ok(())
+        }
+        cli::Command::Init {
+            repo,
+            db,
+            skip_index,
+            skip_hooks,
+        } => {
+            let db_path = db.unwrap_or_else(|| default_db_path(&repo));
+            init::run_init(&repo, &db_path, skip_index, skip_hooks)
         }
         cli::Command::DiagnosticsImport { repo, db, path } => {
             let db_path = db.unwrap_or_else(|| default_db_path(&repo));

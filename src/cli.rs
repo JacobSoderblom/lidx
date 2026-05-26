@@ -120,6 +120,31 @@ pub enum Command {
         #[arg(long)]
         path: PathBuf,
     },
+    /// Show compact cross-file context for a file.
+    Context {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Output format: text (default) or json.
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// File path to analyze (relative to repo root).
+        path: String,
+    },
+    /// Initialize lidx: index repo, install hooks, update gitignore.
+    Init {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Skip indexing.
+        #[arg(long)]
+        skip_index: bool,
+        /// Skip hook installation.
+        #[arg(long)]
+        skip_hooks: bool,
+    },
     /// Run diagnostics tools and import SARIF into the database.
     DiagnosticsRun {
         #[arg(long, default_value = ".")]

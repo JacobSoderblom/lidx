@@ -838,6 +838,7 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
         "diagnostics" => diagnostics_dispatch(indexer, params)?,
         "security_scan" => handlers::handle_security_scan(indexer, params)?,
         "top_complexity" => handlers::handle_top_complexity(indexer, params)?,
+        "context" => handlers::handle_context(indexer, params)?,
         other => {
             return Err(anyhow::anyhow!("unknown method: {other}"));
         }
@@ -848,7 +849,7 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
         eprintln!("lidx: Slow query: {} took {:?}", method, elapsed);
     }
 
-    let exempt = matches!(method, "gather_context" | "onboard" | "orient" | "security_scan");
+    let exempt = matches!(method, "gather_context" | "onboard" | "orient" | "security_scan" | "context");
     let effective_max = max_response_bytes.or_else(|| if exempt { None } else { Some(DEFAULT_MAX_RESPONSE_BYTES) });
     if let Some(max_bytes) = effective_max {
         let (truncated_value, was_truncated, total_available) = truncate_response(value, max_bytes);

@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": ".claude/hooks/lidx-post-read.sh",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Read"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": ".claude/hooks/lidx-pre-edit.sh",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Edit"
+      }
+    ]
+  }
+}
