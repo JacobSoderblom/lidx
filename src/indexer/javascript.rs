@@ -1332,11 +1332,20 @@ fn express_direct_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Opt
     let full_path = http::join_paths(prefix, &raw_path);
     // normalize_path rejects "/" (no alpha chars) — but for known route definitions
     // we accept any path starting with "/"
-    let normalized = http::normalize_path(&full_path)
-        .or_else(|| if full_path.starts_with('/') { Some(full_path.clone()) } else { None })?;
+    let normalized = http::normalize_path(&full_path).or_else(|| {
+        if full_path.starts_with('/') {
+            Some(full_path.clone())
+        } else {
+            None
+        }
+    })?;
     let method = http::normalize_method(&method_name)?;
     let handler = handler_from_args(&args[1..], ctx, source);
-    let framework = if receiver == "fastify" { "fastify" } else { "express" };
+    let framework = if receiver == "fastify" {
+        "fastify"
+    } else {
+        "express"
+    };
     let detail = http::build_route_detail(&method, &normalized, &full_path, framework);
     Some(EdgeInput {
         kind: http::HTTP_ROUTE_KIND.to_string(),
@@ -1378,8 +1387,13 @@ fn express_route_chain_edge(node: Node<'_>, ctx: &Context, source: &str) -> Opti
     let raw_path = route_args
         .get(0)
         .and_then(|arg| extract_string_literal(*arg, source))?;
-    let normalized = http::normalize_path(&raw_path)
-        .or_else(|| if raw_path.starts_with('/') { Some(raw_path.clone()) } else { None })?;
+    let normalized = http::normalize_path(&raw_path).or_else(|| {
+        if raw_path.starts_with('/') {
+            Some(raw_path.clone())
+        } else {
+            None
+        }
+    })?;
     let method = http::normalize_method(&method_name)?;
     let args = call_arguments(node);
     let handler = handler_from_args(&args, ctx, source);
@@ -1421,9 +1435,13 @@ fn fastify_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeI
     };
     let prefix = ctx.route_prefix.as_deref().unwrap_or("/");
     let full_path = http::join_paths(prefix, &raw_path);
-    let normalized = match http::normalize_path(&full_path)
-        .or_else(|| if full_path.starts_with('/') { Some(full_path.clone()) } else { None })
-    {
+    let normalized = match http::normalize_path(&full_path).or_else(|| {
+        if full_path.starts_with('/') {
+            Some(full_path.clone())
+        } else {
+            None
+        }
+    }) {
         Some(value) => value,
         None => return edges,
     };
@@ -1504,8 +1522,11 @@ fn resolve_to_function<'a>(
         return None;
     }
     match node.kind() {
-        "arrow_function" | "function_expression" | "function"
-        | "function_declaration" | "generator_function_declaration" => Some(node),
+        "arrow_function"
+        | "function_expression"
+        | "function"
+        | "function_declaration"
+        | "generator_function_declaration" => Some(node),
         "identifier" => {
             let name = node_text(node, source);
             let value = find_declaration_value(root, &name, source)?;
@@ -1598,8 +1619,7 @@ fn fastify_register_walk(
         if let Some(name_node) = callback.child_by_field_name("name") {
             let func_name = node_text(name_node, source);
             if !func_name.is_empty() {
-                let func_qualname =
-                    build_qualname(&ctx.module, &ctx.class_stack, &func_name);
+                let func_qualname = build_qualname(&ctx.module, &ctx.class_stack, &func_name);
                 output.edges.retain(|e| {
                     !(e.kind == http::HTTP_ROUTE_KIND
                         && e.source_qualname.as_deref() == Some(&func_qualname))

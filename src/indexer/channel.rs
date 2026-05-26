@@ -143,11 +143,7 @@ pub fn topic_from_member_access(raw: &str) -> Option<String> {
     normalize_channel_name(raw)
 }
 
-pub fn build_publish_detail(
-    channel: &str,
-    raw: &str,
-    framework: &str,
-) -> String {
+pub fn build_publish_detail(channel: &str, raw: &str, framework: &str) -> String {
     json!({
         "channel": channel,
         "raw": raw,
@@ -157,11 +153,7 @@ pub fn build_publish_detail(
     .to_string()
 }
 
-pub fn build_subscribe_detail(
-    channel: &str,
-    raw: &str,
-    framework: &str,
-) -> String {
+pub fn build_subscribe_detail(channel: &str, raw: &str, framework: &str) -> String {
     json!({
         "channel": channel,
         "raw": raw,
@@ -191,10 +183,16 @@ pub fn bridge_complement(kind: &str) -> Option<&'static [&'static str]> {
 pub fn is_bridge_edge_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "RPC_IMPL" | "RPC_CALL" | "RPC_ROUTE"
-            | "HTTP_ROUTE" | "HTTP_CALL"
-            | "CHANNEL_PUBLISH" | "CHANNEL_SUBSCRIBE"
-            | "CONFIG_SOURCE" | "CONFIG_READ" | "CONFIG_BIND"
+        "RPC_IMPL"
+            | "RPC_CALL"
+            | "RPC_ROUTE"
+            | "HTTP_ROUTE"
+            | "HTTP_CALL"
+            | "CHANNEL_PUBLISH"
+            | "CHANNEL_SUBSCRIBE"
+            | "CONFIG_SOURCE"
+            | "CONFIG_READ"
+            | "CONFIG_BIND"
             | "XREF"
     )
 }
@@ -283,14 +281,38 @@ mod tests {
 
     #[test]
     fn bridge_pairs() {
-        assert_eq!(bridge_complement("CHANNEL_PUBLISH"), Some(&["CHANNEL_SUBSCRIBE"] as &[&str]));
-        assert_eq!(bridge_complement("CHANNEL_SUBSCRIBE"), Some(&["CHANNEL_PUBLISH"] as &[&str]));
-        assert_eq!(bridge_complement("RPC_CALL"), Some(&["RPC_IMPL"] as &[&str]));
-        assert_eq!(bridge_complement("RPC_IMPL"), Some(&["RPC_CALL"] as &[&str]));
-        assert_eq!(bridge_complement("HTTP_CALL"), Some(&["HTTP_ROUTE"] as &[&str]));
-        assert_eq!(bridge_complement("HTTP_ROUTE"), Some(&["HTTP_CALL"] as &[&str]));
-        assert_eq!(bridge_complement("CONFIG_SOURCE"), Some(&["CONFIG_READ"] as &[&str]));
-        assert_eq!(bridge_complement("CONFIG_READ"), Some(&["CONFIG_SOURCE"] as &[&str]));
+        assert_eq!(
+            bridge_complement("CHANNEL_PUBLISH"),
+            Some(&["CHANNEL_SUBSCRIBE"] as &[&str])
+        );
+        assert_eq!(
+            bridge_complement("CHANNEL_SUBSCRIBE"),
+            Some(&["CHANNEL_PUBLISH"] as &[&str])
+        );
+        assert_eq!(
+            bridge_complement("RPC_CALL"),
+            Some(&["RPC_IMPL"] as &[&str])
+        );
+        assert_eq!(
+            bridge_complement("RPC_IMPL"),
+            Some(&["RPC_CALL"] as &[&str])
+        );
+        assert_eq!(
+            bridge_complement("HTTP_CALL"),
+            Some(&["HTTP_ROUTE"] as &[&str])
+        );
+        assert_eq!(
+            bridge_complement("HTTP_ROUTE"),
+            Some(&["HTTP_CALL"] as &[&str])
+        );
+        assert_eq!(
+            bridge_complement("CONFIG_SOURCE"),
+            Some(&["CONFIG_READ"] as &[&str])
+        );
+        assert_eq!(
+            bridge_complement("CONFIG_READ"),
+            Some(&["CONFIG_SOURCE"] as &[&str])
+        );
         assert_eq!(bridge_complement("CALLS"), None);
     }
 }

@@ -1,10 +1,13 @@
 use lidx::indexer::extract::LanguageExtractor;
-use lidx::indexer::yaml::{module_name_from_rel_path, YamlExtractor};
+use lidx::indexer::yaml::{YamlExtractor, module_name_from_rel_path};
 
 #[test]
 fn module_name_from_path() {
     assert_eq!(module_name_from_rel_path("k8s/deploy.yaml"), "k8s/deploy");
-    assert_eq!(module_name_from_rel_path("manifests/service.yml"), "manifests/service");
+    assert_eq!(
+        module_name_from_rel_path("manifests/service.yml"),
+        "manifests/service"
+    );
     assert_eq!(module_name_from_rel_path("pod.yaml"), "pod");
 }
 
@@ -262,10 +265,16 @@ spec:
         .iter()
         .filter(|e| e.kind == "CONFIG_SOURCE")
         .collect();
-    assert!(config_sources.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("env://DATABASE_URL")
-    }), "expected CONFIG_SOURCE for env://DATABASE_URL, found: {:?}",
-    config_sources.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+    assert!(
+        config_sources
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://DATABASE_URL") }),
+        "expected CONFIG_SOURCE for env://DATABASE_URL, found: {:?}",
+        config_sources
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
 
     // CONFIG_READ for secret://datamgr-db-conn
     let config_reads: Vec<_> = extracted
@@ -273,15 +282,24 @@ spec:
         .iter()
         .filter(|e| e.kind == "CONFIG_READ")
         .collect();
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("secret://datamgr-db-conn")
-    }), "expected CONFIG_READ for secret://datamgr-db-conn, found: {:?}",
-    config_reads.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("secret://datamgr-db-conn") }),
+        "expected CONFIG_READ for secret://datamgr-db-conn, found: {:?}",
+        config_reads
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
 
     // CONFIG_SOURCE for APP_PORT (plain value)
-    assert!(config_sources.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("env://APP_PORT")
-    }), "expected CONFIG_SOURCE for env://APP_PORT");
+    assert!(
+        config_sources
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://APP_PORT") }),
+        "expected CONFIG_SOURCE for env://APP_PORT"
+    );
 }
 
 #[test]
@@ -309,9 +327,12 @@ spec:
         .iter()
         .filter(|e| e.kind == "CONFIG_READ")
         .collect();
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("secret://api-secrets")
-    }), "expected CONFIG_READ for secret://api-secrets");
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("secret://api-secrets") }),
+        "expected CONFIG_READ for secret://api-secrets"
+    );
 }
 
 #[test]
@@ -345,12 +366,18 @@ spec:
         .iter()
         .filter(|e| e.kind == "CONFIG_READ")
         .collect();
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("secret://datamgr-db-conn")
-    }), "expected CONFIG_READ for secret://datamgr-db-conn");
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("secret://api-key")
-    }), "expected CONFIG_READ for secret://api-key");
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("secret://datamgr-db-conn") }),
+        "expected CONFIG_READ for secret://datamgr-db-conn"
+    );
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("secret://api-key") }),
+        "expected CONFIG_READ for secret://api-key"
+    );
 
     // CONFIG_SOURCE for secretObjects[].secretName
     let config_sources: Vec<_> = extracted
@@ -358,7 +385,10 @@ spec:
         .iter()
         .filter(|e| e.kind == "CONFIG_SOURCE")
         .collect();
-    assert!(config_sources.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("secret://datamgr-secrets")
-    }), "expected CONFIG_SOURCE for secret://datamgr-secrets");
+    assert!(
+        config_sources
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("secret://datamgr-secrets") }),
+        "expected CONFIG_SOURCE for secret://datamgr-secrets"
+    );
 }

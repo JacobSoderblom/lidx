@@ -150,7 +150,11 @@ pub fn mine_co_changes(
             total_commits_a: total_a,
             total_commits_b: total_b,
             confidence,
-            last_commit_sha: if last_sha.is_empty() { None } else { Some(last_sha) },
+            last_commit_sha: if last_sha.is_empty() {
+                None
+            } else {
+                Some(last_sha)
+            },
             last_commit_ts: if last_ts > 0 { Some(last_ts) } else { None },
         });
     }

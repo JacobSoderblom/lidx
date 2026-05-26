@@ -278,7 +278,8 @@ impl<'a> TestImpactLayer<'a> {
                     }
 
                     // Skip tests from different languages to avoid cross-language false positives
-                    if let (Some(sl), Some(tl)) = (seed_lang, Self::infer_language(&test.file_path)) {
+                    if let (Some(sl), Some(tl)) = (seed_lang, Self::infer_language(&test.file_path))
+                    {
                         if sl != tl {
                             continue;
                         }
@@ -286,7 +287,10 @@ impl<'a> TestImpactLayer<'a> {
 
                     if let Some(target_name) = extract_test_target_name(&test.name) {
                         if target_name.to_lowercase() == seed_name_lower
-                            || seed.name.to_lowercase().contains(&target_name.to_lowercase())
+                            || seed
+                                .name
+                                .to_lowercase()
+                                .contains(&target_name.to_lowercase())
                         {
                             seen.insert(test.id);
                             let test_type = classify_test_type(&test);
@@ -342,7 +346,8 @@ impl<'a> TestImpactLayer<'a> {
                     }
 
                     // Skip tests from different languages to avoid cross-language false positives
-                    if let (Some(sl), Some(tl)) = (seed_lang, Self::infer_language(&test.file_path)) {
+                    if let (Some(sl), Some(tl)) = (seed_lang, Self::infer_language(&test.file_path))
+                    {
                         if sl != tl {
                             continue;
                         }

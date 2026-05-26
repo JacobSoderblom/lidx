@@ -463,8 +463,7 @@ fn analyze_impact_min_confidence_filtering() {
     )
     .unwrap();
 
-    let value_unfiltered: serde_json::Value =
-        serde_json::from_str(&response_unfiltered).unwrap();
+    let value_unfiltered: serde_json::Value = serde_json::from_str(&response_unfiltered).unwrap();
     let affected_unfiltered = value_unfiltered["result"]["affected"]
         .as_array()
         .unwrap()
@@ -552,12 +551,18 @@ fn analyze_impact_v2_direct_layer_only() {
 
     // Should have layer metadata
     let layers = result["layers"].as_object().unwrap();
-    assert!(layers.contains_key("direct"), "Should have direct layer metadata");
+    assert!(
+        layers.contains_key("direct"),
+        "Should have direct layer metadata"
+    );
 
     let direct_layer = layers["direct"].as_object().unwrap();
     assert_eq!(direct_layer["enabled"].as_bool().unwrap(), true);
     // Duration may be 0ms for fast operations, just verify it exists
-    assert!(direct_layer.contains_key("duration_ms"), "Should have duration_ms field");
+    assert!(
+        direct_layer.contains_key("duration_ms"),
+        "Should have duration_ms field"
+    );
 
     // Should have config
     let config = result["config"].as_object().unwrap();
@@ -617,7 +622,11 @@ fn analyze_impact_v2_layer_enable_disable() {
     let affected = value["result"]["affected"].as_array().unwrap();
 
     // With direct layer disabled and other layers not implemented, should have no results
-    assert_eq!(affected.len(), 0, "Should have no results with direct layer disabled");
+    assert_eq!(
+        affected.len(),
+        0,
+        "Should have no results with direct layer disabled"
+    );
 
     // Enable test layer (should now be implemented in Phase 2)
     let response2 = rpc::call(
@@ -673,7 +682,10 @@ fn analyze_impact_v2_test_layer_basic() {
 
     // Should have test layer metadata
     let layers = result["layers"].as_object().unwrap();
-    assert!(layers.contains_key("test"), "Should have test layer metadata");
+    assert!(
+        layers.contains_key("test"),
+        "Should have test layer metadata"
+    );
 
     let test_layer = layers["test"].as_object().unwrap();
     assert_eq!(
@@ -808,7 +820,10 @@ fn analyze_impact_v2_historical_layer_basic() {
 
     // Should have historical layer metadata
     let layers = result["layers"].as_object().unwrap();
-    assert!(layers.contains_key("historical"), "Should have historical layer metadata");
+    assert!(
+        layers.contains_key("historical"),
+        "Should have historical layer metadata"
+    );
 
     let historical_layer = layers["historical"].as_object().unwrap();
     assert_eq!(
@@ -884,7 +899,10 @@ fn analyze_impact_v2_historical_layer_with_direct() {
 
     // Should have affected symbols (from direct layer at minimum)
     let affected = result["affected"].as_array().unwrap();
-    assert!(!affected.is_empty(), "Should have affected symbols from direct layer");
+    assert!(
+        !affected.is_empty(),
+        "Should have affected symbols from direct layer"
+    );
 }
 
 #[test]
@@ -910,13 +928,25 @@ fn analyze_impact_v2_all_three_layers() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(direct_layer["enabled"].as_bool().unwrap(), true, "Direct layer should be enabled");
+    assert_eq!(
+        direct_layer["enabled"].as_bool().unwrap(),
+        true,
+        "Direct layer should be enabled"
+    );
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(test_layer["enabled"].as_bool().unwrap(), true, "Test layer should be enabled");
+    assert_eq!(
+        test_layer["enabled"].as_bool().unwrap(),
+        true,
+        "Test layer should be enabled"
+    );
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(historical_layer["enabled"].as_bool().unwrap(), true, "Historical layer should be enabled");
+    assert_eq!(
+        historical_layer["enabled"].as_bool().unwrap(),
+        true,
+        "Historical layer should be enabled"
+    );
 
     // Should have execution time for all layers
     direct_layer["duration_ms"].as_u64().unwrap(); // Verify exists and is valid u64
@@ -951,7 +981,11 @@ fn analyze_impact_v2_semantic_layer_disabled_by_default() {
     // Semantic layer should be disabled by default
     let layers = result["layers"].as_object().unwrap();
     let semantic_layer = layers["semantic"].as_object().unwrap();
-    assert_eq!(semantic_layer["enabled"].as_bool().unwrap(), false, "Semantic layer should be disabled by default");
+    assert_eq!(
+        semantic_layer["enabled"].as_bool().unwrap(),
+        false,
+        "Semantic layer should be disabled by default"
+    );
 }
 
 #[test]
@@ -977,7 +1011,11 @@ fn analyze_impact_v2_semantic_layer_graceful_degradation() {
     // Semantic layer should be enabled and gracefully degrade to lexical search
     let layers = result["layers"].as_object().unwrap();
     let semantic_layer = layers["semantic"].as_object().unwrap();
-    assert_eq!(semantic_layer["enabled"].as_bool().unwrap(), true, "Semantic layer should be enabled");
+    assert_eq!(
+        semantic_layer["enabled"].as_bool().unwrap(),
+        true,
+        "Semantic layer should be enabled"
+    );
     // Lexical fallback may find results even without embeddings — no error should be reported
     let has_error = semantic_layer.get("error").map_or(false, |v| !v.is_null());
     assert!(!has_error, "Semantic layer should not error");
@@ -985,7 +1023,10 @@ fn analyze_impact_v2_semantic_layer_graceful_degradation() {
     // Should not fail the entire analysis
     let _affected = result["affected"].as_array().unwrap();
     // May be empty or have results from other layers
-    assert!(true, "Analysis should complete successfully even when semantic layer returns empty");
+    assert!(
+        true,
+        "Analysis should complete successfully even when semantic layer returns empty"
+    );
 }
 
 #[test]
@@ -1012,16 +1053,32 @@ fn analyze_impact_v2_all_four_layers() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(direct_layer["enabled"].as_bool().unwrap(), true, "Direct layer should be enabled");
+    assert_eq!(
+        direct_layer["enabled"].as_bool().unwrap(),
+        true,
+        "Direct layer should be enabled"
+    );
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(test_layer["enabled"].as_bool().unwrap(), true, "Test layer should be enabled");
+    assert_eq!(
+        test_layer["enabled"].as_bool().unwrap(),
+        true,
+        "Test layer should be enabled"
+    );
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(historical_layer["enabled"].as_bool().unwrap(), true, "Historical layer should be enabled");
+    assert_eq!(
+        historical_layer["enabled"].as_bool().unwrap(),
+        true,
+        "Historical layer should be enabled"
+    );
 
     let semantic_layer = layers["semantic"].as_object().unwrap();
-    assert_eq!(semantic_layer["enabled"].as_bool().unwrap(), true, "Semantic layer should be enabled");
+    assert_eq!(
+        semantic_layer["enabled"].as_bool().unwrap(),
+        true,
+        "Semantic layer should be enabled"
+    );
 
     // Should have execution time for all layers
     direct_layer["duration_ms"].as_u64().unwrap(); // Verify exists and is valid u64
@@ -1069,7 +1126,10 @@ fn analyze_impact_batch_basic() {
     let seeds0 = results[0]["seeds"].as_array().unwrap();
     assert!(!seeds0.is_empty(), "Greeter should have seeds");
     let affected0 = results[0]["affected"].as_array().unwrap();
-    assert!(!affected0.is_empty(), "Greeter should have affected symbols");
+    assert!(
+        !affected0.is_empty(),
+        "Greeter should have affected symbols"
+    );
 
     // Second entry should be for make_greeter
     assert_eq!(
@@ -1087,7 +1147,10 @@ fn analyze_impact_batch_basic() {
     assert!(result.contains_key("total_affected"));
     assert!(result.contains_key("total_files"));
     let total_affected = result["total_affected"].as_u64().unwrap();
-    assert!(total_affected > 0, "Should have some affected symbols total");
+    assert!(
+        total_affected > 0,
+        "Should have some affected symbols total"
+    );
 }
 
 #[test]
@@ -1111,7 +1174,11 @@ fn analyze_impact_batch_with_error_entry() {
 
     // Should still have 2 entries (one success, one error)
     let results = result["results"].as_array().unwrap();
-    assert_eq!(results.len(), 2, "Should have 2 batch entries even with error");
+    assert_eq!(
+        results.len(),
+        2,
+        "Should have 2 batch entries even with error"
+    );
 
     // First entry should succeed
     let affected0 = results[0]["affected"].as_array().unwrap();

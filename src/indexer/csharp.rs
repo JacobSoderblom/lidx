@@ -659,7 +659,9 @@ fn config_read_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeI
         && (receiver == "Environment" || receiver.ends_with(".Environment"))
     {
         let args = call_arguments(node);
-        let key = args.first().and_then(|a| extract_string_literal(*a, source))?;
+        let key = args
+            .first()
+            .and_then(|a| extract_string_literal(*a, source))?;
         let env_uri = config::normalize_env_var_name(&key)?;
         let detail = config::build_config_read_detail("env", &env_uri, &key, "dotnet");
         let (start_line, _, end_line, _, _, _) = span(node);
@@ -676,11 +678,15 @@ fn config_read_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeI
 
     // IConfiguration.GetValue<T>("KEY") or GetValue("KEY")
     // Also: .BindConfiguration("Section") for options pattern
-    if ct.name == "GetValue" || ct.name == "GetSection" || ct.name == "GetConnectionString"
+    if ct.name == "GetValue"
+        || ct.name == "GetSection"
+        || ct.name == "GetConnectionString"
         || ct.name == "BindConfiguration"
     {
         let args = call_arguments(node);
-        let key = args.first().and_then(|a| extract_string_literal(*a, source))?;
+        let key = args
+            .first()
+            .and_then(|a| extract_string_literal(*a, source))?;
         let env_uri = config::normalize_env_var_name(&key)?;
         let detail = config::build_config_read_detail("config", &env_uri, &key, "dotnet-config");
         let (start_line, _, end_line, _, _, _) = span(node);
@@ -717,12 +723,8 @@ fn config_bind_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<
         None
     }?;
 
-    let detail = config::build_config_bind_detail(
-        &options_type,
-        method_base,
-        "configure_call",
-        "dotnet",
-    );
+    let detail =
+        config::build_config_bind_detail(&options_type, method_base, "configure_call", "dotnet");
     let (start_line, _, end_line, _, _, _) = span(node);
     Some(EdgeInput {
         kind: config::CONFIG_BIND_KIND.to_string(),
@@ -758,7 +760,8 @@ fn config_indexer_read_edge(node: Node<'_>, ctx: &Context, source: &str) -> Opti
     for child in arg_list.named_children(&mut cursor) {
         if let Some(key) = extract_string_literal(child, source) {
             let env_uri = config::normalize_env_var_name(&key)?;
-            let detail = config::build_config_read_detail("config", &env_uri, &key, "dotnet-config");
+            let detail =
+                config::build_config_read_detail("config", &env_uri, &key, "dotnet-config");
             let (start_line, _, end_line, _, _, _) = span(node);
             return Some(EdgeInput {
                 kind: config::CONFIG_READ_KIND.to_string(),
@@ -1803,7 +1806,10 @@ fn param_type_part(param: &str) -> Option<String> {
 /// Parse raw constructor parameter text and extract IOptions<T> matches.
 /// Returns `(options_type, wrapper_type)` pairs.
 fn extract_di_options_types_from_params(param_text: &str) -> Vec<(String, String)> {
-    let text = param_text.trim().trim_start_matches('(').trim_end_matches(')');
+    let text = param_text
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')');
     let mut results = Vec::new();
     for part in split_respecting_brackets(text) {
         if let Some(type_text) = param_type_part(&part) {
@@ -2333,7 +2339,7 @@ public class MyService : BaseService, IMyService {
     #[test]
     fn extract_di_options_from_mixed_params() {
         let result = extract_di_options_types_from_params(
-            "(IOptions<DatabaseOptions> db, ILogger<Foo> logger, IOptionsMonitor<CacheOptions> cache)"
+            "(IOptions<DatabaseOptions> db, ILogger<Foo> logger, IOptionsMonitor<CacheOptions> cache)",
         );
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].0, "DatabaseOptions");

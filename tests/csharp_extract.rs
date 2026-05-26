@@ -1,5 +1,5 @@
-use lidx::indexer::extract::LanguageExtractor;
 use lidx::indexer::csharp::{CSharpExtractor, module_name_from_rel_path};
+use lidx::indexer::extract::LanguageExtractor;
 
 #[test]
 fn module_name_from_path() {
@@ -89,10 +89,16 @@ public class Startup {
         .iter()
         .filter(|e| e.kind == "CONFIG_READ")
         .collect();
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("env://DATABASE_URL")
-    }), "expected CONFIG_READ for env://DATABASE_URL, found: {:?}",
-    config_reads.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://DATABASE_URL") }),
+        "expected CONFIG_READ for env://DATABASE_URL, found: {:?}",
+        config_reads
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -115,10 +121,23 @@ public class MssqlRepositoryBase {
         .iter()
         .filter(|e| e.kind == "CONFIG_BIND")
         .collect();
-    assert_eq!(config_binds.len(), 1, "expected 1 CONFIG_BIND edge, found: {:?}",
-        config_binds.iter().map(|e| (&e.source_qualname, &e.target_qualname)).collect::<Vec<_>>());
-    assert_eq!(config_binds[0].source_qualname.as_deref(), Some("Acme.Data.MssqlRepositoryBase"));
-    assert_eq!(config_binds[0].target_qualname.as_deref(), Some("DatabaseOptions"));
+    assert_eq!(
+        config_binds.len(),
+        1,
+        "expected 1 CONFIG_BIND edge, found: {:?}",
+        config_binds
+            .iter()
+            .map(|e| (&e.source_qualname, &e.target_qualname))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        config_binds[0].source_qualname.as_deref(),
+        Some("Acme.Data.MssqlRepositoryBase")
+    );
+    assert_eq!(
+        config_binds[0].target_qualname.as_deref(),
+        Some("DatabaseOptions")
+    );
 }
 
 #[test]
@@ -140,10 +159,25 @@ public class MyService {
         .iter()
         .filter(|e| e.kind == "CONFIG_BIND")
         .collect();
-    assert_eq!(config_binds.len(), 2, "expected 2 CONFIG_BIND edges, found: {:?}",
-        config_binds.iter().map(|e| (&e.source_qualname, &e.target_qualname)).collect::<Vec<_>>());
-    assert!(config_binds.iter().any(|e| e.target_qualname.as_deref() == Some("DatabaseOptions")));
-    assert!(config_binds.iter().any(|e| e.target_qualname.as_deref() == Some("LoggingOptions")));
+    assert_eq!(
+        config_binds.len(),
+        2,
+        "expected 2 CONFIG_BIND edges, found: {:?}",
+        config_binds
+            .iter()
+            .map(|e| (&e.source_qualname, &e.target_qualname))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        config_binds
+            .iter()
+            .any(|e| e.target_qualname.as_deref() == Some("DatabaseOptions"))
+    );
+    assert!(
+        config_binds
+            .iter()
+            .any(|e| e.target_qualname.as_deref() == Some("LoggingOptions"))
+    );
 }
 
 #[test]
@@ -167,10 +201,25 @@ public class Startup {
         .iter()
         .filter(|e| e.kind == "CONFIG_BIND")
         .collect();
-    assert_eq!(config_binds.len(), 2, "expected 2 CONFIG_BIND edges, found: {:?}",
-        config_binds.iter().map(|e| (&e.source_qualname, &e.target_qualname)).collect::<Vec<_>>());
-    assert!(config_binds.iter().any(|e| e.target_qualname.as_deref() == Some("DatabaseOptions")));
-    assert!(config_binds.iter().any(|e| e.target_qualname.as_deref() == Some("LoggingOptions")));
+    assert_eq!(
+        config_binds.len(),
+        2,
+        "expected 2 CONFIG_BIND edges, found: {:?}",
+        config_binds
+            .iter()
+            .map(|e| (&e.source_qualname, &e.target_qualname))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        config_binds
+            .iter()
+            .any(|e| e.target_qualname.as_deref() == Some("DatabaseOptions"))
+    );
+    assert!(
+        config_binds
+            .iter()
+            .any(|e| e.target_qualname.as_deref() == Some("LoggingOptions"))
+    );
 }
 
 #[test]
@@ -193,8 +242,14 @@ public class Startup {
         .iter()
         .filter(|e| e.kind == "CONFIG_READ")
         .collect();
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("env://DATABASE")
-    }), "expected CONFIG_READ for env://DATABASE, found: {:?}",
-    config_reads.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://DATABASE") }),
+        "expected CONFIG_READ for env://DATABASE, found: {:?}",
+        config_reads
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
 }

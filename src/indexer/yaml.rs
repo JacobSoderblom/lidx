@@ -1,6 +1,4 @@
-use crate::indexer::config::{
-    self, CONFIG_READ_KIND, CONFIG_SOURCE_KIND,
-};
+use crate::indexer::config::{self, CONFIG_READ_KIND, CONFIG_SOURCE_KIND};
 use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor, SymbolInput};
 use anyhow::Result;
 use serde_yaml_ng::Value;
@@ -37,14 +35,7 @@ impl LanguageExtractor for YamlExtractor {
             let Some(resource) = parse_k8s_resource(&value) else {
                 continue;
             };
-            resource_to_symbols(
-                &resource,
-                &value,
-                module_name,
-                doc,
-                source,
-                &mut output,
-            );
+            resource_to_symbols(&resource, &value, module_name, doc, source, &mut output);
         }
 
         Ok(output)
@@ -70,9 +61,7 @@ fn parse_k8s_resource(value: &Value) -> Option<K8sResource> {
     }
     let kind = map.get(&Value::String("kind".into()))?.as_str()?;
     let metadata = map.get(&Value::String("metadata".into()))?.as_mapping()?;
-    let name = metadata
-        .get(&Value::String("name".into()))?
-        .as_str()?;
+    let name = metadata.get(&Value::String("name".into()))?.as_str()?;
     let namespace = metadata
         .get(&Value::String("namespace".into()))
         .and_then(|v| v.as_str())
@@ -161,8 +150,7 @@ fn resource_to_symbols(
     // Extract containers
     let containers = find_containers(&kind_lower, value);
     for container in containers {
-        let container_qualname =
-            format!("{}/container/{}", qualname, container.name);
+        let container_qualname = format!("{}/container/{}", qualname, container.name);
         let container_symbol = SymbolInput {
             kind: "container".to_string(),
             name: container.name.clone(),
@@ -185,7 +173,13 @@ fn resource_to_symbols(
         });
 
         // Extract config/env edges from container spec
-        extract_config_edges(&container_qualname, &container.raw, start_line, end_line, output);
+        extract_config_edges(
+            &container_qualname,
+            &container.raw,
+            start_line,
+            end_line,
+            output,
+        );
     }
 
     // SecretProviderClass handling
@@ -274,7 +268,10 @@ fn find_containers(kind: &str, value: &Value) -> Vec<ContainerInfo> {
         if let Some(list) = pod_spec.get(*key).and_then(|v| v.as_sequence()) {
             for item in list {
                 if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
-                    let image = item.get("image").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let image = item
+                        .get("image")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     containers.push(ContainerInfo {
                         name: name.to_string(),
                         image,
@@ -346,7 +343,10 @@ fn extract_config_edges(
             // Check for valueFrom.secretKeyRef
             if let Some(value_from) = env_entry.get("valueFrom") {
                 if let Some(secret_ref) = value_from.get("secretKeyRef") {
-                    let secret_name = secret_ref.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let secret_name = secret_ref
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let secret_key = secret_ref.get("key").and_then(|v| v.as_str()).unwrap_or("");
 
                     // CONFIG_SOURCE: container → env://NAME
@@ -368,7 +368,13 @@ fn extract_config_edges(
                         evidence_end_line: Some(end_line),
                         ..Default::default()
                     });
-                    emit_section_prefix_edges(container_qualname, env_name, start_line, end_line, output);
+                    emit_section_prefix_edges(
+                        container_qualname,
+                        env_name,
+                        start_line,
+                        end_line,
+                        output,
+                    );
 
                     // CONFIG_READ: container → secret://secret-name
                     if let Some(secret_uri) = config::normalize_secret_name(secret_name) {
@@ -413,7 +419,13 @@ fn extract_config_edges(
                         evidence_end_line: Some(end_line),
                         ..Default::default()
                     });
-                    emit_section_prefix_edges(container_qualname, env_name, start_line, end_line, output);
+                    emit_section_prefix_edges(
+                        container_qualname,
+                        env_name,
+                        start_line,
+                        end_line,
+                        output,
+                    );
                     continue;
                 }
             }
@@ -430,7 +442,13 @@ fn extract_config_edges(
                     evidence_end_line: Some(end_line),
                     ..Default::default()
                 });
-                emit_section_prefix_edges(container_qualname, env_name, start_line, end_line, output);
+                emit_section_prefix_edges(
+                    container_qualname,
+                    env_name,
+                    start_line,
+                    end_line,
+                    output,
+                );
             }
         }
     }
@@ -462,12 +480,8 @@ fn extract_config_edges(
             if let Some(cm_ref) = entry.get("configMapRef") {
                 if let Some(name) = cm_ref.get("name").and_then(|v| v.as_str()) {
                     let uri = format!("configmap://{}", name.to_lowercase());
-                    let detail = config::build_config_read_detail(
-                        "configmap",
-                        &uri,
-                        name,
-                        "kubernetes",
-                    );
+                    let detail =
+                        config::build_config_read_detail("configmap", &uri, name, "kubernetes");
                     output.edges.push(EdgeInput {
                         kind: CONFIG_READ_KIND.to_string(),
                         source_qualname: Some(container_qualname.to_string()),
@@ -509,28 +523,26 @@ fn extract_secret_provider_edges(
             // 1. Direct sequence: [{objectName: ..., objectType: ...}, ...]
             // 2. Azure CSI `array:` wrapper: {array: [string, string, ...]}
             let items_owned: Vec<Value>;
-            let items: &[Value] = if let Some(arr) = objects_value
-                .get("array")
-                .and_then(|a| a.as_sequence())
-            {
-                // Azure CSI format: array items may be strings needing another YAML parse
-                items_owned = arr
-                    .iter()
-                    .filter_map(|item| {
-                        if let Some(s) = item.as_str() {
-                            serde_yaml_ng::from_str::<Value>(s).ok()
-                        } else {
-                            Some(item.clone())
-                        }
-                    })
-                    .collect();
-                &items_owned
-            } else {
-                match &objects_value {
-                    Value::Sequence(seq) => seq.as_slice(),
-                    _ => std::slice::from_ref(&objects_value),
-                }
-            };
+            let items: &[Value] =
+                if let Some(arr) = objects_value.get("array").and_then(|a| a.as_sequence()) {
+                    // Azure CSI format: array items may be strings needing another YAML parse
+                    items_owned = arr
+                        .iter()
+                        .filter_map(|item| {
+                            if let Some(s) = item.as_str() {
+                                serde_yaml_ng::from_str::<Value>(s).ok()
+                            } else {
+                                Some(item.clone())
+                            }
+                        })
+                        .collect();
+                    &items_owned
+                } else {
+                    match &objects_value {
+                        Value::Sequence(seq) => seq.as_slice(),
+                        _ => std::slice::from_ref(&objects_value),
+                    }
+                };
             for item in items {
                 if let Some(obj_name) = item.get("objectName").and_then(|v| v.as_str()) {
                     if let Some(secret_uri) = config::normalize_secret_name(obj_name) {
@@ -613,9 +625,8 @@ fn split_documents(source: &str) -> Vec<YamlDocument> {
                 // Find end of separator line
                 let sep_end = find_line_end(source, next);
                 current_start = sep_end;
-                current_line = current_line
-                    + doc_text.bytes().filter(|b| *b == b'\n').count() as i64
-                    + 1; // +1 for the separator line
+                current_line =
+                    current_line + doc_text.bytes().filter(|b| *b == b'\n').count() as i64 + 1; // +1 for the separator line
                 i = sep_end;
                 continue;
             }
@@ -693,10 +704,7 @@ fn span_whole(source: &str) -> (i64, i64, i64, i64, i64, i64) {
     (1, 1, lines, 1, 0, source.len() as i64)
 }
 
-fn module_symbol_with_span(
-    module_name: &str,
-    span: (i64, i64, i64, i64, i64, i64),
-) -> SymbolInput {
+fn module_symbol_with_span(module_name: &str, span: (i64, i64, i64, i64, i64, i64)) -> SymbolInput {
     let name = module_name
         .rsplit('/')
         .next()

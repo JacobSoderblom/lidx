@@ -29,12 +29,7 @@ jq -n --arg ctx "Cross-file context (callers may be affected by this edit):\n$CO
   '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":$ctx}}'
 "#;
 
-pub fn run_init(
-    repo: &Path,
-    db_path: &Path,
-    skip_index: bool,
-    skip_hooks: bool,
-) -> Result<()> {
+pub fn run_init(repo: &Path, db_path: &Path, skip_index: bool, skip_hooks: bool) -> Result<()> {
     let repo = std::fs::canonicalize(repo).context("canonicalize repo path")?;
 
     // 1. Index (unless --skip-index)
@@ -123,11 +118,8 @@ fn update_settings() -> Result<()> {
     });
     merge_hook_entry(hooks, "PreToolUse", pre_hook);
 
-    std::fs::write(
-        &settings_path,
-        serde_json::to_string_pretty(&settings)?,
-    )
-    .context("write settings.json")?;
+    std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)
+        .context("write settings.json")?;
     eprintln!("Updated {}", settings_path.display());
 
     Ok(())

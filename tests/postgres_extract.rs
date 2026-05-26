@@ -34,7 +34,11 @@ $$ LANGUAGE plpgsql;
     assert_eq!(function.unwrap().name, "get_user_count");
 
     // Check for CONTAINS edges
-    let contains_edges: Vec<_> = result.edges.iter().filter(|e| e.kind == "CONTAINS").collect();
+    let contains_edges: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONTAINS")
+        .collect();
     assert!(contains_edges.len() >= 2); // module contains table and function
 }
 
@@ -66,7 +70,10 @@ $$ LANGUAGE plpgsql;
         e.source_qualname.as_deref() == Some("register_user")
             && e.target_qualname.as_deref() == Some("validate_email")
     });
-    assert!(found, "Expected CALLS edge from register_user to validate_email");
+    assert!(
+        found,
+        "Expected CALLS edge from register_user to validate_email"
+    );
 }
 
 #[test]
@@ -88,12 +95,19 @@ CREATE TABLE employees (
     let result = extractor.extract(source, "test_module").unwrap();
 
     // Check for REFERENCES edge from employees to departments
-    let refs: Vec<_> = result.edges.iter().filter(|e| e.kind == "REFERENCES").collect();
+    let refs: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == "REFERENCES")
+        .collect();
     let found = refs.iter().any(|e| {
         e.source_qualname.as_deref() == Some("employees")
             && e.target_qualname.as_deref() == Some("departments")
     });
-    assert!(found, "Expected REFERENCES edge from employees to departments");
+    assert!(
+        found,
+        "Expected REFERENCES edge from employees to departments"
+    );
 }
 
 #[test]
@@ -125,7 +139,10 @@ CREATE TRIGGER audit_trigger
         e.source_qualname.as_deref() == Some("audit_trigger")
             && e.target_qualname.as_deref() == Some("log_changes")
     });
-    assert!(found, "Expected CALLS edge from audit_trigger to log_changes");
+    assert!(
+        found,
+        "Expected CALLS edge from audit_trigger to log_changes"
+    );
 }
 
 #[test]
@@ -157,7 +174,10 @@ $$;
             .unwrap_or(false)
             && e.target_qualname.as_deref() == Some("cleanup_old_records")
     });
-    assert!(found, "Expected CALLS edge from DO block to cleanup_old_records");
+    assert!(
+        found,
+        "Expected CALLS edge from DO block to cleanup_old_records"
+    );
 }
 
 #[test]
@@ -172,10 +192,7 @@ fn test_module_naming() {
         extractor.module_name_from_rel_path("db/schema.sql"),
         "db/schema"
     );
-    assert_eq!(
-        extractor.module_name_from_rel_path("simple.sql"),
-        "simple"
-    );
+    assert_eq!(extractor.module_name_from_rel_path("simple.sql"), "simple");
 }
 
 #[test]

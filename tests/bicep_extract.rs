@@ -1,10 +1,16 @@
-use lidx::indexer::bicep::{module_name_from_rel_path, BicepExtractor};
+use lidx::indexer::bicep::{BicepExtractor, module_name_from_rel_path};
 use lidx::indexer::extract::LanguageExtractor;
 
 #[test]
 fn module_name_from_path() {
-    assert_eq!(module_name_from_rel_path("infra/bicep/main.bicep"), "infra/bicep/main");
-    assert_eq!(module_name_from_rel_path("infra/main.bicepparam"), "infra/main");
+    assert_eq!(
+        module_name_from_rel_path("infra/bicep/main.bicep"),
+        "infra/bicep/main"
+    );
+    assert_eq!(
+        module_name_from_rel_path("infra/main.bicepparam"),
+        "infra/main"
+    );
     assert_eq!(module_name_from_rel_path("main.bicep"), "main");
 }
 
@@ -26,11 +32,23 @@ fn extract_resource() {
     let extracted = extractor.extract(source, &module).unwrap();
 
     // Module + resource
-    assert!(extracted.symbols.iter().any(|s| s.kind == "module" && s.qualname == "infra/bicep/main"));
-    let res = extracted.symbols.iter().find(|s| s.kind == "resource").unwrap();
+    assert!(
+        extracted
+            .symbols
+            .iter()
+            .any(|s| s.kind == "module" && s.qualname == "infra/bicep/main")
+    );
+    let res = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "resource")
+        .unwrap();
     assert_eq!(res.name, "keyVault");
     assert_eq!(res.qualname, "infra/bicep/main.keyVault");
-    assert_eq!(res.signature.as_deref(), Some("Microsoft.KeyVault/vaults@2023-07-01"));
+    assert_eq!(
+        res.signature.as_deref(),
+        Some("Microsoft.KeyVault/vaults@2023-07-01")
+    );
 
     // CONTAINS edge
     assert!(extracted.edges.iter().any(|e| {
@@ -53,10 +71,17 @@ fn extract_module_ref() {
     let mut extractor = BicepExtractor::new().unwrap();
     let extracted = extractor.extract(source, &module).unwrap();
 
-    let mod_ref = extracted.symbols.iter().find(|s| s.kind == "module_ref").unwrap();
+    let mod_ref = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "module_ref")
+        .unwrap();
     assert_eq!(mod_ref.name, "logAnalytics");
     assert_eq!(mod_ref.qualname, "infra/bicep/main.logAnalytics");
-    assert_eq!(mod_ref.signature.as_deref(), Some("modules/logAnalytics.bicep"));
+    assert_eq!(
+        mod_ref.signature.as_deref(),
+        Some("modules/logAnalytics.bicep")
+    );
 
     // IMPORTS_FILE edge
     assert!(extracted.edges.iter().any(|e| {
@@ -79,18 +104,30 @@ output vaultUri string = keyVault.properties.vaultUri
     let mut extractor = BicepExtractor::new().unwrap();
     let extracted = extractor.extract(source, &module).unwrap();
 
-    let param_loc = extracted.symbols.iter().find(|s| s.kind == "param" && s.name == "location").unwrap();
+    let param_loc = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "param" && s.name == "location")
+        .unwrap();
     assert_eq!(param_loc.signature.as_deref(), Some("string"));
     assert_eq!(param_loc.qualname, "infra/main.location");
 
-    let param_server = extracted.symbols.iter().find(|s| s.kind == "param" && s.name == "serverName").unwrap();
+    let param_server = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "param" && s.name == "serverName")
+        .unwrap();
     assert_eq!(param_server.signature.as_deref(), Some("string"));
 
     let var = extracted.symbols.iter().find(|s| s.kind == "var").unwrap();
     assert_eq!(var.name, "defaultTags");
     assert!(var.signature.is_none());
 
-    let output = extracted.symbols.iter().find(|s| s.kind == "output").unwrap();
+    let output = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "output")
+        .unwrap();
     assert_eq!(output.name, "vaultUri");
     assert_eq!(output.signature.as_deref(), Some("string"));
 }
@@ -102,7 +139,11 @@ fn extract_existing_resource() {
     let mut extractor = BicepExtractor::new().unwrap();
     let extracted = extractor.extract(source, &module).unwrap();
 
-    let res = extracted.symbols.iter().find(|s| s.kind == "resource").unwrap();
+    let res = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "resource")
+        .unwrap();
     assert_eq!(res.name, "existingVault");
     assert_eq!(
         res.signature.as_deref(),
@@ -125,7 +166,11 @@ fn extract_conditional_resource() {
     let mut extractor = BicepExtractor::new().unwrap();
     let extracted = extractor.extract(source, &module).unwrap();
 
-    let res = extracted.symbols.iter().find(|s| s.kind == "resource").unwrap();
+    let res = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "resource")
+        .unwrap();
     assert_eq!(res.name, "storageAccount");
     assert_eq!(
         res.signature.as_deref(),
@@ -147,7 +192,11 @@ fn extract_for_loop_resource() {
     let mut extractor = BicepExtractor::new().unwrap();
     let extracted = extractor.extract(source, &module).unwrap();
 
-    let res = extracted.symbols.iter().find(|s| s.kind == "resource").unwrap();
+    let res = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "resource")
+        .unwrap();
     assert_eq!(res.name, "secrets");
     assert_eq!(
         res.signature.as_deref(),
@@ -168,7 +217,12 @@ var suffix = 'prod'
     let extracted = extractor.extract(source, &module).unwrap();
 
     // Module symbol
-    assert!(extracted.symbols.iter().any(|s| s.kind == "module" && s.qualname == "infra/envs/prod"));
+    assert!(
+        extracted
+            .symbols
+            .iter()
+            .any(|s| s.kind == "module" && s.qualname == "infra/envs/prod")
+    );
 
     // IMPORTS_FILE edge from using
     assert!(extracted.edges.iter().any(|e| {
@@ -178,11 +232,20 @@ var suffix = 'prod'
     }));
 
     // Params
-    let params: Vec<_> = extracted.symbols.iter().filter(|s| s.kind == "param").collect();
+    let params: Vec<_> = extracted
+        .symbols
+        .iter()
+        .filter(|s| s.kind == "param")
+        .collect();
     assert_eq!(params.len(), 2);
 
     // Var
-    assert!(extracted.symbols.iter().any(|s| s.kind == "var" && s.name == "suffix"));
+    assert!(
+        extracted
+            .symbols
+            .iter()
+            .any(|s| s.kind == "var" && s.name == "suffix")
+    );
 }
 
 #[test]
@@ -194,8 +257,15 @@ param location string = 'eastus'
     let mut extractor = BicepExtractor::new().unwrap();
     let extracted = extractor.extract(source, &module).unwrap();
 
-    let param = extracted.symbols.iter().find(|s| s.kind == "param").unwrap();
-    assert_eq!(param.docstring.as_deref(), Some("The Azure region for deployment"));
+    let param = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "param")
+        .unwrap();
+    assert_eq!(
+        param.docstring.as_deref(),
+        Some("The Azure region for deployment")
+    );
 }
 
 #[test]
@@ -207,7 +277,11 @@ param adminPassword string
     let mut extractor = BicepExtractor::new().unwrap();
     let extracted = extractor.extract(source, &module).unwrap();
 
-    let param = extracted.symbols.iter().find(|s| s.kind == "param").unwrap();
+    let param = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "param")
+        .unwrap();
     assert_eq!(param.name, "adminPassword");
     assert_eq!(param.signature.as_deref(), Some("string (secure)"));
 }
@@ -225,7 +299,11 @@ func buildUrl(host string, path string) string => '${host}/${path}'
     assert_eq!(type_sym.name, "storageSkuType");
     assert_eq!(type_sym.qualname, "infra/main.storageSkuType");
 
-    let func_sym = extracted.symbols.iter().find(|s| s.kind == "function").unwrap();
+    let func_sym = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "function")
+        .unwrap();
     assert_eq!(func_sym.name, "buildUrl");
     assert_eq!(func_sym.qualname, "infra/main.buildUrl");
     // Signature should include params and return type
@@ -255,9 +333,24 @@ resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {
     let extracted = extractor.extract(source, &module).unwrap();
 
     // Should extract all 3 declarations despite comments
-    assert!(extracted.symbols.iter().any(|s| s.kind == "param" && s.name == "location"));
-    assert!(extracted.symbols.iter().any(|s| s.kind == "var" && s.name == "name"));
-    assert!(extracted.symbols.iter().any(|s| s.kind == "resource" && s.name == "kv"));
+    assert!(
+        extracted
+            .symbols
+            .iter()
+            .any(|s| s.kind == "param" && s.name == "location")
+    );
+    assert!(
+        extracted
+            .symbols
+            .iter()
+            .any(|s| s.kind == "var" && s.name == "name")
+    );
+    assert!(
+        extracted
+            .symbols
+            .iter()
+            .any(|s| s.kind == "resource" && s.name == "kv")
+    );
 }
 
 #[test]
@@ -303,29 +396,57 @@ output namespaceId string = serviceBusNamespace.id
     let extracted = extractor.extract(source, &module).unwrap();
 
     // File module with targetScope signature and metadata description docstring
-    let file_mod = extracted.symbols.iter().find(|s| s.kind == "module").unwrap();
+    let file_mod = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "module")
+        .unwrap();
     assert_eq!(file_mod.signature.as_deref(), Some("resourceGroup"));
-    assert_eq!(file_mod.docstring.as_deref(), Some("Service Bus namespace and queues"));
+    assert_eq!(
+        file_mod.docstring.as_deref(),
+        Some("Service Bus namespace and queues")
+    );
 
     // Params
-    let loc_param = extracted.symbols.iter().find(|s| s.kind == "param" && s.name == "location").unwrap();
+    let loc_param = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "param" && s.name == "location")
+        .unwrap();
     assert_eq!(loc_param.docstring.as_deref(), Some("The Azure region"));
 
     // Var
-    assert!(extracted.symbols.iter().any(|s| s.kind == "var" && s.name == "defaultSku"));
+    assert!(
+        extracted
+            .symbols
+            .iter()
+            .any(|s| s.kind == "var" && s.name == "defaultSku")
+    );
 
     // Resources
-    let resources: Vec<_> = extracted.symbols.iter().filter(|s| s.kind == "resource").collect();
+    let resources: Vec<_> = extracted
+        .symbols
+        .iter()
+        .filter(|s| s.kind == "resource")
+        .collect();
     assert_eq!(resources.len(), 2);
     assert!(resources.iter().any(|s| s.name == "serviceBusNamespace"));
     assert!(resources.iter().any(|s| s.name == "deadLetterQueue"));
 
     // Module ref
-    let mod_ref = extracted.symbols.iter().find(|s| s.kind == "module_ref").unwrap();
+    let mod_ref = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "module_ref")
+        .unwrap();
     assert_eq!(mod_ref.name, "monitoring");
 
     // Output
-    let out = extracted.symbols.iter().find(|s| s.kind == "output").unwrap();
+    let out = extracted
+        .symbols
+        .iter()
+        .find(|s| s.kind == "output")
+        .unwrap();
     assert_eq!(out.name, "namespaceId");
     assert_eq!(out.signature.as_deref(), Some("string"));
 
@@ -333,7 +454,11 @@ output namespaceId string = serviceBusNamespace.id
     assert_eq!(extracted.symbols.len(), 8);
 
     // CONTAINS edges for all non-module symbols
-    let contains: Vec<_> = extracted.edges.iter().filter(|e| e.kind == "CONTAINS").collect();
+    let contains: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CONTAINS")
+        .collect();
     assert_eq!(contains.len(), 7); // 2 params + 1 var + 2 resources + 1 module_ref + 1 output
 
     // IMPORTS_FILE edge for module ref
@@ -376,16 +501,54 @@ fn channel_edges_for_service_bus_topic() {
     let extracted = extractor.extract(source, &module).unwrap();
 
     // Should emit both CHANNEL_PUBLISH and CHANNEL_SUBSCRIBE
-    let pub_edge = extracted.edges.iter().find(|e| e.kind == "CHANNEL_PUBLISH").unwrap();
-    assert_eq!(pub_edge.source_qualname.as_deref(), Some("infra/bicep/topics.topicOrchestratorTriggers"));
-    assert_eq!(pub_edge.target_qualname.as_deref(), Some("channel://orchestratortriggers"));
-    assert!(pub_edge.detail.as_ref().unwrap().contains("\"framework\":\"azure-service-bus\""));
-    assert!(pub_edge.detail.as_ref().unwrap().contains("\"role\":\"infrastructure\""));
-    assert!(pub_edge.detail.as_ref().unwrap().contains("\"raw\":\"sbt-orchestrator-triggers\""));
+    let pub_edge = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CHANNEL_PUBLISH")
+        .unwrap();
+    assert_eq!(
+        pub_edge.source_qualname.as_deref(),
+        Some("infra/bicep/topics.topicOrchestratorTriggers")
+    );
+    assert_eq!(
+        pub_edge.target_qualname.as_deref(),
+        Some("channel://orchestratortriggers")
+    );
+    assert!(
+        pub_edge
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("\"framework\":\"azure-service-bus\"")
+    );
+    assert!(
+        pub_edge
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("\"role\":\"infrastructure\"")
+    );
+    assert!(
+        pub_edge
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("\"raw\":\"sbt-orchestrator-triggers\"")
+    );
 
-    let sub_edge = extracted.edges.iter().find(|e| e.kind == "CHANNEL_SUBSCRIBE").unwrap();
-    assert_eq!(sub_edge.source_qualname.as_deref(), Some("infra/bicep/topics.topicOrchestratorTriggers"));
-    assert_eq!(sub_edge.target_qualname.as_deref(), Some("channel://orchestratortriggers"));
+    let sub_edge = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CHANNEL_SUBSCRIBE")
+        .unwrap();
+    assert_eq!(
+        sub_edge.source_qualname.as_deref(),
+        Some("infra/bicep/topics.topicOrchestratorTriggers")
+    );
+    assert_eq!(
+        sub_edge.target_qualname.as_deref(),
+        Some("channel://orchestratortriggers")
+    );
 }
 
 #[test]
@@ -403,8 +566,7 @@ fn channel_edges_for_service_bus_queue() {
     let extracted = extractor.extract(source, &module).unwrap();
 
     assert!(extracted.edges.iter().any(|e| {
-        e.kind == "CHANNEL_PUBLISH"
-            && e.target_qualname.as_deref() == Some("channel://dataingest")
+        e.kind == "CHANNEL_PUBLISH" && e.target_qualname.as_deref() == Some("channel://dataingest")
     }));
     assert!(extracted.edges.iter().any(|e| {
         e.kind == "CHANNEL_SUBSCRIBE"
@@ -423,9 +585,12 @@ fn no_channel_edges_for_non_servicebus() {
     let mut extractor = BicepExtractor::new().unwrap();
     let extracted = extractor.extract(source, &module).unwrap();
 
-    assert!(!extracted.edges.iter().any(|e| {
-        e.kind == "CHANNEL_PUBLISH" || e.kind == "CHANNEL_SUBSCRIBE"
-    }));
+    assert!(
+        !extracted
+            .edges
+            .iter()
+            .any(|e| { e.kind == "CHANNEL_PUBLISH" || e.kind == "CHANNEL_SUBSCRIBE" })
+    );
 }
 
 #[test]
@@ -442,9 +607,12 @@ fn no_channel_edges_for_topic_subscription() {
     let mut extractor = BicepExtractor::new().unwrap();
     let extracted = extractor.extract(source, &module).unwrap();
 
-    assert!(!extracted.edges.iter().any(|e| {
-        e.kind == "CHANNEL_PUBLISH" || e.kind == "CHANNEL_SUBSCRIBE"
-    }));
+    assert!(
+        !extracted
+            .edges
+            .iter()
+            .any(|e| { e.kind == "CHANNEL_PUBLISH" || e.kind == "CHANNEL_SUBSCRIBE" })
+    );
 }
 
 #[test]
@@ -466,8 +634,14 @@ fn extract_keyvault_secret_config_source() {
         .iter()
         .filter(|e| e.kind == "CONFIG_SOURCE")
         .collect();
-    assert!(config_sources.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("secret://datamgr-db-conn")
-    }), "expected CONFIG_SOURCE for secret://datamgr-db-conn, found: {:?}",
-    config_sources.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+    assert!(
+        config_sources
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("secret://datamgr-db-conn") }),
+        "expected CONFIG_SOURCE for secret://datamgr-db-conn, found: {:?}",
+        config_sources
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
 }

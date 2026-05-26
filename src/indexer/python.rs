@@ -433,8 +433,7 @@ fn config_read_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<
     let (base, name) = attribute_base_and_name(function_node, source)?;
 
     // os.getenv("KEY") or os.environ.get("KEY")
-    let is_env_read = (base == "os" && name == "getenv")
-        || (base == "os.environ" && name == "get");
+    let is_env_read = (base == "os" && name == "getenv") || (base == "os.environ" && name == "get");
 
     if !is_env_read {
         return None;
@@ -462,11 +461,10 @@ fn config_read_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<
 fn config_read_subscript_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
     // Tree-sitter-python "subscript" node has fields "value" and "subscript"
     let value_node = node.child_by_field_name("value")?;
-    let subscript_node = node.child_by_field_name("subscript")
-        .or_else(|| {
-            // Some tree-sitter versions use "slice" instead of "subscript"
-            node.child_by_field_name("slice")
-        })?;
+    let subscript_node = node.child_by_field_name("subscript").or_else(|| {
+        // Some tree-sitter versions use "slice" instead of "subscript"
+        node.child_by_field_name("slice")
+    })?;
     let base = node_text(value_node, source);
     if base != "os.environ" {
         return None;
@@ -901,8 +899,7 @@ fn channel_edges_from_decorators(
             channel::build_subscribe_detail(&normalized, &raw_topic, "python-decorator")
         };
 
-        let (start_line, _start_col, end_line, _end_col, _start_byte, _end_byte) =
-            span(*decorator);
+        let (start_line, _start_col, end_line, _end_col, _start_byte, _end_byte) = span(*decorator);
         edges.push(EdgeInput {
             kind: kind.to_string(),
             source_qualname: Some(handler.to_string()),

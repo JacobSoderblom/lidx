@@ -6,9 +6,7 @@
 
 use crate::db::Db;
 use crate::impact::confidence::apply_distance_decay;
-use crate::impact::types::{
-    ConfidenceScore, ImpactSource, LayerResult,
-};
+use crate::impact::types::{ConfidenceScore, ImpactSource, LayerResult};
 use crate::model::{Edge, Symbol};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -210,7 +208,9 @@ fn resolve_bridge_targets(
                     continue;
                 }
                 distance_map.insert(bridged_id, current_distance + 1);
-                parent_map.entry(bridged_id).or_insert((*source_id, edge_kind.clone()));
+                parent_map
+                    .entry(bridged_id)
+                    .or_insert((*source_id, edge_kind.clone()));
                 queue.push_back((bridged_id, current_distance + 1));
                 if visited.len() >= limit {
                     return Ok(true);
@@ -313,15 +313,24 @@ pub fn analyze_direct_impact(
 
         // For upstream/both directions, also fetch incoming edges via qualname pattern
         // This catches callers where target_symbol_id is NULL but target_qualname matches
-        if matches!(direction, TraversalDirection::Upstream | TraversalDirection::Both) {
+        if matches!(
+            direction,
+            TraversalDirection::Upstream | TraversalDirection::Both
+        ) {
             for &current_id in &current_level {
                 if let Some(sym) = symbol_cache.get(&current_id) {
                     // Search for CALLS and CONFIG_BIND edges targeting this symbol
                     let mut all_incoming = db.incoming_edges_by_qualname_pattern(
-                        &sym.name, "CALLS", languages, graph_version
+                        &sym.name,
+                        "CALLS",
+                        languages,
+                        graph_version,
                     )?;
                     let config_bind_incoming = db.incoming_edges_by_qualname_pattern(
-                        &sym.name, "CONFIG_BIND", languages, graph_version
+                        &sym.name,
+                        "CONFIG_BIND",
+                        languages,
+                        graph_version,
                     )?;
                     all_incoming.extend(config_bind_incoming);
                     if !all_incoming.is_empty() {
@@ -331,7 +340,9 @@ pub fn analyze_direct_impact(
                             if !existing_ids.contains(&edge.id) {
                                 // Verify qualname actually matches this symbol
                                 let matches = edge.target_qualname.as_ref().map_or(false, |qn| {
-                                    qn == &sym.qualname || qn == &sym.name || qn.ends_with(&format!(".{}", sym.name))
+                                    qn == &sym.qualname
+                                        || qn == &sym.name
+                                        || qn.ends_with(&format!(".{}", sym.name))
                                 });
                                 if matches {
                                     entry.push(edge);
@@ -355,7 +366,10 @@ pub fn analyze_direct_impact(
                         if let Some(ref qn) = edge.target_qualname {
                             // For downstream/both: resolve target when source is current
                             if edge.source_symbol_id == Some(*current_id)
-                                && matches!(direction, TraversalDirection::Downstream | TraversalDirection::Both)
+                                && matches!(
+                                    direction,
+                                    TraversalDirection::Downstream | TraversalDirection::Both
+                                )
                             {
                                 unresolved_qualnames.push(qn.clone());
                             }
@@ -383,7 +397,9 @@ pub fn analyze_direct_impact(
                     if !edge_matches_filter(edge, kinds, include_tests) {
                         continue;
                     }
-                    if let Some(id) = resolve_next_id(edge, *current_id, direction, &resolved_qualnames) {
+                    if let Some(id) =
+                        resolve_next_id(edge, *current_id, direction, &resolved_qualnames)
+                    {
                         if !visited.contains(&id) {
                             neighbor_ids.push(id);
                         }
@@ -420,7 +436,9 @@ pub fn analyze_direct_impact(
                         }
                     }
 
-                    let Some(next_id) = resolve_next_id(edge, *current_id, direction, &resolved_qualnames) else {
+                    let Some(next_id) =
+                        resolve_next_id(edge, *current_id, direction, &resolved_qualnames)
+                    else {
                         continue;
                     };
 
@@ -432,7 +450,9 @@ pub fn analyze_direct_impact(
                     }
 
                     distance_map.insert(next_id, current_distance + 1);
-                    parent_map.entry(next_id).or_insert((*current_id, edge.kind.clone()));
+                    parent_map
+                        .entry(next_id)
+                        .or_insert((*current_id, edge.kind.clone()));
                     queue.push_back((next_id, current_distance + 1));
 
                     if visited.len() >= limit {
@@ -515,10 +535,19 @@ mod tests {
 
     #[test]
     fn direction_from_string() {
-        assert_eq!(TraversalDirection::from("upstream"), TraversalDirection::Upstream);
-        assert_eq!(TraversalDirection::from("DOWNSTREAM"), TraversalDirection::Downstream);
+        assert_eq!(
+            TraversalDirection::from("upstream"),
+            TraversalDirection::Upstream
+        );
+        assert_eq!(
+            TraversalDirection::from("DOWNSTREAM"),
+            TraversalDirection::Downstream
+        );
         assert_eq!(TraversalDirection::from("both"), TraversalDirection::Both);
-        assert_eq!(TraversalDirection::from("invalid"), TraversalDirection::Both);
+        assert_eq!(
+            TraversalDirection::from("invalid"),
+            TraversalDirection::Both
+        );
     }
 
     #[test]

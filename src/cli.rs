@@ -111,15 +111,6 @@ pub enum Command {
         #[arg(long, default_value_t = 1000)]
         watch_batch_max: usize,
     },
-    /// Import SARIF diagnostics into the database.
-    DiagnosticsImport {
-        #[arg(long, default_value = ".")]
-        repo: PathBuf,
-        #[arg(long)]
-        db: Option<PathBuf>,
-        #[arg(long)]
-        path: PathBuf,
-    },
     /// Show compact cross-file context for a file.
     Context {
         #[arg(long, default_value = ".")]
@@ -144,21 +135,5 @@ pub enum Command {
         /// Skip hook installation.
         #[arg(long)]
         skip_hooks: bool,
-    },
-    /// Run diagnostics tools and import SARIF into the database.
-    DiagnosticsRun {
-        #[arg(long, default_value = ".")]
-        repo: PathBuf,
-        #[arg(long)]
-        db: Option<PathBuf>,
-        /// Restrict diagnostics to specific languages.
-        #[arg(long = "language", value_delimiter = ',')]
-        languages: Vec<String>,
-        /// Restrict diagnostics to specific tools.
-        #[arg(long = "tool", value_delimiter = ',')]
-        tools: Vec<String>,
-        /// Output directory for generated SARIF files.
-        #[arg(long)]
-        output_dir: Option<PathBuf>,
     },
 }

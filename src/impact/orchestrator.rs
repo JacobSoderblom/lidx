@@ -4,12 +4,12 @@
 //! fuses their results, and handles graceful degradation when layers fail.
 
 use crate::db::Db;
-use crate::impact::config::MultiLayerConfig;
 use crate::impact::confidence::fuse_evidence;
-use crate::impact::layers::{analyze_direct_impact, HistoricalImpactLayer, TestImpactLayer};
+use crate::impact::config::MultiLayerConfig;
+use crate::impact::layers::{HistoricalImpactLayer, TestImpactLayer, analyze_direct_impact};
 use crate::impact::types::{
-    ImpactEntry, ImpactSource, ImpactSummary, LayerMetadata, LayerResult,
-    LayerStats, PathStep, UnifiedImpactResult,
+    ImpactEntry, ImpactSource, ImpactSummary, LayerMetadata, LayerResult, LayerStats, PathStep,
+    UnifiedImpactResult,
 };
 use crate::model::{Symbol, SymbolCompact};
 use anyhow::Result;
@@ -42,7 +42,11 @@ impl<'a> MultiLayerOrchestrator<'a> {
     ///
     /// This method runs all enabled layers in parallel using threads,
     /// providing 2-3x speedup compared to sequential execution.
-    pub fn analyze_parallel(&self, seed_ids: &[i64], graph_version: i64) -> Result<UnifiedImpactResult> {
+    pub fn analyze_parallel(
+        &self,
+        seed_ids: &[i64],
+        graph_version: i64,
+    ) -> Result<UnifiedImpactResult> {
         let start = Instant::now();
 
         // Load seed symbols
@@ -77,7 +81,10 @@ impl<'a> MultiLayerOrchestrator<'a> {
                 let db = match Db::new(&db_path) {
                     Ok(db) => db,
                     Err(e) => {
-                        eprintln!("Warning: Failed to create DB connection for direct layer: {}", e);
+                        eprintln!(
+                            "Warning: Failed to create DB connection for direct layer: {}",
+                            e
+                        );
                         let mut meta = metadata.lock().unwrap();
                         meta.direct = Some(LayerStats {
                             enabled: true,
@@ -150,7 +157,10 @@ impl<'a> MultiLayerOrchestrator<'a> {
                 let db = match Db::new(&db_path) {
                     Ok(db) => db,
                     Err(e) => {
-                        eprintln!("Warning: Failed to create DB connection for test layer: {}", e);
+                        eprintln!(
+                            "Warning: Failed to create DB connection for test layer: {}",
+                            e
+                        );
                         let mut meta = metadata.lock().unwrap();
                         meta.test = Some(LayerStats {
                             enabled: true,
@@ -212,7 +222,10 @@ impl<'a> MultiLayerOrchestrator<'a> {
                 let db = match Db::new(&db_path) {
                     Ok(db) => db,
                     Err(e) => {
-                        eprintln!("Warning: Failed to create DB connection for historical layer: {}", e);
+                        eprintln!(
+                            "Warning: Failed to create DB connection for historical layer: {}",
+                            e
+                        );
                         let mut meta = metadata.lock().unwrap();
                         meta.historical = Some(LayerStats {
                             enabled: true,
@@ -283,7 +296,8 @@ impl<'a> MultiLayerOrchestrator<'a> {
 
         // Fuse results from all layers
         let num_layers = layer_results.len();
-        let (affected, summary, truncated) = self.fuse_results(layer_results, seed_ids, graph_version)?;
+        let (affected, summary, truncated) =
+            self.fuse_results(layer_results, seed_ids, graph_version)?;
 
         // Apply global confidence filter
         let filtered_affected = if self.config.min_confidence > 0.0 {
@@ -320,7 +334,11 @@ impl<'a> MultiLayerOrchestrator<'a> {
     }
 
     /// Analyze impact from seed symbols using sequential layer execution (original implementation)
-    fn analyze_sequential(&self, seed_ids: &[i64], graph_version: i64) -> Result<UnifiedImpactResult> {
+    fn analyze_sequential(
+        &self,
+        seed_ids: &[i64],
+        graph_version: i64,
+    ) -> Result<UnifiedImpactResult> {
         let start = Instant::now();
 
         // Load seed symbols
@@ -441,7 +459,8 @@ impl<'a> MultiLayerOrchestrator<'a> {
 
         // Fuse results from all layers
         let num_layers = layer_results.len();
-        let (affected, summary, truncated) = self.fuse_results(layer_results, seed_ids, graph_version)?;
+        let (affected, summary, truncated) =
+            self.fuse_results(layer_results, seed_ids, graph_version)?;
 
         // Apply global confidence filter
         let filtered_affected = if self.config.min_confidence > 0.0 {
@@ -529,7 +548,9 @@ impl<'a> MultiLayerOrchestrator<'a> {
             any_truncated = any_truncated || layer_result.truncated;
 
             for (child, parent_info) in &layer_result.parent_map {
-                merged_parents.entry(*child).or_insert_with(|| parent_info.clone());
+                merged_parents
+                    .entry(*child)
+                    .or_insert_with(|| parent_info.clone());
             }
 
             for (symbol_id, _confidence) in &layer_result.impacts {
@@ -545,10 +566,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
         // Load all impacted symbols
         let symbol_ids: Vec<i64> = symbol_evidence.keys().copied().collect();
         let symbols = self.db.symbols_by_ids(&symbol_ids, None, graph_version)?;
-        let symbol_map: HashMap<i64, Symbol> = symbols
-            .into_iter()
-            .map(|s| (s.id, s))
-            .collect();
+        let symbol_map: HashMap<i64, Symbol> = symbols.into_iter().map(|s| (s.id, s)).collect();
 
         // Build impact entries with fused confidence
         let seed_set: std::collections::HashSet<i64> = seed_ids.iter().copied().collect();
@@ -564,8 +582,12 @@ impl<'a> MultiLayerOrchestrator<'a> {
                 let confidence = fuse_evidence(&evidence);
 
                 // Calculate distance from first evidence
-                let has_direct = evidence.iter().any(|e| matches!(e, ImpactSource::DirectEdge { .. }));
-                let has_test = evidence.iter().any(|e| matches!(e, ImpactSource::TestLink { .. }));
+                let has_direct = evidence
+                    .iter()
+                    .any(|e| matches!(e, ImpactSource::DirectEdge { .. }));
+                let has_test = evidence
+                    .iter()
+                    .any(|e| matches!(e, ImpactSource::TestLink { .. }));
 
                 let distance = evidence
                     .iter()
@@ -591,9 +613,8 @@ impl<'a> MultiLayerOrchestrator<'a> {
 
                 // Build path if requested — reconstruct from parent_map
                 let path = if self.config.include_paths {
-                    let steps = reconstruct_path_steps(
-                        symbol_id, &seed_set, &merged_parents, &symbol_map,
-                    );
+                    let steps =
+                        reconstruct_path_steps(symbol_id, &seed_set, &merged_parents, &symbol_map);
                     Some(crate::impact::types::ImpactPath { steps })
                 } else {
                     None
@@ -611,7 +632,10 @@ impl<'a> MultiLayerOrchestrator<'a> {
 
         // Filter out module/namespace-level symbols that add noise
         affected.retain(|entry| {
-            !matches!(entry.symbol.kind.as_str(), "module" | "namespace" | "package")
+            !matches!(
+                entry.symbol.kind.as_str(),
+                "module" | "namespace" | "package"
+            )
         });
 
         // Sort by distance, then by qualname for determinism

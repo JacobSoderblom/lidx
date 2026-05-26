@@ -6,9 +6,9 @@
 //! - Layer 3: Historical impact (co-change patterns)
 
 pub mod direct;
-pub mod test;
 pub mod historical;
+pub mod test;
 
 pub use direct::analyze_direct_impact;
-pub use test::TestImpactLayer;
 pub use historical::HistoricalImpactLayer;
+pub use test::TestImpactLayer;

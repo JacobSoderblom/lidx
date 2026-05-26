@@ -645,7 +645,11 @@ fn config_read_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeI
     let key_node = args.first()?;
     let key = extract_string_literal(*key_node, source)?;
     let env_uri = config::normalize_env_var_name(&key)?;
-    let framework = if raw_fn.starts_with("dotenvy") { "dotenvy" } else { "rust-std" };
+    let framework = if raw_fn.starts_with("dotenvy") {
+        "dotenvy"
+    } else {
+        "rust-std"
+    };
     let detail = config::build_config_read_detail("env", &env_uri, &key, framework);
     let (start_line, _, end_line, _, _, _) = span(node);
     Some(EdgeInput {

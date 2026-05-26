@@ -1,8 +1,7 @@
-use crate::diagnostics::DiagnosticInput;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -103,29 +102,6 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_symbol_metrics_complexity ON symbol_metrics(complexity);
         CREATE INDEX IF NOT EXISTS idx_symbol_metrics_dup ON symbol_metrics(duplication_hash);
 
-        CREATE TABLE IF NOT EXISTS diagnostics (
-            id INTEGER PRIMARY KEY,
-            file_id INTEGER,
-            path TEXT,
-            line INTEGER,
-            column INTEGER,
-            end_line INTEGER,
-            end_column INTEGER,
-            severity TEXT,
-            message TEXT NOT NULL,
-            rule_id TEXT,
-            tool TEXT,
-            snippet TEXT,
-            diagnostic_hash TEXT,
-            created INTEGER NOT NULL,
-            FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE SET NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_diagnostics_file ON diagnostics(file_id);
-        CREATE INDEX IF NOT EXISTS idx_diagnostics_path ON diagnostics(path);
-        CREATE INDEX IF NOT EXISTS idx_diagnostics_severity ON diagnostics(severity);
-        CREATE INDEX IF NOT EXISTS idx_diagnostics_rule ON diagnostics(rule_id);
-        CREATE INDEX IF NOT EXISTS idx_diagnostics_tool ON diagnostics(tool);
         COMMIT;
         ",
     )?;
@@ -162,27 +138,6 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         if !has_column(conn, "edges", "evidence_snippet")? {
             conn.execute("ALTER TABLE edges ADD COLUMN evidence_snippet TEXT", [])?;
         }
-    }
-
-    if existing < 5 {
-        if !has_column(conn, "diagnostics", "diagnostic_hash")? {
-            conn.execute(
-                "ALTER TABLE diagnostics ADD COLUMN diagnostic_hash TEXT",
-                [],
-            )?;
-        }
-        backfill_diagnostics_hashes(conn)?;
-        conn.execute(
-            "DELETE FROM diagnostics
-             WHERE id NOT IN (
-                SELECT MIN(id) FROM diagnostics GROUP BY diagnostic_hash
-             )",
-            [],
-        )?;
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_diagnostics_hash ON diagnostics(diagnostic_hash)",
-            [],
-        )?;
     }
 
     if existing < 6 {
@@ -365,6 +320,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    if existing < 12 {
+        conn.execute("DROP TABLE IF EXISTS diagnostics", [])?;
+    }
+
     if existing < SCHEMA_VERSION {
         conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?)
@@ -385,34 +344,4 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
         }
     }
     Ok(false)
-}
-
-fn backfill_diagnostics_hashes(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare(
-        "SELECT id, path, line, column, end_line, end_column, severity, message, rule_id, tool, snippet
-         FROM diagnostics",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        let id: i64 = row.get(0)?;
-        let diagnostic = DiagnosticInput {
-            path: row.get(1)?,
-            line: row.get(2)?,
-            column: row.get(3)?,
-            end_line: row.get(4)?,
-            end_column: row.get(5)?,
-            severity: row.get(6)?,
-            message: row.get(7)?,
-            rule_id: row.get(8)?,
-            tool: row.get(9)?,
-            snippet: row.get(10)?,
-        };
-        Ok((id, diagnostic))
-    })?;
-    let mut update = conn.prepare("UPDATE diagnostics SET diagnostic_hash = ? WHERE id = ?")?;
-    for row in rows {
-        let (id, diagnostic) = row?;
-        let hash = diagnostic.fingerprint();
-        update.execute(params![hash, id])?;
-    }
-    Ok(())
 }

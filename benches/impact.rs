@@ -1,6 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use lidx::db::Db;
-use lidx::impact::{analyze_impact, TraversalDirection};
+use lidx::impact::{TraversalDirection, analyze_impact};
 use lidx::indexer::Indexer;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -31,7 +31,10 @@ fn setup_test_repo() -> (PathBuf, PathBuf) {
     // Index the repo
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     let result = indexer.reindex().unwrap();
-    eprintln!("Indexed {} files with {} symbols", result.indexed, result.symbols);
+    eprintln!(
+        "Indexed {} files with {} symbols",
+        result.indexed, result.symbols
+    );
 
     (repo_root, db_path)
 }
@@ -66,15 +69,26 @@ fn find_greeter_symbol(db: &Db) -> lidx::model::Symbol {
         .or_else(|| {
             // Try finding with find_symbols which is more flexible
             let symbols = db.find_symbols("Greeter", 10, None, graph_version).ok()?;
-            eprintln!("Found {} symbols matching 'Greeter' at version {}", symbols.len(), graph_version);
+            eprintln!(
+                "Found {} symbols matching 'Greeter' at version {}",
+                symbols.len(),
+                graph_version
+            );
             symbols.into_iter().next()
         })
         .or_else(|| {
             // Try getting any symbol as a fallback
             let symbols = db.find_symbols("", 10, None, graph_version).ok()?;
-            eprintln!("Found {} total symbols at version {}", symbols.len(), graph_version);
+            eprintln!(
+                "Found {} total symbols at version {}",
+                symbols.len(),
+                graph_version
+            );
             if !symbols.is_empty() {
-                eprintln!("Using fallback symbol: {} ({})", symbols[0].name, symbols[0].qualname);
+                eprintln!(
+                    "Using fallback symbol: {} ({})",
+                    symbols[0].name, symbols[0].qualname
+                );
             }
             symbols.into_iter().next()
         })
@@ -308,7 +322,8 @@ fn bench_multi_layer_sequential(c: &mut Criterion) {
 
     c.bench_function("multi_layer_all_sequential", |b| {
         b.iter(|| {
-            let orchestrator = MultiLayerOrchestrator::new(black_box(&db), black_box(config.clone()));
+            let orchestrator =
+                MultiLayerOrchestrator::new(black_box(&db), black_box(config.clone()));
             let result = orchestrator.analyze(black_box(&[seed_id]), black_box(-1));
             black_box(result)
         })
@@ -333,7 +348,8 @@ fn bench_multi_layer_parallel(c: &mut Criterion) {
 
     c.bench_function("multi_layer_all_parallel", |b| {
         b.iter(|| {
-            let orchestrator = MultiLayerOrchestrator::new(black_box(&db), black_box(config.clone()));
+            let orchestrator =
+                MultiLayerOrchestrator::new(black_box(&db), black_box(config.clone()));
             let result = orchestrator.analyze_parallel(black_box(&[seed_id]), black_box(-1));
             black_box(result)
         })
@@ -358,7 +374,8 @@ fn bench_multi_layer_direct_only(c: &mut Criterion) {
 
     c.bench_function("multi_layer_direct_only", |b| {
         b.iter(|| {
-            let orchestrator = MultiLayerOrchestrator::new(black_box(&db), black_box(config.clone()));
+            let orchestrator =
+                MultiLayerOrchestrator::new(black_box(&db), black_box(config.clone()));
             let result = orchestrator.analyze(black_box(&[seed_id]), black_box(-1));
             black_box(result)
         })

@@ -77,13 +77,22 @@ const apiKey = process.env["API_KEY"];
         .iter()
         .filter(|e| e.kind == "CONFIG_READ")
         .collect();
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("env://DATABASE_URL")
-    }), "expected CONFIG_READ for env://DATABASE_URL, found: {:?}",
-    config_reads.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("env://API_KEY")
-    }), "expected CONFIG_READ for env://API_KEY");
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://DATABASE_URL") }),
+        "expected CONFIG_READ for env://DATABASE_URL, found: {:?}",
+        config_reads
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://API_KEY") }),
+        "expected CONFIG_READ for env://API_KEY"
+    );
 }
 
 #[test]
@@ -100,14 +109,25 @@ const { DATABASE_URL, API_KEY } = process.env;
         .iter()
         .filter(|e| e.kind == "CONFIG_READ")
         .collect();
-    assert_eq!(config_reads.len(), 2, "expected 2 CONFIG_READ edges, found: {:?}",
-        config_reads.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("env://DATABASE_URL")
-    }));
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("env://API_KEY")
-    }));
+    assert_eq!(
+        config_reads.len(),
+        2,
+        "expected 2 CONFIG_READ edges, found: {:?}",
+        config_reads
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://DATABASE_URL") })
+    );
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://API_KEY") })
+    );
 }
 
 #[test]
@@ -124,11 +144,20 @@ const { DB_URL: dbUrl } = process.env;
         .iter()
         .filter(|e| e.kind == "CONFIG_READ")
         .collect();
-    assert_eq!(config_reads.len(), 1, "expected 1 CONFIG_READ edge for renamed destructuring, found: {:?}",
-        config_reads.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("env://DB_URL")
-    }));
+    assert_eq!(
+        config_reads.len(),
+        1,
+        "expected 1 CONFIG_READ edge for renamed destructuring, found: {:?}",
+        config_reads
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://DB_URL") })
+    );
 }
 
 #[test]
@@ -147,11 +176,21 @@ fastify.get('/users', async (req, reply) => {
         .iter()
         .filter(|e| e.kind == "HTTP_ROUTE")
         .collect();
-    assert_eq!(routes.len(), 1, "expected 1 HTTP_ROUTE, got {:?}",
-        routes.iter().map(|e| (&e.target_qualname, &e.detail)).collect::<Vec<_>>());
+    assert_eq!(
+        routes.len(),
+        1,
+        "expected 1 HTTP_ROUTE, got {:?}",
+        routes
+            .iter()
+            .map(|e| (&e.target_qualname, &e.detail))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(routes[0].target_qualname.as_deref(), Some("/users"));
     let detail = routes[0].detail.as_deref().unwrap_or("");
-    assert!(detail.contains("fastify"), "expected fastify framework label, got: {detail}");
+    assert!(
+        detail.contains("fastify"),
+        "expected fastify framework label, got: {detail}"
+    );
 }
 
 #[test]
@@ -174,8 +213,15 @@ fastify.register((instance, opts, done) => {
         .iter()
         .filter(|e| e.kind == "HTTP_ROUTE")
         .collect();
-    assert_eq!(routes.len(), 1, "expected 1 HTTP_ROUTE, got {:?}",
-        routes.iter().map(|e| (&e.target_qualname, &e.detail)).collect::<Vec<_>>());
+    assert_eq!(
+        routes.len(),
+        1,
+        "expected 1 HTTP_ROUTE, got {:?}",
+        routes
+            .iter()
+            .map(|e| (&e.target_qualname, &e.detail))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(routes[0].target_qualname.as_deref(), Some("/api/users"));
 }
 
@@ -200,8 +246,15 @@ fastify.register((app, opts, done) => {
         .iter()
         .filter(|e| e.kind == "HTTP_ROUTE")
         .collect();
-    assert_eq!(routes.len(), 1, "expected 1 HTTP_ROUTE, got {:?}",
-        routes.iter().map(|e| (&e.target_qualname, &e.detail)).collect::<Vec<_>>());
+    assert_eq!(
+        routes.len(),
+        1,
+        "expected 1 HTTP_ROUTE, got {:?}",
+        routes
+            .iter()
+            .map(|e| (&e.target_qualname, &e.detail))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(routes[0].target_qualname.as_deref(), Some("/api/v1/users"));
 }
 
@@ -224,11 +277,21 @@ app.route({
         .iter()
         .filter(|e| e.kind == "HTTP_ROUTE")
         .collect();
-    assert_eq!(routes.len(), 1, "expected 1 HTTP_ROUTE, got {:?}",
-        routes.iter().map(|e| (&e.target_qualname, &e.detail)).collect::<Vec<_>>());
+    assert_eq!(
+        routes.len(),
+        1,
+        "expected 1 HTTP_ROUTE, got {:?}",
+        routes
+            .iter()
+            .map(|e| (&e.target_qualname, &e.detail))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(routes[0].target_qualname.as_deref(), Some("/items"));
     let detail = routes[0].detail.as_deref().unwrap_or("");
-    assert!(detail.contains("fastify"), "expected fastify framework label, got: {detail}");
+    assert!(
+        detail.contains("fastify"),
+        "expected fastify framework label, got: {detail}"
+    );
 }
 
 #[test]
@@ -254,8 +317,15 @@ fastify.register(userRoutes, { prefix: '/api' });
         .iter()
         .filter(|e| e.kind == "HTTP_ROUTE")
         .collect();
-    assert_eq!(routes.len(), 1, "expected 1 HTTP_ROUTE, got {:?}",
-        routes.iter().map(|e| (&e.target_qualname, &e.detail)).collect::<Vec<_>>());
+    assert_eq!(
+        routes.len(),
+        1,
+        "expected 1 HTTP_ROUTE, got {:?}",
+        routes
+            .iter()
+            .map(|e| (&e.target_qualname, &e.detail))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(routes[0].target_qualname.as_deref(), Some("/api/users"));
 }
 
@@ -280,9 +350,20 @@ fastify.register(itemRoutes, { prefix: '/v1' });
         .iter()
         .filter(|e| e.kind == "HTTP_ROUTE")
         .collect();
-    assert_eq!(routes.len(), 2, "expected 2 HTTP_ROUTE edges, got {:?}",
-        routes.iter().map(|e| (&e.target_qualname, &e.detail)).collect::<Vec<_>>());
-    assert!(routes.iter().any(|e| e.target_qualname.as_deref() == Some("/v1/items")));
+    assert_eq!(
+        routes.len(),
+        2,
+        "expected 2 HTTP_ROUTE edges, got {:?}",
+        routes
+            .iter()
+            .map(|e| (&e.target_qualname, &e.detail))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        routes
+            .iter()
+            .any(|e| e.target_qualname.as_deref() == Some("/v1/items"))
+    );
 }
 
 #[test]
@@ -304,8 +385,15 @@ fastify.register(fp(async function(instance, opts) {
         .iter()
         .filter(|e| e.kind == "HTTP_ROUTE")
         .collect();
-    assert_eq!(routes.len(), 1, "expected 1 HTTP_ROUTE, got {:?}",
-        routes.iter().map(|e| (&e.target_qualname, &e.detail)).collect::<Vec<_>>());
+    assert_eq!(
+        routes.len(),
+        1,
+        "expected 1 HTTP_ROUTE, got {:?}",
+        routes
+            .iter()
+            .map(|e| (&e.target_qualname, &e.detail))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(routes[0].target_qualname.as_deref(), Some("/api/health"));
 }
 
@@ -330,9 +418,19 @@ fastify.register(dbPlugin, { prefix: '/internal' });
         .iter()
         .filter(|e| e.kind == "HTTP_ROUTE")
         .collect();
-    assert_eq!(routes.len(), 1, "expected 1 HTTP_ROUTE, got {:?}",
-        routes.iter().map(|e| (&e.target_qualname, &e.detail)).collect::<Vec<_>>());
-    assert_eq!(routes[0].target_qualname.as_deref(), Some("/internal/db/status"));
+    assert_eq!(
+        routes.len(),
+        1,
+        "expected 1 HTTP_ROUTE, got {:?}",
+        routes
+            .iter()
+            .map(|e| (&e.target_qualname, &e.detail))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        routes[0].target_qualname.as_deref(),
+        Some("/internal/db/status")
+    );
 }
 
 #[test]
@@ -354,10 +452,16 @@ fastify.register(require('@fastify/postgres'), {
         .iter()
         .filter(|e| e.kind == "CONFIG_READ")
         .collect();
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("env://DATABASE_URL")
-    }), "expected CONFIG_READ for DATABASE_URL, got: {:?}",
-        config_reads.iter().map(|e| e.target_qualname.as_deref()).collect::<Vec<_>>());
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://DATABASE_URL") }),
+        "expected CONFIG_READ for DATABASE_URL, got: {:?}",
+        config_reads
+            .iter()
+            .map(|e| e.target_qualname.as_deref())
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -390,27 +494,46 @@ fastify.register(apiRoutes, { prefix: '/api' });
         .iter()
         .filter(|e| e.kind == "HTTP_ROUTE")
         .collect();
-    let route_paths: Vec<_> = routes.iter()
+    let route_paths: Vec<_> = routes
+        .iter()
         .map(|e| e.target_qualname.as_deref().unwrap_or(""))
         .collect();
-    let route_details: Vec<_> = routes.iter()
-        .map(|e| (e.target_qualname.as_deref().unwrap_or(""), e.source_qualname.as_deref().unwrap_or(""), e.evidence_start_line))
+    let route_details: Vec<_> = routes
+        .iter()
+        .map(|e| {
+            (
+                e.target_qualname.as_deref().unwrap_or(""),
+                e.source_qualname.as_deref().unwrap_or(""),
+                e.evidence_start_line,
+            )
+        })
         .collect();
-    assert!(route_paths.contains(&"/db/health"),
-        "expected /db/health route, got: {route_details:?}");
-    assert!(route_paths.contains(&"/api/users"),
-        "expected /api/users route, got: {route_details:?}");
+    assert!(
+        route_paths.contains(&"/db/health"),
+        "expected /db/health route, got: {route_details:?}"
+    );
+    assert!(
+        route_paths.contains(&"/api/users"),
+        "expected /api/users route, got: {route_details:?}"
+    );
     // POST /api/users
-    assert_eq!(routes.len(), 3, "expected 3 HTTP_ROUTE edges (GET /db/health, GET /api/users, POST /api/users), got: {route_details:?}");
+    assert_eq!(
+        routes.len(),
+        3,
+        "expected 3 HTTP_ROUTE edges (GET /db/health, GET /api/users, POST /api/users), got: {route_details:?}"
+    );
 
     let config_reads: Vec<_> = extracted
         .edges
         .iter()
         .filter(|e| e.kind == "CONFIG_READ")
         .collect();
-    assert!(config_reads.iter().any(|e| {
-        e.target_qualname.as_deref() == Some("env://DB_CONN")
-    }), "expected CONFIG_READ for DB_CONN");
+    assert!(
+        config_reads
+            .iter()
+            .any(|e| { e.target_qualname.as_deref() == Some("env://DB_CONN") }),
+        "expected CONFIG_READ for DB_CONN"
+    );
 }
 
 #[test]
@@ -444,20 +567,46 @@ export default healthRoutes;
         .iter()
         .filter(|e| e.kind == "HTTP_ROUTE")
         .collect();
-    let route_details: Vec<_> = routes.iter()
-        .map(|e| (e.target_qualname.as_deref().unwrap_or(""), e.source_qualname.as_deref().unwrap_or(""), e.detail.as_deref().unwrap_or("")))
+    let route_details: Vec<_> = routes
+        .iter()
+        .map(|e| {
+            (
+                e.target_qualname.as_deref().unwrap_or(""),
+                e.source_qualname.as_deref().unwrap_or(""),
+                e.detail.as_deref().unwrap_or(""),
+            )
+        })
         .collect();
-    assert_eq!(routes.len(), 3, "expected 3 HTTP_ROUTE edges for health routes, got: {route_details:?}");
-    assert!(routes.iter().any(|e| e.target_qualname.as_deref() == Some("/health/live")),
-        "expected /health/live, got: {route_details:?}");
-    assert!(routes.iter().any(|e| e.target_qualname.as_deref() == Some("/health/ready")),
-        "expected /health/ready, got: {route_details:?}");
-    assert!(routes.iter().any(|e| e.target_qualname.as_deref() == Some("/health/startup")),
-        "expected /health/startup, got: {route_details:?}");
+    assert_eq!(
+        routes.len(),
+        3,
+        "expected 3 HTTP_ROUTE edges for health routes, got: {route_details:?}"
+    );
+    assert!(
+        routes
+            .iter()
+            .any(|e| e.target_qualname.as_deref() == Some("/health/live")),
+        "expected /health/live, got: {route_details:?}"
+    );
+    assert!(
+        routes
+            .iter()
+            .any(|e| e.target_qualname.as_deref() == Some("/health/ready")),
+        "expected /health/ready, got: {route_details:?}"
+    );
+    assert!(
+        routes
+            .iter()
+            .any(|e| e.target_qualname.as_deref() == Some("/health/startup")),
+        "expected /health/startup, got: {route_details:?}"
+    );
     // All routes should have "fastify" framework label
     for r in &routes {
         let detail = r.detail.as_deref().unwrap_or("");
-        assert!(detail.contains("fastify"), "expected fastify label, got: {detail}");
+        assert!(
+            detail.contains("fastify"),
+            "expected fastify label, got: {detail}"
+        );
     }
 }
 
@@ -486,9 +635,20 @@ export async function buildApp() {
         .iter()
         .filter(|e| e.kind == "HTTP_ROUTE")
         .collect();
-    let route_details: Vec<_> = routes.iter()
-        .map(|e| (e.target_qualname.as_deref().unwrap_or(""), e.source_qualname.as_deref().unwrap_or(""), e.detail.as_deref().unwrap_or("")))
+    let route_details: Vec<_> = routes
+        .iter()
+        .map(|e| {
+            (
+                e.target_qualname.as_deref().unwrap_or(""),
+                e.source_qualname.as_deref().unwrap_or(""),
+                e.detail.as_deref().unwrap_or(""),
+            )
+        })
         .collect();
-    assert_eq!(routes.len(), 1, "expected 1 HTTP_ROUTE for root route, got: {route_details:?}");
+    assert_eq!(
+        routes.len(),
+        1,
+        "expected 1 HTTP_ROUTE for root route, got: {route_details:?}"
+    );
     assert_eq!(routes[0].target_qualname.as_deref(), Some("/"));
 }

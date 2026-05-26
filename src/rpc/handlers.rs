@@ -25,9 +25,7 @@ fn resolve_symbol_by_query(
 
     // Retry without language filter
     if languages.is_some() {
-        let results = indexer
-            .db()
-            .find_symbols(query, 5, None, graph_version)?;
+        let results = indexer.db().find_symbols(query, 5, None, graph_version)?;
         if let Some(sym) = results.into_iter().next() {
             return Ok(sym);
         }
@@ -93,9 +91,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         ("summary", "source"),
         ("body", "source"),
     ];
-    let raw_sections = params.sections.clone().unwrap_or_else(||
-        vec!["source".into(), "callers".into(), "callees".into(), "tests".into(), "implements".into()]
-    );
+    let raw_sections = params.sections.clone().unwrap_or_else(|| {
+        vec![
+            "source".into(),
+            "callers".into(),
+            "callees".into(),
+            "tests".into(),
+            "implements".into(),
+        ]
+    });
     let mut warnings: Vec<String> = Vec::new();
     let sections: Vec<String> = raw_sections.iter().map(|s| {
         let lower = s.to_lowercase();
@@ -115,10 +119,14 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
     // 1. Resolve symbol
     let symbol = if let Some(id) = params.id {
-        indexer.db().get_symbol_by_id(id)?
+        indexer
+            .db()
+            .get_symbol_by_id(id)?
             .ok_or_else(|| anyhow::anyhow!("symbol not found: id={}", id))?
     } else if let Some(ref qn) = params.qualname {
-        indexer.db().get_symbol_by_qualname(qn, graph_version)?
+        indexer
+            .db()
+            .get_symbol_by_qualname(qn, graph_version)?
             .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", qn))?
     } else if let Some(ref query) = params.query {
         resolve_symbol_by_query(indexer, query, languages.as_deref(), graph_version)?
@@ -148,7 +156,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             let snippet = if snippet.len() > source_budget {
                 truncated = true;
                 // Find last newline before budget limit to avoid mid-line truncation
-                let truncate_pos = snippet[..source_budget].rfind('\n').unwrap_or(source_budget);
+                let truncate_pos = snippet[..source_budget]
+                    .rfind('\n')
+                    .unwrap_or(source_budget);
                 snippet[..truncate_pos].to_string()
             } else {
                 snippet
@@ -158,12 +168,14 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         } else {
             None
         }
-    } else { None };
+    } else {
+        None
+    };
 
     // 4. Get edges for callers/callees
-    let edges = indexer.db().edges_for_symbol(
-        symbol.id, languages.as_deref(), graph_version
-    )?;
+    let edges = indexer
+        .db()
+        .edges_for_symbol(symbol.id, languages.as_deref(), graph_version)?;
 
     // 5. Build callers (incoming CALLS)
     let mut callers = if sections.contains(&"callers".to_string()) {
@@ -175,14 +187,20 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         let is_class_symbol = symbol.kind == "class";
         let target_ids: Vec<(i64, String)> = if is_class_symbol {
             // For class symbols, find all methods and collect callers for each
-            let all_symbols = indexer.db().get_symbols_for_file(&symbol.file_path, graph_version)?;
-            let mut ids: Vec<(i64, String)> = all_symbols.into_iter()
+            let all_symbols = indexer
+                .db()
+                .get_symbols_for_file(&symbol.file_path, graph_version)?;
+            let mut ids: Vec<(i64, String)> = all_symbols
+                .into_iter()
                 .filter(|s| {
-                    (s.kind == "method" || s.kind == "function") &&
-                    s.start_line >= symbol.start_line &&
-                    s.end_line <= symbol.end_line
+                    (s.kind == "method" || s.kind == "function")
+                        && s.start_line >= symbol.start_line
+                        && s.end_line <= symbol.end_line
                 })
-                .map(|s| { let name = s.name.clone(); (s.id, name) })
+                .map(|s| {
+                    let name = s.name.clone();
+                    (s.id, name)
+                })
                 .collect();
             // Also include the class itself
             ids.push((symbol.id, symbol.name.clone()));
@@ -192,13 +210,17 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         };
 
         for (target_id, target_name) in &target_ids {
-            if caller_refs.len() >= max_refs || caller_bytes > callers_budget { break; }
+            if caller_refs.len() >= max_refs || caller_bytes > callers_budget {
+                break;
+            }
 
             // Get edges for this target
             let target_edges = if *target_id == symbol.id {
                 edges.clone()
             } else {
-                indexer.db().edges_for_symbol(*target_id, languages.as_deref(), graph_version)?
+                indexer
+                    .db()
+                    .edges_for_symbol(*target_id, languages.as_deref(), graph_version)?
             };
 
             // Collect resolved callers
@@ -208,8 +230,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         if seen_caller_ids.insert(source_id) {
                             if let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id) {
                                 let evidence = edge.evidence_snippet.clone();
-                                let ref_json = serde_json::to_string(&caller_sym).unwrap_or_default();
-                                caller_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                                let ref_json =
+                                    serde_json::to_string(&caller_sym).unwrap_or_default();
+                                caller_bytes +=
+                                    ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
                                 if caller_bytes > callers_budget {
                                     truncated = true;
                                     break;
@@ -220,7 +244,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                     evidence,
                                     edge_kind: "CALLS".to_string(),
                                 });
-                                if caller_refs.len() >= max_refs { break; }
+                                if caller_refs.len() >= max_refs {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -230,7 +256,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             // Check for unresolved callers by qualname
             if caller_refs.len() < max_refs && caller_bytes <= callers_budget {
                 let unresolved_edges = indexer.db().incoming_edges_by_qualname_pattern(
-                    target_name, "CALLS", languages.as_deref(), graph_version
+                    target_name,
+                    "CALLS",
+                    languages.as_deref(),
+                    graph_version,
                 )?;
 
                 for edge in &unresolved_edges {
@@ -238,10 +267,14 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         if target_qn.ends_with(target_name) {
                             if let Some(source_id) = edge.source_symbol_id {
                                 if seen_caller_ids.insert(source_id) {
-                                    if let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id) {
+                                    if let Ok(Some(caller_sym)) =
+                                        indexer.db().get_symbol_by_id(source_id)
+                                    {
                                         let evidence = edge.evidence_snippet.clone();
-                                        let ref_json = serde_json::to_string(&caller_sym).unwrap_or_default();
-                                        caller_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                                        let ref_json =
+                                            serde_json::to_string(&caller_sym).unwrap_or_default();
+                                        caller_bytes += ref_json.len()
+                                            + evidence.as_ref().map_or(0, |e| e.len());
                                         if caller_bytes > callers_budget {
                                             truncated = true;
                                             break;
@@ -252,7 +285,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                             evidence,
                                             edge_kind: "CALLS".to_string(),
                                         });
-                                        if caller_refs.len() >= max_refs { break; }
+                                        if caller_refs.len() >= max_refs {
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -264,7 +299,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
         used_bytes += caller_bytes;
         Some(caller_refs)
-    } else { None };
+    } else {
+        None
+    };
 
     // 6. Build callees (outgoing CALLS) - FIX #3: For class symbols, aggregate from methods
     let mut callees = if sections.contains(&"callees".to_string()) {
@@ -277,19 +314,24 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
         if is_class_symbol {
             // For class symbols, find all methods in the same file within the class's line range
-            let all_symbols = indexer.db().get_symbols_for_file(&symbol.file_path, graph_version)?;
-            let methods: Vec<_> = all_symbols.into_iter()
+            let all_symbols = indexer
+                .db()
+                .get_symbols_for_file(&symbol.file_path, graph_version)?;
+            let methods: Vec<_> = all_symbols
+                .into_iter()
                 .filter(|s| {
-                    (s.kind == "method" || s.kind == "function") &&
-                    s.start_line >= symbol.start_line &&
-                    s.end_line <= symbol.end_line
+                    (s.kind == "method" || s.kind == "function")
+                        && s.start_line >= symbol.start_line
+                        && s.end_line <= symbol.end_line
                 })
                 .collect();
 
             // Get callees from all methods
             for method in methods {
                 let method_edges = indexer.db().edges_for_symbol(
-                    method.id, languages.as_deref(), graph_version
+                    method.id,
+                    languages.as_deref(),
+                    graph_version,
                 )?;
 
                 for edge in &method_edges {
@@ -298,15 +340,23 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         let target_id = match edge.target_symbol_id {
                             Some(id) => Some(id),
                             None => edge.target_qualname.as_deref().and_then(|qn| {
-                                indexer.db().lookup_symbol_id_fuzzy(qn, languages.as_deref(), graph_version).ok().flatten()
+                                indexer
+                                    .db()
+                                    .lookup_symbol_id_fuzzy(qn, languages.as_deref(), graph_version)
+                                    .ok()
+                                    .flatten()
                             }),
                         };
                         if let Some(target_id) = target_id {
                             if seen_callee_ids.insert(target_id) {
-                                if let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id) {
+                                if let Ok(Some(callee_sym)) =
+                                    indexer.db().get_symbol_by_id(target_id)
+                                {
                                     let evidence = edge.evidence_snippet.clone();
-                                    let ref_json = serde_json::to_string(&callee_sym).unwrap_or_default();
-                                    callee_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                                    let ref_json =
+                                        serde_json::to_string(&callee_sym).unwrap_or_default();
+                                    callee_bytes +=
+                                        ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
                                     if callee_bytes > callees_budget {
                                         truncated = true;
                                         break;
@@ -317,7 +367,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                         evidence,
                                         edge_kind: "CALLS".to_string(),
                                     });
-                                    if callee_refs.len() >= max_refs { break; }
+                                    if callee_refs.len() >= max_refs {
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -334,15 +386,21 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     let target_id = match edge.target_symbol_id {
                         Some(id) => Some(id),
                         None => edge.target_qualname.as_deref().and_then(|qn| {
-                            indexer.db().lookup_symbol_id_fuzzy(qn, languages.as_deref(), graph_version).ok().flatten()
+                            indexer
+                                .db()
+                                .lookup_symbol_id_fuzzy(qn, languages.as_deref(), graph_version)
+                                .ok()
+                                .flatten()
                         }),
                     };
                     if let Some(target_id) = target_id {
                         if seen_callee_ids.insert(target_id) {
                             if let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id) {
                                 let evidence = edge.evidence_snippet.clone();
-                                let ref_json = serde_json::to_string(&callee_sym).unwrap_or_default();
-                                callee_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                                let ref_json =
+                                    serde_json::to_string(&callee_sym).unwrap_or_default();
+                                callee_bytes +=
+                                    ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
                                 if callee_bytes > callees_budget {
                                     truncated = true;
                                     break;
@@ -353,7 +411,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                     evidence,
                                     edge_kind: "CALLS".to_string(),
                                 });
-                                if callee_refs.len() >= max_refs { break; }
+                                if callee_refs.len() >= max_refs {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -363,7 +423,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
         used_bytes += callee_bytes;
         Some(callee_refs)
-    } else { None };
+    } else {
+        None
+    };
 
     // 7. Find tests (incoming CALLS from test files)
     let mut tests = if sections.contains(&"tests".to_string()) {
@@ -390,7 +452,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                 evidence: edge.evidence_snippet.clone(),
                                 edge_kind: "CALLS".to_string(),
                             });
-                            if test_refs.len() >= max_refs { break; }
+                            if test_refs.len() >= max_refs {
+                                break;
+                            }
                         }
                     }
                 }
@@ -398,14 +462,17 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         }
         used_bytes += test_bytes;
         Some(test_refs)
-    } else { None };
+    } else {
+        None
+    };
 
     // 8. Find implements (EXTENDS/IMPLEMENTS/INHERITS edges) - FIX #2
     let implements = if sections.contains(&"implements".to_string()) {
         let mut impl_syms = Vec::new();
         for edge in &edges {
             if (edge.kind == "EXTENDS" || edge.kind == "IMPLEMENTS" || edge.kind == "INHERITS")
-                && edge.source_symbol_id == Some(symbol.id) {
+                && edge.source_symbol_id == Some(symbol.id)
+            {
                 if let Some(target_id) = edge.target_symbol_id {
                     if let Ok(Some(impl_sym)) = indexer.db().get_symbol_by_id(target_id) {
                         impl_syms.push(impl_sym);
@@ -413,8 +480,14 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 }
             }
         }
-        if impl_syms.is_empty() { None } else { Some(impl_syms) }
-    } else { None };
+        if impl_syms.is_empty() {
+            None
+        } else {
+            Some(impl_syms)
+        }
+    } else {
+        None
+    };
 
     // 9. FIX #4: Budget expansion - if >30% budget remaining, fetch source snippets for refs
     let budget_remaining = max_bytes.saturating_sub(used_bytes);
@@ -427,7 +500,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         // Expand callers with source snippets
         if let Some(ref caller_list) = callers {
             for caller_ref in caller_list.iter() {
-                if used_bytes + snippet_budget_per_ref > max_bytes { break; }
+                if used_bytes + snippet_budget_per_ref > max_bytes {
+                    break;
+                }
 
                 let full_path = repo_root.join(&caller_ref.symbol.file_path);
                 if full_path.exists() {
@@ -437,7 +512,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         let end = ((caller_ref.symbol.start_line + 3) as usize).min(lines.len());
                         let snippet = lines[start..end].join("\n");
                         let snippet = if snippet.len() > snippet_budget_per_ref {
-                            let truncate_pos = snippet[..snippet_budget_per_ref].rfind('\n').unwrap_or(snippet_budget_per_ref);
+                            let truncate_pos = snippet[..snippet_budget_per_ref]
+                                .rfind('\n')
+                                .unwrap_or(snippet_budget_per_ref);
                             snippet[..truncate_pos].to_string()
                         } else {
                             snippet
@@ -451,7 +528,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         // Expand callees with source snippets
         if let Some(ref callee_list) = callees {
             for callee_ref in callee_list.iter() {
-                if used_bytes + snippet_budget_per_ref > max_bytes { break; }
+                if used_bytes + snippet_budget_per_ref > max_bytes {
+                    break;
+                }
 
                 let full_path = repo_root.join(&callee_ref.symbol.file_path);
                 if full_path.exists() {
@@ -461,7 +540,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         let end = ((callee_ref.symbol.start_line + 3) as usize).min(lines.len());
                         let snippet = lines[start..end].join("\n");
                         let snippet = if snippet.len() > snippet_budget_per_ref {
-                            let truncate_pos = snippet[..snippet_budget_per_ref].rfind('\n').unwrap_or(snippet_budget_per_ref);
+                            let truncate_pos = snippet[..snippet_budget_per_ref]
+                                .rfind('\n')
+                                .unwrap_or(snippet_budget_per_ref);
                             snippet[..truncate_pos].to_string()
                         } else {
                             snippet
@@ -487,9 +568,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         }
     };
     if format == "signatures" {
-        if let Some(ref mut c) = callers { strip_to_compact(c); }
-        if let Some(ref mut c) = callees { strip_to_compact(c); }
-        if let Some(ref mut t) = tests { strip_to_compact(t); }
+        if let Some(ref mut c) = callers {
+            strip_to_compact(c);
+        }
+        if let Some(ref mut c) = callees {
+            strip_to_compact(c);
+        }
+        if let Some(ref mut t) = tests {
+            strip_to_compact(t);
+        }
     }
 
     // 11. Build next_hops
@@ -553,12 +640,15 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
             graph_version,
         };
         let map_result = crate::repo_map::build_repo_map(indexer.db(), &config)?;
-        result.insert("map".to_string(), json!({
-            "text": map_result.text,
-            "modules": map_result.modules,
-            "symbols": map_result.symbols,
-            "bytes": map_result.bytes,
-        }));
+        result.insert(
+            "map".to_string(),
+            json!({
+                "text": map_result.text,
+                "modules": map_result.modules,
+                "symbols": map_result.symbols,
+                "bytes": map_result.bytes,
+            }),
+        );
     }
 
     if include_modules {
@@ -578,11 +668,9 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
                 languages: m.languages,
             })
             .collect();
-        let edges = indexer.db().module_edges(
-            depth,
-            languages.as_deref(),
-            graph_version,
-        )?;
+        let edges = indexer
+            .db()
+            .module_edges(depth, languages.as_deref(), graph_version)?;
         let module_edges: Vec<ModuleEdge> = edges
             .into_iter()
             .map(|(src, dst, calls, imports)| ModuleEdge {
@@ -597,6 +685,74 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
     }
 
     Ok(Value::Object(result))
+}
+
+pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let params: RepoMapParams = serde_json::from_value(params)?;
+    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
+    let paths = normalize_search_paths(indexer.repo_root(), None, params.paths)?;
+    let max_bytes = params.max_bytes.unwrap_or(8000).clamp(1000, 50000);
+
+    let config = crate::repo_map::RepoMapConfig {
+        max_bytes,
+        languages,
+        paths,
+        graph_version,
+    };
+    let map_result = crate::repo_map::build_repo_map(indexer.db(), &config)?;
+    Ok(json!({
+        "text": map_result.text,
+        "modules": map_result.modules,
+        "symbols": map_result.symbols,
+        "bytes": map_result.bytes,
+    }))
+}
+
+pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let params: DeadSymbolsParams = serde_json::from_value(params)?;
+    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    let limit = params.limit.unwrap_or(50);
+    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
+    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths.clone())?;
+    let include_unused_imports = params.include_unused_imports.unwrap_or(true);
+    let include_orphan_tests = params.include_orphan_tests.unwrap_or(true);
+
+    let dead_syms =
+        indexer
+            .db()
+            .dead_symbols(limit, languages.as_deref(), paths.as_deref(), graph_version)?;
+
+    let unused_imports = if include_unused_imports {
+        indexer
+            .db()
+            .unused_imports(limit, languages.as_deref(), paths.as_deref(), graph_version)?
+    } else {
+        vec![]
+    };
+
+    let orphan_tests = if include_orphan_tests {
+        indexer
+            .db()
+            .orphan_tests(limit, languages.as_deref(), paths.as_deref(), graph_version)?
+    } else {
+        vec![]
+    };
+
+    let ds_count = dead_syms.len();
+    let ui_count = unused_imports.len();
+    let ot_count = orphan_tests.len();
+
+    Ok(json!({
+        "dead_symbols": dead_syms,
+        "unused_imports": unused_imports,
+        "orphan_tests": orphan_tests,
+        "counts": {
+            "dead_symbols": ds_count,
+            "unused_imports": ui_count,
+            "orphan_tests": ot_count,
+        }
+    }))
 }
 
 pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Result<Value> {
@@ -651,19 +807,28 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
     let trace_offset = params.trace_offset.unwrap_or(0);
     let compact_mode = params.format.as_deref() == Some("compact");
-    let allowed_kinds: Vec<String> = params.kinds.clone().unwrap_or_else(||
+    let allowed_kinds: Vec<String> = params.kinds.clone().unwrap_or_else(|| {
         vec![
-            "CALLS".into(), "RPC_IMPL".into(), "RPC_CALL".into(), "XREF".into(),
-            "CHANNEL_PUBLISH".into(), "CHANNEL_SUBSCRIBE".into(),
-            "HTTP_CALL".into(), "HTTP_ROUTE".into(),
-            "CONFIG_SOURCE".into(), "CONFIG_READ".into(), "CONFIG_BIND".into(),
+            "CALLS".into(),
+            "RPC_IMPL".into(),
+            "RPC_CALL".into(),
+            "XREF".into(),
+            "CHANNEL_PUBLISH".into(),
+            "CHANNEL_SUBSCRIBE".into(),
+            "HTTP_CALL".into(),
+            "HTTP_ROUTE".into(),
+            "CONFIG_SOURCE".into(),
+            "CONFIG_READ".into(),
+            "CONFIG_BIND".into(),
         ]
-    );
+    });
 
     // Config URI resolution: find all symbols connected to the URI
     let config_uri_seeds: Vec<i64> = if let Some(ref qn) = params.start_qualname {
         if crate::indexer::config::is_config_uri(qn) {
-            indexer.db().source_symbols_for_config_uri(qn, &[], graph_version)?
+            indexer
+                .db()
+                .source_symbols_for_config_uri(qn, &[], graph_version)?
         } else {
             vec![]
         }
@@ -673,18 +838,27 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
 
     // Resolve start symbol
     let start = if let Some(id) = params.start_id {
-        indexer.db().get_symbol_by_id(id)?
+        indexer
+            .db()
+            .get_symbol_by_id(id)?
             .ok_or_else(|| anyhow::anyhow!("start symbol not found: id={}", id))?
     } else if let Some(ref qn) = params.start_qualname {
         if crate::indexer::config::is_config_uri(qn) {
-            let first_id = config_uri_seeds.first()
+            let first_id = config_uri_seeds
+                .first()
                 .ok_or_else(|| anyhow::anyhow!("no symbols found for config URI: {}", qn))?;
-            indexer.db().get_symbol_by_id(*first_id)?
+            indexer
+                .db()
+                .get_symbol_by_id(*first_id)?
                 .ok_or_else(|| anyhow::anyhow!("start symbol not found"))?
         } else {
-            let id = indexer.db().lookup_symbol_id(qn, graph_version)?
+            let id = indexer
+                .db()
+                .lookup_symbol_id(qn, graph_version)?
                 .ok_or_else(|| anyhow::anyhow!("start symbol not found: {}", qn))?;
-            indexer.db().get_symbol_by_id(id)?
+            indexer
+                .db()
+                .get_symbol_by_id(id)?
                 .ok_or_else(|| anyhow::anyhow!("start symbol not found"))?
         }
     } else if let Some(ref query) = params.query {
@@ -712,12 +886,18 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         }
     }
     if is_container {
-        if let Ok(file_symbols) = indexer.db().get_symbols_for_file(&start.file_path, graph_version) {
+        if let Ok(file_symbols) = indexer
+            .db()
+            .get_symbols_for_file(&start.file_path, graph_version)
+        {
             for s in &file_symbols {
                 if s.id != start.id
                     && s.start_line >= start.start_line
                     && s.end_line <= start.end_line
-                    && matches!(s.kind.as_str(), "method" | "function" | "resource" | "var" | "param" | "output")
+                    && matches!(
+                        s.kind.as_str(),
+                        "method" | "function" | "resource" | "var" | "param" | "output"
+                    )
                 {
                     seed_ids.push(s.id);
                 }
@@ -747,17 +927,24 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             break;
         }
 
-        let mut edges = indexer.db().edges_for_symbol(
-            current_id, languages.as_deref(), graph_version
-        )?;
+        let mut edges =
+            indexer
+                .db()
+                .edges_for_symbol(current_id, languages.as_deref(), graph_version)?;
 
         // For upstream direction, also find unresolved callers via qualname pattern
         if direction == "upstream" {
             if let Ok(Some(current_sym)) = indexer.db().get_symbol_by_id(current_id) {
                 for kind in &allowed_kinds {
-                    let mut unresolved = indexer.db().incoming_edges_by_qualname_pattern(
-                        &current_sym.name, kind, languages.as_deref(), graph_version
-                    ).unwrap_or_default();
+                    let mut unresolved = indexer
+                        .db()
+                        .incoming_edges_by_qualname_pattern(
+                            &current_sym.name,
+                            kind,
+                            languages.as_deref(),
+                            graph_version,
+                        )
+                        .unwrap_or_default();
                     edges.append(&mut unresolved);
                 }
             }
@@ -767,12 +954,16 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         let mut bridge_targets: Vec<(String, String)> = Vec::new(); // (target_qualname, edge_kind)
 
         for edge in &edges {
-            if !allowed_kinds.contains(&edge.kind) { continue; }
+            if !allowed_kinds.contains(&edge.kind) {
+                continue;
+            }
 
             // Determine next symbol based on direction
             let next_id = if direction == "downstream" {
                 // Follow outgoing calls: we are the source, get target
-                if edge.source_symbol_id != Some(current_id) { continue; }
+                if edge.source_symbol_id != Some(current_id) {
+                    continue;
+                }
                 edge.target_symbol_id
             } else {
                 // Follow incoming calls: we are the target, get source
@@ -806,13 +997,23 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
                         // (e.g., C# .Add() matching Python add() or TS Add())
                         let prev_lang = detect_language(&prev_file);
                         let same_lang = vec![prev_lang];
-                        let resolved = indexer.db().lookup_symbol_id_fuzzy(qn, Some(&same_lang), graph_version)
-                            .ok().flatten()
+                        let resolved = indexer
+                            .db()
+                            .lookup_symbol_id_fuzzy(qn, Some(&same_lang), graph_version)
+                            .ok()
+                            .flatten()
                             .or_else(|| {
                                 // Cross-language fallback ONLY for bridge edge kinds
                                 if is_bridge_edge_kind(&edge.kind) {
-                                    indexer.db().lookup_symbol_id_fuzzy(qn, languages.as_deref(), graph_version)
-                                        .ok().flatten()
+                                    indexer
+                                        .db()
+                                        .lookup_symbol_id_fuzzy(
+                                            qn,
+                                            languages.as_deref(),
+                                            graph_version,
+                                        )
+                                        .ok()
+                                        .flatten()
                                 } else {
                                     None
                                 }
@@ -827,7 +1028,9 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
                 }
             };
 
-            if !visited.insert(next_id) { continue; }
+            if !visited.insert(next_id) {
+                continue;
+            }
 
             if let Ok(Some(next_sym)) = indexer.db().get_symbol_by_id(next_id) {
                 let prev_lang = detect_language(&prev_file);
@@ -838,7 +1041,9 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
                 // Read snippet if requested
                 let snippet = if include_snippets {
                     edge.evidence_snippet.clone()
-                } else { None };
+                } else {
+                    None
+                };
 
                 // Detect language boundary and add annotations
                 let (boundary_type, boundary_detail, protocol_context) = if cross_lang {
@@ -886,14 +1091,26 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         // Bridge pass: for edges with bridge complements, find cross-service symbols
         if !reached_target && !truncated {
             for (tq, edge_kind) in &bridge_targets {
-                if let Some(complement_kinds) = crate::indexer::channel::bridge_complement(edge_kind) {
-                    let bridged = indexer.db().edges_by_target_qualname_and_kinds(
-                        tq, complement_kinds, languages.as_deref(), graph_version
-                    ).unwrap_or_default();
+                if let Some(complement_kinds) =
+                    crate::indexer::channel::bridge_complement(edge_kind)
+                {
+                    let bridged = indexer
+                        .db()
+                        .edges_by_target_qualname_and_kinds(
+                            tq,
+                            complement_kinds,
+                            languages.as_deref(),
+                            graph_version,
+                        )
+                        .unwrap_or_default();
                     let b_type = crate::indexer::channel::boundary_type_for_kind(edge_kind);
                     for bridged_edge in &bridged {
-                        let Some(bridged_id) = bridged_edge.source_symbol_id else { continue };
-                        if !visited.insert(bridged_id) { continue; }
+                        let Some(bridged_id) = bridged_edge.source_symbol_id else {
+                            continue;
+                        };
+                        if !visited.insert(bridged_id) {
+                            continue;
+                        }
                         if let Ok(Some(bridged_sym)) = indexer.db().get_symbol_by_id(bridged_id) {
                             let prev_lang = detect_language(&prev_file);
                             let next_lang = detect_language(&bridged_sym.file_path);
@@ -904,7 +1121,11 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
                                 edge_kind: bridged_edge.kind.clone(),
                                 distance: dist + 1,
                                 language: next_lang,
-                                snippet: if include_snippets { bridged_edge.evidence_snippet.clone() } else { None },
+                                snippet: if include_snippets {
+                                    bridged_edge.evidence_snippet.clone()
+                                } else {
+                                    None
+                                },
                                 cross_language: true,
                                 boundary_type: Some(b_type.to_string()),
                                 boundary_detail: Some(b_detail),
@@ -915,18 +1136,28 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
                             trace.push(hop);
                             if hop_idx >= trace_offset {
                                 used_bytes += hop_size;
-                                if used_bytes >= max_bytes { truncated = true; break; }
+                                if used_bytes >= max_bytes {
+                                    truncated = true;
+                                    break;
+                                }
                             }
-                            if end_id == Some(bridged_id) { reached_target = true; break; }
+                            if end_id == Some(bridged_id) {
+                                reached_target = true;
+                                break;
+                            }
                             queue.push_back((bridged_id, dist + 1, bridged_sym.file_path.clone()));
                         }
                     }
-                    if reached_target || truncated { break; }
+                    if reached_target || truncated {
+                        break;
+                    }
                 }
             }
         }
 
-        if reached_target || truncated { break; }
+        if reached_target || truncated {
+            break;
+        }
     }
 
     // Sort trace by distance, then apply offset pagination
@@ -935,7 +1166,9 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
 
     let end_sym = if let Some(eid) = end_id {
         indexer.db().get_symbol_by_id(eid)?
-    } else { None };
+    } else {
+        None
+    };
 
     // Build next_hops with continuation when truncated
     let mut next_hops: Vec<serde_json::Value> = Vec::new();
@@ -989,7 +1222,8 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     if trace.is_empty() {
         let mut impact_params = json!({"id": start.id, "direction": "upstream"});
         if matches!(start.kind.as_str(), "class" | "property") {
-            impact_params["kinds"] = json!(["CONFIG_BIND", "CONFIG_SOURCE", "CONFIG_READ", "CALLS"]);
+            impact_params["kinds"] =
+                json!(["CONFIG_BIND", "CONFIG_SOURCE", "CONFIG_READ", "CALLS"]);
         }
         next_hops.push(json!({
             "method": "analyze_impact",
@@ -1047,7 +1281,6 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     Ok(value)
 }
 
-
 // ---------------------------------------------------------------------------
 // GROUP 3 -- Analysis handlers
 // ---------------------------------------------------------------------------
@@ -1059,7 +1292,12 @@ fn build_impact_config(
 ) -> crate::impact::config::MultiLayerConfig {
     let mut config = crate::impact::config::MultiLayerConfig::builder()
         .max_depth(params.max_depth.unwrap_or(3).min(10))
-        .direction(params.direction.clone().unwrap_or_else(|| "both".to_string()))
+        .direction(
+            params
+                .direction
+                .clone()
+                .unwrap_or_else(|| "both".to_string()),
+        )
         .include_tests(params.include_tests.unwrap_or(false))
         .include_paths(params.include_paths.unwrap_or(true))
         .limit(limit)
@@ -1101,9 +1339,14 @@ fn resolve_and_analyze_single(
             "upstream" => &["CONFIG_READ", "CONFIG_BIND"],
             _ => &[],
         };
-        let ids = indexer.db().source_symbols_for_config_uri(qualname, uri_kinds, graph_version)?;
+        let ids = indexer
+            .db()
+            .source_symbols_for_config_uri(qualname, uri_kinds, graph_version)?;
         if ids.is_empty() {
-            return Err(anyhow::anyhow!("no symbols found for config URI: {}", qualname));
+            return Err(anyhow::anyhow!(
+                "no symbols found for config URI: {}",
+                qualname
+            ));
         }
         ids
     } else {
@@ -1143,9 +1386,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         let mut all_files: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for qn in qualnames {
-            let entry = match resolve_and_analyze_single(
-                indexer, qn, &base_config, graph_version,
-            ) {
+            let entry = match resolve_and_analyze_single(indexer, qn, &base_config, graph_version) {
                 Ok(result) => {
                     total_affected += result.summary.total_affected;
                     for fi in &result.summary.by_file {
@@ -1221,9 +1462,15 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 "upstream" => &["CONFIG_READ", "CONFIG_BIND"],
                 _ => &[],
             };
-            let ids = indexer.db().source_symbols_for_config_uri(qualname, uri_kinds, graph_version)?;
+            let ids =
+                indexer
+                    .db()
+                    .source_symbols_for_config_uri(qualname, uri_kinds, graph_version)?;
             if ids.is_empty() {
-                return Err(anyhow::anyhow!("no symbols found for config URI: {}", qualname));
+                return Err(anyhow::anyhow!(
+                    "no symbols found for config URI: {}",
+                    qualname
+                ));
             }
             ids
         } else {
@@ -1259,9 +1506,15 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         // Property→parent expansion: if the seed is a property/field/attribute/const,
         // also add the parent class so CONFIG_BIND consumers are reachable
         let mut ids = vec![symbol.id];
-        if matches!(symbol.kind.as_str(), "property" | "field" | "attribute" | "const") {
+        if matches!(
+            symbol.kind.as_str(),
+            "property" | "field" | "attribute" | "const"
+        ) {
             if let Some(parent_qn) = symbol.qualname.rsplit_once('.').map(|(p, _)| p) {
-                if let Ok(Some(parent)) = indexer.db().get_symbol_by_qualname(parent_qn, graph_version) {
+                if let Ok(Some(parent)) = indexer
+                    .db()
+                    .get_symbol_by_qualname(parent_qn, graph_version)
+                {
                     if !ids.contains(&parent.id) {
                         ids.push(parent.id);
                     }
@@ -1306,12 +1559,8 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     }
 
     // Perform multi-layer impact analysis
-    let result = crate::impact::analyze_impact_multi_layer(
-        indexer.db(),
-        &seed_ids,
-        config,
-        graph_version,
-    )?;
+    let result =
+        crate::impact::analyze_impact_multi_layer(indexer.db(), &seed_ids, config, graph_version)?;
 
     Ok(json!(result))
 }
@@ -1330,12 +1579,15 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
     let changed_files: Vec<ChangedFile> = if let Some(ref diff) = params.diff {
         parse_diff_with_ranges(diff)
     } else if let Some(ref paths) = params.paths {
-        paths.iter().map(|p| ChangedFile {
-            path: p.clone(),
-            changed_ranges: Vec::new(),
-            added_ranges: Vec::new(),
-            deleted_ranges: Vec::new(),
-        }).collect()
+        paths
+            .iter()
+            .map(|p| ChangedFile {
+                path: p.clone(),
+                changed_ranges: Vec::new(),
+                added_ranges: Vec::new(),
+                deleted_ranges: Vec::new(),
+            })
+            .collect()
     } else {
         anyhow::bail!("analyze_diff requires 'diff' or 'paths' parameter");
     };
@@ -1347,7 +1599,10 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
     // Step 2: Find symbols in changed files, filtered by hunk ranges
     let mut changed_symbols = Vec::new();
     for cf in &changed_files {
-        let symbols = indexer.db().get_symbols_for_file(&cf.path, graph_version).unwrap_or_default();
+        let symbols = indexer
+            .db()
+            .get_symbols_for_file(&cf.path, graph_version)
+            .unwrap_or_default();
         if symbols.is_empty() {
             warnings.push(format!("Path not found in index: {}", cf.path));
             continue;
@@ -1360,13 +1615,19 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                     let hunk_end = h.start_line + h.line_count - 1;
                     sym.start_line <= hunk_end && sym.end_line >= h.start_line
                 });
-                if !overlaps { continue; }
+                if !overlaps {
+                    continue;
+                }
                 // Determine change type: if symbol is fully within added range, it's "added"
                 let fully_added = cf.added_ranges.iter().any(|h| {
                     let hunk_end = h.start_line + h.line_count - 1;
                     sym.start_line >= h.start_line && sym.end_line <= hunk_end
                 });
-                if fully_added { "added".to_string() } else { "modified".to_string() }
+                if fully_added {
+                    "added".to_string()
+                } else {
+                    "modified".to_string()
+                }
             } else {
                 "modified".to_string()
             };
@@ -1378,10 +1639,10 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 
             if change_type == "modified" && sym.stable_id.is_some() && graph_version > 1 {
                 // Try to find the symbol in the previous graph version
-                if let Ok(Some(old_sym)) = indexer.db().get_symbol_by_stable_id(
-                    sym.stable_id.as_ref().unwrap(),
-                    graph_version - 1,
-                ) {
+                if let Ok(Some(old_sym)) = indexer
+                    .db()
+                    .get_symbol_by_stable_id(sym.stable_id.as_ref().unwrap(), graph_version - 1)
+                {
                     // Compare signatures
                     if old_sym.signature != sym.signature {
                         final_change_type = "signature_changed".to_string();
@@ -1424,7 +1685,8 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
     let max_downstream = 50;
 
     // BFS: start with changed symbols, expand callers level by level
-    let mut current_level: Vec<Symbol> = changed_symbols.iter().map(|cs| cs.symbol.clone()).collect();
+    let mut current_level: Vec<Symbol> =
+        changed_symbols.iter().map(|cs| cs.symbol.clone()).collect();
     let mut current_distance = 1usize;
     let mut base_confidence = 0.9;
 
@@ -1432,15 +1694,20 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         let mut next_level = Vec::new();
 
         for sym in &current_level {
-            if downstream.len() >= max_downstream { break; }
+            if downstream.len() >= max_downstream {
+                break;
+            }
 
-            let edges = indexer.db().edges_for_symbol(
-                sym.id, languages.as_deref(), graph_version
-            )?;
+            let edges =
+                indexer
+                    .db()
+                    .edges_for_symbol(sym.id, languages.as_deref(), graph_version)?;
 
             // Find callers via resolved edges
             for edge in &edges {
-                if downstream.len() >= max_downstream { break; }
+                if downstream.len() >= max_downstream {
+                    break;
+                }
                 if edge.kind == "CALLS" && edge.target_symbol_id == Some(sym.id) {
                     if let Some(source_id) = edge.source_symbol_id {
                         if seen_ids.insert(source_id) {
@@ -1448,7 +1715,11 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                                 next_level.push(caller.clone());
                                 downstream.push(DiffImpactEntry {
                                     symbol: caller,
-                                    relationship: if current_distance == 1 { "caller".to_string() } else { format!("caller_depth_{}", current_distance) },
+                                    relationship: if current_distance == 1 {
+                                        "caller".to_string()
+                                    } else {
+                                        format!("caller_depth_{}", current_distance)
+                                    },
                                     distance: current_distance,
                                     confidence: base_confidence,
                                 });
@@ -1460,18 +1731,30 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 
             // Qualname fallback for unresolved incoming edges
             if downstream.len() < max_downstream {
-                let unresolved = indexer.db().incoming_edges_by_qualname_pattern(
-                    &sym.name, "CALLS", languages.as_deref(), graph_version
-                ).unwrap_or_default();
+                let unresolved = indexer
+                    .db()
+                    .incoming_edges_by_qualname_pattern(
+                        &sym.name,
+                        "CALLS",
+                        languages.as_deref(),
+                        graph_version,
+                    )
+                    .unwrap_or_default();
                 for edge in &unresolved {
-                    if downstream.len() >= max_downstream { break; }
+                    if downstream.len() >= max_downstream {
+                        break;
+                    }
                     if let Some(source_id) = edge.source_symbol_id {
                         if seen_ids.insert(source_id) {
                             if let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id) {
                                 next_level.push(caller.clone());
                                 downstream.push(DiffImpactEntry {
                                     symbol: caller,
-                                    relationship: if current_distance == 1 { "caller".to_string() } else { format!("caller_depth_{}", current_distance) },
+                                    relationship: if current_distance == 1 {
+                                        "caller".to_string()
+                                    } else {
+                                        format!("caller_depth_{}", current_distance)
+                                    },
                                     distance: current_distance,
                                     confidence: base_confidence * 0.8,
                                 });
@@ -1482,7 +1765,9 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             }
         }
 
-        if next_level.is_empty() || downstream.len() >= max_downstream { break; }
+        if next_level.is_empty() || downstream.len() >= max_downstream {
+            break;
+        }
         current_level = next_level;
         current_distance += 1;
         base_confidence *= 0.8; // Decay confidence per level
@@ -1495,9 +1780,10 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             let mut tests = Vec::new();
             let mut seen_test_ids = HashSet::new();
             // Check resolved edges
-            let edges = indexer.db().edges_for_symbol(
-                cs.symbol.id, languages.as_deref(), graph_version
-            )?;
+            let edges =
+                indexer
+                    .db()
+                    .edges_for_symbol(cs.symbol.id, languages.as_deref(), graph_version)?;
             for edge in &edges {
                 if edge.kind == "CALLS" && edge.target_symbol_id == Some(cs.symbol.id) {
                     if let Some(source_id) = edge.source_symbol_id {
@@ -1514,9 +1800,15 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 }
             }
             // Qualname fallback for unresolved edges
-            let unresolved = indexer.db().incoming_edges_by_qualname_pattern(
-                &cs.symbol.name, "CALLS", languages.as_deref(), graph_version
-            ).unwrap_or_default();
+            let unresolved = indexer
+                .db()
+                .incoming_edges_by_qualname_pattern(
+                    &cs.symbol.name,
+                    "CALLS",
+                    languages.as_deref(),
+                    graph_version,
+                )
+                .unwrap_or_default();
             for edge in &unresolved {
                 if let Some(source_id) = edge.source_symbol_id {
                     if let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id) {
@@ -1530,7 +1822,11 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                     }
                 }
             }
-            let status = if tests.is_empty() { "uncovered" } else { "covered" };
+            let status = if tests.is_empty() {
+                "uncovered"
+            } else {
+                "covered"
+            };
             coverage.push(TestCoverageEntry {
                 symbol_qualname: cs.symbol.qualname.clone(),
                 tests,
@@ -1538,7 +1834,9 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             });
         }
         Some(coverage)
-    } else { None };
+    } else {
+        None
+    };
 
     // Step 5: Enhanced risk assessment with review checklist
     let risk = if include_risk {
@@ -1549,7 +1847,8 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         // 1. Signature change + high fan-in = CRITICAL risk
         for cs in &changed_symbols {
             if cs.change_type == "signature_changed" {
-                let caller_count = downstream.iter()
+                let caller_count = downstream
+                    .iter()
                     .filter(|d| d.relationship.starts_with("caller"))
                     .count();
 
@@ -1589,7 +1888,8 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         // 2. Cross-language callers = HIGH risk
         let mut cross_lang_callers: Vec<String> = Vec::new();
         for impact in &downstream {
-            let changed_langs: HashSet<_> = changed_symbols.iter()
+            let changed_langs: HashSet<_> = changed_symbols
+                .iter()
                 .map(|cs| infer_language(&cs.symbol.file_path))
                 .collect();
             let caller_lang = infer_language(&impact.symbol.file_path);
@@ -1603,14 +1903,14 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         if !cross_lang_callers.is_empty() {
             factors.push(RiskFactor {
                 factor: "Cross-language impact".to_string(),
-                description: format!("{} cross-language callers affected", cross_lang_callers.len()),
+                description: format!(
+                    "{} cross-language callers affected",
+                    cross_lang_callers.len()
+                ),
                 severity: "high".to_string(),
             });
             for caller in cross_lang_callers.iter().take(3) {
-                review_checklist.push(format!(
-                    "Test cross-language caller: {}",
-                    caller
-                ));
+                review_checklist.push(format!("Test cross-language caller: {}", caller));
             }
         }
 
@@ -1619,8 +1919,10 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         //    interface appeared in the changed list (e.g. due to a method body edit
         //    in the same file).
         for cs in &changed_symbols {
-            if matches!(cs.symbol.kind.as_str(), "interface" | "trait" | "abstract_class")
-                && cs.change_type == "signature_changed"
+            if matches!(
+                cs.symbol.kind.as_str(),
+                "interface" | "trait" | "abstract_class"
+            ) && cs.change_type == "signature_changed"
             {
                 factors.push(RiskFactor {
                     factor: "Interface/contract change".to_string(),
@@ -1638,7 +1940,8 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         }
 
         // 4. High fan-in = HIGH risk
-        let high_fan_in: Vec<_> = downstream.iter()
+        let high_fan_in: Vec<_> = downstream
+            .iter()
             .filter(|d| d.relationship.starts_with("caller"))
             .collect();
         if high_fan_in.len() > 10 {
@@ -1647,7 +1950,8 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 description: format!("{} callers affected", high_fan_in.len()),
                 severity: "high".to_string(),
             });
-            let caller_files: HashSet<_> = high_fan_in.iter()
+            let caller_files: HashSet<_> = high_fan_in
+                .iter()
                 .map(|d| d.symbol.file_path.as_str())
                 .collect();
             if caller_files.len() <= 5 {
@@ -1658,7 +1962,8 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         }
 
         // 5. Wide blast radius = MEDIUM risk
-        let affected_files: HashSet<_> = downstream.iter()
+        let affected_files: HashSet<_> = downstream
+            .iter()
             .map(|d| d.symbol.file_path.as_str())
             .collect();
         if affected_files.len() > 3 {
@@ -1705,11 +2010,15 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             focus_areas,
             review_checklist,
         })
-    } else { None };
+    } else {
+        None
+    };
 
     let mut used_bytes = 0;
     let result_json = serde_json::to_value(&changed_symbols)?;
-    used_bytes += serde_json::to_string(&result_json).unwrap_or_default().len();
+    used_bytes += serde_json::to_string(&result_json)
+        .unwrap_or_default()
+        .len();
 
     let mut next_hops: Vec<Value> = Vec::new();
     // Add explain_symbol for first changed symbol
@@ -1717,7 +2026,10 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         next_hops.push(json!({"method": "explain_symbol", "params": {"id": cs.symbol.id}, "description": format!("Explain {}", cs.symbol.name)}));
     }
     // Add references for top changed symbol
-    if let Some(cs) = changed_symbols.iter().find(|cs| cs.symbol.kind == "method" || cs.symbol.kind == "function") {
+    if let Some(cs) = changed_symbols
+        .iter()
+        .find(|cs| cs.symbol.kind == "method" || cs.symbol.kind == "function")
+    {
         next_hops.push(json!({"method": "references", "params": {"id": cs.symbol.id, "direction": "in"}, "description": format!("Callers of {}", cs.symbol.name)}));
     }
     // Add subgraph for exploration
@@ -1875,9 +2187,10 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
 
     // Determine strategy: default to "symbol" if all seeds are symbol seeds
     let strategy = params.strategy.or_else(|| {
-        let all_symbol_seeds = params.seeds.iter().all(|seed| {
-            matches!(seed, ContextSeed::Symbol { .. })
-        });
+        let all_symbol_seeds = params
+            .seeds
+            .iter()
+            .all(|seed| matches!(seed, ContextSeed::Symbol { .. }));
         if all_symbol_seeds && !params.seeds.is_empty() {
             Some("symbol".to_string())
         } else {
@@ -1899,12 +2212,8 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
         strategy,
     };
 
-    let result = gather_context::gather_context(
-        indexer.db(),
-        indexer.repo_root(),
-        &params.seeds,
-        &config,
-    )?;
+    let result =
+        gather_context::gather_context(indexer.db(), indexer.repo_root(), &params.seeds, &config)?;
 
     Ok(json!(result))
 }
@@ -1922,20 +2231,19 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
     )?;
 
     // 2. Module summary (depth=1)
-    let modules = indexer.db().module_summary(
-        1,
-        languages.as_deref(),
-        None,
-        graph_version,
-    )?;
+    let modules = indexer
+        .db()
+        .module_summary(1, languages.as_deref(), None, graph_version)?;
     let module_nodes: Vec<Value> = modules
         .into_iter()
-        .map(|m| json!({
-            "path": m.path,
-            "file_count": m.file_count,
-            "symbol_count": m.symbol_count,
-            "languages": m.languages,
-        }))
+        .map(|m| {
+            json!({
+                "path": m.path,
+                "file_count": m.file_count,
+                "symbol_count": m.symbol_count,
+                "languages": m.languages,
+            })
+        })
         .collect();
 
     // 3. Languages
@@ -1946,9 +2254,8 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
 
     // 4. Index status
     let changed = indexer.changed_files(languages.as_deref())?;
-    let stale = !changed.added.is_empty()
-        || !changed.modified.is_empty()
-        || !changed.deleted.is_empty();
+    let stale =
+        !changed.added.is_empty() || !changed.modified.is_empty() || !changed.deleted.is_empty();
     let last_indexed = indexer.db().get_meta_i64("last_indexed")?;
     let hint = if last_indexed.is_none() {
         "index missing; run reindex"
@@ -1973,473 +2280,4 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
         "index_status": { "stale": stale, "hint": hint },
         "suggested_queries": suggested,
     }))
-}
-
-pub(super) fn handle_changes(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: ChangesParams = serde_json::from_value(params)?;
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-
-    match params.since {
-        Some(ref commit) => {
-            // Git diff since commit (changed_since logic)
-            let repo_root = indexer.repo_root();
-            if commit.len() > 100 || !commit.chars().all(|ch| ch.is_alphanumeric() || "~^-._/".contains(ch)) {
-                anyhow::bail!("invalid commit reference: must be alphanumeric with ~^-._/ allowed, max 100 chars");
-            }
-
-            let current_commit = crate::util::git_head_sha(repo_root)
-                .ok_or_else(|| anyhow::anyhow!("failed to get git HEAD sha — is this a git repository?"))?;
-
-            let output = std::process::Command::new("git")
-                .arg("-C")
-                .arg(repo_root)
-                .arg("diff")
-                .arg("--name-only")
-                .arg(format!("{}..HEAD", commit))
-                .output()
-                .map_err(|e| anyhow::anyhow!("failed to run git diff: {e}"))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                anyhow::bail!("git diff failed: {stderr}");
-            }
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let files: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
-            let file_count = files.len();
-
-            Ok(json!({
-                "since_commit": commit,
-                "current_commit": current_commit,
-                "files_changed": files,
-                "file_count": file_count,
-            }))
-        }
-        None => {
-            // Working tree changes vs index (changed_files logic)
-            let changed = indexer.changed_files(languages.as_deref())?;
-            Ok(json!(changed))
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// GROUP 8 -- Security scanning with graph-based reachability
-// ---------------------------------------------------------------------------
-
-/// Security tools: tools whose findings represent potential security issues.
-const SECURITY_TOOLS: &[&str] = &["bandit", "gosec", "cargo-audit"];
-
-pub(super) fn handle_security_scan(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: SecurityScanParams = serde_json::from_value(params)?;
-    let max_depth = params.max_depth.unwrap_or(5).min(10);
-    let public_only = params.public_only.unwrap_or(false);
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-
-    // Step 1: Determine which security tools to run
-    let security_tools: Vec<String> = params
-        .tools
-        .unwrap_or_else(|| SECURITY_TOOLS.iter().map(|s| s.to_string()).collect());
-
-    // Step 2: Run security tools via diagnostics_run
-    let run_result = diagnostics_run(
-        indexer,
-        DiagnosticsRunParams {
-            tools: Some(security_tools.clone()),
-            tool: None,
-            languages: params.languages.clone(),
-            output_dir: None,
-        },
-    )?;
-
-    // Step 3: Query all diagnostics from security tools
-    let tool_filter: HashSet<String> = security_tools.iter().cloned().collect();
-    let mut all_findings = Vec::new();
-    for tool_name in &security_tools {
-        let diags = indexer.db().list_diagnostics(
-            5000, // high limit to get all security findings
-            0,
-            None,
-            None,
-            None,
-            None,
-            Some(tool_name),
-        )?;
-        all_findings.extend(diags);
-    }
-
-    // Step 4: Group findings by (path, enclosing symbol) to avoid redundant traversals
-    let mut symbol_cache: HashMap<(String, i64), Option<i64>> = HashMap::new();
-    let mut impact_cache: HashMap<i64, Vec<EntryPoint>> = HashMap::new();
-
-    let mut enriched: Vec<Value> = Vec::new();
-    let mut summary_by_severity: HashMap<String, usize> = HashMap::new();
-    let mut summary_by_tool: HashMap<String, usize> = HashMap::new();
-    let mut reachability_public = 0usize;
-    let mut reachability_internal = 0usize;
-    let mut reachability_unreachable = 0usize;
-    let mut high_risk_count = 0usize;
-
-    for diag in &all_findings {
-        let tool = diag.tool.as_deref().unwrap_or("unknown");
-        if !tool_filter.contains(tool) {
-            continue;
-        }
-
-        let severity = diag.severity.as_deref().unwrap_or("unknown");
-        *summary_by_severity
-            .entry(severity.to_string())
-            .or_insert(0) += 1;
-        *summary_by_tool.entry(tool.to_string()).or_insert(0) += 1;
-
-        // Find enclosing symbol
-        let symbol_id = if let (Some(path), Some(line)) = (&diag.path, diag.line) {
-            let cache_key = (path.clone(), line);
-            if let Some(cached) = symbol_cache.get(&cache_key) {
-                *cached
-            } else {
-                let sym = indexer
-                    .db()
-                    .enclosing_symbol_for_line(path, line, graph_version)
-                    .ok()
-                    .flatten();
-                let id = sym.as_ref().map(|s| s.id);
-                symbol_cache.insert(cache_key, id);
-                id
-            }
-        } else {
-            None
-        };
-
-        // Run reachability analysis (cached per symbol)
-        let entry_points = if let Some(sid) = symbol_id {
-            if let Some(cached) = impact_cache.get(&sid) {
-                cached.clone()
-            } else {
-                let eps = find_entry_points(indexer, sid, max_depth, graph_version);
-                impact_cache.insert(sid, eps.clone());
-                eps
-            }
-        } else {
-            Vec::new()
-        };
-
-        // Classify reachability
-        let has_public = entry_points
-            .iter()
-            .any(|ep| ep.entry_type == "http_route" || ep.entry_type == "rpc_endpoint");
-        let has_any = !entry_points.is_empty();
-
-        if has_public {
-            reachability_public += 1;
-        } else if has_any {
-            reachability_internal += 1;
-        } else {
-            reachability_unreachable += 1;
-        }
-
-        // Score risk
-        let (risk_score, risk_factors) =
-            compute_risk_score(severity, &entry_points, diag.rule_id.as_deref());
-
-        if public_only && !has_public {
-            continue;
-        }
-
-        if risk_score >= 0.7 {
-            high_risk_count += 1;
-        }
-
-        // Build symbol info
-        let symbol_value = if let Some(_sid) = symbol_id {
-            if let Ok(Some(sym)) = indexer
-                .db()
-                .enclosing_symbol_for_line(
-                    diag.path.as_deref().unwrap_or(""),
-                    diag.line.unwrap_or(0),
-                    graph_version,
-                )
-            {
-                json!({
-                    "id": sym.id,
-                    "qualname": sym.qualname,
-                    "kind": sym.kind,
-                })
-            } else {
-                json!(null)
-            }
-        } else {
-            json!(null)
-        };
-
-        let entry_points_json: Vec<Value> = entry_points
-            .iter()
-            .map(|ep| {
-                json!({
-                    "entry_type": ep.entry_type,
-                    "identifier": ep.identifier,
-                    "distance": ep.distance,
-                    "symbol_id": ep.symbol_id,
-                })
-            })
-            .collect();
-
-        enriched.push(json!({
-            "diagnostic": {
-                "path": diag.path,
-                "line": diag.line,
-                "severity": severity,
-                "message": diag.message,
-                "rule_id": diag.rule_id,
-                "tool": tool,
-            },
-            "symbol": symbol_value,
-            "reachable_from": entry_points_json,
-            "risk_score": (risk_score * 100.0).round() / 100.0,
-            "risk_factors": risk_factors,
-        }));
-    }
-
-    // Sort by risk_score descending
-    enriched.sort_by(|a, b| {
-        let sa = a["risk_score"].as_f64().unwrap_or(0.0);
-        let sb = b["risk_score"].as_f64().unwrap_or(0.0);
-        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let total = enriched.len();
-
-    Ok(json!({
-        "findings": enriched,
-        "summary": {
-            "total": total,
-            "by_severity": summary_by_severity,
-            "by_reachability": {
-                "public": reachability_public,
-                "internal": reachability_internal,
-                "unreachable": reachability_unreachable,
-            },
-            "by_tool": summary_by_tool,
-            "high_risk_count": high_risk_count,
-        },
-        "tools_run": json!(run_result),
-    }))
-}
-
-#[derive(Clone)]
-struct EntryPoint {
-    entry_type: String,
-    identifier: String,
-    distance: usize,
-    symbol_id: i64,
-}
-
-/// Walk upstream from a symbol to find public entry points (HTTP routes, RPC endpoints, channel subscribers).
-fn find_entry_points(
-    indexer: &mut Indexer,
-    symbol_id: i64,
-    max_depth: usize,
-    graph_version: i64,
-) -> Vec<EntryPoint> {
-    let config = crate::impact::config::MultiLayerConfig::builder()
-        .max_depth(max_depth)
-        .direction("upstream".to_string())
-        .include_tests(false)
-        .include_paths(false)
-        .limit(200)
-        .enable_test_layer(false)
-        .enable_historical_layer(false)
-        .build();
-
-    let result = match crate::impact::analyze_impact_multi_layer(
-        indexer.db(),
-        &[symbol_id],
-        config,
-        graph_version,
-    ) {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
-
-    let entry_kinds: &[&str] = &["HTTP_ROUTE", "RPC_IMPL", "CHANNEL_SUBSCRIBE"];
-    let entry_kind_strings: Vec<String> = entry_kinds.iter().map(|s| s.to_string()).collect();
-    let mut entry_points = Vec::new();
-
-    for affected in &result.affected {
-        // Check if this upstream symbol has entry-point edges
-        let edges = match indexer.db().list_edges(
-            50,
-            0,
-            None,
-            None,
-            Some(&entry_kind_strings),
-            Some(affected.symbol.id),
-            None,
-            None,
-            false,
-            None,
-            graph_version,
-            None,
-            None,
-            None,
-        ) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for edge in &edges {
-            let entry_type = match edge.kind.as_str() {
-                "HTTP_ROUTE" => "http_route",
-                "RPC_IMPL" => "rpc_endpoint",
-                "CHANNEL_SUBSCRIBE" => "channel_subscriber",
-                _ => continue,
-            };
-            let identifier = edge
-                .target_qualname
-                .as_deref()
-                .or(edge.detail.as_deref())
-                .unwrap_or(&affected.symbol.qualname)
-                .to_string();
-            entry_points.push(EntryPoint {
-                entry_type: entry_type.to_string(),
-                identifier,
-                distance: affected.distance,
-                symbol_id: affected.symbol.id,
-            });
-        }
-    }
-
-    // Also check the seed symbol itself (distance 0)
-    if let Ok(edges) = indexer.db().list_edges(
-        50,
-        0,
-        None,
-        None,
-        Some(&entry_kind_strings),
-        Some(symbol_id),
-        None,
-        None,
-        false,
-        None,
-        graph_version,
-        None,
-        None,
-        None,
-    ) {
-        for edge in &edges {
-            let entry_type = match edge.kind.as_str() {
-                "HTTP_ROUTE" => "http_route",
-                "RPC_IMPL" => "rpc_endpoint",
-                "CHANNEL_SUBSCRIBE" => "channel_subscriber",
-                _ => continue,
-            };
-            let identifier = edge
-                .target_qualname
-                .as_deref()
-                .or(edge.detail.as_deref())
-                .unwrap_or("")
-                .to_string();
-            entry_points.push(EntryPoint {
-                entry_type: entry_type.to_string(),
-                identifier,
-                distance: 0,
-                symbol_id,
-            });
-        }
-    }
-
-    // Deduplicate by symbol_id + entry_type, keeping shortest distance
-    let mut seen: HashMap<(i64, String), usize> = HashMap::new();
-    let mut deduped = Vec::new();
-    for ep in entry_points {
-        let key = (ep.symbol_id, ep.entry_type.clone());
-        match seen.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut e) => {
-                if ep.distance < *e.get() {
-                    *e.get_mut() = ep.distance;
-                    // Update in deduped - find and replace
-                    if let Some(existing) = deduped.iter_mut().find(|d: &&mut EntryPoint| {
-                        d.symbol_id == ep.symbol_id && d.entry_type == ep.entry_type
-                    }) {
-                        existing.distance = ep.distance;
-                        existing.identifier = ep.identifier;
-                    }
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(ep.distance);
-                deduped.push(ep);
-            }
-        }
-    }
-
-    deduped
-}
-
-/// Compute a risk score (0.0 to 1.0) based on severity, reachability, and rule type.
-fn compute_risk_score(
-    severity: &str,
-    entry_points: &[EntryPoint],
-    rule_id: Option<&str>,
-) -> (f64, Vec<String>) {
-    let mut score = 0.0f64;
-    let mut factors = Vec::new();
-
-    // Severity score
-    match severity.to_lowercase().as_str() {
-        "error" | "high" => {
-            score += 0.4;
-            factors.push("high_severity".to_string());
-        }
-        "warning" | "medium" => {
-            score += 0.2;
-            factors.push("medium_severity".to_string());
-        }
-        _ => {
-            score += 0.1;
-            factors.push("low_severity".to_string());
-        }
-    }
-
-    // Reachability score
-    let min_distance = entry_points.iter().map(|ep| ep.distance).min();
-    let has_http = entry_points.iter().any(|ep| ep.entry_type == "http_route");
-    let has_rpc = entry_points.iter().any(|ep| ep.entry_type == "rpc_endpoint");
-    let has_channel = entry_points
-        .iter()
-        .any(|ep| ep.entry_type == "channel_subscriber");
-
-    if has_http {
-        score += 0.4;
-        factors.push("http_api_reachable".to_string());
-    } else if has_rpc {
-        score += 0.3;
-        factors.push("rpc_endpoint_reachable".to_string());
-    } else if has_channel {
-        score += 0.2;
-        factors.push("channel_subscriber_reachable".to_string());
-    }
-
-    // Proximity score
-    if let Some(dist) = min_distance {
-        if dist <= 2 {
-            score += 0.2;
-            factors.push("close_to_entry_point".to_string());
-        } else if dist <= 5 {
-            score += 0.1;
-            factors.push("moderate_distance_to_entry_point".to_string());
-        }
-    }
-
-    // Rule type bonus for security-critical patterns
-    if let Some(rid) = rule_id {
-        let rid_lower = rid.to_lowercase();
-        let dangerous = ["sql", "injection", "xss", "deserial", "b608", "b601", "g201", "g202"];
-        if dangerous.iter().any(|pat| rid_lower.contains(pat)) {
-            score += 0.1;
-            factors.push("security_critical_rule".to_string());
-        }
-    }
-
-    (score.min(1.0), factors)
 }

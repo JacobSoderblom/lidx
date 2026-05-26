@@ -31,7 +31,9 @@ impl LanguageExtractor for BicepExtractor {
                 None
             }
         });
-        output.symbols.push(module_symbol(module_name, source, file_sig, file_doc));
+        output
+            .symbols
+            .push(module_symbol(module_name, source, file_sig, file_doc));
 
         // Store using_path for resolve_imports
         if let Some(ref path) = using_path {
@@ -155,9 +157,7 @@ impl LanguageExtractor for BicepExtractor {
         _module_name: &str,
         edges: &mut Vec<EdgeInput>,
     ) {
-        let file_dir = Path::new(file_rel_path)
-            .parent()
-            .unwrap_or(Path::new(""));
+        let file_dir = Path::new(file_rel_path).parent().unwrap_or(Path::new(""));
 
         for edge in edges.iter_mut() {
             if edge.kind != "IMPORTS_FILE" {
@@ -323,8 +323,12 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
             brace_depth += bd;
             bracket_depth += kd;
             // Clamp
-            if brace_depth < 0 { brace_depth = 0; }
-            if bracket_depth < 0 { bracket_depth = 0; }
+            if brace_depth < 0 {
+                brace_depth = 0;
+            }
+            if bracket_depth < 0 {
+                bracket_depth = 0;
+            }
 
             // If we've returned to depth 0, finalize the last decl's end
             if brace_depth == 0 && bracket_depth == 0 {
@@ -349,7 +353,7 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
             if let Some(desc) = extract_description_decorator(trimmed) {
                 pending_description = Some(desc);
             }
-            if trimmed.starts_with("@secure()") || trimmed.starts_with("@secure()")  {
+            if trimmed.starts_with("@secure()") || trimmed.starts_with("@secure()") {
                 pending_secure = true;
             }
             byte_offset = line_byte_end + 1;
@@ -380,7 +384,11 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
         // metadata description = '...'
         if trimmed.starts_with("metadata ") {
             let tokens = split_tokens(trimmed);
-            if tokens.len() >= 4 && tokens[0] == "metadata" && tokens[1] == "description" && tokens[2] == "=" {
+            if tokens.len() >= 4
+                && tokens[0] == "metadata"
+                && tokens[1] == "description"
+                && tokens[2] == "="
+            {
                 if let Some(val) = extract_single_quoted_string(trimmed) {
                     decls.push(BicepDecl {
                         kind: DeclKind::Metadata,
@@ -420,8 +428,12 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
                 let (bd, kd) = count_depth_line(trimmed);
                 brace_depth += bd;
                 bracket_depth += kd;
-                if brace_depth < 0 { brace_depth = 0; }
-                if bracket_depth < 0 { bracket_depth = 0; }
+                if brace_depth < 0 {
+                    brace_depth = 0;
+                }
+                if bracket_depth < 0 {
+                    bracket_depth = 0;
+                }
 
                 let end_line = if brace_depth == 0 && bracket_depth == 0 {
                     line_num
@@ -468,8 +480,12 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
                 let (bd, kd) = count_depth_line(trimmed);
                 brace_depth += bd;
                 bracket_depth += kd;
-                if brace_depth < 0 { brace_depth = 0; }
-                if bracket_depth < 0 { bracket_depth = 0; }
+                if brace_depth < 0 {
+                    brace_depth = 0;
+                }
+                if bracket_depth < 0 {
+                    bracket_depth = 0;
+                }
 
                 let end_line = if brace_depth == 0 && bracket_depth == 0 {
                     line_num
@@ -522,8 +538,12 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
                 let (bd, kd) = count_depth_line(trimmed);
                 brace_depth += bd;
                 bracket_depth += kd;
-                if brace_depth < 0 { brace_depth = 0; }
-                if bracket_depth < 0 { bracket_depth = 0; }
+                if brace_depth < 0 {
+                    brace_depth = 0;
+                }
+                if bracket_depth < 0 {
+                    bracket_depth = 0;
+                }
 
                 let secure = pending_secure;
                 decls.push(BicepDecl {
@@ -561,8 +581,12 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
                 let (bd, kd) = count_depth_line(trimmed);
                 brace_depth += bd;
                 bracket_depth += kd;
-                if brace_depth < 0 { brace_depth = 0; }
-                if bracket_depth < 0 { bracket_depth = 0; }
+                if brace_depth < 0 {
+                    brace_depth = 0;
+                }
+                if bracket_depth < 0 {
+                    bracket_depth = 0;
+                }
 
                 decls.push(BicepDecl {
                     kind: DeclKind::Var,
@@ -636,8 +660,12 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
                 let (bd, kd) = count_depth_line(trimmed);
                 brace_depth += bd;
                 bracket_depth += kd;
-                if brace_depth < 0 { brace_depth = 0; }
-                if bracket_depth < 0 { bracket_depth = 0; }
+                if brace_depth < 0 {
+                    brace_depth = 0;
+                }
+                if bracket_depth < 0 {
+                    bracket_depth = 0;
+                }
 
                 decls.push(BicepDecl {
                     kind: DeclKind::Type,
@@ -667,7 +695,11 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
             } else {
                 line_byte_start
             };
-            let name = trimmed[5..].split(|c: char| c == '(' || c.is_whitespace()).next().unwrap_or("").to_string();
+            let name = trimmed[5..]
+                .split(|c: char| c == '(' || c.is_whitespace())
+                .next()
+                .unwrap_or("")
+                .to_string();
             let signature = extract_func_signature(trimmed);
 
             if !name.is_empty() {
@@ -695,8 +727,12 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
         let (bd, kd) = count_depth_line(trimmed);
         brace_depth += bd;
         bracket_depth += kd;
-        if brace_depth < 0 { brace_depth = 0; }
-        if bracket_depth < 0 { bracket_depth = 0; }
+        if brace_depth < 0 {
+            brace_depth = 0;
+        }
+        if bracket_depth < 0 {
+            bracket_depth = 0;
+        }
 
         // Clear pending decorators if line doesn't match any declaration
         pending_description = None;
@@ -712,7 +748,12 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
 
 // --- Helpers ---
 
-fn module_symbol(module_name: &str, source: &str, signature: Option<String>, docstring: Option<String>) -> SymbolInput {
+fn module_symbol(
+    module_name: &str,
+    source: &str,
+    signature: Option<String>,
+    docstring: Option<String>,
+) -> SymbolInput {
     let name = module_name
         .rsplit('/')
         .next()
@@ -798,7 +839,9 @@ fn normalize_azure_channel_name(azure_name: &str) -> Option<String> {
 
 /// Check if an Azure resource type is a Key Vault secret.
 fn is_keyvault_secret(azure_type: &str) -> bool {
-    azure_type.to_lowercase().contains("keyvault/vaults/secrets")
+    azure_type
+        .to_lowercase()
+        .contains("keyvault/vaults/secrets")
 }
 
 /// Check if an Azure resource type is a Service Bus topic or queue (not a topic subscription).
@@ -807,8 +850,7 @@ fn is_service_bus_topic_or_queue(azure_type: &str) -> bool {
     if lower.contains("servicebus/namespaces/topics/subscriptions") {
         return false;
     }
-    lower.contains("servicebus/namespaces/topics")
-        || lower.contains("servicebus/namespaces/queues")
+    lower.contains("servicebus/namespaces/topics") || lower.contains("servicebus/namespaces/queues")
 }
 
 /// Extract the `name:` property value from a resource body line.
@@ -854,7 +896,11 @@ fn extract_func_signature(line: &str) -> Option<String> {
         return None;
     }
     let sig = line[open..arrow].trim();
-    if sig.is_empty() { None } else { Some(sig.to_string()) }
+    if sig.is_empty() {
+        None
+    } else {
+        Some(sig.to_string())
+    }
 }
 
 /// Split a line into whitespace-separated tokens (simple, not quote-aware for keywords)
@@ -905,8 +951,12 @@ fn count_depth(line: &str, brace: &mut i32, bracket: &mut i32) {
     let (bd, kd) = count_depth_line(line);
     *brace += bd;
     *bracket += kd;
-    if *brace < 0 { *brace = 0; }
-    if *bracket < 0 { *bracket = 0; }
+    if *brace < 0 {
+        *brace = 0;
+    }
+    if *bracket < 0 {
+        *bracket = 0;
+    }
 }
 
 /// Compute the byte offset for the start of a given 1-based line number.
@@ -927,20 +977,30 @@ mod tests {
 
     #[test]
     fn parse_resource_line() {
-        let source = "resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {\n  name: 'kv'\n}\n";
+        let source =
+            "resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {\n  name: 'kv'\n}\n";
         let (decls, _, _) = parse_bicep(source);
         let res = decls.iter().find(|d| d.kind == DeclKind::Resource).unwrap();
         assert_eq!(res.name, "keyVault");
-        assert_eq!(res.type_or_path.as_deref(), Some("Microsoft.KeyVault/vaults@2023-07-01"));
+        assert_eq!(
+            res.type_or_path.as_deref(),
+            Some("Microsoft.KeyVault/vaults@2023-07-01")
+        );
     }
 
     #[test]
     fn parse_module_line() {
         let source = "module logAnalytics 'modules/logAnalytics.bicep' = {\n  name: 'la'\n}\n";
         let (decls, _, _) = parse_bicep(source);
-        let m = decls.iter().find(|d| d.kind == DeclKind::ModuleRef).unwrap();
+        let m = decls
+            .iter()
+            .find(|d| d.kind == DeclKind::ModuleRef)
+            .unwrap();
         assert_eq!(m.name, "logAnalytics");
-        assert_eq!(m.type_or_path.as_deref(), Some("modules/logAnalytics.bicep"));
+        assert_eq!(
+            m.type_or_path.as_deref(),
+            Some("modules/logAnalytics.bicep")
+        );
     }
 
     #[test]
@@ -1046,9 +1106,17 @@ mod tests {
 
     #[test]
     fn is_service_bus_topic_or_queue_checks() {
-        assert!(is_service_bus_topic_or_queue("Microsoft.ServiceBus/namespaces/topics@2022-10-01"));
-        assert!(is_service_bus_topic_or_queue("Microsoft.ServiceBus/namespaces/queues@2022-10-01"));
-        assert!(!is_service_bus_topic_or_queue("Microsoft.ServiceBus/namespaces/topics/subscriptions@2022-10-01"));
-        assert!(!is_service_bus_topic_or_queue("Microsoft.KeyVault/vaults@2023-07-01"));
+        assert!(is_service_bus_topic_or_queue(
+            "Microsoft.ServiceBus/namespaces/topics@2022-10-01"
+        ));
+        assert!(is_service_bus_topic_or_queue(
+            "Microsoft.ServiceBus/namespaces/queues@2022-10-01"
+        ));
+        assert!(!is_service_bus_topic_or_queue(
+            "Microsoft.ServiceBus/namespaces/topics/subscriptions@2022-10-01"
+        ));
+        assert!(!is_service_bus_topic_or_queue(
+            "Microsoft.KeyVault/vaults@2023-07-01"
+        ));
     }
 }

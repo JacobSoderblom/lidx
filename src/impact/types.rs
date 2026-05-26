@@ -88,13 +88,10 @@ pub type ConfidenceScore = f32;
 #[serde(tag = "type")]
 pub enum ImpactSource {
     /// Direct graph edge (CALL, IMPORT, etc.)
-    DirectEdge {
-        edge_kind: String,
-        distance: usize,
-    },
+    DirectEdge { edge_kind: String, distance: usize },
     /// Test relationship
     TestLink {
-        strategy: String, // "import", "call", "naming", "proximity"
+        strategy: String,  // "import", "call", "naming", "proximity"
         test_type: String, // "unit", "integration", "e2e"
     },
     /// Historical co-change pattern
@@ -152,7 +149,7 @@ impl Default for MultiLayerConfig {
 pub struct DirectConfig {
     pub enabled: bool,
     pub max_depth: usize,
-    pub direction: String, // "upstream", "downstream", "both"
+    pub direction: String,  // "upstream", "downstream", "both"
     pub kinds: Vec<String>, // Edge kinds to follow (empty = all)
     pub include_tests: bool,
     pub languages: Option<Vec<String>>,
@@ -175,7 +172,7 @@ impl Default for DirectConfig {
 #[derive(Debug, Clone)]
 pub struct TestConfig {
     pub enabled: bool,
-    pub min_priority: f32, // Minimum test priority to include
+    pub min_priority: f32,       // Minimum test priority to include
     pub test_types: Vec<String>, // "unit", "integration", "e2e" (empty = all)
 }
 

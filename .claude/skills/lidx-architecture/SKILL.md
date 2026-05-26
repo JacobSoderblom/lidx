@@ -43,7 +43,6 @@ src/
     javascript.rs    -- JS/TS/TSX tree-sitter extractors
     csharp.rs        -- C# tree-sitter extractor
     sql.rs           -- SQL tree-sitter extractor
-    markdown.rs      -- Markdown heading extractor
     proto.rs         -- Protobuf service/method extractor + RPC edge detection
     xref.rs          -- Cross-language reference detection (C#->SQL, C#->Python)
     channel.rs       -- CHANNEL_PUBLISH/SUBSCRIBE detection (message bus)
@@ -64,7 +63,6 @@ src/
   watch.rs           -- File watching (notify crate), debounce, fallback polling
   git_mining.rs      -- Git log mining for co-change history
   metrics.rs         -- File and symbol metrics (LOC, complexity, duplication)
-  diagnostics.rs     -- Diagnostic ingestion (SARIF, inline)
   repo_map.rs        -- Repository map generation
   util.rs            -- Shared utilities
 ```

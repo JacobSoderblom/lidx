@@ -211,12 +211,6 @@ fn python_incremental_updates_are_detected() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
-
-
-
-
-
-
 #[test]
 fn rpc_search_rg_returns_regex_matches() {
     if std::process::Command::new("rg")
@@ -302,8 +296,6 @@ fn xref_links_cross_language_strings() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
-
-
 #[test]
 fn rpc_summary_and_fields_filter_results() {
     let (repo_root, db_path) = setup_repo("py_mvp");
@@ -357,8 +349,6 @@ fn rpc_summary_and_fields_filter_results() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
-
-
 
 #[test]
 fn rust_module_linking_and_subgraph_are_consistent() {
@@ -428,23 +418,34 @@ fn find_symbols_multi_word_query() {
     let graph_version = db.current_graph_version().unwrap();
 
     // Multi-word query: both tokens appear in qualname "pkg.core.Greeter" and "pkg.core.Greeter.greet"
-    let results = db.find_symbols("Greeter greet", 5, None, graph_version).unwrap();
+    let results = db
+        .find_symbols("Greeter greet", 5, None, graph_version)
+        .unwrap();
     assert!(!results.is_empty(), "multi-word query should match");
     // Both "Greeter" and "greet" must appear as substrings in the qualname
     assert!(
-        results.iter().any(|s| s.qualname.contains("Greeter") && s.qualname.contains("greet")),
+        results
+            .iter()
+            .any(|s| s.qualname.contains("Greeter") && s.qualname.contains("greet")),
         "should find symbol matching both tokens, got: {:?}",
         results.iter().map(|s| &s.qualname).collect::<Vec<_>>()
     );
 
     // Multi-word query: "core make_greeter" matches "pkg.core.make_greeter"
-    let results = db.find_symbols("core make_greeter", 5, None, graph_version).unwrap();
+    let results = db
+        .find_symbols("core make_greeter", 5, None, graph_version)
+        .unwrap();
     assert!(!results.is_empty(), "multi-word query should match");
     assert!(results[0].qualname.contains("make_greeter"));
 
     // Multi-word query with nonexistent token returns empty
-    let results = db.find_symbols("Greeter nonexistent", 5, None, graph_version).unwrap();
-    assert!(results.is_empty(), "query with nonexistent token should return empty");
+    let results = db
+        .find_symbols("Greeter nonexistent", 5, None, graph_version)
+        .unwrap();
+    assert!(
+        results.is_empty(),
+        "query with nonexistent token should return empty"
+    );
 
     // Single-word query still works
     let results = db.find_symbols("Greeter", 5, None, graph_version).unwrap();

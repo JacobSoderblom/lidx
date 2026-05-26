@@ -169,17 +169,17 @@ fn initialize_result(message: &Value) -> Value {
         },
         "instructions": format!(
             "Use the {TOOL_NAME} tool to query a code index. Call with method: help for docs.\n\
-\n\
-START HERE: explain_symbol for deep symbol understanding (one call replaces 5+). \
-analyze_diff for change impact. trace_flow for call chains. \
-orient for architecture overview. search for regex. \
-gather_context for LLM-ready context.\n\
-\n\
-Other methods: analyze_impact, onboard, reindex, changes, diagnostics, security_scan, top_complexity.\n\
-\n\
-Edge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, \
-HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, \
-XREF, MODULE_FILE, IMPORTS_FILE. Scope values: code, docs, tests, examples, all."
+    \n\
+    START HERE: explain_symbol for deep symbol understanding (one call replaces 5+). \
+    analyze_diff for change impact. trace_flow for call chains. \
+    orient for architecture overview. search for regex. \
+    gather_context for LLM-ready context.\n\
+    \n\
+    Other methods: analyze_impact, onboard, reindex, top_complexity, repo_map, dead_symbols.\n\
+    \n\
+    Edge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, \
+    HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, \
+    XREF, MODULE_FILE, IMPORTS_FILE. Scope values: code, docs, tests, examples, all."
         ),
     })
 }

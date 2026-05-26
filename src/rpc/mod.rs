@@ -1,30 +1,23 @@
 mod handlers;
 
 use crate::config::Config;
-use crate::diagnostics;
 use crate::indexer::{Indexer, channel::is_bridge_edge_kind, scan, test_detection};
 use crate::model::{
-    AnalyzeDiffResult, BudgetInfo, ChangedSymbol, ContextLine, DiffImpactEntry, Edge,
-    ExplainRef, ExplainSymbolResult, GrepHit,
-    ModuleEdge, ModuleNode,
-    RiskAssessment, RiskFactor,
-    Symbol, TestCoverageEntry, TestRef, TraceFlowResult,
-    TraceHop, ValidationResult,
+    AnalyzeDiffResult, BudgetInfo, ChangedSymbol, ContextLine, DiffImpactEntry, Edge, ExplainRef,
+    ExplainSymbolResult, GrepHit, ModuleEdge, ModuleNode, RiskAssessment, RiskFactor, Symbol,
+    TestCoverageEntry, TestRef, TraceFlowResult, TraceHop, ValidationResult,
 };
 #[cfg(test)]
 use crate::model::{FlowStatusEntry, FlowStatusResult};
-use crate::watch;
 use crate::util;
+use crate::watch;
 use anyhow::{Context, Result};
-use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
-use std::fs::{self, File};
-use std::io::{self, BufRead, Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
+use std::process::Command;
 use std::time::Instant;
 
 fn validate_pattern_length(pattern: &str, operation: &str) -> Result<()> {
@@ -130,9 +123,18 @@ fn validate_gather_context_params(params: &GatherContextParams) -> ValidationRes
 
 /// Convert a Symbol JSON value to compact format by keeping only essential fields
 fn compact_symbol_value(symbol_value: &serde_json::Value) -> serde_json::Value {
-    let keep_fields = ["id", "kind", "name", "qualname", "file_path", "start_line", "signature"];
+    let keep_fields = [
+        "id",
+        "kind",
+        "name",
+        "qualname",
+        "file_path",
+        "start_line",
+        "signature",
+    ];
     if let serde_json::Value::Object(map) = symbol_value {
-        let compact: serde_json::Map<String, serde_json::Value> = map.iter()
+        let compact: serde_json::Map<String, serde_json::Value> = map
+            .iter()
             .filter(|(k, _)| keep_fields.contains(&k.as_str()))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
@@ -161,27 +163,33 @@ fn estimate_hop_size(hop: &crate::model::TraceHop, compact: bool) -> usize {
 fn apply_compact_format(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.into_iter().map(|item| {
-                if let serde_json::Value::Object(ref map) = item {
-                    // If it looks like a symbol (has qualname field), compact it
-                    if map.contains_key("qualname") {
-                        return compact_symbol_value(&item);
-                    }
-                    // If it has a "symbol" field, compact that
-                    if map.contains_key("symbol") {
-                        let mut new_map = map.clone();
-                        if let Some(sym) = new_map.get("symbol") {
-                            new_map.insert("symbol".to_string(), compact_symbol_value(sym));
+            serde_json::Value::Array(
+                arr.into_iter()
+                    .map(|item| {
+                        if let serde_json::Value::Object(ref map) = item {
+                            // If it looks like a symbol (has qualname field), compact it
+                            if map.contains_key("qualname") {
+                                return compact_symbol_value(&item);
+                            }
+                            // If it has a "symbol" field, compact that
+                            if map.contains_key("symbol") {
+                                let mut new_map = map.clone();
+                                if let Some(sym) = new_map.get("symbol") {
+                                    new_map.insert("symbol".to_string(), compact_symbol_value(sym));
+                                }
+                                return serde_json::Value::Object(new_map);
+                            }
                         }
-                        return serde_json::Value::Object(new_map);
-                    }
-                }
-                item
-            }).collect())
+                        item
+                    })
+                    .collect(),
+            )
         }
         serde_json::Value::Object(mut map) => {
             // Process known array fields
-            for key in ["results", "nodes", "incoming", "outgoing", "edges", "trace", "items", "affected"] {
+            for key in [
+                "results", "nodes", "incoming", "outgoing", "edges", "trace", "items", "affected",
+            ] {
                 if let Some(arr) = map.remove(key) {
                     map.insert(key.to_string(), apply_compact_format(arr));
                 }
@@ -206,7 +214,7 @@ fn apply_compact_format(value: serde_json::Value) -> serde_json::Value {
             }
             serde_json::Value::Object(map)
         }
-        other => other
+        other => other,
     }
 }
 
@@ -233,7 +241,6 @@ struct RpcError {
     message: String,
 }
 
-
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ReindexParams {
     summary: Option<bool>,
@@ -241,7 +248,6 @@ struct ReindexParams {
     resolve_edges: Option<bool>,
     mine_git: Option<bool>,
 }
-
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct TopComplexityParams {
@@ -254,29 +260,38 @@ struct TopComplexityParams {
     graph_version: Option<i64>,
 }
 
-
 #[derive(Deserialize, schemars::JsonSchema)]
-pub(super) struct DiagnosticsRunParams {
-    pub(super) tools: Option<Vec<String>>,
-    pub(super) tool: Option<String>,
-    pub(super) languages: Option<Vec<String>>,
-    pub(super) output_dir: Option<String>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-pub(super) struct SecurityScanParams {
-    pub(super) languages: Option<Vec<String>>,
-    pub(super) tools: Option<Vec<String>>,
+struct RepoMapParams {
+    /// Maximum bytes of output text (default: 8000, min: 1000, max: 50000)
+    max_bytes: Option<usize>,
+    /// Language filter (e.g. ["rust", "python"])
+    languages: Option<Vec<String>>,
+    /// Path filter
+    #[serde(alias = "path")]
+    paths: Option<Vec<String>>,
     #[serde(alias = "as_of", alias = "version")]
-    pub(super) graph_version: Option<i64>,
-    /// Max upstream traversal depth for reachability (default: 5, max: 10)
-    pub(super) max_depth: Option<usize>,
-    /// Only include findings reachable from public APIs
-    pub(super) public_only: Option<bool>,
+    graph_version: Option<i64>,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+struct DeadSymbolsParams {
+    /// Maximum number of results per category (default: 50)
+    limit: Option<usize>,
+    /// Language filter (e.g. ["rust", "python"])
+    languages: Option<Vec<String>>,
+    /// Single path filter (alternative to paths array)
+    path: Option<String>,
+    /// Path filter array
+    paths: Option<Vec<String>>,
+    /// Include unused imports (default: true)
+    include_unused_imports: Option<bool>,
+    /// Include orphan tests (default: true)
+    include_orphan_tests: Option<bool>,
+    #[serde(alias = "as_of", alias = "version")]
+    graph_version: Option<i64>,
+}
 
-// Active param structs used by the 13 consolidated methods
+// Active param structs used by the remaining methods
 #[derive(Deserialize, schemars::JsonSchema)]
 struct AnalyzeImpactParams {
     id: Option<i64>,
@@ -323,7 +338,6 @@ struct AnalyzeDiffParams {
     graph_version: Option<i64>,
 }
 
-
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RgParams {
     #[serde(alias = "pattern", alias = "text", alias = "q")]
@@ -344,14 +358,12 @@ struct RgParams {
     graph_version: Option<i64>,
 }
 
-
 #[derive(Deserialize, Default, schemars::JsonSchema)]
 struct OnboardParams {
     languages: Option<Vec<String>>,
     #[serde(alias = "as_of", alias = "version")]
     graph_version: Option<i64>,
 }
-
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct OrientParams {
@@ -365,31 +377,6 @@ struct OrientParams {
     #[serde(alias = "as_of", alias = "version")]
     graph_version: Option<i64>,
 }
-
-#[derive(Deserialize, Default, schemars::JsonSchema)]
-struct ChangesParams {
-    /// Commit hash to diff against. If omitted, shows changes vs index.
-    since: Option<String>,
-    languages: Option<Vec<String>>,
-}
-
-#[derive(Deserialize, Default, schemars::JsonSchema)]
-struct DiagnosticsParams {
-    /// "run" (default), "list", or "summary"
-    action: Option<String>,
-    tools: Option<Vec<String>>,
-    tool: Option<String>,
-    languages: Option<Vec<String>>,
-    output_dir: Option<String>,
-    // list/summary filters
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    severity: Option<String>,
-    rule_id: Option<String>,
-    limit: Option<usize>,
-    offset: Option<usize>,
-}
-
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct GatherContextParams {
@@ -437,7 +424,6 @@ pub enum ContextSeed {
     },
 }
 
-
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ExplainSymbolParams {
     id: Option<i64>,
@@ -477,46 +463,6 @@ struct TraceFlowParams {
     graph_version: Option<i64>,
 }
 
-#[derive(Serialize)]
-pub(super) struct DiagnosticsRunResult {
-    repo_root: String,
-    output_dir: String,
-    languages: Vec<String>,
-    summary: DiagnosticsRunSummary,
-    tools: Vec<ToolRunResult>,
-}
-
-#[derive(Serialize)]
-struct DiagnosticsRunSummary {
-    ok: usize,
-    skipped: usize,
-    failed: usize,
-    imported: usize,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ToolRunStatus {
-    Ok,
-    Skipped,
-    Failed,
-}
-
-#[derive(Serialize)]
-struct ToolRunResult {
-    name: String,
-    status: ToolRunStatus,
-    reason: Option<String>,
-    message: Option<String>,
-    hint: Option<String>,
-    command: Option<Vec<String>>,
-    sarif_path: Option<String>,
-    imported: Option<usize>,
-    exit_code: Option<i32>,
-    duration_ms: Option<u128>,
-    stderr: Option<String>,
-}
-
 /// Hard cap on result count to prevent huge responses that blow LLM context windows.
 const MAX_RESPONSE_LIMIT: usize = 500;
 
@@ -527,13 +473,13 @@ pub const METHOD_LIST: &[&str] = &[
     "analyze_impact",
     "analyze_diff",
     "gather_context",
+    "context",
     "orient",
     "onboard",
     "reindex",
-    "changes",
-    "diagnostics",
-    "security_scan",
     "top_complexity",
+    "repo_map",
+    "dead_symbols",
 ];
 
 // --- Per-method JSON Schema generation ---
@@ -556,10 +502,9 @@ pub fn method_param_schema(method: &str) -> Value {
         "orient" => schema_value::<OrientParams>(),
         "onboard" => schema_value::<OnboardParams>(),
         "reindex" => schema_value::<ReindexParams>(),
-        "changes" => schema_value::<ChangesParams>(),
-        "diagnostics" => schema_value::<DiagnosticsParams>(),
-        "security_scan" => schema_value::<SecurityScanParams>(),
         "top_complexity" => schema_value::<TopComplexityParams>(),
+        "repo_map" => schema_value::<RepoMapParams>(),
+        "dead_symbols" => schema_value::<DeadSymbolsParams>(),
         _ => json!({"type": "object"}),
     }
 }
@@ -608,9 +553,9 @@ fn inline_refs(value: &mut Value, definitions: &Value) {
             if let Some(any_of) = map.get("anyOf").cloned() {
                 if let Some(variants) = any_of.as_array() {
                     if variants.len() == 2 {
-                        let null_idx = variants.iter().position(|v| {
-                            v.get("type").and_then(|t| t.as_str()) == Some("null")
-                        });
+                        let null_idx = variants
+                            .iter()
+                            .position(|v| v.get("type").and_then(|t| t.as_str()) == Some("null"));
                         if let Some(idx) = null_idx {
                             let inner_idx = 1 - idx;
                             let mut inner = variants[inner_idx].clone();
@@ -648,7 +593,6 @@ fn inline_refs(value: &mut Value, definitions: &Value) {
         _ => {}
     }
 }
-
 
 pub fn serve(repo_root: PathBuf, db_path: PathBuf, watch_config: watch::WatchConfig) -> Result<()> {
     let watch_repo = repo_root.clone();
@@ -740,7 +684,10 @@ fn extract_max_response_bytes(params: &serde_json::Value) -> Option<usize> {
 /// If value is an array, removes tail elements.
 /// If value is an object with common array fields, truncates those arrays.
 /// Returns (truncated_value, was_truncated, total_available)
-fn truncate_response(value: serde_json::Value, max_bytes: usize) -> (serde_json::Value, bool, Option<usize>) {
+fn truncate_response(
+    value: serde_json::Value,
+    max_bytes: usize,
+) -> (serde_json::Value, bool, Option<usize>) {
     let serialized = serde_json::to_string(&value).unwrap_or_default();
     if serialized.len() <= max_bytes {
         return (value, false, None);
@@ -762,7 +709,11 @@ fn truncate_response(value: serde_json::Value, max_bytes: usize) -> (serde_json:
                     high = mid - 1;
                 }
             }
-            (serde_json::Value::Array(arr[..low].to_vec()), true, Some(original_len))
+            (
+                serde_json::Value::Array(arr[..low].to_vec()),
+                true,
+                Some(original_len),
+            )
         }
         serde_json::Value::Object(mut map) => {
             // Check if this object has a top-level array field that we can track
@@ -810,7 +761,11 @@ fn truncate_response(value: serde_json::Value, max_bytes: usize) -> (serde_json:
                 }
             }
 
-            (serde_json::Value::Object(map), did_truncate, total_available)
+            (
+                serde_json::Value::Object(map),
+                did_truncate,
+                total_available,
+            )
         }
         other => (other, false, None),
     }
@@ -834,11 +789,10 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
         "orient" => handlers::handle_orient(indexer, params)?,
         "onboard" => handlers::handle_onboard(indexer, params)?,
         "reindex" => handlers::handle_reindex(indexer, params)?,
-        "changes" => handlers::handle_changes(indexer, params)?,
-        "diagnostics" => diagnostics_dispatch(indexer, params)?,
-        "security_scan" => handlers::handle_security_scan(indexer, params)?,
         "top_complexity" => handlers::handle_top_complexity(indexer, params)?,
         "context" => handlers::handle_context(indexer, params)?,
+        "repo_map" => handlers::handle_repo_map(indexer, params)?,
+        "dead_symbols" => handlers::handle_dead_symbols(indexer, params)?,
         other => {
             return Err(anyhow::anyhow!("unknown method: {other}"));
         }
@@ -849,8 +803,17 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
         eprintln!("lidx: Slow query: {} took {:?}", method, elapsed);
     }
 
-    let exempt = matches!(method, "gather_context" | "onboard" | "orient" | "security_scan" | "context");
-    let effective_max = max_response_bytes.or_else(|| if exempt { None } else { Some(DEFAULT_MAX_RESPONSE_BYTES) });
+    let exempt = matches!(
+        method,
+        "gather_context" | "onboard" | "orient" | "context" | "repo_map"
+    );
+    let effective_max = max_response_bytes.or_else(|| {
+        if exempt {
+            None
+        } else {
+            Some(DEFAULT_MAX_RESPONSE_BYTES)
+        }
+    });
     if let Some(max_bytes) = effective_max {
         let (truncated_value, was_truncated, total_available) = truncate_response(value, max_bytes);
         if was_truncated {
@@ -860,7 +823,10 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
                 "max_response_bytes": max_bytes,
             });
             if let Some(total) = total_available {
-                response.as_object_mut().unwrap().insert("total_available".to_string(), json!(total));
+                response
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("total_available".to_string(), json!(total));
             }
             Ok(response)
         } else {
@@ -868,52 +834,6 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
         }
     } else {
         Ok(value)
-    }
-}
-
-fn diagnostics_dispatch(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let p: DiagnosticsParams = serde_json::from_value(params)?;
-    let action = p.action.as_deref().unwrap_or("run");
-    match action {
-        "run" => {
-            let run_params = DiagnosticsRunParams {
-                tools: p.tools,
-                tool: p.tool,
-                languages: p.languages,
-                output_dir: p.output_dir,
-            };
-            let result = diagnostics_run(indexer, run_params)?;
-            Ok(json!(result))
-        }
-        "list" => {
-            let limit = p.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
-            let offset = p.offset.unwrap_or(0);
-            let languages = scan::normalize_language_filter(p.languages.as_deref())?;
-            let paths = normalize_search_paths(indexer.repo_root(), p.path, p.paths)?;
-            let diagnostics = indexer.db().list_diagnostics(
-                limit,
-                offset,
-                languages.as_deref(),
-                paths.as_deref(),
-                p.severity.as_ref(),
-                p.rule_id.as_ref(),
-                p.tool.as_ref(),
-            )?;
-            Ok(json!(diagnostics))
-        }
-        "summary" => {
-            let languages = scan::normalize_language_filter(p.languages.as_deref())?;
-            let paths = normalize_search_paths(indexer.repo_root(), p.path, p.paths)?;
-            let summary = indexer.db().diagnostics_summary(
-                languages.as_deref(),
-                paths.as_deref(),
-                p.severity.as_ref(),
-                p.rule_id.as_ref(),
-                p.tool.as_ref(),
-            )?;
-            Ok(json!(summary))
-        }
-        other => Err(anyhow::anyhow!("unknown diagnostics action: {other}. Use run, list, or summary")),
     }
 }
 
@@ -1007,10 +927,12 @@ fn detect_boundary_type(edge_kind: &str, source_lang: &str, target_lang: &str) -
 
 /// Build a human-readable boundary detail string
 fn build_boundary_detail(boundary_type: &str, source_lang: &str, target_lang: &str) -> String {
-    let source_display = source_lang.replace("csharp", "C#")
+    let source_display = source_lang
+        .replace("csharp", "C#")
         .replace("javascript", "JavaScript")
         .replace("typescript", "TypeScript");
-    let target_display = target_lang.replace("csharp", "C#")
+    let target_display = target_lang
+        .replace("csharp", "C#")
         .replace("javascript", "JavaScript")
         .replace("typescript", "TypeScript");
 
@@ -1019,8 +941,14 @@ fn build_boundary_detail(boundary_type: &str, source_lang: &str, target_lang: &s
         "http" => format!("{} → {} via HTTP", source_display, target_display),
         "message_bus" => format!("{} → {} via message bus", source_display, target_display),
         "config" => format!("{} → {} via config/env", source_display, target_display),
-        "stored_procedure" => format!("{} → {} via stored procedure", source_display, target_display),
-        "xref" => format!("{} → {} via cross-reference", source_display, target_display),
+        "stored_procedure" => format!(
+            "{} → {} via stored procedure",
+            source_display, target_display
+        ),
+        "xref" => format!(
+            "{} → {} via cross-reference",
+            source_display, target_display
+        ),
         _ => format!("{} → {}", source_display, target_display),
     }
 }
@@ -1035,7 +963,10 @@ fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
             let service = detail.get("service")?.as_str()?;
             let rpc = detail.get("rpc")?.as_str()?;
             let package = detail.get("package").and_then(|p| p.as_str());
-            let framework = detail.get("framework").and_then(|f| f.as_str()).unwrap_or("grpc");
+            let framework = detail
+                .get("framework")
+                .and_then(|f| f.as_str())
+                .unwrap_or("grpc");
             Some(json!({
                 "framework": framework,
                 "service": service,
@@ -1045,8 +976,14 @@ fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
         }
         "CHANNEL_PUBLISH" | "CHANNEL_SUBSCRIBE" => {
             let channel_name = detail.get("channel").and_then(|c| c.as_str());
-            let framework = detail.get("framework").and_then(|f| f.as_str()).unwrap_or("unknown");
-            let role = detail.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+            let framework = detail
+                .get("framework")
+                .and_then(|f| f.as_str())
+                .unwrap_or("unknown");
+            let role = detail
+                .get("role")
+                .and_then(|r| r.as_str())
+                .unwrap_or("unknown");
             Some(json!({
                 "framework": framework,
                 "channel": channel_name,
@@ -1055,8 +992,14 @@ fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
         }
         "CONFIG_SOURCE" | "CONFIG_READ" => {
             let config_uri = detail.get("config_uri").and_then(|c| c.as_str());
-            let source_type = detail.get("source_type").and_then(|s| s.as_str()).unwrap_or("env");
-            let role = detail.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+            let source_type = detail
+                .get("source_type")
+                .and_then(|s| s.as_str())
+                .unwrap_or("env");
+            let role = detail
+                .get("role")
+                .and_then(|r| r.as_str())
+                .unwrap_or("unknown");
             Some(json!({
                 "source_type": source_type,
                 "config_uri": config_uri,
@@ -1066,7 +1009,10 @@ fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
         "HTTP_CALL" | "HTTP_ROUTE" => {
             let method = detail.get("method").and_then(|m| m.as_str());
             let path = detail.get("path").and_then(|p| p.as_str());
-            let framework = detail.get("framework").and_then(|f| f.as_str()).unwrap_or("http");
+            let framework = detail
+                .get("framework")
+                .and_then(|f| f.as_str())
+                .unwrap_or("http");
             Some(json!({
                 "framework": framework,
                 "method": method,
@@ -1240,1167 +1186,6 @@ fn normalize_search_paths(
     Ok(Some(normalized))
 }
 
-pub(super) fn diagnostics_run(
-    indexer: &mut Indexer,
-    params: DiagnosticsRunParams,
-) -> Result<DiagnosticsRunResult> {
-    let language_override = scan::normalize_language_filter(params.languages.as_deref())?;
-    let mut languages = resolve_diagnostics_languages(indexer, language_override)?;
-    normalize_language_list(&mut languages);
-
-    let mut requested_tools = Vec::new();
-    if let Some(tool) = params.tool {
-        requested_tools.push(tool);
-    }
-    if let Some(tools) = params.tools {
-        requested_tools.extend(tools);
-    }
-    let tools = if requested_tools.is_empty() {
-        default_tools_for_languages(&languages)
-    } else {
-        normalize_tool_list(requested_tools)
-    };
-
-    let output_dir = resolve_output_dir(indexer.repo_root(), params.output_dir.as_deref())?;
-    fs::create_dir_all(&output_dir)?;
-
-    let language_set: HashSet<String> = languages.iter().cloned().collect();
-    let mut results = Vec::new();
-    for tool in tools {
-        let result = match tool.as_str() {
-            "eslint" => run_eslint(indexer, &output_dir, &language_set),
-            "ruff" => run_ruff(indexer, &output_dir, &language_set),
-            "semgrep" => run_semgrep(indexer, &output_dir, &language_set),
-            "dotnet" => run_dotnet(indexer, &output_dir, &language_set),
-            "clippy" => run_clippy(indexer, &output_dir, &language_set),
-            "bandit" => run_bandit(indexer, &output_dir, &language_set),
-            "gosec" => run_gosec(indexer, &output_dir, &language_set),
-            "cargo-audit" => run_cargo_audit(indexer, &output_dir, &language_set),
-            other => ToolRunResult {
-                name: other.to_string(),
-                status: ToolRunStatus::Skipped,
-                reason: Some("unknown_tool".to_string()),
-                message: Some(format!("Unknown diagnostics tool '{other}'.")),
-                hint: None,
-                command: None,
-                sarif_path: None,
-                imported: None,
-                exit_code: None,
-                duration_ms: None,
-                stderr: None,
-            },
-        };
-        results.push(result);
-    }
-
-    let mut summary = DiagnosticsRunSummary {
-        ok: 0,
-        skipped: 0,
-        failed: 0,
-        imported: 0,
-    };
-    for result in &results {
-        match result.status {
-            ToolRunStatus::Ok => summary.ok += 1,
-            ToolRunStatus::Skipped => summary.skipped += 1,
-            ToolRunStatus::Failed => summary.failed += 1,
-        }
-        if let Some(imported) = result.imported {
-            summary.imported += imported;
-        }
-    }
-
-    Ok(DiagnosticsRunResult {
-        repo_root: indexer.repo_root().to_string_lossy().to_string(),
-        output_dir: render_path(indexer.repo_root(), &output_dir),
-        languages,
-        summary,
-        tools: results,
-    })
-}
-
-fn resolve_diagnostics_languages(
-    indexer: &Indexer,
-    override_languages: Option<Vec<String>>,
-) -> Result<Vec<String>> {
-    if let Some(languages) = override_languages {
-        return Ok(languages);
-    }
-    let from_db = indexer.db().list_languages(indexer.graph_version())?;
-    if !from_db.is_empty() {
-        return Ok(from_db);
-    }
-    let scanned = scan::scan_repo_with_options(indexer.repo_root(), scan::ScanOptions::default())?;
-    let mut languages: Vec<String> = scanned.into_iter().map(|file| file.language).collect();
-    languages.sort();
-    languages.dedup();
-    Ok(languages)
-}
-
-fn normalize_language_list(languages: &mut Vec<String>) {
-    for language in languages.iter_mut() {
-        *language = language.trim().to_ascii_lowercase();
-    }
-    languages.sort();
-    languages.dedup();
-}
-
-fn normalize_tool_list(tools: Vec<String>) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    for raw in tools {
-        let key = raw.trim().to_ascii_lowercase();
-        if key.is_empty() {
-            continue;
-        }
-        let normalized = match key.as_str() {
-            "cargo-clippy" | "cargo_clippy" => "clippy",
-            value => value,
-        };
-        if seen.insert(normalized.to_string()) {
-            out.push(normalized.to_string());
-        }
-    }
-    out
-}
-
-fn default_tools_for_languages(languages: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    let mut push = |tool: &str| {
-        if seen.insert(tool.to_string()) {
-            out.push(tool.to_string());
-        }
-    };
-    let has = |lang: &str| languages.iter().any(|value| value == lang);
-    if has("javascript") || has("typescript") || has("tsx") {
-        push("eslint");
-    }
-    if has("python") {
-        push("ruff");
-        push("bandit");
-    }
-    if has("rust") {
-        push("clippy");
-        push("cargo-audit");
-    }
-    if has("go") {
-        push("gosec");
-    }
-    if has("csharp") {
-        push("dotnet");
-    }
-    if has("sql") || has("postgres") || has("tsql") || has("markdown") || has("proto") {
-        push("semgrep");
-    }
-    out
-}
-
-fn resolve_output_dir(repo_root: &PathBuf, output_dir: Option<&str>) -> Result<PathBuf> {
-    let dir = match output_dir {
-        Some(raw) if !raw.trim().is_empty() => {
-            let trimmed = raw.trim();
-            let candidate = PathBuf::from(trimmed);
-
-            // Security: Reject absolute paths outside repo
-            if candidate.is_absolute() {
-                eprintln!("lidx: Security: diagnostics_run absolute path rejected");
-                anyhow::bail!("diagnostics_run output_dir must be relative to repo root");
-            }
-
-            // Security: Normalize and check for path traversal
-            // We can't use canonicalize() because the directory might not exist yet
-            // Instead, check that the normalized path still starts with repo_root
-            let normalized_repo = repo_root
-                .canonicalize()
-                .unwrap_or_else(|_| repo_root.clone());
-
-            // Check each component for .. that would escape
-            let mut current = normalized_repo.clone();
-            for component in candidate.components() {
-                match component {
-                    std::path::Component::Normal(part) => {
-                        current.push(part);
-                    }
-                    std::path::Component::ParentDir => {
-                        if !current.pop() || !current.starts_with(&normalized_repo) {
-                            eprintln!("lidx: Security: diagnostics_run path escapes repo root");
-                            anyhow::bail!("diagnostics_run output_dir escapes repo root");
-                        }
-                    }
-                    std::path::Component::CurDir => {}
-                    _ => {}
-                }
-            }
-
-            current
-        }
-        _ => repo_root.join(".lidx").join("diagnostics"),
-    };
-    Ok(dir)
-}
-
-fn render_path(repo_root: &PathBuf, path: &Path) -> String {
-    path.strip_prefix(repo_root)
-        .map(|rel| util::normalize_path(rel))
-        .unwrap_or_else(|_| path.to_string_lossy().to_string())
-}
-
-fn has_language(languages: &HashSet<String>, targets: &[&str]) -> bool {
-    targets.iter().any(|value| languages.contains(*value))
-}
-
-fn run_eslint(
-    indexer: &mut Indexer,
-    output_dir: &Path,
-    languages: &HashSet<String>,
-) -> ToolRunResult {
-    let name = "eslint";
-    if !has_language(languages, &["javascript", "typescript", "tsx"]) {
-        return tool_skipped(
-            name,
-            "no_language_match",
-            "No JavaScript/TypeScript files detected.",
-            None,
-        );
-    }
-    if !eslint_config_present(indexer.repo_root()) {
-        return tool_skipped(
-            name,
-            "config_missing",
-            "No ESLint config found in repo root.",
-            Some("Add eslint.config.js/.eslintrc or package.json config."),
-        );
-    }
-    let cmd_path = resolve_node_tool(indexer.repo_root(), "eslint")
-        .unwrap_or_else(|| OsString::from("eslint"));
-    let sarif_path = output_dir.join("eslint.sarif");
-    let mut cmd = Command::new(&cmd_path);
-    cmd.current_dir(indexer.repo_root());
-    cmd.arg(".")
-        .arg("-f")
-        .arg("sarif")
-        .arg("-o")
-        .arg(&sarif_path);
-    let command_display = vec![
-        cmd_path.to_string_lossy().to_string(),
-        ".".to_string(),
-        "-f".to_string(),
-        "sarif".to_string(),
-        "-o".to_string(),
-        sarif_path.to_string_lossy().to_string(),
-    ];
-    run_sarif_command(
-        indexer,
-        name,
-        cmd,
-        command_display,
-        &sarif_path,
-        "eslint not found on PATH or node_modules/.bin.",
-        Some("Install with npm/pnpm/yarn (e.g., npm i -D eslint)."),
-    )
-}
-
-fn run_ruff(
-    indexer: &mut Indexer,
-    output_dir: &Path,
-    languages: &HashSet<String>,
-) -> ToolRunResult {
-    let name = "ruff";
-    if !has_language(languages, &["python"]) {
-        return tool_skipped(name, "no_language_match", "No Python files detected.", None);
-    }
-    let cmd_path =
-        resolve_python_tool(indexer.repo_root(), "ruff").unwrap_or_else(|| OsString::from("ruff"));
-    let sarif_path = output_dir.join("ruff.sarif");
-    let mut cmd = Command::new(&cmd_path);
-    cmd.current_dir(indexer.repo_root());
-    cmd.arg("check")
-        .arg(".")
-        .arg("--output-format")
-        .arg("sarif")
-        .arg("-o")
-        .arg(&sarif_path);
-    let command_display = vec![
-        cmd_path.to_string_lossy().to_string(),
-        "check".to_string(),
-        ".".to_string(),
-        "--output-format".to_string(),
-        "sarif".to_string(),
-        "-o".to_string(),
-        sarif_path.to_string_lossy().to_string(),
-    ];
-    run_sarif_command(
-        indexer,
-        name,
-        cmd,
-        command_display,
-        &sarif_path,
-        "ruff not found on PATH or .venv/venv.",
-        Some("Install with pipx install ruff or pip install ruff."),
-    )
-}
-
-fn run_semgrep(
-    indexer: &mut Indexer,
-    output_dir: &Path,
-    languages: &HashSet<String>,
-) -> ToolRunResult {
-    let name = "semgrep";
-    if !has_language(languages, &["sql", "postgres", "tsql", "markdown", "proto"]) {
-        return tool_skipped(
-            name,
-            "no_language_match",
-            "No SQL/Markdown/Proto files detected.",
-            None,
-        );
-    }
-    let Some(config) = semgrep_config(indexer.repo_root()) else {
-        return tool_skipped(
-            name,
-            "config_missing",
-            "No Semgrep config found in repo root.",
-            Some("Add .semgrep.yml or .semgrep.yaml."),
-        );
-    };
-    let cmd_path = resolve_python_tool(indexer.repo_root(), "semgrep")
-        .unwrap_or_else(|| OsString::from("semgrep"));
-    let sarif_path = output_dir.join("semgrep.sarif");
-    let mut cmd = Command::new(&cmd_path);
-    cmd.current_dir(indexer.repo_root());
-    cmd.arg("--config")
-        .arg(&config)
-        .arg("--sarif")
-        .arg("-o")
-        .arg(&sarif_path);
-    let command_display = vec![
-        cmd_path.to_string_lossy().to_string(),
-        "--config".to_string(),
-        config.to_string_lossy().to_string(),
-        "--sarif".to_string(),
-        "-o".to_string(),
-        sarif_path.to_string_lossy().to_string(),
-    ];
-    run_sarif_command(
-        indexer,
-        name,
-        cmd,
-        command_display,
-        &sarif_path,
-        "semgrep not found on PATH or .venv/venv.",
-        Some("Install with pipx install semgrep or pip install semgrep."),
-    )
-}
-
-fn run_dotnet(
-    indexer: &mut Indexer,
-    output_dir: &Path,
-    languages: &HashSet<String>,
-) -> ToolRunResult {
-    let name = "dotnet";
-    if !has_language(languages, &["csharp"]) {
-        return tool_skipped(name, "no_language_match", "No C# files detected.", None);
-    }
-    let Some(project) = find_dotnet_project(indexer.repo_root()) else {
-        return tool_skipped(
-            name,
-            "config_missing",
-            "No .sln or .csproj found.",
-            Some("Add a solution/project file or pass a tools list."),
-        );
-    };
-    let sarif_path = output_dir.join("dotnet.sarif");
-    let mut cmd = Command::new("dotnet");
-    cmd.current_dir(indexer.repo_root());
-    cmd.arg("build")
-        .arg(&project)
-        .arg(format!("-p:ErrorLog={}", sarif_path.display()))
-        .arg("-p:ErrorLogFormat=Sarif");
-    let command_display = vec![
-        "dotnet".to_string(),
-        "build".to_string(),
-        project.to_string_lossy().to_string(),
-        format!("-p:ErrorLog={}", sarif_path.display()),
-        "-p:ErrorLogFormat=Sarif".to_string(),
-    ];
-    run_sarif_command(
-        indexer,
-        name,
-        cmd,
-        command_display,
-        &sarif_path,
-        "dotnet not found on PATH.",
-        Some("Install the .NET SDK and ensure dotnet is on PATH."),
-    )
-}
-
-fn run_clippy(
-    indexer: &mut Indexer,
-    output_dir: &Path,
-    languages: &HashSet<String>,
-) -> ToolRunResult {
-    let name = "clippy";
-    if !has_language(languages, &["rust"]) {
-        return tool_skipped(name, "no_language_match", "No Rust files detected.", None);
-    }
-    let Some(cargo_root) = find_cargo_root(indexer.repo_root()) else {
-        return tool_skipped(
-            name,
-            "config_missing",
-            "No Cargo.toml found.",
-            Some("Add a Cargo.toml workspace or pass a tools list."),
-        );
-    };
-    let sarif_path = output_dir.join("clippy.sarif");
-    let clippy_sarif = OsString::from("clippy-sarif");
-    if !command_available(&clippy_sarif) {
-        return tool_skipped(
-            name,
-            "not_installed",
-            "clippy-sarif not found on PATH.",
-            Some("Install with cargo install clippy-sarif."),
-        );
-    }
-    if !command_available(&OsString::from("cargo")) {
-        return tool_skipped(
-            name,
-            "not_installed",
-            "cargo not found on PATH.",
-            Some("Install Rust toolchain and ensure cargo is on PATH."),
-        );
-    }
-
-    let _ = fs::remove_file(&sarif_path);
-    let start = Instant::now();
-
-    let mut cargo_cmd = Command::new("cargo");
-    cargo_cmd
-        .current_dir(&cargo_root)
-        .arg("clippy")
-        .arg("--message-format=json")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut cargo_child = match cargo_cmd.spawn() {
-        Ok(child) => child,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return tool_skipped(
-                name,
-                "not_installed",
-                "cargo not found on PATH.",
-                Some("Install Rust toolchain and ensure cargo is on PATH."),
-            );
-        }
-        Err(err) => {
-            return tool_failed(
-                name,
-                Some(format!("Failed to start cargo: {err}")),
-                Some(vec![
-                    "cargo".to_string(),
-                    "clippy".to_string(),
-                    "--message-format=json".to_string(),
-                ]),
-                None,
-                Some(start.elapsed().as_millis()),
-                None,
-                None,
-            );
-        }
-    };
-
-    let stdout = match cargo_child.stdout.take() {
-        Some(pipe) => pipe,
-        None => {
-            return tool_failed(
-                name,
-                Some("Failed to capture cargo output.".to_string()),
-                Some(vec![
-                    "cargo".to_string(),
-                    "clippy".to_string(),
-                    "--message-format=json".to_string(),
-                ]),
-                None,
-                Some(start.elapsed().as_millis()),
-                None,
-                None,
-            );
-        }
-    };
-
-    let sarif_file = match File::create(&sarif_path) {
-        Ok(file) => file,
-        Err(err) => {
-            return tool_failed(
-                name,
-                Some(format!("Failed to create SARIF output file: {err}")),
-                Some(vec![
-                    "cargo".to_string(),
-                    "clippy".to_string(),
-                    "--message-format=json".to_string(),
-                    "|".to_string(),
-                    "clippy-sarif".to_string(),
-                    ">".to_string(),
-                    sarif_path.to_string_lossy().to_string(),
-                ]),
-                None,
-                Some(start.elapsed().as_millis()),
-                None,
-                None,
-            );
-        }
-    };
-    let mut sarif_cmd = Command::new(&clippy_sarif);
-    sarif_cmd
-        .current_dir(&cargo_root)
-        .stdin(Stdio::from(stdout))
-        .stdout(Stdio::from(sarif_file))
-        .stderr(Stdio::piped());
-    let mut sarif_child = match sarif_cmd.spawn() {
-        Ok(child) => child,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return tool_skipped(
-                name,
-                "not_installed",
-                "clippy-sarif not found on PATH.",
-                Some("Install with cargo install clippy-sarif."),
-            );
-        }
-        Err(err) => {
-            return tool_failed(
-                name,
-                Some(format!("Failed to start clippy-sarif: {err}")),
-                Some(vec![
-                    "cargo".to_string(),
-                    "clippy".to_string(),
-                    "--message-format=json".to_string(),
-                    "|".to_string(),
-                    "clippy-sarif".to_string(),
-                    ">".to_string(),
-                    sarif_path.to_string_lossy().to_string(),
-                ]),
-                None,
-                Some(start.elapsed().as_millis()),
-                None,
-                None,
-            );
-        }
-    };
-
-    let sarif_stderr = read_child_stderr(&mut sarif_child);
-    let sarif_status = sarif_child.wait().ok();
-    let cargo_stderr = read_child_stderr(&mut cargo_child);
-    let cargo_status = cargo_child.wait().ok();
-
-    let duration_ms = start.elapsed().as_millis();
-    let exit_code = cargo_status.and_then(|status| status.code());
-
-    if !sarif_path.exists()
-        || fs::metadata(&sarif_path)
-            .map(|meta| meta.len())
-            .unwrap_or(0)
-            == 0
-    {
-        return tool_failed(
-            name,
-            Some("clippy-sarif did not produce a SARIF file.".to_string()),
-            Some(vec![
-                "cargo".to_string(),
-                "clippy".to_string(),
-                "--message-format=json".to_string(),
-                "|".to_string(),
-                "clippy-sarif".to_string(),
-                ">".to_string(),
-                sarif_path.to_string_lossy().to_string(),
-            ]),
-            exit_code,
-            Some(duration_ms),
-            merge_stderr(&[cargo_stderr.as_str(), sarif_stderr.as_str()]),
-            None,
-        );
-    }
-
-    match import_sarif(indexer, &sarif_path) {
-        Ok(imported) => ToolRunResult {
-            name: name.to_string(),
-            status: ToolRunStatus::Ok,
-            reason: None,
-            message: sarif_status.and_then(|status| {
-                if status.success() {
-                    None
-                } else {
-                    Some("clippy-sarif exited with non-zero status.".to_string())
-                }
-            }),
-            hint: None,
-            command: Some(vec![
-                "cargo".to_string(),
-                "clippy".to_string(),
-                "--message-format=json".to_string(),
-                "|".to_string(),
-                "clippy-sarif".to_string(),
-                ">".to_string(),
-                sarif_path.to_string_lossy().to_string(),
-            ]),
-            sarif_path: Some(render_path(indexer.repo_root(), &sarif_path)),
-            imported: Some(imported),
-            exit_code,
-            duration_ms: Some(duration_ms),
-            stderr: merge_stderr(&[cargo_stderr.as_str(), sarif_stderr.as_str()]),
-        },
-        Err(err) => tool_failed(
-            name,
-            Some(format!("Failed to import SARIF: {err}")),
-            Some(vec![
-                "cargo".to_string(),
-                "clippy".to_string(),
-                "--message-format=json".to_string(),
-                "|".to_string(),
-                "clippy-sarif".to_string(),
-                ">".to_string(),
-                sarif_path.to_string_lossy().to_string(),
-            ]),
-            exit_code,
-            Some(duration_ms),
-            merge_stderr(&[cargo_stderr.as_str(), sarif_stderr.as_str()]),
-            Some(render_path(indexer.repo_root(), &sarif_path)),
-        ),
-    }
-}
-
-fn run_bandit(
-    indexer: &mut Indexer,
-    output_dir: &Path,
-    languages: &HashSet<String>,
-) -> ToolRunResult {
-    let name = "bandit";
-    if !has_language(languages, &["python"]) {
-        return tool_skipped(name, "no_language_match", "No Python files detected.", None);
-    }
-    let cmd_path = resolve_python_tool(indexer.repo_root(), "bandit")
-        .unwrap_or_else(|| OsString::from("bandit"));
-    let sarif_path = output_dir.join("bandit.sarif");
-    let mut cmd = Command::new(&cmd_path);
-    cmd.current_dir(indexer.repo_root());
-    cmd.arg("-f")
-        .arg("sarif")
-        .arg("-o")
-        .arg(&sarif_path)
-        .arg("-r")
-        .arg(".");
-    let command_display = vec![
-        cmd_path.to_string_lossy().to_string(),
-        "-f".to_string(),
-        "sarif".to_string(),
-        "-o".to_string(),
-        sarif_path.to_string_lossy().to_string(),
-        "-r".to_string(),
-        ".".to_string(),
-    ];
-    run_sarif_command(
-        indexer,
-        name,
-        cmd,
-        command_display,
-        &sarif_path,
-        "bandit not found on PATH or .venv/venv.",
-        Some("Install with pipx install bandit."),
-    )
-}
-
-fn run_gosec(
-    indexer: &mut Indexer,
-    output_dir: &Path,
-    languages: &HashSet<String>,
-) -> ToolRunResult {
-    let name = "gosec";
-    if !has_language(languages, &["go"]) {
-        return tool_skipped(name, "no_language_match", "No Go files detected.", None);
-    }
-    let gosec = OsString::from("gosec");
-    if !command_available(&gosec) {
-        return tool_skipped(
-            name,
-            "not_installed",
-            "gosec not found on PATH.",
-            Some("Install with go install github.com/securego/gosec/v2/cmd/gosec@latest."),
-        );
-    }
-    let sarif_path = output_dir.join("gosec.sarif");
-    let mut cmd = Command::new(&gosec);
-    cmd.current_dir(indexer.repo_root());
-    cmd.arg("-fmt")
-        .arg("sarif")
-        .arg("-out")
-        .arg(&sarif_path)
-        .arg("./...");
-    let command_display = vec![
-        "gosec".to_string(),
-        "-fmt".to_string(),
-        "sarif".to_string(),
-        "-out".to_string(),
-        sarif_path.to_string_lossy().to_string(),
-        "./...".to_string(),
-    ];
-    run_sarif_command(
-        indexer,
-        name,
-        cmd,
-        command_display,
-        &sarif_path,
-        "gosec not found on PATH.",
-        Some("Install with go install github.com/securego/gosec/v2/cmd/gosec@latest."),
-    )
-}
-
-fn run_cargo_audit(
-    indexer: &mut Indexer,
-    _output_dir: &Path,
-    languages: &HashSet<String>,
-) -> ToolRunResult {
-    let name = "cargo-audit";
-    if !has_language(languages, &["rust"]) {
-        return tool_skipped(name, "no_language_match", "No Rust files detected.", None);
-    }
-    if !indexer.repo_root().join("Cargo.lock").is_file() {
-        return tool_skipped(
-            name,
-            "config_missing",
-            "No Cargo.lock found.",
-            Some("Run cargo generate-lockfile first."),
-        );
-    }
-    let cargo_audit = OsString::from("cargo-audit");
-    if !command_available(&cargo_audit) {
-        return tool_skipped(
-            name,
-            "not_installed",
-            "cargo-audit not found on PATH.",
-            Some("Install with cargo install cargo-audit."),
-        );
-    }
-    let start = Instant::now();
-    let mut cmd = Command::new("cargo");
-    cmd.current_dir(indexer.repo_root());
-    cmd.arg("audit").arg("--json");
-    let output = match cmd.output() {
-        Ok(value) => value,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return tool_skipped(
-                name,
-                "not_installed",
-                "cargo not found on PATH.",
-                Some("Install Rust toolchain and ensure cargo is on PATH."),
-            );
-        }
-        Err(err) => {
-            return tool_failed(
-                name,
-                Some(format!("Failed to run cargo audit: {err}")),
-                Some(vec![
-                    "cargo".to_string(),
-                    "audit".to_string(),
-                    "--json".to_string(),
-                ]),
-                None,
-                Some(start.elapsed().as_millis()),
-                None,
-                None,
-            );
-        }
-    };
-    let duration_ms = start.elapsed().as_millis();
-    let exit_code = output.status.code();
-    let stderr = truncate_output(&output.stderr, 2000);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    match diagnostics::parse_cargo_audit_json(&stdout) {
-        Ok(diags) => {
-            let count = diags.len();
-            match indexer.db_mut().insert_diagnostics(&diags) {
-                Ok(imported) => ToolRunResult {
-                    name: name.to_string(),
-                    status: ToolRunStatus::Ok,
-                    reason: None,
-                    message: if count == 0 {
-                        Some("No vulnerabilities found.".to_string())
-                    } else {
-                        None
-                    },
-                    hint: None,
-                    command: Some(vec![
-                        "cargo".to_string(),
-                        "audit".to_string(),
-                        "--json".to_string(),
-                    ]),
-                    sarif_path: None,
-                    imported: Some(imported),
-                    exit_code,
-                    duration_ms: Some(duration_ms),
-                    stderr: if stderr.is_empty() {
-                        None
-                    } else {
-                        Some(stderr)
-                    },
-                },
-                Err(err) => tool_failed(
-                    name,
-                    Some(format!("Failed to insert diagnostics: {err}")),
-                    Some(vec![
-                        "cargo".to_string(),
-                        "audit".to_string(),
-                        "--json".to_string(),
-                    ]),
-                    exit_code,
-                    Some(duration_ms),
-                    if stderr.is_empty() {
-                        None
-                    } else {
-                        Some(stderr)
-                    },
-                    None,
-                ),
-            }
-        }
-        Err(err) => tool_failed(
-            name,
-            Some(format!("Failed to parse cargo-audit output: {err}")),
-            Some(vec![
-                "cargo".to_string(),
-                "audit".to_string(),
-                "--json".to_string(),
-            ]),
-            exit_code,
-            Some(duration_ms),
-            if stderr.is_empty() {
-                None
-            } else {
-                Some(stderr)
-            },
-            None,
-        ),
-    }
-}
-
-fn run_sarif_command(
-    indexer: &mut Indexer,
-    name: &str,
-    mut cmd: Command,
-    command_display: Vec<String>,
-    sarif_path: &Path,
-    not_installed_message: &str,
-    not_installed_hint: Option<&str>,
-) -> ToolRunResult {
-    let _ = fs::remove_file(sarif_path);
-    let start = Instant::now();
-    let output = match cmd.output() {
-        Ok(value) => value,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return tool_skipped(
-                name,
-                "not_installed",
-                not_installed_message,
-                not_installed_hint,
-            );
-        }
-        Err(err) => {
-            return tool_failed(
-                name,
-                Some(format!("Failed to run tool: {err}")),
-                Some(command_display),
-                None,
-                Some(start.elapsed().as_millis()),
-                None,
-                None,
-            );
-        }
-    };
-    let duration_ms = start.elapsed().as_millis();
-    let exit_code = output.status.code();
-    let stderr = truncate_output(&output.stderr, 2000);
-
-    if !sarif_path.exists() || fs::metadata(sarif_path).map(|meta| meta.len()).unwrap_or(0) == 0 {
-        let message = if let Some(code) = exit_code {
-            format!("Command exited with code {code}; SARIF file missing.")
-        } else {
-            "Command failed; SARIF file missing.".to_string()
-        };
-        return tool_failed(
-            name,
-            Some(message),
-            Some(command_display),
-            exit_code,
-            Some(duration_ms),
-            if stderr.is_empty() {
-                None
-            } else {
-                Some(stderr)
-            },
-            None,
-        );
-    }
-
-    match import_sarif(indexer, sarif_path) {
-        Ok(imported) => ToolRunResult {
-            name: name.to_string(),
-            status: ToolRunStatus::Ok,
-            reason: None,
-            message: None,
-            hint: None,
-            command: Some(command_display),
-            sarif_path: Some(render_path(indexer.repo_root(), sarif_path)),
-            imported: Some(imported),
-            exit_code,
-            duration_ms: Some(duration_ms),
-            stderr: if stderr.is_empty() {
-                None
-            } else {
-                Some(stderr)
-            },
-        },
-        Err(err) => tool_failed(
-            name,
-            Some(format!("Failed to import SARIF: {err}")),
-            Some(command_display),
-            exit_code,
-            Some(duration_ms),
-            if stderr.is_empty() {
-                None
-            } else {
-                Some(stderr)
-            },
-            Some(render_path(indexer.repo_root(), sarif_path)),
-        ),
-    }
-}
-
-fn import_sarif(indexer: &mut Indexer, sarif_path: &Path) -> Result<usize> {
-    let content = util::read_to_string(sarif_path)?;
-    let diagnostics = diagnostics::parse_sarif(&content, indexer.repo_root())?;
-    indexer.db_mut().insert_diagnostics(&diagnostics)
-}
-
-fn tool_skipped(name: &str, reason: &str, message: &str, hint: Option<&str>) -> ToolRunResult {
-    ToolRunResult {
-        name: name.to_string(),
-        status: ToolRunStatus::Skipped,
-        reason: Some(reason.to_string()),
-        message: Some(message.to_string()),
-        hint: hint.map(|value| value.to_string()),
-        command: None,
-        sarif_path: None,
-        imported: None,
-        exit_code: None,
-        duration_ms: None,
-        stderr: None,
-    }
-}
-
-fn tool_failed(
-    name: &str,
-    message: Option<String>,
-    command: Option<Vec<String>>,
-    exit_code: Option<i32>,
-    duration_ms: Option<u128>,
-    stderr: Option<String>,
-    sarif_path: Option<String>,
-) -> ToolRunResult {
-    ToolRunResult {
-        name: name.to_string(),
-        status: ToolRunStatus::Failed,
-        reason: None,
-        message,
-        hint: None,
-        command,
-        sarif_path,
-        imported: None,
-        exit_code,
-        duration_ms,
-        stderr,
-    }
-}
-
-fn truncate_output(bytes: &[u8], max_bytes: usize) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let trimmed = text.trim();
-    util::truncate_str_bytes(trimmed, max_bytes)
-}
-
-fn merge_stderr(values: &[&str]) -> Option<String> {
-    let mut out = String::new();
-    for value in values {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(trimmed);
-    }
-    if out.is_empty() { None } else { Some(out) }
-}
-
-fn read_child_stderr(child: &mut std::process::Child) -> String {
-    let mut buf = String::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut buf);
-    }
-    let trimmed = buf.trim();
-    util::truncate_str_bytes(trimmed, 2000)
-}
-
-fn eslint_config_present(repo_root: &PathBuf) -> bool {
-    let candidates = [
-        "eslint.config.js",
-        "eslint.config.cjs",
-        "eslint.config.mjs",
-        ".eslintrc",
-        ".eslintrc.js",
-        ".eslintrc.cjs",
-        ".eslintrc.json",
-        ".eslintrc.yaml",
-        ".eslintrc.yml",
-        "package.json",
-    ];
-    candidates.iter().any(|name| repo_root.join(name).exists())
-}
-
-fn semgrep_config(repo_root: &PathBuf) -> Option<PathBuf> {
-    let candidates = [
-        ".semgrep.yml",
-        ".semgrep.yaml",
-        "semgrep.yml",
-        "semgrep.yaml",
-    ];
-    for name in candidates {
-        let path = repo_root.join(name);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    let dir = repo_root.join(".semgrep");
-    if dir.is_dir() {
-        return Some(dir);
-    }
-    None
-}
-
-fn find_cargo_root(repo_root: &PathBuf) -> Option<PathBuf> {
-    let root_manifest = repo_root.join("Cargo.toml");
-    if root_manifest.is_file() {
-        return Some(repo_root.clone());
-    }
-    find_first_named_file(repo_root, &["Cargo.toml"], 6)
-        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
-}
-
-fn find_dotnet_project(repo_root: &PathBuf) -> Option<PathBuf> {
-    find_first_extension(repo_root, "sln", 6)
-        .or_else(|| find_first_extension(repo_root, "csproj", 6))
-}
-
-fn find_first_named_file(repo_root: &PathBuf, names: &[&str], max_depth: usize) -> Option<PathBuf> {
-    let mut best: Option<(usize, PathBuf)> = None;
-    let mut builder = WalkBuilder::new(repo_root);
-    builder.max_depth(Some(max_depth)).hidden(true);
-    for entry in builder.build() {
-        let entry = match entry {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-            continue;
-        }
-        let Some(file_name) = entry.path().file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if !names.iter().any(|name| *name == file_name) {
-            continue;
-        }
-        let depth = entry
-            .path()
-            .strip_prefix(repo_root)
-            .map(|rel| rel.components().count())
-            .unwrap_or(usize::MAX);
-        match &best {
-            Some((best_depth, _)) if *best_depth <= depth => {}
-            _ => best = Some((depth, entry.path().to_path_buf())),
-        }
-    }
-    best.map(|(_, path)| path)
-}
-
-fn find_first_extension(repo_root: &PathBuf, ext: &str, max_depth: usize) -> Option<PathBuf> {
-    let mut best: Option<(usize, PathBuf)> = None;
-    let mut builder = WalkBuilder::new(repo_root);
-    builder.max_depth(Some(max_depth)).hidden(true);
-    for entry in builder.build() {
-        let entry = match entry {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-            continue;
-        }
-        let Some(extension) = entry.path().extension().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if extension != ext {
-            continue;
-        }
-        let depth = entry
-            .path()
-            .strip_prefix(repo_root)
-            .map(|rel| rel.components().count())
-            .unwrap_or(usize::MAX);
-        match &best {
-            Some((best_depth, _)) if *best_depth <= depth => {}
-            _ => best = Some((depth, entry.path().to_path_buf())),
-        }
-    }
-    best.map(|(_, path)| path)
-}
-
-fn resolve_node_tool(repo_root: &PathBuf, tool: &str) -> Option<OsString> {
-    let base = repo_root.join("node_modules").join(".bin");
-    let candidates = [tool.to_string(), format!("{tool}.cmd")];
-    for name in candidates {
-        let path = base.join(name);
-        if path.is_file() {
-            return Some(path.into_os_string());
-        }
-    }
-    None
-}
-
-fn resolve_python_tool(repo_root: &PathBuf, tool: &str) -> Option<OsString> {
-    let candidates = [
-        repo_root.join(".venv").join("bin").join(tool),
-        repo_root.join("venv").join("bin").join(tool),
-        repo_root
-            .join(".venv")
-            .join("Scripts")
-            .join(format!("{tool}.exe")),
-        repo_root
-            .join("venv")
-            .join("Scripts")
-            .join(format!("{tool}.exe")),
-    ];
-    for path in candidates {
-        if path.is_file() {
-            return Some(path.into_os_string());
-        }
-    }
-    None
-}
-
-fn command_available(cmd: &OsString) -> bool {
-    Command::new(cmd)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok()
-}
-
 #[cfg(test)]
 fn build_flow_status(
     routes: Vec<Edge>,
@@ -2554,8 +1339,14 @@ mod tests {
         assert_eq!(detect_boundary_type("RPC_CALL", "csharp", "proto"), "grpc");
 
         // Stored procedure boundaries
-        assert_eq!(detect_boundary_type("XREF", "csharp", "sql"), "stored_procedure");
-        assert_eq!(detect_boundary_type("XREF", "sql", "csharp"), "stored_procedure");
+        assert_eq!(
+            detect_boundary_type("XREF", "csharp", "sql"),
+            "stored_procedure"
+        );
+        assert_eq!(
+            detect_boundary_type("XREF", "sql", "csharp"),
+            "stored_procedure"
+        );
 
         // Generic XREF
         assert_eq!(detect_boundary_type("XREF", "python", "csharp"), "xref");
@@ -2684,7 +1475,10 @@ mod tests {
         let required = schema.get("required").and_then(|v| v.as_array());
         // Note: seeds has a default, so it may not be in required array
         // Just check the schema is valid
-        assert!(schema.is_object(), "gather_context should have valid schema");
+        assert!(
+            schema.is_object(),
+            "gather_context should have valid schema"
+        );
     }
 
     #[test]
@@ -2767,10 +1561,17 @@ mod tests {
             .get("properties")
             .and_then(|p| p.get("seeds"))
             .and_then(|s| s.get("items"));
-        assert!(seeds_schema.is_some(), "gather_context should have seeds.items");
+        assert!(
+            seeds_schema.is_some(),
+            "gather_context should have seeds.items"
+        );
         let seeds_items = seeds_schema.unwrap();
         let one_of = seeds_items.get("oneOf");
-        assert!(one_of.is_some(), "seeds.items should have oneOf: {}", seeds_items);
+        assert!(
+            one_of.is_some(),
+            "seeds.items should have oneOf: {}",
+            seeds_items
+        );
         let variants = one_of.unwrap().as_array().unwrap();
         assert_eq!(
             variants.len(),
@@ -2781,12 +1582,42 @@ mod tests {
         // Each variant should have a type discriminator property
         for variant in variants {
             let props = variant.get("properties");
-            assert!(props.is_some(), "variant should have properties: {}", variant);
+            assert!(
+                props.is_some(),
+                "variant should have properties: {}",
+                variant
+            );
             assert!(
                 props.unwrap().get("type").is_some(),
                 "variant should have 'type' discriminator property: {}",
                 variant
             );
+        }
+    }
+
+    #[test]
+    fn method_list_matches_dispatch() {
+        // Ensure every method in METHOD_LIST is handled by handle_method
+        let dir = std::env::temp_dir().join(format!(
+            "lidx-dispatch-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join(".lidx.sqlite");
+        let mut indexer = crate::indexer::Indexer::new(dir.clone(), db_path).unwrap();
+        for method in super::METHOD_LIST {
+            let result = super::handle_method(&mut indexer, method, serde_json::json!({}));
+            if let Err(ref err) = result {
+                let msg = err.to_string();
+                assert!(
+                    !msg.contains("unknown method"),
+                    "METHOD_LIST contains '{}' but handle_method does not dispatch it",
+                    method
+                );
+            }
         }
     }
 }

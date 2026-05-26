@@ -82,9 +82,7 @@ impl DeduplicationTracker {
 
     /// Returns true if this region was NOT seen before (and marks it as seen)
     fn mark_if_new(&mut self, path: &str, start_byte: i64, end_byte: i64) -> bool {
-        let regions = self.regions_by_path
-            .entry(path.to_string())
-            .or_default();
+        let regions = self.regions_by_path.entry(path.to_string()).or_default();
 
         // Check if new region is fully contained in any existing region
         for &(existing_start, existing_end) in regions.iter() {
@@ -148,7 +146,13 @@ impl<'a> ContentCollector<'a> {
             return Ok(false);
         }
         if let Some(item) = read_symbol_content(
-            self.repo_root, symbol, start, end, source, match_loc, self.remaining(),
+            self.repo_root,
+            symbol,
+            start,
+            end,
+            source,
+            match_loc,
+            self.remaining(),
         )? {
             self.total_bytes += item.content.len();
             self.items.push(item);
@@ -173,8 +177,15 @@ impl<'a> ContentCollector<'a> {
             return Ok(false);
         }
         if let Some(item) = read_file_region(
-            self.repo_root, path, start_byte, end_byte, start_line, end_line,
-            source, match_loc, self.remaining(),
+            self.repo_root,
+            path,
+            start_byte,
+            end_byte,
+            start_line,
+            end_line,
+            source,
+            match_loc,
+            self.remaining(),
         )? {
             self.total_bytes += item.content.len();
             self.items.push(item);
@@ -192,7 +203,10 @@ impl<'a> ContentCollector<'a> {
         source: ItemSource,
         match_loc: Option<MatchLocation>,
     ) -> bool {
-        if !self.dedup.mark_if_new(&symbol.file_path, symbol.start_byte, symbol.end_byte) {
+        if !self
+            .dedup
+            .mark_if_new(&symbol.file_path, symbol.start_byte, symbol.end_byte)
+        {
             return false;
         }
         if content.len() > self.remaining() {
@@ -606,10 +620,17 @@ fn expand_via_subgraph(db: &Db, symbol_ids: &[i64], config: &GatherConfig) -> Re
     // Use existing subgraph logic — include cross-file edge kinds
     let filter = EdgeFilter {
         include: Some(
-            ["CALLS", "CONTAINS", "IMPLEMENTS", "EXTENDS", "IMPORTS", "RPC_IMPL"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            [
+                "CALLS",
+                "CONTAINS",
+                "IMPLEMENTS",
+                "EXTENDS",
+                "IMPORTS",
+                "RPC_IMPL",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         ),
         exclude: Default::default(),
         exclude_all: false,
@@ -676,7 +697,10 @@ fn collect_content_file_strategy(
 
     // Process direct seeds
     for (seed_idx, resolved_seed) in resolved {
-        if c.over_budget() { c.mark_truncated(); break; }
+        if c.over_budget() {
+            c.mark_truncated();
+            break;
+        }
         let seed_source = |idx: usize| ItemSource {
             source_type: SourceType::DirectSeed,
             seed_index: Some(idx),
@@ -684,13 +708,36 @@ fn collect_content_file_strategy(
             distance: Some(0),
         };
         match resolved_seed {
-            ResolvedSeed::Symbol { symbol, content_region } => {
+            ResolvedSeed::Symbol {
+                symbol,
+                content_region,
+            } => {
                 if let Some((start, end)) = content_region {
-                    c.try_add_symbol(symbol, *start, *end, seed_source(*seed_idx), match_locations.get(&symbol.id).cloned())?;
+                    c.try_add_symbol(
+                        symbol,
+                        *start,
+                        *end,
+                        seed_source(*seed_idx),
+                        match_locations.get(&symbol.id).cloned(),
+                    )?;
                 }
             }
-            ResolvedSeed::FileRegion { path, start_byte, end_byte, start_line, end_line } => {
-                c.try_add_file_region(path, *start_byte, *end_byte, *start_line, *end_line, seed_source(*seed_idx), None)?;
+            ResolvedSeed::FileRegion {
+                path,
+                start_byte,
+                end_byte,
+                start_line,
+                end_line,
+            } => {
+                c.try_add_file_region(
+                    path,
+                    *start_byte,
+                    *end_byte,
+                    *start_line,
+                    *end_line,
+                    seed_source(*seed_idx),
+                    None,
+                )?;
             }
             ResolvedSeed::SearchResults { .. } => {}
         }
@@ -699,14 +746,23 @@ fn collect_content_file_strategy(
     // Process related symbols
     if config.include_snippets {
         for symbol in related_symbols {
-            if c.over_budget() { c.mark_truncated(); break; }
+            if c.over_budget() {
+                c.mark_truncated();
+                break;
+            }
             let source = ItemSource {
                 source_type: SourceType::Subgraph,
                 seed_index: None,
                 relationship: Some("related".to_string()),
                 distance: None,
             };
-            c.try_add_symbol(symbol, symbol.start_byte, symbol.end_byte, source, match_locations.get(&symbol.id).cloned())?;
+            c.try_add_symbol(
+                symbol,
+                symbol.start_byte,
+                symbol.end_byte,
+                source,
+                match_locations.get(&symbol.id).cloned(),
+            )?;
         }
     }
 
@@ -726,16 +782,21 @@ fn collect_content_file_strategy(
         let mut seen_caller_ids = HashSet::new();
 
         for symbol_id in symbol_ids_to_check {
-            if c.over_budget() { break; }
+            if c.over_budget() {
+                break;
+            }
 
-            let edges = db.edges_for_symbol(symbol_id, config.languages.as_deref(), config.graph_version)?;
+            let edges =
+                db.edges_for_symbol(symbol_id, config.languages.as_deref(), config.graph_version)?;
             for edge in &edges {
                 if edge.kind == "CALLS"
                     && edge.target_symbol_id == Some(symbol_id)
                     && edge.source_symbol_id.is_some()
                 {
                     let source_id = edge.source_symbol_id.unwrap();
-                    if current_symbol_ids.contains(&source_id) || seen_caller_ids.contains(&source_id) {
+                    if current_symbol_ids.contains(&source_id)
+                        || seen_caller_ids.contains(&source_id)
+                    {
                         continue;
                     }
                     if let Some(caller) = db.get_symbol_by_id(source_id)? {
@@ -747,12 +808,17 @@ fn collect_content_file_strategy(
                 }
             }
 
-            if let Some(symbol) = c.items.iter()
+            if let Some(symbol) = c
+                .items
+                .iter()
                 .filter_map(|item| item.symbol.as_ref())
                 .find(|s| s.id == symbol_id)
             {
                 let incoming = db.incoming_edges_by_qualname_pattern(
-                    &symbol.name, "CALLS", config.languages.as_deref(), config.graph_version
+                    &symbol.name,
+                    "CALLS",
+                    config.languages.as_deref(),
+                    config.graph_version,
                 )?;
                 for edge in &incoming {
                     let matches = edge.target_qualname.as_ref().map_or(false, |qn| {
@@ -760,7 +826,9 @@ fn collect_content_file_strategy(
                     });
                     if matches {
                         if let Some(source_id) = edge.source_symbol_id {
-                            if !current_symbol_ids.contains(&source_id) && !seen_caller_ids.contains(&source_id) {
+                            if !current_symbol_ids.contains(&source_id)
+                                && !seen_caller_ids.contains(&source_id)
+                            {
                                 if let Some(caller) = db.get_symbol_by_id(source_id)? {
                                     if !current_file_paths.contains(&caller.file_path) {
                                         caller_symbols.push(caller);
@@ -775,7 +843,10 @@ fn collect_content_file_strategy(
         }
 
         for caller in caller_symbols {
-            if c.over_budget() { c.mark_truncated(); break; }
+            if c.over_budget() {
+                c.mark_truncated();
+                break;
+            }
             let source = ItemSource {
                 source_type: SourceType::Subgraph,
                 seed_index: None,
@@ -803,7 +874,10 @@ fn collect_content_symbol_strategy(
 
     // Process direct symbol seeds at Tier 0
     for (seed_idx, resolved_seed) in resolved {
-        if c.over_budget() { c.mark_truncated(); break; }
+        if c.over_budget() {
+            c.mark_truncated();
+            break;
+        }
         let seed_source = |idx: usize| ItemSource {
             source_type: SourceType::DirectSeed,
             seed_index: Some(idx),
@@ -812,15 +886,37 @@ fn collect_content_symbol_strategy(
         };
         match resolved_seed {
             ResolvedSeed::Symbol { symbol, .. } => {
-                let file_content = file_cache.entry(symbol.file_path.clone()).or_insert_with(|| {
-                    let abs_path = repo_root.join(&symbol.file_path);
-                    std::fs::read_to_string(&abs_path).unwrap_or_default()
-                });
+                let file_content =
+                    file_cache
+                        .entry(symbol.file_path.clone())
+                        .or_insert_with(|| {
+                            let abs_path = repo_root.join(&symbol.file_path);
+                            std::fs::read_to_string(&abs_path).unwrap_or_default()
+                        });
                 let content = format_tier0(repo_root, symbol, file_content)?;
-                c.try_add_formatted(symbol, content, seed_source(*seed_idx), match_locations.get(&symbol.id).cloned());
+                c.try_add_formatted(
+                    symbol,
+                    content,
+                    seed_source(*seed_idx),
+                    match_locations.get(&symbol.id).cloned(),
+                );
             }
-            ResolvedSeed::FileRegion { path, start_byte, end_byte, start_line, end_line } => {
-                c.try_add_file_region(path, *start_byte, *end_byte, *start_line, *end_line, seed_source(*seed_idx), None)?;
+            ResolvedSeed::FileRegion {
+                path,
+                start_byte,
+                end_byte,
+                start_line,
+                end_line,
+            } => {
+                c.try_add_file_region(
+                    path,
+                    *start_byte,
+                    *end_byte,
+                    *start_line,
+                    *end_line,
+                    seed_source(*seed_idx),
+                    None,
+                )?;
             }
             ResolvedSeed::SearchResults { .. } => {}
         }
@@ -837,7 +933,10 @@ fn collect_content_symbol_strategy(
             .collect();
 
         for symbol in related_symbols {
-            if c.over_budget() { c.mark_truncated(); break; }
+            if c.over_budget() {
+                c.mark_truncated();
+                break;
+            }
             let content = format_tier2(symbol);
             let source = ItemSource {
                 source_type: SourceType::Subgraph,
@@ -845,7 +944,12 @@ fn collect_content_symbol_strategy(
                 relationship: Some("related".to_string()),
                 distance: None,
             };
-            c.try_add_formatted(symbol, content, source, match_locations.get(&symbol.id).cloned());
+            c.try_add_formatted(
+                symbol,
+                content,
+                source,
+                match_locations.get(&symbol.id).cloned(),
+            );
         }
 
         // Cross-file expansion via CALLS edges (up to 30% of remaining budget)
@@ -853,16 +957,25 @@ fn collect_content_symbol_strategy(
             let cross_file_budget = (c.remaining() * 30 / 100).max(1000);
             let mut cross_file_bytes = 0usize;
 
-            let current_file_paths: HashSet<String> = c.items
+            let current_file_paths: HashSet<String> = c
+                .items
                 .iter()
                 .filter_map(|item| item.symbol.as_ref().map(|s| s.file_path.clone()))
                 .collect();
 
             for seed_id in &seed_symbol_ids {
-                if cross_file_bytes >= cross_file_budget { break; }
-                let edges = db.edges_for_symbol(*seed_id, config.languages.as_deref(), config.graph_version)?;
+                if cross_file_bytes >= cross_file_budget {
+                    break;
+                }
+                let edges = db.edges_for_symbol(
+                    *seed_id,
+                    config.languages.as_deref(),
+                    config.graph_version,
+                )?;
                 for edge in &edges {
-                    if cross_file_bytes >= cross_file_budget { break; }
+                    if cross_file_bytes >= cross_file_budget {
+                        break;
+                    }
                     if edge.kind == "CALLS" {
                         let target_id = if edge.source_symbol_id == Some(*seed_id) {
                             edge.target_symbol_id
@@ -882,7 +995,12 @@ fn collect_content_symbol_strategy(
                                         distance: Some(1),
                                     };
                                     if content.len() <= cross_file_budget - cross_file_bytes {
-                                        if c.try_add_formatted(&target_symbol, content.clone(), source, None) {
+                                        if c.try_add_formatted(
+                                            &target_symbol,
+                                            content.clone(),
+                                            source,
+                                            None,
+                                        ) {
                                             cross_file_bytes += content.len();
                                         }
                                     }
@@ -1043,11 +1161,7 @@ fn read_file_header(repo_root: &Path, file_path: &str) -> Result<String> {
 }
 
 /// Format symbol at Tier 0: full source body with file header
-fn format_tier0(
-    repo_root: &Path,
-    symbol: &Symbol,
-    file_content: &str,
-) -> Result<String> {
+fn format_tier0(repo_root: &Path, symbol: &Symbol, file_content: &str) -> Result<String> {
     let header = read_file_header(repo_root, &symbol.file_path)?;
 
     let start = symbol.start_byte as usize;
@@ -1065,7 +1179,10 @@ fn format_tier0(
         result.push_str(&header);
         result.push_str("\n");
     }
-    result.push_str(&format!("// Symbol: {} ({})\n", symbol.qualname, symbol.kind));
+    result.push_str(&format!(
+        "// Symbol: {} ({})\n",
+        symbol.qualname, symbol.kind
+    ));
     result.push_str(body);
 
     Ok(result)
@@ -1075,7 +1192,10 @@ fn format_tier0(
 fn format_tier1(symbol: &Symbol, edge: Option<&crate::model::Edge>) -> String {
     let mut result = String::new();
 
-    result.push_str(&format!("// File: {} ({})\n", symbol.file_path, symbol.kind));
+    result.push_str(&format!(
+        "// File: {} ({})\n",
+        symbol.file_path, symbol.kind
+    ));
 
     if let Some(sig) = &symbol.signature {
         result.push_str(sig);
@@ -1086,7 +1206,11 @@ fn format_tier1(symbol: &Symbol, edge: Option<&crate::model::Edge>) -> String {
 
     if let Some(e) = edge {
         if let (Some(snippet), Some(line)) = (&e.evidence_snippet, e.evidence_start_line) {
-            result.push_str(&format!("  // {} at line {}\n", e.kind.to_lowercase(), line));
+            result.push_str(&format!(
+                "  // {} at line {}\n",
+                e.kind.to_lowercase(),
+                line
+            ));
             result.push_str("  ");
             result.push_str(&snippet.trim());
             result.push('\n');
@@ -1100,7 +1224,10 @@ fn format_tier1(symbol: &Symbol, edge: Option<&crate::model::Edge>) -> String {
 fn format_tier2(symbol: &Symbol) -> String {
     let mut result = String::new();
 
-    result.push_str(&format!("// File: {} ({})\n", symbol.file_path, symbol.kind));
+    result.push_str(&format!(
+        "// File: {} ({})\n",
+        symbol.file_path, symbol.kind
+    ));
 
     if let Some(sig) = &symbol.signature {
         result.push_str(sig);

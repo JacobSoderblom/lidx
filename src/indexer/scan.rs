@@ -82,20 +82,12 @@ static LANGUAGE_SPECS: &[LanguageSpec] = &[
         extensions: &["tsql"],
     },
     LanguageSpec {
-        name: "markdown",
-        extensions: &["md", "markdown", "mdx"],
-    },
-    LanguageSpec {
         name: "proto",
         extensions: &["proto"],
     },
     LanguageSpec {
         name: "go",
         extensions: &["go"],
-    },
-    LanguageSpec {
-        name: "lua",
-        extensions: &["lua"],
     },
     LanguageSpec {
         name: "yaml",
@@ -173,18 +165,6 @@ static LANGUAGE_FILTERS: &[LanguageFilter] = &[
         languages: &["sql", "postgres", "tsql"],
     },
     LanguageFilter {
-        name: "markdown",
-        languages: &["markdown"],
-    },
-    LanguageFilter {
-        name: "md",
-        languages: &["markdown"],
-    },
-    LanguageFilter {
-        name: "mdx",
-        languages: &["markdown"],
-    },
-    LanguageFilter {
         name: "postgres",
         languages: &["postgres"],
     },
@@ -235,10 +215,6 @@ static LANGUAGE_FILTERS: &[LanguageFilter] = &[
     LanguageFilter {
         name: "golang",
         languages: &["go"],
-    },
-    LanguageFilter {
-        name: "lua",
-        languages: &["lua"],
     },
     LanguageFilter {
         name: "yaml",

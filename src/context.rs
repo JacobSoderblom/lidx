@@ -89,11 +89,7 @@ pub fn build_file_context(
                 // If source is in our file → outgoing call (callee)
                 if let Some(src_id) = edge.source_symbol_id {
                     if symbol_id_set.contains(&src_id) {
-                        let name = edge
-                            .target_qualname
-                            .as_deref()
-                            .unwrap_or("?")
-                            .to_string();
+                        let name = edge.target_qualname.as_deref().unwrap_or("?").to_string();
                         // Resolve target file from target_symbol_id
                         let target_file = if let Some(tgt_id) = edge.target_symbol_id {
                             let file = target_file_cache
@@ -193,11 +189,7 @@ pub fn build_file_context(
             if callers.len() >= MAX_CALLERS {
                 break;
             }
-            let caller_name = edge
-                .target_qualname
-                .as_deref()
-                .unwrap_or("?")
-                .to_string();
+            let caller_name = edge.target_qualname.as_deref().unwrap_or("?").to_string();
             let key = (caller_name.clone(), edge.file_path.clone());
             if caller_seen.insert(key) {
                 // Try to resolve source symbol name

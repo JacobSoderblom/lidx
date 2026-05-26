@@ -107,7 +107,10 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
         }
         // Symbols in test files
         if is_test_file(&symbol.file_path) {
-            return matches!(symbol.kind.as_str(), "function" | "method" | "arrow_function");
+            return matches!(
+                symbol.kind.as_str(),
+                "function" | "method" | "arrow_function"
+            );
         }
     }
 
@@ -330,21 +333,11 @@ mod tests {
         );
         assert!(is_test_symbol(&sym), "C# method in test file");
 
-        let mut sym = make_symbol(
-            "dotnet/src/Dpb/Service.cs",
-            "method",
-            "Deploy",
-            None,
-        );
+        let mut sym = make_symbol("dotnet/src/Dpb/Service.cs", "method", "Deploy", None);
         sym.qualname = "Dpb.Tests.ServiceTests.Deploy".to_string();
         assert!(is_test_symbol(&sym), "C# qualname with .Tests. namespace");
 
-        let sym = make_symbol(
-            "dotnet/src/Dpb/Service.cs",
-            "method",
-            "Deploy",
-            None,
-        );
+        let sym = make_symbol("dotnet/src/Dpb/Service.cs", "method", "Deploy", None);
         assert!(!is_test_symbol(&sym), "C# production method");
     }
 
