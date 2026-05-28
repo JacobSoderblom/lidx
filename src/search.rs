@@ -978,10 +978,7 @@ fn is_generated_filename(name: &str) -> bool {
     name.contains(".min.") || name.contains(".generated.")
 }
 
-// ---------------------------------------------------------------------------
-// Ripgrep-based search (extracted from rpc/mod.rs)
-// ---------------------------------------------------------------------------
-
+/// Options for ripgrep-based code search.
 pub struct RgSearchOptions {
     pub include_text: bool,
     pub case_sensitive: Option<bool>,
@@ -993,10 +990,12 @@ pub struct RgSearchOptions {
     pub paths: Vec<PathBuf>,
 }
 
+/// Clamps an optional context-lines value to the range `0..=50`.
 pub fn normalize_rg_context(value: Option<usize>) -> usize {
     value.unwrap_or(0).min(50)
 }
 
+/// Resolves and validates search paths, falling back to `repo_root` when none are given.
 pub fn resolve_rg_paths(
     repo_root: &Path,
     path: Option<String>,
@@ -1027,6 +1026,7 @@ pub fn resolve_rg_paths(
     Ok(resolved)
 }
 
+/// Runs ripgrep with `--json` output and returns parsed grep hits.
 pub fn search_rg(
     repo_root: &PathBuf,
     query: &str,
@@ -1150,6 +1150,7 @@ pub fn search_rg(
     Ok(hits)
 }
 
+/// Enriches grep hits with surrounding context lines and enclosing symbol info.
 pub fn annotate_grep_hits(
     indexer: &Indexer,
     hits: &mut [GrepHit],
@@ -1255,7 +1256,7 @@ fn build_rg_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ContextLine, Symbol};
+    use crate::model::Symbol;
 
     fn make_symbol(name: &str, qualname: &str) -> Symbol {
         Symbol {
@@ -1381,5 +1382,32 @@ mod tests {
             reasons,
             Some(vec!["first".to_string(), "second".to_string()])
         );
+    }
+
+    #[test]
+    fn build_rg_context_line_beyond_end_returns_none() {
+        let lines: Vec<String> = (1..=5).map(|i| format!("line {i}")).collect();
+        assert!(build_rg_context(&lines, 100, 2).is_none());
+    }
+
+    #[test]
+    fn rg_query_tokens_special_chars_only() {
+        let tokens = rg_query_tokens("...::");
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn rg_symbol_matches_query_single_char_no_match() {
+        let sym = make_symbol("x", "main::x");
+        assert!(!rg_symbol_matches_query(&sym, "x"));
+    }
+
+    #[test]
+    fn build_rg_context_single_line_file() {
+        let lines = vec!["only line".to_string()];
+        let ctx = build_rg_context(&lines, 1, 5).unwrap();
+        assert_eq!(ctx.len(), 1);
+        assert_eq!(ctx[0].line, 1);
+        assert_eq!(ctx[0].text, "only line");
     }
 }

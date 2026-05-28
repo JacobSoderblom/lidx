@@ -155,6 +155,7 @@ pub fn git_head_sha(repo_root: &Path) -> Option<String> {
     }
 }
 
+/// Resolves a raw path against `repo_root`, canonicalizes it, and rejects escapes.
 pub fn resolve_repo_path_for_op(
     repo_root: &Path,
     raw_path: &str,
