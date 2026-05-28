@@ -1,5 +1,6 @@
 {
   "private": true,
+  "type": "module",
   "scripts": {
     "sandcastle": "tsx ./.sandcastle/main.ts"
   },

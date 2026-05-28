@@ -36,6 +36,9 @@ ENV PATH="/home/agent/.local/bin:$PATH"
 
 WORKDIR /home/agent
 
+# Pre-create .gitconfig so sandcastle's safe.directory write succeeds
+RUN touch /home/agent/.gitconfig
+
 # In worktree sandbox mode, Sandcastle bind-mounts the git worktree at /home/agent/workspace
 # and overrides the working directory to /home/agent/workspace at container start.
 ENTRYPOINT ["sleep", "infinity"]
