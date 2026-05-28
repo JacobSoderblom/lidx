@@ -1,11 +1,12 @@
 use crate::config::Config;
-use crate::indexer::scan;
-use crate::model::{GrepHit, SearchHit};
+use crate::indexer::{Indexer, scan};
+use crate::model::{ContextLine, GrepHit, SearchHit, Symbol};
 use crate::util;
 use anyhow::{Context, Result, bail};
 use std::cmp::Ordering;
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::io;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -975,4 +976,438 @@ fn is_tests_filename(name: &str) -> bool {
 
 fn is_generated_filename(name: &str) -> bool {
     name.contains(".min.") || name.contains(".generated.")
+}
+
+/// Options for ripgrep-based code search.
+pub struct RgSearchOptions {
+    pub include_text: bool,
+    pub case_sensitive: Option<bool>,
+    pub fixed_string: bool,
+    pub hidden: bool,
+    pub no_ignore: bool,
+    pub follow: bool,
+    pub globs: Vec<String>,
+    pub paths: Vec<PathBuf>,
+}
+
+/// Clamps an optional context-lines value to the range `0..=50`.
+pub fn normalize_rg_context(value: Option<usize>) -> usize {
+    value.unwrap_or(0).min(50)
+}
+
+/// Resolves and validates search paths, falling back to `repo_root` when none are given.
+pub fn resolve_rg_paths(
+    repo_root: &Path,
+    path: Option<String>,
+    paths: Option<Vec<String>>,
+) -> Result<Vec<PathBuf>> {
+    let mut raw_paths = Vec::new();
+    if let Some(value) = path {
+        raw_paths.push(value);
+    }
+    if let Some(values) = paths {
+        raw_paths.extend(values);
+    }
+    if raw_paths.is_empty() {
+        return Ok(vec![repo_root.to_path_buf()]);
+    }
+    let mut resolved = Vec::new();
+    for raw in raw_paths {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (abs, _) = util::resolve_repo_path_for_op(repo_root, trimmed, "search_rg")?;
+        resolved.push(abs);
+    }
+    if resolved.is_empty() {
+        return Ok(vec![repo_root.to_path_buf()]);
+    }
+    Ok(resolved)
+}
+
+/// Runs ripgrep with `--json` output and returns parsed grep hits.
+pub fn search_rg(
+    repo_root: &PathBuf,
+    query: &str,
+    limit: usize,
+    options: RgSearchOptions,
+) -> Result<Vec<GrepHit>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let build_cmd = |allow_no_require_git: bool| {
+        let mut cmd = Command::new("rg");
+        cmd.arg("--json").arg("-n").arg("--column");
+        if options.fixed_string {
+            cmd.arg("-F");
+        }
+        if let Some(case_sensitive) = options.case_sensitive {
+            if case_sensitive {
+                cmd.arg("-s");
+            } else {
+                cmd.arg("-i");
+            }
+        }
+        if options.hidden {
+            cmd.arg("--hidden");
+        }
+        if options.no_ignore {
+            cmd.arg("--no-ignore");
+        } else if allow_no_require_git {
+            cmd.arg("--no-require-git");
+        }
+        if options.follow {
+            cmd.arg("--follow");
+        }
+        for glob in &options.globs {
+            let trimmed = glob.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            cmd.arg("-g").arg(trimmed);
+        }
+        cmd.arg("--").arg(query);
+        for path in &options.paths {
+            cmd.arg(path);
+        }
+        cmd
+    };
+    let mut output = match build_cmd(true).output() {
+        Ok(value) => value,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Err(anyhow::anyhow!("rg not found in PATH"));
+        }
+        Err(err) => return Err(err).with_context(|| "run rg"),
+    };
+    if !output.status.success()
+        && !options.no_ignore
+        && rg_flag_unsupported(&output, "--no-require-git")
+    {
+        output = match build_cmd(false).output() {
+            Ok(value) => value,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return Err(anyhow::anyhow!("rg not found in PATH"));
+            }
+            Err(err) => return Err(err).with_context(|| "run rg"),
+        };
+    }
+    let exit_code = output.status.code().unwrap_or(2);
+    if exit_code == 1 {
+        return Ok(Vec::new());
+    }
+    if exit_code != 0 {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("rg failed (exit code {}): {}", exit_code, stderr.trim());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut hits = Vec::new();
+    for line in stdout.lines() {
+        if hits.len() >= limit {
+            break;
+        }
+        let value: serde_json::Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if value.get("type").and_then(|t| t.as_str()) != Some("match") {
+            continue;
+        }
+        let data = &value["data"];
+        let raw_path = data["path"]["text"].as_str().unwrap_or("");
+        let path = match std::path::Path::new(raw_path).strip_prefix(repo_root) {
+            Ok(rel) => util::normalize_path(rel),
+            Err(_) => raw_path.to_string(),
+        };
+        let line_number = data["line_number"].as_u64().unwrap_or(0) as usize;
+        let line_text = data["lines"]["text"]
+            .as_str()
+            .unwrap_or("")
+            .trim_end()
+            .to_string();
+        let column = data["submatches"]
+            .get(0)
+            .and_then(|v| v["start"].as_u64())
+            .map(|v| v as usize + 1)
+            .unwrap_or(1);
+        hits.push(GrepHit {
+            path,
+            line: line_number,
+            column,
+            line_text: if options.include_text {
+                Some(line_text)
+            } else {
+                None
+            },
+            context: None,
+            enclosing_symbol: None,
+            score: None,
+            reasons: Some(vec!["regex".to_string()]),
+            engine: Some("search_rg".to_string()),
+            next_hops: None,
+        });
+    }
+    Ok(hits)
+}
+
+/// Enriches grep hits with surrounding context lines and enclosing symbol info.
+pub fn annotate_grep_hits(
+    indexer: &Indexer,
+    hits: &mut [GrepHit],
+    context_lines: usize,
+    include_symbol: bool,
+    graph_version: i64,
+    query: Option<&str>,
+) -> Result<()> {
+    let repo_root = indexer.repo_root();
+    let mut cache: HashMap<String, Vec<String>> = HashMap::new();
+    for hit in hits {
+        if context_lines > 0 {
+            let lines = cache
+                .entry(hit.path.clone())
+                .or_insert_with(|| read_rg_lines(repo_root, &hit.path).unwrap_or_default());
+            if let Some(context) = build_rg_context(lines, hit.line, context_lines) {
+                hit.context = Some(context);
+            }
+        }
+        if include_symbol
+            && let Some(symbol) =
+                indexer
+                    .db()
+                    .enclosing_symbol_for_line(&hit.path, hit.line as i64, graph_version)?
+        {
+            hit.enclosing_symbol = Some(symbol.qualname.clone());
+            if let Some(query) = query
+                && rg_symbol_matches_query(&symbol, query)
+            {
+                push_rg_reason(&mut hit.reasons, "symbol_name");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn push_rg_reason(reasons: &mut Option<Vec<String>>, reason: &str) {
+    match reasons {
+        Some(values) => values.push(reason.to_string()),
+        None => *reasons = Some(vec![reason.to_string()]),
+    }
+}
+
+fn rg_query_tokens(query: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for ch in query.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            current.push(ch.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out.into_iter().filter(|token| token.len() > 1).collect()
+}
+
+fn rg_symbol_matches_query(symbol: &Symbol, query: &str) -> bool {
+    let tokens = rg_query_tokens(query);
+    if tokens.is_empty() {
+        return false;
+    }
+    let name = symbol.name.to_ascii_lowercase();
+    let qualname = symbol.qualname.to_ascii_lowercase();
+    tokens
+        .iter()
+        .any(|token| name.contains(token) || qualname.contains(token))
+}
+
+fn read_rg_lines(repo_root: &Path, rel_path: &str) -> Option<Vec<String>> {
+    let path = repo_root.join(rel_path);
+    let content = util::read_to_string(&path).ok()?;
+    Some(content.lines().map(|line| line.to_string()).collect())
+}
+
+fn build_rg_context(
+    lines: &[String],
+    line: usize,
+    context_lines: usize,
+) -> Option<Vec<ContextLine>> {
+    if lines.is_empty() || line == 0 {
+        return None;
+    }
+    let line_idx = line.saturating_sub(1);
+    if line_idx >= lines.len() {
+        return None;
+    }
+    let start = line_idx.saturating_sub(context_lines);
+    let end = (line_idx + context_lines).min(lines.len() - 1);
+    let out = lines[start..=end]
+        .iter()
+        .enumerate()
+        .map(|(i, text)| ContextLine {
+            line: start + i + 1,
+            text: text.clone(),
+        })
+        .collect();
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Symbol;
+
+    fn make_symbol(name: &str, qualname: &str) -> Symbol {
+        Symbol {
+            id: 1,
+            file_path: "test.rs".to_string(),
+            kind: "function".to_string(),
+            name: name.to_string(),
+            qualname: qualname.to_string(),
+            start_line: 1,
+            start_col: 0,
+            end_line: 10,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 100,
+            signature: None,
+            docstring: None,
+            graph_version: 1,
+            commit_sha: None,
+            stable_id: None,
+        }
+    }
+
+    #[test]
+    fn rg_query_tokens_splits_and_lowercases() {
+        let tokens = rg_query_tokens("FooBar_baz-qux");
+        assert_eq!(tokens, vec!["foobar_baz-qux"]);
+
+        let tokens = rg_query_tokens("Foo.Bar");
+        assert_eq!(tokens, vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn rg_query_tokens_filters_short() {
+        let tokens = rg_query_tokens("a b cd ef");
+        assert_eq!(tokens, vec!["cd", "ef"]);
+    }
+
+    #[test]
+    fn rg_query_tokens_empty_input() {
+        let tokens = rg_query_tokens("");
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn rg_symbol_matches_query_by_name() {
+        let sym = make_symbol("processRefund", "payments::processRefund");
+        assert!(rg_symbol_matches_query(&sym, "refund"));
+    }
+
+    #[test]
+    fn rg_symbol_matches_query_by_qualname() {
+        let sym = make_symbol("run", "payments::processRefund");
+        assert!(rg_symbol_matches_query(&sym, "payments"));
+    }
+
+    #[test]
+    fn rg_symbol_matches_query_no_match() {
+        let sym = make_symbol("run", "main::run");
+        assert!(!rg_symbol_matches_query(&sym, "refund"));
+    }
+
+    #[test]
+    fn rg_symbol_matches_query_empty() {
+        let sym = make_symbol("run", "main::run");
+        assert!(!rg_symbol_matches_query(&sym, ""));
+    }
+
+    #[test]
+    fn build_rg_context_basic() {
+        let lines: Vec<String> = (1..=10).map(|i| format!("line {i}")).collect();
+        let ctx = build_rg_context(&lines, 5, 2).unwrap();
+        assert_eq!(ctx.len(), 5);
+        assert_eq!(ctx[0].line, 3);
+        assert_eq!(ctx[0].text, "line 3");
+        assert_eq!(ctx[4].line, 7);
+    }
+
+    #[test]
+    fn build_rg_context_at_start() {
+        let lines: Vec<String> = (1..=5).map(|i| format!("line {i}")).collect();
+        let ctx = build_rg_context(&lines, 1, 2).unwrap();
+        assert_eq!(ctx[0].line, 1);
+        assert_eq!(ctx.len(), 3);
+    }
+
+    #[test]
+    fn build_rg_context_at_end() {
+        let lines: Vec<String> = (1..=5).map(|i| format!("line {i}")).collect();
+        let ctx = build_rg_context(&lines, 5, 2).unwrap();
+        assert_eq!(ctx.last().unwrap().line, 5);
+    }
+
+    #[test]
+    fn build_rg_context_line_zero_returns_none() {
+        let lines = vec!["a".to_string()];
+        assert!(build_rg_context(&lines, 0, 1).is_none());
+    }
+
+    #[test]
+    fn build_rg_context_empty_lines_returns_none() {
+        assert!(build_rg_context(&[], 1, 1).is_none());
+    }
+
+    #[test]
+    fn normalize_rg_context_lines_defaults() {
+        assert_eq!(normalize_rg_context(None), 0);
+        assert_eq!(normalize_rg_context(Some(5)), 5);
+        assert_eq!(normalize_rg_context(Some(100)), 50);
+    }
+
+    #[test]
+    fn push_rg_reason_creates_new() {
+        let mut reasons: Option<Vec<String>> = None;
+        push_rg_reason(&mut reasons, "test");
+        assert_eq!(reasons, Some(vec!["test".to_string()]));
+    }
+
+    #[test]
+    fn push_rg_reason_appends() {
+        let mut reasons = Some(vec!["first".to_string()]);
+        push_rg_reason(&mut reasons, "second");
+        assert_eq!(
+            reasons,
+            Some(vec!["first".to_string(), "second".to_string()])
+        );
+    }
+
+    #[test]
+    fn build_rg_context_line_beyond_end_returns_none() {
+        let lines: Vec<String> = (1..=5).map(|i| format!("line {i}")).collect();
+        assert!(build_rg_context(&lines, 100, 2).is_none());
+    }
+
+    #[test]
+    fn rg_query_tokens_special_chars_only() {
+        let tokens = rg_query_tokens("...::");
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn rg_symbol_matches_query_single_char_no_match() {
+        let sym = make_symbol("x", "main::x");
+        assert!(!rg_symbol_matches_query(&sym, "x"));
+    }
+
+    #[test]
+    fn build_rg_context_single_line_file() {
+        let lines = vec!["only line".to_string()];
+        let ctx = build_rg_context(&lines, 1, 5).unwrap();
+        assert_eq!(ctx.len(), 1);
+        assert_eq!(ctx[0].line, 1);
+        assert_eq!(ctx[0].text, "only line");
+    }
 }
