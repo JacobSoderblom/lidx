@@ -1,5 +1,6 @@
 use crate::db::Db;
 use crate::indexer::channel::{boundary_type_for_kind, bridge_complement, is_bridge_edge_kind};
+use crate::indexer::scan::language_for_path;
 use crate::model::{Edge, Symbol, TraceHop};
 use anyhow::Result;
 use std::collections::{HashSet, VecDeque};
@@ -346,24 +347,12 @@ fn build_hop(
 }
 
 fn detect_language(file_path: &str) -> String {
-    if file_path.ends_with(".py") {
-        "python".to_string()
-    } else if file_path.ends_with(".cs") {
-        "csharp".to_string()
-    } else if file_path.ends_with(".ts") || file_path.ends_with(".tsx") {
-        "typescript".to_string()
-    } else if file_path.ends_with(".js") || file_path.ends_with(".jsx") {
-        "javascript".to_string()
-    } else if file_path.ends_with(".rs") {
-        "rust".to_string()
-    } else if file_path.ends_with(".proto") {
-        "proto".to_string()
-    } else if file_path.ends_with(".sql") {
-        "sql".to_string()
-    } else if file_path.ends_with(".md") {
-        "markdown".to_string()
-    } else {
-        "unknown".to_string()
+    let lang = language_for_path(std::path::Path::new(file_path)).unwrap_or("unknown");
+    // Normalize tsx → typescript so .ts/.tsx files are never treated as
+    // different languages for cross-language boundary detection.
+    match lang {
+        "tsx" => "typescript".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -380,15 +369,18 @@ fn detect_boundary_type(edge_kind: &str, source_lang: &str, target_lang: &str) -
     }
 }
 
+fn display_language(lang: &str) -> String {
+    match lang {
+        "csharp" => "C#".to_string(),
+        "javascript" => "JavaScript".to_string(),
+        "typescript" | "tsx" => "TypeScript".to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn build_boundary_detail(boundary_type: &str, source_lang: &str, target_lang: &str) -> String {
-    let source_display = source_lang
-        .replace("csharp", "C#")
-        .replace("javascript", "JavaScript")
-        .replace("typescript", "TypeScript");
-    let target_display = target_lang
-        .replace("csharp", "C#")
-        .replace("javascript", "JavaScript")
-        .replace("typescript", "TypeScript");
+    let source_display = display_language(source_lang);
+    let target_display = display_language(target_lang);
 
     match boundary_type {
         "grpc" => format!("{} \u{2192} {} via gRPC", source_display, target_display),
@@ -496,7 +488,6 @@ fn estimate_hop_size(hop: &TraceHop, compact: bool) -> usize {
         serde_json::to_string(hop).unwrap_or_default().len()
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,7 +572,13 @@ mod tests {
         assert_eq!(detect_language("test.js"), "javascript");
         assert_eq!(detect_language("test.jsx"), "javascript");
         assert_eq!(detect_language("test.sql"), "sql");
-        assert_eq!(detect_language("test.md"), "markdown");
+        assert_eq!(detect_language("test.go"), "go");
+        assert_eq!(detect_language("test.yaml"), "yaml");
+        assert_eq!(detect_language("test.yml"), "yaml");
+        assert_eq!(detect_language("test.bicep"), "bicep");
+        assert_eq!(detect_language("test.psql"), "postgres");
+        assert_eq!(detect_language("test.pgsql"), "postgres");
+        assert_eq!(detect_language("test.md"), "unknown");
         assert_eq!(detect_language("test.txt"), "unknown");
     }
 
@@ -865,6 +862,16 @@ mod tests {
         assert_eq!(detect_language(""), "unknown");
     }
 
+    #[test]
+    fn display_language_renders_tsx_as_typescript() {
+        assert_eq!(display_language("tsx"), "TypeScript");
+        assert_eq!(display_language("typescript"), "TypeScript");
+        assert_eq!(display_language("csharp"), "C#");
+        assert_eq!(display_language("javascript"), "JavaScript");
+        assert_eq!(display_language("python"), "python");
+        assert_eq!(display_language("unknown"), "unknown");
+    }
+
     // -- Integration tests for trace_flow --
 
     #[test]
@@ -1131,5 +1138,321 @@ mod tests {
                 "cross-language hop should have boundary_detail"
             );
         }
+    }
+
+    #[test]
+    fn empty_seeds_returns_error() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let config = TraceConfig::default();
+        let err = trace_flow(indexer.db(), vec![], None, None, gv, &config).unwrap_err();
+        assert!(
+            err.to_string().contains("empty seeds"),
+            "empty seeds should fail, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn max_hops_zero_still_traces_direct_neighbors() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let start = crate::resolve::resolve_symbol(
+            indexer.db(),
+            crate::resolve::SymbolRef::Query("run".into()),
+            None,
+            gv,
+        )
+        .unwrap();
+        let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
+
+        let config = TraceConfig {
+            max_hops: 0,
+            direction: TraceDirection::Downstream,
+            allowed_kinds: vec!["CALLS".into()],
+            ..Default::default()
+        };
+
+        let result = trace_flow(indexer.db(), seeds, None, None, gv, &config).unwrap();
+        // max_hops=0 means seeds (dist 0) are expanded, their children (dist 1) are collected
+        for hop in &result.hops {
+            assert!(
+                hop.distance <= 1,
+                "with max_hops=0, hops should be at distance <= 1, got {}",
+                hop.distance
+            );
+        }
+    }
+
+    #[test]
+    fn trace_offset_larger_than_results_produces_empty_hops() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let start = crate::resolve::resolve_symbol(
+            indexer.db(),
+            crate::resolve::SymbolRef::Query("run".into()),
+            None,
+            gv,
+        )
+        .unwrap();
+        let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
+
+        let config = TraceConfig {
+            trace_offset: 10000,
+            direction: TraceDirection::Downstream,
+            ..Default::default()
+        };
+
+        let result = trace_flow(indexer.db(), seeds, None, None, gv, &config).unwrap();
+        assert!(
+            result.hops.is_empty(),
+            "large offset should produce no hops"
+        );
+        assert_eq!(result.paths_found, 0);
+    }
+
+    #[test]
+    fn nonexistent_seed_id_returns_error() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let config = TraceConfig::default();
+        let err = trace_flow(indexer.db(), vec![999999], None, None, gv, &config).unwrap_err();
+        assert!(
+            err.to_string().contains("start symbol not found"),
+            "nonexistent seed should fail, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn trace_with_end_id_same_as_start_finds_nothing() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let start = crate::resolve::resolve_symbol(
+            indexer.db(),
+            crate::resolve::SymbolRef::Query("run".into()),
+            None,
+            gv,
+        )
+        .unwrap();
+        let seeds = vec![start.id];
+
+        let config = TraceConfig {
+            direction: TraceDirection::Downstream,
+            ..Default::default()
+        };
+
+        // end_id == start_id: the start is in visited, so it can never be "reached"
+        // as a neighbor. The trace should run normally but not reach target.
+        let result = trace_flow(indexer.db(), seeds, Some(start.id), None, gv, &config).unwrap();
+        assert!(
+            !result.reached_target,
+            "should not reach target when end_id == start_id (already visited)"
+        );
+    }
+
+    #[test]
+    fn downstream_and_upstream_on_leaf_node() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        // helper() is a leaf function - nothing calls from it downstream
+        let leaf = crate::resolve::resolve_symbol(
+            indexer.db(),
+            crate::resolve::SymbolRef::Query("helper".into()),
+            None,
+            gv,
+        )
+        .unwrap();
+        let seeds = vec![leaf.id];
+
+        let down_config = TraceConfig {
+            direction: TraceDirection::Downstream,
+            allowed_kinds: vec!["CALLS".into()],
+            ..Default::default()
+        };
+        let down = trace_flow(indexer.db(), seeds.clone(), None, None, gv, &down_config).unwrap();
+        // helper() doesn't call anything, so downstream should be empty
+        assert!(
+            down.hops.is_empty(),
+            "leaf node downstream should have no hops"
+        );
+
+        let up_config = TraceConfig {
+            direction: TraceDirection::Upstream,
+            allowed_kinds: vec!["CALLS".into()],
+            ..Default::default()
+        };
+        let up = trace_flow(indexer.db(), seeds, None, None, gv, &up_config).unwrap();
+        // helper() should have at least one upstream caller (call() in a.py)
+        assert!(
+            !up.hops.is_empty(),
+            "leaf node upstream should find callers"
+        );
+    }
+
+    #[test]
+    fn compact_estimate_differs_from_full_estimate() {
+        let hop = TraceHop {
+            symbol: crate::model::Symbol {
+                id: 1,
+                file_path: "test.py".to_string(),
+                kind: "function".to_string(),
+                name: "test_func".to_string(),
+                qualname: "module.test_func".to_string(),
+                start_line: 1,
+                start_col: 0,
+                end_line: 10,
+                end_col: 0,
+                start_byte: 0,
+                end_byte: 100,
+                signature: Some("def test_func():".to_string()),
+                docstring: Some(
+                    "A test function with a long docstring for size testing".to_string(),
+                ),
+                graph_version: 1,
+                commit_sha: None,
+                stable_id: None,
+            },
+            edge_kind: "CALLS".to_string(),
+            distance: 1,
+            language: "python".to_string(),
+            snippet: Some("test_func()".to_string()),
+            cross_language: false,
+            boundary_type: None,
+            boundary_detail: None,
+            protocol_context: None,
+        };
+
+        let full_size = estimate_hop_size(&hop, false);
+        let compact_size = estimate_hop_size(&hop, true);
+
+        // Compact should be smaller because it strips fields from the symbol
+        assert!(
+            compact_size <= full_size,
+            "compact ({}) should be <= full ({})",
+            compact_size,
+            full_size
+        );
+        assert!(full_size > 0, "hop size should be positive");
+        assert!(compact_size > 0, "compact hop size should be positive");
+    }
+}
+
+#[cfg(test)]
+mod tsx_normalization_tests {
+    use super::*;
+    use crate::model::{Edge, Symbol};
+
+    fn dummy_symbol(file_path: &str) -> Symbol {
+        Symbol {
+            id: 1,
+            file_path: file_path.to_string(),
+            kind: "function".to_string(),
+            name: "foo".to_string(),
+            qualname: "mod.foo".to_string(),
+            start_line: 1,
+            start_col: 0,
+            end_line: 5,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 50,
+            signature: None,
+            docstring: None,
+            graph_version: 1,
+            commit_sha: None,
+            stable_id: None,
+        }
+    }
+
+    fn dummy_edge() -> Edge {
+        Edge {
+            id: 1,
+            file_path: "src/a.ts".to_string(),
+            kind: "CALLS".to_string(),
+            source_symbol_id: Some(1),
+            target_symbol_id: Some(2),
+            target_qualname: Some("mod.bar".to_string()),
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: None,
+            graph_version: 1,
+            commit_sha: None,
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        }
+    }
+
+    #[test]
+    fn ts_to_tsx_hop_is_not_cross_language() {
+        let target_sym = dummy_symbol("components/App.tsx");
+        let edge = dummy_edge();
+
+        let hop = build_hop(&target_sym, &edge, 1, "src/util.ts", true);
+
+        assert!(
+            !hop.cross_language,
+            ".ts -> .tsx should not be cross-language"
+        );
+        assert!(hop.boundary_type.is_none(), "should have no boundary type");
+        assert_eq!(hop.language, "typescript");
+    }
+
+    #[test]
+    fn tsx_to_ts_hop_is_not_cross_language() {
+        let target_sym = dummy_symbol("src/util.ts");
+        let edge = dummy_edge();
+
+        let hop = build_hop(&target_sym, &edge, 1, "components/App.tsx", true);
+
+        assert!(
+            !hop.cross_language,
+            ".tsx -> .ts should not be cross-language"
+        );
+        assert!(hop.boundary_type.is_none(), "should have no boundary type");
+        assert_eq!(hop.language, "typescript");
+    }
+
+    #[test]
+    fn tsx_to_tsx_hop_is_not_cross_language() {
+        let target_sym = dummy_symbol("components/Bar.tsx");
+        let edge = dummy_edge();
+
+        let hop = build_hop(&target_sym, &edge, 1, "components/App.tsx", true);
+
+        assert!(
+            !hop.cross_language,
+            ".tsx -> .tsx should not be cross-language"
+        );
+    }
+
+    #[test]
+    fn ts_to_py_hop_is_cross_language() {
+        let target_sym = dummy_symbol("backend/app.py");
+        let edge = dummy_edge();
+
+        let hop = build_hop(&target_sym, &edge, 1, "frontend/util.ts", true);
+
+        assert!(hop.cross_language, ".ts -> .py should be cross-language");
+        assert!(hop.boundary_type.is_some());
+    }
+
+    #[test]
+    fn tsx_to_py_hop_is_cross_language() {
+        let target_sym = dummy_symbol("backend/app.py");
+        let edge = dummy_edge();
+
+        let hop = build_hop(&target_sym, &edge, 1, "frontend/App.tsx", true);
+
+        assert!(hop.cross_language, ".tsx -> .py should be cross-language");
+        assert!(hop.boundary_type.is_some());
     }
 }

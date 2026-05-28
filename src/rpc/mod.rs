@@ -1,14 +1,14 @@
 mod handlers;
 
 use crate::config::Config;
-use crate::indexer::{Indexer, channel::is_bridge_edge_kind, scan, test_detection};
+use crate::indexer::{Indexer, scan, test_detection};
 use crate::model::{
-    AnalyzeDiffResult, BudgetInfo, ChangedSymbol, ContextLine, DiffImpactEntry, Edge, ExplainRef,
+    AnalyzeDiffResult, BudgetInfo, ChangedSymbol, ContextLine, DiffImpactEntry, ExplainRef,
     ExplainSymbolResult, GrepHit, ModuleEdge, ModuleNode, RiskAssessment, RiskFactor, Symbol,
-    TestCoverageEntry, TestRef, TraceFlowResult, TraceHop, ValidationResult,
+    TestCoverageEntry, TestRef, TraceFlowResult, ValidationResult,
 };
 #[cfg(test)]
-use crate::model::{FlowStatusEntry, FlowStatusResult};
+use crate::model::{Edge, FlowStatusEntry, FlowStatusResult};
 use crate::util;
 use crate::watch;
 use anyhow::{Context, Result};
@@ -145,21 +145,6 @@ pub(crate) fn compact_symbol_value(symbol_value: &serde_json::Value) -> serde_js
 }
 
 /// Apply compact format to a response value by converting all symbol objects
-/// Estimate serialized size of a TraceHop, using compact symbol size when in compact mode.
-fn estimate_hop_size(hop: &crate::model::TraceHop, compact: bool) -> usize {
-    if compact {
-        let mut hop_val = serde_json::to_value(hop).unwrap_or_default();
-        if let Some(sym) = hop_val.get("symbol").cloned()
-            && let Some(obj) = hop_val.as_object_mut()
-        {
-            obj.insert("symbol".to_string(), compact_symbol_value(&sym));
-        }
-        serde_json::to_string(&hop_val).unwrap_or_default().len()
-    } else {
-        serde_json::to_string(hop).unwrap_or_default().len()
-    }
-}
-
 fn apply_compact_format(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Array(arr) => {
@@ -374,6 +359,10 @@ struct OrientParams {
     depth: Option<usize>,
     max_bytes: Option<usize>,
     languages: Option<Vec<String>>,
+    /// Focus on a specific symbol by qualname (filters orient output to symbol's context)
+    focus_qualname: Option<String>,
+    /// Focus on a specific symbol by fuzzy query (alternative to focus_qualname)
+    focus_query: Option<String>,
     #[serde(alias = "as_of", alias = "version")]
     graph_version: Option<i64>,
 }
@@ -888,140 +877,6 @@ pub(super) fn resolve_graph_version(indexer: &Indexer, value: Option<i64>) -> Re
     indexer.db().current_graph_version()
 }
 
-fn detect_language(file_path: &str) -> String {
-    if file_path.ends_with(".py") {
-        "python".to_string()
-    } else if file_path.ends_with(".cs") {
-        "csharp".to_string()
-    } else if file_path.ends_with(".ts") || file_path.ends_with(".tsx") {
-        "typescript".to_string()
-    } else if file_path.ends_with(".js") || file_path.ends_with(".jsx") {
-        "javascript".to_string()
-    } else if file_path.ends_with(".rs") {
-        "rust".to_string()
-    } else if file_path.ends_with(".proto") {
-        "proto".to_string()
-    } else if file_path.ends_with(".sql") {
-        "sql".to_string()
-    } else if file_path.ends_with(".md") {
-        "markdown".to_string()
-    } else {
-        "unknown".to_string()
-    }
-}
-
-/// Detect the type of language boundary crossing
-fn detect_boundary_type(edge_kind: &str, source_lang: &str, target_lang: &str) -> String {
-    match edge_kind {
-        "RPC_IMPL" | "RPC_CALL" | "RPC_ROUTE" => "grpc".to_string(),
-        "HTTP_CALL" | "HTTP_ROUTE" => "http".to_string(),
-        "CHANNEL_PUBLISH" | "CHANNEL_SUBSCRIBE" => "message_bus".to_string(),
-        "CONFIG_SOURCE" | "CONFIG_READ" => "config".to_string(),
-        "XREF" if source_lang == "csharp" && target_lang == "sql" => "stored_procedure".to_string(),
-        "XREF" if source_lang == "sql" && target_lang == "csharp" => "stored_procedure".to_string(),
-        "XREF" => "xref".to_string(),
-        _ => "other".to_string(),
-    }
-}
-
-/// Build a human-readable boundary detail string
-fn build_boundary_detail(boundary_type: &str, source_lang: &str, target_lang: &str) -> String {
-    let source_display = source_lang
-        .replace("csharp", "C#")
-        .replace("javascript", "JavaScript")
-        .replace("typescript", "TypeScript");
-    let target_display = target_lang
-        .replace("csharp", "C#")
-        .replace("javascript", "JavaScript")
-        .replace("typescript", "TypeScript");
-
-    match boundary_type {
-        "grpc" => format!("{} → {} via gRPC", source_display, target_display),
-        "http" => format!("{} → {} via HTTP", source_display, target_display),
-        "message_bus" => format!("{} → {} via message bus", source_display, target_display),
-        "config" => format!("{} → {} via config/env", source_display, target_display),
-        "stored_procedure" => format!(
-            "{} → {} via stored procedure",
-            source_display, target_display
-        ),
-        "xref" => format!(
-            "{} → {} via cross-reference",
-            source_display, target_display
-        ),
-        _ => format!("{} → {}", source_display, target_display),
-    }
-}
-
-/// Extract protocol context from edge detail field (RPC, HTTP, or channel edges)
-fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
-    let detail_str = edge.detail.as_ref()?;
-    let detail: serde_json::Value = serde_json::from_str(detail_str).ok()?;
-
-    match edge.kind.as_str() {
-        "RPC_IMPL" | "RPC_CALL" | "RPC_ROUTE" => {
-            let service = detail.get("service")?.as_str()?;
-            let rpc = detail.get("rpc")?.as_str()?;
-            let package = detail.get("package").and_then(|p| p.as_str());
-            let framework = detail
-                .get("framework")
-                .and_then(|f| f.as_str())
-                .unwrap_or("grpc");
-            Some(json!({
-                "framework": framework,
-                "service": service,
-                "rpc": rpc,
-                "package": package,
-            }))
-        }
-        "CHANNEL_PUBLISH" | "CHANNEL_SUBSCRIBE" => {
-            let channel_name = detail.get("channel").and_then(|c| c.as_str());
-            let framework = detail
-                .get("framework")
-                .and_then(|f| f.as_str())
-                .unwrap_or("unknown");
-            let role = detail
-                .get("role")
-                .and_then(|r| r.as_str())
-                .unwrap_or("unknown");
-            Some(json!({
-                "framework": framework,
-                "channel": channel_name,
-                "role": role,
-            }))
-        }
-        "CONFIG_SOURCE" | "CONFIG_READ" => {
-            let config_uri = detail.get("config_uri").and_then(|c| c.as_str());
-            let source_type = detail
-                .get("source_type")
-                .and_then(|s| s.as_str())
-                .unwrap_or("env");
-            let role = detail
-                .get("role")
-                .and_then(|r| r.as_str())
-                .unwrap_or("unknown");
-            Some(json!({
-                "source_type": source_type,
-                "config_uri": config_uri,
-                "role": role,
-            }))
-        }
-        "HTTP_CALL" | "HTTP_ROUTE" => {
-            let method = detail.get("method").and_then(|m| m.as_str());
-            let path = detail.get("path").and_then(|p| p.as_str());
-            let framework = detail
-                .get("framework")
-                .and_then(|f| f.as_str())
-                .unwrap_or("http");
-            Some(json!({
-                "framework": framework,
-                "method": method,
-                "path": path,
-            }))
-        }
-        _ => None,
-    }
-}
-
 fn is_test_symbol(s: &Symbol) -> bool {
     test_detection::is_test_symbol(s)
 }
@@ -1310,121 +1165,6 @@ mod tests {
         assert_eq!(result.calls_without_routes[0].path, "/api/orders/{}");
         assert!(result.routes_without_calls[0].routes.is_some());
         assert!(result.calls_without_routes[0].calls.is_some());
-    }
-
-    #[test]
-    fn test_detect_language() {
-        use super::detect_language;
-        assert_eq!(detect_language("test.py"), "python");
-        assert_eq!(detect_language("test.cs"), "csharp");
-        assert_eq!(detect_language("test.rs"), "rust");
-        assert_eq!(detect_language("test.proto"), "proto");
-        assert_eq!(detect_language("test.ts"), "typescript");
-        assert_eq!(detect_language("test.tsx"), "typescript");
-        assert_eq!(detect_language("test.js"), "javascript");
-        assert_eq!(detect_language("test.jsx"), "javascript");
-        assert_eq!(detect_language("test.sql"), "sql");
-        assert_eq!(detect_language("test.md"), "markdown");
-        assert_eq!(detect_language("test.txt"), "unknown");
-    }
-
-    #[test]
-    fn test_detect_boundary_type() {
-        use super::detect_boundary_type;
-
-        // gRPC boundaries
-        assert_eq!(detect_boundary_type("RPC_IMPL", "proto", "csharp"), "grpc");
-        assert_eq!(detect_boundary_type("RPC_CALL", "csharp", "proto"), "grpc");
-
-        // Stored procedure boundaries
-        assert_eq!(
-            detect_boundary_type("XREF", "csharp", "sql"),
-            "stored_procedure"
-        );
-        assert_eq!(
-            detect_boundary_type("XREF", "sql", "csharp"),
-            "stored_procedure"
-        );
-
-        // Generic XREF
-        assert_eq!(detect_boundary_type("XREF", "python", "csharp"), "xref");
-
-        // Other edges
-        assert_eq!(detect_boundary_type("CALLS", "python", "python"), "other");
-    }
-
-    #[test]
-    fn test_build_boundary_detail() {
-        use super::build_boundary_detail;
-
-        assert_eq!(
-            build_boundary_detail("grpc", "proto", "csharp"),
-            "proto → C# via gRPC"
-        );
-        assert_eq!(
-            build_boundary_detail("stored_procedure", "csharp", "sql"),
-            "C# → sql via stored procedure"
-        );
-        assert_eq!(
-            build_boundary_detail("xref", "python", "csharp"),
-            "python → C# via cross-reference"
-        );
-    }
-
-    #[test]
-    fn test_extract_protocol_context() {
-        use super::extract_protocol_context;
-
-        // Test with RPC_IMPL edge
-        let rpc_impl_edge = Edge {
-            id: 1,
-            file_path: "test.cs".to_string(),
-            kind: "RPC_IMPL".to_string(),
-            source_symbol_id: Some(100),
-            target_symbol_id: Some(200),
-            target_qualname: Some("myservice.MyService.GetUser".to_string()),
-            detail: Some(r#"{"framework":"grpc-csharp","role":"server","service":"MyService","rpc":"GetUser","package":"myservice","raw":"/myservice.MyService/GetUser"}"#.to_string()),
-            evidence_snippet: None,
-            evidence_start_line: None,
-            evidence_end_line: None,
-            confidence: None,
-            graph_version: 1,
-            commit_sha: None,
-            trace_id: None,
-            span_id: None,
-            event_ts: None,
-        };
-
-        let context = extract_protocol_context(&rpc_impl_edge);
-        assert!(context.is_some());
-        let context = context.unwrap();
-        assert_eq!(context["service"], "MyService");
-        assert_eq!(context["rpc"], "GetUser");
-        assert_eq!(context["package"], "myservice");
-        assert_eq!(context["framework"], "grpc-csharp");
-
-        // Test with non-RPC edge
-        let call_edge = Edge {
-            id: 2,
-            file_path: "test.rs".to_string(),
-            kind: "CALLS".to_string(),
-            source_symbol_id: Some(100),
-            target_symbol_id: Some(200),
-            target_qualname: Some("module::function".to_string()),
-            detail: None,
-            evidence_snippet: None,
-            evidence_start_line: None,
-            evidence_end_line: None,
-            confidence: None,
-            graph_version: 1,
-            commit_sha: None,
-            trace_id: None,
-            span_id: None,
-            event_ts: None,
-        };
-
-        let context = extract_protocol_context(&call_edge);
-        assert!(context.is_none());
     }
 
     // --- Schema generation tests ---

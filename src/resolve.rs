@@ -37,21 +37,26 @@ fn resolve_by_query(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<Symbol> {
-    let results = db.find_symbols(query, 5, languages, graph_version)?;
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("no symbol found for query: {}", query);
+    }
+
+    let results = db.find_symbols(trimmed, 5, languages, graph_version)?;
     if let Some(sym) = results.into_iter().next() {
         return Ok(sym);
     }
 
     if languages.is_some() {
-        let results = db.find_symbols(query, 5, None, graph_version)?;
+        let results = db.find_symbols(trimmed, 5, None, graph_version)?;
         if let Some(sym) = results.into_iter().next() {
             return Ok(sym);
         }
     }
 
     let config_uris: Vec<String> = [
-        crate::indexer::config::normalize_env_var_name(query),
-        crate::indexer::config::normalize_secret_name(query),
+        crate::indexer::config::normalize_env_var_name(trimmed),
+        crate::indexer::config::normalize_secret_name(trimmed),
     ]
     .into_iter()
     .flatten()
@@ -65,10 +70,10 @@ fn resolve_by_query(
         }
     }
 
-    let suggestion_query = query
+    let suggestion_query = trimmed
         .split_whitespace()
         .max_by_key(|t| t.len())
-        .unwrap_or(query);
+        .unwrap_or(trimmed);
     let suggestions = db
         .find_symbols(suggestion_query, 10, None, graph_version)
         .unwrap_or_default();
@@ -398,6 +403,65 @@ mod tests {
                 "member should be method or function, got: {}",
                 sym.kind
             );
+        }
+    }
+
+    #[test]
+    fn resolve_empty_query_returns_error() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let err = resolve_symbol(indexer.db(), SymbolRef::Query("".into()), None, gv).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no symbol found") || msg.contains("Did you mean"),
+            "empty query should fail with meaningful error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_whitespace_only_query_returns_error() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let err =
+            resolve_symbol(indexer.db(), SymbolRef::Query("   ".into()), None, gv).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no symbol found") || msg.contains("Did you mean"),
+            "whitespace query should fail, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_with_empty_languages_list() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        // Empty languages slice should behave like no language filter
+        let empty: Vec<String> = vec![];
+        let resolved = resolve_symbol(
+            indexer.db(),
+            SymbolRef::Query("Greeter".into()),
+            Some(&empty),
+            gv,
+        )
+        .unwrap();
+        assert_eq!(resolved.name, "Greeter");
+    }
+
+    #[test]
+    fn expand_seeds_returns_no_duplicates() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let class =
+            resolve_symbol(indexer.db(), SymbolRef::Query("Greeter".into()), None, gv).unwrap();
+        let seeds = expand_seeds(indexer.db(), class.id, gv).unwrap();
+
+        let mut seen = std::collections::HashSet::new();
+        for id in &seeds {
+            assert!(seen.insert(id), "duplicate seed id: {}", id);
         }
     }
 }
