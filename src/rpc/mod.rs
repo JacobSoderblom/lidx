@@ -144,7 +144,7 @@ pub(crate) fn compact_symbol_value(symbol_value: &serde_json::Value) -> serde_js
     }
 }
 
-/// Apply compact format to a response value by converting all symbol objects
+/// Apply compact format to a response value by converting all symbol objects to compact form.
 fn apply_compact_format(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Array(arr) => {

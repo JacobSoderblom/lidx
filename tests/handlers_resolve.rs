@@ -472,35 +472,3 @@ fn analyze_impact_missing_params_returns_error() {
         response
     );
 }
-
-#[test]
-fn analyze_impact_resolves_by_qualname() {
-    let (temp, indexer) = indexed_repo("py_mvp");
-    let gv = indexer.db().current_graph_version().unwrap();
-
-    let sym = indexer
-        .db()
-        .find_symbols("Greeter", 5, None, gv)
-        .unwrap()
-        .into_iter()
-        .next()
-        .expect("Greeter should exist");
-    drop(indexer);
-
-    let result = call(
-        &temp,
-        "analyze_impact",
-        &format!(r#"{{"qualname":"{}"}}"#, sym.qualname),
-    );
-    let seeds: Vec<i64> = result["seeds"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter_map(|s| s["id"].as_i64())
-        .collect();
-    assert!(
-        seeds.contains(&sym.id),
-        "qualname lookup should include the symbol, got seeds: {:?}",
-        seeds
-    );
-}

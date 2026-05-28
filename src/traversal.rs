@@ -580,12 +580,19 @@ mod tests {
         assert_eq!(detect_language("test.pgsql"), "postgres");
         assert_eq!(detect_language("test.md"), "unknown");
         assert_eq!(detect_language("test.txt"), "unknown");
+        // Paths with directories
+        assert_eq!(detect_language("src/services/api.py"), "python");
+        assert_eq!(detect_language("deep/nested/path/file.ts"), "typescript");
+        // Edge cases
+        assert_eq!(detect_language("no_extension"), "unknown");
+        assert_eq!(detect_language(""), "unknown");
     }
 
     #[test]
     fn test_detect_boundary_type() {
         assert_eq!(detect_boundary_type("RPC_IMPL", "proto", "csharp"), "grpc");
         assert_eq!(detect_boundary_type("RPC_CALL", "csharp", "proto"), "grpc");
+        assert_eq!(detect_boundary_type("RPC_ROUTE", "proto", "csharp"), "grpc");
         assert_eq!(
             detect_boundary_type("XREF", "csharp", "sql"),
             "stored_procedure"
@@ -595,6 +602,30 @@ mod tests {
             "stored_procedure"
         );
         assert_eq!(detect_boundary_type("XREF", "python", "csharp"), "xref");
+        assert_eq!(
+            detect_boundary_type("HTTP_CALL", "typescript", "python"),
+            "http"
+        );
+        assert_eq!(
+            detect_boundary_type("HTTP_ROUTE", "python", "typescript"),
+            "http"
+        );
+        assert_eq!(
+            detect_boundary_type("CHANNEL_PUBLISH", "python", "csharp"),
+            "message_bus"
+        );
+        assert_eq!(
+            detect_boundary_type("CHANNEL_SUBSCRIBE", "csharp", "python"),
+            "message_bus"
+        );
+        assert_eq!(
+            detect_boundary_type("CONFIG_SOURCE", "python", "typescript"),
+            "config"
+        );
+        assert_eq!(
+            detect_boundary_type("CONFIG_READ", "typescript", "python"),
+            "config"
+        );
         assert_eq!(detect_boundary_type("CALLS", "python", "python"), "other");
     }
 
@@ -611,6 +642,22 @@ mod tests {
         assert_eq!(
             build_boundary_detail("xref", "python", "csharp"),
             "python \u{2192} C# via cross-reference"
+        );
+        assert_eq!(
+            build_boundary_detail("http", "typescript", "python"),
+            "TypeScript \u{2192} python via HTTP"
+        );
+        assert_eq!(
+            build_boundary_detail("message_bus", "python", "csharp"),
+            "python \u{2192} C# via message bus"
+        );
+        assert_eq!(
+            build_boundary_detail("config", "javascript", "python"),
+            "JavaScript \u{2192} python via config/env"
+        );
+        assert_eq!(
+            build_boundary_detail("other", "rust", "python"),
+            "rust \u{2192} python"
         );
     }
 
@@ -664,55 +711,6 @@ mod tests {
 
         let context = extract_protocol_context(&call_edge);
         assert!(context.is_none());
-    }
-
-    #[test]
-    fn test_detect_boundary_type_all_kinds() {
-        assert_eq!(detect_boundary_type("RPC_ROUTE", "proto", "csharp"), "grpc");
-        assert_eq!(
-            detect_boundary_type("HTTP_CALL", "typescript", "python"),
-            "http"
-        );
-        assert_eq!(
-            detect_boundary_type("HTTP_ROUTE", "python", "typescript"),
-            "http"
-        );
-        assert_eq!(
-            detect_boundary_type("CHANNEL_PUBLISH", "python", "csharp"),
-            "message_bus"
-        );
-        assert_eq!(
-            detect_boundary_type("CHANNEL_SUBSCRIBE", "csharp", "python"),
-            "message_bus"
-        );
-        assert_eq!(
-            detect_boundary_type("CONFIG_SOURCE", "python", "typescript"),
-            "config"
-        );
-        assert_eq!(
-            detect_boundary_type("CONFIG_READ", "typescript", "python"),
-            "config"
-        );
-    }
-
-    #[test]
-    fn test_build_boundary_detail_all_types() {
-        assert_eq!(
-            build_boundary_detail("http", "typescript", "python"),
-            "TypeScript \u{2192} python via HTTP"
-        );
-        assert_eq!(
-            build_boundary_detail("message_bus", "python", "csharp"),
-            "python \u{2192} C# via message bus"
-        );
-        assert_eq!(
-            build_boundary_detail("config", "javascript", "python"),
-            "JavaScript \u{2192} python via config/env"
-        );
-        assert_eq!(
-            build_boundary_detail("other", "rust", "python"),
-            "rust \u{2192} python"
-        );
     }
 
     #[test]
@@ -855,14 +853,6 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_language_paths_with_directories() {
-        assert_eq!(detect_language("src/services/api.py"), "python");
-        assert_eq!(detect_language("deep/nested/path/file.ts"), "typescript");
-        assert_eq!(detect_language("no_extension"), "unknown");
-        assert_eq!(detect_language(""), "unknown");
-    }
-
-    #[test]
     fn display_language_renders_tsx_as_typescript() {
         assert_eq!(display_language("tsx"), "TypeScript");
         assert_eq!(display_language("typescript"), "TypeScript");
@@ -966,6 +956,10 @@ mod tests {
             assert!(
                 hop.boundary_type.is_some(),
                 "cross-language hop should have boundary_type"
+            );
+            assert!(
+                hop.boundary_detail.is_some(),
+                "cross-language hop should have boundary_detail"
             );
         }
     }
@@ -1100,42 +1094,6 @@ mod tests {
                 offset_result.hops.len(),
                 full_result.hops.len() - 1,
                 "offset=1 should skip 1 hop"
-            );
-        }
-    }
-
-    #[test]
-    fn boundary_annotations_on_cross_language_hops() {
-        let (_temp, indexer) = indexed_repo("poly_mvp");
-        let gv = indexer.db().current_graph_version().unwrap();
-
-        let start = crate::resolve::resolve_symbol(
-            indexer.db(),
-            crate::resolve::SymbolRef::Query("GetUser".into()),
-            None,
-            gv,
-        )
-        .unwrap();
-        let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
-
-        let config = TraceConfig {
-            max_hops: 5,
-            direction: TraceDirection::Downstream,
-            ..Default::default()
-        };
-
-        let result = trace_flow(indexer.db(), seeds, None, None, gv, &config).unwrap();
-
-        let cross_lang_hops: Vec<&TraceHop> =
-            result.hops.iter().filter(|h| h.cross_language).collect();
-        for hop in &cross_lang_hops {
-            assert!(
-                hop.boundary_type.is_some(),
-                "cross-language hop should have boundary_type"
-            );
-            assert!(
-                hop.boundary_detail.is_some(),
-                "cross-language hop should have boundary_detail"
             );
         }
     }
@@ -1392,67 +1350,40 @@ mod tsx_normalization_tests {
     }
 
     #[test]
-    fn ts_to_tsx_hop_is_not_cross_language() {
-        let target_sym = dummy_symbol("components/App.tsx");
+    fn ts_tsx_variants_are_same_language() {
         let edge = dummy_edge();
 
-        let hop = build_hop(&target_sym, &edge, 1, "src/util.ts", true);
-
-        assert!(
-            !hop.cross_language,
-            ".ts -> .tsx should not be cross-language"
-        );
-        assert!(hop.boundary_type.is_none(), "should have no boundary type");
-        assert_eq!(hop.language, "typescript");
+        for (source, target, label) in [
+            ("src/util.ts", "components/App.tsx", ".ts -> .tsx"),
+            ("components/App.tsx", "src/util.ts", ".tsx -> .ts"),
+            ("components/App.tsx", "components/Bar.tsx", ".tsx -> .tsx"),
+        ] {
+            let target_sym = dummy_symbol(target);
+            let hop = build_hop(&target_sym, &edge, 1, source, true);
+            assert!(!hop.cross_language, "{label} should not be cross-language");
+            assert!(
+                hop.boundary_type.is_none(),
+                "{label} should have no boundary type"
+            );
+            assert_eq!(hop.language, "typescript", "{label}");
+        }
     }
 
     #[test]
-    fn tsx_to_ts_hop_is_not_cross_language() {
-        let target_sym = dummy_symbol("src/util.ts");
+    fn ts_tsx_to_other_language_is_cross_language() {
         let edge = dummy_edge();
 
-        let hop = build_hop(&target_sym, &edge, 1, "components/App.tsx", true);
-
-        assert!(
-            !hop.cross_language,
-            ".tsx -> .ts should not be cross-language"
-        );
-        assert!(hop.boundary_type.is_none(), "should have no boundary type");
-        assert_eq!(hop.language, "typescript");
-    }
-
-    #[test]
-    fn tsx_to_tsx_hop_is_not_cross_language() {
-        let target_sym = dummy_symbol("components/Bar.tsx");
-        let edge = dummy_edge();
-
-        let hop = build_hop(&target_sym, &edge, 1, "components/App.tsx", true);
-
-        assert!(
-            !hop.cross_language,
-            ".tsx -> .tsx should not be cross-language"
-        );
-    }
-
-    #[test]
-    fn ts_to_py_hop_is_cross_language() {
-        let target_sym = dummy_symbol("backend/app.py");
-        let edge = dummy_edge();
-
-        let hop = build_hop(&target_sym, &edge, 1, "frontend/util.ts", true);
-
-        assert!(hop.cross_language, ".ts -> .py should be cross-language");
-        assert!(hop.boundary_type.is_some());
-    }
-
-    #[test]
-    fn tsx_to_py_hop_is_cross_language() {
-        let target_sym = dummy_symbol("backend/app.py");
-        let edge = dummy_edge();
-
-        let hop = build_hop(&target_sym, &edge, 1, "frontend/App.tsx", true);
-
-        assert!(hop.cross_language, ".tsx -> .py should be cross-language");
-        assert!(hop.boundary_type.is_some());
+        for (source, label) in [("frontend/util.ts", ".ts"), ("frontend/App.tsx", ".tsx")] {
+            let target_sym = dummy_symbol("backend/app.py");
+            let hop = build_hop(&target_sym, &edge, 1, source, true);
+            assert!(
+                hop.cross_language,
+                "{label} -> .py should be cross-language"
+            );
+            assert!(
+                hop.boundary_type.is_some(),
+                "{label} -> .py should have boundary type"
+            );
+        }
     }
 }

@@ -407,30 +407,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_empty_query_returns_error() {
+    fn resolve_empty_or_whitespace_query_returns_error() {
         let (_temp, indexer) = indexed_repo("py_mvp");
         let gv = indexer.db().current_graph_version().unwrap();
 
-        let err = resolve_symbol(indexer.db(), SymbolRef::Query("".into()), None, gv).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("no symbol found") || msg.contains("Did you mean"),
-            "empty query should fail with meaningful error, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn resolve_whitespace_only_query_returns_error() {
-        let (_temp, indexer) = indexed_repo("py_mvp");
-        let gv = indexer.db().current_graph_version().unwrap();
-
-        let err =
-            resolve_symbol(indexer.db(), SymbolRef::Query("   ".into()), None, gv).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("no symbol found") || msg.contains("Did you mean"),
-            "whitespace query should fail, got: {msg}"
-        );
+        for input in ["", "   "] {
+            let err =
+                resolve_symbol(indexer.db(), SymbolRef::Query(input.into()), None, gv).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("no symbol found") || msg.contains("Did you mean"),
+                "'{input}' query should fail, got: {msg}"
+            );
+        }
     }
 
     #[test]
