@@ -2,6 +2,7 @@ use tree_sitter::Node;
 
 use crate::indexer::extract::SymbolInput;
 
+/// Extracts 1-indexed (start_row, start_col, end_row, end_col, start_byte, end_byte) from a node.
 pub fn span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
     let start = node.start_position();
     let end = node.end_position();
@@ -15,17 +16,20 @@ pub fn span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
     )
 }
 
+/// Extracts the trimmed text content of a node.
 pub fn node_text(node: Node<'_>, source: &str) -> String {
     let start = node.start_byte();
     let end = node.end_byte();
     source.get(start..end).unwrap_or("").trim().to_string()
 }
 
+/// Counts lines in source, minimum 1.
 pub fn line_count(source: &str) -> i64 {
     let count = source.lines().count();
     if count == 0 { 1 } else { count as i64 }
 }
 
+/// Builds a module-level `SymbolInput` from a module name and root node span.
 pub fn module_symbol_with_span(
     module_name: &str,
     span: (i64, i64, i64, i64, i64, i64),
@@ -53,6 +57,7 @@ pub fn module_symbol_with_span(
     }
 }
 
+/// Fallback module symbol when parsing fails (no tree available).
 pub fn module_symbol_fallback(
     module_name: &str,
     source: &str,
@@ -147,6 +152,26 @@ mod tests {
         assert_eq!(eb, source.len() as i64);
         assert!(el >= 1);
         assert!(ec >= 1);
+    }
+
+    #[test]
+    fn test_line_count_trailing_newline() {
+        assert_eq!(line_count("a\nb\n"), 2);
+    }
+
+    #[test]
+    fn test_module_symbol_with_span_no_delimiter_in_name() {
+        let sym = module_symbol_with_span("simple", (1, 1, 1, 1, 0, 10), "/", None);
+        assert_eq!(sym.name, "simple");
+        assert_eq!(sym.qualname, "simple");
+    }
+
+    #[test]
+    fn test_module_symbol_fallback_empty_source() {
+        let sym = module_symbol_fallback("mod/file", "", "/", None);
+        assert_eq!(sym.start_line, 1);
+        assert_eq!(sym.end_line, 1);
+        assert_eq!(sym.end_byte, 0);
     }
 
     #[test]
