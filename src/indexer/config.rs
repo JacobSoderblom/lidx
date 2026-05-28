@@ -38,11 +38,11 @@ pub fn build_config_source_detail(
         "source_type": source_type,
         "role": "source",
     });
-    if let Some(extra) = extra {
-        if let Some(map) = extra.as_object() {
-            for (k, v) in map {
-                obj[k] = v.clone();
-            }
+    if let Some(extra) = extra
+        && let Some(map) = extra.as_object()
+    {
+        for (k, v) in map {
+            obj[k] = v.clone();
         }
     }
     obj.to_string()

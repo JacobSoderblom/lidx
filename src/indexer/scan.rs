@@ -27,7 +27,7 @@ pub struct LanguageFilter {
     pub languages: &'static [&'static str],
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ScanOptions {
     pub no_ignore: bool,
 }
@@ -35,12 +35,6 @@ pub struct ScanOptions {
 impl ScanOptions {
     pub fn new(no_ignore: bool) -> Self {
         Self { no_ignore }
-    }
-}
-
-impl Default for ScanOptions {
-    fn default() -> Self {
-        Self { no_ignore: false }
     }
 }
 
@@ -363,7 +357,7 @@ pub fn scan_path(repo_root: &Path, path: &Path) -> Result<Option<ScannedFile>> {
 fn detect_language(path: &Path) -> Option<&'static str> {
     let ext = path.extension().and_then(|ext| ext.to_str())?;
     for spec in LANGUAGE_SPECS {
-        if spec.extensions.iter().any(|candidate| *candidate == ext) {
+        if spec.extensions.contains(&ext) {
             return Some(spec.name);
         }
     }

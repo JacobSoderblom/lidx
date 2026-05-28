@@ -246,10 +246,10 @@ pub fn normalize_rpc_path(
 fn find_package(tokens: &[Token]) -> Option<String> {
     let mut idx = 0;
     while idx + 1 < tokens.len() {
-        if tokens[idx].is_ident("package") {
-            if let Some(name) = tokens.get(idx + 1).filter(|t| t.is_ident_any()) {
-                return Some(name.text.clone());
-            }
+        if tokens[idx].is_ident("package")
+            && let Some(name) = tokens.get(idx + 1).filter(|t| t.is_ident_any())
+        {
+            return Some(name.text.clone());
         }
         idx += 1;
     }
@@ -290,18 +290,17 @@ fn parse_services(tokens: &[Token]) -> Vec<ServiceDef> {
                 if active_service.depth > 0 {
                     active_service.depth -= 1;
                 }
-                if active_service.depth == 0 {
-                    if let Some(active) = active.take() {
-                        services.push(active.service);
-                    }
+                if active_service.depth == 0
+                    && let Some(active) = active.take()
+                {
+                    services.push(active.service);
                 }
             }
-        } else if token.is_ident("rpc") {
-            if let Some(active) = active.as_mut() {
-                if let Some(rpc) = parse_rpc(tokens, idx) {
-                    active.service.rpcs.push(rpc);
-                }
-            }
+        } else if token.is_ident("rpc")
+            && let Some(active) = active.as_mut()
+            && let Some(rpc) = parse_rpc(tokens, idx)
+        {
+            active.service.rpcs.push(rpc);
         }
         idx += 1;
     }
@@ -344,21 +343,20 @@ fn parse_rpc(tokens: &[Token], start_idx: usize) -> Option<RpcDef> {
     }
     while idx < tokens.len() {
         let token = &tokens[idx];
-        if token.is_ident("returns") {
-            if let Some(next) = tokens.get(idx + 1) {
-                if next.is_punct('(') {
-                    let (value, end_idx) = parse_type_in_parens(tokens, idx + 1);
-                    response = value;
-                    idx = end_idx + 1;
-                    if let Some(token) = tokens
-                        .get(idx)
-                        .filter(|t| t.is_punct(';') || t.is_punct('{'))
-                    {
-                        end_token = token.clone();
-                    }
-                    break;
-                }
+        if token.is_ident("returns")
+            && let Some(next) = tokens.get(idx + 1)
+            && next.is_punct('(')
+        {
+            let (value, end_idx) = parse_type_in_parens(tokens, idx + 1);
+            response = value;
+            idx = end_idx + 1;
+            if let Some(token) = tokens
+                .get(idx)
+                .filter(|t| t.is_punct(';') || t.is_punct('{'))
+            {
+                end_token = token.clone();
             }
+            break;
         }
         if token.is_punct(';') || token.is_punct('{') {
             end_token = token.clone();
@@ -492,10 +490,10 @@ fn is_ident_start(current: u8, next: Option<u8>) -> bool {
     if current.is_ascii_alphabetic() || current == b'_' {
         return true;
     }
-    if current == b'.' {
-        if let Some(next) = next {
-            return next.is_ascii_alphabetic() || next == b'_';
-        }
+    if current == b'.'
+        && let Some(next) = next
+    {
+        return next.is_ascii_alphabetic() || next == b'_';
     }
     false
 }

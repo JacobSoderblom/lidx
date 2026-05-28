@@ -220,11 +220,7 @@ pub fn resolve_import_file_edges(
 }
 
 fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> Option<String> {
-    let target = target
-        .split(|ch| ch == '?' || ch == '#')
-        .next()
-        .unwrap_or(target)
-        .trim();
+    let target = target.split(['?', '#']).next().unwrap_or(target).trim();
     if target.is_empty() {
         return None;
     }
@@ -396,10 +392,10 @@ fn module_symbol_fallback(module_name: &str, source: &str) -> SymbolInput {
 }
 
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    if node.kind() == "jsx_element" || node.kind() == "jsx_self_closing_element" {
-        if let Some(edge) = jsx_route_edge(node, ctx, source) {
-            output.edges.push(edge);
-        }
+    if (node.kind() == "jsx_element" || node.kind() == "jsx_self_closing_element")
+        && let Some(edge) = jsx_route_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
     }
     if node.kind() == "call_expression" || node.kind() == "new_expression" {
         handle_call(node, ctx, source, output);
@@ -411,15 +407,15 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         }
     }
     // process.env.KEY (member_expression) or process.env["KEY"] (subscript_expression)
-    if node.kind() == "member_expression" || node.kind() == "optional_member_expression" {
-        if let Some(edge) = process_env_member_edge(node, ctx, source) {
-            output.edges.push(edge);
-        }
+    if (node.kind() == "member_expression" || node.kind() == "optional_member_expression")
+        && let Some(edge) = process_env_member_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
     }
-    if node.kind() == "subscript_expression" {
-        if let Some(edge) = process_env_subscript_edge(node, ctx, source) {
-            output.edges.push(edge);
-        }
+    if node.kind() == "subscript_expression"
+        && let Some(edge) = process_env_subscript_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
     }
     if is_nested_function_node(node.kind()) {
         return;
@@ -598,10 +594,11 @@ fn collect_clause_targets_from(node: Node<'_>, clause_kind: &str, source: &str) 
                         saw_clause = true;
                     }
                 }
-                if !saw_clause && clause_kind == "extends_clause" {
-                    if let Some(target) = class_heritage_target(child, source) {
-                        targets.push(target);
-                    }
+                if !saw_clause
+                    && clause_kind == "extends_clause"
+                    && let Some(target) = class_heritage_target(child, source)
+                {
+                    targets.push(target);
                 }
             }
             _ => {}
@@ -826,7 +823,7 @@ fn grpc_impl_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput
         return edges;
     }
     let args = call_arguments(node);
-    let Some(service_arg) = args.get(0) else {
+    let Some(service_arg) = args.first() else {
         return edges;
     };
     let Some(service) = grpc_service_from_service_def(*service_arg, source) else {
@@ -850,12 +847,8 @@ fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     if node.kind() != "call_expression" {
         return None;
     }
-    let Some(target_node) = call_target_node(node) else {
-        return None;
-    };
-    let Some((object_node, method_name)) = member_object_and_method(target_node, source) else {
-        return None;
-    };
+    let target_node = call_target_node(node)?;
+    let (object_node, method_name) = member_object_and_method(target_node, source)?;
     let method_name = unquote_string_literal(&method_name).unwrap_or(method_name);
     if GRPC_JS_RAW_METHODS.contains(&method_name.as_str()) {
         return grpc_call_edge_from_raw_path(node, ctx, source);
@@ -890,7 +883,7 @@ fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
 fn grpc_call_edge_from_raw_path(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
     let args = call_arguments(node);
     let raw_path = args
-        .get(0)
+        .first()
         .and_then(|arg| extract_string_literal(*arg, source))?;
     let (service, rpc) = grpc_service_from_raw_path(&raw_path)?;
     let (raw_path, normalized) =
@@ -1068,10 +1061,10 @@ fn grpc_service_from_receiver(receiver: &str, ctx: &Context) -> Option<GrpcServi
     if let Some(service) = ctx.grpc_clients.get(receiver) {
         return Some(service.clone());
     }
-    if let Some(last) = receiver.rsplit('.').next() {
-        if let Some(service) = ctx.grpc_clients.get(last) {
-            return Some(service.clone());
-        }
+    if let Some(last) = receiver.rsplit('.').next()
+        && let Some(service) = ctx.grpc_clients.get(last)
+    {
+        return Some(service.clone());
     }
     grpc_service_from_path(receiver)
 }
@@ -1142,20 +1135,19 @@ fn strip_grpc_service_token(raw: &str) -> (String, bool) {
     let mut stripped = false;
     let mut stripped_client = false;
     let mut value = token;
-    if let Some(base) = value.strip_suffix("Client") {
-        if !base.is_empty() {
-            value = base;
-            stripped = true;
-            stripped_client = true;
-        }
+    if let Some(base) = value.strip_suffix("Client")
+        && !base.is_empty()
+    {
+        value = base;
+        stripped = true;
+        stripped_client = true;
     }
-    if !stripped_client {
-        if let Some(base) = value.strip_suffix("Service") {
-            if !base.is_empty() {
-                value = base;
-                stripped = true;
-            }
-        }
+    if !stripped_client
+        && let Some(base) = value.strip_suffix("Service")
+        && !base.is_empty()
+    {
+        value = base;
+        stripped = true;
     }
     (value.to_string(), stripped)
 }
@@ -1165,12 +1157,11 @@ fn grpc_package_from_parts(parts: &[&str], drop_root: bool) -> Option<String> {
         return None;
     }
     let mut start = 0;
-    if drop_root {
-        if let Some(first) = parts.first() {
-            if is_grpc_root_segment(first) {
-                start = 1;
-            }
-        }
+    if drop_root
+        && let Some(first) = parts.first()
+        && is_grpc_root_segment(first)
+    {
+        start = 1;
     }
     if start >= parts.len() {
         return None;
@@ -1213,7 +1204,7 @@ fn method_route_edges(
             None => continue,
         };
         let raw = args
-            .get(0)
+            .first()
             .and_then(|arg| extract_string_literal(*arg, source))
             .unwrap_or_else(|| "/".to_string());
         let prefix = ctx.route_prefix.as_deref().unwrap_or("/");
@@ -1244,7 +1235,7 @@ fn controller_prefix_from_class(node: Node<'_>, source: &str) -> Option<String> 
         };
         if name == "Controller" {
             let raw = args
-                .get(0)
+                .first()
                 .and_then(|arg| extract_string_literal(*arg, source))
                 .unwrap_or_else(|| "/".to_string());
             return Some(raw);
@@ -1272,7 +1263,11 @@ fn decorator_name_and_args<'a>(node: Node<'a>, source: &str) -> Option<(String, 
                 continue;
             };
             let raw = node_text(target_node, source);
-            let name = raw.split('.').last().unwrap_or(raw.as_str()).to_string();
+            let name = raw
+                .split('.')
+                .next_back()
+                .unwrap_or(raw.as_str())
+                .to_string();
             let args = call_arguments(child);
             return Some((name, args));
         }
@@ -1281,7 +1276,7 @@ fn decorator_name_and_args<'a>(node: Node<'a>, source: &str) -> Option<(String, 
     let name = raw
         .trim_start_matches('@')
         .split('.')
-        .last()
+        .next_back()
         .unwrap_or(raw.as_str())
         .to_string();
     if name.is_empty() {
@@ -1312,12 +1307,8 @@ fn extract_string_literal(node: Node<'_>, source: &str) -> Option<String> {
 }
 
 fn express_direct_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let Some(target_node) = call_target_node(node) else {
-        return None;
-    };
-    let Some((receiver, method_name)) = member_receiver_and_method(target_node, source) else {
-        return None;
-    };
+    let target_node = call_target_node(node)?;
+    let (receiver, method_name) = member_receiver_and_method(target_node, source)?;
     if !HTTP_METHOD_NAMES.contains(&method_name.as_str()) {
         return None;
     }
@@ -1326,7 +1317,7 @@ fn express_direct_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Opt
     }
     let args = call_arguments(node);
     let raw_path = args
-        .get(0)
+        .first()
         .and_then(|arg| extract_string_literal(*arg, source))?;
     let prefix = ctx.route_prefix.as_deref().unwrap_or("/");
     let full_path = http::join_paths(prefix, &raw_path);
@@ -1360,12 +1351,8 @@ fn express_direct_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Opt
 }
 
 fn express_route_chain_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let Some(target_node) = call_target_node(node) else {
-        return None;
-    };
-    let Some((object_node, method_name)) = member_object_and_method(target_node, source) else {
-        return None;
-    };
+    let target_node = call_target_node(node)?;
+    let (object_node, method_name) = member_object_and_method(target_node, source)?;
     if !HTTP_METHOD_NAMES.contains(&method_name.as_str()) {
         return None;
     }
@@ -1373,19 +1360,14 @@ fn express_route_chain_edge(node: Node<'_>, ctx: &Context, source: &str) -> Opti
         return None;
     }
     let route_call = object_node;
-    let Some(route_target) = call_target_node(route_call) else {
-        return None;
-    };
-    let Some((_route_receiver, route_method)) = member_receiver_and_method(route_target, source)
-    else {
-        return None;
-    };
+    let route_target = call_target_node(route_call)?;
+    let (_route_receiver, route_method) = member_receiver_and_method(route_target, source)?;
     if route_method != "route" {
         return None;
     }
     let route_args = call_arguments(route_call);
     let raw_path = route_args
-        .get(0)
+        .first()
         .and_then(|arg| extract_string_literal(*arg, source))?;
     let normalized = http::normalize_path(&raw_path).or_else(|| {
         if raw_path.starts_with('/') {
@@ -1422,7 +1404,7 @@ fn fastify_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeI
         return edges;
     }
     let args = call_arguments(node);
-    let Some(config) = args.get(0) else {
+    let Some(config) = args.first() else {
         return edges;
     };
     if config.kind() != "object" {
@@ -1481,21 +1463,20 @@ fn find_declaration_value<'a>(root: Node<'a>, name: &str, source: &str) -> Optio
     for child in root.named_children(&mut cursor) {
         match child.kind() {
             "function_declaration" | "generator_function_declaration" => {
-                if let Some(n) = child.child_by_field_name("name") {
-                    if node_text(n, source) == name {
-                        return Some(child);
-                    }
+                if let Some(n) = child.child_by_field_name("name")
+                    && node_text(n, source) == name
+                {
+                    return Some(child);
                 }
             }
             "lexical_declaration" | "variable_declaration" => {
                 let mut c = child.walk();
                 for decl in child.named_children(&mut c) {
-                    if decl.kind() == "variable_declarator" {
-                        if let Some(n) = decl.child_by_field_name("name") {
-                            if node_text(n, source) == name {
-                                return decl.child_by_field_name("value");
-                            }
-                        }
+                    if decl.kind() == "variable_declarator"
+                        && let Some(n) = decl.child_by_field_name("name")
+                        && node_text(n, source) == name
+                    {
+                        return decl.child_by_field_name("value");
                     }
                 }
             }
@@ -1604,10 +1585,10 @@ fn fastify_register_walk(
         next_ctx.route_prefix = Some(http::join_paths(existing, &prefix));
     }
     // The callback's first parameter is the Fastify instance — treat it as a router receiver
-    if let Some(name) = first_param_name(callback, source) {
-        if !is_router_receiver_static(&name) {
-            next_ctx.router_aliases.push(name);
-        }
+    if let Some(name) = first_param_name(callback, source)
+        && !is_router_receiver_static(&name)
+    {
+        next_ctx.router_aliases.push(name);
     }
     // For function_declarations, handle_function already walked the body and may have
     // emitted HTTP_ROUTE edges (without prefix). Remove those — we'll re-emit with the
@@ -1615,16 +1596,15 @@ fn fastify_register_walk(
     if matches!(
         callback.kind(),
         "function_declaration" | "generator_function_declaration"
-    ) {
-        if let Some(name_node) = callback.child_by_field_name("name") {
-            let func_name = node_text(name_node, source);
-            if !func_name.is_empty() {
-                let func_qualname = build_qualname(&ctx.module, &ctx.class_stack, &func_name);
-                output.edges.retain(|e| {
-                    !(e.kind == http::HTTP_ROUTE_KIND
-                        && e.source_qualname.as_deref() == Some(&func_qualname))
-                });
-            }
+    ) && let Some(name_node) = callback.child_by_field_name("name")
+    {
+        let func_name = node_text(name_node, source);
+        if !func_name.is_empty() {
+            let func_qualname = build_qualname(&ctx.module, &ctx.class_stack, &func_name);
+            output.edges.retain(|e| {
+                !(e.kind == http::HTTP_ROUTE_KIND
+                    && e.source_qualname.as_deref() == Some(&func_qualname))
+            });
         }
     }
     let body = callback.child_by_field_name("body");
@@ -1638,15 +1618,13 @@ fn fastify_register_walk(
 }
 
 fn fetch_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let Some(target_node) = call_target_node(node) else {
-        return None;
-    };
+    let target_node = call_target_node(node)?;
     if !is_fetch_callee(target_node, source) {
         return None;
     }
     let args = call_arguments(node);
     let raw_path = args
-        .get(0)
+        .first()
         .and_then(|arg| extract_string_literal(*arg, source))?;
     let normalized = http::normalize_path(&raw_path)?;
     let method = args
@@ -1668,14 +1646,10 @@ fn fetch_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeIn
 }
 
 fn axios_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let Some(target_node) = call_target_node(node) else {
-        return None;
-    };
+    let target_node = call_target_node(node)?;
     let args = call_arguments(node);
     if is_axios_identifier(target_node, source) {
-        let Some(config) = args.get(0) else {
-            return None;
-        };
+        let config = args.first()?;
         let raw_path = object_property_string(config, "url", source)?;
         let normalized = http::normalize_path(&raw_path)?;
         let method = object_property_string(config, "method", source)
@@ -1693,9 +1667,7 @@ fn axios_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeIn
             ..Default::default()
         });
     }
-    let Some((receiver, method_name)) = member_receiver_and_method(target_node, source) else {
-        return None;
-    };
+    let (receiver, method_name) = member_receiver_and_method(target_node, source)?;
     if receiver != "axios" {
         return None;
     }
@@ -1703,7 +1675,7 @@ fn axios_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeIn
         return None;
     }
     let raw_path = args
-        .get(0)
+        .first()
         .and_then(|arg| extract_string_literal(*arg, source))?;
     let normalized = http::normalize_path(&raw_path)?;
     let method = http::normalize_method(&method_name)?;
@@ -1790,10 +1762,10 @@ fn is_router_receiver(raw: &str, ctx: &Context) -> bool {
 }
 
 fn handler_from_args(args: &[Node<'_>], ctx: &Context, source: &str) -> String {
-    if let Some(last) = args.last() {
-        if let Some(name) = handler_node_qualname(*last, ctx, source) {
-            return name;
-        }
+    if let Some(last) = args.last()
+        && let Some(name) = handler_node_qualname(*last, ctx, source)
+    {
+        return name;
     }
     ctx.current_scope.clone()
 }
@@ -1865,18 +1837,18 @@ fn object_property_methods(node: &Node<'_>, source: &str) -> Vec<String> {
         "array" => {
             let mut cursor = value_node.walk();
             for child in value_node.named_children(&mut cursor) {
-                if let Some(raw) = extract_string_literal(child, source) {
-                    if let Some(method) = http::normalize_method(&raw) {
-                        methods.push(method);
-                    }
+                if let Some(raw) = extract_string_literal(child, source)
+                    && let Some(method) = http::normalize_method(&raw)
+                {
+                    methods.push(method);
                 }
             }
         }
         _ => {
-            if let Some(raw) = extract_string_literal(value_node, source) {
-                if let Some(method) = http::normalize_method(&raw) {
-                    methods.push(method);
-                }
+            if let Some(raw) = extract_string_literal(value_node, source)
+                && let Some(method) = http::normalize_method(&raw)
+            {
+                methods.push(method);
             }
         }
     }
@@ -1929,9 +1901,7 @@ fn jsx_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
 }
 
 fn next_page_route_edge(module_name: &str) -> Option<EdgeInput> {
-    let Some(raw) = next_route_from_module(module_name, false) else {
-        return None;
-    };
+    let raw = next_route_from_module(module_name, false)?;
     let normalized = http::normalize_path(&raw)?;
     Some(EdgeInput {
         kind: http::PAGE_ROUTE_KIND.to_string(),
@@ -1946,9 +1916,7 @@ fn next_page_route_edge(module_name: &str) -> Option<EdgeInput> {
 }
 
 fn next_api_route_edge(module_name: &str) -> Option<EdgeInput> {
-    let Some(raw) = next_route_from_module(module_name, true) else {
-        return None;
-    };
+    let raw = next_route_from_module(module_name, true)?;
     let normalized = http::normalize_path(&raw)?;
     let detail = http::build_route_detail(http::HTTP_ANY, &normalized, &raw, "nextjs");
     Some(EdgeInput {
@@ -1979,20 +1947,20 @@ fn next_route_from_module(module_name: &str, api_only: bool) -> Option<String> {
             return None;
         }
         segments.remove(0);
-        if let Some(last) = segments.last() {
-            if *last == "route" {
-                segments.pop();
-            }
+        if let Some(last) = segments.last()
+            && *last == "route"
+        {
+            segments.pop();
         }
     } else {
         if segments.first() == Some(&"api") {
             return None;
         }
         if is_app {
-            if let Some(last) = segments.last() {
-                if *last != "page" {
-                    return None;
-                }
+            if let Some(last) = segments.last()
+                && *last != "page"
+            {
+                return None;
             }
             segments.pop();
         }
@@ -2160,9 +2128,7 @@ fn handle_named_item(
     output: &mut ExtractedFile,
     kind: &str,
 ) -> Option<String> {
-    let Some(name_node) = node.child_by_field_name("name") else {
-        return None;
-    };
+    let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     if name.is_empty() {
         return None;
@@ -2253,8 +2219,6 @@ fn declaration_keyword(node: Node<'_>, source: &str) -> &'static str {
         "const"
     } else if trimmed.starts_with("let ") {
         "let"
-    } else if trimmed.starts_with("var ") {
-        "var"
     } else {
         "var"
     }
@@ -2298,10 +2262,10 @@ fn extract_import_target(node: Node<'_>, source: &str, allow_fallback: bool) -> 
 }
 
 fn extract_string_from_text(raw: &str) -> Option<String> {
-    let mut chars = raw.char_indices();
+    let chars = raw.char_indices();
     let mut quote = None;
     let mut start = 0;
-    while let Some((idx, ch)) = chars.next() {
+    for (idx, ch) in chars {
         if ch == '"' || ch == '\'' || ch == '`' {
             quote = Some(ch);
             start = idx + ch.len_utf8();

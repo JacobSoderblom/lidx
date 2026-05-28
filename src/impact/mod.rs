@@ -67,7 +67,7 @@ fn aggregate_by_file(entries: &[ImpactEntry]) -> Vec<FileImpact> {
         })
         .collect();
 
-    result.sort_by(|a, b| b.symbol_count.cmp(&a.symbol_count));
+    result.sort_by_key(|a| std::cmp::Reverse(a.symbol_count));
     result
 }
 

@@ -43,10 +43,10 @@ fn resolve_symbol_by_query(
         let ids = indexer
             .db()
             .source_symbols_for_config_uri(uri, &[], graph_version)?;
-        if let Some(&first_id) = ids.first() {
-            if let Some(sym) = indexer.db().get_symbol_by_id(first_id)? {
-                return Ok(sym);
-            }
+        if let Some(&first_id) = ids.first()
+            && let Some(sym) = indexer.db().get_symbol_by_id(first_id)?
+        {
+            return Ok(sym);
         }
     }
 
@@ -225,30 +225,27 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
             // Collect resolved callers
             for edge in &target_edges {
-                if edge.kind == "CALLS" && edge.target_symbol_id == Some(*target_id) {
-                    if let Some(source_id) = edge.source_symbol_id {
-                        if seen_caller_ids.insert(source_id) {
-                            if let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id) {
-                                let evidence = edge.evidence_snippet.clone();
-                                let ref_json =
-                                    serde_json::to_string(&caller_sym).unwrap_or_default();
-                                caller_bytes +=
-                                    ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                                if caller_bytes > callers_budget {
-                                    truncated = true;
-                                    break;
-                                }
-                                caller_refs.push(ExplainRef {
-                                    signature: caller_sym.signature.clone(),
-                                    symbol: caller_sym,
-                                    evidence,
-                                    edge_kind: "CALLS".to_string(),
-                                });
-                                if caller_refs.len() >= max_refs {
-                                    break;
-                                }
-                            }
-                        }
+                if edge.kind == "CALLS"
+                    && edge.target_symbol_id == Some(*target_id)
+                    && let Some(source_id) = edge.source_symbol_id
+                    && seen_caller_ids.insert(source_id)
+                    && let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id)
+                {
+                    let evidence = edge.evidence_snippet.clone();
+                    let ref_json = serde_json::to_string(&caller_sym).unwrap_or_default();
+                    caller_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                    if caller_bytes > callers_budget {
+                        truncated = true;
+                        break;
+                    }
+                    caller_refs.push(ExplainRef {
+                        signature: caller_sym.signature.clone(),
+                        symbol: caller_sym,
+                        evidence,
+                        edge_kind: "CALLS".to_string(),
+                    });
+                    if caller_refs.len() >= max_refs {
+                        break;
                     }
                 }
             }
@@ -263,34 +260,27 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 )?;
 
                 for edge in &unresolved_edges {
-                    if let Some(ref target_qn) = edge.target_qualname {
-                        if target_qn.ends_with(target_name) {
-                            if let Some(source_id) = edge.source_symbol_id {
-                                if seen_caller_ids.insert(source_id) {
-                                    if let Ok(Some(caller_sym)) =
-                                        indexer.db().get_symbol_by_id(source_id)
-                                    {
-                                        let evidence = edge.evidence_snippet.clone();
-                                        let ref_json =
-                                            serde_json::to_string(&caller_sym).unwrap_or_default();
-                                        caller_bytes += ref_json.len()
-                                            + evidence.as_ref().map_or(0, |e| e.len());
-                                        if caller_bytes > callers_budget {
-                                            truncated = true;
-                                            break;
-                                        }
-                                        caller_refs.push(ExplainRef {
-                                            signature: caller_sym.signature.clone(),
-                                            symbol: caller_sym,
-                                            evidence,
-                                            edge_kind: "CALLS".to_string(),
-                                        });
-                                        if caller_refs.len() >= max_refs {
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
+                    if let Some(ref target_qn) = edge.target_qualname
+                        && target_qn.ends_with(target_name)
+                        && let Some(source_id) = edge.source_symbol_id
+                        && seen_caller_ids.insert(source_id)
+                        && let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id)
+                    {
+                        let evidence = edge.evidence_snippet.clone();
+                        let ref_json = serde_json::to_string(&caller_sym).unwrap_or_default();
+                        caller_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                        if caller_bytes > callers_budget {
+                            truncated = true;
+                            break;
+                        }
+                        caller_refs.push(ExplainRef {
+                            signature: caller_sym.signature.clone(),
+                            symbol: caller_sym,
+                            evidence,
+                            edge_kind: "CALLS".to_string(),
+                        });
+                        if caller_refs.len() >= max_refs {
+                            break;
                         }
                     }
                 }
@@ -347,30 +337,26 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                     .flatten()
                             }),
                         };
-                        if let Some(target_id) = target_id {
-                            if seen_callee_ids.insert(target_id) {
-                                if let Ok(Some(callee_sym)) =
-                                    indexer.db().get_symbol_by_id(target_id)
-                                {
-                                    let evidence = edge.evidence_snippet.clone();
-                                    let ref_json =
-                                        serde_json::to_string(&callee_sym).unwrap_or_default();
-                                    callee_bytes +=
-                                        ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                                    if callee_bytes > callees_budget {
-                                        truncated = true;
-                                        break;
-                                    }
-                                    callee_refs.push(ExplainRef {
-                                        signature: callee_sym.signature.clone(),
-                                        symbol: callee_sym,
-                                        evidence,
-                                        edge_kind: "CALLS".to_string(),
-                                    });
-                                    if callee_refs.len() >= max_refs {
-                                        break;
-                                    }
-                                }
+                        if let Some(target_id) = target_id
+                            && seen_callee_ids.insert(target_id)
+                            && let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id)
+                        {
+                            let evidence = edge.evidence_snippet.clone();
+                            let ref_json = serde_json::to_string(&callee_sym).unwrap_or_default();
+                            callee_bytes +=
+                                ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                            if callee_bytes > callees_budget {
+                                truncated = true;
+                                break;
+                            }
+                            callee_refs.push(ExplainRef {
+                                signature: callee_sym.signature.clone(),
+                                symbol: callee_sym,
+                                evidence,
+                                edge_kind: "CALLS".to_string(),
+                            });
+                            if callee_refs.len() >= max_refs {
+                                break;
                             }
                         }
                     }
@@ -393,28 +379,25 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                 .flatten()
                         }),
                     };
-                    if let Some(target_id) = target_id {
-                        if seen_callee_ids.insert(target_id) {
-                            if let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id) {
-                                let evidence = edge.evidence_snippet.clone();
-                                let ref_json =
-                                    serde_json::to_string(&callee_sym).unwrap_or_default();
-                                callee_bytes +=
-                                    ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                                if callee_bytes > callees_budget {
-                                    truncated = true;
-                                    break;
-                                }
-                                callee_refs.push(ExplainRef {
-                                    signature: callee_sym.signature.clone(),
-                                    symbol: callee_sym,
-                                    evidence,
-                                    edge_kind: "CALLS".to_string(),
-                                });
-                                if callee_refs.len() >= max_refs {
-                                    break;
-                                }
-                            }
+                    if let Some(target_id) = target_id
+                        && seen_callee_ids.insert(target_id)
+                        && let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id)
+                    {
+                        let evidence = edge.evidence_snippet.clone();
+                        let ref_json = serde_json::to_string(&callee_sym).unwrap_or_default();
+                        callee_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                        if callee_bytes > callees_budget {
+                            truncated = true;
+                            break;
+                        }
+                        callee_refs.push(ExplainRef {
+                            signature: callee_sym.signature.clone(),
+                            symbol: callee_sym,
+                            evidence,
+                            edge_kind: "CALLS".to_string(),
+                        });
+                        if callee_refs.len() >= max_refs {
+                            break;
                         }
                     }
                 }
@@ -432,30 +415,30 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         let mut test_refs = Vec::new();
         let mut test_bytes = 0usize;
         for edge in &edges {
-            if edge.kind == "CALLS" && edge.target_symbol_id == Some(symbol.id) {
-                if let Some(source_id) = edge.source_symbol_id {
-                    if let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id) {
-                        let is_test = test_sym.file_path.contains("test")
-                            || test_sym.file_path.contains("spec")
-                            || test_sym.name.starts_with("test_")
-                            || test_sym.name.starts_with("Test");
-                        if is_test {
-                            let ref_json = serde_json::to_string(&test_sym).unwrap_or_default();
-                            test_bytes += ref_json.len();
-                            if test_bytes > tests_budget {
-                                truncated = true;
-                                break;
-                            }
-                            test_refs.push(ExplainRef {
-                                signature: test_sym.signature.clone(),
-                                symbol: test_sym,
-                                evidence: edge.evidence_snippet.clone(),
-                                edge_kind: "CALLS".to_string(),
-                            });
-                            if test_refs.len() >= max_refs {
-                                break;
-                            }
-                        }
+            if edge.kind == "CALLS"
+                && edge.target_symbol_id == Some(symbol.id)
+                && let Some(source_id) = edge.source_symbol_id
+                && let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id)
+            {
+                let is_test = test_sym.file_path.contains("test")
+                    || test_sym.file_path.contains("spec")
+                    || test_sym.name.starts_with("test_")
+                    || test_sym.name.starts_with("Test");
+                if is_test {
+                    let ref_json = serde_json::to_string(&test_sym).unwrap_or_default();
+                    test_bytes += ref_json.len();
+                    if test_bytes > tests_budget {
+                        truncated = true;
+                        break;
+                    }
+                    test_refs.push(ExplainRef {
+                        signature: test_sym.signature.clone(),
+                        symbol: test_sym,
+                        evidence: edge.evidence_snippet.clone(),
+                        edge_kind: "CALLS".to_string(),
+                    });
+                    if test_refs.len() >= max_refs {
+                        break;
                     }
                 }
             }
@@ -472,12 +455,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         for edge in &edges {
             if (edge.kind == "EXTENDS" || edge.kind == "IMPLEMENTS" || edge.kind == "INHERITS")
                 && edge.source_symbol_id == Some(symbol.id)
+                && let Some(target_id) = edge.target_symbol_id
+                && let Ok(Some(impl_sym)) = indexer.db().get_symbol_by_id(target_id)
             {
-                if let Some(target_id) = edge.target_symbol_id {
-                    if let Ok(Some(impl_sym)) = indexer.db().get_symbol_by_id(target_id) {
-                        impl_syms.push(impl_sym);
-                    }
-                }
+                impl_syms.push(impl_sym);
             }
         }
         if impl_syms.is_empty() {
@@ -505,22 +486,22 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 }
 
                 let full_path = repo_root.join(&caller_ref.symbol.file_path);
-                if full_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&full_path) {
-                        let lines: Vec<&str> = content.lines().collect();
-                        let start = (caller_ref.symbol.start_line as usize).saturating_sub(1);
-                        let end = ((caller_ref.symbol.start_line + 3) as usize).min(lines.len());
-                        let snippet = lines[start..end].join("\n");
-                        let snippet = if snippet.len() > snippet_budget_per_ref {
-                            let truncate_pos = snippet[..snippet_budget_per_ref]
-                                .rfind('\n')
-                                .unwrap_or(snippet_budget_per_ref);
-                            snippet[..truncate_pos].to_string()
-                        } else {
-                            snippet
-                        };
-                        used_bytes += snippet.len();
-                    }
+                if full_path.exists()
+                    && let Ok(content) = std::fs::read_to_string(&full_path)
+                {
+                    let lines: Vec<&str> = content.lines().collect();
+                    let start = (caller_ref.symbol.start_line as usize).saturating_sub(1);
+                    let end = ((caller_ref.symbol.start_line + 3) as usize).min(lines.len());
+                    let snippet = lines[start..end].join("\n");
+                    let snippet = if snippet.len() > snippet_budget_per_ref {
+                        let truncate_pos = snippet[..snippet_budget_per_ref]
+                            .rfind('\n')
+                            .unwrap_or(snippet_budget_per_ref);
+                        snippet[..truncate_pos].to_string()
+                    } else {
+                        snippet
+                    };
+                    used_bytes += snippet.len();
                 }
             }
         }
@@ -533,22 +514,22 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 }
 
                 let full_path = repo_root.join(&callee_ref.symbol.file_path);
-                if full_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&full_path) {
-                        let lines: Vec<&str> = content.lines().collect();
-                        let start = (callee_ref.symbol.start_line as usize).saturating_sub(1);
-                        let end = ((callee_ref.symbol.start_line + 3) as usize).min(lines.len());
-                        let snippet = lines[start..end].join("\n");
-                        let snippet = if snippet.len() > snippet_budget_per_ref {
-                            let truncate_pos = snippet[..snippet_budget_per_ref]
-                                .rfind('\n')
-                                .unwrap_or(snippet_budget_per_ref);
-                            snippet[..truncate_pos].to_string()
-                        } else {
-                            snippet
-                        };
-                        used_bytes += snippet.len();
-                    }
+                if full_path.exists()
+                    && let Ok(content) = std::fs::read_to_string(&full_path)
+                {
+                    let lines: Vec<&str> = content.lines().collect();
+                    let start = (callee_ref.symbol.start_line as usize).saturating_sub(1);
+                    let end = ((callee_ref.symbol.start_line + 3) as usize).min(lines.len());
+                    let snippet = lines[start..end].join("\n");
+                    let snippet = if snippet.len() > snippet_budget_per_ref {
+                        let truncate_pos = snippet[..snippet_budget_per_ref]
+                            .rfind('\n')
+                            .unwrap_or(snippet_budget_per_ref);
+                        snippet[..truncate_pos].to_string()
+                    } else {
+                        snippet
+                    };
+                    used_bytes += snippet.len();
                 }
             }
         }
@@ -632,7 +613,7 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
     }
 
     if include_map {
-        let max_bytes = params.max_bytes.unwrap_or(8000).max(1000).min(50000);
+        let max_bytes = params.max_bytes.unwrap_or(8000).clamp(1000, 50000);
         let config = crate::repo_map::RepoMapConfig {
             max_bytes,
             languages: languages.clone(),
@@ -652,7 +633,7 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
     }
 
     if include_modules {
-        let depth = params.depth.unwrap_or(1).max(1).min(5);
+        let depth = params.depth.unwrap_or(1).clamp(1, 5);
         let summary = indexer.db().module_summary(
             depth,
             languages.as_deref(),
@@ -885,22 +866,21 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             seed_ids.push(*id);
         }
     }
-    if is_container {
-        if let Ok(file_symbols) = indexer
+    if is_container
+        && let Ok(file_symbols) = indexer
             .db()
             .get_symbols_for_file(&start.file_path, graph_version)
-        {
-            for s in &file_symbols {
-                if s.id != start.id
-                    && s.start_line >= start.start_line
-                    && s.end_line <= start.end_line
-                    && matches!(
-                        s.kind.as_str(),
-                        "method" | "function" | "resource" | "var" | "param" | "output"
-                    )
-                {
-                    seed_ids.push(s.id);
-                }
+    {
+        for s in &file_symbols {
+            if s.id != start.id
+                && s.start_line >= start.start_line
+                && s.end_line <= start.end_line
+                && matches!(
+                    s.kind.as_str(),
+                    "method" | "function" | "resource" | "var" | "param" | "output"
+                )
+            {
+                seed_ids.push(s.id);
             }
         }
     }
@@ -933,20 +913,20 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
                 .edges_for_symbol(current_id, languages.as_deref(), graph_version)?;
 
         // For upstream direction, also find unresolved callers via qualname pattern
-        if direction == "upstream" {
-            if let Ok(Some(current_sym)) = indexer.db().get_symbol_by_id(current_id) {
-                for kind in &allowed_kinds {
-                    let mut unresolved = indexer
-                        .db()
-                        .incoming_edges_by_qualname_pattern(
-                            &current_sym.name,
-                            kind,
-                            languages.as_deref(),
-                            graph_version,
-                        )
-                        .unwrap_or_default();
-                    edges.append(&mut unresolved);
-                }
+        if direction == "upstream"
+            && let Ok(Some(current_sym)) = indexer.db().get_symbol_by_id(current_id)
+        {
+            for kind in &allowed_kinds {
+                let mut unresolved = indexer
+                    .db()
+                    .incoming_edges_by_qualname_pattern(
+                        &current_sym.name,
+                        kind,
+                        languages.as_deref(),
+                        graph_version,
+                    )
+                    .unwrap_or_default();
+                edges.append(&mut unresolved);
             }
         }
 
@@ -981,10 +961,10 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             };
 
             // Check for bridgeable edge (e.g., CHANNEL_PUBLISH → CHANNEL_SUBSCRIBE)
-            if let Some(ref tq) = edge.target_qualname {
-                if crate::indexer::channel::bridge_complement(&edge.kind).is_some() {
-                    bridge_targets.push((tq.clone(), edge.kind.clone()));
-                }
+            if let Some(ref tq) = edge.target_qualname
+                && crate::indexer::channel::bridge_complement(&edge.kind).is_some()
+            {
+                bridge_targets.push((tq.clone(), edge.kind.clone()));
             }
 
             // Resolve next_id, trying fuzzy lookup if unresolved
@@ -1313,10 +1293,10 @@ fn build_impact_config(
     if let Some(enable_historical) = params.enable_historical {
         config.historical.enabled = enable_historical;
     }
-    if let Some(languages) = params.languages.as_ref() {
-        if let Ok(normalized) = scan::normalize_language_filter(Some(languages.as_slice())) {
-            config.direct.languages = normalized;
-        }
+    if let Some(languages) = params.languages.as_ref()
+        && let Ok(normalized) = scan::normalize_language_filter(Some(languages.as_slice()))
+    {
+        config.direct.languages = normalized;
     }
     if let Some(ref kinds) = params.kinds {
         config.direct.kinds = kinds.clone();
@@ -1509,17 +1489,13 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         if matches!(
             symbol.kind.as_str(),
             "property" | "field" | "attribute" | "const"
-        ) {
-            if let Some(parent_qn) = symbol.qualname.rsplit_once('.').map(|(p, _)| p) {
-                if let Ok(Some(parent)) = indexer
-                    .db()
-                    .get_symbol_by_qualname(parent_qn, graph_version)
-                {
-                    if !ids.contains(&parent.id) {
-                        ids.push(parent.id);
-                    }
-                }
-            }
+        ) && let Some(parent_qn) = symbol.qualname.rsplit_once('.').map(|(p, _)| p)
+            && let Ok(Some(parent)) = indexer
+                .db()
+                .get_symbol_by_qualname(parent_qn, graph_version)
+            && !ids.contains(&parent.id)
+        {
+            ids.push(parent.id);
         }
         ids
     };
@@ -1637,11 +1613,12 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             let new_signature = sym.signature.clone();
             let mut final_change_type = change_type.clone();
 
-            if change_type == "modified" && sym.stable_id.is_some() && graph_version > 1 {
+            if change_type == "modified" && graph_version > 1 {
                 // Try to find the symbol in the previous graph version
-                if let Ok(Some(old_sym)) = indexer
-                    .db()
-                    .get_symbol_by_stable_id(sym.stable_id.as_ref().unwrap(), graph_version - 1)
+                if let Some(stable_id) = sym.stable_id.as_ref()
+                    && let Ok(Some(old_sym)) = indexer
+                        .db()
+                        .get_symbol_by_stable_id(stable_id, graph_version - 1)
                 {
                     // Compare signatures
                     if old_sym.signature != sym.signature {
@@ -1687,10 +1664,9 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
     // BFS: start with changed symbols, expand callers level by level
     let mut current_level: Vec<Symbol> =
         changed_symbols.iter().map(|cs| cs.symbol.clone()).collect();
-    let mut current_distance = 1usize;
     let mut base_confidence = 0.9;
 
-    for _depth in 0..max_depth {
+    for current_distance in 1..=max_depth {
         let mut next_level = Vec::new();
 
         for sym in &current_level {
@@ -1708,24 +1684,23 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 if downstream.len() >= max_downstream {
                     break;
                 }
-                if edge.kind == "CALLS" && edge.target_symbol_id == Some(sym.id) {
-                    if let Some(source_id) = edge.source_symbol_id {
-                        if seen_ids.insert(source_id) {
-                            if let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id) {
-                                next_level.push(caller.clone());
-                                downstream.push(DiffImpactEntry {
-                                    symbol: caller,
-                                    relationship: if current_distance == 1 {
-                                        "caller".to_string()
-                                    } else {
-                                        format!("caller_depth_{}", current_distance)
-                                    },
-                                    distance: current_distance,
-                                    confidence: base_confidence,
-                                });
-                            }
-                        }
-                    }
+                if edge.kind == "CALLS"
+                    && edge.target_symbol_id == Some(sym.id)
+                    && let Some(source_id) = edge.source_symbol_id
+                    && seen_ids.insert(source_id)
+                    && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
+                {
+                    next_level.push(caller.clone());
+                    downstream.push(DiffImpactEntry {
+                        symbol: caller,
+                        relationship: if current_distance == 1 {
+                            "caller".to_string()
+                        } else {
+                            format!("caller_depth_{}", current_distance)
+                        },
+                        distance: current_distance,
+                        confidence: base_confidence,
+                    });
                 }
             }
 
@@ -1744,22 +1719,21 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                     if downstream.len() >= max_downstream {
                         break;
                     }
-                    if let Some(source_id) = edge.source_symbol_id {
-                        if seen_ids.insert(source_id) {
-                            if let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id) {
-                                next_level.push(caller.clone());
-                                downstream.push(DiffImpactEntry {
-                                    symbol: caller,
-                                    relationship: if current_distance == 1 {
-                                        "caller".to_string()
-                                    } else {
-                                        format!("caller_depth_{}", current_distance)
-                                    },
-                                    distance: current_distance,
-                                    confidence: base_confidence * 0.8,
-                                });
-                            }
-                        }
+                    if let Some(source_id) = edge.source_symbol_id
+                        && seen_ids.insert(source_id)
+                        && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
+                    {
+                        next_level.push(caller.clone());
+                        downstream.push(DiffImpactEntry {
+                            symbol: caller,
+                            relationship: if current_distance == 1 {
+                                "caller".to_string()
+                            } else {
+                                format!("caller_depth_{}", current_distance)
+                            },
+                            distance: current_distance,
+                            confidence: base_confidence * 0.8,
+                        });
                     }
                 }
             }
@@ -1769,7 +1743,6 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             break;
         }
         current_level = next_level;
-        current_distance += 1;
         base_confidence *= 0.8; // Decay confidence per level
     }
 
@@ -1785,18 +1758,18 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                     .db()
                     .edges_for_symbol(cs.symbol.id, languages.as_deref(), graph_version)?;
             for edge in &edges {
-                if edge.kind == "CALLS" && edge.target_symbol_id == Some(cs.symbol.id) {
-                    if let Some(source_id) = edge.source_symbol_id {
-                        if let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id) {
-                            if is_test_symbol(&caller) && seen_test_ids.insert(source_id) {
-                                tests.push(TestRef {
-                                    test_qualname: caller.qualname.clone(),
-                                    test_file: caller.file_path.clone(),
-                                    coverage_type: "direct".to_string(),
-                                });
-                            }
-                        }
-                    }
+                if edge.kind == "CALLS"
+                    && edge.target_symbol_id == Some(cs.symbol.id)
+                    && let Some(source_id) = edge.source_symbol_id
+                    && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
+                    && is_test_symbol(&caller)
+                    && seen_test_ids.insert(source_id)
+                {
+                    tests.push(TestRef {
+                        test_qualname: caller.qualname.clone(),
+                        test_file: caller.file_path.clone(),
+                        coverage_type: "direct".to_string(),
+                    });
                 }
             }
             // Qualname fallback for unresolved edges
@@ -1810,16 +1783,16 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 )
                 .unwrap_or_default();
             for edge in &unresolved {
-                if let Some(source_id) = edge.source_symbol_id {
-                    if let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id) {
-                        if is_test_symbol(&caller) && seen_test_ids.insert(source_id) {
-                            tests.push(TestRef {
-                                test_qualname: caller.qualname.clone(),
-                                test_file: caller.file_path.clone(),
-                                coverage_type: "direct".to_string(),
-                            });
-                        }
-                    }
+                if let Some(source_id) = edge.source_symbol_id
+                    && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
+                    && is_test_symbol(&caller)
+                    && seen_test_ids.insert(source_id)
+                {
+                    tests.push(TestRef {
+                        test_qualname: caller.qualname.clone(),
+                        test_file: caller.file_path.clone(),
+                        coverage_type: "direct".to_string(),
+                    });
                 }
             }
             let status = if tests.is_empty() {

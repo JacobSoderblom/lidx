@@ -1,10 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
 use lidx::{cli, context, db, indexer, init, mcp, rpc, watch};
-use serde_json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-fn default_db_path(repo: &PathBuf) -> PathBuf {
+fn default_db_path(repo: &Path) -> PathBuf {
     repo.join(".lidx").join(".lidx.sqlite")
 }
 

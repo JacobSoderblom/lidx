@@ -192,10 +192,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         handle_call(node, ctx, source, output);
     }
     // Configuration["KEY"] — element_access_expression
-    if node.kind() == "element_access_expression" {
-        if let Some(edge) = config_indexer_read_edge(node, ctx, source) {
-            output.edges.push(edge);
-        }
+    if node.kind() == "element_access_expression"
+        && let Some(edge) = config_indexer_read_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
     }
     if is_nested_function_node(node.kind()) {
         return;
@@ -793,10 +793,10 @@ struct CallTarget {
 fn route_prefix_from_attributes(node: Node<'_>, source: &str) -> Option<String> {
     for attr in attributes_for_node(node, source) {
         let name = normalize_attribute_name(&attr.name);
-        if name == "Route" || name == "RoutePrefix" {
-            if let Some(template) = attribute_first_string_arg(&attr, source) {
-                return Some(template);
-            }
+        if (name == "Route" || name == "RoutePrefix")
+            && let Some(template) = attribute_first_string_arg(&attr, source)
+        {
+            return Some(template);
         }
     }
     None
@@ -871,12 +871,11 @@ fn route_edges_from_method_attributes(
         let Some(raw_path) = raw_path else {
             return edges;
         };
-        if let Some(node) = route_node {
-            if let Some(edge) =
+        if let Some(node) = route_node
+            && let Some(edge) =
                 build_route_edge(handler, http::HTTP_ANY, &raw_path, "aspnet", node, source)
-            {
-                edges.push(edge);
-            }
+        {
+            edges.push(edge);
         }
     }
     edges
@@ -973,9 +972,7 @@ fn normalize_attribute_name(raw: &str) -> String {
 }
 
 fn http_method_from_attribute(name: &str) -> Option<String> {
-    let Some(rest) = name.strip_prefix("Http") else {
-        return None;
-    };
+    let rest = name.strip_prefix("Http")?;
     if rest.is_empty() {
         return None;
     }
@@ -1032,7 +1029,7 @@ fn route_edges_from_map_call(node: Node<'_>, ctx: &Context, source: &str) -> Vec
     }
     let args = call_arguments(node);
     let Some(raw_path) = args
-        .get(0)
+        .first()
         .and_then(|arg| extract_string_literal(*arg, source))
     else {
         return edges;
@@ -1093,10 +1090,10 @@ fn map_group_prefix_from_receiver(node: Node<'_>, ctx: &Context, source: &str) -
     if let Some(prefix) = ctx.route_groups.get(&receiver_text) {
         return Some(prefix.clone());
     }
-    if let Some(last) = receiver_text.rsplit('.').next() {
-        if let Some(prefix) = ctx.route_groups.get(last) {
-            return Some(prefix.clone());
-        }
+    if let Some(last) = receiver_text.rsplit('.').next()
+        && let Some(prefix) = ctx.route_groups.get(last)
+    {
+        return Some(prefix.clone());
     }
     None
 }
@@ -1112,15 +1109,14 @@ fn map_group_prefix_from_invocation(node: Node<'_>, source: &str) -> Option<Stri
     }
     let args = call_arguments(node);
     let path = args
-        .get(0)
+        .first()
         .and_then(|arg| extract_string_literal(*arg, source))?;
     let mut prefix = path;
-    if function.kind() == "member_access_expression" {
-        if let Some(receiver) = function.child_by_field_name("expression") {
-            if let Some(parent) = map_group_prefix_from_invocation(receiver, source) {
-                prefix = http::join_paths(&parent, &prefix);
-            }
-        }
+    if function.kind() == "member_access_expression"
+        && let Some(receiver) = function.child_by_field_name("expression")
+        && let Some(parent) = map_group_prefix_from_invocation(receiver, source)
+    {
+        prefix = http::join_paths(&parent, &prefix);
     }
     Some(prefix)
 }
@@ -1174,10 +1170,10 @@ fn collect_route_groups_inner(node: Node<'_>, source: &str, groups: &mut HashMap
         }
         _ => {}
     }
-    if node.kind() == "variable_declarator" {
-        if let Some((name, prefix)) = route_group_from_declarator(node, source) {
-            groups.insert(name, prefix);
-        }
+    if node.kind() == "variable_declarator"
+        && let Some((name, prefix)) = route_group_from_declarator(node, source)
+    {
+        groups.insert(name, prefix);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -1198,10 +1194,10 @@ fn collect_grpc_clients_inner(node: Node<'_>, source: &str, clients: &mut HashMa
         }
         _ => {}
     }
-    if node.kind() == "variable_declarator" {
-        if let Some((name, service)) = grpc_client_from_declarator(node, source) {
-            clients.insert(name, service);
-        }
+    if node.kind() == "variable_declarator"
+        && let Some((name, service)) = grpc_client_from_declarator(node, source)
+    {
+        clients.insert(name, service);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -1223,10 +1219,10 @@ fn route_group_from_declarator(node: Node<'_>, source: &str) -> Option<(String, 
 }
 
 fn map_group_prefix_in_node(node: Node<'_>, source: &str) -> Option<String> {
-    if node.kind() == "invocation_expression" {
-        if let Some(prefix) = map_group_prefix_from_invocation(node, source) {
-            return Some(prefix);
-        }
+    if node.kind() == "invocation_expression"
+        && let Some(prefix) = map_group_prefix_from_invocation(node, source)
+    {
+        return Some(prefix);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -1251,10 +1247,10 @@ fn grpc_client_from_declarator(node: Node<'_>, source: &str) -> Option<(String, 
 }
 
 fn grpc_client_from_initializer(node: Node<'_>, source: &str) -> Option<String> {
-    if node.kind() == "object_creation_expression" {
-        if let Some(service) = grpc_client_from_object_creation(node, source) {
-            return Some(service);
-        }
+    if node.kind() == "object_creation_expression"
+        && let Some(service) = grpc_client_from_object_creation(node, source)
+    {
+        return Some(service);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -1277,10 +1273,10 @@ fn grpc_client_from_object_creation(node: Node<'_>, source: &str) -> Option<Stri
     }
     let last = type_name.rsplit('.').next().unwrap_or(type_name).trim();
     let last = last.split('<').next().unwrap_or(last).trim();
-    if let Some(service) = last.strip_suffix("Client") {
-        if !service.is_empty() {
-            return Some(service.to_string());
-        }
+    if let Some(service) = last.strip_suffix("Client")
+        && !service.is_empty()
+    {
+        return Some(service.to_string());
     }
     None
 }
@@ -1289,17 +1285,15 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     if node.kind() != "invocation_expression" {
         return None;
     }
-    let Some(target_node) = node.child_by_field_name("function") else {
-        return None;
-    };
+    let target_node = node.child_by_field_name("function")?;
     let target = call_target_parts(target_node, source)?;
     let client = http_client_label(target.receiver.as_deref(), &target.full)?;
     let args = call_arguments(node);
     let (method, raw_path) = if target.name == "SendAsync" || target.name == "Send" {
-        http_request_message_parts(args.get(0).copied()?, source)?
+        http_request_message_parts(args.first().copied()?, source)?
     } else if let Some(method) = normalize_http_method_name(&target.name) {
         let raw_path = args
-            .get(0)
+            .first()
             .and_then(|arg| extract_string_literal(*arg, source))?;
         (method, raw_path)
     } else {
@@ -1355,9 +1349,7 @@ fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     if node.kind() != "invocation_expression" {
         return None;
     }
-    let Some(target_node) = node.child_by_field_name("function") else {
-        return None;
-    };
+    let target_node = node.child_by_field_name("function")?;
     let target = call_target_parts(target_node, source)?;
     let rpc_name = normalize_grpc_method_name(&target.name)?;
     let service = grpc_service_from_client_receiver(target.receiver.as_deref())
@@ -1449,10 +1441,10 @@ fn normalize_grpc_method_name(name: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    if let Some(base) = trimmed.strip_suffix("Async") {
-        if !base.is_empty() {
-            return Some(base.to_string());
-        }
+    if let Some(base) = trimmed.strip_suffix("Async")
+        && !base.is_empty()
+    {
+        return Some(base.to_string());
     }
     Some(trimmed.to_string())
 }
@@ -1515,10 +1507,10 @@ fn grpc_service_from_client_receiver(receiver: Option<&str>) -> Option<String> {
     if last.is_empty() {
         return None;
     }
-    if let Some(service) = last.strip_suffix("Client") {
-        if !service.is_empty() {
-            return Some(service.to_string());
-        }
+    if let Some(service) = last.strip_suffix("Client")
+        && !service.is_empty()
+    {
+        return Some(service.to_string());
     }
     let lower = last.to_ascii_lowercase();
     if lower.ends_with("client") {
@@ -1538,10 +1530,10 @@ fn grpc_service_from_client_binding(receiver: Option<&str>, ctx: &Context) -> Op
     if let Some(service) = ctx.grpc_clients.get(receiver) {
         return Some(service.clone());
     }
-    if let Some(last) = receiver.rsplit('.').next() {
-        if let Some(service) = ctx.grpc_clients.get(last) {
-            return Some(service.clone());
-        }
+    if let Some(last) = receiver.rsplit('.').next()
+        && let Some(service) = ctx.grpc_clients.get(last)
+    {
+        return Some(service.clone());
     }
     None
 }
@@ -1560,7 +1552,7 @@ fn http_request_message_parts(node: Node<'_>, source: &str) -> Option<(String, S
         .map(argument_values)
         .unwrap_or_default();
     let method = args
-        .get(0)
+        .first()
         .and_then(|arg| extract_method_from_expr(*arg, source))?;
     let raw_path = args
         .get(1)
@@ -1695,11 +1687,10 @@ fn unquote_string_literal(raw: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    if let Some(rest) = trimmed.strip_prefix("@\"") {
-        if rest.ends_with('"') {
-            let value = &rest[..rest.len() - 1];
-            return Some(value.replace("\"\"", "\""));
-        }
+    if let Some(rest) = trimmed.strip_prefix("@\"")
+        && let Some(value) = rest.strip_suffix('"')
+    {
+        return Some(value.replace("\"\"", "\""));
     }
     let quote_count = trimmed.chars().take_while(|ch| *ch == '"').count();
     if quote_count >= 3 && trimmed.ends_with(&"\"".repeat(quote_count)) {
@@ -1812,15 +1803,15 @@ fn extract_di_options_types_from_params(param_text: &str) -> Vec<(String, String
         .trim_end_matches(')');
     let mut results = Vec::new();
     for part in split_respecting_brackets(text) {
-        if let Some(type_text) = param_type_part(&part) {
-            if let Some(options_type) = extract_options_type(&type_text) {
-                let wrapper = type_text
-                    .split('<')
-                    .next()
-                    .unwrap_or(&type_text)
-                    .to_string();
-                results.push((options_type, wrapper));
-            }
+        if let Some(type_text) = param_type_part(&part)
+            && let Some(options_type) = extract_options_type(&type_text)
+        {
+            let wrapper = type_text
+                .split('<')
+                .next()
+                .unwrap_or(&type_text)
+                .to_string();
+            results.push((options_type, wrapper));
         }
     }
     results
@@ -2028,8 +2019,7 @@ fn namespace_parts(name: &str) -> Vec<String> {
 }
 
 fn type_signature(node: Node<'_>, source: &str) -> Option<String> {
-    let params = node
-        .child_by_field_name("parameters")
+    node.child_by_field_name("parameters")
         .map(|n| node_text(n, source))
         .filter(|value| !value.is_empty())
         .or_else(|| {
@@ -2043,8 +2033,7 @@ fn type_signature(node: Node<'_>, source: &str) -> Option<String> {
                 }
             }
             None
-        });
-    params
+        })
 }
 
 fn method_signature(node: Node<'_>, source: &str) -> Option<String> {

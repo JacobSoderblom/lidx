@@ -13,20 +13,15 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Direction to traverse the symbol graph
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TraversalDirection {
     /// Follow incoming edges (who calls/imports this)
     Upstream,
     /// Follow outgoing edges (what does this call/import)
     Downstream,
     /// Follow all edges
+    #[default]
     Both,
-}
-
-impl Default for TraversalDirection {
-    fn default() -> Self {
-        TraversalDirection::Both
-    }
 }
 
 impl From<&str> for TraversalDirection {
@@ -170,6 +165,7 @@ fn resolve_next_id(
 /// Follow cross-service edges via bridge complements (CHANNEL_PUBLISH↔SUBSCRIBE, RPC_CALL↔IMPL, etc.)
 ///
 /// Returns true if the limit was hit (truncated).
+#[allow(clippy::too_many_arguments)]
 fn resolve_bridge_targets(
     db: &Db,
     bridge_targets: &[(String, String, i64)], // (qualname, edge_kind, source_symbol_id)
@@ -339,7 +335,7 @@ pub fn analyze_direct_impact(
                         for edge in all_incoming {
                             if !existing_ids.contains(&edge.id) {
                                 // Verify qualname actually matches this symbol
-                                let matches = edge.target_qualname.as_ref().map_or(false, |qn| {
+                                let matches = edge.target_qualname.as_ref().is_some_and(|qn| {
                                     qn == &sym.qualname
                                         || qn == &sym.name
                                         || qn.ends_with(&format!(".{}", sym.name))
@@ -362,17 +358,17 @@ pub fn analyze_direct_impact(
                     if !edge_matches_filter(edge, kinds, include_tests) {
                         continue;
                     }
-                    if next_symbol(edge, *current_id, direction).is_none() {
-                        if let Some(ref qn) = edge.target_qualname {
-                            // For downstream/both: resolve target when source is current
-                            if edge.source_symbol_id == Some(*current_id)
-                                && matches!(
-                                    direction,
-                                    TraversalDirection::Downstream | TraversalDirection::Both
-                                )
-                            {
-                                unresolved_qualnames.push(qn.clone());
-                            }
+                    if next_symbol(edge, *current_id, direction).is_none()
+                        && let Some(ref qn) = edge.target_qualname
+                    {
+                        // For downstream/both: resolve target when source is current
+                        if edge.source_symbol_id == Some(*current_id)
+                            && matches!(
+                                direction,
+                                TraversalDirection::Downstream | TraversalDirection::Both
+                            )
+                        {
+                            unresolved_qualnames.push(qn.clone());
                         }
                     }
                 }
@@ -382,10 +378,10 @@ pub fn analyze_direct_impact(
         // Batch resolve qualnames to symbol IDs (using fuzzy matching for short qualnames)
         let mut resolved_qualnames: HashMap<String, i64> = HashMap::new();
         for qn in &unresolved_qualnames {
-            if !resolved_qualnames.contains_key(qn) {
-                if let Ok(Some(id)) = db.lookup_symbol_id_fuzzy(qn, languages, graph_version) {
-                    resolved_qualnames.insert(qn.clone(), id);
-                }
+            if !resolved_qualnames.contains_key(qn)
+                && let Ok(Some(id)) = db.lookup_symbol_id_fuzzy(qn, languages, graph_version)
+            {
+                resolved_qualnames.insert(qn.clone(), id);
             }
         }
 
@@ -399,10 +395,9 @@ pub fn analyze_direct_impact(
                     }
                     if let Some(id) =
                         resolve_next_id(edge, *current_id, direction, &resolved_qualnames)
+                        && !visited.contains(&id)
                     {
-                        if !visited.contains(&id) {
-                            neighbor_ids.push(id);
-                        }
+                        neighbor_ids.push(id);
                     }
                 }
             }
@@ -430,10 +425,10 @@ pub fn analyze_direct_impact(
                     }
 
                     // Collect bridge targets
-                    if let Some(ref tq) = edge.target_qualname {
-                        if crate::indexer::channel::bridge_complement(&edge.kind).is_some() {
-                            bridge_targets.push((tq.clone(), edge.kind.clone(), *current_id));
-                        }
+                    if let Some(ref tq) = edge.target_qualname
+                        && crate::indexer::channel::bridge_complement(&edge.kind).is_some()
+                    {
+                        bridge_targets.push((tq.clone(), edge.kind.clone(), *current_id));
                     }
 
                     let Some(next_id) =

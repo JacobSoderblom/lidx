@@ -757,7 +757,7 @@ impl Db {
 
                 file_symbols
                     .entry(fd.file_id)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .extend(symbols_for_file);
             }
         }
@@ -818,7 +818,7 @@ impl Db {
 
                 file_symbols
                     .entry(fd.file_id)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .extend(symbols_for_file);
             }
         }
@@ -864,7 +864,7 @@ impl Db {
 
                 file_symbols
                     .entry(fd.file_id)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .extend(symbols_for_file);
             }
         }
@@ -935,7 +935,7 @@ impl Db {
                         .or_else(|| {
                             // Fuzzy fallback: try same-language first, then cross-language for bridge edges only
                             edge.target_qualname.as_ref().and_then(|qn| {
-                                let method_name = qn.split('.').last().unwrap_or(qn);
+                                let method_name = qn.split('.').next_back().unwrap_or(qn);
                                 let pattern = format!("%.{}", method_name);
                                 // Try same-language first
                                 let same_lang = fuzzy_same_lang_stmt
@@ -1091,7 +1091,10 @@ impl Db {
                     tx.prepare("UPDATE edges SET target_symbol_id = ? WHERE id = ?")?;
 
                 for (edge_id, target_qualname, source_lang, edge_kind) in &unresolved {
-                    let method_name = target_qualname.split('.').last().unwrap_or(target_qualname);
+                    let method_name = target_qualname
+                        .split('.')
+                        .next_back()
+                        .unwrap_or(target_qualname);
                     let pattern = format!("%.{}", method_name);
 
                     // Try same-language first
@@ -1250,19 +1253,19 @@ impl Db {
         params.push(Box::new(graph_version));
         params.push(Box::new(graph_version));
 
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(Box::new(language.clone()));
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(Box::new(language.clone()));
             }
         }
         // Relevance-based ordering:
@@ -1289,7 +1292,7 @@ impl Db {
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*param_refs, |row| symbol_from_row(row))?;
+        let rows = stmt.query_map(&*param_refs, symbol_from_row)?;
 
         let mut results = Vec::new();
         for row in rows {
@@ -1320,19 +1323,19 @@ impl Db {
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&pattern, &graph_version, &graph_version];
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         sql.push_str(" ORDER BY s.name LIMIT ?");
@@ -1340,7 +1343,7 @@ impl Db {
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| symbol_from_row(row))?;
+        let rows = stmt.query_map(&*params, symbol_from_row)?;
 
         let mut results = Vec::new();
         for row in rows {
@@ -1359,7 +1362,7 @@ impl Db {
                  JOIN files f ON s.file_id = f.id
                  WHERE s.id = ?",
                 params![id],
-                |row| symbol_from_row(row),
+                symbol_from_row,
             )
             .optional()
             .map_err(Into::into)
@@ -1382,7 +1385,7 @@ impl Db {
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                  LIMIT 1",
                 params![qualname, graph_version, graph_version],
-                |row| symbol_from_row(row),
+                symbol_from_row,
             )
             .optional()
             .map_err(Into::into)
@@ -1445,7 +1448,7 @@ impl Db {
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                  LIMIT 1",
                 params![stable_id, graph_version, graph_version],
-                |row| symbol_from_row(row),
+                symbol_from_row,
             )
             .optional()
             .map_err(Into::into)
@@ -1472,7 +1475,7 @@ impl Db {
                           s.start_line DESC
                  LIMIT 1",
                 params![path, line, line, graph_version, graph_version],
-                |row| symbol_from_row(row),
+                symbol_from_row,
             )
             .optional()
             .map_err(Into::into)
@@ -1497,19 +1500,19 @@ impl Db {
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&qualname, &graph_version, &graph_version];
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         sql.push_str(" LIMIT 1");
@@ -1540,7 +1543,10 @@ impl Db {
         }
 
         // Extract the method/function name from the short qualname
-        let name = target_qualname.split('.').last().unwrap_or(target_qualname);
+        let name = target_qualname
+            .split('.')
+            .next_back()
+            .unwrap_or(target_qualname);
 
         // Search for symbols whose qualname ends with '.{name}'
         let pattern = format!("%.{}", name);
@@ -1558,19 +1564,19 @@ impl Db {
         let mut params: Vec<&dyn rusqlite::ToSql> =
             vec![&name, &pattern, &graph_version, &graph_version];
 
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
 
@@ -1618,25 +1624,25 @@ impl Db {
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&id, &id, &graph_version, &graph_version];
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         sql.push_str(" ORDER BY e.id");
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| edge_from_row(row))?;
+        let rows = stmt.query_map(&*params, edge_from_row)?;
         let mut edges = Vec::new();
         for row in rows {
             edges.push(row?);
@@ -1674,19 +1680,19 @@ impl Db {
         let mut params: Vec<&dyn rusqlite::ToSql> =
             vec![&pattern, &exact, &kind, &graph_version, &graph_version];
 
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
 
@@ -1694,7 +1700,7 @@ impl Db {
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| edge_from_row(row))?;
+        let rows = stmt.query_map(&*params, edge_from_row)?;
         let mut edges = Vec::new();
         for row in rows {
             edges.push(row?);
@@ -1741,25 +1747,25 @@ impl Db {
         }
         params.push(&graph_version);
         params.push(&graph_version);
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         sql.push_str(" ORDER BY e.id LIMIT 100");
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| edge_from_row(row))?;
+        let rows = stmt.query_map(&*params, edge_from_row)?;
         let mut edges = Vec::new();
         for row in rows {
             edges.push(row?);
@@ -1786,10 +1792,10 @@ impl Db {
         let mut seen = std::collections::HashSet::new();
         let mut ids = Vec::new();
         for e in &edges {
-            if let Some(id) = e.source_symbol_id {
-                if seen.insert(id) {
-                    ids.push(id);
-                }
+            if let Some(id) = e.source_symbol_id
+                && seen.insert(id)
+            {
+                ids.push(id);
             }
         }
         Ok(ids)
@@ -1838,26 +1844,26 @@ impl Db {
         params.push(&graph_version);
         params.push(&graph_version);
 
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         sql.push_str(" ORDER BY e.id");
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| edge_from_row(row))?;
+        let rows = stmt.query_map(&*params, edge_from_row)?;
 
         // Group edges by symbol ID
         let mut result: HashMap<i64, Vec<Edge>> = HashMap::new();
@@ -1870,15 +1876,15 @@ impl Db {
             let edge = row?;
             seen_edge_ids.insert(edge.id);
             // Add edge to both source and target symbol lists
-            if let Some(source_id) = edge.source_symbol_id {
-                if ids.contains(&source_id) {
-                    result.entry(source_id).or_default().push(edge.clone());
-                }
+            if let Some(source_id) = edge.source_symbol_id
+                && ids.contains(&source_id)
+            {
+                result.entry(source_id).or_default().push(edge.clone());
             }
-            if let Some(target_id) = edge.target_symbol_id {
-                if ids.contains(&target_id) {
-                    result.entry(target_id).or_default().push(edge.clone());
-                }
+            if let Some(target_id) = edge.target_symbol_id
+                && ids.contains(&target_id)
+            {
+                result.entry(target_id).or_default().push(edge.clone());
             }
         }
 
@@ -1934,25 +1940,25 @@ impl Db {
             }
             unresolved_sql.push(')');
 
-            if let Some(languages) = languages {
-                if !languages.is_empty() {
-                    unresolved_sql.push_str(" AND f.language IN (");
-                    for (idx, _) in languages.iter().enumerate() {
-                        if idx > 0 {
-                            unresolved_sql.push(',');
-                        }
-                        unresolved_sql.push('?');
+            if let Some(languages) = languages
+                && !languages.is_empty()
+            {
+                unresolved_sql.push_str(" AND f.language IN (");
+                for (idx, _) in languages.iter().enumerate() {
+                    if idx > 0 {
+                        unresolved_sql.push(',');
                     }
-                    unresolved_sql.push(')');
-                    for language in languages {
-                        unresolved_params.push(language as &dyn rusqlite::ToSql);
-                    }
+                    unresolved_sql.push('?');
+                }
+                unresolved_sql.push(')');
+                for language in languages {
+                    unresolved_params.push(language as &dyn rusqlite::ToSql);
                 }
             }
             unresolved_sql.push_str(" ORDER BY e.id");
 
             let mut stmt = conn.prepare(&unresolved_sql)?;
-            let rows = stmt.query_map(&*unresolved_params, |row| edge_from_row(row))?;
+            let rows = stmt.query_map(&*unresolved_params, edge_from_row)?;
 
             for row in rows {
                 let edge = row?;
@@ -1976,6 +1982,7 @@ impl Db {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn list_edges(
         &self,
         limit: usize,
@@ -2036,19 +2043,19 @@ impl Db {
                 params.push(kind as &dyn rusqlite::ToSql);
             }
         }
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         let min_confidence_param = min_confidence;
@@ -2081,7 +2088,7 @@ impl Db {
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| edge_from_row(row))?;
+        let rows = stmt.query_map(&*params, edge_from_row)?;
         let mut edges = Vec::new();
         for row in rows {
             edges.push(row?);
@@ -2120,25 +2127,25 @@ impl Db {
             ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
         params.push(&graph_version);
         params.push(&graph_version);
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         sql.push_str(" ORDER BY s.id");
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| symbol_from_row(row))?;
+        let rows = stmt.query_map(&*params, symbol_from_row)?;
 
         let mut results = Vec::new();
         for row in rows {
@@ -2162,19 +2169,19 @@ impl Db {
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         let mut path_params = Vec::new();
@@ -2210,19 +2217,19 @@ impl Db {
         );
         let mut params: Vec<&dyn rusqlite::ToSql> =
             vec![&min_complexity, &graph_version, &graph_version];
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         let mut path_params = Vec::new();
@@ -2271,19 +2278,19 @@ impl Db {
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         let mut path_params = Vec::new();
@@ -2328,19 +2335,19 @@ impl Db {
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         let mut path_params = Vec::new();
@@ -2393,19 +2400,19 @@ impl Db {
         let mut params: Vec<&dyn rusqlite::ToSql> =
             vec![&graph_version, &graph_version, &graph_version];
 
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
 
@@ -2459,19 +2466,19 @@ impl Db {
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
 
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
 
@@ -2494,6 +2501,7 @@ impl Db {
         Ok(results)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn duplicate_groups(
         &self,
         limit: usize,
@@ -2514,19 +2522,19 @@ impl Db {
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&min_loc, &graph_version, &graph_version];
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
         let mut path_params = Vec::new();
@@ -2562,19 +2570,19 @@ impl Db {
             );
             let mut member_params: Vec<&dyn rusqlite::ToSql> =
                 vec![&hash, &min_loc, &graph_version, &graph_version];
-            if let Some(languages) = languages {
-                if !languages.is_empty() {
-                    member_sql.push_str(" AND f.language IN (");
-                    for (idx, _) in languages.iter().enumerate() {
-                        if idx > 0 {
-                            member_sql.push(',');
-                        }
-                        member_sql.push('?');
+            if let Some(languages) = languages
+                && !languages.is_empty()
+            {
+                member_sql.push_str(" AND f.language IN (");
+                for (idx, _) in languages.iter().enumerate() {
+                    if idx > 0 {
+                        member_sql.push(',');
                     }
-                    member_sql.push(')');
-                    for language in languages {
-                        member_params.push(language as &dyn rusqlite::ToSql);
-                    }
+                    member_sql.push('?');
+                }
+                member_sql.push(')');
+                for language in languages {
+                    member_params.push(language as &dyn rusqlite::ToSql);
                 }
             }
             let mut member_path_params = Vec::new();
@@ -2590,7 +2598,7 @@ impl Db {
             member_params.push(&per_group_limit);
             let member_conn = self.read_conn()?;
             let mut member_stmt = member_conn.prepare(&member_sql)?;
-            let rows = member_stmt.query_map(&*member_params, |row| symbol_from_row(row))?;
+            let rows = member_stmt.query_map(&*member_params, symbol_from_row)?;
             let mut symbols = Vec::new();
             for row in rows {
                 symbols.push(row?);
@@ -2649,19 +2657,19 @@ impl Db {
             &graph_version,
         ];
 
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                full_sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        full_sql.push(',');
-                    }
-                    full_sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            full_sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    full_sql.push(',');
                 }
-                full_sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                full_sql.push('?');
+            }
+            full_sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
 
@@ -2674,7 +2682,7 @@ impl Db {
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&full_sql)?;
-        let rows = stmt.query_map(&*params, |row| symbol_from_row(row))?;
+        let rows = stmt.query_map(&*params, symbol_from_row)?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);
@@ -2711,19 +2719,19 @@ impl Db {
         let mut params: Vec<&dyn rusqlite::ToSql> =
             vec![&graph_version, &graph_version, &graph_version];
 
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                full_sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        full_sql.push(',');
-                    }
-                    full_sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            full_sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    full_sql.push(',');
                 }
-                full_sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                full_sql.push('?');
+            }
+            full_sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
 
@@ -2736,7 +2744,7 @@ impl Db {
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&full_sql)?;
-        let rows = stmt.query_map(&*params, |row| edge_from_row(row))?;
+        let rows = stmt.query_map(&*params, edge_from_row)?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);
@@ -2767,19 +2775,19 @@ impl Db {
 
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
 
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
 
@@ -2792,7 +2800,7 @@ impl Db {
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| symbol_from_row(row))?;
+        let rows = stmt.query_map(&*params, symbol_from_row)?;
         let mut all_tests = Vec::new();
         for row in rows {
             all_tests.push(row?);
@@ -3276,19 +3284,19 @@ impl Db {
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
 
         // Add language filter
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
 
@@ -3341,7 +3349,7 @@ impl Db {
                 languages: langs.into_iter().collect(),
             })
             .collect();
-        result.sort_by(|a, b| b.symbol_count.cmp(&a.symbol_count));
+        result.sort_by_key(|x| std::cmp::Reverse(x.symbol_count));
 
         Ok(result)
     }
@@ -3372,19 +3380,19 @@ impl Db {
             vec![&graph_version, &graph_version, &graph_version];
 
         // Add language filter
-        if let Some(languages) = languages {
-            if !languages.is_empty() {
-                sql.push_str(" AND src_f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        sql.push(',');
-                    }
-                    sql.push('?');
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND src_f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
                 }
-                sql.push(')');
-                for language in languages {
-                    params.push(language as &dyn rusqlite::ToSql);
-                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
             }
         }
 
@@ -3440,7 +3448,7 @@ impl Db {
             .into_iter()
             .map(|((src, tgt), (calls, imports))| (src, tgt, calls, imports))
             .collect();
-        result.sort_by(|a, b| (b.2 + b.3).cmp(&(a.2 + a.3))); // Sort by total edge count desc
+        result.sort_by_key(|x| std::cmp::Reverse(x.2 + x.3)); // Sort by total edge count desc
 
         Ok(result)
     }
@@ -3475,19 +3483,19 @@ fn count_files_for_version(
          WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)",
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
-    if let Some(languages) = languages {
-        if !languages.is_empty() {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
+    if let Some(languages) = languages
+        && !languages.is_empty()
+    {
+        sql.push_str(" AND f.language IN (");
+        for (idx, _) in languages.iter().enumerate() {
+            if idx > 0 {
+                sql.push(',');
             }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
+            sql.push('?');
+        }
+        sql.push(')');
+        for language in languages {
+            params.push(language as &dyn rusqlite::ToSql);
         }
     }
     let count: i64 = conn.query_row(&sql, &*params, |row| row.get(0))?;
@@ -3507,19 +3515,19 @@ fn count_symbols_for_version(
            AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-    if let Some(languages) = languages {
-        if !languages.is_empty() {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
+    if let Some(languages) = languages
+        && !languages.is_empty()
+    {
+        sql.push_str(" AND f.language IN (");
+        for (idx, _) in languages.iter().enumerate() {
+            if idx > 0 {
+                sql.push(',');
             }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
+            sql.push('?');
+        }
+        sql.push(')');
+        for language in languages {
+            params.push(language as &dyn rusqlite::ToSql);
         }
     }
     let count: i64 = conn.query_row(&sql, &*params, |row| row.get(0))?;
@@ -3539,19 +3547,19 @@ fn count_edges_for_version(
            AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-    if let Some(languages) = languages {
-        if !languages.is_empty() {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
+    if let Some(languages) = languages
+        && !languages.is_empty()
+    {
+        sql.push_str(" AND f.language IN (");
+        for (idx, _) in languages.iter().enumerate() {
+            if idx > 0 {
+                sql.push(',');
             }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
+            sql.push('?');
+        }
+        sql.push(')');
+        for language in languages {
+            params.push(language as &dyn rusqlite::ToSql);
         }
     }
     let count: i64 = conn.query_row(&sql, &*params, |row| row.get(0))?;
@@ -3604,8 +3612,8 @@ fn append_path_filters<'a>(
         path_params.push(format!("{escaped}/%"));
     }
     sql.push(')');
-    for idx in base..path_params.len() {
-        params.push(&path_params[idx] as &dyn rusqlite::ToSql);
+    for param in &path_params[base..] {
+        params.push(param as &dyn rusqlite::ToSql);
     }
 }
 

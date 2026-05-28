@@ -73,77 +73,72 @@ impl LanguageExtractor for BicepExtractor {
             });
 
             // IMPORTS_FILE edge for module declarations
-            if decl.kind == DeclKind::ModuleRef {
-                if let Some(ref path) = decl.type_or_path {
-                    output.edges.push(EdgeInput {
-                        kind: "IMPORTS_FILE".to_string(),
-                        source_qualname: Some(qualname.clone()),
-                        target_qualname: Some(path.clone()),
-                        ..Default::default()
-                    });
-                }
+            if decl.kind == DeclKind::ModuleRef
+                && let Some(ref path) = decl.type_or_path
+            {
+                output.edges.push(EdgeInput {
+                    kind: "IMPORTS_FILE".to_string(),
+                    source_qualname: Some(qualname.clone()),
+                    target_qualname: Some(path.clone()),
+                    ..Default::default()
+                });
             }
 
             // Channel edges for Service Bus topics/queues
-            if decl.kind == DeclKind::Resource {
-                if let Some(ref azure_type) = decl.type_or_path {
-                    if is_service_bus_topic_or_queue(azure_type) {
-                        if let Some(ref resource_name) = decl.resource_name {
-                            if let Some(channel) = normalize_azure_channel_name(resource_name) {
-                                let detail = json!({
-                                    "channel": channel,
-                                    "raw": resource_name,
-                                    "framework": "azure-service-bus",
-                                    "role": "infrastructure",
-                                })
-                                .to_string();
-                                output.edges.push(EdgeInput {
-                                    kind: CHANNEL_PUBLISH_KIND.to_string(),
-                                    source_qualname: Some(qualname.clone()),
-                                    target_qualname: Some(channel.clone()),
-                                    detail: Some(detail.clone()),
-                                    evidence_start_line: Some(decl.start_line),
-                                    evidence_end_line: Some(decl.end_line),
-                                    ..Default::default()
-                                });
-                                output.edges.push(EdgeInput {
-                                    kind: CHANNEL_SUBSCRIBE_KIND.to_string(),
-                                    source_qualname: Some(qualname.clone()),
-                                    target_qualname: Some(channel),
-                                    detail: Some(detail),
-                                    evidence_start_line: Some(decl.start_line),
-                                    evidence_end_line: Some(decl.end_line),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                    }
-                }
+            if decl.kind == DeclKind::Resource
+                && let Some(ref azure_type) = decl.type_or_path
+                && is_service_bus_topic_or_queue(azure_type)
+                && let Some(ref resource_name) = decl.resource_name
+                && let Some(channel) = normalize_azure_channel_name(resource_name)
+            {
+                let detail = json!({
+                    "channel": channel,
+                    "raw": resource_name,
+                    "framework": "azure-service-bus",
+                    "role": "infrastructure",
+                })
+                .to_string();
+                output.edges.push(EdgeInput {
+                    kind: CHANNEL_PUBLISH_KIND.to_string(),
+                    source_qualname: Some(qualname.clone()),
+                    target_qualname: Some(channel.clone()),
+                    detail: Some(detail.clone()),
+                    evidence_start_line: Some(decl.start_line),
+                    evidence_end_line: Some(decl.end_line),
+                    ..Default::default()
+                });
+                output.edges.push(EdgeInput {
+                    kind: CHANNEL_SUBSCRIBE_KIND.to_string(),
+                    source_qualname: Some(qualname.clone()),
+                    target_qualname: Some(channel),
+                    detail: Some(detail),
+                    evidence_start_line: Some(decl.start_line),
+                    evidence_end_line: Some(decl.end_line),
+                    ..Default::default()
+                });
             }
 
             // Key Vault secret → CONFIG_SOURCE
-            if let Some(ref azure_type) = decl.type_or_path {
-                if is_keyvault_secret(azure_type) {
-                    if let Some(ref resource_name) = decl.resource_name {
-                        if let Some(secret_uri) = config::normalize_secret_name(resource_name) {
-                            let detail = config::build_config_source_detail(
-                                "secret",
-                                &secret_uri,
-                                resource_name,
-                                Some(&json!({ "provider": "azure-keyvault" })),
-                            );
-                            output.edges.push(EdgeInput {
-                                kind: CONFIG_SOURCE_KIND.to_string(),
-                                source_qualname: Some(qualname.clone()),
-                                target_qualname: Some(secret_uri),
-                                detail: Some(detail),
-                                evidence_start_line: Some(decl.start_line),
-                                evidence_end_line: Some(decl.end_line),
-                                ..Default::default()
-                            });
-                        }
-                    }
-                }
+            if let Some(ref azure_type) = decl.type_or_path
+                && is_keyvault_secret(azure_type)
+                && let Some(ref resource_name) = decl.resource_name
+                && let Some(secret_uri) = config::normalize_secret_name(resource_name)
+            {
+                let detail = config::build_config_source_detail(
+                    "secret",
+                    &secret_uri,
+                    resource_name,
+                    Some(&json!({ "provider": "azure-keyvault" })),
+                );
+                output.edges.push(EdgeInput {
+                    kind: CONFIG_SOURCE_KIND.to_string(),
+                    source_qualname: Some(qualname.clone()),
+                    target_qualname: Some(secret_uri),
+                    detail: Some(detail),
+                    evidence_start_line: Some(decl.start_line),
+                    evidence_end_line: Some(decl.end_line),
+                    ..Default::default()
+                });
             }
         }
 
@@ -293,10 +288,10 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
         }
 
         // Check for block comment start
-        if trimmed.starts_with("/*") {
-            if let Some(pos) = trimmed[2..].find("*/") {
+        if let Some(after_open) = trimmed.strip_prefix("/*") {
+            if let Some(pos) = after_open.find("*/") {
                 // Single-line block comment
-                let rest = &trimmed[pos + 4..];
+                let rest = &after_open[pos + 2..];
                 count_depth(rest, &mut brace_depth, &mut bracket_depth);
             } else {
                 in_block_comment = true;
@@ -309,14 +304,13 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
         // Inside a block — track depth
         if brace_depth > 0 || bracket_depth > 0 {
             // At depth 1 inside a resource/module block, extract name: 'value'
-            if brace_depth == 1 && bracket_depth == 0 {
-                if let Some(idx) = current_resource_idx {
-                    if decls[idx].resource_name.is_none() {
-                        if let Some(rn) = extract_resource_name_property(trimmed) {
-                            decls[idx].resource_name = Some(rn);
-                        }
-                    }
-                }
+            if brace_depth == 1
+                && bracket_depth == 0
+                && let Some(idx) = current_resource_idx
+                && decls[idx].resource_name.is_none()
+                && let Some(rn) = extract_resource_name_property(trimmed)
+            {
+                decls[idx].resource_name = Some(rn);
             }
 
             let (bd, kd) = count_depth_line(trimmed);
@@ -388,22 +382,21 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
                 && tokens[0] == "metadata"
                 && tokens[1] == "description"
                 && tokens[2] == "="
+                && let Some(val) = extract_single_quoted_string(trimmed)
             {
-                if let Some(val) = extract_single_quoted_string(trimmed) {
-                    decls.push(BicepDecl {
-                        kind: DeclKind::Metadata,
-                        name: "description".to_string(),
-                        type_or_path: None,
-                        start_line: line_num,
-                        start_byte: line_byte_start,
-                        end_line: line_num,
-                        end_byte: line_byte_end,
-                        is_existing: false,
-                        description: Some(val),
-                        is_secure: false,
-                        resource_name: None,
-                    });
-                }
+                decls.push(BicepDecl {
+                    kind: DeclKind::Metadata,
+                    name: "description".to_string(),
+                    type_or_path: None,
+                    start_line: line_num,
+                    start_byte: line_byte_start,
+                    end_line: line_num,
+                    end_byte: line_byte_end,
+                    is_existing: false,
+                    description: Some(val),
+                    is_secure: false,
+                    resource_name: None,
+                });
             }
             byte_offset = line_byte_end + 1;
             line_idx += 1;
@@ -422,7 +415,7 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
             if tokens.len() >= 2 {
                 let name = tokens[1].to_string();
                 let azure_type = extract_single_quoted_string(trimmed);
-                let is_existing = tokens.iter().any(|t| *t == "existing");
+                let is_existing = tokens.contains(&"existing");
 
                 // Determine if this opens a block
                 let (bd, kd) = count_depth_line(trimmed);
@@ -435,11 +428,7 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
                     bracket_depth = 0;
                 }
 
-                let end_line = if brace_depth == 0 && bracket_depth == 0 {
-                    line_num
-                } else {
-                    line_num // will be updated when block closes
-                };
+                let end_line = line_num;
 
                 decls.push(BicepDecl {
                     kind: DeclKind::Resource,
@@ -487,11 +476,7 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
                     bracket_depth = 0;
                 }
 
-                let end_line = if brace_depth == 0 && bracket_depth == 0 {
-                    line_num
-                } else {
-                    line_num
-                };
+                let end_line = line_num;
 
                 decls.push(BicepDecl {
                     kind: DeclKind::ModuleRef,
@@ -688,14 +673,14 @@ fn parse_bicep(source: &str) -> (Vec<BicepDecl>, Option<String>, Option<String>)
         }
 
         // func <name>(<params>) <returnType> => <expr>
-        if trimmed.starts_with("func ") {
+        if let Some(after_func) = trimmed.strip_prefix("func ") {
             let start = decl_start_line.take().unwrap_or(line_num);
             let start_byte_actual = if start < line_num {
                 line_byte_offset(source, start)
             } else {
                 line_byte_start
             };
-            let name = trimmed[5..]
+            let name = after_func
                 .split(|c: char| c == '(' || c.is_whitespace())
                 .next()
                 .unwrap_or("")

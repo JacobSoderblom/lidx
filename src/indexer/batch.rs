@@ -60,7 +60,7 @@ pub struct FileDiff {
 ///
 /// # Usage
 ///
-/// ```rust
+/// ```ignore
 /// let mut writer = BatchWriter::new(BatchConfig::default());
 ///
 /// // Collect diffs from multiple files

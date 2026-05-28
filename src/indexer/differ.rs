@@ -82,7 +82,7 @@ pub fn compute_symbol_diff(old_symbols: Vec<Symbol>, new_symbols: Vec<SymbolInpu
     }
 
     // Find deleted symbols
-    for (stable_id, _) in &old_map {
+    for stable_id in old_map.keys() {
         if !new_map.contains_key(stable_id) {
             diff.deleted.push(stable_id.clone());
         }

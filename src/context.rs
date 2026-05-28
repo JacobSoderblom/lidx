@@ -87,57 +87,56 @@ pub fn build_file_context(
         match edge.kind.as_str() {
             "CALLS" | "RPC_CALL" | "HTTP_CALL" | "CHANNEL_PUBLISH" => {
                 // If source is in our file → outgoing call (callee)
-                if let Some(src_id) = edge.source_symbol_id {
-                    if symbol_id_set.contains(&src_id) {
-                        let name = edge.target_qualname.as_deref().unwrap_or("?").to_string();
-                        // Resolve target file from target_symbol_id
-                        let target_file = if let Some(tgt_id) = edge.target_symbol_id {
-                            let file = target_file_cache
-                                .entry(tgt_id)
-                                .or_insert_with(|| {
-                                    db.get_symbol_by_id(tgt_id)
-                                        .ok()
-                                        .flatten()
-                                        .map(|s| s.file_path)
-                                        .unwrap_or_default()
-                                })
-                                .clone();
-                            if file.is_empty() { None } else { Some(file) }
-                        } else {
-                            None
-                        };
-                        // Skip if we can't resolve target file (unresolved edges)
-                        // or if it's same-file
-                        let callee_file = match target_file {
-                            Some(f) if f != file_path => f,
-                            _ => continue,
-                        };
-                        let key = (name.clone(), callee_file.clone());
-                        if callee_seen.insert(key) && callees.len() < MAX_CALLEES {
-                            callees.push(CrossRef {
-                                symbol_name: short_name(&name),
-                                file_path: callee_file,
-                            });
-                        }
-                        continue;
+                if let Some(src_id) = edge.source_symbol_id
+                    && symbol_id_set.contains(&src_id)
+                {
+                    let name = edge.target_qualname.as_deref().unwrap_or("?").to_string();
+                    // Resolve target file from target_symbol_id
+                    let target_file = if let Some(tgt_id) = edge.target_symbol_id {
+                        let file = target_file_cache
+                            .entry(tgt_id)
+                            .or_insert_with(|| {
+                                db.get_symbol_by_id(tgt_id)
+                                    .ok()
+                                    .flatten()
+                                    .map(|s| s.file_path)
+                                    .unwrap_or_default()
+                            })
+                            .clone();
+                        if file.is_empty() { None } else { Some(file) }
+                    } else {
+                        None
+                    };
+                    // Skip if we can't resolve target file (unresolved edges)
+                    // or if it's same-file
+                    let callee_file = match target_file {
+                        Some(f) if f != file_path => f,
+                        _ => continue,
+                    };
+                    let key = (name.clone(), callee_file.clone());
+                    if callee_seen.insert(key) && callees.len() < MAX_CALLEES {
+                        callees.push(CrossRef {
+                            symbol_name: short_name(&name),
+                            file_path: callee_file,
+                        });
                     }
+                    continue;
                 }
                 // If target is in our file → incoming call (caller) from edge.file_path
                 if edge.file_path == file_path {
                     continue; // Same-file edge, not cross-file
                 }
-                if let Some(tgt_id) = edge.target_symbol_id {
-                    if symbol_id_set.contains(&tgt_id) {
-                        if let Some(src_id) = edge.source_symbol_id {
-                            let name = format!("id:{}", src_id);
-                            let key = (name.clone(), edge.file_path.clone());
-                            if caller_seen.insert(key) && callers.len() < MAX_CALLERS {
-                                callers.push(CrossRef {
-                                    symbol_name: name,
-                                    file_path: edge.file_path.clone(),
-                                });
-                            }
-                        }
+                if let Some(tgt_id) = edge.target_symbol_id
+                    && symbol_id_set.contains(&tgt_id)
+                    && let Some(src_id) = edge.source_symbol_id
+                {
+                    let name = format!("id:{}", src_id);
+                    let key = (name.clone(), edge.file_path.clone());
+                    if caller_seen.insert(key) && callers.len() < MAX_CALLERS {
+                        callers.push(CrossRef {
+                            symbol_name: name,
+                            file_path: edge.file_path.clone(),
+                        });
                     }
                 }
             }

@@ -198,13 +198,13 @@ fn parse_git_log(output: &str) -> Result<Vec<GitCommit>> {
 
         if line.is_empty() {
             // Empty line separates commits (but only save if it has files)
-            if let Some(ref commit) = current_commit {
-                if !commit.files.is_empty() {
-                    // This commit is complete, save it
-                    commits.push(current_commit.take().unwrap());
-                }
-                // Otherwise keep it open to collect files
+            if let Some(ref commit) = current_commit
+                && !commit.files.is_empty()
+            {
+                // This commit is complete, save it
+                commits.push(current_commit.take().unwrap());
             }
+            // Otherwise keep it open to collect files
             continue;
         }
 
@@ -212,10 +212,10 @@ fn parse_git_log(output: &str) -> Result<Vec<GitCommit>> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() == 2 && parts[0].len() == 40 && parts[1].parse::<i64>().is_ok() {
             // Save previous commit if exists
-            if let Some(commit) = current_commit.take() {
-                if !commit.files.is_empty() {
-                    commits.push(commit);
-                }
+            if let Some(commit) = current_commit.take()
+                && !commit.files.is_empty()
+            {
+                commits.push(commit);
             }
 
             // Start new commit
@@ -238,10 +238,10 @@ fn parse_git_log(output: &str) -> Result<Vec<GitCommit>> {
     }
 
     // Don't forget the last commit
-    if let Some(commit) = current_commit {
-        if !commit.files.is_empty() {
-            commits.push(commit);
-        }
+    if let Some(commit) = current_commit
+        && !commit.files.is_empty()
+    {
+        commits.push(commit);
     }
 
     Ok(commits)

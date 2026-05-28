@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
@@ -43,17 +43,17 @@ fn validate_gather_context_params(params: &GatherContextParams) -> ValidationRes
     let mut result = ValidationResult::new();
 
     // Validate max_bytes
-    if let Some(max_bytes) = params.max_bytes {
-        if max_bytes == 0 {
-            result.add("max_bytes", "out_of_range", "max_bytes must be at least 1");
-        }
+    if let Some(max_bytes) = params.max_bytes
+        && max_bytes == 0
+    {
+        result.add("max_bytes", "out_of_range", "max_bytes must be at least 1");
     }
 
     // Validate depth
-    if let Some(depth) = params.depth {
-        if depth > 10 {
-            result.add("depth", "out_of_range", "depth must be 10 or less");
-        }
+    if let Some(depth) = params.depth
+        && depth > 10
+    {
+        result.add("depth", "out_of_range", "depth must be 10 or less");
     }
 
     // Validate max_nodes
@@ -149,10 +149,10 @@ pub(crate) fn compact_symbol_value(symbol_value: &serde_json::Value) -> serde_js
 fn estimate_hop_size(hop: &crate::model::TraceHop, compact: bool) -> usize {
     if compact {
         let mut hop_val = serde_json::to_value(hop).unwrap_or_default();
-        if let Some(sym) = hop_val.get("symbol").cloned() {
-            if let Some(obj) = hop_val.as_object_mut() {
-                obj.insert("symbol".to_string(), compact_symbol_value(&sym));
-            }
+        if let Some(sym) = hop_val.get("symbol").cloned()
+            && let Some(obj) = hop_val.as_object_mut()
+        {
+            obj.insert("symbol".to_string(), compact_symbol_value(&sym));
         }
         serde_json::to_string(&hop_val).unwrap_or_default().len()
     } else {
@@ -535,35 +535,34 @@ fn inline_refs(value: &mut Value, definitions: &Value) {
     match value {
         Value::Object(map) => {
             // Handle $ref: inline the definition
-            if let Some(ref_val) = map.get("$ref").cloned() {
-                if let Some(ref_str) = ref_val.as_str() {
-                    // Extract definition name from "#/definitions/Name"
-                    if let Some(name) = ref_str.strip_prefix("#/definitions/") {
-                        if let Some(def) = definitions.get(name) {
-                            let mut inlined = def.clone();
-                            inline_refs(&mut inlined, definitions);
-                            *value = inlined;
-                            return;
-                        }
-                    }
+            if let Some(ref_val) = map.get("$ref").cloned()
+                && let Some(ref_str) = ref_val.as_str()
+            {
+                // Extract definition name from "#/definitions/Name"
+                if let Some(name) = ref_str.strip_prefix("#/definitions/")
+                    && let Some(def) = definitions.get(name)
+                {
+                    let mut inlined = def.clone();
+                    inline_refs(&mut inlined, definitions);
+                    *value = inlined;
+                    return;
                 }
             }
 
             // Handle anyOf with null (Option<T> pattern): collapse to inner schema
-            if let Some(any_of) = map.get("anyOf").cloned() {
-                if let Some(variants) = any_of.as_array() {
-                    if variants.len() == 2 {
-                        let null_idx = variants
-                            .iter()
-                            .position(|v| v.get("type").and_then(|t| t.as_str()) == Some("null"));
-                        if let Some(idx) = null_idx {
-                            let inner_idx = 1 - idx;
-                            let mut inner = variants[inner_idx].clone();
-                            inline_refs(&mut inner, definitions);
-                            *value = inner;
-                            return;
-                        }
-                    }
+            if let Some(any_of) = map.get("anyOf").cloned()
+                && let Some(variants) = any_of.as_array()
+                && variants.len() == 2
+            {
+                let null_idx = variants
+                    .iter()
+                    .position(|v| v.get("type").and_then(|t| t.as_str()) == Some("null"));
+                if let Some(idx) = null_idx {
+                    let inner_idx = 1 - idx;
+                    let mut inner = variants[inner_idx].clone();
+                    inline_refs(&mut inner, definitions);
+                    *value = inner;
+                    return;
                 }
             }
 
@@ -700,7 +699,7 @@ fn truncate_response(
             let mut low = 0usize;
             let mut high = arr.len();
             while low < high {
-                let mid = (low + high + 1) / 2;
+                let mid = (low + high).div_ceil(2);
                 let slice = serde_json::Value::Array(arr[..mid].to_vec());
                 let size = serde_json::to_string(&slice).unwrap_or_default().len();
                 if size <= max_bytes {
@@ -731,10 +730,10 @@ fn truncate_response(
             }
 
             // If there's a single top-level array (common pattern), capture its length
-            if array_keys.len() == 1 {
-                if let Some(serde_json::Value::Array(arr)) = map.get(&array_keys[0]) {
-                    total_available = Some(arr.len());
-                }
+            if array_keys.len() == 1
+                && let Some(serde_json::Value::Array(arr)) = map.get(&array_keys[0])
+            {
+                total_available = Some(arr.len());
             }
 
             // Truncate each array field proportionally
@@ -807,7 +806,7 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
         method,
         "gather_context" | "onboard" | "orient" | "context" | "repo_map"
     );
-    let effective_max = max_response_bytes.or_else(|| {
+    let effective_max = max_response_bytes.or({
         if exempt {
             None
         } else {
@@ -1069,62 +1068,61 @@ fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
     let mut current_file: Option<ChangedFile> = None;
 
     for line in diff.lines() {
-        if line.starts_with("+++ b/") {
+        if let Some(rest) = line.strip_prefix("+++ b/") {
             if let Some(file) = current_file.take() {
                 files.push(file);
             }
             current_file = Some(ChangedFile {
-                path: line[6..].to_string(),
+                path: rest.to_string(),
                 changed_ranges: Vec::new(),
                 added_ranges: Vec::new(),
                 deleted_ranges: Vec::new(),
             });
-        } else if line.starts_with("+++ ") && !line.starts_with("+++ /dev/null") {
-            if let Some(file) = current_file.take() {
-                files.push(file);
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
+            if !rest.starts_with("/dev/null") {
+                if let Some(file) = current_file.take() {
+                    files.push(file);
+                }
+                current_file = Some(ChangedFile {
+                    path: rest.to_string(),
+                    changed_ranges: Vec::new(),
+                    added_ranges: Vec::new(),
+                    deleted_ranges: Vec::new(),
+                });
             }
-            current_file = Some(ChangedFile {
-                path: line[4..].to_string(),
-                changed_ranges: Vec::new(),
-                added_ranges: Vec::new(),
-                deleted_ranges: Vec::new(),
-            });
         } else if line.starts_with("@@ ") {
             // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
-            if let Some(ref mut file) = current_file {
-                if let Some(hunk_info) = line.strip_prefix("@@ ") {
-                    if let Some(ranges) = hunk_info.split("@@").next() {
-                        let parts: Vec<&str> = ranges.split_whitespace().collect();
+            if let Some(ref mut file) = current_file
+                && let Some(hunk_info) = line.strip_prefix("@@ ")
+                && let Some(ranges) = hunk_info.split("@@").next()
+            {
+                let parts: Vec<&str> = ranges.split_whitespace().collect();
 
-                        // Parse old range (deleted lines)
-                        if let Some(old_part) = parts.get(0) {
-                            if let Some(old_range) = old_part.strip_prefix('-') {
-                                if let Some((start, count)) = parse_hunk_range(old_range) {
-                                    file.deleted_ranges.push(DiffHunk {
-                                        start_line: start,
-                                        line_count: count,
-                                    });
-                                }
-                            }
-                        }
+                // Parse old range (deleted lines)
+                if let Some(old_part) = parts.first()
+                    && let Some(old_range) = old_part.strip_prefix('-')
+                    && let Some((start, count)) = parse_hunk_range(old_range)
+                {
+                    file.deleted_ranges.push(DiffHunk {
+                        start_line: start,
+                        line_count: count,
+                    });
+                }
 
-                        // Parse new range (added/modified lines)
-                        if let Some(new_part) = parts.get(1) {
-                            if let Some(new_range) = new_part.strip_prefix('+') {
-                                if let Some((start, count)) = parse_hunk_range(new_range) {
-                                    file.added_ranges.push(DiffHunk {
-                                        start_line: start,
-                                        line_count: count,
-                                    });
-                                    // Also add to changed_ranges as any hunk represents a change
-                                    file.changed_ranges.push(DiffHunk {
-                                        start_line: start,
-                                        line_count: count,
-                                    });
-                                }
-                            }
-                        }
-                    }
+                // Parse new range (added/modified lines)
+                if let Some(new_part) = parts.get(1)
+                    && let Some(new_range) = new_part.strip_prefix('+')
+                    && let Some((start, count)) = parse_hunk_range(new_range)
+                {
+                    file.added_ranges.push(DiffHunk {
+                        start_line: start,
+                        line_count: count,
+                    });
+                    // Also add to changed_ranges as any hunk represents a change
+                    file.changed_ranges.push(DiffHunk {
+                        start_line: start,
+                        line_count: count,
+                    });
                 }
             }
         }
@@ -1150,7 +1148,7 @@ fn parse_hunk_range(range: &str) -> Option<(i64, i64)> {
 }
 
 fn normalize_search_paths(
-    repo_root: &PathBuf,
+    repo_root: &Path,
     path: Option<String>,
     paths: Option<Vec<String>>,
 ) -> Result<Option<Vec<String>>> {
@@ -1623,7 +1621,7 @@ mod tests {
 }
 
 fn resolve_repo_path_for_op(
-    repo_root: &PathBuf,
+    repo_root: &Path,
     raw_path: &str,
     op: &str,
 ) -> Result<(PathBuf, String)> {
@@ -1661,7 +1659,7 @@ fn resolve_repo_path_for_op(
 }
 
 fn resolve_rg_paths(
-    repo_root: &PathBuf,
+    repo_root: &Path,
     path: Option<String>,
     paths: Option<Vec<String>>,
 ) -> Result<Vec<PathBuf>> {
@@ -1673,7 +1671,7 @@ fn resolve_rg_paths(
         raw_paths.extend(values);
     }
     if raw_paths.is_empty() {
-        return Ok(vec![repo_root.clone()]);
+        return Ok(vec![repo_root.to_path_buf()]);
     }
     let mut resolved = Vec::new();
     for raw in raw_paths {
@@ -1685,7 +1683,7 @@ fn resolve_rg_paths(
         resolved.push(abs);
     }
     if resolved.is_empty() {
-        return Ok(vec![repo_root.clone()]);
+        return Ok(vec![repo_root.to_path_buf()]);
     }
     Ok(resolved)
 }
@@ -1873,25 +1871,24 @@ fn annotate_grep_hits(
                 hit.context = Some(context);
             }
         }
-        if include_symbol {
-            if let Some(symbol) =
+        if include_symbol
+            && let Some(symbol) =
                 indexer
                     .db()
                     .enclosing_symbol_for_line(&hit.path, hit.line as i64, graph_version)?
+        {
+            hit.enclosing_symbol = Some(symbol.qualname.clone());
+            if let Some(query) = query
+                && symbol_matches_query(&symbol, query)
             {
-                hit.enclosing_symbol = Some(symbol.qualname.clone());
-                if let Some(query) = query {
-                    if symbol_matches_query(&symbol, query) {
-                        push_reason(&mut hit.reasons, "symbol_name");
-                    }
-                }
+                push_reason(&mut hit.reasons, "symbol_name");
             }
         }
     }
     Ok(())
 }
 
-fn read_lines(repo_root: &PathBuf, rel_path: &str) -> Option<Vec<String>> {
+fn read_lines(repo_root: &Path, rel_path: &str) -> Option<Vec<String>> {
     let path = repo_root.join(rel_path);
     let content = util::read_to_string(&path).ok()?;
     Some(content.lines().map(|line| line.to_string()).collect())
@@ -1907,12 +1904,13 @@ fn build_context(lines: &[String], line: usize, context_lines: usize) -> Option<
     }
     let start = line_idx.saturating_sub(context_lines);
     let end = (line_idx + context_lines).min(lines.len() - 1);
-    let mut out = Vec::new();
-    for idx in start..=end {
-        out.push(ContextLine {
-            line: idx + 1,
-            text: lines[idx].clone(),
-        });
-    }
+    let out = lines[start..=end]
+        .iter()
+        .enumerate()
+        .map(|(i, text)| ContextLine {
+            line: start + i + 1,
+            text: text.clone(),
+        })
+        .collect();
     Some(out)
 }

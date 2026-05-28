@@ -67,10 +67,10 @@ pub fn search_text(
     limit: usize,
     options: SearchOptions<'_>,
 ) -> Result<Vec<SearchHit>> {
-    if options.languages.map_or(false, |langs| langs.is_empty()) {
+    if options.languages.is_some_and(|langs| langs.is_empty()) {
         return Ok(Vec::new());
     }
-    if options.paths.map_or(false, |paths| paths.is_empty()) {
+    if options.paths.is_some_and(|paths| paths.is_empty()) {
         return Ok(Vec::new());
     }
     let fetch_limit = rank_fetch_limit(limit, options.rank);
@@ -133,10 +133,10 @@ pub fn grep_text(
     include_text: bool,
     options: SearchOptions<'_>,
 ) -> Result<Vec<GrepHit>> {
-    if options.languages.map_or(false, |langs| langs.is_empty()) {
+    if options.languages.is_some_and(|langs| langs.is_empty()) {
         return Ok(Vec::new());
     }
-    if options.paths.map_or(false, |paths| paths.is_empty()) {
+    if options.paths.is_some_and(|paths| paths.is_empty()) {
         return Ok(Vec::new());
     }
     let fetch_limit = rank_fetch_limit(limit, options.rank);
@@ -303,7 +303,7 @@ fn search_with_rg(
             .unwrap_or(1);
         if let Some(ref set) = lang_set {
             let path_lang = scan::language_for_path(std::path::Path::new(&path));
-            if path_lang.map_or(true, |lang| !set.contains(lang)) {
+            if path_lang.is_none_or(|lang| !set.contains(lang)) {
                 continue;
             }
         }
@@ -359,10 +359,10 @@ fn search_fallback_exact(
         if hits.len() >= max_hits {
             break;
         }
-        if let Some(ref set) = lang_set {
-            if !set.contains(file.language.as_str()) {
-                continue;
-            }
+        if let Some(ref set) = lang_set
+            && !set.contains(file.language.as_str())
+        {
+            continue;
         }
         if !scope_allows(
             &file.rel_path,
@@ -458,10 +458,10 @@ fn search_fuzzy(
         .map(|langs| langs.iter().map(String::as_str).collect::<HashSet<_>>());
     let mut hits = Vec::new();
     for file in files {
-        if let Some(ref set) = lang_set {
-            if !set.contains(file.language.as_str()) {
-                continue;
-            }
+        if let Some(ref set) = lang_set
+            && !set.contains(file.language.as_str())
+        {
+            continue;
         }
         if !scope_allows(
             &file.rel_path,
@@ -647,22 +647,22 @@ fn is_word_char(byte: u8) -> bool {
 fn expand_word(word: &str, column: usize) -> Vec<TokenOccurrence> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    if let Some(base) = normalize_token(word) {
-        if seen.insert(base.clone()) {
-            out.push(TokenOccurrence {
-                token: base,
-                column,
-            });
-        }
+    if let Some(base) = normalize_token(word)
+        && seen.insert(base.clone())
+    {
+        out.push(TokenOccurrence {
+            token: base,
+            column,
+        });
     }
     for (part, offset) in split_identifier(word) {
-        if let Some(norm) = normalize_token(&part) {
-            if seen.insert(norm.clone()) {
-                out.push(TokenOccurrence {
-                    token: norm,
-                    column: column + offset,
-                });
-            }
+        if let Some(norm) = normalize_token(&part)
+            && seen.insert(norm.clone())
+        {
+            out.push(TokenOccurrence {
+                token: norm,
+                column: column + offset,
+            });
         }
     }
     out
@@ -685,23 +685,17 @@ fn split_identifier(word: &str) -> Vec<(String, usize)> {
         }
         let cat = classify_byte(byte);
         if let Some(prev) = prev_cat {
-            if prev == CAT_LOWER && cat == CAT_UPPER {
-                if start < idx {
-                    parts.push((word[start..idx].to_string(), start));
-                }
-                start = idx;
-            } else if (prev == CAT_DIGIT && cat != CAT_DIGIT)
+            if (prev == CAT_LOWER && cat == CAT_UPPER)
+                || (prev == CAT_DIGIT && cat != CAT_DIGIT)
                 || (prev != CAT_DIGIT && cat == CAT_DIGIT)
             {
                 if start < idx {
                     parts.push((word[start..idx].to_string(), start));
                 }
                 start = idx;
-            } else if prev == CAT_UPPER && cat == CAT_LOWER {
-                if idx > 0 && idx - 1 > start {
-                    parts.push((word[start..idx - 1].to_string(), start));
-                    start = idx - 1;
-                }
+            } else if prev == CAT_UPPER && cat == CAT_LOWER && idx > 0 && idx - 1 > start {
+                parts.push((word[start..idx - 1].to_string(), start));
+                start = idx - 1;
             }
         }
         prev_cat = Some(cat);
@@ -749,15 +743,12 @@ fn normalize_token(raw: &str) -> Option<String> {
 
 fn stem_token(token: &str) -> String {
     let mut value = token.to_string();
-    if value.len() > 5 && value.ends_with("ing") {
+    if (value.len() > 5 && value.ends_with("ing")) || (value.len() > 5 && value.ends_with("ers")) {
         value.truncate(value.len() - 3);
-    } else if value.len() > 5 && value.ends_with("ers") {
-        value.truncate(value.len() - 3);
-    } else if value.len() > 4 && value.ends_with("er") {
-        value.truncate(value.len() - 2);
-    } else if value.len() > 4 && value.ends_with("ed") {
-        value.truncate(value.len() - 2);
-    } else if value.len() > 4 && value.ends_with("es") {
+    } else if (value.len() > 4 && value.ends_with("er"))
+        || (value.len() > 4 && value.ends_with("ed"))
+        || (value.len() > 4 && value.ends_with("es"))
+    {
         value.truncate(value.len() - 2);
     } else if value.len() > 3 && value.ends_with('s') && !value.ends_with("ss") {
         value.truncate(value.len() - 1);

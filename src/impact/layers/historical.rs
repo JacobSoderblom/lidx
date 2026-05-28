@@ -427,10 +427,8 @@ impl<'a> HistoricalImpactLayer<'a> {
                 row.get::<_, String>(0)
             })?;
 
-            for stable_id in stable_ids {
-                if let Ok(id) = stable_id {
-                    result.insert(id);
-                }
+            for id in stable_ids.flatten() {
+                result.insert(id);
             }
         }
 
@@ -536,10 +534,8 @@ impl<'a> HistoricalImpactLayer<'a> {
 
         let added = stmt.query_map(rusqlite::params![version_b], |row| row.get::<_, String>(0))?;
 
-        for stable_id in added {
-            if let Ok(id) = stable_id {
-                changed.insert(id);
-            }
+        for id in added.flatten() {
+            changed.insert(id);
         }
 
         // Symbols deleted from version_a (existed in a but not in b)

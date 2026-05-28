@@ -217,12 +217,10 @@ fn compute_debounce(queue: &PrioritizedFileQueue, config: &WatchConfig) -> Durat
     let total_count = queue.len();
     let urgent_count = queue.urgent_count();
 
-    // Single urgent file → fast response
-    if total_count == 1 && urgent_count == 1 {
-        config.urgent_debounce
-    }
-    // Multiple urgent files but still small → fast response
-    else if total_count > 0 && total_count < config.batch_threshold && urgent_count > 0 {
+    // Single urgent file or multiple urgent files but still small → fast response
+    if (total_count == 1 && urgent_count == 1)
+        || (total_count > 0 && total_count < config.batch_threshold && urgent_count > 0)
+    {
         config.urgent_debounce
     }
     // Large batch or all normal files → normal debounce
@@ -269,12 +267,11 @@ fn run_loop(
     let repo_root = std::fs::canonicalize(&repo_root).unwrap_or(repo_root);
     let mut indexer = Indexer::new_with_options(repo_root.clone(), db_path, config.scan_options)
         .with_context(|| format!("watch open indexer {}", repo_root.display()))?;
-    if config.bootstrap {
-        if indexer.db().get_meta_i64("last_indexed")?.is_none() {
-            if let Err(err) = indexer.reindex() {
-                eprintln!("watch bootstrap reindex failed: {err}");
-            }
-        }
+    if config.bootstrap
+        && indexer.db().get_meta_i64("last_indexed")?.is_none()
+        && let Err(err) = indexer.reindex()
+    {
+        eprintln!("watch bootstrap reindex failed: {err}");
     }
 
     let mut filter = PathFilter::new(&repo_root, config.scan_options.no_ignore);

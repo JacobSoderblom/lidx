@@ -127,12 +127,11 @@ pub fn resolve_import_file_edges(
         if !target.contains('*') {
             candidates.push(target.to_string());
         }
-        if import_kind == ImportKind::From {
-            if let Some(base) = base_module {
-                if !base.contains('*') {
-                    candidates.push(base);
-                }
-            }
+        if import_kind == ImportKind::From
+            && let Some(base) = base_module
+            && !base.contains('*')
+        {
+            candidates.push(base);
         }
         let mut resolved_edge = None;
         for candidate in candidates {
@@ -225,10 +224,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     if node.kind() == "call" {
         handle_call(node, ctx, source, output);
     }
-    if node.kind() == "subscript" {
-        if let Some(edge) = config_read_subscript_edge(node, ctx, source) {
-            output.edges.push(edge);
-        }
+    if node.kind() == "subscript"
+        && let Some(edge) = config_read_subscript_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
     }
     match node.kind() {
         "class_definition" => {
@@ -336,10 +335,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                     evidence_snippet: None,
                     ..Default::default()
                 });
-                if kind == "method" {
-                    if let Some(edge) = grpc_impl_edge(node, ctx, source, &name) {
-                        output.edges.push(edge);
-                    }
+                if kind == "method"
+                    && let Some(edge) = grpc_impl_edge(node, ctx, source, &name)
+                {
+                    output.edges.push(edge);
                 }
                 let mut next_ctx = ctx.clone();
                 next_ctx.fn_depth += 1;
@@ -541,7 +540,7 @@ fn route_edges_from_decorators(
         if let Some(method) = http::normalize_method(&name) {
             let raw_path = args
                 .positional
-                .get(0)
+                .first()
                 .and_then(|arg| extract_string_literal(*arg, source))
                 .unwrap_or_else(|| "/".to_string());
             if let Some(edge) =
@@ -554,7 +553,7 @@ fn route_edges_from_decorators(
         if name == "route" {
             let raw_path = args
                 .positional
-                .get(0)
+                .first()
                 .and_then(|arg| extract_string_literal(*arg, source))
                 .unwrap_or_else(|| "/".to_string());
             let mut methods = methods_from_keywords(&args, source);
@@ -573,7 +572,7 @@ fn route_edges_from_decorators(
         if name == "api_route" {
             let raw_path = args
                 .positional
-                .get(0)
+                .first()
                 .and_then(|arg| extract_string_literal(*arg, source))
                 .unwrap_or_else(|| "/".to_string());
             let mut methods = methods_from_keywords(&args, source);
@@ -680,10 +679,10 @@ fn methods_from_keywords(args: &CallArgs<'_>, source: &str) -> Vec<String> {
 
 fn call_target_name(node: Node<'_>, source: &str) -> Option<String> {
     let function = node.child_by_field_name("function")?;
-    if function.kind() == "attribute" {
-        if let Some(attr) = function.child_by_field_name("attribute") {
-            return Some(node_text(attr, source));
-        }
+    if function.kind() == "attribute"
+        && let Some(attr) = function.child_by_field_name("attribute")
+    {
+        return Some(node_text(attr, source));
     }
     Some(node_text(function, source))
 }
@@ -705,7 +704,7 @@ fn django_path_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeI
     let args = parse_call_arguments(node, source);
     let raw_path = args
         .positional
-        .get(0)
+        .first()
         .and_then(|arg| extract_string_literal(*arg, source))?;
     let handler = args
         .positional
@@ -731,7 +730,7 @@ fn fastapi_add_api_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> V
     let args = parse_call_arguments(node, source);
     let Some(raw_path) = args
         .positional
-        .get(0)
+        .first()
         .and_then(|arg| extract_string_literal(*arg, source))
     else {
         return Vec::new();
@@ -763,7 +762,7 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     let (method, raw_path) = if name == "request" {
         let method = args
             .positional
-            .get(0)
+            .first()
             .and_then(|arg| extract_string_literal(*arg, source))
             .and_then(|raw| http::normalize_method(&raw))?;
         let raw_path = args
@@ -774,7 +773,7 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     } else if let Some(method) = http::normalize_method(&name) {
         let raw_path = args
             .positional
-            .get(0)
+            .first()
             .and_then(|arg| extract_string_literal(*arg, source))?;
         (method, raw_path)
     } else {
@@ -1209,32 +1208,32 @@ fn parse_imports(text: &str) -> Vec<String> {
         return rest
             .split(',')
             .filter_map(|part| {
-                let mut name = part.trim().split_whitespace();
+                let mut name = part.split_whitespace();
                 name.next().map(|s| s.to_string())
             })
             .collect();
     }
-    if let Some(rest) = cleaned.strip_prefix("from ") {
-        if let Some((module, names)) = rest.split_once(" import ") {
-            let base = module.trim();
-            return names
-                .split(',')
-                .filter_map(|part| {
-                    let mut name = part.trim().split_whitespace();
-                    let item = name.next()?;
-                    if item == "*" {
-                        return Some(format!("{base}.*"));
-                    }
-                    if base.is_empty() {
-                        Some(item.to_string())
-                    } else if base == "." || base.ends_with('.') {
-                        Some(format!("{base}{item}"))
-                    } else {
-                        Some(format!("{base}.{item}"))
-                    }
-                })
-                .collect();
-        }
+    if let Some(rest) = cleaned.strip_prefix("from ")
+        && let Some((module, names)) = rest.split_once(" import ")
+    {
+        let base = module.trim();
+        return names
+            .split(',')
+            .filter_map(|part| {
+                let mut name = part.split_whitespace();
+                let item = name.next()?;
+                if item == "*" {
+                    return Some(format!("{base}.*"));
+                }
+                if base.is_empty() {
+                    Some(item.to_string())
+                } else if base == "." || base.ends_with('.') {
+                    Some(format!("{base}{item}"))
+                } else {
+                    Some(format!("{base}.{item}"))
+                }
+            })
+            .collect();
     }
     Vec::new()
 }
@@ -1250,12 +1249,12 @@ fn import_kind_and_base(snippet: Option<&str>) -> (ImportKind, Option<String>) {
         return (ImportKind::Import, None);
     };
     let cleaned = snippet.trim().trim_end_matches(';');
-    if let Some(rest) = cleaned.strip_prefix("from ") {
-        if let Some((base, _)) = rest.split_once(" import ") {
-            let base = base.trim();
-            if !base.is_empty() {
-                return (ImportKind::From, Some(base.to_string()));
-            }
+    if let Some(rest) = cleaned.strip_prefix("from ")
+        && let Some((base, _)) = rest.split_once(" import ")
+    {
+        let base = base.trim();
+        if !base.is_empty() {
+            return (ImportKind::From, Some(base.to_string()));
         }
     }
     (ImportKind::Import, None)

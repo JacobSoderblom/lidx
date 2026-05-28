@@ -134,10 +134,8 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         }
     }
 
-    if existing < 3 {
-        if !has_column(conn, "edges", "evidence_snippet")? {
-            conn.execute("ALTER TABLE edges ADD COLUMN evidence_snippet TEXT", [])?;
-        }
+    if existing < 3 && !has_column(conn, "edges", "evidence_snippet")? {
+        conn.execute("ALTER TABLE edges ADD COLUMN evidence_snippet TEXT", [])?;
     }
 
     if existing < 6 {

@@ -5,7 +5,7 @@ use anyhow::Result;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const TOOL_NAME: &str = "lidx";
 
@@ -63,15 +63,19 @@ impl State {
         Ok(self.indexers.get_mut(&key).expect("indexer cache"))
     }
 
-    fn ensure_watch(&mut self, repo_root: &PathBuf, db_path: &PathBuf) -> Result<()> {
+    fn ensure_watch(&mut self, repo_root: &Path, db_path: &Path) -> Result<()> {
         if self.watch_config.mode == watch::WatchMode::Off {
             return Ok(());
         }
-        let target = (repo_root.clone(), db_path.clone());
+        let target = (repo_root.to_path_buf(), db_path.to_path_buf());
         if self.watch_target.as_ref() == Some(&target) {
             return Ok(());
         }
-        let next = watch::start(repo_root.clone(), db_path.clone(), self.watch_config)?;
+        let next = watch::start(
+            repo_root.to_path_buf(),
+            db_path.to_path_buf(),
+            self.watch_config,
+        )?;
         if let Some(handle) = self.watcher.take() {
             handle.stop();
         }
@@ -276,10 +280,10 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
     // Start watcher lazily on first call (or when defaults change)
-    if set_default || state.watcher.is_none() {
-        if let Err(err) = state.ensure_watch(&repo_root, &db_path) {
-            eprintln!("watch error: {err}");
-        }
+    if (set_default || state.watcher.is_none())
+        && let Err(err) = state.ensure_watch(&repo_root, &db_path)
+    {
+        eprintln!("watch error: {err}");
     }
     if set_default {
         state.set_defaults(repo_root.clone(), db_path.clone());
@@ -396,7 +400,7 @@ fn repo_and_db(arguments: &Value, defaults: &Defaults) -> (PathBuf, PathBuf) {
     (repo_root, db_path)
 }
 
-fn default_db_path(repo: &PathBuf) -> PathBuf {
+fn default_db_path(repo: &Path) -> PathBuf {
     repo.join(".lidx").join(".lidx.sqlite")
 }
 

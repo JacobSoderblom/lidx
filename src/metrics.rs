@@ -34,29 +34,29 @@ pub fn compute_file_metrics(source: &str, language: &str) -> FileMetricsInput {
         }
         if in_block_comment {
             comment += 1;
-            if let Some(end) = block_end {
-                if trimmed.contains(end) {
-                    in_block_comment = false;
-                }
+            if let Some(end) = block_end
+                && trimmed.contains(end)
+            {
+                in_block_comment = false;
             }
             continue;
         }
-        if let Some(prefix) = line_comment {
-            if trimmed.starts_with(prefix) {
-                comment += 1;
-                continue;
-            }
+        if let Some(prefix) = line_comment
+            && trimmed.starts_with(prefix)
+        {
+            comment += 1;
+            continue;
         }
-        if let Some(start) = block_start {
-            if trimmed.starts_with(start) {
-                comment += 1;
-                if let Some(end) = block_end {
-                    if !trimmed.contains(end) {
-                        in_block_comment = true;
-                    }
-                }
-                continue;
+        if let Some(start) = block_start
+            && trimmed.starts_with(start)
+        {
+            comment += 1;
+            if let Some(end) = block_end
+                && !trimmed.contains(end)
+            {
+                in_block_comment = true;
             }
+            continue;
         }
         code += 1;
     }

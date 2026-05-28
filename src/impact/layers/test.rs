@@ -128,30 +128,27 @@ impl<'a> TestImpactLayer<'a> {
                     continue;
                 }
 
-                if edge.target_symbol_id == Some(*seed_id) {
-                    if let Some(source_id) = edge.source_symbol_id {
-                        if seen.contains(&source_id) {
-                            continue;
-                        }
-                        seen.insert(source_id);
+                if edge.target_symbol_id == Some(*seed_id)
+                    && let Some(source_id) = edge.source_symbol_id
+                {
+                    if seen.contains(&source_id) {
+                        continue;
+                    }
+                    seen.insert(source_id);
 
-                        // Check if source is a test symbol
-                        if let Ok(symbols) =
-                            self.db.symbols_by_ids(&[source_id], None, graph_version)
-                        {
-                            if let Some(sym) = symbols.first() {
-                                if is_test_symbol(sym) {
-                                    let test_type = classify_test_type(sym);
-                                    results.push((
-                                        source_id,
-                                        ImpactSource::TestLink {
-                                            strategy: "import".to_string(),
-                                            test_type: test_type.to_string(),
-                                        },
-                                    ));
-                                }
-                            }
-                        }
+                    // Check if source is a test symbol
+                    if let Ok(symbols) = self.db.symbols_by_ids(&[source_id], None, graph_version)
+                        && let Some(sym) = symbols.first()
+                        && is_test_symbol(sym)
+                    {
+                        let test_type = classify_test_type(sym);
+                        results.push((
+                            source_id,
+                            ImpactSource::TestLink {
+                                strategy: "import".to_string(),
+                                test_type: test_type.to_string(),
+                            },
+                        ));
                     }
                 }
             }
@@ -182,30 +179,27 @@ impl<'a> TestImpactLayer<'a> {
                     continue;
                 }
 
-                if edge.target_symbol_id == Some(*seed_id) {
-                    if let Some(source_id) = edge.source_symbol_id {
-                        if seen.contains(&source_id) {
-                            continue;
-                        }
-                        seen.insert(source_id);
+                if edge.target_symbol_id == Some(*seed_id)
+                    && let Some(source_id) = edge.source_symbol_id
+                {
+                    if seen.contains(&source_id) {
+                        continue;
+                    }
+                    seen.insert(source_id);
 
-                        // Check if source is a test symbol
-                        if let Ok(symbols) =
-                            self.db.symbols_by_ids(&[source_id], None, graph_version)
-                        {
-                            if let Some(sym) = symbols.first() {
-                                if is_test_symbol(sym) {
-                                    let test_type = classify_test_type(sym);
-                                    results.push((
-                                        source_id,
-                                        ImpactSource::TestLink {
-                                            strategy: "call".to_string(),
-                                            test_type: test_type.to_string(),
-                                        },
-                                    ));
-                                }
-                            }
-                        }
+                    // Check if source is a test symbol
+                    if let Ok(symbols) = self.db.symbols_by_ids(&[source_id], None, graph_version)
+                        && let Some(sym) = symbols.first()
+                        && is_test_symbol(sym)
+                    {
+                        let test_type = classify_test_type(sym);
+                        results.push((
+                            source_id,
+                            ImpactSource::TestLink {
+                                strategy: "call".to_string(),
+                                test_type: test_type.to_string(),
+                            },
+                        ));
                     }
                 }
             }
@@ -279,29 +273,27 @@ impl<'a> TestImpactLayer<'a> {
 
                     // Skip tests from different languages to avoid cross-language false positives
                     if let (Some(sl), Some(tl)) = (seed_lang, Self::infer_language(&test.file_path))
+                        && sl != tl
                     {
-                        if sl != tl {
-                            continue;
-                        }
+                        continue;
                     }
 
-                    if let Some(target_name) = extract_test_target_name(&test.name) {
-                        if target_name.to_lowercase() == seed_name_lower
+                    if let Some(target_name) = extract_test_target_name(&test.name)
+                        && (target_name.to_lowercase() == seed_name_lower
                             || seed
                                 .name
                                 .to_lowercase()
-                                .contains(&target_name.to_lowercase())
-                        {
-                            seen.insert(test.id);
-                            let test_type = classify_test_type(&test);
-                            results.push((
-                                test.id,
-                                ImpactSource::TestLink {
-                                    strategy: "naming".to_string(),
-                                    test_type: test_type.to_string(),
-                                },
-                            ));
-                        }
+                                .contains(&target_name.to_lowercase()))
+                    {
+                        seen.insert(test.id);
+                        let test_type = classify_test_type(&test);
+                        results.push((
+                            test.id,
+                            ImpactSource::TestLink {
+                                strategy: "naming".to_string(),
+                                test_type: test_type.to_string(),
+                            },
+                        ));
                     }
                 }
             }
@@ -347,10 +339,9 @@ impl<'a> TestImpactLayer<'a> {
 
                     // Skip tests from different languages to avoid cross-language false positives
                     if let (Some(sl), Some(tl)) = (seed_lang, Self::infer_language(&test.file_path))
+                        && sl != tl
                     {
-                        if sl != tl {
-                            continue;
-                        }
+                        continue;
                     }
 
                     let test_components = self.extract_path_components(&test.file_path);

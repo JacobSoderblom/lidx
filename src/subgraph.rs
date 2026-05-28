@@ -41,7 +41,7 @@ pub fn build_subgraph_filtered(
 ) -> Result<Subgraph> {
     let mut visited: HashSet<i64> = HashSet::new();
     let mut queue: VecDeque<(i64, usize)> = VecDeque::new();
-    let mut sorted_start: Vec<i64> = start_ids.iter().copied().collect();
+    let mut sorted_start: Vec<i64> = start_ids.to_vec();
     sorted_start.sort_unstable();
     sorted_start.dedup();
 
@@ -79,38 +79,35 @@ pub fn build_subgraph_filtered(
         for edge in neighbors.iter_mut() {
             if (edge.kind == "MODULE_FILE" || edge.kind == "IMPORTS_FILE")
                 && edge.target_symbol_id.is_none()
+                && let Some(target_qualname) = edge.target_qualname.as_deref()
             {
-                if let Some(target_qualname) = edge.target_qualname.as_deref() {
-                    let resolved = if let Some(cached) = module_target_cache.get(target_qualname) {
-                        *cached
-                    } else {
-                        let id = db.lookup_symbol_id_filtered(
-                            target_qualname,
-                            languages,
-                            graph_version,
-                        )?;
-                        module_target_cache.insert(target_qualname.to_string(), id);
-                        id
-                    };
-                    if let Some(resolved_id) = resolved {
-                        edge.target_symbol_id = Some(resolved_id);
-                    }
+                let resolved = if let Some(cached) = module_target_cache.get(target_qualname) {
+                    *cached
+                } else {
+                    let id =
+                        db.lookup_symbol_id_filtered(target_qualname, languages, graph_version)?;
+                    module_target_cache.insert(target_qualname.to_string(), id);
+                    id
+                };
+                if let Some(resolved_id) = resolved {
+                    edge.target_symbol_id = Some(resolved_id);
                 }
             }
             // Resolve CALLS edges with NULL target_symbol_id
-            if edge.kind == "CALLS" && edge.target_symbol_id.is_none() {
-                if let Some(target_qualname) = edge.target_qualname.as_deref() {
-                    let resolved = if let Some(cached) = calls_target_cache.get(target_qualname) {
-                        *cached
-                    } else {
-                        let id =
-                            db.lookup_symbol_id_fuzzy(target_qualname, languages, graph_version)?;
-                        calls_target_cache.insert(target_qualname.to_string(), id);
-                        id
-                    };
-                    if let Some(resolved_id) = resolved {
-                        edge.target_symbol_id = Some(resolved_id);
-                    }
+            if edge.kind == "CALLS"
+                && edge.target_symbol_id.is_none()
+                && let Some(target_qualname) = edge.target_qualname.as_deref()
+            {
+                let resolved = if let Some(cached) = calls_target_cache.get(target_qualname) {
+                    *cached
+                } else {
+                    let id =
+                        db.lookup_symbol_id_fuzzy(target_qualname, languages, graph_version)?;
+                    calls_target_cache.insert(target_qualname.to_string(), id);
+                    id
+                };
+                if let Some(resolved_id) = resolved {
+                    edge.target_symbol_id = Some(resolved_id);
                 }
             }
         }
@@ -139,8 +136,7 @@ pub fn build_subgraph_filtered(
             graph_version,
         )?;
 
-        neighbors
-            .sort_by(|a, b| edge_sort_key(a, &symbol_cache).cmp(&edge_sort_key(b, &symbol_cache)));
+        neighbors.sort_by_key(|a| edge_sort_key(a, &symbol_cache));
 
         for edge in neighbors {
             let source_ok = edge
@@ -181,7 +177,7 @@ pub fn build_subgraph_filtered(
     let mut nodes: Vec<Symbol> = db.symbols_by_ids(&ids, languages, graph_version)?;
     nodes.sort_by(|a, b| a.qualname.cmp(&b.qualname).then_with(|| a.id.cmp(&b.id)));
 
-    edges.sort_by(|a, b| edge_sort_key(a, &symbol_cache).cmp(&edge_sort_key(b, &symbol_cache)));
+    edges.sort_by_key(|a| edge_sort_key(a, &symbol_cache));
 
     Ok(Subgraph { nodes, edges })
 }

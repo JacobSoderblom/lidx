@@ -111,7 +111,7 @@ pub fn normalize_channel_name(raw: &str) -> Option<String> {
 fn strip_topic_container(raw: &str) -> &str {
     if let Some((prefix, suffix)) = raw.split_once('.') {
         let prefix = prefix.rsplit('.').next().unwrap_or(prefix);
-        if TOPIC_CONTAINERS.iter().any(|c| *c == prefix) {
+        if TOPIC_CONTAINERS.contains(&prefix) {
             return suffix;
         }
     }
@@ -124,17 +124,17 @@ pub fn is_bus_receiver(receiver: &str) -> bool {
     if last.is_empty() {
         return false;
     }
-    BUS_RECEIVER_PATTERNS.iter().any(|pat| last == *pat)
+    BUS_RECEIVER_PATTERNS.contains(&last)
 }
 
 /// Check if a method name is a publish method.
 pub fn is_publish_method(name: &str) -> bool {
-    PUBLISH_METHODS.iter().any(|m| *m == name)
+    PUBLISH_METHODS.contains(&name)
 }
 
 /// Check if a method name is a subscribe method.
 pub fn is_subscribe_method(name: &str) -> bool {
-    SUBSCRIBE_METHODS.iter().any(|m| *m == name)
+    SUBSCRIBE_METHODS.contains(&name)
 }
 
 /// Check if a raw topic value looks like a topic container member access.

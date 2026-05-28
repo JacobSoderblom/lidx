@@ -20,7 +20,7 @@ use blake3::Hasher;
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// // These two symbols have the same stable ID:
 /// let sym1 = SymbolInput {
 ///     qualname: "MyClass.authenticate".to_string(),

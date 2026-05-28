@@ -140,10 +140,11 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
     }
 
     // Go tests
-    if file_lower.ends_with(".go") {
-        if file_lower.ends_with("_test.go") && name_lower.starts_with("test") {
-            return true;
-        }
+    if file_lower.ends_with(".go")
+        && file_lower.ends_with("_test.go")
+        && name_lower.starts_with("test")
+    {
+        return true;
     }
 
     false
@@ -203,7 +204,7 @@ pub fn extract_test_target_name(test_name: &str) -> Option<String> {
     // Pattern: testSomething -> Something (camelCase)
     if test_name.starts_with("test") && test_name.len() > 4 {
         let target = &test_name[4..]; // Skip "test"
-        if target.chars().next().map_or(false, |c| c.is_uppercase()) {
+        if target.chars().next().is_some_and(|c| c.is_uppercase()) {
             return Some(target.to_string());
         }
     }

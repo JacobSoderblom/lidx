@@ -163,6 +163,7 @@ impl<'a> ContentCollector<'a> {
     }
 
     /// Try to add a file region. Returns true if added.
+    #[allow(clippy::too_many_arguments)]
     fn try_add_file_region(
         &mut self,
         path: &str,
@@ -241,6 +242,7 @@ impl<'a> ContentCollector<'a> {
 
 /// Resolved seed ready for content gathering
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 enum ResolvedSeed {
     /// Symbol with ID and optional content region
     Symbol {
@@ -348,6 +350,7 @@ pub fn gather_context(
 }
 
 /// Resolve all seeds to concrete references in one pass
+#[allow(clippy::type_complexity)]
 fn resolve_seeds(
     db: &Db,
     repo_root: &Path,
@@ -551,6 +554,7 @@ fn line_range_to_bytes(
 /// itself (ripgrep) dominates latency (~38ms), so the additional database
 /// queries (~15ms each) are acceptable for the MVP. Future optimization
 /// could batch these lookups if search seeds become performance-critical.
+#[allow(clippy::type_complexity)]
 fn resolve_search_seed(
     db: &Db,
     repo_root: &Path,
@@ -789,21 +793,20 @@ fn collect_content_file_strategy(
             let edges =
                 db.edges_for_symbol(symbol_id, config.languages.as_deref(), config.graph_version)?;
             for edge in &edges {
-                if edge.kind == "CALLS"
-                    && edge.target_symbol_id == Some(symbol_id)
-                    && edge.source_symbol_id.is_some()
-                {
-                    let source_id = edge.source_symbol_id.unwrap();
+                if edge.kind == "CALLS" && edge.target_symbol_id == Some(symbol_id) {
+                    let Some(source_id) = edge.source_symbol_id else {
+                        continue;
+                    };
                     if current_symbol_ids.contains(&source_id)
                         || seen_caller_ids.contains(&source_id)
                     {
                         continue;
                     }
-                    if let Some(caller) = db.get_symbol_by_id(source_id)? {
-                        if !current_file_paths.contains(&caller.file_path) {
-                            caller_symbols.push(caller);
-                            seen_caller_ids.insert(source_id);
-                        }
+                    if let Some(caller) = db.get_symbol_by_id(source_id)?
+                        && !current_file_paths.contains(&caller.file_path)
+                    {
+                        caller_symbols.push(caller);
+                        seen_caller_ids.insert(source_id);
                     }
                 }
             }
@@ -821,22 +824,18 @@ fn collect_content_file_strategy(
                     config.graph_version,
                 )?;
                 for edge in &incoming {
-                    let matches = edge.target_qualname.as_ref().map_or(false, |qn| {
+                    let matches = edge.target_qualname.as_ref().is_some_and(|qn| {
                         qn == &symbol.qualname || qn.ends_with(&format!(".{}", symbol.name))
                     });
-                    if matches {
-                        if let Some(source_id) = edge.source_symbol_id {
-                            if !current_symbol_ids.contains(&source_id)
-                                && !seen_caller_ids.contains(&source_id)
-                            {
-                                if let Some(caller) = db.get_symbol_by_id(source_id)? {
-                                    if !current_file_paths.contains(&caller.file_path) {
-                                        caller_symbols.push(caller);
-                                        seen_caller_ids.insert(source_id);
-                                    }
-                                }
-                            }
-                        }
+                    if matches
+                        && let Some(source_id) = edge.source_symbol_id
+                        && !current_symbol_ids.contains(&source_id)
+                        && !seen_caller_ids.contains(&source_id)
+                        && let Some(caller) = db.get_symbol_by_id(source_id)?
+                        && !current_file_paths.contains(&caller.file_path)
+                    {
+                        caller_symbols.push(caller);
+                        seen_caller_ids.insert(source_id);
                     }
                 }
             }
@@ -984,27 +983,26 @@ fn collect_content_symbol_strategy(
                         } else {
                             None
                         };
-                        if let Some(tid) = target_id {
-                            if let Some(target_symbol) = db.get_symbol_by_id(tid)? {
-                                if !current_file_paths.contains(&target_symbol.file_path) {
-                                    let content = format_tier1(&target_symbol, Some(edge));
-                                    let source = ItemSource {
-                                        source_type: SourceType::Subgraph,
-                                        seed_index: None,
-                                        relationship: Some("caller".to_string()),
-                                        distance: Some(1),
-                                    };
-                                    if content.len() <= cross_file_budget - cross_file_bytes {
-                                        if c.try_add_formatted(
-                                            &target_symbol,
-                                            content.clone(),
-                                            source,
-                                            None,
-                                        ) {
-                                            cross_file_bytes += content.len();
-                                        }
-                                    }
-                                }
+                        if let Some(tid) = target_id
+                            && let Some(target_symbol) = db.get_symbol_by_id(tid)?
+                            && !current_file_paths.contains(&target_symbol.file_path)
+                        {
+                            let content = format_tier1(&target_symbol, Some(edge));
+                            let source = ItemSource {
+                                source_type: SourceType::Subgraph,
+                                seed_index: None,
+                                relationship: Some("caller".to_string()),
+                                distance: Some(1),
+                            };
+                            if content.len() <= cross_file_budget - cross_file_bytes
+                                && c.try_add_formatted(
+                                    &target_symbol,
+                                    content.clone(),
+                                    source,
+                                    None,
+                                )
+                            {
+                                cross_file_bytes += content.len();
                             }
                         }
                     }
@@ -1034,30 +1032,30 @@ fn collect_content_dry_run(
                 symbol,
                 content_region,
             } => {
-                if let Some((start, end)) = content_region {
-                    if dedup.mark_if_new(&symbol.file_path, *start, *end) {
-                        let est_size = (end - start) as usize;
-                        estimated_bytes += est_size;
-                        let source = ItemSource {
-                            source_type: SourceType::DirectSeed,
-                            seed_index: Some(*seed_idx),
-                            relationship: None,
-                            distance: Some(0),
-                        };
-                        let match_loc = match_locations.get(&symbol.id).cloned();
-                        items.push(ContextItem {
-                            source,
-                            path: symbol.file_path.clone(),
-                            start_line: Some(symbol.start_line),
-                            end_line: Some(symbol.end_line),
-                            start_byte: *start,
-                            end_byte: *end,
-                            content: String::new(), // Empty in dry_run
-                            symbol: Some(symbol.clone()),
-                            score: None,
-                            match_location: match_loc,
-                        });
-                    }
+                if let Some((start, end)) = content_region
+                    && dedup.mark_if_new(&symbol.file_path, *start, *end)
+                {
+                    let est_size = (end - start) as usize;
+                    estimated_bytes += est_size;
+                    let source = ItemSource {
+                        source_type: SourceType::DirectSeed,
+                        seed_index: Some(*seed_idx),
+                        relationship: None,
+                        distance: Some(0),
+                    };
+                    let match_loc = match_locations.get(&symbol.id).cloned();
+                    items.push(ContextItem {
+                        source,
+                        path: symbol.file_path.clone(),
+                        start_line: Some(symbol.start_line),
+                        end_line: Some(symbol.end_line),
+                        start_byte: *start,
+                        end_byte: *end,
+                        content: String::new(), // Empty in dry_run
+                        symbol: Some(symbol.clone()),
+                        score: None,
+                        match_location: match_loc,
+                    });
                 }
             }
             ResolvedSeed::FileRegion {
@@ -1138,14 +1136,12 @@ fn read_file_header(repo_root: &Path, file_path: &str) -> Result<String> {
     };
 
     let mut header = String::new();
-    let mut lines = 0;
-    for line in content.lines() {
-        if lines >= 10 || header.len() > 500 {
+    for (i, line) in content.lines().enumerate() {
+        if i >= 10 || header.len() > 500 {
             break;
         }
         header.push_str(line);
         header.push('\n');
-        lines += 1;
     }
 
     // Truncate at 500 bytes if needed
@@ -1177,7 +1173,7 @@ fn format_tier0(repo_root: &Path, symbol: &Symbol, file_content: &str) -> Result
     if !header.is_empty() {
         result.push_str(&format!("// File: {} (header)\n", symbol.file_path));
         result.push_str(&header);
-        result.push_str("\n");
+        result.push('\n');
     }
     result.push_str(&format!(
         "// Symbol: {} ({})\n",
@@ -1204,17 +1200,17 @@ fn format_tier1(symbol: &Symbol, edge: Option<&crate::model::Edge>) -> String {
         result.push_str(&format!("{} {}\n", symbol.kind, symbol.name));
     }
 
-    if let Some(e) = edge {
-        if let (Some(snippet), Some(line)) = (&e.evidence_snippet, e.evidence_start_line) {
-            result.push_str(&format!(
-                "  // {} at line {}\n",
-                e.kind.to_lowercase(),
-                line
-            ));
-            result.push_str("  ");
-            result.push_str(&snippet.trim());
-            result.push('\n');
-        }
+    if let Some(e) = edge
+        && let (Some(snippet), Some(line)) = (&e.evidence_snippet, e.evidence_start_line)
+    {
+        result.push_str(&format!(
+            "  // {} at line {}\n",
+            e.kind.to_lowercase(),
+            line
+        ));
+        result.push_str("  ");
+        result.push_str(snippet.trim());
+        result.push('\n');
     }
 
     result
@@ -1300,6 +1296,7 @@ fn read_symbol_content(
 }
 
 /// Read content for a file region
+#[allow(clippy::too_many_arguments)]
 fn read_file_region(
     repo_root: &Path,
     rel_path: &str,

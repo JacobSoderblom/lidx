@@ -86,8 +86,9 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
     ) {
         // For now, just add detail field with import path
         for edge in edges.iter_mut() {
-            if edge.kind == "IMPORTS" && edge.target_qualname.is_some() {
-                let target = edge.target_qualname.as_ref().unwrap();
+            if edge.kind == "IMPORTS"
+                && let Some(target) = edge.target_qualname.as_ref()
+            {
                 edge.detail = Some(
                     json!({
                         "import_path": target,

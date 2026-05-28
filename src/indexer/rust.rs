@@ -783,16 +783,13 @@ fn route_edges_from_attribute_items(
             for (idx, token) in tokens.iter().enumerate() {
                 if token.kind == AttributeTokenKind::Identifier
                     && (token.text == "method" || token.text == "methods")
-                {
-                    if let Some(next) = tokens
+                    && let Some(next) = tokens
                         .iter()
                         .skip(idx + 1)
                         .find(|next| next.kind == AttributeTokenKind::StringLiteral)
-                    {
-                        if let Some(method) = http::normalize_method(&next.text) {
-                            methods.push(method);
-                        }
-                    }
+                    && let Some(method) = http::normalize_method(&next.text)
+                {
+                    methods.push(method);
                 }
             }
             if methods.is_empty() {
@@ -959,7 +956,7 @@ fn route_call_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInpu
     let args = call_arguments(node);
     let receiver_paths = actix_receiver_paths(function, source);
     let (raw_path, route_arg, used_receiver_path) = if let Some(raw_path) = args
-        .get(0)
+        .first()
         .and_then(|arg| extract_string_literal(*arg, source))
     {
         (Some(raw_path), args.get(1).copied(), false)
@@ -968,7 +965,7 @@ fn route_call_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInpu
             .resource_path
             .clone()
             .or(receiver_paths.scope_prefix.clone());
-        (raw_path.clone(), args.get(0).copied(), raw_path.is_some())
+        (raw_path.clone(), args.first().copied(), raw_path.is_some())
     };
     let Some(mut raw_path) = raw_path else {
         return edges;
@@ -982,10 +979,10 @@ fn route_call_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInpu
         return edges;
     };
     let handler = handler.unwrap_or_else(|| ctx.current_scope.clone());
-    if let Some(prefix) = receiver_paths.scope_prefix.as_deref() {
-        if !used_receiver_path {
-            raw_path = http::join_paths(prefix, &raw_path);
-        }
+    if let Some(prefix) = receiver_paths.scope_prefix.as_deref()
+        && !used_receiver_path
+    {
+        raw_path = http::join_paths(prefix, &raw_path);
     }
     if let Some(edge) = build_route_edge(&handler, &method, &raw_path, framework, node, source) {
         edges.push(edge);
@@ -1020,7 +1017,7 @@ fn axum_method_and_handler_from_route_arg(
     let method = http::normalize_method(&target.name)?;
     let args = call_arguments(node);
     let handler = args
-        .get(0)
+        .first()
         .and_then(|arg| handler_name_from_expr(*arg, ctx, source));
     Some((method, handler))
 }
@@ -1042,7 +1039,7 @@ fn actix_method_and_handler_from_route_arg(
     let method = actix_method_from_builder(receiver, source)?;
     let args = call_arguments(node);
     let handler = args
-        .get(0)
+        .first()
         .and_then(|arg| handler_name_from_expr(*arg, ctx, source));
     Some((method, handler))
 }
@@ -1058,9 +1055,7 @@ fn actix_method_from_builder(node: Node<'_>, source: &str) -> Option<String> {
         if let Some(method) = http::normalize_method(&target.name) {
             return Some(method);
         }
-        let Some(receiver) = function.child_by_field_name("value") else {
-            return None;
-        };
+        let receiver = function.child_by_field_name("value")?;
         if receiver.kind() != "call_expression" {
             return None;
         }
@@ -1102,7 +1097,7 @@ fn actix_call_name_and_path(node: Node<'_>, source: &str) -> Option<(String, Str
     }
     let args = call_arguments(node);
     let path = args
-        .get(0)
+        .first()
         .and_then(|arg| extract_string_literal(*arg, source))?;
     Some((name, path))
 }
@@ -1122,7 +1117,7 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     let args = call_arguments(node);
     let (method, raw_path) = if target.name == "request" {
         let method = args
-            .get(0)
+            .first()
             .and_then(|arg| extract_method_from_expr(*arg, source))?;
         let raw_path = args
             .get(1)
@@ -1130,7 +1125,7 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
         (method, raw_path)
     } else if let Some(method) = http::normalize_method(&target.name) {
         let raw_path = args
-            .get(0)
+            .first()
             .and_then(|arg| extract_string_literal(*arg, source))?;
         (method, raw_path)
     } else {
@@ -1324,10 +1319,10 @@ fn collect_grpc_clients_inner(
     if node.kind() == "function_item" || node.kind() == "impl_item" {
         return;
     }
-    if node.kind() == "let_declaration" || node.kind() == "let_statement" {
-        if let Some((name, service)) = grpc_client_from_let(node, source) {
-            clients.insert(name, service);
-        }
+    if (node.kind() == "let_declaration" || node.kind() == "let_statement")
+        && let Some((name, service)) = grpc_client_from_let(node, source)
+    {
+        clients.insert(name, service);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -1352,10 +1347,10 @@ fn grpc_client_from_expr(node: Node<'_>, source: &str) -> Option<GrpcService> {
     if node.kind() == "call_expression" {
         let function = node.child_by_field_name("function")?;
         let target = call_target_parts(function, source)?;
-        if is_grpc_client_constructor(&target.name) {
-            if let Some(receiver) = target.receiver.as_deref() {
-                return grpc_service_from_client_path(receiver);
-            }
+        if is_grpc_client_constructor(&target.name)
+            && let Some(receiver) = target.receiver.as_deref()
+        {
+            return grpc_service_from_client_path(receiver);
         }
     }
     let mut cursor = node.walk();
@@ -1471,10 +1466,10 @@ fn extract_string_literal(node: Node<'_>, source: &str) -> Option<String> {
 }
 
 fn extract_string_from_text(raw: &str) -> Option<String> {
-    let mut chars = raw.char_indices();
+    let chars = raw.char_indices();
     let mut quote = None;
     let mut start = 0;
-    while let Some((idx, ch)) = chars.next() {
+    for (idx, ch) in chars {
         if ch == '"' || ch == '\'' {
             quote = Some(ch);
             start = idx + ch.len_utf8();
@@ -1534,7 +1529,7 @@ fn extract_method_from_expr(node: Node<'_>, source: &str) -> Option<String> {
         return None;
     }
     let last = raw.split("::").last().unwrap_or(raw.as_str());
-    let last = last.split('.').last().unwrap_or(last);
+    let last = last.split('.').next_back().unwrap_or(last);
     http::normalize_method(last)
 }
 
@@ -1603,12 +1598,8 @@ fn body_node(node: Node<'_>) -> Option<Node<'_>> {
 
 fn find_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        if child.kind() == kind {
-            return Some(child);
-        }
-    }
-    None
+    node.named_children(&mut cursor)
+        .find(|&child| child.kind() == kind)
 }
 
 fn span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
@@ -1768,15 +1759,13 @@ fn split_outer_braces(input: &str) -> Option<(String, String)> {
                 }
                 depth += 1;
             }
-            '}' => {
-                if depth > 0 {
-                    depth -= 1;
-                    if depth == 0 {
-                        let start_idx = start?;
-                        let before = input[..start_idx].to_string();
-                        let inner = input[start_idx + 1..idx].to_string();
-                        return Some((before, inner));
-                    }
+            '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    let start_idx = start?;
+                    let before = input[..start_idx].to_string();
+                    let inner = input[start_idx + 1..idx].to_string();
+                    return Some((before, inner));
                 }
             }
             _ => {}
@@ -1792,10 +1781,8 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
     for (idx, ch) in input.char_indices() {
         match ch {
             '{' => depth += 1,
-            '}' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
+            '}' if depth > 0 => {
+                depth -= 1;
             }
             _ if ch == delimiter && depth == 0 => {
                 parts.push(input[start..idx].to_string());

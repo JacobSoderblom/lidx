@@ -440,13 +440,8 @@ fn push_token_key(keys: &mut Vec<TokenKey>, value: String, kind: TokenKind) {
 }
 
 fn score_match(token: &str, key_kind: KeyKind, token_kind: TokenKind) -> f64 {
-    let mut score = base_score(key_kind) + token_bonus(token) + token_penalty(token_kind);
-    if score < 0.0 {
-        score = 0.0;
-    } else if score > 1.0 {
-        score = 1.0;
-    }
-    score
+    let score = base_score(key_kind) + token_bonus(token) + token_penalty(token_kind);
+    score.clamp(0.0, 1.0)
 }
 
 fn base_score(kind: KeyKind) -> f64 {
@@ -717,13 +712,7 @@ fn scan_prefixed_string(
 ) -> Option<(StringLiteral, usize, i64)> {
     let prefix = bytes.get(idx).copied()?;
     let quote_idx = match prefix {
-        b'$' => {
-            if bytes.get(idx + 1) == Some(&b'"') {
-                idx + 1
-            } else {
-                return None;
-            }
-        }
+        b'$' if bytes.get(idx + 1) == Some(&b'"') => idx + 1,
         b'b' | b'B' | b'r' | b'R' | b'u' | b'U' | b'f' | b'F' => {
             let next = bytes.get(idx + 1)?;
             if *next == b'"' || *next == b'\'' {
@@ -876,10 +865,8 @@ pub(crate) fn normalize_route_literal(raw: &str) -> Option<String> {
 fn strip_url_prefix(value: &str) -> Option<&str> {
     let stripped = if let Some(rest) = value.strip_prefix("http://") {
         rest
-    } else if let Some(rest) = value.strip_prefix("https://") {
-        rest
     } else {
-        return None;
+        value.strip_prefix("https://")?
     };
     let slash = stripped.find('/')?;
     Some(&stripped[slash..])

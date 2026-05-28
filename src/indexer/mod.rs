@@ -128,10 +128,10 @@ impl Indexer {
         let existing = self.db.list_files(self.graph_version)?;
         let mut existing_map: HashMap<String, String> = HashMap::new();
         for record in existing {
-            if let Some(languages) = languages {
-                if !languages.contains(&record.language) {
-                    continue;
-                }
+            if let Some(languages) = languages
+                && !languages.contains(&record.language)
+            {
+                continue;
             }
             existing_map.insert(record.path, record.hash);
         }
@@ -202,11 +202,11 @@ impl Indexer {
                 }
                 continue;
             };
-            if let Some(existing) = self.db.get_file_by_path(&scanned.rel_path)? {
-                if existing.hash == scanned.hash {
-                    stats.skipped += 1;
-                    continue;
-                }
+            if let Some(existing) = self.db.get_file_by_path(&scanned.rel_path)?
+                && existing.hash == scanned.hash
+            {
+                stats.skipped += 1;
+                continue;
             }
             match self.index_scanned_file(&scanned) {
                 Ok((symbols, edges)) => {
