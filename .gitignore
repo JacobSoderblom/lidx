@@ -1,4 +1,6 @@
 /target
+/node_modules
+pnpm-lock.yaml
 /.lidx
 /.fastembed_cache
 /vendor

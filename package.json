@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "scripts": {
+    "sandcastle": "tsx ./.sandcastle/main.ts"
+  },
+  "devDependencies": {
+    "@ai-hero/sandcastle": "^0.5.12",
+    "tsx": "^4.20.5",
+    "zod": "^4.1.1"
+  }
+}
