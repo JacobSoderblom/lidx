@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
@@ -152,4 +153,42 @@ pub fn git_head_sha(repo_root: &Path) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+pub fn resolve_repo_path_for_op(
+    repo_root: &Path,
+    raw_path: &str,
+    op: &str,
+) -> Result<(PathBuf, String)> {
+    let trimmed = raw_path.trim();
+    if trimmed.is_empty() {
+        eprintln!("lidx: Security: {} rejected: empty path", op);
+        return Err(anyhow::anyhow!("{op} requires path"));
+    }
+    let candidate = PathBuf::from(trimmed);
+    let abs = if candidate.is_absolute() {
+        candidate
+    } else {
+        repo_root.join(&candidate)
+    };
+    let abs = match abs.canonicalize() {
+        Ok(value) => value,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            eprintln!("lidx: Security: {} path not found", op);
+            return Err(anyhow::anyhow!("{op} path not found: {trimmed}"));
+        }
+        Err(err) => {
+            return Err(anyhow::Error::from(err))
+                .with_context(|| format!("resolve {}", abs.display()));
+        }
+    };
+    let root = repo_root
+        .canonicalize()
+        .with_context(|| format!("resolve {}", repo_root.display()))?;
+    if !abs.starts_with(&root) {
+        eprintln!("lidx: Security: {} path escapes repo root", op);
+        return Err(anyhow::anyhow!("{op} path escapes repo root"));
+    }
+    let rel = normalize_rel_path(&root, &abs)?;
+    Ok((abs, rel))
 }

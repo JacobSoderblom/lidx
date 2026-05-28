@@ -2,6 +2,9 @@
 //! Each function corresponds to a match arm in `handle_method`.
 
 use super::*;
+use crate::search::{
+    RgSearchOptions, annotate_grep_hits, normalize_rg_context, resolve_rg_paths, search_rg,
+};
 
 // ---------------------------------------------------------------------------
 // Shared helper: resolve a symbol from a fuzzy query string
@@ -2035,7 +2038,7 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
     let params: RgParams = serde_json::from_value(params)?;
     validate_pattern_length(&params.query, "search_rg")?;
     let limit = params.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
-    let context_lines = normalize_rg_context_lines(params.context_lines);
+    let context_lines = normalize_rg_context(params.context_lines);
     let include_text = params.include_text.unwrap_or(true);
     let include_symbol = params.include_symbol.unwrap_or(false);
     let graph_version = resolve_graph_version(indexer, params.graph_version)?;
