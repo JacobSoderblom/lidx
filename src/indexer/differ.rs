@@ -19,6 +19,7 @@ pub struct ChangedFile {
     pub deleted_ranges: Vec<DiffHunk>,
 }
 
+/// Parses a unified diff string into a list of changed files with line ranges.
 pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
     let mut files = Vec::new();
     let mut current_file: Option<ChangedFile> = None;
@@ -1102,5 +1103,43 @@ diff --git a/deleted.rs b/deleted.rs
         let files = parse_diff_with_ranges(diff);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "plain.rs");
+    }
+
+    #[test]
+    fn parse_hunk_range_empty_string() {
+        assert_eq!(parse_hunk_range(""), None);
+    }
+
+    #[test]
+    fn parse_hunk_range_multiple_commas() {
+        assert_eq!(parse_hunk_range("1,2,3"), None);
+    }
+
+    #[test]
+    fn parse_diff_new_file() {
+        let diff = "\
+diff --git a/new.rs b/new.rs
+new file mode 100644
+--- /dev/null
++++ b/new.rs
+@@ -0,0 +1,5 @@
++fn main() {}";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "new.rs");
+        assert_eq!(files[0].added_ranges.len(), 1);
+        assert_eq!(files[0].added_ranges[0].start_line, 1);
+        assert_eq!(files[0].added_ranges[0].line_count, 5);
+        assert_eq!(files[0].deleted_ranges[0].start_line, 0);
+        assert_eq!(files[0].deleted_ranges[0].line_count, 0);
+    }
+
+    #[test]
+    fn parse_diff_hunks_before_any_file_are_ignored() {
+        let diff = "\
+@@ -1,3 +1,4 @@
+ orphan hunk with no file header";
+        let files = parse_diff_with_ranges(diff);
+        assert!(files.is_empty());
     }
 }
