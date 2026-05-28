@@ -867,7 +867,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     )?;
 
     // Build next_hops (RPC-specific: continuation, narrowing, explain suggestions)
-    let next_hops = build_trace_next_hops(&params, &result, &start);
+    let next_hops = build_trace_next_hops(&params, &result, &start, &config);
 
     let trace_result = TraceFlowResult {
         start: result.start,
@@ -895,18 +895,15 @@ fn build_trace_next_hops(
     params: &TraceFlowParams,
     result: &crate::traversal::TraceResult,
     start: &Symbol,
+    config: &crate::traversal::TraceConfig,
 ) -> Vec<serde_json::Value> {
     let mut next_hops: Vec<serde_json::Value> = Vec::new();
-    let max_hops = params.max_hops.unwrap_or(5).min(10);
-    let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
-    let include_snippets = params.include_snippets.unwrap_or(true);
-    let trace_offset = params.trace_offset.unwrap_or(0);
 
     if result.truncated {
-        let next_offset = trace_offset + result.hops.len();
+        let next_offset = config.trace_offset + result.hops.len();
         let mut continue_params = json!({
-            "max_hops": max_hops,
-            "include_snippets": include_snippets,
+            "max_hops": config.max_hops,
+            "include_snippets": config.include_snippets,
             "trace_offset": next_offset,
         });
         if let Some(ref qn) = params.start_qualname {
@@ -927,7 +924,7 @@ fn build_trace_next_hops(
         }));
     }
     if result.truncated && params.kinds.is_none() {
-        let mut narrow_params = json!({"max_bytes": (max_bytes * 2).min(200_000)});
+        let mut narrow_params = json!({"max_bytes": (config.max_bytes * 2).min(200_000)});
         if let Some(ref qn) = params.start_qualname {
             narrow_params["start_qualname"] = json!(qn);
         } else if let Some(id) = params.start_id {
@@ -959,7 +956,7 @@ fn build_trace_next_hops(
             "description": format!("Try analyze_impact on {} (finds consumers via CONFIG/DI edges)", start.name),
         }));
         if params.kinds.is_none() {
-            let mut retry_params = json!({"include_snippets": include_snippets});
+            let mut retry_params = json!({"include_snippets": config.include_snippets});
             if let Some(ref qn) = params.start_qualname {
                 retry_params["start_qualname"] = json!(qn);
             } else {
