@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod metrics;
 pub mod model;
 pub mod repo_map;
+pub mod resolve;
 pub mod rpc;
 pub mod search;
 pub mod subgraph;
