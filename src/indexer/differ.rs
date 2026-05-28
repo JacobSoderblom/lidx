@@ -3,6 +3,106 @@ use crate::indexer::stable_id::compute_stable_symbol_id;
 use crate::model::Symbol;
 use std::collections::HashMap;
 
+/// Represents a changed line range from a diff hunk
+#[derive(Debug, Clone)]
+pub struct DiffHunk {
+    pub start_line: i64,
+    pub line_count: i64,
+}
+
+/// Represents a changed file with its line ranges
+#[derive(Debug, Clone)]
+pub struct ChangedFile {
+    pub path: String,
+    pub changed_ranges: Vec<DiffHunk>,
+    pub added_ranges: Vec<DiffHunk>,
+    pub deleted_ranges: Vec<DiffHunk>,
+}
+
+pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
+    let mut files = Vec::new();
+    let mut current_file: Option<ChangedFile> = None;
+
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("+++ b/") {
+            if let Some(file) = current_file.take() {
+                files.push(file);
+            }
+            current_file = Some(ChangedFile {
+                path: rest.to_string(),
+                changed_ranges: Vec::new(),
+                added_ranges: Vec::new(),
+                deleted_ranges: Vec::new(),
+            });
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
+            if !rest.starts_with("/dev/null") {
+                if let Some(file) = current_file.take() {
+                    files.push(file);
+                }
+                current_file = Some(ChangedFile {
+                    path: rest.to_string(),
+                    changed_ranges: Vec::new(),
+                    added_ranges: Vec::new(),
+                    deleted_ranges: Vec::new(),
+                });
+            }
+        } else if line.starts_with("@@ ") {
+            // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+            if let Some(ref mut file) = current_file
+                && let Some(hunk_info) = line.strip_prefix("@@ ")
+                && let Some(ranges) = hunk_info.split("@@").next()
+            {
+                let parts: Vec<&str> = ranges.split_whitespace().collect();
+
+                // Parse old range (deleted lines)
+                if let Some(old_part) = parts.first()
+                    && let Some(old_range) = old_part.strip_prefix('-')
+                    && let Some((start, count)) = parse_hunk_range(old_range)
+                {
+                    file.deleted_ranges.push(DiffHunk {
+                        start_line: start,
+                        line_count: count,
+                    });
+                }
+
+                // Parse new range (added/modified lines)
+                if let Some(new_part) = parts.get(1)
+                    && let Some(new_range) = new_part.strip_prefix('+')
+                    && let Some((start, count)) = parse_hunk_range(new_range)
+                {
+                    file.added_ranges.push(DiffHunk {
+                        start_line: start,
+                        line_count: count,
+                    });
+                    // Also add to changed_ranges as any hunk represents a change
+                    file.changed_ranges.push(DiffHunk {
+                        start_line: start,
+                        line_count: count,
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(file) = current_file {
+        files.push(file);
+    }
+
+    files
+}
+
+fn parse_hunk_range(range: &str) -> Option<(i64, i64)> {
+    if let Some((start_str, count_str)) = range.split_once(',') {
+        let start = start_str.parse::<i64>().ok()?;
+        let count = count_str.parse::<i64>().ok()?;
+        Some((start, count))
+    } else {
+        // Single line change: just a line number
+        let start = range.parse::<i64>().ok()?;
+        Some((start, 1))
+    }
+}
+
 /// Result of comparing old symbols (database) vs new symbols (just extracted)
 #[derive(Debug, Default, Clone)]
 pub struct SymbolDiff {
@@ -884,5 +984,123 @@ mod integration_tests {
         // Should be detected as modified
         assert_eq!(diff.modified.len(), 1);
         assert_eq!(diff.unchanged.len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_diff_with_ranges / parse_hunk_range tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_hunk_range_with_comma() {
+        assert_eq!(parse_hunk_range("10,20"), Some((10, 20)));
+    }
+
+    #[test]
+    fn parse_hunk_range_single_line() {
+        assert_eq!(parse_hunk_range("42"), Some((42, 1)));
+    }
+
+    #[test]
+    fn parse_hunk_range_invalid() {
+        assert_eq!(parse_hunk_range("abc"), None);
+        assert_eq!(parse_hunk_range("1,abc"), None);
+        assert_eq!(parse_hunk_range("abc,1"), None);
+    }
+
+    #[test]
+    fn parse_diff_single_file_single_hunk() {
+        let diff = "\
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -10,5 +10,7 @@ fn main() {
+     some context
++    added line
++    another added line
+     more context";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/main.rs");
+        assert_eq!(files[0].changed_ranges.len(), 1);
+        assert_eq!(files[0].changed_ranges[0].start_line, 10);
+        assert_eq!(files[0].changed_ranges[0].line_count, 7);
+        assert_eq!(files[0].added_ranges.len(), 1);
+        assert_eq!(files[0].deleted_ranges.len(), 1);
+        assert_eq!(files[0].deleted_ranges[0].start_line, 10);
+        assert_eq!(files[0].deleted_ranges[0].line_count, 5);
+    }
+
+    #[test]
+    fn parse_diff_multiple_files() {
+        let diff = "\
+diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -1,3 +1,4 @@ fn a() {
+ context
++added
+ context
+diff --git a/b.rs b/b.rs
+--- a/b.rs
++++ b/b.rs
+@@ -5,2 +5,3 @@ fn b() {
+ context
++added";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "a.rs");
+        assert_eq!(files[1].path, "b.rs");
+    }
+
+    #[test]
+    fn parse_diff_multiple_hunks() {
+        let diff = "\
+diff --git a/x.rs b/x.rs
+--- a/x.rs
++++ b/x.rs
+@@ -1,3 +1,4 @@ fn first() {
+ context
++added
+@@ -20,2 +21,5 @@ fn second() {
+ context
++added";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].changed_ranges.len(), 2);
+        assert_eq!(files[0].changed_ranges[0].start_line, 1);
+        assert_eq!(files[0].changed_ranges[0].line_count, 4);
+        assert_eq!(files[0].changed_ranges[1].start_line, 21);
+        assert_eq!(files[0].changed_ranges[1].line_count, 5);
+    }
+
+    #[test]
+    fn parse_diff_empty_input() {
+        let files = parse_diff_with_ranges("");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn parse_diff_skips_dev_null() {
+        let diff = "\
+diff --git a/deleted.rs b/deleted.rs
+--- a/deleted.rs
++++ /dev/null
+@@ -1,10 +0,0 @@
+-deleted content";
+        let files = parse_diff_with_ranges(diff);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn parse_diff_without_b_prefix() {
+        let diff = "\
+--- a/plain.rs
++++ plain.rs
+@@ -1,3 +1,4 @@
+ context
++added";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "plain.rs");
     }
 }

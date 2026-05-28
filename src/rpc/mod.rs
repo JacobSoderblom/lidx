@@ -1,6 +1,7 @@
 mod handlers;
 
 use crate::config::Config;
+use crate::indexer::differ::{ChangedFile, parse_diff_with_ranges};
 use crate::indexer::{Indexer, channel::is_bridge_edge_kind, scan, test_detection};
 use crate::model::{
     AnalyzeDiffResult, BudgetInfo, ChangedSymbol, ContextLine, DiffImpactEntry, Edge, ExplainRef,
@@ -1045,106 +1046,6 @@ struct RgSearchOptions {
     follow: bool,
     globs: Vec<String>,
     paths: Vec<PathBuf>,
-}
-
-/// Represents a changed line range from a diff hunk
-#[derive(Debug, Clone)]
-struct DiffHunk {
-    start_line: i64,
-    line_count: i64,
-}
-
-/// Represents a changed file with its line ranges
-#[derive(Debug, Clone)]
-struct ChangedFile {
-    path: String,
-    changed_ranges: Vec<DiffHunk>,
-    added_ranges: Vec<DiffHunk>,
-    deleted_ranges: Vec<DiffHunk>,
-}
-
-fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
-    let mut files = Vec::new();
-    let mut current_file: Option<ChangedFile> = None;
-
-    for line in diff.lines() {
-        if let Some(rest) = line.strip_prefix("+++ b/") {
-            if let Some(file) = current_file.take() {
-                files.push(file);
-            }
-            current_file = Some(ChangedFile {
-                path: rest.to_string(),
-                changed_ranges: Vec::new(),
-                added_ranges: Vec::new(),
-                deleted_ranges: Vec::new(),
-            });
-        } else if let Some(rest) = line.strip_prefix("+++ ") {
-            if !rest.starts_with("/dev/null") {
-                if let Some(file) = current_file.take() {
-                    files.push(file);
-                }
-                current_file = Some(ChangedFile {
-                    path: rest.to_string(),
-                    changed_ranges: Vec::new(),
-                    added_ranges: Vec::new(),
-                    deleted_ranges: Vec::new(),
-                });
-            }
-        } else if line.starts_with("@@ ") {
-            // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
-            if let Some(ref mut file) = current_file
-                && let Some(hunk_info) = line.strip_prefix("@@ ")
-                && let Some(ranges) = hunk_info.split("@@").next()
-            {
-                let parts: Vec<&str> = ranges.split_whitespace().collect();
-
-                // Parse old range (deleted lines)
-                if let Some(old_part) = parts.first()
-                    && let Some(old_range) = old_part.strip_prefix('-')
-                    && let Some((start, count)) = parse_hunk_range(old_range)
-                {
-                    file.deleted_ranges.push(DiffHunk {
-                        start_line: start,
-                        line_count: count,
-                    });
-                }
-
-                // Parse new range (added/modified lines)
-                if let Some(new_part) = parts.get(1)
-                    && let Some(new_range) = new_part.strip_prefix('+')
-                    && let Some((start, count)) = parse_hunk_range(new_range)
-                {
-                    file.added_ranges.push(DiffHunk {
-                        start_line: start,
-                        line_count: count,
-                    });
-                    // Also add to changed_ranges as any hunk represents a change
-                    file.changed_ranges.push(DiffHunk {
-                        start_line: start,
-                        line_count: count,
-                    });
-                }
-            }
-        }
-    }
-
-    if let Some(file) = current_file {
-        files.push(file);
-    }
-
-    files
-}
-
-fn parse_hunk_range(range: &str) -> Option<(i64, i64)> {
-    if let Some((start_str, count_str)) = range.split_once(',') {
-        let start = start_str.parse::<i64>().ok()?;
-        let count = count_str.parse::<i64>().ok()?;
-        Some((start, count))
-    } else {
-        // Single line change: just a line number
-        let start = range.parse::<i64>().ok()?;
-        Some((start, 1))
-    }
 }
 
 fn normalize_search_paths(
