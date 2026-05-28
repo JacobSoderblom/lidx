@@ -3,21 +3,21 @@ use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::differ::SymbolDiff;
 use crate::indexer::extract::{EdgeInput, SymbolInput};
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
-use crate::model::{
-    DuplicateGroup, Edge, GraphVersion, RepoOverview, Symbol, SymbolComplexity, SymbolCoupling,
-};
+use crate::model::{Edge, GraphVersion, Symbol};
 use anyhow::{Context, Result};
-use blake3::Hasher;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+mod analytics;
+mod co_change;
+mod graph_query;
 mod migrations;
+mod overview;
 
 #[derive(Debug, Clone)]
 pub struct ModuleSummaryEntry {
@@ -148,47 +148,6 @@ impl Db {
         self.write_conn.lock().unwrap()
     }
 
-    pub fn repo_overview(
-        &self,
-        repo_root: PathBuf,
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<RepoOverview> {
-        let last_indexed = self.get_meta_i64("last_indexed")?;
-        let commit_sha = self.graph_version_commit(graph_version)?;
-
-        let conn = self.read_conn()?;
-        let files = count_files_for_version(&conn, languages, graph_version)?;
-        let symbols = count_symbols_for_version(&conn, languages, graph_version)?;
-        let edges = count_edges_for_version(&conn, languages, graph_version)?;
-
-        Ok(RepoOverview {
-            repo_root: repo_root.to_string_lossy().to_string(),
-            files,
-            symbols,
-            edges,
-            last_indexed,
-            graph_version: Some(graph_version),
-            commit_sha,
-        })
-    }
-
-    pub fn list_languages(&self, graph_version: i64) -> Result<Vec<String>> {
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT language
-             FROM files
-             WHERE deleted_version IS NULL OR deleted_version > ?
-             ORDER BY language",
-        )?;
-        let rows = stmt.query_map(params![graph_version], |row| row.get(0))?;
-        let mut languages = Vec::new();
-        for row in rows {
-            languages.push(row?);
-        }
-        Ok(languages)
-    }
-
     pub fn list_files(&self, graph_version: i64) -> Result<Vec<FileRecord>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
@@ -207,31 +166,6 @@ impl Db {
             })
         })?;
 
-        let mut records = Vec::new();
-        for row in rows {
-            records.push(row?);
-        }
-        Ok(records)
-    }
-
-    pub fn list_symbol_refs(&self, graph_version: i64) -> Result<Vec<SymbolRefRecord>> {
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT s.id, s.name, s.qualname, s.kind, f.language
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        )?;
-        let rows = stmt.query_map(params![graph_version, graph_version], |row| {
-            Ok(SymbolRefRecord {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                qualname: row.get(2)?,
-                kind: row.get(3)?,
-                language: row.get(4)?,
-            })
-        })?;
         let mut records = Vec::new();
         for row in rows {
             records.push(row?);
@@ -303,30 +237,6 @@ impl Db {
             params![graph_version, graph_version, path],
         )?;
         Ok(())
-    }
-
-    pub fn symbol_map_for_file(
-        &self,
-        file_id: i64,
-        graph_version: i64,
-    ) -> Result<HashMap<String, i64>> {
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, qualname
-             FROM symbols
-             WHERE file_id = ? AND graph_version = ?",
-        )?;
-        let rows = stmt.query_map(params![file_id, graph_version], |row| {
-            let id: i64 = row.get(0)?;
-            let qualname: String = row.get(1)?;
-            Ok((qualname, id))
-        })?;
-        let mut map = HashMap::new();
-        for row in rows {
-            let (qualname, id) = row?;
-            map.insert(qualname, id);
-        }
-        Ok(map)
     }
 
     pub fn delete_edges_by_kind(&self, kind: &str, graph_version: i64) -> Result<()> {
@@ -1212,146 +1122,6 @@ impl Db {
         Ok(count)
     }
 
-    pub fn find_symbols(
-        &self,
-        query: &str,
-        limit: usize,
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<Symbol>> {
-        let tokens: Vec<&str> = query.split_whitespace().collect();
-        // Build per-token LIKE patterns
-        let patterns: Vec<String> = tokens.iter().map(|t| format!("%{}%", t)).collect();
-        // For ORDER BY exact-name match, use the longest token
-        let longest_token = tokens.iter().max_by_key(|t| t.len()).unwrap_or(&query);
-        let longest_lower = longest_token.to_lowercase();
-        let limit = limit as i64;
-
-        let mut sql = String::from(
-            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                    s.graph_version, s.commit_sha, s.stable_id
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE ",
-        );
-
-        // Each token must match name OR qualname (AND across tokens)
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        for (i, pat) in patterns.iter().enumerate() {
-            if i > 0 {
-                sql.push_str(" AND ");
-            }
-            sql.push_str("(s.name LIKE ? OR s.qualname LIKE ?)");
-            params.push(Box::new(pat.clone()));
-            params.push(Box::new(pat.clone()));
-        }
-
-        sql.push_str(
-            " AND s.graph_version = ? AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        params.push(Box::new(graph_version));
-        params.push(Box::new(graph_version));
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(Box::new(language.clone()));
-            }
-        }
-        // Relevance-based ordering:
-        // 1. Exact name match (longest token) first
-        // 2. Code symbols before doc/heading symbols
-        // 3. Demote changelog/migration files
-        // 4. Shorter qualnames (less nesting) first
-        sql.push_str(
-            " ORDER BY \
-             CASE WHEN LOWER(s.name) = ? THEN 0 ELSE 1 END, \
-             CASE WHEN s.kind IN ('class','function','method','struct','interface','enum','trait','service') THEN 0 \
-                  WHEN s.kind IN ('module','namespace','package') THEN 1 \
-                  WHEN s.kind IN ('heading','section') THEN 3 \
-                  ELSE 2 END, \
-             CASE WHEN f.path LIKE '%changelog%' OR f.path LIKE '%migration%' THEN 1 ELSE 0 END, \
-             LENGTH(s.qualname), \
-             s.name \
-             LIMIT ?",
-        );
-        params.push(Box::new(longest_lower));
-        params.push(Box::new(limit));
-
-        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*param_refs, symbol_from_row)?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    /// Search symbols where name starts with the given prefix.
-    /// Used for fuzzy matching candidate retrieval.
-    pub fn find_symbols_by_name_prefix(
-        &self,
-        prefix: &str,
-        limit: usize,
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<Symbol>> {
-        let pattern = format!("{}%", prefix);
-        let limit = limit as i64;
-        let mut sql = String::from(
-            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                    s.graph_version, s.commit_sha, s.stable_id
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE s.name LIKE ?
-               AND s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&pattern, &graph_version, &graph_version];
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-        sql.push_str(" ORDER BY s.name LIMIT ?");
-        params.push(&limit);
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, symbol_from_row)?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
     pub fn get_symbol_by_id(&self, id: i64) -> Result<Option<Symbol>> {
         self.read_conn()?
             .query_row(
@@ -1481,507 +1251,6 @@ impl Db {
             .map_err(Into::into)
     }
 
-    pub fn lookup_symbol_id(&self, qualname: &str, graph_version: i64) -> Result<Option<i64>> {
-        self.lookup_symbol_id_filtered(qualname, None, graph_version)
-    }
-
-    pub fn lookup_symbol_id_filtered(
-        &self,
-        qualname: &str,
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Option<i64>> {
-        let mut sql = String::from(
-            "SELECT s.id
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE s.qualname = ?
-               AND s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&qualname, &graph_version, &graph_version];
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-        sql.push_str(" LIMIT 1");
-        self.read_conn()?
-            .query_row(&sql, &*params, |row| row.get(0))
-            .optional()
-            .map_err(Into::into)
-    }
-
-    /// Fuzzy lookup for symbol IDs, handling short qualnames like "_svc.DeployAsync"
-    ///
-    /// Strategy:
-    /// 1. Try exact match first (fast path)
-    /// 2. Extract method/function name from short qualname (part after last '.')
-    /// 3. Search for symbols whose qualname ends with '.{name}'
-    /// 4. Prefer shortest qualname match (less nesting = more specific)
-    pub fn lookup_symbol_id_fuzzy(
-        &self,
-        target_qualname: &str,
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Option<i64>> {
-        // Fast path: try exact match first
-        if let Some(id) =
-            self.lookup_symbol_id_filtered(target_qualname, languages, graph_version)?
-        {
-            return Ok(Some(id));
-        }
-
-        // Extract the method/function name from the short qualname
-        let name = target_qualname
-            .split('.')
-            .next_back()
-            .unwrap_or(target_qualname);
-
-        // Search for symbols whose qualname ends with '.{name}'
-        let pattern = format!("%.{}", name);
-
-        let mut sql = String::from(
-            "SELECT s.id, s.qualname, LENGTH(s.qualname) as qn_len
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE (s.qualname = ? OR s.qualname LIKE ?)
-               AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
-               AND s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&name, &pattern, &graph_version, &graph_version];
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        sql.push_str(" ORDER BY qn_len ASC LIMIT 10");
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt.query(&*params)?;
-
-        let mut candidates: Vec<(i64, String)> = Vec::new();
-        while let Some(row) = rows.next()? {
-            let id: i64 = row.get(0)?;
-            let qualname: String = row.get(1)?;
-            candidates.push((id, qualname));
-        }
-
-        // If exactly 1 match, return it
-        if candidates.len() == 1 {
-            return Ok(Some(candidates[0].0));
-        }
-
-        // If multiple matches, prefer the shortest qualname (already ordered by qn_len)
-        if !candidates.is_empty() {
-            return Ok(Some(candidates[0].0));
-        }
-
-        Ok(None)
-    }
-
-    pub fn edges_for_symbol(
-        &self,
-        id: i64,
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<Edge>> {
-        let mut sql = String::from(
-            "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
-                    e.target_qualname, e.detail, e.evidence_snippet,
-                    e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
-             FROM edges e
-             JOIN files f ON e.file_id = f.id
-             WHERE (e.source_symbol_id = ? OR e.target_symbol_id = ?)
-               AND e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&id, &id, &graph_version, &graph_version];
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-        sql.push_str(" ORDER BY e.id");
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, edge_from_row)?;
-        let mut edges = Vec::new();
-        for row in rows {
-            edges.push(row?);
-        }
-        Ok(edges)
-    }
-
-    /// Find incoming edges by target_qualname pattern
-    /// Used for finding callers when target_symbol_id is null but target_qualname is set
-    pub fn incoming_edges_by_qualname_pattern(
-        &self,
-        symbol_name: &str,
-        kind: &str,
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<Edge>> {
-        // Search for edges where target_qualname ends with '.<symbol_name>' or equals it exactly
-        let pattern = format!("%.{}", symbol_name);
-        let exact = symbol_name.to_string();
-
-        let mut sql = String::from(
-            "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
-                    e.target_qualname, e.detail, e.evidence_snippet,
-                    e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
-             FROM edges e
-             JOIN files f ON e.file_id = f.id
-             WHERE (e.target_qualname LIKE ? OR e.target_qualname = ?)
-               AND e.kind = ?
-               AND e.source_symbol_id IS NOT NULL
-               AND e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&pattern, &exact, &kind, &graph_version, &graph_version];
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        sql.push_str(" ORDER BY e.id LIMIT 100");
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, edge_from_row)?;
-        let mut edges = Vec::new();
-        for row in rows {
-            edges.push(row?);
-        }
-        Ok(edges)
-    }
-
-    /// Find edges by exact target_qualname match and edge kind filter.
-    /// Used for traversal bridging: given a channel/route qualname, find all
-    /// edges pointing at it with complementary kinds.
-    pub fn edges_by_target_qualname_and_kinds(
-        &self,
-        target_qualname: &str,
-        kinds: &[&str],
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<Edge>> {
-        if kinds.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut kind_placeholders = String::new();
-        for (idx, _) in kinds.iter().enumerate() {
-            if idx > 0 {
-                kind_placeholders.push(',');
-            }
-            kind_placeholders.push('?');
-        }
-        let mut sql = format!(
-            "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
-                    e.target_qualname, e.detail, e.evidence_snippet,
-                    e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
-             FROM edges e
-             JOIN files f ON e.file_id = f.id
-             WHERE e.target_qualname = ?
-               AND e.kind IN ({kind_placeholders})
-               AND e.source_symbol_id IS NOT NULL
-               AND e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)"
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&target_qualname as &dyn rusqlite::ToSql];
-        for kind in kinds {
-            params.push(kind as &dyn rusqlite::ToSql);
-        }
-        params.push(&graph_version);
-        params.push(&graph_version);
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-        sql.push_str(" ORDER BY e.id LIMIT 100");
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, edge_from_row)?;
-        let mut edges = Vec::new();
-        for row in rows {
-            edges.push(row?);
-        }
-        Ok(edges)
-    }
-
-    /// Find unique source symbol IDs from edges targeting a config URI.
-    /// If `kinds` is empty, searches all CONFIG edge kinds.
-    pub fn source_symbols_for_config_uri(
-        &self,
-        uri: &str,
-        kinds: &[&str],
-        graph_version: i64,
-    ) -> Result<Vec<i64>> {
-        let default_kinds: &[&str] = &["CONFIG_SOURCE", "CONFIG_READ", "CONFIG_BIND"];
-        let search_kinds = if kinds.is_empty() {
-            default_kinds
-        } else {
-            kinds
-        };
-        let edges =
-            self.edges_by_target_qualname_and_kinds(uri, search_kinds, None, graph_version)?;
-        let mut seen = std::collections::HashSet::new();
-        let mut ids = Vec::new();
-        for e in &edges {
-            if let Some(id) = e.source_symbol_id
-                && seen.insert(id)
-            {
-                ids.push(id);
-            }
-        }
-        Ok(ids)
-    }
-
-    pub fn edges_for_symbols(
-        &self,
-        ids: &[i64],
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<HashMap<i64, Vec<Edge>>> {
-        if ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let mut placeholders = String::new();
-        for (idx, _) in ids.iter().enumerate() {
-            if idx > 0 {
-                placeholders.push(',');
-            }
-            placeholders.push('?');
-        }
-
-        // First query: resolved edges (existing behavior)
-        let mut sql = format!(
-            "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
-                    e.target_qualname, e.detail, e.evidence_snippet,
-                    e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
-             FROM edges e
-             JOIN files f ON e.file_id = f.id
-             WHERE (e.source_symbol_id IN ({}) OR e.target_symbol_id IN ({}))
-               AND e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-            placeholders, placeholders
-        );
-
-        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
-        // Add IDs twice (for source and target)
-        for id in ids {
-            params.push(id as &dyn rusqlite::ToSql);
-        }
-        for id in ids {
-            params.push(id as &dyn rusqlite::ToSql);
-        }
-        params.push(&graph_version);
-        params.push(&graph_version);
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-        sql.push_str(" ORDER BY e.id");
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, edge_from_row)?;
-
-        // Group edges by symbol ID
-        let mut result: HashMap<i64, Vec<Edge>> = HashMap::new();
-        for id in ids {
-            result.insert(*id, Vec::new());
-        }
-
-        let mut seen_edge_ids = std::collections::HashSet::new();
-        for row in rows {
-            let edge = row?;
-            seen_edge_ids.insert(edge.id);
-            // Add edge to both source and target symbol lists
-            if let Some(source_id) = edge.source_symbol_id
-                && ids.contains(&source_id)
-            {
-                result.entry(source_id).or_default().push(edge.clone());
-            }
-            if let Some(target_id) = edge.target_symbol_id
-                && ids.contains(&target_id)
-            {
-                result.entry(target_id).or_default().push(edge.clone());
-            }
-        }
-
-        // Second query: unresolved edges where target_qualname matches symbol names
-        // This catches cross-file CALLS edges with short qualnames like "_svc.DeployAsync"
-        let symbols_sql = format!(
-            "SELECT id, name FROM symbols WHERE id IN ({}) AND graph_version = ?",
-            placeholders
-        );
-        let mut symbols_params: Vec<&dyn rusqlite::ToSql> =
-            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        symbols_params.push(&graph_version);
-
-        let mut stmt = conn.prepare(&symbols_sql)?;
-        let mut symbol_rows = stmt.query(&*symbols_params)?;
-        let mut symbol_names: std::collections::HashMap<String, i64> =
-            std::collections::HashMap::new();
-        while let Some(row) = symbol_rows.next()? {
-            let id: i64 = row.get(0)?;
-            let name: String = row.get(1)?;
-            symbol_names.insert(name, id);
-        }
-
-        // Build patterns for LIKE queries: %.MethodName
-        let mut patterns: Vec<String> = Vec::new();
-        for name in symbol_names.keys() {
-            patterns.push(format!("%.{}", name));
-        }
-
-        if !patterns.is_empty() {
-            let mut unresolved_sql = String::from(
-                "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
-                        e.target_qualname, e.detail, e.evidence_snippet,
-                        e.evidence_start_line, e.evidence_end_line, e.confidence,
-                        e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
-                 FROM edges e
-                 JOIN files f ON e.file_id = f.id
-                 WHERE e.target_symbol_id IS NULL
-                   AND e.graph_version = ?
-                   AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                   AND (",
-            );
-
-            let mut unresolved_params: Vec<&dyn rusqlite::ToSql> =
-                vec![&graph_version, &graph_version];
-
-            for (idx, pattern) in patterns.iter().enumerate() {
-                if idx > 0 {
-                    unresolved_sql.push_str(" OR ");
-                }
-                unresolved_sql.push_str("e.target_qualname LIKE ?");
-                unresolved_params.push(pattern as &dyn rusqlite::ToSql);
-            }
-            unresolved_sql.push(')');
-
-            if let Some(languages) = languages
-                && !languages.is_empty()
-            {
-                unresolved_sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        unresolved_sql.push(',');
-                    }
-                    unresolved_sql.push('?');
-                }
-                unresolved_sql.push(')');
-                for language in languages {
-                    unresolved_params.push(language as &dyn rusqlite::ToSql);
-                }
-            }
-            unresolved_sql.push_str(" ORDER BY e.id");
-
-            let mut stmt = conn.prepare(&unresolved_sql)?;
-            let rows = stmt.query_map(&*unresolved_params, edge_from_row)?;
-
-            for row in rows {
-                let edge = row?;
-                // Skip if we already saw this edge in the first query
-                if seen_edge_ids.contains(&edge.id) {
-                    continue;
-                }
-
-                // Match target_qualname to symbol name and add to that symbol's edge list
-                if let Some(target_qn) = &edge.target_qualname {
-                    for (name, symbol_id) in &symbol_names {
-                        if target_qn.ends_with(&format!(".{}", name)) {
-                            result.entry(*symbol_id).or_default().push(edge.clone());
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(result)
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn list_edges(
         &self,
@@ -2096,960 +1365,6 @@ impl Db {
         Ok(edges)
     }
 
-    pub fn symbols_by_ids(
-        &self,
-        ids: &[i64],
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<Symbol>> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut placeholders = String::new();
-        for (idx, _) in ids.iter().enumerate() {
-            if idx > 0 {
-                placeholders.push(',');
-            }
-            placeholders.push('?');
-        }
-        let mut sql = format!(
-            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                    s.graph_version, s.commit_sha, s.stable_id
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE s.id IN ({})
-               AND s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-            placeholders
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        params.push(&graph_version);
-        params.push(&graph_version);
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-        sql.push_str(" ORDER BY s.id");
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, symbol_from_row)?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    pub fn call_edge_count(
-        &self,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<i64> {
-        let mut sql = String::from(
-            "SELECT COUNT(*)
-             FROM edges e
-             JOIN files f ON e.file_id = f.id
-             WHERE e.kind = 'CALLS'
-               AND e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-        let mut path_params = Vec::new();
-        append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
-        let conn = self.read_conn()?;
-        let count: i64 = if params.is_empty() {
-            conn.query_row(&sql, [], |row| row.get(0))?
-        } else {
-            conn.query_row(&sql, &*params, |row| row.get(0))?
-        };
-        Ok(count)
-    }
-
-    pub fn top_complexity(
-        &self,
-        limit: usize,
-        min_complexity: i64,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<SymbolComplexity>> {
-        let mut sql = String::from(
-            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                    s.graph_version, s.commit_sha, s.stable_id,
-                    sm.loc, sm.complexity
-             FROM symbol_metrics sm
-             JOIN symbols s ON sm.symbol_id = s.id
-             JOIN files f ON sm.file_id = f.id
-             WHERE sm.complexity >= ?
-               AND s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&min_complexity, &graph_version, &graph_version];
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-        let mut path_params = Vec::new();
-        append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
-        sql.push_str(" ORDER BY sm.complexity DESC, sm.loc DESC, s.id");
-        sql.push_str(" LIMIT ?");
-        let limit = limit as i64;
-        params.push(&limit);
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| {
-            let symbol = symbol_from_row(row)?;
-            let loc: i64 = row.get(16)?;
-            let complexity: i64 = row.get(17)?;
-            Ok(SymbolComplexity {
-                symbol,
-                loc,
-                complexity,
-            })
-        })?;
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    pub fn top_fan_in(
-        &self,
-        limit: usize,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<SymbolCoupling>> {
-        let mut sql = String::from(
-            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                    s.graph_version, s.commit_sha, s.stable_id,
-                    COUNT(*) as fan_in
-             FROM edges e
-             JOIN symbols s ON e.target_symbol_id = s.id
-             JOIN files f ON s.file_id = f.id
-             WHERE e.kind = 'CALLS'
-               AND e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-        let mut path_params = Vec::new();
-        append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
-        sql.push_str(" GROUP BY e.target_symbol_id");
-        sql.push_str(" ORDER BY fan_in DESC, s.id");
-        sql.push_str(" LIMIT ?");
-        let limit = limit as i64;
-        params.push(&limit);
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| {
-            let symbol = symbol_from_row(row)?;
-            let count: i64 = row.get(16)?;
-            Ok(SymbolCoupling { symbol, count })
-        })?;
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    pub fn top_fan_out(
-        &self,
-        limit: usize,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<SymbolCoupling>> {
-        let mut sql = String::from(
-            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                    s.graph_version, s.commit_sha, s.stable_id,
-                    COUNT(*) as fan_out
-             FROM edges e
-             JOIN symbols s ON e.source_symbol_id = s.id
-             JOIN files f ON s.file_id = f.id
-             WHERE e.kind = 'CALLS'
-               AND e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-        let mut path_params = Vec::new();
-        append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
-        sql.push_str(" GROUP BY e.source_symbol_id");
-        sql.push_str(" ORDER BY fan_out DESC, s.id");
-        sql.push_str(" LIMIT ?");
-        let limit = limit as i64;
-        params.push(&limit);
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| {
-            let symbol = symbol_from_row(row)?;
-            let count: i64 = row.get(16)?;
-            Ok(SymbolCoupling { symbol, count })
-        })?;
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    pub fn top_fan_in_by_module(
-        &self,
-        limit_per_module: usize,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<(String, Symbol, i64)>> {
-        let mut sql = String::from(
-            "SELECT
-                CASE
-                    WHEN INSTR(f.path, '/') > 0
-                    THEN SUBSTR(f.path, 1, INSTR(f.path, '/') - 1)
-                    ELSE f.path
-                END as module,
-                s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                s.graph_version, s.commit_sha, s.stable_id,
-                COUNT(e.id) as fan_in
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             LEFT JOIN edges e ON e.target_symbol_id = s.id AND e.kind = 'CALLS' AND e.graph_version = ?
-             WHERE s.graph_version = ?
-               AND s.kind IN ('function','method','class','struct','interface','service')
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&graph_version, &graph_version, &graph_version];
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        let mut path_params = Vec::new();
-        append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
-        sql.push_str(" GROUP BY s.id");
-        sql.push_str(" HAVING fan_in > 0");
-        sql.push_str(" ORDER BY module, fan_in DESC");
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| {
-            let module: String = row.get(0)?;
-            let symbol = symbol_from_row_offset(row, 1)?;
-            let fan_in: i64 = row.get(17)?;
-            Ok((module, symbol, fan_in))
-        })?;
-
-        // Collect and group by module, limiting per module
-        let mut by_module: std::collections::HashMap<String, Vec<(Symbol, i64)>> =
-            std::collections::HashMap::new();
-        for row in rows {
-            let (module, symbol, fan_in) = row?;
-            by_module.entry(module).or_default().push((symbol, fan_in));
-        }
-
-        // Flatten with limit per module
-        let mut results = Vec::new();
-        for (module, mut symbols) in by_module {
-            symbols.truncate(limit_per_module);
-            for (symbol, fan_in) in symbols {
-                results.push((module.clone(), symbol, fan_in));
-            }
-        }
-
-        Ok(results)
-    }
-
-    pub fn count_symbols_by_kind(
-        &self,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<(String, i64)>> {
-        let mut sql = String::from(
-            "SELECT s.kind, COUNT(*) as cnt
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        let mut path_params = Vec::new();
-        append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
-        sql.push_str(" GROUP BY s.kind ORDER BY cnt DESC");
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, |row| {
-            let kind: String = row.get(0)?;
-            let cnt: i64 = row.get(1)?;
-            Ok((kind, cnt))
-        })?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn duplicate_groups(
-        &self,
-        limit: usize,
-        min_count: i64,
-        min_loc: i64,
-        per_group_limit: usize,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<DuplicateGroup>> {
-        let mut sql = String::from(
-            "SELECT sm.duplication_hash, COUNT(*) as count
-             FROM symbol_metrics sm
-             JOIN symbols s ON sm.symbol_id = s.id
-             JOIN files f ON sm.file_id = f.id
-             WHERE sm.duplication_hash IS NOT NULL AND sm.loc >= ?
-               AND s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&min_loc, &graph_version, &graph_version];
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-        let mut path_params = Vec::new();
-        append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
-        sql.push_str(" GROUP BY sm.duplication_hash HAVING COUNT(*) >= ?");
-        params.push(&min_count);
-        sql.push_str(" ORDER BY count DESC, sm.duplication_hash");
-        sql.push_str(" LIMIT ?");
-        let limit = limit as i64;
-        params.push(&limit);
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let groups = stmt.query_map(&*params, |row| {
-            let hash: String = row.get(0)?;
-            let count: i64 = row.get(1)?;
-            Ok((hash, count))
-        })?;
-
-        let mut results = Vec::new();
-        for row in groups {
-            let (hash, count) = row?;
-            let mut member_sql = String::from(
-                "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                        s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                        s.graph_version, s.commit_sha, s.stable_id
-                 FROM symbol_metrics sm
-                 JOIN symbols s ON sm.symbol_id = s.id
-                 JOIN files f ON sm.file_id = f.id
-                 WHERE sm.duplication_hash = ? AND sm.loc >= ?
-                   AND s.graph_version = ?
-                   AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-            );
-            let mut member_params: Vec<&dyn rusqlite::ToSql> =
-                vec![&hash, &min_loc, &graph_version, &graph_version];
-            if let Some(languages) = languages
-                && !languages.is_empty()
-            {
-                member_sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        member_sql.push(',');
-                    }
-                    member_sql.push('?');
-                }
-                member_sql.push(')');
-                for language in languages {
-                    member_params.push(language as &dyn rusqlite::ToSql);
-                }
-            }
-            let mut member_path_params = Vec::new();
-            append_path_filters(
-                &mut member_sql,
-                &mut member_params,
-                &mut member_path_params,
-                paths,
-                "f",
-            );
-            member_sql.push_str(" ORDER BY f.path, s.start_line, s.id LIMIT ?");
-            let per_group_limit = per_group_limit as i64;
-            member_params.push(&per_group_limit);
-            let member_conn = self.read_conn()?;
-            let mut member_stmt = member_conn.prepare(&member_sql)?;
-            let rows = member_stmt.query_map(&*member_params, symbol_from_row)?;
-            let mut symbols = Vec::new();
-            for row in rows {
-                symbols.push(row?);
-            }
-            results.push(DuplicateGroup {
-                hash,
-                count,
-                symbols,
-            });
-        }
-        Ok(results)
-    }
-
-    pub fn dead_symbols(
-        &self,
-        limit: usize,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<Symbol>> {
-        let sql = "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                          s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                          s.graph_version, s.commit_sha, s.stable_id
-                   FROM symbols s
-                   JOIN files f ON s.file_id = f.id
-                   WHERE s.graph_version = ?
-                     AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                     AND s.kind IN ('function', 'method', 'class', 'struct')
-                     AND s.name NOT IN ('main', '__init__', 'setup', 'teardown', 'configure', 'register')
-                     AND NOT EXISTS (
-                       SELECT 1 FROM edges e
-                       WHERE e.target_symbol_id = s.id
-                         AND e.kind IN ('CALLS', 'IMPORTS', 'RPC_IMPL', 'IMPLEMENTS', 'EXTENDS')
-                         AND e.graph_version = ?
-                     )
-                     AND NOT EXISTS (
-                       SELECT 1 FROM edges e
-                       WHERE e.target_symbol_id = s.id
-                         AND e.kind = 'IMPORTS'
-                         AND e.graph_version = ?
-                         AND e.file_id != s.file_id
-                     )
-                     AND NOT EXISTS (
-                       SELECT 1 FROM edges e
-                       WHERE e.source_symbol_id = s.id
-                         AND e.kind IN ('HTTP_ROUTE', 'RPC_IMPL', 'CHANNEL_SUBSCRIBE')
-                         AND e.graph_version = ?
-                     )";
-
-        let mut full_sql = String::from(sql);
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![
-            &graph_version,
-            &graph_version,
-            &graph_version,
-            &graph_version,
-            &graph_version,
-        ];
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            full_sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    full_sql.push(',');
-                }
-                full_sql.push('?');
-            }
-            full_sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        let mut path_params = Vec::new();
-        append_path_filters(&mut full_sql, &mut params, &mut path_params, paths, "f");
-
-        full_sql.push_str(" ORDER BY s.qualname LIMIT ?");
-        let limit = limit as i64;
-        params.push(&limit);
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&full_sql)?;
-        let rows = stmt.query_map(&*params, symbol_from_row)?;
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    pub fn unused_imports(
-        &self,
-        limit: usize,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<Edge>> {
-        let sql = "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
-                          e.target_qualname, e.detail, e.evidence_snippet,
-                          e.evidence_start_line, e.evidence_end_line, e.confidence,
-                          e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
-                   FROM edges e
-                   JOIN files f ON e.file_id = f.id
-                   WHERE e.kind = 'IMPORTS'
-                     AND e.graph_version = ?
-                     AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                     AND e.target_qualname IS NOT NULL
-                     AND NOT EXISTS (
-                       SELECT 1 FROM edges e2
-                       WHERE e2.kind = 'CALLS'
-                         AND e2.file_id = e.file_id
-                         AND e2.target_qualname = e.target_qualname
-                         AND e2.graph_version = ?
-                     )";
-
-        let mut full_sql = String::from(sql);
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&graph_version, &graph_version, &graph_version];
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            full_sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    full_sql.push(',');
-                }
-                full_sql.push('?');
-            }
-            full_sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        let mut path_params = Vec::new();
-        append_path_filters(&mut full_sql, &mut params, &mut path_params, paths, "f");
-
-        full_sql.push_str(" ORDER BY f.path, e.evidence_start_line LIMIT ?");
-        let limit = limit as i64;
-        params.push(&limit);
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&full_sql)?;
-        let rows = stmt.query_map(&*params, edge_from_row)?;
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    pub fn orphan_tests(
-        &self,
-        limit: usize,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<Symbol>> {
-        // First, get all test symbols
-        let mut sql = String::from(
-            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                    s.graph_version, s.commit_sha, s.stable_id
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-               AND s.kind IN ('function', 'method')
-               AND (s.name LIKE 'test_%' OR s.name LIKE 'Test%'
-                    OR f.path LIKE '%test%' OR f.path LIKE '%spec%')",
-        );
-
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        let mut path_params = Vec::new();
-        append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
-
-        // Cap scan to limit*10 to avoid unbounded N+1 queries
-        let scan_cap = limit * 10;
-        sql.push_str(&format!(" ORDER BY s.qualname LIMIT {}", scan_cap));
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, symbol_from_row)?;
-        let mut all_tests = Vec::new();
-        for row in rows {
-            all_tests.push(row?);
-        }
-
-        // Extract target names for all test symbols in batch
-        let mut tests_with_targets: Vec<(Symbol, String)> = Vec::new();
-        for test_symbol in all_tests {
-            let target_name = extract_target_name(&test_symbol.name);
-            if !target_name.is_empty() {
-                tests_with_targets.push((test_symbol, target_name));
-            }
-        }
-
-        if tests_with_targets.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Batch query: get all symbol names that exist in the project
-        let unique_targets: Vec<&str> = tests_with_targets
-            .iter()
-            .map(|(_, t)| t.as_str())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-
-        let mut existing_targets = std::collections::HashSet::new();
-        for chunk in unique_targets.chunks(500) {
-            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let batch_sql = format!(
-                "SELECT DISTINCT s.name FROM symbols s
-                 JOIN files f ON s.file_id = f.id
-                 WHERE s.graph_version = ?
-                   AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                   AND s.name IN ({})",
-                placeholders
-            );
-            let mut batch_params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-            for name in chunk {
-                batch_params.push(name as &dyn rusqlite::ToSql);
-            }
-            let mut batch_stmt = conn.prepare(&batch_sql)?;
-            let rows = batch_stmt.query_map(&*batch_params, |row| row.get::<_, String>(0))?;
-            for row in rows {
-                existing_targets.insert(row?);
-            }
-        }
-
-        // Filter to orphan tests (target name not found)
-        let mut orphans = Vec::new();
-        for (test_symbol, target_name) in tests_with_targets {
-            if !existing_targets.contains(&target_name) {
-                orphans.push(test_symbol);
-                if orphans.len() >= limit {
-                    break;
-                }
-            }
-        }
-
-        Ok(orphans)
-    }
-
-    // Co-change methods for git mining intelligence
-
-    pub fn insert_co_changes_batch(
-        &mut self,
-        entries: &[crate::git_mining::CoChangeEntry],
-    ) -> Result<usize> {
-        if entries.is_empty() {
-            return Ok(0);
-        }
-
-        let mined_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-
-        let mut conn = self.conn();
-        let tx = conn.transaction()?;
-        let mut count = 0;
-
-        {
-            let mut insert = tx.prepare(
-                "INSERT INTO co_changes
-                 (file_a, file_b, co_change_count, total_commits_a, total_commits_b, confidence, last_commit_sha, last_commit_ts, mined_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(file_a, file_b) DO UPDATE SET
-                   co_change_count = excluded.co_change_count,
-                   total_commits_a = excluded.total_commits_a,
-                   total_commits_b = excluded.total_commits_b,
-                   confidence = excluded.confidence,
-                   last_commit_sha = excluded.last_commit_sha,
-                   last_commit_ts = excluded.last_commit_ts,
-                   mined_at = excluded.mined_at",
-            )?;
-
-            for entry in entries {
-                insert.execute(params![
-                    entry.file_a,
-                    entry.file_b,
-                    entry.co_change_count,
-                    entry.total_commits_a,
-                    entry.total_commits_b,
-                    entry.confidence,
-                    entry.last_commit_sha,
-                    entry.last_commit_ts,
-                    mined_at,
-                ])?;
-                count += 1;
-            }
-        }
-
-        tx.commit()?;
-        Ok(count)
-    }
-
-    pub fn co_changes_for_file(
-        &self,
-        path: &str,
-        limit: usize,
-        min_confidence: f64,
-        _graph_version: i64,
-    ) -> Result<Vec<crate::model::CoChangeResult>> {
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT file_a, file_b, co_change_count, confidence, last_commit_sha
-             FROM co_changes
-             WHERE (file_a = ? OR file_b = ?)
-               AND confidence >= ?
-             ORDER BY confidence DESC
-             LIMIT ?",
-        )?;
-
-        let rows = stmt.query_map(params![path, path, min_confidence, limit as i64], |row| {
-            Ok(crate::model::CoChangeResult {
-                file_a: row.get(0)?,
-                file_b: row.get(1)?,
-                co_change_count: row.get(2)?,
-                confidence: row.get(3)?,
-                last_commit_sha: row.get(4)?,
-            })
-        })?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    pub fn co_changes_for_files(
-        &self,
-        paths: &[String],
-        limit: usize,
-        min_confidence: f64,
-        _graph_version: i64,
-    ) -> Result<Vec<crate::model::CoChangeResult>> {
-        if paths.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let conn = self.read_conn()?;
-
-        // Build query with IN clause
-        let placeholders = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT file_a, file_b, co_change_count, confidence, last_commit_sha
-             FROM co_changes
-             WHERE (file_a IN ({}) OR file_b IN ({}))
-               AND confidence >= ?
-             ORDER BY confidence DESC
-             LIMIT ?",
-            placeholders, placeholders
-        );
-
-        let mut stmt = conn.prepare(&sql)?;
-
-        // Build params: paths, paths, min_confidence, limit
-        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
-        for path in paths {
-            params.push(path);
-        }
-        for path in paths {
-            params.push(path);
-        }
-        params.push(&min_confidence);
-        let limit_param = limit as i64;
-        params.push(&limit_param);
-
-        let rows = stmt.query_map(&*params, |row| {
-            Ok(crate::model::CoChangeResult {
-                file_a: row.get(0)?,
-                file_b: row.get(1)?,
-                co_change_count: row.get(2)?,
-                confidence: row.get(3)?,
-                last_commit_sha: row.get(4)?,
-            })
-        })?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    pub fn clear_co_changes(&mut self) -> Result<()> {
-        self.conn().execute("DELETE FROM co_changes", [])?;
-        Ok(())
-    }
-
-    pub fn coupling_hotspots(
-        &self,
-        limit: usize,
-        min_confidence: f64,
-    ) -> Result<Vec<crate::model::CouplingHotspot>> {
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT file_a, file_b, confidence, co_change_count
-             FROM co_changes
-             WHERE confidence >= ?
-             ORDER BY confidence DESC
-             LIMIT ?",
-        )?;
-
-        let rows = stmt.query_map(params![min_confidence, limit as i64], |row| {
-            Ok(crate::model::CouplingHotspot {
-                file_a: row.get(0)?,
-                file_b: row.get(1)?,
-                confidence: row.get(2)?,
-                co_change_count: row.get(3)?,
-            })
-        })?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
-    }
-
-    pub fn digest(&self) -> Result<DbDigest> {
-        Ok(DbDigest {
-            files: self.digest_files()?,
-            symbols: self.digest_symbols()?,
-            edges: self.digest_edges()?,
-        })
-    }
-
     pub fn current_graph_version(&self) -> Result<i64> {
         let value = self.get_meta_i64("graph_version")?;
         Ok(value.unwrap_or(1))
@@ -3125,445 +1440,6 @@ impl Db {
         )?;
         Ok(())
     }
-
-    fn digest_files(&self) -> Result<TableDigest> {
-        let graph_version = self.current_graph_version()?;
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT path, hash, language, size, deleted_version
-             FROM files
-             WHERE deleted_version IS NULL OR deleted_version > ?
-             ORDER BY path",
-        )?;
-        let rows = stmt.query_map(params![graph_version], |row| {
-            let path: String = row.get(0)?;
-            let hash: String = row.get(1)?;
-            let language: String = row.get(2)?;
-            let size: i64 = row.get(3)?;
-            let deleted_version: Option<i64> = row.get(4)?;
-            Ok(json!([path, hash, language, size, deleted_version]).to_string())
-        })?;
-        digest_rows(rows)
-    }
-
-    fn digest_symbols(&self) -> Result<TableDigest> {
-        let graph_version = self.current_graph_version()?;
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                    s.graph_version, s.commit_sha, s.stable_id
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-             ORDER BY f.path, s.qualname, s.kind, s.start_line, s.start_col, s.end_line, s.end_col",
-        )?;
-        let rows = stmt.query_map(params![graph_version, graph_version], |row| {
-            let path: String = row.get(0)?;
-            let kind: String = row.get(1)?;
-            let name: String = row.get(2)?;
-            let qualname: String = row.get(3)?;
-            let start_line: i64 = row.get(4)?;
-            let start_col: i64 = row.get(5)?;
-            let end_line: i64 = row.get(6)?;
-            let end_col: i64 = row.get(7)?;
-            let start_byte: i64 = row.get(8)?;
-            let end_byte: i64 = row.get(9)?;
-            let signature: Option<String> = row.get(10)?;
-            let docstring: Option<String> = row.get(11)?;
-            let row_graph_version: i64 = row.get(12)?;
-            let commit_sha: Option<String> = row.get(13)?;
-            let stable_id: Option<String> = row.get(14)?;
-            Ok(json!([
-                path,
-                kind,
-                name,
-                qualname,
-                start_line,
-                start_col,
-                end_line,
-                end_col,
-                start_byte,
-                end_byte,
-                signature,
-                docstring,
-                row_graph_version,
-                commit_sha,
-                stable_id
-            ])
-            .to_string())
-        })?;
-        digest_rows(rows)
-    }
-
-    fn digest_edges(&self) -> Result<TableDigest> {
-        let graph_version = self.current_graph_version()?;
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT f.path,
-                    e.kind,
-                    src.qualname,
-                    COALESCE(tgt.qualname, e.target_qualname),
-                    e.detail,
-                    e.evidence_snippet,
-                    e.evidence_start_line,
-                    e.evidence_end_line,
-                    e.confidence,
-                    e.graph_version,
-                    e.commit_sha,
-                    e.trace_id,
-                    e.span_id,
-                    e.event_ts
-             FROM edges e
-             JOIN files f ON e.file_id = f.id
-             LEFT JOIN symbols src ON e.source_symbol_id = src.id
-             LEFT JOIN symbols tgt ON e.target_symbol_id = tgt.id
-             WHERE e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-             ORDER BY f.path,
-                      e.kind,
-                      COALESCE(src.qualname, ''),
-                      COALESCE(tgt.qualname, e.target_qualname, ''),
-                      COALESCE(e.detail, ''),
-                      COALESCE(e.evidence_snippet, '')",
-        )?;
-        let rows = stmt.query_map(params![graph_version, graph_version], |row| {
-            let path: String = row.get(0)?;
-            let kind: String = row.get(1)?;
-            let source: Option<String> = row.get(2)?;
-            let target: Option<String> = row.get(3)?;
-            let detail: Option<String> = row.get(4)?;
-            let evidence_snippet: Option<String> = row.get(5)?;
-            let evidence_start_line: Option<i64> = row.get(6)?;
-            let evidence_end_line: Option<i64> = row.get(7)?;
-            let confidence: Option<f64> = row.get(8)?;
-            let row_graph_version: i64 = row.get(9)?;
-            let commit_sha: Option<String> = row.get(10)?;
-            let trace_id: Option<String> = row.get(11)?;
-            let span_id: Option<String> = row.get(12)?;
-            let event_ts: Option<i64> = row.get(13)?;
-            Ok(json!([
-                path,
-                kind,
-                source,
-                target,
-                detail,
-                evidence_snippet,
-                evidence_start_line,
-                evidence_end_line,
-                confidence,
-                row_graph_version,
-                commit_sha,
-                trace_id,
-                span_id,
-                event_ts
-            ])
-            .to_string())
-        })?;
-        digest_rows(rows)
-    }
-
-    /// Get module-level aggregation: file counts and symbol counts per directory prefix
-    pub fn module_summary(
-        &self,
-        depth: usize,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<ModuleSummaryEntry>> {
-        let conn = self.read_conn()?;
-
-        // Query all files with their symbol counts
-        let mut sql = String::from(
-            "SELECT f.path, f.language, COUNT(s.id) as sym_count
-             FROM files f
-             LEFT JOIN symbols s ON s.file_id = f.id AND s.graph_version = ?
-             WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-
-        // Add language filter
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        // Add path filter
-        let mut path_params = Vec::new();
-        append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
-
-        sql.push_str(" GROUP BY f.id");
-
-        let mut stmt = conn.prepare(&sql)?;
-        let rows: Vec<(String, String, i64)> = stmt
-            .query_map(&*params, |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        // Group by module prefix at given depth
-        let mut modules: std::collections::HashMap<
-            String,
-            (usize, usize, std::collections::HashSet<String>),
-        > = std::collections::HashMap::new();
-
-        for (path, lang, sym_count) in &rows {
-            // Extract module prefix at depth
-            let parts: Vec<&str> = path.split('/').collect();
-            let prefix = if parts.len() > depth {
-                parts[..depth].join("/") + "/"
-            } else {
-                // For files at shallower depth, use parent directory
-                if parts.len() > 1 {
-                    parts[..parts.len().saturating_sub(1)].join("/") + "/"
-                } else {
-                    ".".to_string()
-                }
-            };
-
-            let entry = modules
-                .entry(prefix)
-                .or_insert((0, 0, std::collections::HashSet::new()));
-            entry.0 += 1; // file count
-            entry.1 += *sym_count as usize; // symbol count
-            entry.2.insert(lang.clone()); // languages
-        }
-
-        let mut result: Vec<ModuleSummaryEntry> = modules
-            .into_iter()
-            .map(|(path, (fc, sc, langs))| ModuleSummaryEntry {
-                path,
-                file_count: fc,
-                symbol_count: sc,
-                languages: langs.into_iter().collect(),
-            })
-            .collect();
-        result.sort_by_key(|x| std::cmp::Reverse(x.symbol_count));
-
-        Ok(result)
-    }
-
-    /// Get inter-module edge counts (calls and imports)
-    pub fn module_edges(
-        &self,
-        depth: usize,
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<(String, String, usize, usize)>> {
-        let conn = self.read_conn()?;
-
-        // Query all CALLS, IMPORTS, and XREF edges with source and target file paths
-        let mut sql = String::from(
-            "SELECT e.kind, src_f.path as src_path, tgt_f.path as tgt_path
-             FROM edges e
-             JOIN symbols src_s ON e.source_symbol_id = src_s.id
-             JOIN files src_f ON src_s.file_id = src_f.id
-             LEFT JOIN symbols tgt_s ON e.target_symbol_id = tgt_s.id
-             LEFT JOIN files tgt_f ON tgt_s.file_id = tgt_f.id
-             WHERE e.kind IN ('CALLS', 'IMPORTS', 'XREF')
-               AND e.graph_version = ?
-               AND (src_f.deleted_version IS NULL OR src_f.deleted_version > ?)
-               AND (tgt_f.deleted_version IS NULL OR tgt_f.deleted_version > ? OR tgt_f.id IS NULL)",
-        );
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&graph_version, &graph_version, &graph_version];
-
-        // Add language filter
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND src_f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        let mut stmt = conn.prepare(&sql)?;
-        let rows: Vec<(String, String, Option<String>)> = stmt
-            .query_map(&*params, |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        // Group by source module -> target module
-        let mut edge_map: std::collections::HashMap<(String, String), (usize, usize)> =
-            std::collections::HashMap::new();
-
-        for (kind, src_path, tgt_path_opt) in &rows {
-            // Extract module prefix at depth for source
-            let src_parts: Vec<&str> = src_path.split('/').collect();
-            let src_module = if src_parts.len() > depth {
-                src_parts[..depth].join("/") + "/"
-            } else if src_parts.len() > 1 {
-                src_parts[..src_parts.len().saturating_sub(1)].join("/") + "/"
-            } else {
-                ".".to_string()
-            };
-
-            // Extract module prefix for target (if exists)
-            if let Some(tgt_path) = tgt_path_opt {
-                let tgt_parts: Vec<&str> = tgt_path.split('/').collect();
-                let tgt_module = if tgt_parts.len() > depth {
-                    tgt_parts[..depth].join("/") + "/"
-                } else if tgt_parts.len() > 1 {
-                    tgt_parts[..tgt_parts.len().saturating_sub(1)].join("/") + "/"
-                } else {
-                    ".".to_string()
-                };
-
-                // Skip self-edges (within same module)
-                if src_module == tgt_module {
-                    continue;
-                }
-
-                let key = (src_module.clone(), tgt_module.clone());
-                let entry = edge_map.entry(key).or_insert((0, 0));
-
-                if kind == "CALLS" || kind == "XREF" {
-                    entry.0 += 1; // call count (includes XREFs as they're usage relationships)
-                } else if kind == "IMPORTS" {
-                    entry.1 += 1; // import count
-                }
-            }
-        }
-
-        let mut result: Vec<_> = edge_map
-            .into_iter()
-            .map(|((src, tgt), (calls, imports))| (src, tgt, calls, imports))
-            .collect();
-        result.sort_by_key(|x| std::cmp::Reverse(x.2 + x.3)); // Sort by total edge count desc
-
-        Ok(result)
-    }
-}
-
-fn digest_rows<I>(rows: I) -> Result<TableDigest>
-where
-    I: Iterator<Item = rusqlite::Result<String>>,
-{
-    let mut hasher = Hasher::new();
-    let mut count = 0;
-    for row in rows {
-        let row = row?;
-        hasher.update(row.as_bytes());
-        hasher.update(b"\n");
-        count += 1;
-    }
-    Ok(TableDigest {
-        rows: count,
-        hash: hasher.finalize().to_hex().to_string(),
-    })
-}
-
-fn count_files_for_version(
-    conn: &Connection,
-    languages: Option<&[String]>,
-    graph_version: i64,
-) -> Result<i64> {
-    let mut sql = String::from(
-        "SELECT COUNT(*)
-         FROM files f
-         WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)",
-    );
-    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
-    if let Some(languages) = languages
-        && !languages.is_empty()
-    {
-        sql.push_str(" AND f.language IN (");
-        for (idx, _) in languages.iter().enumerate() {
-            if idx > 0 {
-                sql.push(',');
-            }
-            sql.push('?');
-        }
-        sql.push(')');
-        for language in languages {
-            params.push(language as &dyn rusqlite::ToSql);
-        }
-    }
-    let count: i64 = conn.query_row(&sql, &*params, |row| row.get(0))?;
-    Ok(count)
-}
-
-fn count_symbols_for_version(
-    conn: &Connection,
-    languages: Option<&[String]>,
-    graph_version: i64,
-) -> Result<i64> {
-    let mut sql = String::from(
-        "SELECT COUNT(*)
-         FROM symbols s
-         JOIN files f ON s.file_id = f.id
-         WHERE s.graph_version = ?
-           AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-    );
-    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-    if let Some(languages) = languages
-        && !languages.is_empty()
-    {
-        sql.push_str(" AND f.language IN (");
-        for (idx, _) in languages.iter().enumerate() {
-            if idx > 0 {
-                sql.push(',');
-            }
-            sql.push('?');
-        }
-        sql.push(')');
-        for language in languages {
-            params.push(language as &dyn rusqlite::ToSql);
-        }
-    }
-    let count: i64 = conn.query_row(&sql, &*params, |row| row.get(0))?;
-    Ok(count)
-}
-
-fn count_edges_for_version(
-    conn: &Connection,
-    languages: Option<&[String]>,
-    graph_version: i64,
-) -> Result<i64> {
-    let mut sql = String::from(
-        "SELECT COUNT(*)
-         FROM edges e
-         JOIN files f ON e.file_id = f.id
-         WHERE e.graph_version = ?
-           AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-    );
-    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
-    if let Some(languages) = languages
-        && !languages.is_empty()
-    {
-        sql.push_str(" AND f.language IN (");
-        for (idx, _) in languages.iter().enumerate() {
-            if idx > 0 {
-                sql.push(',');
-            }
-            sql.push('?');
-        }
-        sql.push(')');
-        for language in languages {
-            params.push(language as &dyn rusqlite::ToSql);
-        }
-    }
-    let count: i64 = conn.query_row(&sql, &*params, |row| row.get(0))?;
-    Ok(count)
 }
 
 fn collect_path_prefixes(paths: Option<&[String]>) -> Vec<String> {
@@ -4533,5 +2409,1000 @@ mod tests {
         }
 
         println!("Batch update of {} files: {:?}", num_files, batch_duration);
+    }
+
+    // ========== CO-CHANGE SUBMODULE TESTS ==========
+
+    fn make_co_change_entry(
+        file_a: &str,
+        file_b: &str,
+        co_change_count: i64,
+        confidence: f64,
+    ) -> crate::git_mining::CoChangeEntry {
+        crate::git_mining::CoChangeEntry {
+            file_a: file_a.to_string(),
+            file_b: file_b.to_string(),
+            co_change_count,
+            total_commits_a: co_change_count + 5,
+            total_commits_b: co_change_count + 3,
+            confidence,
+            last_commit_sha: Some("abc123".to_string()),
+            last_commit_ts: Some(1700000000),
+        }
+    }
+
+    #[test]
+    fn test_insert_co_changes_batch_empty() {
+        let (mut db, _temp) = create_test_db();
+        let result = db.insert_co_changes_batch(&[]).unwrap();
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_insert_and_query_single_co_change() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![make_co_change_entry("src/a.rs", "src/b.rs", 10, 0.8)];
+        let count = db.insert_co_changes_batch(&entries).unwrap();
+        assert_eq!(count, 1);
+
+        let results = db.co_changes_for_file("src/a.rs", 10, 0.0, 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_a, "src/a.rs");
+        assert_eq!(results[0].file_b, "src/b.rs");
+        assert_eq!(results[0].co_change_count, 10);
+        assert!((results[0].confidence - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_co_changes_for_file_matches_both_columns() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![make_co_change_entry("src/a.rs", "src/b.rs", 10, 0.8)];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        // Query by file_b — should still find the pair
+        let results = db.co_changes_for_file("src/b.rs", 10, 0.0, 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_a, "src/a.rs");
+        assert_eq!(results[0].file_b, "src/b.rs");
+    }
+
+    #[test]
+    fn test_co_changes_for_file_respects_min_confidence() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![
+            make_co_change_entry("src/a.rs", "src/b.rs", 10, 0.3),
+            make_co_change_entry("src/a.rs", "src/c.rs", 5, 0.9),
+        ];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        let results = db.co_changes_for_file("src/a.rs", 10, 0.5, 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_b, "src/c.rs");
+    }
+
+    #[test]
+    fn test_co_changes_for_file_respects_limit() {
+        let (mut db, _temp) = create_test_db();
+        let entries: Vec<_> = (0..20)
+            .map(|i| make_co_change_entry("src/a.rs", &format!("src/other_{}.rs", i), 10, 0.5))
+            .collect();
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        let results = db.co_changes_for_file("src/a.rs", 5, 0.0, 1).unwrap();
+        assert_eq!(results.len(), 5);
+    }
+
+    #[test]
+    fn test_co_changes_for_file_no_match() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![make_co_change_entry("src/a.rs", "src/b.rs", 10, 0.8)];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        let results = db
+            .co_changes_for_file("src/nonexistent.rs", 10, 0.0, 1)
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_co_changes_for_file_ordered_by_confidence_desc() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![
+            make_co_change_entry("src/a.rs", "src/low.rs", 1, 0.1),
+            make_co_change_entry("src/a.rs", "src/high.rs", 20, 0.95),
+            make_co_change_entry("src/a.rs", "src/mid.rs", 10, 0.5),
+        ];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        let results = db.co_changes_for_file("src/a.rs", 10, 0.0, 1).unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].file_b, "src/high.rs");
+        assert_eq!(results[1].file_b, "src/mid.rs");
+        assert_eq!(results[2].file_b, "src/low.rs");
+    }
+
+    #[test]
+    fn test_co_changes_for_files_empty_paths() {
+        let (db, _temp) = create_test_db();
+        let results = db.co_changes_for_files(&[], 10, 0.0, 1).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_co_changes_for_files_multiple_paths() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![
+            make_co_change_entry("src/a.rs", "src/x.rs", 10, 0.8),
+            make_co_change_entry("src/b.rs", "src/y.rs", 5, 0.6),
+            make_co_change_entry("src/c.rs", "src/z.rs", 3, 0.4),
+        ];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        let paths = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let results = db.co_changes_for_files(&paths, 10, 0.0, 1).unwrap();
+        assert_eq!(results.len(), 2);
+        // Should not include the c.rs/z.rs pair
+        for r in &results {
+            assert!(r.file_a != "src/c.rs" && r.file_b != "src/z.rs");
+        }
+    }
+
+    #[test]
+    fn test_co_changes_for_files_deduplicates_results() {
+        let (mut db, _temp) = create_test_db();
+        // Entry where both file_a and file_b are in the query paths
+        let entries = vec![make_co_change_entry("src/a.rs", "src/b.rs", 10, 0.8)];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        let paths = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let results = db.co_changes_for_files(&paths, 10, 0.0, 1).unwrap();
+        // SQL OR with IN clauses — the row matches both sides, but it's the same row
+        // so SQLite returns it once (no DISTINCT needed because it's a single row match)
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_co_changes_for_files_respects_min_confidence() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![
+            make_co_change_entry("src/a.rs", "src/x.rs", 10, 0.2),
+            make_co_change_entry("src/a.rs", "src/y.rs", 5, 0.7),
+        ];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        let paths = vec!["src/a.rs".to_string()];
+        let results = db.co_changes_for_files(&paths, 10, 0.5, 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_b, "src/y.rs");
+    }
+
+    #[test]
+    fn test_insert_co_changes_upsert_overwrites() {
+        let (mut db, _temp) = create_test_db();
+
+        // Insert initial entry
+        let entries = vec![make_co_change_entry("src/a.rs", "src/b.rs", 5, 0.4)];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        // Insert updated entry for the same pair
+        let updated = vec![make_co_change_entry("src/a.rs", "src/b.rs", 20, 0.9)];
+        db.insert_co_changes_batch(&updated).unwrap();
+
+        let results = db.co_changes_for_file("src/a.rs", 10, 0.0, 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].co_change_count, 20);
+        assert!((results[0].confidence - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_clear_co_changes() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![
+            make_co_change_entry("src/a.rs", "src/b.rs", 10, 0.8),
+            make_co_change_entry("src/c.rs", "src/d.rs", 5, 0.6),
+        ];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        db.clear_co_changes().unwrap();
+
+        let results = db.co_changes_for_file("src/a.rs", 10, 0.0, 1).unwrap();
+        assert!(results.is_empty());
+        let results = db.co_changes_for_file("src/c.rs", 10, 0.0, 1).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_clear_co_changes_on_empty_table() {
+        let (mut db, _temp) = create_test_db();
+        // Should not error on empty table
+        db.clear_co_changes().unwrap();
+    }
+
+    #[test]
+    fn test_coupling_hotspots_basic() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![
+            make_co_change_entry("src/a.rs", "src/b.rs", 20, 0.95),
+            make_co_change_entry("src/c.rs", "src/d.rs", 10, 0.6),
+            make_co_change_entry("src/e.rs", "src/f.rs", 3, 0.2),
+        ];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        let hotspots = db.coupling_hotspots(10, 0.5).unwrap();
+        assert_eq!(hotspots.len(), 2); // excludes 0.2 confidence
+        assert_eq!(hotspots[0].file_a, "src/a.rs");
+        assert_eq!(hotspots[0].co_change_count, 20);
+        assert!((hotspots[0].confidence - 0.95).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_coupling_hotspots_respects_limit() {
+        let (mut db, _temp) = create_test_db();
+        let entries: Vec<_> = (0..10)
+            .map(|i| {
+                make_co_change_entry(
+                    &format!("src/a_{}.rs", i),
+                    &format!("src/b_{}.rs", i),
+                    10,
+                    0.8,
+                )
+            })
+            .collect();
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        let hotspots = db.coupling_hotspots(3, 0.0).unwrap();
+        assert_eq!(hotspots.len(), 3);
+    }
+
+    #[test]
+    fn test_coupling_hotspots_empty_table() {
+        let (db, _temp) = create_test_db();
+        let hotspots = db.coupling_hotspots(10, 0.0).unwrap();
+        assert!(hotspots.is_empty());
+    }
+
+    #[test]
+    fn test_coupling_hotspots_ordered_by_confidence_desc() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![
+            make_co_change_entry("src/low.rs", "src/low2.rs", 1, 0.1),
+            make_co_change_entry("src/high.rs", "src/high2.rs", 20, 0.99),
+            make_co_change_entry("src/mid.rs", "src/mid2.rs", 10, 0.5),
+        ];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        let hotspots = db.coupling_hotspots(10, 0.0).unwrap();
+        assert_eq!(hotspots.len(), 3);
+        assert!((hotspots[0].confidence - 0.99).abs() < f64::EPSILON);
+        assert!((hotspots[1].confidence - 0.5).abs() < f64::EPSILON);
+        assert!((hotspots[2].confidence - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_co_change_entry_with_none_fields() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![crate::git_mining::CoChangeEntry {
+            file_a: "src/a.rs".to_string(),
+            file_b: "src/b.rs".to_string(),
+            co_change_count: 5,
+            total_commits_a: 10,
+            total_commits_b: 8,
+            confidence: 0.5,
+            last_commit_sha: None,
+            last_commit_ts: None,
+        }];
+        let count = db.insert_co_changes_batch(&entries).unwrap();
+        assert_eq!(count, 1);
+
+        let results = db.co_changes_for_file("src/a.rs", 10, 0.0, 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].last_commit_sha.is_none());
+    }
+
+    #[test]
+    fn test_co_change_zero_confidence_boundary() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![
+            make_co_change_entry("src/a.rs", "src/b.rs", 1, 0.0),
+            make_co_change_entry("src/a.rs", "src/c.rs", 1, 0.001),
+        ];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        // min_confidence=0.0 should include the 0.0 entry
+        let results = db.co_changes_for_file("src/a.rs", 10, 0.0, 1).unwrap();
+        assert_eq!(results.len(), 2);
+
+        // min_confidence just above 0.0 should exclude the 0.0 entry
+        let results = db.co_changes_for_file("src/a.rs", 10, 0.0005, 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_b, "src/c.rs");
+    }
+
+    #[test]
+    fn test_co_changes_limit_zero() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![make_co_change_entry("src/a.rs", "src/b.rs", 10, 0.8)];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        // limit=0 should return nothing
+        let results = db.co_changes_for_file("src/a.rs", 0, 0.0, 1).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_co_changes_for_files_single_path() {
+        let (mut db, _temp) = create_test_db();
+        let entries = vec![make_co_change_entry("src/a.rs", "src/b.rs", 10, 0.8)];
+        db.insert_co_changes_batch(&entries).unwrap();
+
+        let paths = vec!["src/a.rs".to_string()];
+        let results = db.co_changes_for_files(&paths, 10, 0.0, 1).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_insert_co_changes_batch_large_batch() {
+        let (mut db, _temp) = create_test_db();
+        let entries: Vec<_> = (0..500)
+            .map(|i| {
+                make_co_change_entry(
+                    &format!("src/file_{}.rs", i),
+                    &format!("src/file_{}.rs", i + 500),
+                    i as i64 + 1,
+                    (i as f64) / 500.0,
+                )
+            })
+            .collect();
+        let count = db.insert_co_changes_batch(&entries).unwrap();
+        assert_eq!(count, 500);
+
+        let hotspots = db.coupling_hotspots(5, 0.0).unwrap();
+        assert_eq!(hotspots.len(), 5);
+        // Highest confidence should be 499/500 = 0.998
+        assert!(hotspots[0].confidence > 0.99);
+    }
+
+    // graph_query tests
+
+    #[test]
+    fn test_find_symbols_returns_matching_symbols() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            make_test_symbol("my_module.MyClass", Some("struct MyClass"), "class", 1),
+            make_test_symbol(
+                "my_module.helper_fn",
+                Some("fn helper_fn()"),
+                "function",
+                10,
+            ),
+        ];
+        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let found = db.find_symbols("MyClass", 10, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "MyClass");
+
+        let found = db.find_symbols("my_module", 10, None, 1).unwrap();
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn test_find_symbols_multi_word_query() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            make_test_symbol("my_module.MyClass", None, "class", 1),
+            make_test_symbol("my_module.MyOther", None, "class", 10),
+        ];
+        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Both tokens must match (AND across tokens)
+        let found = db.find_symbols("my_module MyClass", 10, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "MyClass");
+    }
+
+    #[test]
+    fn test_lookup_symbol_id_exact_match() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol("mod.Foo", Some("struct Foo"), "class", 1)];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let id = db.lookup_symbol_id("mod.Foo", 1).unwrap();
+        assert_eq!(id, Some(inserted[0].id));
+
+        let id = db.lookup_symbol_id("mod.Bar", 1).unwrap();
+        assert!(id.is_none());
+    }
+
+    #[test]
+    fn test_lookup_symbol_id_fuzzy_finds_by_suffix() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol(
+            "a.b.DeployAsync",
+            Some("fn deploy_async()"),
+            "method",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Fuzzy: short qualname "_svc.DeployAsync" should match by suffix
+        let id = db
+            .lookup_symbol_id_fuzzy("_svc.DeployAsync", None, 1)
+            .unwrap();
+        assert_eq!(id, Some(inserted[0].id));
+    }
+
+    #[test]
+    fn test_edges_for_symbol_returns_edges() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            make_test_symbol("mod.Caller", Some("fn caller()"), "function", 1),
+            make_test_symbol("mod.Callee", Some("fn callee()"), "function", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let edges = vec![crate::indexer::extract::EdgeInput {
+            kind: "CALLS".to_string(),
+            source_qualname: Some("mod.Caller".to_string()),
+            target_qualname: Some("mod.Callee".to_string()),
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: Some(1.0),
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        }];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let found = db.edges_for_symbol(inserted[0].id, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, "CALLS");
+    }
+
+    #[test]
+    fn test_symbols_by_ids_returns_requested_symbols() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            make_test_symbol("mod.A", None, "class", 1),
+            make_test_symbol("mod.B", None, "class", 10),
+            make_test_symbol("mod.C", None, "class", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let ids = vec![inserted[0].id, inserted[2].id];
+        let found = db.symbols_by_ids(&ids, None, 1).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].name, "A");
+        assert_eq!(found[1].name, "C");
+    }
+
+    #[test]
+    fn test_symbols_by_ids_empty_input() {
+        let (db, _temp) = create_test_db();
+        let found = db.symbols_by_ids(&[], None, 1).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_edges_for_symbols_empty_input() {
+        let (db, _temp) = create_test_db();
+        let found = db.edges_for_symbols(&[], None, 1).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_find_symbols_by_name_prefix() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            make_test_symbol("mod.FooBar", None, "class", 1),
+            make_test_symbol("mod.FooBaz", None, "class", 10),
+            make_test_symbol("mod.BarQux", None, "class", 20),
+        ];
+        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let found = db.find_symbols_by_name_prefix("Foo", 10, None, 1).unwrap();
+        assert_eq!(found.len(), 2);
+        // All results should start with "Foo"
+        for s in &found {
+            assert!(s.name.starts_with("Foo"));
+        }
+    }
+
+    #[test]
+    fn test_source_symbols_for_config_uri_empty() {
+        let (db, _temp) = create_test_db();
+        let found = db
+            .source_symbols_for_config_uri("secret://nonexistent", &[], 1)
+            .unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_edges_by_target_qualname_and_kinds_empty_kinds() {
+        let (db, _temp) = create_test_db();
+        let found = db
+            .edges_by_target_qualname_and_kinds("some.target", &[], None, 1)
+            .unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_incoming_edges_by_qualname_pattern() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            make_test_symbol("mod.Caller", Some("fn caller()"), "function", 1),
+            make_test_symbol("mod.Callee", Some("fn callee()"), "function", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let edges = vec![crate::indexer::extract::EdgeInput {
+            kind: "CALLS".to_string(),
+            source_qualname: Some("mod.Caller".to_string()),
+            target_qualname: Some("mod.Callee".to_string()),
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: Some(1.0),
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        }];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let found = db
+            .incoming_edges_by_qualname_pattern("Callee", "CALLS", None, 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, "CALLS");
+    }
+
+    #[test]
+    fn test_find_symbols_empty_query_returns_empty() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol("mod.Foo", None, "class", 1)];
+        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Empty query should not crash and should return empty results
+        let found = db.find_symbols("", 10, None, 1).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_find_symbols_whitespace_query_returns_empty() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol("mod.Foo", None, "class", 1)];
+        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Whitespace-only query should not crash and should return empty results
+        let found = db.find_symbols("   ", 10, None, 1).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_find_symbols_limit_zero() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol("mod.Foo", None, "class", 1)];
+        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let found = db.find_symbols("Foo", 0, None, 1).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_find_symbols_language_filter() {
+        let (mut db, _temp) = create_test_db();
+        let file_rs = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let file_py = db
+            .upsert_file("src/lib.py", "h2", "python", 100, 0)
+            .unwrap();
+        let sym_rs = vec![make_test_symbol("mod.Foo", None, "class", 1)];
+        let sym_py = vec![make_test_symbol("pkg.Foo", None, "class", 1)];
+        db.insert_symbols(file_rs, "src/lib.rs", &sym_rs, 1, None)
+            .unwrap();
+        db.insert_symbols(file_py, "src/lib.py", &sym_py, 1, None)
+            .unwrap();
+
+        // No language filter returns both
+        let found = db.find_symbols("Foo", 10, None, 1).unwrap();
+        assert_eq!(found.len(), 2);
+
+        // Filter to rust only
+        let langs = vec!["rust".to_string()];
+        let found = db.find_symbols("Foo", 10, Some(&langs), 1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].file_path.ends_with(".rs"));
+
+        // Empty languages array behaves like no filter
+        let empty_langs: Vec<String> = vec![];
+        let found = db.find_symbols("Foo", 10, Some(&empty_langs), 1).unwrap();
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn test_find_symbols_by_name_prefix_empty_prefix() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol("mod.Foo", None, "class", 1)];
+        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Empty prefix matches everything (LIKE '%')
+        let found = db.find_symbols_by_name_prefix("", 10, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn test_find_symbols_by_name_prefix_limit_zero() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol("mod.Foo", None, "class", 1)];
+        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let found = db.find_symbols_by_name_prefix("Foo", 0, None, 1).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_lookup_symbol_id_fuzzy_no_match() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol(
+            "a.b.DeployAsync",
+            Some("fn deploy_async()"),
+            "method",
+            1,
+        )];
+        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Completely unrelated name should return None
+        let id = db
+            .lookup_symbol_id_fuzzy("_svc.NonexistentMethod", None, 1)
+            .unwrap();
+        assert!(id.is_none());
+    }
+
+    #[test]
+    fn test_lookup_symbol_id_fuzzy_exact_name() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol(
+            "Deploy",
+            Some("fn deploy()"),
+            "function",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Bare name (no dots) should match via exact name search
+        let id = db.lookup_symbol_id_fuzzy("Deploy", None, 1).unwrap();
+        assert_eq!(id, Some(inserted[0].id));
+    }
+
+    #[test]
+    fn test_lookup_symbol_id_fuzzy_multiple_matches_prefers_shortest() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            make_test_symbol("a.b.c.Run", Some("fn run()"), "method", 1),
+            make_test_symbol("x.Run", Some("fn run()"), "method", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Should prefer "x.Run" (shorter qualname)
+        let id = db.lookup_symbol_id_fuzzy("_svc.Run", None, 1).unwrap();
+        assert_eq!(id, Some(inserted[1].id));
+    }
+
+    #[test]
+    fn test_edges_for_symbol_wrong_graph_version() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            make_test_symbol("mod.Caller", Some("fn caller()"), "function", 1),
+            make_test_symbol("mod.Callee", Some("fn callee()"), "function", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let edges = vec![crate::indexer::extract::EdgeInput {
+            kind: "CALLS".to_string(),
+            source_qualname: Some("mod.Caller".to_string()),
+            target_qualname: Some("mod.Callee".to_string()),
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: Some(1.0),
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        }];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Wrong graph_version returns empty
+        let found = db.edges_for_symbol(inserted[0].id, None, 999).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_symbols_by_ids_nonexistent_ids() {
+        let (db, _temp) = create_test_db();
+        let found = db.symbols_by_ids(&[99999, 88888], None, 1).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_edges_by_target_qualname_and_kinds_with_data() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            make_test_symbol("mod.Publisher", Some("fn publish()"), "function", 1),
+            make_test_symbol("mod.Subscriber", Some("fn subscribe()"), "function", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let edges = vec![
+            crate::indexer::extract::EdgeInput {
+                kind: "CHANNEL_PUBLISH".to_string(),
+                source_qualname: Some("mod.Publisher".to_string()),
+                target_qualname: Some("channel://orders".to_string()),
+                detail: None,
+                evidence_snippet: None,
+                evidence_start_line: None,
+                evidence_end_line: None,
+                confidence: Some(1.0),
+                trace_id: None,
+                span_id: None,
+                event_ts: None,
+            },
+            crate::indexer::extract::EdgeInput {
+                kind: "CHANNEL_SUBSCRIBE".to_string(),
+                source_qualname: Some("mod.Subscriber".to_string()),
+                target_qualname: Some("channel://orders".to_string()),
+                detail: None,
+                evidence_snippet: None,
+                evidence_start_line: None,
+                evidence_end_line: None,
+                confidence: Some(1.0),
+                trace_id: None,
+                span_id: None,
+                event_ts: None,
+            },
+        ];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Search by target qualname with one kind
+        let found = db
+            .edges_by_target_qualname_and_kinds("channel://orders", &["CHANNEL_PUBLISH"], None, 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, "CHANNEL_PUBLISH");
+
+        // Search by target qualname with both kinds
+        let found = db
+            .edges_by_target_qualname_and_kinds(
+                "channel://orders",
+                &["CHANNEL_PUBLISH", "CHANNEL_SUBSCRIBE"],
+                None,
+                1,
+            )
+            .unwrap();
+        assert_eq!(found.len(), 2);
+
+        // Nonexistent qualname returns empty
+        let found = db
+            .edges_by_target_qualname_and_kinds(
+                "channel://nonexistent",
+                &["CHANNEL_PUBLISH"],
+                None,
+                1,
+            )
+            .unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_source_symbols_for_config_uri_with_data() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol(
+            "mod.ConfigReader",
+            Some("fn read_config()"),
+            "function",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let edges = vec![crate::indexer::extract::EdgeInput {
+            kind: "CONFIG_READ".to_string(),
+            source_qualname: Some("mod.ConfigReader".to_string()),
+            target_qualname: Some("secret://db-connection".to_string()),
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: Some(1.0),
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        }];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Default kinds (empty) should use CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND
+        let found = db
+            .source_symbols_for_config_uri("secret://db-connection", &[], 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0], inserted[0].id);
+
+        // Specific kind should also work
+        let found = db
+            .source_symbols_for_config_uri("secret://db-connection", &["CONFIG_READ"], 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+
+        // Wrong kind returns empty
+        let found = db
+            .source_symbols_for_config_uri("secret://db-connection", &["CONFIG_SOURCE"], 1)
+            .unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_source_symbols_for_config_uri_deduplicates() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol(
+            "mod.ConfigReader",
+            Some("fn read_config()"),
+            "function",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Two edges from same symbol to same target
+        let edges = vec![
+            crate::indexer::extract::EdgeInput {
+                kind: "CONFIG_READ".to_string(),
+                source_qualname: Some("mod.ConfigReader".to_string()),
+                target_qualname: Some("secret://db-conn".to_string()),
+                detail: Some("first read".to_string()),
+                evidence_snippet: None,
+                evidence_start_line: None,
+                evidence_end_line: None,
+                confidence: Some(1.0),
+                trace_id: None,
+                span_id: None,
+                event_ts: None,
+            },
+            crate::indexer::extract::EdgeInput {
+                kind: "CONFIG_BIND".to_string(),
+                source_qualname: Some("mod.ConfigReader".to_string()),
+                target_qualname: Some("secret://db-conn".to_string()),
+                detail: Some("second bind".to_string()),
+                evidence_snippet: None,
+                evidence_start_line: None,
+                evidence_end_line: None,
+                confidence: Some(1.0),
+                trace_id: None,
+                span_id: None,
+                event_ts: None,
+            },
+        ];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Should deduplicate: same source symbol appears once
+        let found = db
+            .source_symbols_for_config_uri("secret://db-conn", &[], 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn test_lookup_symbol_id_filtered_by_language() {
+        let (mut db, _temp) = create_test_db();
+        let file_id_rs = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let file_id_py = db
+            .upsert_file("src/lib.py", "h2", "python", 100, 0)
+            .unwrap();
+
+        let sym_rs = vec![make_test_symbol("mod.Foo", None, "class", 1)];
+        let sym_py = vec![make_test_symbol("mod.Foo", None, "class", 1)];
+        let ins_rs = db
+            .insert_symbols(file_id_rs, "src/lib.rs", &sym_rs, 1, None)
+            .unwrap();
+        let ins_py = db
+            .insert_symbols(file_id_py, "src/lib.py", &sym_py, 1, None)
+            .unwrap();
+
+        // Without language filter, get any match
+        let id = db.lookup_symbol_id("mod.Foo", 1).unwrap();
+        assert!(id.is_some());
+
+        // With language filter, get specific match
+        let rust_langs = vec!["rust".to_string()];
+        let id = db
+            .lookup_symbol_id_filtered("mod.Foo", Some(&rust_langs), 1)
+            .unwrap();
+        assert_eq!(id, Some(ins_rs[0].id));
+
+        let python_langs = vec!["python".to_string()];
+        let id = db
+            .lookup_symbol_id_filtered("mod.Foo", Some(&python_langs), 1)
+            .unwrap();
+        assert_eq!(id, Some(ins_py[0].id));
     }
 }
