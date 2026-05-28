@@ -2,6 +2,7 @@ use crate::db::Db;
 use crate::model::Symbol;
 use anyhow::Result;
 
+/// Reference to a symbol by ID, fully-qualified name, or free-text query.
 #[derive(Debug, Clone)]
 pub enum SymbolRef {
     Id(i64),
@@ -9,6 +10,8 @@ pub enum SymbolRef {
     Query(String),
 }
 
+/// Resolves a `SymbolRef` to a `Symbol` using the full fallback chain:
+/// ID lookup → qualname lookup → fuzzy query → config key → "did you mean".
 pub fn resolve_symbol(
     db: &Db,
     reference: SymbolRef,
@@ -80,6 +83,8 @@ fn resolve_by_query(
     anyhow::bail!("no symbol found for query: {}", query);
 }
 
+/// Expands a symbol into seed IDs for BFS traversal.
+/// For container symbols (class/module/resource), returns the symbol plus its members.
 pub fn expand_seeds(db: &Db, symbol_id: i64, graph_version: i64) -> Result<Vec<i64>> {
     let symbol = db
         .get_symbol_by_id(symbol_id)?
@@ -306,6 +311,70 @@ mod tests {
 
         let seeds = expand_seeds(indexer.db(), func.id, gv).unwrap();
         assert_eq!(seeds, vec![func.id]);
+    }
+
+    #[test]
+    fn resolve_nonexistent_id() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let err = resolve_symbol(indexer.db(), SymbolRef::Id(999999), None, gv).unwrap_err();
+        assert!(
+            err.to_string().contains("symbol not found"),
+            "expected 'symbol not found' in: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn resolve_nonexistent_qualname() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let err = resolve_symbol(
+            indexer.db(),
+            SymbolRef::Qualname("no.such.Symbol".into()),
+            None,
+            gv,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("symbol not found"),
+            "expected 'symbol not found' in: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn resolve_totally_unresolvable_query() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let err = resolve_symbol(
+            indexer.db(),
+            SymbolRef::Query("xyzzy_not_a_symbol_at_all".into()),
+            None,
+            gv,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no symbol found"),
+            "expected 'no symbol found' in: {msg}"
+        );
+    }
+
+    #[test]
+    fn expand_seeds_nonexistent_symbol() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let err = expand_seeds(indexer.db(), 999999, gv).unwrap_err();
+        assert!(
+            err.to_string().contains("symbol not found"),
+            "expected 'symbol not found' in: {}",
+            err
+        );
     }
 
     #[test]
