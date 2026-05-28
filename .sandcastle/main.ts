@@ -9,7 +9,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   // Phase 1: Plan — orchestrator agent analyzes issues and picks parallelizable work
   const plan = await sandcastle.run({
-    sandbox: docker(),
+    sandbox: docker({ containerUid: 1000, containerGid: 1000 }),
     name: "Planner",
     agent: sandcastle.claudeCode("claude-opus-4-6"),
     promptFile: "./.sandcastle/plan-prompt.md",
@@ -59,7 +59,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       await acquire();
       try {
         await using sandbox = await sandcastle.createSandbox({
-          sandbox: docker(),
+          sandbox: docker({ containerUid: 1000, containerGid: 1000 }),
           branch: issue.branch,
           hooks: {
             host: {
@@ -139,7 +139,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   // Phase 3: Merge — one agent merges all branches together
   await sandcastle.run({
-    sandbox: docker(),
+    sandbox: docker({ containerUid: 1000, containerGid: 1000 }),
     name: "Merger",
     maxIterations: 10,
     agent: sandcastle.claudeCode("claude-opus-4-6"),
