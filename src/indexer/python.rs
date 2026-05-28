@@ -3,6 +3,9 @@ use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::tree_helpers::{
+    module_symbol_fallback, module_symbol_with_span, node_text, span,
+};
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
@@ -41,9 +44,12 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
         let tree = match self.parser.parse(source, None) {
             Some(tree) => tree,
             None => {
-                output
-                    .symbols
-                    .push(module_symbol_fallback(module_name, source));
+                output.symbols.push(module_symbol_fallback(
+                    module_name,
+                    source,
+                    ".",
+                    extract_docstring_fallback(source),
+                ));
                 return Ok(output);
             }
         };
@@ -54,6 +60,7 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
         output.symbols.push(module_symbol_with_span(
             module_name,
             module_span,
+            ".",
             module_docstring,
         ));
         let ctx = Context {
@@ -166,40 +173,6 @@ pub fn resolve_import_file_edges(
         }
     }
     edges.extend(resolved);
-}
-
-fn module_symbol_with_span(
-    module_name: &str,
-    span: (i64, i64, i64, i64, i64, i64),
-    docstring: Option<String>,
-) -> SymbolInput {
-    let name = module_name
-        .rsplit('.')
-        .next()
-        .unwrap_or(module_name)
-        .to_string();
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span;
-    SymbolInput {
-        kind: "module".to_string(),
-        name,
-        qualname: module_name.to_string(),
-        start_line,
-        start_col,
-        end_line,
-        end_col,
-        start_byte,
-        end_byte,
-        signature: None,
-        docstring,
-    }
-}
-
-fn module_symbol_fallback(module_name: &str, source: &str) -> SymbolInput {
-    module_symbol_with_span(
-        module_name,
-        (1, 1, line_count(source), 1, 0, source.len() as i64),
-        extract_docstring_fallback(source),
-    )
 }
 
 fn extract_docstring_fallback(source: &str) -> Option<String> {
@@ -1109,19 +1082,6 @@ fn is_simple_call_target(raw: &str) -> bool {
         .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.')
 }
 
-fn span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
-    let start = node.start_position();
-    let end = node.end_position();
-    (
-        start.row as i64 + 1,
-        start.column as i64 + 1,
-        end.row as i64 + 1,
-        end.column as i64 + 1,
-        node.start_byte() as i64,
-        node.end_byte() as i64,
-    )
-}
-
 fn build_qualname(module: &str, class_stack: &[String], name: &str) -> String {
     if class_stack.is_empty() {
         format!("{module}.{name}")
@@ -1136,12 +1096,6 @@ fn container_qualname(module: &str, class_stack: &[String]) -> String {
     } else {
         format!("{module}.{}", class_stack.join("."))
     }
-}
-
-fn node_text(node: Node<'_>, source: &str) -> String {
-    let start = node.start_byte();
-    let end = node.end_byte();
-    source.get(start..end).unwrap_or("").trim().to_string()
 }
 
 fn extract_signature(node: Node<'_>, source: &str) -> Option<String> {
@@ -1343,11 +1297,6 @@ fn package_prefixes_have_init(repo_root: &Path, parts: &[&str]) -> bool {
         }
     }
     true
-}
-
-fn line_count(source: &str) -> i64 {
-    let count = source.lines().count();
-    if count == 0 { 1 } else { count as i64 }
 }
 
 #[cfg(test)]

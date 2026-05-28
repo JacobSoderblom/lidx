@@ -1,5 +1,6 @@
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
+use crate::indexer::tree_helpers::module_symbol_fallback;
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
@@ -76,7 +77,7 @@ impl crate::indexer::extract::LanguageExtractor for ProtoExtractor {
         let mut output = ExtractedFile::default();
         output
             .symbols
-            .push(module_symbol_with_span(module_name, span_whole(source)));
+            .push(module_symbol_fallback(module_name, source, "/", None));
 
         let tokens = tokenize_proto(source);
         let package = find_package(&tokens);
@@ -177,32 +178,6 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
         "proto".to_string()
     } else {
         parts.join("/")
-    }
-}
-
-fn span_whole(source: &str) -> (i64, i64, i64, i64, i64, i64) {
-    (1, 1, line_count(source), 1, 0, source.len() as i64)
-}
-
-fn module_symbol_with_span(module_name: &str, span: (i64, i64, i64, i64, i64, i64)) -> SymbolInput {
-    let name = module_name
-        .rsplit('/')
-        .next()
-        .unwrap_or(module_name)
-        .to_string();
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span;
-    SymbolInput {
-        kind: "module".to_string(),
-        name,
-        qualname: module_name.to_string(),
-        start_line,
-        start_col,
-        end_line,
-        end_col,
-        start_byte,
-        end_byte,
-        signature: None,
-        docstring: None,
     }
 }
 
@@ -502,11 +477,6 @@ fn is_ident_start(current: u8, next: Option<u8>) -> bool {
 
 fn is_ident_continue(current: u8) -> bool {
     current.is_ascii_alphanumeric() || current == b'_' || current == b'.'
-}
-
-fn line_count(source: &str) -> i64 {
-    let count = source.lines().count();
-    if count == 0 { 1 } else { count as i64 }
 }
 
 #[cfg(test)]
