@@ -15,5 +15,6 @@ pub mod resolve;
 pub mod rpc;
 pub mod search;
 pub mod subgraph;
+pub mod traversal;
 pub mod util;
 pub mod watch;

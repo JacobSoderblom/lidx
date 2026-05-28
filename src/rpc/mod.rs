@@ -122,7 +122,7 @@ fn validate_gather_context_params(params: &GatherContextParams) -> ValidationRes
 }
 
 /// Convert a Symbol JSON value to compact format by keeping only essential fields
-fn compact_symbol_value(symbol_value: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn compact_symbol_value(symbol_value: &serde_json::Value) -> serde_json::Value {
     let keep_fields = [
         "id",
         "kind",
