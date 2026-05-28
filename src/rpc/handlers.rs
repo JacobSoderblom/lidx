@@ -782,29 +782,11 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     let params: TraceFlowParams = serde_json::from_value(params)?;
     let graph_version = resolve_graph_version(indexer, params.graph_version)?;
     let languages = params.languages.clone();
-    let max_hops = params.max_hops.unwrap_or(5).min(10);
-    let direction = params.direction.as_deref().unwrap_or("downstream");
-    let include_snippets = params.include_snippets.unwrap_or(true);
-    let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
-    let trace_offset = params.trace_offset.unwrap_or(0);
     let compact_mode = params.format.as_deref() == Some("compact");
-    let allowed_kinds: Vec<String> = params.kinds.clone().unwrap_or_else(|| {
-        vec![
-            "CALLS".into(),
-            "RPC_IMPL".into(),
-            "RPC_CALL".into(),
-            "XREF".into(),
-            "CHANNEL_PUBLISH".into(),
-            "CHANNEL_SUBSCRIBE".into(),
-            "HTTP_CALL".into(),
-            "HTTP_ROUTE".into(),
-            "CONFIG_SOURCE".into(),
-            "CONFIG_READ".into(),
-            "CONFIG_BIND".into(),
-        ]
-    });
+    let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
+    let include_snippets = params.include_snippets.unwrap_or(true);
 
-    // Config URI resolution: find all symbols connected to the URI
+    // Resolve config URI seeds
     let config_uri_seeds: Vec<i64> = if let Some(ref qn) = params.start_qualname {
         if crate::indexer::config::is_config_uri(qn) {
             indexer
@@ -817,36 +799,37 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         vec![]
     };
 
-    // Resolve start symbol
-    let start = if let Some(id) = params.start_id {
-        indexer
-            .db()
-            .get_symbol_by_id(id)?
-            .ok_or_else(|| anyhow::anyhow!("start symbol not found: id={}", id))?
+    // Resolve start symbol via resolve module
+    let start_ref = if let Some(id) = params.start_id {
+        crate::resolve::SymbolRef::Id(id)
     } else if let Some(ref qn) = params.start_qualname {
         if crate::indexer::config::is_config_uri(qn) {
             let first_id = config_uri_seeds
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("no symbols found for config URI: {}", qn))?;
-            indexer
-                .db()
-                .get_symbol_by_id(*first_id)?
-                .ok_or_else(|| anyhow::anyhow!("start symbol not found"))?
+            crate::resolve::SymbolRef::Id(*first_id)
         } else {
-            let id = indexer
-                .db()
-                .lookup_symbol_id(qn, graph_version)?
-                .ok_or_else(|| anyhow::anyhow!("start symbol not found: {}", qn))?;
-            indexer
-                .db()
-                .get_symbol_by_id(id)?
-                .ok_or_else(|| anyhow::anyhow!("start symbol not found"))?
+            crate::resolve::SymbolRef::Qualname(qn.clone())
         }
     } else if let Some(ref query) = params.query {
-        resolve_symbol_by_query(indexer, query, languages.as_deref(), graph_version)?
+        crate::resolve::SymbolRef::Query(query.clone())
     } else {
         anyhow::bail!("trace_flow requires start_id, start_qualname, or query");
     };
+    let start = crate::resolve::resolve_symbol(
+        indexer.db(),
+        start_ref,
+        languages.as_deref(),
+        graph_version,
+    )?;
+
+    // Expand seeds via resolve module (container → members)
+    let mut seed_ids = crate::resolve::expand_seeds(indexer.db(), start.id, graph_version)?;
+    for id in &config_uri_seeds {
+        if *id != start.id && !seed_ids.contains(id) {
+            seed_ids.push(*id);
+        }
+    }
 
     // Resolve optional end symbol
     let end_id = if let Some(id) = params.end_id {
@@ -857,303 +840,70 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         None
     };
 
-    // If start symbol is a container, also seed BFS with its members
-    let is_container = matches!(start.kind.as_str(), "class" | "module" | "resource");
-    let mut seed_ids: Vec<i64> = vec![start.id];
-    // Add config URI seeds (other symbols connected to the same config URI)
-    for id in &config_uri_seeds {
-        if *id != start.id && !seed_ids.contains(id) {
-            seed_ids.push(*id);
-        }
-    }
-    if is_container
-        && let Ok(file_symbols) = indexer
-            .db()
-            .get_symbols_for_file(&start.file_path, graph_version)
-    {
-        for s in &file_symbols {
-            if s.id != start.id
-                && s.start_line >= start.start_line
-                && s.end_line <= start.end_line
-                && matches!(
-                    s.kind.as_str(),
-                    "method" | "function" | "resource" | "var" | "param" | "output"
-                )
-            {
-                seed_ids.push(s.id);
-            }
-        }
-    }
+    // Build config and call traversal module
+    let direction = match params.direction.as_deref().unwrap_or("downstream") {
+        "upstream" => crate::traversal::TraceDirection::Upstream,
+        _ => crate::traversal::TraceDirection::Downstream,
+    };
+    let config = crate::traversal::TraceConfig {
+        max_hops: params.max_hops.unwrap_or(5).min(10),
+        max_bytes,
+        direction,
+        include_snippets,
+        allowed_kinds: params
+            .kinds
+            .clone()
+            .unwrap_or_else(|| crate::traversal::TraceConfig::default().allowed_kinds),
+        trace_offset: params.trace_offset.unwrap_or(0),
+        compact: compact_mode,
+    };
+    let result = crate::traversal::trace_flow(
+        indexer.db(),
+        seed_ids,
+        end_id,
+        languages.as_deref(),
+        graph_version,
+        &config,
+    )?;
 
-    // BFS from start (seeded with container members if applicable)
-    let mut trace = Vec::new();
-    let mut visited = std::collections::HashSet::new();
-    let mut queue = std::collections::VecDeque::new();
-    for &sid in &seed_ids {
-        visited.insert(sid);
-        queue.push_back((sid, 0usize, start.file_path.clone()));
-    }
-    let mut used_bytes = 0;
-    let mut truncated = false;
-    let mut reached_target = false;
+    // Build next_hops (RPC-specific: continuation, narrowing, explain suggestions)
+    let next_hops = build_trace_next_hops(&params, &result, &start);
 
-    while let Some((current_id, dist, prev_file)) = queue.pop_front() {
-        if dist > max_hops {
-            truncated = true;
-            break;
-        }
-        if used_bytes >= max_bytes {
-            truncated = true;
-            break;
-        }
-
-        let mut edges =
-            indexer
-                .db()
-                .edges_for_symbol(current_id, languages.as_deref(), graph_version)?;
-
-        // For upstream direction, also find unresolved callers via qualname pattern
-        if direction == "upstream"
-            && let Ok(Some(current_sym)) = indexer.db().get_symbol_by_id(current_id)
-        {
-            for kind in &allowed_kinds {
-                let mut unresolved = indexer
-                    .db()
-                    .incoming_edges_by_qualname_pattern(
-                        &current_sym.name,
-                        kind,
-                        languages.as_deref(),
-                        graph_version,
-                    )
-                    .unwrap_or_default();
-                edges.append(&mut unresolved);
-            }
-        }
-
-        // Collect bridgeable edges for a second pass
-        let mut bridge_targets: Vec<(String, String)> = Vec::new(); // (target_qualname, edge_kind)
-
-        for edge in &edges {
-            if !allowed_kinds.contains(&edge.kind) {
-                continue;
-            }
-
-            // Determine next symbol based on direction
-            let next_id = if direction == "downstream" {
-                // Follow outgoing calls: we are the source, get target
-                if edge.source_symbol_id != Some(current_id) {
-                    continue;
-                }
-                edge.target_symbol_id
-            } else {
-                // Follow incoming calls: we are the target, get source
-                // For resolved edges, check target matches us
-                // For unresolved edges (from qualname pattern), source_symbol_id is the caller
-                if edge.target_symbol_id == Some(current_id) {
-                    edge.source_symbol_id
-                } else if edge.target_symbol_id.is_none() {
-                    // Unresolved edge from qualname pattern — source is the caller
-                    edge.source_symbol_id
-                } else {
-                    // This edge doesn't target us
-                    continue;
-                }
-            };
-
-            // Check for bridgeable edge (e.g., CHANNEL_PUBLISH → CHANNEL_SUBSCRIBE)
-            if let Some(ref tq) = edge.target_qualname
-                && crate::indexer::channel::bridge_complement(&edge.kind).is_some()
-            {
-                bridge_targets.push((tq.clone(), edge.kind.clone()));
-            }
-
-            // Resolve next_id, trying fuzzy lookup if unresolved
-            let next_id = match next_id {
-                Some(id) => id,
-                None => {
-                    // Try fuzzy resolve on target_qualname if available
-                    if let Some(ref qn) = edge.target_qualname {
-                        // Prefer same-language resolution to avoid false cross-language matches
-                        // (e.g., C# .Add() matching Python add() or TS Add())
-                        let prev_lang = detect_language(&prev_file);
-                        let same_lang = vec![prev_lang];
-                        let resolved = indexer
-                            .db()
-                            .lookup_symbol_id_fuzzy(qn, Some(&same_lang), graph_version)
-                            .ok()
-                            .flatten()
-                            .or_else(|| {
-                                // Cross-language fallback ONLY for bridge edge kinds
-                                if is_bridge_edge_kind(&edge.kind) {
-                                    indexer
-                                        .db()
-                                        .lookup_symbol_id_fuzzy(
-                                            qn,
-                                            languages.as_deref(),
-                                            graph_version,
-                                        )
-                                        .ok()
-                                        .flatten()
-                                } else {
-                                    None
-                                }
-                            });
-                        match resolved {
-                            Some(id) => id,
-                            None => continue,
-                        }
-                    } else {
-                        continue;
-                    }
-                }
-            };
-
-            if !visited.insert(next_id) {
-                continue;
-            }
-
-            if let Ok(Some(next_sym)) = indexer.db().get_symbol_by_id(next_id) {
-                let prev_lang = detect_language(&prev_file);
-                let next_lang = detect_language(&next_sym.file_path);
-                let cross_lang = prev_lang != next_lang;
-                let language = next_lang.clone();
-
-                // Read snippet if requested
-                let snippet = if include_snippets {
-                    edge.evidence_snippet.clone()
-                } else {
-                    None
-                };
-
-                // Detect language boundary and add annotations
-                let (boundary_type, boundary_detail, protocol_context) = if cross_lang {
-                    let b_type = detect_boundary_type(&edge.kind, &prev_lang, &next_lang);
-                    let b_detail = build_boundary_detail(&b_type, &prev_lang, &next_lang);
-                    let p_context = extract_protocol_context(edge);
-                    (Some(b_type), Some(b_detail), p_context)
-                } else {
-                    (None, None, None)
-                };
-
-                let hop = TraceHop {
-                    symbol: next_sym.clone(),
-                    edge_kind: edge.kind.clone(),
-                    distance: dist + 1,
-                    language,
-                    snippet,
-                    cross_language: cross_lang,
-                    boundary_type,
-                    boundary_detail,
-                    protocol_context,
-                };
-
-                let hop_size = estimate_hop_size(&hop, compact_mode);
-                let hop_idx = trace.len();
-                trace.push(hop);
-                if hop_idx >= trace_offset {
-                    used_bytes += hop_size;
-                    if used_bytes >= max_bytes {
-                        truncated = true;
-                        break;
-                    }
-                }
-
-                // Check if we reached the target
-                if end_id == Some(next_id) {
-                    reached_target = true;
-                    break;
-                }
-
-                queue.push_back((next_id, dist + 1, next_sym.file_path.clone()));
-            }
-        }
-
-        // Bridge pass: for edges with bridge complements, find cross-service symbols
-        if !reached_target && !truncated {
-            for (tq, edge_kind) in &bridge_targets {
-                if let Some(complement_kinds) =
-                    crate::indexer::channel::bridge_complement(edge_kind)
-                {
-                    let bridged = indexer
-                        .db()
-                        .edges_by_target_qualname_and_kinds(
-                            tq,
-                            complement_kinds,
-                            languages.as_deref(),
-                            graph_version,
-                        )
-                        .unwrap_or_default();
-                    let b_type = crate::indexer::channel::boundary_type_for_kind(edge_kind);
-                    for bridged_edge in &bridged {
-                        let Some(bridged_id) = bridged_edge.source_symbol_id else {
-                            continue;
-                        };
-                        if !visited.insert(bridged_id) {
-                            continue;
-                        }
-                        if let Ok(Some(bridged_sym)) = indexer.db().get_symbol_by_id(bridged_id) {
-                            let prev_lang = detect_language(&prev_file);
-                            let next_lang = detect_language(&bridged_sym.file_path);
-                            let b_detail = build_boundary_detail(b_type, &prev_lang, &next_lang);
-                            let p_context = extract_protocol_context(bridged_edge);
-                            let hop = TraceHop {
-                                symbol: bridged_sym.clone(),
-                                edge_kind: bridged_edge.kind.clone(),
-                                distance: dist + 1,
-                                language: next_lang,
-                                snippet: if include_snippets {
-                                    bridged_edge.evidence_snippet.clone()
-                                } else {
-                                    None
-                                },
-                                cross_language: true,
-                                boundary_type: Some(b_type.to_string()),
-                                boundary_detail: Some(b_detail),
-                                protocol_context: p_context,
-                            };
-                            let hop_size = estimate_hop_size(&hop, compact_mode);
-                            let hop_idx = trace.len();
-                            trace.push(hop);
-                            if hop_idx >= trace_offset {
-                                used_bytes += hop_size;
-                                if used_bytes >= max_bytes {
-                                    truncated = true;
-                                    break;
-                                }
-                            }
-                            if end_id == Some(bridged_id) {
-                                reached_target = true;
-                                break;
-                            }
-                            queue.push_back((bridged_id, dist + 1, bridged_sym.file_path.clone()));
-                        }
-                    }
-                    if reached_target || truncated {
-                        break;
-                    }
-                }
-            }
-        }
-
-        if reached_target || truncated {
-            break;
-        }
-    }
-
-    // Sort trace by distance, then apply offset pagination
-    trace.sort_by_key(|h| h.distance);
-    let trace: Vec<TraceHop> = trace.into_iter().skip(trace_offset).collect();
-
-    let end_sym = if let Some(eid) = end_id {
-        indexer.db().get_symbol_by_id(eid)?
-    } else {
-        None
+    let trace_result = TraceFlowResult {
+        start: result.start,
+        end: result.end,
+        trace: result.hops,
+        paths_found: result.paths_found,
+        reached_target: result.reached_target,
+        truncated: result.truncated,
+        budget: BudgetInfo {
+            budget_bytes: result.budget_bytes,
+            used_bytes: result.used_bytes,
+            truncated: result.truncated,
+        },
+        next_hops,
     };
 
-    // Build next_hops with continuation when truncated
+    let mut value = serde_json::to_value(&trace_result)?;
+    if compact_mode {
+        value = apply_compact_format(value);
+    }
+    Ok(value)
+}
+
+fn build_trace_next_hops(
+    params: &TraceFlowParams,
+    result: &crate::traversal::TraceResult,
+    start: &Symbol,
+) -> Vec<serde_json::Value> {
     let mut next_hops: Vec<serde_json::Value> = Vec::new();
-    if truncated {
-        let next_offset = trace_offset + trace.len();
+    let max_hops = params.max_hops.unwrap_or(5).min(10);
+    let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
+    let include_snippets = params.include_snippets.unwrap_or(true);
+    let trace_offset = params.trace_offset.unwrap_or(0);
+
+    if result.truncated {
+        let next_offset = trace_offset + result.hops.len();
         let mut continue_params = json!({
             "max_hops": max_hops,
             "include_snippets": include_snippets,
@@ -1176,8 +926,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             "description": format!("Continue trace (offset {})", next_offset),
         }));
     }
-    if truncated && params.kinds.is_none() {
-        // Suggest narrowing by edge kind when trace was truncated and no filter was used
+    if result.truncated && params.kinds.is_none() {
         let mut narrow_params = json!({"max_bytes": (max_bytes * 2).min(200_000)});
         if let Some(ref qn) = params.start_qualname {
             narrow_params["start_qualname"] = json!(qn);
@@ -1191,15 +940,14 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             "description": "Re-trace with only CONFIG edges (avoids truncation)",
         }));
     }
-    for h in trace.iter().take(3) {
+    for h in result.hops.iter().take(3) {
         next_hops.push(json!({
             "method": "explain_symbol",
             "params": {"id": h.symbol.id},
             "description": format!("Explain {}", h.symbol.name),
         }));
     }
-    // When trace is empty, suggest analyze_impact as an alternative
-    if trace.is_empty() {
+    if result.hops.is_empty() {
         let mut impact_params = json!({"id": start.id, "direction": "upstream"});
         if matches!(start.kind.as_str(), "class" | "property") {
             impact_params["kinds"] =
@@ -1210,7 +958,6 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             "params": impact_params,
             "description": format!("Try analyze_impact on {} (finds consumers via CONFIG/DI edges)", start.name),
         }));
-        // Also suggest with CONFIG-only kinds if default kinds were used
         if params.kinds.is_none() {
             let mut retry_params = json!({"include_snippets": include_snippets});
             if let Some(ref qn) = params.start_qualname {
@@ -1226,39 +973,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             }));
         }
     }
-
-    // Calculate paths_found: 0 if empty and no target reached, 1 if target reached, else count leaf nodes
-    let paths_found = if trace.is_empty() {
-        0
-    } else if end_id.is_some() {
-        if reached_target { 1 } else { 0 }
-    } else {
-        // Count distinct leaf nodes (max distance symbols)
-        let max_dist = trace.iter().map(|h| h.distance).max().unwrap_or(0);
-        trace.iter().filter(|h| h.distance == max_dist).count()
-    };
-
-    let result = TraceFlowResult {
-        start,
-        end: end_sym,
-        trace,
-        paths_found,
-        reached_target,
-        truncated,
-        budget: BudgetInfo {
-            budget_bytes: max_bytes,
-            used_bytes,
-            truncated,
-        },
-        next_hops,
-    };
-
-    let mut value = serde_json::to_value(&result)?;
-    let format = params.format.as_deref().unwrap_or("full");
-    if format == "compact" {
-        value = apply_compact_format(value);
-    }
-    Ok(value)
+    next_hops
 }
 
 // ---------------------------------------------------------------------------
