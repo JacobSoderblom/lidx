@@ -4,12 +4,14 @@ use crate::model::{Edge, Symbol, TraceHop};
 use anyhow::Result;
 use std::collections::{HashSet, VecDeque};
 
+/// Direction of a BFS trace through the symbol graph.
 #[derive(Debug, Clone)]
 pub enum TraceDirection {
     Downstream,
     Upstream,
 }
 
+/// Configuration for a `trace_flow` traversal.
 #[derive(Debug, Clone)]
 pub struct TraceConfig {
     pub max_hops: usize,
@@ -47,6 +49,7 @@ impl Default for TraceConfig {
     }
 }
 
+/// Result of a `trace_flow` BFS traversal.
 #[derive(Debug)]
 pub struct TraceResult {
     pub start: Symbol,
@@ -59,6 +62,8 @@ pub struct TraceResult {
     pub used_bytes: usize,
 }
 
+/// BFS traversal of the symbol graph from `seeds`, following edges in the
+/// configured direction with bridge-edge crossing and byte budgeting.
 pub fn trace_flow(
     db: &Db,
     seeds: Vec<i64>,
@@ -662,6 +667,202 @@ mod tests {
 
         let context = extract_protocol_context(&call_edge);
         assert!(context.is_none());
+    }
+
+    #[test]
+    fn test_detect_boundary_type_all_kinds() {
+        assert_eq!(detect_boundary_type("RPC_ROUTE", "proto", "csharp"), "grpc");
+        assert_eq!(
+            detect_boundary_type("HTTP_CALL", "typescript", "python"),
+            "http"
+        );
+        assert_eq!(
+            detect_boundary_type("HTTP_ROUTE", "python", "typescript"),
+            "http"
+        );
+        assert_eq!(
+            detect_boundary_type("CHANNEL_PUBLISH", "python", "csharp"),
+            "message_bus"
+        );
+        assert_eq!(
+            detect_boundary_type("CHANNEL_SUBSCRIBE", "csharp", "python"),
+            "message_bus"
+        );
+        assert_eq!(
+            detect_boundary_type("CONFIG_SOURCE", "python", "typescript"),
+            "config"
+        );
+        assert_eq!(
+            detect_boundary_type("CONFIG_READ", "typescript", "python"),
+            "config"
+        );
+    }
+
+    #[test]
+    fn test_build_boundary_detail_all_types() {
+        assert_eq!(
+            build_boundary_detail("http", "typescript", "python"),
+            "TypeScript \u{2192} python via HTTP"
+        );
+        assert_eq!(
+            build_boundary_detail("message_bus", "python", "csharp"),
+            "python \u{2192} C# via message bus"
+        );
+        assert_eq!(
+            build_boundary_detail("config", "javascript", "python"),
+            "JavaScript \u{2192} python via config/env"
+        );
+        assert_eq!(
+            build_boundary_detail("other", "rust", "python"),
+            "rust \u{2192} python"
+        );
+    }
+
+    #[test]
+    fn test_extract_protocol_context_channel() {
+        let edge = Edge {
+            id: 1,
+            file_path: "test.py".to_string(),
+            kind: "CHANNEL_PUBLISH".to_string(),
+            source_symbol_id: Some(100),
+            target_symbol_id: None,
+            target_qualname: Some("events.user_created".to_string()),
+            detail: Some(
+                r#"{"framework":"rabbitmq","channel":"user_created","role":"publisher"}"#
+                    .to_string(),
+            ),
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: None,
+            graph_version: 1,
+            commit_sha: None,
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        };
+
+        let ctx = extract_protocol_context(&edge).unwrap();
+        assert_eq!(ctx["framework"], "rabbitmq");
+        assert_eq!(ctx["channel"], "user_created");
+        assert_eq!(ctx["role"], "publisher");
+    }
+
+    #[test]
+    fn test_extract_protocol_context_config() {
+        let edge = Edge {
+            id: 1,
+            file_path: "test.py".to_string(),
+            kind: "CONFIG_READ".to_string(),
+            source_symbol_id: Some(100),
+            target_symbol_id: None,
+            target_qualname: Some("env.DATABASE_URL".to_string()),
+            detail: Some(
+                r#"{"source_type":"env","config_uri":"DATABASE_URL","role":"reader"}"#.to_string(),
+            ),
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: None,
+            graph_version: 1,
+            commit_sha: None,
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        };
+
+        let ctx = extract_protocol_context(&edge).unwrap();
+        assert_eq!(ctx["source_type"], "env");
+        assert_eq!(ctx["config_uri"], "DATABASE_URL");
+        assert_eq!(ctx["role"], "reader");
+    }
+
+    #[test]
+    fn test_extract_protocol_context_http() {
+        let edge = Edge {
+            id: 1,
+            file_path: "test.ts".to_string(),
+            kind: "HTTP_CALL".to_string(),
+            source_symbol_id: Some(100),
+            target_symbol_id: None,
+            target_qualname: Some("api.users".to_string()),
+            detail: Some(
+                r#"{"framework":"express","method":"GET","path":"/api/users"}"#.to_string(),
+            ),
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: None,
+            graph_version: 1,
+            commit_sha: None,
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        };
+
+        let ctx = extract_protocol_context(&edge).unwrap();
+        assert_eq!(ctx["framework"], "express");
+        assert_eq!(ctx["method"], "GET");
+        assert_eq!(ctx["path"], "/api/users");
+    }
+
+    #[test]
+    fn test_extract_protocol_context_malformed_json() {
+        let edge = Edge {
+            id: 1,
+            file_path: "test.py".to_string(),
+            kind: "RPC_IMPL".to_string(),
+            source_symbol_id: Some(100),
+            target_symbol_id: None,
+            target_qualname: None,
+            detail: Some("not valid json".to_string()),
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: None,
+            graph_version: 1,
+            commit_sha: None,
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        };
+
+        assert!(extract_protocol_context(&edge).is_none());
+    }
+
+    #[test]
+    fn test_extract_protocol_context_missing_required_fields() {
+        let edge = Edge {
+            id: 1,
+            file_path: "test.cs".to_string(),
+            kind: "RPC_IMPL".to_string(),
+            source_symbol_id: Some(100),
+            target_symbol_id: None,
+            target_qualname: None,
+            detail: Some(r#"{"framework":"grpc"}"#.to_string()),
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: None,
+            graph_version: 1,
+            commit_sha: None,
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        };
+
+        assert!(
+            extract_protocol_context(&edge).is_none(),
+            "should return None when required service/rpc fields are missing"
+        );
+    }
+
+    #[test]
+    fn test_detect_language_paths_with_directories() {
+        assert_eq!(detect_language("src/services/api.py"), "python");
+        assert_eq!(detect_language("deep/nested/path/file.ts"), "typescript");
+        assert_eq!(detect_language("no_extension"), "unknown");
+        assert_eq!(detect_language(""), "unknown");
     }
 
     // -- Integration tests for trace_flow --
