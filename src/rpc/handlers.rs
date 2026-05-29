@@ -5,7 +5,6 @@ use super::*;
 use crate::search::{
     RgSearchOptions, annotate_grep_hits, normalize_rg_context, resolve_rg_paths, search_rg,
 };
-use crate::util::normalize_search_paths;
 
 // ---------------------------------------------------------------------------
 // GROUP 1 -- Symbol query handlers
@@ -13,8 +12,11 @@ use crate::util::normalize_search_paths;
 
 pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: ExplainSymbolParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let languages = params.languages.clone();
+    let HandlerContext {
+        graph_version,
+        languages,
+        ..
+    } = HandlerContext::new(indexer, params.common)?;
 
     let max_bytes = params.max_bytes.unwrap_or(40_000).min(200_000);
     let max_refs = params.max_refs.unwrap_or(10);
@@ -524,10 +526,12 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
 pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: OrientParams = serde_json::from_value(params)?;
+    let HandlerContext {
+        graph_version,
+        languages,
+        paths,
+    } = HandlerContext::new(indexer, params.common)?;
     let view = params.view.as_deref().unwrap_or("all");
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
 
     // Resolve optional focus symbol via resolve module
     let focus_sym = if let Some(ref qn) = params.focus_qualname {
@@ -635,16 +639,14 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
 
 pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: RepoMapParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), None, params.paths)?;
+    let ctx = HandlerContext::new(indexer, params.common)?;
     let max_bytes = params.max_bytes.unwrap_or(8000).clamp(1000, 50000);
 
     let config = crate::repo_map::RepoMapConfig {
         max_bytes,
-        languages,
-        paths,
-        graph_version,
+        languages: ctx.languages,
+        paths: ctx.paths,
+        graph_version: ctx.graph_version,
     };
     let map_result = crate::repo_map::build_repo_map(indexer.db(), &config)?;
     Ok(json!({
@@ -657,10 +659,12 @@ pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Va
 
 pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: DeadSymbolsParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    let HandlerContext {
+        graph_version,
+        languages,
+        paths,
+    } = HandlerContext::new(indexer, params.common)?;
     let limit = params.limit.unwrap_or(50);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths.clone())?;
     let include_unused_imports = params.include_unused_imports.unwrap_or(true);
     let include_orphan_tests = params.include_orphan_tests.unwrap_or(true);
 
@@ -703,39 +707,31 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
 
 pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: TopComplexityParams = serde_json::from_value(params)?;
+    let ctx = HandlerContext::new(indexer, params.common)?;
     let limit = params.limit.unwrap_or(10);
     let min_complexity = params.min_complexity.unwrap_or(1);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
     let results = indexer.db().top_complexity(
         limit,
         min_complexity,
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
+        ctx.languages.as_deref(),
+        ctx.paths.as_deref(),
+        ctx.graph_version,
     )?;
     Ok(json!(results))
 }
 
 pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    #[derive(Deserialize)]
-    struct ContextParams {
-        path: String,
-        format: Option<String>,
-        graph_version: Option<i64>,
-    }
     let params: ContextParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let ctx = crate::context::build_file_context(
+    let ctx = HandlerContext::new(indexer, params.common)?;
+    let file_ctx = crate::context::build_file_context(
         indexer.db(),
         indexer.repo_root(),
         &params.path,
-        graph_version,
+        ctx.graph_version,
     )?;
     match params.format.as_deref() {
-        Some("json") => Ok(crate::context::format_json(&ctx)),
-        _ => Ok(json!({ "context": crate::context::format_text(&ctx) })),
+        Some("json") => Ok(crate::context::format_json(&file_ctx)),
+        _ => Ok(json!({ "context": crate::context::format_text(&file_ctx) })),
     }
 }
 
@@ -745,8 +741,11 @@ pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Val
 
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: TraceFlowParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let languages = params.languages.clone();
+    let HandlerContext {
+        graph_version,
+        languages,
+        ..
+    } = HandlerContext::new(indexer, params.common)?;
     let max_hops = params.max_hops.unwrap_or(5).min(10);
     let include_snippets = params.include_snippets.unwrap_or(true);
     let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
@@ -943,6 +942,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
 /// Build a MultiLayerConfig from AnalyzeImpactParams with a given limit.
 fn build_impact_config(
     params: &AnalyzeImpactParams,
+    languages: Option<&[String]>,
     limit: usize,
 ) -> crate::impact::config::MultiLayerConfig {
     let mut config = crate::impact::config::MultiLayerConfig::builder()
@@ -968,8 +968,8 @@ fn build_impact_config(
     if let Some(enable_historical) = params.enable_historical {
         config.historical.enabled = enable_historical;
     }
-    if let Some(languages) = params.languages.as_ref()
-        && let Ok(normalized) = scan::normalize_language_filter(Some(languages.as_slice()))
+    if let Some(languages) = languages
+        && let Ok(normalized) = scan::normalize_language_filter(Some(languages))
     {
         config.direct.languages = normalized;
     }
@@ -1022,7 +1022,13 @@ fn resolve_and_analyze_single(
 
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: AnalyzeImpactParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    // `params` is borrowed below (build_impact_config), so clone the common
+    // params for context construction rather than moving them out of `params`.
+    let HandlerContext {
+        graph_version,
+        languages,
+        ..
+    } = HandlerContext::new(indexer, params.common.clone())?;
 
     // ---- Batch path: multiple qualnames in one call ----
     if let Some(ref qualnames) = params.qualnames {
@@ -1034,7 +1040,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         let total_limit = params.limit.unwrap_or(500).min(2000);
         let per_seed_limit = (total_limit / qualnames.len()).max(50);
 
-        let base_config = build_impact_config(&params, per_seed_limit);
+        let base_config = build_impact_config(&params, languages.as_deref(), per_seed_limit);
 
         let mut results = Vec::with_capacity(qualnames.len());
         let mut total_affected: usize = 0;
@@ -1150,9 +1156,12 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 "analyze_impact requires id, qualname, or query"
             ));
         };
-        let langs = scan::normalize_language_filter(params.languages.as_deref())?;
-        let symbol =
-            crate::resolve::resolve_symbol(indexer.db(), sym_ref, langs.as_deref(), graph_version)?;
+        let symbol = crate::resolve::resolve_symbol(
+            indexer.db(),
+            sym_ref,
+            languages.as_deref(),
+            graph_version,
+        )?;
 
         // Property→parent expansion: if the seed is a property/field/attribute/const,
         // also add the parent class so CONFIG_BIND consumers are reachable
@@ -1195,9 +1204,8 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     }
 
     // Set languages if specified
-    if let Some(languages) = params.languages.as_ref() {
-        let normalized = scan::normalize_language_filter(Some(languages.as_slice()))?;
-        config.direct.languages = normalized;
+    if let Some(ref langs) = languages {
+        config.direct.languages = Some(langs.clone());
     }
 
     // Set kinds if specified
@@ -1214,12 +1222,15 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
 
 pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: AnalyzeDiffParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    let HandlerContext {
+        graph_version,
+        languages,
+        ..
+    } = HandlerContext::new(indexer, params.common)?;
     let max_bytes = params.max_bytes.unwrap_or(50_000).min(200_000);
     let max_depth = params.max_depth.unwrap_or(1).min(5);
     let include_tests = params.include_tests.unwrap_or(true);
     let include_risk = params.include_risk.unwrap_or(true);
-    let languages = params.languages.clone();
 
     // Step 1: Get changed files with optional line ranges
     let mut warnings: Vec<String> = Vec::new();
@@ -1704,12 +1715,12 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 
 pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: RgParams = serde_json::from_value(params)?;
+    let graph_version = HandlerContext::new(indexer, params.common)?.graph_version;
     super::validate::validate_pattern_length(&params.query, "search_rg")?;
     let limit = params.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
     let context_lines = normalize_rg_context(params.context_lines);
     let include_text = params.include_text.unwrap_or(true);
     let include_symbol = params.include_symbol.unwrap_or(false);
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
     let paths = resolve_rg_paths(indexer.repo_root(), params.path, params.paths)?;
     let globs = params.globs.unwrap_or_default();
     let options = RgSearchOptions {
@@ -1813,7 +1824,7 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
         ));
     }
 
-    // Moderate Concern #3: Validate seed count
+    // Validate seed count
     if params.seeds.len() > MAX_SEEDS {
         anyhow::bail!(
             "Too many seeds: {} (max: {})",
@@ -1822,9 +1833,11 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
         );
     }
 
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
+    let HandlerContext {
+        graph_version,
+        languages,
+        paths,
+    } = HandlerContext::new(indexer, params.common)?;
 
     // Moderate Concern #1: Enforce hard cap on max_bytes
     let max_bytes = params.max_bytes.unwrap_or(100_000).min(MAX_BYTES_HARD_CAP);
@@ -1864,8 +1877,11 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
 
 pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: OnboardParams = serde_json::from_value(params)?;
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    let HandlerContext {
+        graph_version,
+        languages,
+        ..
+    } = HandlerContext::new(indexer, params.common)?;
 
     // 1. Repo overview (compact)
     let overview = indexer.db().repo_overview(

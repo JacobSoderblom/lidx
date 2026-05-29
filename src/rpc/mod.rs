@@ -48,6 +48,35 @@ struct RpcError {
     message: String,
 }
 
+#[derive(Deserialize, Default, Clone, schemars::JsonSchema)]
+struct CommonParams {
+    #[serde(alias = "as_of", alias = "version")]
+    pub graph_version: Option<i64>,
+    pub languages: Option<Vec<String>>,
+    pub path: Option<String>,
+    pub paths: Option<Vec<String>>,
+}
+
+struct HandlerContext {
+    pub graph_version: i64,
+    pub languages: Option<Vec<String>>,
+    pub paths: Option<Vec<String>>,
+}
+
+impl HandlerContext {
+    pub fn new(indexer: &Indexer, common: CommonParams) -> anyhow::Result<Self> {
+        let graph_version = resolve_graph_version(indexer, common.graph_version)?;
+        let languages = scan::normalize_language_filter(common.languages.as_deref())?;
+        let paths =
+            crate::util::normalize_search_paths(indexer.repo_root(), common.path, common.paths)?;
+        Ok(Self {
+            graph_version,
+            languages,
+            paths,
+        })
+    }
+}
+
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ReindexParams {
     summary: Option<bool>,
@@ -60,42 +89,28 @@ struct ReindexParams {
 struct TopComplexityParams {
     limit: Option<usize>,
     min_complexity: Option<i64>,
-    languages: Option<Vec<String>>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RepoMapParams {
     /// Maximum bytes of output text (default: 8000, min: 1000, max: 50000)
     max_bytes: Option<usize>,
-    /// Language filter (e.g. ["rust", "python"])
-    languages: Option<Vec<String>>,
-    /// Path filter
-    #[serde(alias = "path")]
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct DeadSymbolsParams {
     /// Maximum number of results per category (default: 50)
     limit: Option<usize>,
-    /// Language filter (e.g. ["rust", "python"])
-    languages: Option<Vec<String>>,
-    /// Single path filter (alternative to paths array)
-    path: Option<String>,
-    /// Path filter array
-    paths: Option<Vec<String>>,
     /// Include unused imports (default: true)
     include_unused_imports: Option<bool>,
     /// Include orphan tests (default: true)
     include_orphan_tests: Option<bool>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 // Active param structs used by the remaining methods
@@ -121,9 +136,8 @@ struct AnalyzeImpactParams {
     /// Global configuration
     limit: Option<usize>,
     min_confidence: Option<f32>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -140,9 +154,8 @@ struct AnalyzeDiffParams {
     /// Include risk assessment
     include_risk: Option<bool>,
     max_bytes: Option<usize>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -161,32 +174,28 @@ struct RgParams {
     hidden: Option<bool>,
     no_ignore: Option<bool>,
     follow: Option<bool>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, Default, schemars::JsonSchema)]
 struct OnboardParams {
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct OrientParams {
     /// "overview", "map", "modules", or "all" (default: "all")
     view: Option<String>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
     depth: Option<usize>,
     max_bytes: Option<usize>,
-    languages: Option<Vec<String>>,
     /// Focus on a specific symbol by qualname (filters orient output to symbol's context)
     focus_qualname: Option<String>,
     /// Focus on a specific symbol by fuzzy query (alternative to focus_qualname)
     focus_query: Option<String>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -206,16 +215,11 @@ struct GatherContextParams {
     include_related: Option<bool>,
     /// If true, return metadata and item skeletons without content
     dry_run: Option<bool>,
-    /// Language filter
-    languages: Option<Vec<String>>,
-    /// Path filter
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
     /// Content strategy: "symbol" (symbol bodies only) or "file" (full files)
     /// Defaults to "symbol" when all seeds are symbol/id seeds, "file" otherwise
     strategy: Option<String>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -244,9 +248,8 @@ struct ExplainSymbolParams {
     sections: Option<Vec<String>>,
     max_refs: Option<usize>,
     format: Option<String>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -269,9 +272,16 @@ struct TraceFlowParams {
     format: Option<String>,
     trace_offset: Option<usize>,
     max_bytes: Option<usize>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct ContextParams {
+    path: String,
+    format: Option<String>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 /// Hard cap on result count to prevent huge responses that blow LLM context windows.
@@ -534,6 +544,123 @@ fn build_flow_status(
 mod tests {
     use super::build_flow_status;
     use crate::model::Edge;
+    use serde_json::json;
+
+    // --- CommonParams / flatten deserialization contract ---
+    //
+    // These tests pin the JSON-key acceptance of the param structs after the
+    // CommonParams `#[serde(flatten)]` refactor. They exercise the real
+    // deserialization path (the same `serde_json::from_value` each handler
+    // runs) so any change to which keys are accepted/coerced is caught here.
+
+    #[test]
+    fn common_params_accepts_graph_version_aliases() {
+        use super::CommonParams;
+        for key in ["graph_version", "as_of", "version"] {
+            let p: CommonParams = serde_json::from_value(json!({ key: 7 })).unwrap();
+            assert_eq!(
+                p.graph_version,
+                Some(7),
+                "alias `{key}` should populate graph_version"
+            );
+        }
+    }
+
+    #[test]
+    fn common_params_defaults_when_empty() {
+        use super::CommonParams;
+        let p: CommonParams = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(p.graph_version, None);
+        assert!(p.languages.is_none());
+        assert!(p.path.is_none());
+        assert!(p.paths.is_none());
+    }
+
+    #[test]
+    fn flatten_common_into_outer_struct_populates_both_layers() {
+        use super::TopComplexityParams;
+        let p: TopComplexityParams = serde_json::from_value(json!({
+            "limit": 5,
+            "languages": ["rust"],
+            "path": "src",
+            "paths": ["tests"],
+            "as_of": 3,
+        }))
+        .unwrap();
+        assert_eq!(p.limit, Some(5));
+        assert_eq!(p.common.graph_version, Some(3));
+        assert_eq!(
+            p.common.languages.as_deref(),
+            Some(["rust".to_string()].as_slice())
+        );
+        assert_eq!(p.common.path.as_deref(), Some("src"));
+        assert_eq!(p.common.paths, Some(vec!["tests".to_string()]));
+    }
+
+    #[test]
+    fn flatten_does_not_reject_unknown_fields() {
+        // None of the param structs use deny_unknown_fields, so unrelated keys
+        // must continue to be ignored rather than erroring. Flatten must not
+        // change this (a flattened struct silently absorbs leftover keys, but
+        // an unknown key still has to be tolerated).
+        use super::TopComplexityParams;
+        let p: TopComplexityParams =
+            serde_json::from_value(json!({ "totally_unknown": true, "limit": 1 })).unwrap();
+        assert_eq!(p.limit, Some(1));
+    }
+
+    #[test]
+    fn rg_params_keeps_own_path_and_query_aliases_alongside_common() {
+        // RgParams has its own `path`/`paths` (consumed by resolve_rg_paths) and
+        // flattens CommonParams which ALSO has path/paths. Confirm the query
+        // aliases survive and graph_version still flows through common.
+        use super::RgParams;
+        let p: RgParams = serde_json::from_value(json!({
+            "pattern": "foo",
+            "path": "src",
+            "version": 9,
+        }))
+        .unwrap();
+        assert_eq!(p.query, "foo");
+        assert_eq!(p.path.as_deref(), Some("src"));
+        assert_eq!(p.common.graph_version, Some(9));
+    }
+
+    #[test]
+    fn analyze_diff_changed_files_accept_paths_key_and_path_alias() {
+        // analyze_diff keeps its OWN `paths` field (changed files), distinct from
+        // the flattened common path filter. Both the `paths` key and the
+        // `#[serde(alias = "path")]` must land on the outer field the handler
+        // reads -- the flatten refactor must not drop either.
+        use super::AnalyzeDiffParams;
+        for key in ["paths", "path"] {
+            let p: AnalyzeDiffParams =
+                serde_json::from_value(json!({ key: ["src/a.rs"] })).unwrap();
+            assert_eq!(
+                p.paths,
+                Some(vec!["src/a.rs".to_string()]),
+                "`{key}` should populate changed-files `paths`"
+            );
+        }
+    }
+
+    #[test]
+    fn repo_map_accepts_scalar_path_filter_via_common() {
+        // repo_map now takes its path filter through the shared CommonParams,
+        // so a scalar `path` is accepted (consistent with every other handler).
+        // Note: pre-refactor repo_map carried an `alias = "path"` on its `paths`
+        // array, so it accepted `{"path": [...]}`; after consolidation `path` is
+        // the standard scalar and `paths` is the array.
+        use super::RepoMapParams;
+        let p: RepoMapParams = serde_json::from_value(json!({ "path": "src" })).unwrap();
+        assert_eq!(p.common.path.as_deref(), Some("src"));
+        let p: RepoMapParams =
+            serde_json::from_value(json!({ "paths": ["src", "tests"] })).unwrap();
+        assert_eq!(
+            p.common.paths,
+            Some(vec!["src".to_string(), "tests".to_string()])
+        );
+    }
 
     fn edge(kind: &str, path: &str, id: i64) -> Edge {
         Edge {
