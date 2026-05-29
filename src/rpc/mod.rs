@@ -1,206 +1,29 @@
+mod compact;
+mod format;
 mod handlers;
+mod schema;
+mod validate;
 
-use crate::config::Config;
+pub(crate) use crate::indexer::differ::{ChangedFile, parse_diff_with_ranges};
 use crate::indexer::{Indexer, scan, test_detection};
 use crate::model::{
-    AnalyzeDiffResult, BudgetInfo, ChangedSymbol, DiffImpactEntry, ExplainRef,
-    ExplainSymbolResult, ModuleEdge, ModuleNode, RiskAssessment, RiskFactor, Symbol,
-    TestCoverageEntry, TestRef, TraceFlowResult, ValidationResult,
+    AnalyzeDiffResult, BudgetInfo, ChangedSymbol, DiffImpactEntry, ExplainRef, ExplainSymbolResult,
+    ModuleEdge, ModuleNode, RiskAssessment, RiskFactor, Symbol, TestCoverageEntry, TestRef,
+    TraceFlowResult,
 };
 #[cfg(test)]
 use crate::model::{Edge, FlowStatusEntry, FlowStatusResult};
-use crate::util;
 use crate::watch;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
-fn validate_pattern_length(pattern: &str, operation: &str) -> Result<()> {
-    let max_length = Config::get().pattern_max_length;
-    if pattern.len() > max_length {
-        eprintln!(
-            "lidx: Security: {} pattern too long: {} bytes (max: {})",
-            operation,
-            pattern.len(),
-            max_length
-        );
-        anyhow::bail!(
-            "{} pattern too long: {} bytes (max: {})",
-            operation,
-            pattern.len(),
-            max_length
-        );
-    }
-    Ok(())
-}
-
-fn validate_gather_context_params(params: &GatherContextParams) -> ValidationResult {
-    let mut result = ValidationResult::new();
-
-    // Validate max_bytes
-    if let Some(max_bytes) = params.max_bytes
-        && max_bytes == 0
-    {
-        result.add("max_bytes", "out_of_range", "max_bytes must be at least 1");
-    }
-
-    // Validate depth
-    if let Some(depth) = params.depth
-        && depth > 10
-    {
-        result.add("depth", "out_of_range", "depth must be 10 or less");
-    }
-
-    // Validate max_nodes
-    if let Some(max_nodes) = params.max_nodes {
-        if max_nodes == 0 {
-            result.add("max_nodes", "out_of_range", "max_nodes must be at least 1");
-        } else if max_nodes > 500 {
-            result.add("max_nodes", "out_of_range", "max_nodes must be 500 or less");
-        }
-    }
-
-    // Validate seeds
-    for (idx, seed) in params.seeds.iter().enumerate() {
-        match seed {
-            ContextSeed::Symbol { qualname } => {
-                if qualname.trim().is_empty() {
-                    result.add(
-                        &format!("seeds[{}].qualname", idx),
-                        "required",
-                        "Symbol seed requires non-empty qualname",
-                    );
-                }
-            }
-            ContextSeed::File {
-                path,
-                start_line,
-                end_line,
-            } => {
-                if path.trim().is_empty() {
-                    result.add(
-                        &format!("seeds[{}].path", idx),
-                        "required",
-                        "File seed requires non-empty path",
-                    );
-                }
-                if let (Some(start), Some(end)) = (start_line, end_line) {
-                    if start > end {
-                        result.add(
-                            &format!("seeds[{}]", idx),
-                            "invalid_range",
-                            &format!("start_line ({}) must be <= end_line ({})", start, end),
-                        );
-                    }
-                    if *start < 1 {
-                        result.add(
-                            &format!("seeds[{}].start_line", idx),
-                            "out_of_range",
-                            "start_line must be >= 1",
-                        );
-                    }
-                }
-            }
-            ContextSeed::Search { query, .. } => {
-                if query.trim().is_empty() {
-                    result.add(
-                        &format!("seeds[{}].query", idx),
-                        "required",
-                        "Search seed requires non-empty query",
-                    );
-                }
-            }
-        }
-    }
-
-    result
-}
-
-/// Convert a Symbol JSON value to compact format by keeping only essential fields
-pub(crate) fn compact_symbol_value(symbol_value: &serde_json::Value) -> serde_json::Value {
-    let keep_fields = [
-        "id",
-        "kind",
-        "name",
-        "qualname",
-        "file_path",
-        "start_line",
-        "signature",
-    ];
-    if let serde_json::Value::Object(map) = symbol_value {
-        let compact: serde_json::Map<String, serde_json::Value> = map
-            .iter()
-            .filter(|(k, _)| keep_fields.contains(&k.as_str()))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        serde_json::Value::Object(compact)
-    } else {
-        symbol_value.clone()
-    }
-}
-
-/// Apply compact format to a response value by converting all symbol objects to compact form.
-fn apply_compact_format(value: serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(
-                arr.into_iter()
-                    .map(|item| {
-                        if let serde_json::Value::Object(ref map) = item {
-                            // If it looks like a symbol (has qualname field), compact it
-                            if map.contains_key("qualname") {
-                                return compact_symbol_value(&item);
-                            }
-                            // If it has a "symbol" field, compact that
-                            if map.contains_key("symbol") {
-                                let mut new_map = map.clone();
-                                if let Some(sym) = new_map.get("symbol") {
-                                    new_map.insert("symbol".to_string(), compact_symbol_value(sym));
-                                }
-                                return serde_json::Value::Object(new_map);
-                            }
-                        }
-                        item
-                    })
-                    .collect(),
-            )
-        }
-        serde_json::Value::Object(mut map) => {
-            // Process known array fields
-            for key in [
-                "results", "nodes", "incoming", "outgoing", "edges", "trace", "items", "affected",
-            ] {
-                if let Some(arr) = map.remove(key) {
-                    map.insert(key.to_string(), apply_compact_format(arr));
-                }
-            }
-            // Process symbol field if present
-            if let Some(sym) = map.remove("symbol") {
-                if sym.is_object() && sym.get("qualname").is_some() {
-                    map.insert("symbol".to_string(), compact_symbol_value(&sym));
-                } else {
-                    map.insert("symbol".to_string(), sym);
-                }
-            }
-            // Process start/end symbol fields (trace_flow)
-            for key in ["start", "end"] {
-                if let Some(sym) = map.remove(key) {
-                    if sym.is_object() && sym.get("qualname").is_some() {
-                        map.insert(key.to_string(), compact_symbol_value(&sym));
-                    } else {
-                        map.insert(key.to_string(), sym);
-                    }
-                }
-            }
-            serde_json::Value::Object(map)
-        }
-        other => other,
-    }
-}
+pub(crate) use compact::compact_symbol_value;
+pub(crate) use schema::method_param_schema;
 
 #[derive(Deserialize)]
 struct RpcRequest {
@@ -470,117 +293,6 @@ pub const METHOD_LIST: &[&str] = &[
     "dead_symbols",
 ];
 
-// --- Per-method JSON Schema generation ---
-
-fn schema_value<T: schemars::JsonSchema>() -> Value {
-    let schema = schemars::schema_for!(T);
-    let raw = serde_json::to_value(schema).unwrap_or_else(|_| json!({"type": "object"}));
-    simplify_schema(raw)
-}
-
-/// Return a simplified JSON Schema for the params struct of the given method.
-pub fn method_param_schema(method: &str) -> Value {
-    match method {
-        "search" => schema_value::<RgParams>(),
-        "explain_symbol" => schema_value::<ExplainSymbolParams>(),
-        "trace_flow" => schema_value::<TraceFlowParams>(),
-        "analyze_impact" => schema_value::<AnalyzeImpactParams>(),
-        "analyze_diff" => schema_value::<AnalyzeDiffParams>(),
-        "gather_context" => schema_value::<GatherContextParams>(),
-        "orient" => schema_value::<OrientParams>(),
-        "onboard" => schema_value::<OnboardParams>(),
-        "reindex" => schema_value::<ReindexParams>(),
-        "top_complexity" => schema_value::<TopComplexityParams>(),
-        "repo_map" => schema_value::<RepoMapParams>(),
-        "dead_symbols" => schema_value::<DeadSymbolsParams>(),
-        _ => json!({"type": "object"}),
-    }
-}
-
-/// Post-process schemars output into compact, LLM-friendly JSON Schema.
-fn simplify_schema(mut schema: Value) -> Value {
-    // 1. Collect definitions for inlining $ref
-    let definitions = schema
-        .get("definitions")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-
-    // 2. Recursively inline $ref and clean up
-    inline_refs(&mut schema, &definitions);
-
-    // 3. Strip root-level noise
-    if let Some(obj) = schema.as_object_mut() {
-        obj.remove("$schema");
-        obj.remove("definitions");
-        obj.remove("title");
-    }
-
-    schema
-}
-
-/// Recursively inline `$ref` references and collapse `Option<T>` patterns.
-fn inline_refs(value: &mut Value, definitions: &Value) {
-    match value {
-        Value::Object(map) => {
-            // Handle $ref: inline the definition
-            if let Some(ref_val) = map.get("$ref").cloned()
-                && let Some(ref_str) = ref_val.as_str()
-            {
-                // Extract definition name from "#/definitions/Name"
-                if let Some(name) = ref_str.strip_prefix("#/definitions/")
-                    && let Some(def) = definitions.get(name)
-                {
-                    let mut inlined = def.clone();
-                    inline_refs(&mut inlined, definitions);
-                    *value = inlined;
-                    return;
-                }
-            }
-
-            // Handle anyOf with null (Option<T> pattern): collapse to inner schema
-            if let Some(any_of) = map.get("anyOf").cloned()
-                && let Some(variants) = any_of.as_array()
-                && variants.len() == 2
-            {
-                let null_idx = variants
-                    .iter()
-                    .position(|v| v.get("type").and_then(|t| t.as_str()) == Some("null"));
-                if let Some(idx) = null_idx {
-                    let inner_idx = 1 - idx;
-                    let mut inner = variants[inner_idx].clone();
-                    inline_refs(&mut inner, definitions);
-                    *value = inner;
-                    return;
-                }
-            }
-
-            // Recurse into all values
-            let keys: Vec<String> = map.keys().cloned().collect();
-            for key in keys {
-                if let Some(v) = map.get_mut(&key) {
-                    inline_refs(v, definitions);
-                }
-            }
-
-            // Strip format on integers (e.g. "format": "uint", "format": "int64")
-            if map.get("type").and_then(|t| t.as_str()) == Some("integer") {
-                map.remove("format");
-                map.remove("minimum");
-            }
-            // Strip format on numbers
-            if map.get("type").and_then(|t| t.as_str()) == Some("number") {
-                map.remove("format");
-            }
-        }
-        Value::Array(arr) => {
-            for item in arr.iter_mut() {
-                inline_refs(item, definitions);
-            }
-        }
-        _ => {}
-    }
-}
-
 pub fn serve(repo_root: PathBuf, db_path: PathBuf, watch_config: watch::WatchConfig) -> Result<()> {
     let watch_repo = repo_root.clone();
     let watch_db = db_path.clone();
@@ -603,7 +315,7 @@ pub fn serve(repo_root: PathBuf, db_path: PathBuf, watch_config: watch::WatchCon
 
         let response = match serde_json::from_str::<RpcRequest>(&line) {
             Ok(request) => app.handle_request(request),
-            Err(err) => error_response(Value::Null, &format!("invalid request: {err}")),
+            Err(err) => format::error_response(Value::Null, &format!("invalid request: {err}")),
         };
 
         writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
@@ -621,7 +333,7 @@ pub fn call(
     id_raw: &str,
 ) -> Result<String> {
     let params: Value = serde_json::from_str(params_raw).with_context(|| "parse params JSON")?;
-    let id = parse_value(id_raw);
+    let id = format::parse_value(id_raw);
     let mut app = App::new(repo_root, db_path, scan::ScanOptions::default())?;
     let request = RpcRequest { id, method, params };
     let response = app.handle_request(request);
@@ -648,113 +360,8 @@ impl App {
                 result: Some(value),
                 error: None,
             },
-            Err(err) => error_response(id, &err.to_string()),
+            Err(err) => format::error_response(id, &err.to_string()),
         }
-    }
-}
-
-/// Extract max_response_bytes from params (supports both max_response_bytes and max_tokens)
-fn extract_max_response_bytes(params: &serde_json::Value) -> Option<usize> {
-    params
-        .get("max_response_bytes")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
-        .or_else(|| {
-            params
-                .get("max_tokens")
-                .and_then(|v| v.as_u64())
-                .map(|v| (v as usize) * 4) // ~4 bytes per token
-        })
-}
-
-/// Truncate a JSON response to fit within a byte budget.
-/// If value is an array, removes tail elements.
-/// If value is an object with common array fields, truncates those arrays.
-/// Returns (truncated_value, was_truncated, total_available)
-fn truncate_response(
-    value: serde_json::Value,
-    max_bytes: usize,
-) -> (serde_json::Value, bool, Option<usize>) {
-    let serialized = serde_json::to_string(&value).unwrap_or_default();
-    if serialized.len() <= max_bytes {
-        return (value, false, None);
-    }
-
-    match value {
-        serde_json::Value::Array(arr) => {
-            // Binary search for how many elements fit
-            let original_len = arr.len();
-            let mut low = 0usize;
-            let mut high = arr.len();
-            while low < high {
-                let mid = (low + high).div_ceil(2);
-                let slice = serde_json::Value::Array(arr[..mid].to_vec());
-                let size = serde_json::to_string(&slice).unwrap_or_default().len();
-                if size <= max_bytes {
-                    low = mid;
-                } else {
-                    high = mid - 1;
-                }
-            }
-            (
-                serde_json::Value::Array(arr[..low].to_vec()),
-                true,
-                Some(original_len),
-            )
-        }
-        serde_json::Value::Object(mut map) => {
-            // Check if this object has a top-level array field that we can track
-            let mut total_available: Option<usize> = None;
-
-            // Look for common array fields and truncate them
-            let array_keys: Vec<String> = map
-                .iter()
-                .filter(|(_, v)| v.is_array())
-                .map(|(k, _)| k.clone())
-                .collect();
-
-            if array_keys.is_empty() {
-                return (serde_json::Value::Object(map), false, None);
-            }
-
-            // If there's a single top-level array (common pattern), capture its length
-            if array_keys.len() == 1
-                && let Some(serde_json::Value::Array(arr)) = map.get(&array_keys[0])
-            {
-                total_available = Some(arr.len());
-            }
-
-            // Truncate each array field proportionally
-            let overhead = {
-                let mut temp = map.clone();
-                for key in &array_keys {
-                    temp.insert(key.clone(), serde_json::Value::Array(vec![]));
-                }
-                serde_json::to_string(&serde_json::Value::Object(temp))
-                    .unwrap_or_default()
-                    .len()
-            };
-
-            let available = max_bytes.saturating_sub(overhead);
-            let per_array = available / array_keys.len().max(1);
-
-            let mut did_truncate = false;
-            for key in &array_keys {
-                if let Some(serde_json::Value::Array(arr)) = map.remove(key) {
-                    let (truncated_arr, was_truncated, _) =
-                        truncate_response(serde_json::Value::Array(arr), per_array);
-                    did_truncate = did_truncate || was_truncated;
-                    map.insert(key.clone(), truncated_arr);
-                }
-            }
-
-            (
-                serde_json::Value::Object(map),
-                did_truncate,
-                total_available,
-            )
-        }
-        other => (other, false, None),
     }
 }
 
@@ -765,7 +372,7 @@ const DEFAULT_MAX_RESPONSE_BYTES: usize = 30_000;
 
 pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Result<Value> {
     let start = Instant::now();
-    let max_response_bytes = extract_max_response_bytes(&params);
+    let max_response_bytes = format::extract_max_response_bytes(&params);
     let value = match method {
         "search" => handlers::handle_search_rg(indexer, params)?,
         "explain_symbol" => handlers::handle_explain_symbol(indexer, params)?,
@@ -802,7 +409,8 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
         }
     });
     if let Some(max_bytes) = effective_max {
-        let (truncated_value, was_truncated, total_available) = truncate_response(value, max_bytes);
+        let (truncated_value, was_truncated, total_available) =
+            format::truncate_response(value, max_bytes);
         if was_truncated {
             let mut response = json!({
                 "data": truncated_value,
@@ -824,51 +432,6 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
     }
 }
 
-fn error_response(id: Value, message: &str) -> RpcResponse {
-    RpcResponse {
-        id,
-        result: None,
-        error: Some(RpcError {
-            message: message.to_string(),
-        }),
-    }
-}
-
-fn parse_value(raw: &str) -> Value {
-    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
-}
-
-fn apply_field_filters(
-    value: Value,
-    summary: bool,
-    fields: Option<&[String]>,
-    summary_fields: &[&str],
-) -> Value {
-    if let Some(fields) = fields {
-        return filter_fields(value, fields.iter().map(|s| s.as_str()));
-    }
-    if summary {
-        return filter_fields(value, summary_fields.iter().copied());
-    }
-    value
-}
-
-fn filter_fields<'a, I>(value: Value, fields: I) -> Value
-where
-    I: IntoIterator<Item = &'a str>,
-{
-    let Value::Object(mut map) = value else {
-        return value;
-    };
-    let mut filtered = serde_json::Map::new();
-    for key in fields {
-        if let Some(value) = map.remove(key) {
-            filtered.insert(key.to_string(), value);
-        }
-    }
-    Value::Object(filtered)
-}
-
 pub(super) fn resolve_graph_version(indexer: &Indexer, value: Option<i64>) -> Result<i64> {
     if let Some(version) = value {
         return Ok(version);
@@ -884,143 +447,6 @@ fn infer_language(file_path: &str) -> String {
     scan::language_for_path(std::path::Path::new(file_path))
         .unwrap_or("unknown")
         .to_string()
-}
-
-/// Represents a changed line range from a diff hunk
-#[derive(Debug, Clone)]
-struct DiffHunk {
-    start_line: i64,
-    line_count: i64,
-}
-
-/// Represents a changed file with its line ranges
-#[derive(Debug, Clone)]
-struct ChangedFile {
-    path: String,
-    changed_ranges: Vec<DiffHunk>,
-    added_ranges: Vec<DiffHunk>,
-    deleted_ranges: Vec<DiffHunk>,
-}
-
-fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
-    let mut files = Vec::new();
-    let mut current_file: Option<ChangedFile> = None;
-
-    for line in diff.lines() {
-        if let Some(rest) = line.strip_prefix("+++ b/") {
-            if let Some(file) = current_file.take() {
-                files.push(file);
-            }
-            current_file = Some(ChangedFile {
-                path: rest.to_string(),
-                changed_ranges: Vec::new(),
-                added_ranges: Vec::new(),
-                deleted_ranges: Vec::new(),
-            });
-        } else if let Some(rest) = line.strip_prefix("+++ ") {
-            if !rest.starts_with("/dev/null") {
-                if let Some(file) = current_file.take() {
-                    files.push(file);
-                }
-                current_file = Some(ChangedFile {
-                    path: rest.to_string(),
-                    changed_ranges: Vec::new(),
-                    added_ranges: Vec::new(),
-                    deleted_ranges: Vec::new(),
-                });
-            }
-        } else if line.starts_with("@@ ") {
-            // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
-            if let Some(ref mut file) = current_file
-                && let Some(hunk_info) = line.strip_prefix("@@ ")
-                && let Some(ranges) = hunk_info.split("@@").next()
-            {
-                let parts: Vec<&str> = ranges.split_whitespace().collect();
-
-                // Parse old range (deleted lines)
-                if let Some(old_part) = parts.first()
-                    && let Some(old_range) = old_part.strip_prefix('-')
-                    && let Some((start, count)) = parse_hunk_range(old_range)
-                {
-                    file.deleted_ranges.push(DiffHunk {
-                        start_line: start,
-                        line_count: count,
-                    });
-                }
-
-                // Parse new range (added/modified lines)
-                if let Some(new_part) = parts.get(1)
-                    && let Some(new_range) = new_part.strip_prefix('+')
-                    && let Some((start, count)) = parse_hunk_range(new_range)
-                {
-                    file.added_ranges.push(DiffHunk {
-                        start_line: start,
-                        line_count: count,
-                    });
-                    // Also add to changed_ranges as any hunk represents a change
-                    file.changed_ranges.push(DiffHunk {
-                        start_line: start,
-                        line_count: count,
-                    });
-                }
-            }
-        }
-    }
-
-    if let Some(file) = current_file {
-        files.push(file);
-    }
-
-    files
-}
-
-fn parse_hunk_range(range: &str) -> Option<(i64, i64)> {
-    if let Some((start_str, count_str)) = range.split_once(',') {
-        let start = start_str.parse::<i64>().ok()?;
-        let count = count_str.parse::<i64>().ok()?;
-        Some((start, count))
-    } else {
-        // Single line change: just a line number
-        let start = range.parse::<i64>().ok()?;
-        Some((start, 1))
-    }
-}
-
-fn normalize_search_paths(
-    repo_root: &Path,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-) -> Result<Option<Vec<String>>> {
-    let mut raw_paths = Vec::new();
-    if let Some(value) = path {
-        raw_paths.push(value);
-    }
-    if let Some(values) = paths {
-        raw_paths.extend(values);
-    }
-    if raw_paths.is_empty() {
-        return Ok(None);
-    }
-    let mut normalized = Vec::new();
-    for raw in raw_paths {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // Security: Validate path using canonicalization to prevent traversal and symlink escapes
-        // This ensures paths stay within repo_root
-        let (_abs, rel) = util::resolve_repo_path_for_op(repo_root, trimmed, "path_filter")?;
-        if rel == "." {
-            continue;
-        }
-        normalized.push(rel);
-    }
-    if normalized.is_empty() {
-        return Ok(None);
-    }
-    normalized.sort();
-    normalized.dedup();
-    Ok(Some(normalized))
 }
 
 #[cfg(test)]
@@ -1192,11 +618,9 @@ mod tests {
             required
         );
 
-        // gather_context requires "seeds"
+        // gather_context — seeds has a default, so it may not be in required array.
+        // Just check the schema is valid.
         let schema = super::method_param_schema("gather_context");
-        let required = schema.get("required").and_then(|v| v.as_array());
-        // Note: seeds has a default, so it may not be in required array
-        // Just check the schema is valid
         assert!(
             schema.is_object(),
             "gather_context should have valid schema"

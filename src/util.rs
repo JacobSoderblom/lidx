@@ -155,6 +155,47 @@ pub fn git_head_sha(repo_root: &Path) -> Option<String> {
     }
 }
 
+/// Normalize `path` and `paths` params into a deduplicated, sorted list of repo-relative paths.
+///
+/// Returns `None` when no paths were supplied (callers should treat this as "no filter").
+/// Rejects paths that escape the repo root via canonicalization.
+pub fn normalize_search_paths(
+    repo_root: &Path,
+    path: Option<String>,
+    paths: Option<Vec<String>>,
+) -> anyhow::Result<Option<Vec<String>>> {
+    let mut raw_paths = Vec::new();
+    if let Some(value) = path {
+        raw_paths.push(value);
+    }
+    if let Some(values) = paths {
+        raw_paths.extend(values);
+    }
+    if raw_paths.is_empty() {
+        return Ok(None);
+    }
+    let mut normalized = Vec::new();
+    for raw in raw_paths {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Security: Validate path using canonicalization to prevent traversal and symlink escapes
+        // This ensures paths stay within repo_root
+        let (_abs, rel) = resolve_repo_path_for_op(repo_root, trimmed, "path_filter")?;
+        if rel == "." {
+            continue;
+        }
+        normalized.push(rel);
+    }
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    normalized.sort();
+    normalized.dedup();
+    Ok(Some(normalized))
+}
+
 /// Resolves a raw path against `repo_root`, canonicalizes it, and rejects escapes.
 pub fn resolve_repo_path_for_op(
     repo_root: &Path,
