@@ -5,6 +5,7 @@ use super::*;
 use crate::search::{
     RgSearchOptions, annotate_grep_hits, normalize_rg_context, resolve_rg_paths, search_rg,
 };
+use crate::util::normalize_search_paths;
 
 // ---------------------------------------------------------------------------
 // GROUP 1 -- Symbol query handlers
@@ -930,7 +931,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
 
     let mut value = serde_json::to_value(&result)?;
     if compact_mode {
-        value = apply_compact_format(value);
+        value = super::compact::apply_compact_format(value);
     }
     Ok(value)
 }
@@ -1703,7 +1704,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 
 pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: RgParams = serde_json::from_value(params)?;
-    validate_pattern_length(&params.query, "search_rg")?;
+    super::validate::validate_pattern_length(&params.query, "search_rg")?;
     let limit = params.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
     let context_lines = normalize_rg_context(params.context_lines);
     let include_text = params.include_text.unwrap_or(true);
@@ -1787,7 +1788,7 @@ pub(super) fn handle_reindex(indexer: &mut Indexer, params: Value) -> Result<Val
         }
     }
 
-    Ok(apply_field_filters(
+    Ok(super::format::apply_field_filters(
         json_stats,
         params.summary.unwrap_or(false),
         params.fields.as_deref(),
@@ -1804,7 +1805,7 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
     let params: GatherContextParams = serde_json::from_value(params)?;
 
     // Validate parameters
-    let validation = validate_gather_context_params(&params);
+    let validation = super::validate::validate_gather_context_params(&params);
     if !validation.is_valid() {
         return Err(anyhow::anyhow!(
             "Validation failed: {}",

@@ -91,6 +91,122 @@ pub fn compute_symbol_diff(old_symbols: Vec<Symbol>, new_symbols: Vec<SymbolInpu
     diff
 }
 
+// ---------------------------------------------------------------------------
+// Diff parsing — git unified diff → changed file/line ranges
+// ---------------------------------------------------------------------------
+
+/// Represents a changed line range from a diff hunk.
+#[derive(Debug, Clone)]
+pub struct DiffHunk {
+    pub start_line: i64,
+    pub line_count: i64,
+}
+
+/// Represents a changed file with its line ranges extracted from a unified diff.
+#[derive(Debug, Clone)]
+pub struct ChangedFile {
+    pub path: String,
+    pub changed_ranges: Vec<DiffHunk>,
+    pub added_ranges: Vec<DiffHunk>,
+    pub deleted_ranges: Vec<DiffHunk>,
+}
+
+/// Parse a unified diff string into per-file changed line ranges.
+///
+/// Handles both `+++ b/path` (git format) and `+++ path` (plain unified diff).
+/// Files with `+++ /dev/null` (deleted files) are skipped.
+pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
+    let mut files = Vec::new();
+    let mut current_file: Option<ChangedFile> = None;
+
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("+++ b/") {
+            if let Some(file) = current_file.take() {
+                files.push(file);
+            }
+            current_file = Some(ChangedFile {
+                path: rest.to_string(),
+                changed_ranges: Vec::new(),
+                added_ranges: Vec::new(),
+                deleted_ranges: Vec::new(),
+            });
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
+            if let Some(file) = current_file.take() {
+                files.push(file);
+            }
+            if !rest.starts_with("/dev/null") {
+                current_file = Some(ChangedFile {
+                    path: rest.to_string(),
+                    changed_ranges: Vec::new(),
+                    added_ranges: Vec::new(),
+                    deleted_ranges: Vec::new(),
+                });
+            }
+        } else if line.starts_with("@@ ") {
+            // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+            if let Some(ref mut file) = current_file
+                && let Some(hunk_info) = line.strip_prefix("@@ ")
+                && let Some(ranges) = hunk_info.split("@@").next()
+            {
+                let parts: Vec<&str> = ranges.split_whitespace().collect();
+
+                // Parse old range (deleted lines)
+                if let Some(old_part) = parts.first()
+                    && let Some(old_range) = old_part.strip_prefix('-')
+                    && let Some((start, count)) = parse_hunk_range(old_range)
+                {
+                    file.deleted_ranges.push(DiffHunk {
+                        start_line: start,
+                        line_count: count,
+                    });
+                }
+
+                // Parse new range (added/modified lines)
+                if let Some(new_part) = parts.get(1)
+                    && let Some(new_range) = new_part.strip_prefix('+')
+                    && let Some((start, count)) = parse_hunk_range(new_range)
+                {
+                    file.added_ranges.push(DiffHunk {
+                        start_line: start,
+                        line_count: count,
+                    });
+                    // Also add to changed_ranges as any hunk represents a change
+                    file.changed_ranges.push(DiffHunk {
+                        start_line: start,
+                        line_count: count,
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(file) = current_file {
+        files.push(file);
+    }
+
+    files
+}
+
+/// Parse a hunk range string of the form `start,count` or just `start`.
+///
+/// Returns `(start_line, line_count)`.  A range with no comma is treated as a
+/// single-line change (`count = 1`).
+pub fn parse_hunk_range(range: &str) -> Option<(i64, i64)> {
+    if let Some((start_str, count_str)) = range.split_once(',') {
+        let start = start_str.parse::<i64>().ok()?;
+        let count = count_str.parse::<i64>().ok()?;
+        Some((start, count))
+    } else {
+        // Single line change: just a line number
+        let start = range.parse::<i64>().ok()?;
+        Some((start, 1))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Symbol content comparison (internal helper)
+// ---------------------------------------------------------------------------
+
 /// Check if symbol content changed (fields that can change without changing stable_id)
 ///
 /// Stable ID includes: qualname, signature, kind
@@ -376,6 +492,206 @@ mod tests {
         assert_eq!(diff.modified.len(), 1);
         assert_eq!(diff.deleted.len(), 0);
         assert_eq!(diff.unchanged.len(), 0);
+    }
+
+    // ---------------------------------------------------------------------------
+    // parse_hunk_range tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn parse_hunk_range_with_comma() {
+        assert_eq!(parse_hunk_range("10,5"), Some((10, 5)));
+    }
+
+    #[test]
+    fn parse_hunk_range_single_line() {
+        assert_eq!(parse_hunk_range("42"), Some((42, 1)));
+    }
+
+    #[test]
+    fn parse_hunk_range_invalid_returns_none() {
+        assert_eq!(parse_hunk_range("abc"), None);
+        assert_eq!(parse_hunk_range("1,xyz"), None);
+    }
+
+    #[test]
+    fn parse_hunk_range_zero_count() {
+        assert_eq!(parse_hunk_range("5,0"), Some((5, 0)));
+    }
+
+    // ---------------------------------------------------------------------------
+    // parse_diff_with_ranges tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn parse_diff_git_format_extracts_file_and_hunks() {
+        let diff = "\
+diff --git a/src/foo.rs b/src/foo.rs
+--- a/src/foo.rs
++++ b/src/foo.rs
+@@ -10,5 +12,7 @@ fn bar() {
+ context
++added line
+";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/foo.rs");
+        assert_eq!(files[0].added_ranges.len(), 1);
+        assert_eq!(files[0].added_ranges[0].start_line, 12);
+        assert_eq!(files[0].added_ranges[0].line_count, 7);
+        assert_eq!(files[0].deleted_ranges.len(), 1);
+        assert_eq!(files[0].deleted_ranges[0].start_line, 10);
+    }
+
+    #[test]
+    fn parse_diff_multiple_files() {
+        let diff = "\
+diff --git a/foo.py b/foo.py
+--- a/foo.py
++++ b/foo.py
+@@ -1,3 +1,4 @@
+ line
++new
+diff --git a/bar.py b/bar.py
+--- a/bar.py
++++ b/bar.py
+@@ -5,2 +5,2 @@
+ unchanged
+";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "foo.py");
+        assert_eq!(files[1].path, "bar.py");
+    }
+
+    #[test]
+    fn parse_diff_skips_dev_null() {
+        let diff = "\
+--- a/deleted.rs
++++ /dev/null
+@@ -1,3 +0,0 @@
+-removed
+";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(
+            files.len(),
+            0,
+            "deleted files (→ /dev/null) should be skipped"
+        );
+    }
+
+    #[test]
+    fn parse_diff_multiple_hunks_per_file() {
+        let diff = "\
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,4 @@
+ a
++b
+@@ -20,2 +21,3 @@
+ x
++y
++z
+";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].changed_ranges.len(), 2);
+        assert_eq!(files[0].added_ranges[0].start_line, 1);
+        assert_eq!(files[0].added_ranges[1].start_line, 21);
+    }
+
+    #[test]
+    fn parse_diff_empty_string_returns_no_files() {
+        let files = parse_diff_with_ranges("");
+        assert_eq!(files.len(), 0);
+    }
+
+    #[test]
+    fn parse_diff_deleted_file_hunks_not_attributed_to_previous_file() {
+        // When a deleted file (+++ /dev/null) sits between two real files,
+        // the deleted file's hunks must NOT leak into the preceding file.
+        let diff = "\
+diff --git a/src/keep.rs b/src/keep.rs
+--- a/src/keep.rs
++++ b/src/keep.rs
+@@ -1,3 +1,4 @@
+ context
++added
+diff --git a/src/gone.rs b/src/gone.rs
+--- a/src/gone.rs
++++ /dev/null
+@@ -1,5 +0,0 @@
+-deleted content
+diff --git a/src/also_keep.rs b/src/also_keep.rs
+--- a/src/also_keep.rs
++++ b/src/also_keep.rs
+@@ -10,2 +10,3 @@
+ x
++y
+";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 2, "only the two non-deleted files");
+        assert_eq!(files[0].path, "src/keep.rs");
+        assert_eq!(
+            files[0].added_ranges.len(),
+            1,
+            "keep.rs should have exactly 1 hunk, not pick up gone.rs hunks"
+        );
+        assert_eq!(files[1].path, "src/also_keep.rs");
+    }
+
+    #[test]
+    fn parse_diff_new_file_from_dev_null() {
+        // New file: --- /dev/null, +++ b/new_file.rs
+        let diff = "\
+diff --git a/new_file.rs b/new_file.rs
+--- /dev/null
++++ b/new_file.rs
+@@ -0,0 +1,5 @@
++line1
++line2
+";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "new_file.rs");
+        assert_eq!(files[0].added_ranges.len(), 1);
+        assert_eq!(files[0].added_ranges[0].start_line, 1);
+        assert_eq!(files[0].added_ranges[0].line_count, 5);
+    }
+
+    #[test]
+    fn parse_diff_no_hunks_only_file_header() {
+        // A file header with no hunk lines — e.g. binary or mode-change-only
+        let diff = "\
+diff --git a/mode.sh b/mode.sh
+old mode 100644
+new mode 100755
+--- a/mode.sh
++++ b/mode.sh
+";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "mode.sh");
+        assert!(files[0].changed_ranges.is_empty());
+        assert!(files[0].added_ranges.is_empty());
+        assert!(files[0].deleted_ranges.is_empty());
+    }
+
+    #[test]
+    fn parse_diff_hunk_header_with_no_counts() {
+        // Single-line hunks: @@ -5 +7 @@ (no commas → count defaults to 1)
+        let diff = "\
+--- a/f.rs
++++ b/f.rs
+@@ -5 +7 @@
+ line
+";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].deleted_ranges[0].start_line, 5);
+        assert_eq!(files[0].deleted_ranges[0].line_count, 1);
+        assert_eq!(files[0].added_ranges[0].start_line, 7);
+        assert_eq!(files[0].added_ranges[0].line_count, 1);
     }
 }
 
