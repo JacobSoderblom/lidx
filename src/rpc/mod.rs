@@ -18,7 +18,9 @@ use crate::watch;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::time::Instant;

@@ -440,3 +440,88 @@ fn gather_context_file_strategy_uses_full_files() {
     let content = items[0]["content"].as_str().unwrap();
     assert!(!content.is_empty());
 }
+
+#[test]
+fn gather_context_truncates_multibyte_content_at_budget() {
+    let temp = TempRepo::new("py_mvp");
+
+    // File of 2-byte chars with no newline: every odd byte offset is mid-char
+    let multibyte_path = temp.repo_root.join("notes.md");
+    std::fs::write(&multibyte_path, "é".repeat(100)).unwrap();
+
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Budget of 5 bytes lands mid-char in the snippet
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "gather_context".to_string(),
+        r#"{"seeds":[{"type":"file","path":"notes.md"}],"max_bytes":5,"include_related":false}"#,
+        "1",
+    )
+    .unwrap();
+
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let result = value["result"].as_object().unwrap();
+    assert!(result["total_bytes"].as_u64().unwrap() <= 5);
+}
+
+#[test]
+fn gather_context_handles_multibyte_file_header() {
+    let temp = TempRepo::new("py_mvp");
+
+    // First line is > 500 bytes of 2-byte chars after a 1-byte "#",
+    // so byte 500 falls mid-char when the header is capped
+    let header_line = format!("#{}", "é".repeat(300));
+    let source = format!("{header_line}\ndef uni_func():\n    return 1\n");
+    std::fs::write(temp.repo_root.join("uni.py"), source).unwrap();
+
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Symbol strategy reads the file header for tier-0 formatting
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "gather_context".to_string(),
+        r#"{"seeds":[{"type":"symbol","qualname":"uni.uni_func"}],"strategy":"symbol","include_related":false}"#,
+        "1",
+    )
+    .unwrap();
+
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let items = value["result"]["items"].as_array().unwrap();
+    assert!(!items.is_empty());
+    assert!(items[0]["content"].as_str().unwrap().contains("uni_func"));
+}
+
+#[test]
+fn gather_context_handles_stale_multibyte_files() {
+    let temp = TempRepo::new("py_mvp");
+
+    let file_path = temp.repo_root.join("stale.py");
+    std::fs::write(&file_path, "def stale_func():\n    return 42\n").unwrap();
+
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Rewrite with multibyte content so the indexed byte offsets land mid-char
+    std::fs::write(&file_path, "é".repeat(50)).unwrap();
+
+    for strategy in ["file", "symbol"] {
+        let response = rpc::call(
+            temp.repo_root.clone(),
+            temp.db_path.clone(),
+            "gather_context".to_string(),
+            &format!(
+                r#"{{"seeds":[{{"type":"symbol","qualname":"stale.stale_func"}}],"strategy":"{strategy}","include_related":false}}"#
+            ),
+            "1",
+        )
+        .unwrap();
+
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert!(value["result"]["items"].is_array(), "strategy={strategy}");
+    }
+}

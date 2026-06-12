@@ -1875,7 +1875,6 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
         languages: ctx.languages,
         paths: ctx.paths,
         graph_version: ctx.graph_version,
-        semantic_results: HashMap::new(),
         strategy,
     };
 
