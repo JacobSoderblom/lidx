@@ -179,7 +179,8 @@ fn initialize_result(message: &Value) -> Value {
     orient for architecture overview. search for regex. \
     gather_context for LLM-ready context.\n\
     \n\
-    Other methods: analyze_impact, onboard, reindex, top_complexity, repo_map, dead_symbols.\n\
+    Other methods: analyze_impact, onboard, reindex, top_complexity, repo_map, dead_symbols, \
+    context (structured single-file output; use format:\"json\" for machine-readable JSON).\n\
     \n\
     Edge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, \
     HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, \

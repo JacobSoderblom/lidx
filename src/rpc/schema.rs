@@ -10,9 +10,9 @@ pub(super) fn schema_value<T: schemars::JsonSchema>() -> Value {
 /// Return a simplified JSON Schema for the params struct of the given method.
 pub fn method_param_schema(method: &str) -> Value {
     use super::{
-        AnalyzeDiffParams, AnalyzeImpactParams, DeadSymbolsParams, ExplainSymbolParams,
-        GatherContextParams, OnboardParams, OrientParams, ReindexParams, RepoMapParams, RgParams,
-        TopComplexityParams, TraceFlowParams,
+        AnalyzeDiffParams, AnalyzeImpactParams, ContextParams, DeadSymbolsParams,
+        ExplainSymbolParams, GatherContextParams, OnboardParams, OrientParams, ReindexParams,
+        RepoMapParams, RgParams, TopComplexityParams, TraceFlowParams,
     };
     match method {
         "search" => schema_value::<RgParams>(),
@@ -21,6 +21,7 @@ pub fn method_param_schema(method: &str) -> Value {
         "analyze_impact" => schema_value::<AnalyzeImpactParams>(),
         "analyze_diff" => schema_value::<AnalyzeDiffParams>(),
         "gather_context" => schema_value::<GatherContextParams>(),
+        "context" => schema_value::<ContextParams>(),
         "orient" => schema_value::<OrientParams>(),
         "onboard" => schema_value::<OnboardParams>(),
         "reindex" => schema_value::<ReindexParams>(),

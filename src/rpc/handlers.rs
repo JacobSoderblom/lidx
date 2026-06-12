@@ -733,13 +733,6 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
 }
 
 pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    #[derive(Deserialize)]
-    struct ContextParams {
-        path: String,
-        format: Option<String>,
-        #[serde(alias = "as_of", alias = "version", default)]
-        graph_version: Option<i64>,
-    }
     let params: ContextParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
     let file_ctx = crate::context::build_file_context(
