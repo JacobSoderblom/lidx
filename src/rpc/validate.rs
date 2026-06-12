@@ -142,11 +142,8 @@ mod tests {
             include_snippets: None,
             include_related: None,
             dry_run: None,
-            languages: None,
-            path: None,
-            paths: None,
-            graph_version: None,
             strategy: None,
+            common: super::super::CommonParams::default(),
         }
     }
 
