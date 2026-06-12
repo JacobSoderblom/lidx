@@ -13,6 +13,7 @@ use crate::model::{
 };
 #[cfg(test)]
 use crate::model::{Edge, FlowStatusEntry, FlowStatusResult};
+use crate::util::normalize_search_paths;
 use crate::watch;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -60,42 +61,28 @@ struct ReindexParams {
 struct TopComplexityParams {
     limit: Option<usize>,
     min_complexity: Option<i64>,
-    languages: Option<Vec<String>>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct RepoMapParams {
     /// Maximum bytes of output text (default: 8000, min: 1000, max: 50000)
     max_bytes: Option<usize>,
-    /// Language filter (e.g. ["rust", "python"])
-    languages: Option<Vec<String>>,
-    /// Path filter
-    #[serde(alias = "path")]
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct DeadSymbolsParams {
     /// Maximum number of results per category (default: 50)
     limit: Option<usize>,
-    /// Language filter (e.g. ["rust", "python"])
-    languages: Option<Vec<String>>,
-    /// Single path filter (alternative to paths array)
-    path: Option<String>,
-    /// Path filter array
-    paths: Option<Vec<String>>,
     /// Include unused imports (default: true)
     include_unused_imports: Option<bool>,
     /// Include orphan tests (default: true)
     include_orphan_tests: Option<bool>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 // Active param structs used by the remaining methods
@@ -121,9 +108,8 @@ struct AnalyzeImpactParams {
     /// Global configuration
     limit: Option<usize>,
     min_confidence: Option<f32>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: LangVersionParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -167,26 +153,22 @@ struct RgParams {
 
 #[derive(Deserialize, Default, schemars::JsonSchema)]
 struct OnboardParams {
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: LangVersionParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct OrientParams {
     /// "overview", "map", "modules", or "all" (default: "all")
     view: Option<String>,
-    path: Option<String>,
-    paths: Option<Vec<String>>,
     depth: Option<usize>,
     max_bytes: Option<usize>,
-    languages: Option<Vec<String>>,
     /// Focus on a specific symbol by qualname (filters orient output to symbol's context)
     focus_qualname: Option<String>,
     /// Focus on a specific symbol by fuzzy query (alternative to focus_qualname)
     focus_query: Option<String>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -206,16 +188,11 @@ struct GatherContextParams {
     include_related: Option<bool>,
     /// If true, return metadata and item skeletons without content
     dry_run: Option<bool>,
-    /// Language filter
-    languages: Option<Vec<String>>,
-    /// Path filter
-    path: Option<String>,
-    paths: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
     /// Content strategy: "symbol" (symbol bodies only) or "file" (full files)
     /// Defaults to "symbol" when all seeds are symbol/id seeds, "file" otherwise
     strategy: Option<String>,
+    #[serde(flatten)]
+    common: CommonParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -244,9 +221,8 @@ struct ExplainSymbolParams {
     sections: Option<Vec<String>>,
     max_refs: Option<usize>,
     format: Option<String>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: LangVersionParams,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -269,9 +245,8 @@ struct TraceFlowParams {
     format: Option<String>,
     trace_offset: Option<usize>,
     max_bytes: Option<usize>,
-    languages: Option<Vec<String>>,
-    #[serde(alias = "as_of", alias = "version")]
-    graph_version: Option<i64>,
+    #[serde(flatten)]
+    common: LangVersionParams,
 }
 
 /// Hard cap on result count to prevent huge responses that blow LLM context windows.
@@ -437,6 +412,90 @@ pub(super) fn resolve_graph_version(indexer: &Indexer, value: Option<i64>) -> Re
         return Ok(version);
     }
     indexer.db().current_graph_version()
+}
+
+/// A single path or a list of paths. Accepting both shapes keeps `path` forgiving
+/// for clients that pass an array (previously supported by repo_map via an alias).
+#[derive(Deserialize, Clone, schemars::JsonSchema)]
+#[serde(untagged)]
+pub(super) enum PathArg {
+    One(String),
+    Many(Vec<String>),
+}
+
+/// Common query parameters shared by handlers that support path filters.
+/// Use `#[serde(flatten)]` in a params struct to include these fields automatically.
+#[derive(Deserialize, Default, Clone, schemars::JsonSchema)]
+pub(super) struct CommonParams {
+    /// Language filter (e.g. ["rust", "python"])
+    pub languages: Option<Vec<String>>,
+    /// Path prefix filter: a single path or an array (alternative to `paths`)
+    pub path: Option<PathArg>,
+    /// Path prefix filters
+    pub paths: Option<Vec<String>>,
+    /// Graph version to query (defaults to current)
+    #[serde(alias = "as_of", alias = "version")]
+    pub graph_version: Option<i64>,
+}
+
+/// Common query parameters for handlers that filter by language but do not
+/// support path filters. Keeping `path`/`paths` out of these params means the
+/// published schemas only advertise filters the handlers actually honor.
+#[derive(Deserialize, Default, Clone, schemars::JsonSchema)]
+pub(super) struct LangVersionParams {
+    /// Language filter (e.g. ["rust", "python"])
+    pub languages: Option<Vec<String>>,
+    /// Graph version to query (defaults to current)
+    #[serde(alias = "as_of", alias = "version")]
+    pub graph_version: Option<i64>,
+}
+
+impl From<LangVersionParams> for CommonParams {
+    fn from(params: LangVersionParams) -> Self {
+        Self {
+            languages: params.languages,
+            path: None,
+            paths: None,
+            graph_version: params.graph_version,
+        }
+    }
+}
+
+/// Resolved common handler state: graph version, normalized language filter, normalized paths.
+pub(super) struct HandlerContext {
+    pub graph_version: i64,
+    pub languages: Option<Vec<String>>,
+    pub paths: Option<Vec<String>>,
+}
+
+impl HandlerContext {
+    /// Resolve common params into ready-to-use values, normalising language and path filters.
+    pub fn new(indexer: &Indexer, common: impl Into<CommonParams>) -> Result<Self> {
+        let common = common.into();
+        let graph_version = resolve_graph_version(indexer, common.graph_version)?;
+        let languages = scan::normalize_language_filter(common.languages.as_deref())?;
+        let mut raw_paths = common.paths.unwrap_or_default();
+        match common.path {
+            Some(PathArg::One(path)) => raw_paths.push(path),
+            Some(PathArg::Many(paths)) => raw_paths.extend(paths),
+            None => {}
+        }
+        let paths = normalize_search_paths(indexer.repo_root(), None, Some(raw_paths))?;
+        Ok(Self {
+            graph_version,
+            languages,
+            paths,
+        })
+    }
+
+    /// Resolve only graph version (for handlers whose params don't use CommonParams).
+    pub fn from_version(indexer: &Indexer, version: Option<i64>) -> Result<Self> {
+        Ok(Self {
+            graph_version: resolve_graph_version(indexer, version)?,
+            languages: None,
+            paths: None,
+        })
+    }
 }
 
 fn is_test_symbol(s: &Symbol) -> bool {
@@ -762,6 +821,74 @@ mod tests {
                     !msg.contains("unknown method"),
                     "METHOD_LIST contains '{}' but handle_method does not dispatch it",
                     method
+                );
+            }
+        }
+    }
+
+    // --- Common params (flattened) tests ---
+
+    #[test]
+    fn common_params_honor_graph_version_aliases_through_flatten() {
+        let p: super::TopComplexityParams =
+            serde_json::from_value(serde_json::json!({"as_of": 3})).unwrap();
+        assert_eq!(p.common.graph_version, Some(3));
+        let p: super::TopComplexityParams =
+            serde_json::from_value(serde_json::json!({"version": 7})).unwrap();
+        assert_eq!(p.common.graph_version, Some(7));
+        let p: super::ExplainSymbolParams =
+            serde_json::from_value(serde_json::json!({"qualname": "x", "as_of": 5})).unwrap();
+        assert_eq!(p.common.graph_version, Some(5));
+        let p: super::TraceFlowParams =
+            serde_json::from_value(serde_json::json!({"query": "x", "version": 2})).unwrap();
+        assert_eq!(p.common.graph_version, Some(2));
+    }
+
+    #[test]
+    fn path_filter_methods_advertise_path_params() {
+        for method in [
+            "orient",
+            "repo_map",
+            "dead_symbols",
+            "top_complexity",
+            "gather_context",
+        ] {
+            let schema = super::method_param_schema(method);
+            let props = schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .unwrap();
+            for key in ["languages", "path", "paths", "graph_version"] {
+                assert!(
+                    props.contains_key(key),
+                    "{} schema should advertise '{}', got: {:?}",
+                    method,
+                    key,
+                    props.keys().collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn non_path_methods_do_not_advertise_path_params() {
+        for method in ["explain_symbol", "trace_flow", "analyze_impact", "onboard"] {
+            let schema = super::method_param_schema(method);
+            let props = schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .unwrap();
+            assert!(
+                props.contains_key("languages"),
+                "{} schema should advertise 'languages'",
+                method
+            );
+            for key in ["path", "paths"] {
+                assert!(
+                    !props.contains_key(key),
+                    "{} ignores '{}', so its schema must not advertise it",
+                    method,
+                    key
                 );
             }
         }

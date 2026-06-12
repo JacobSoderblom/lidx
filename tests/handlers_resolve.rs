@@ -168,6 +168,61 @@ fn explain_symbol_missing_params_returns_error() {
 }
 
 // ---------------------------------------------------------------------------
+// language filter normalization — explain_symbol/trace_flow route languages
+// through normalize_language_filter like every other handler
+// ---------------------------------------------------------------------------
+
+#[test]
+fn explain_symbol_normalizes_language_aliases() {
+    let (temp, _indexer) = indexed_repo("py_mvp");
+    // "PY" is an alias for "python"; normalization lowercases and expands it,
+    // so the filter matches indexed symbols instead of silently missing.
+    let result = call(
+        &temp,
+        "explain_symbol",
+        r#"{"query":"Greeter","languages":["PY"]}"#,
+    );
+    assert_eq!(
+        result["symbol"]["name"].as_str().unwrap(),
+        "Greeter",
+        "language alias 'PY' should normalize to 'python' and match"
+    );
+}
+
+#[test]
+fn unknown_language_returns_error() {
+    let (temp, _indexer) = indexed_repo("py_mvp");
+    for method in ["explain_symbol", "trace_flow"] {
+        let response = call_raw(
+            &temp,
+            method,
+            r#"{"query":"Greeter","languages":["klingon"]}"#,
+        );
+        let err = response
+            .get("error")
+            .unwrap_or_else(|| panic!("{method}: unknown language should return an error"));
+        assert!(
+            err.to_string().contains("klingon"),
+            "{method}: error should name the unknown language: {:?}",
+            err
+        );
+    }
+}
+
+#[test]
+fn explain_symbol_ignores_stray_path_keys() {
+    let (temp, _indexer) = indexed_repo("py_mvp");
+    // explain_symbol does not support path filters; a stray `path` key must be
+    // ignored (serde unknown-field behavior), not normalized or rejected.
+    let result = call(
+        &temp,
+        "explain_symbol",
+        r#"{"query":"Greeter","path":"does/not/exist","paths":["nope"]}"#,
+    );
+    assert_eq!(result["symbol"]["name"].as_str().unwrap(), "Greeter");
+}
+
+// ---------------------------------------------------------------------------
 // analyze_impact — id / qualname / query all reach the same symbol
 // ---------------------------------------------------------------------------
 
