@@ -23,9 +23,10 @@ pub fn resolve_symbol(
             .get_symbol_by_id(id)?
             .ok_or_else(|| anyhow::anyhow!("symbol not found: id={}", id)),
 
-        SymbolRef::Qualname(ref qn) => db
-            .get_symbol_by_qualname(qn, graph_version)?
-            .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", qn)),
+        SymbolRef::Qualname(ref qn) => match db.get_symbol_by_qualname(qn, graph_version)? {
+            Some(sym) => Ok(sym),
+            None => resolve_by_query(db, qn, languages, graph_version),
+        },
 
         SymbolRef::Query(ref query) => resolve_by_query(db, query, languages, graph_version),
     }
@@ -343,11 +344,48 @@ mod tests {
             gv,
         )
         .unwrap_err();
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("symbol not found"),
-            "expected 'symbol not found' in: {}",
-            err
+            msg.contains("no symbol found") || msg.contains("Did you mean"),
+            "expected 'no symbol found' or 'Did you mean' in: {msg}",
         );
+    }
+
+    #[test]
+    fn resolve_near_miss_qualname_falls_through_to_query() {
+        // "core.Greeter" is not an exact qualname, but the query fallback
+        // substring-matches it against "pkg.core.Greeter" — should succeed.
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let resolved = resolve_symbol(
+            indexer.db(),
+            SymbolRef::Qualname("core.Greeter".into()),
+            None,
+            gv,
+        )
+        .unwrap();
+        assert_eq!(resolved.name, "Greeter");
+        assert_eq!(resolved.qualname, "pkg.core.Greeter");
+    }
+
+    #[test]
+    fn resolve_exact_qualname_wins_over_fuzzy_fallthrough() {
+        // "pkg.core" is the module's exact qualname AND a substring of
+        // "pkg.core.Greeter". The fuzzy fallback ranks classes above modules,
+        // so getting the module back proves the exact lookup short-circuits.
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let resolved = resolve_symbol(
+            indexer.db(),
+            SymbolRef::Qualname("pkg.core".into()),
+            None,
+            gv,
+        )
+        .unwrap();
+        assert_eq!(resolved.qualname, "pkg.core");
+        assert_eq!(resolved.kind, "module");
     }
 
     #[test]
@@ -407,18 +445,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_empty_or_whitespace_query_returns_error() {
+    fn resolve_empty_or_whitespace_input_returns_error() {
         let (_temp, indexer) = indexed_repo("py_mvp");
         let gv = indexer.db().current_graph_version().unwrap();
 
         for input in ["", "   "] {
-            let err =
-                resolve_symbol(indexer.db(), SymbolRef::Query(input.into()), None, gv).unwrap_err();
-            let msg = err.to_string();
-            assert!(
-                msg.contains("no symbol found") || msg.contains("Did you mean"),
-                "'{input}' query should fail, got: {msg}"
-            );
+            for reference in [
+                SymbolRef::Query(input.into()),
+                SymbolRef::Qualname(input.into()),
+            ] {
+                let err = resolve_symbol(indexer.db(), reference, None, gv).unwrap_err();
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("no symbol found"),
+                    "'{input}' input should fail cleanly, got: {msg}"
+                );
+            }
         }
     }
 
