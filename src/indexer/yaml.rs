@@ -1,5 +1,6 @@
 use crate::indexer::config::{self, CONFIG_READ_KIND, CONFIG_SOURCE_KIND};
 use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor, SymbolInput};
+use crate::indexer::tree_helpers::module_symbol_fallback;
 use anyhow::Result;
 use serde_yaml_ng::Value;
 use std::path::Path;
@@ -21,7 +22,7 @@ impl LanguageExtractor for YamlExtractor {
         let mut output = ExtractedFile::default();
         output
             .symbols
-            .push(module_symbol_with_span(module_name, span_whole(source)));
+            .push(module_symbol_fallback(module_name, source, "/", None));
 
         let documents = split_documents(source);
         for doc in &documents {
@@ -691,33 +692,6 @@ fn doc_span(doc: &YamlDocument, _source: &str) -> (i64, i64, i64, i64) {
     let start_byte = doc.byte_offset as i64;
     let end_byte = start_byte + doc.text.len() as i64;
     (start_line, end_line, start_byte, end_byte)
-}
-
-fn span_whole(source: &str) -> (i64, i64, i64, i64, i64, i64) {
-    let lines = source.lines().count().max(1) as i64;
-    (1, 1, lines, 1, 0, source.len() as i64)
-}
-
-fn module_symbol_with_span(module_name: &str, span: (i64, i64, i64, i64, i64, i64)) -> SymbolInput {
-    let name = module_name
-        .rsplit('/')
-        .next()
-        .unwrap_or(module_name)
-        .to_string();
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span;
-    SymbolInput {
-        kind: "module".to_string(),
-        name,
-        qualname: module_name.to_string(),
-        start_line,
-        start_col,
-        end_line,
-        end_col,
-        start_byte,
-        end_byte,
-        signature: None,
-        docstring: None,
-    }
 }
 
 pub fn module_name_from_rel_path(rel_path: &str) -> String {
