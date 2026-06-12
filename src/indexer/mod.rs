@@ -25,6 +25,7 @@ pub mod scan;
 pub mod sql;
 pub mod stable_id;
 pub mod test_detection;
+pub mod tree_helpers;
 pub mod xref;
 pub mod yaml;
 

@@ -1,6 +1,7 @@
 use crate::indexer::channel::{CHANNEL_PUBLISH_KIND, CHANNEL_SUBSCRIBE_KIND};
 use crate::indexer::config::{self, CONFIG_SOURCE_KIND};
 use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor, SymbolInput};
+use crate::indexer::tree_helpers::module_symbol_fallback;
 use anyhow::Result;
 use serde_json::json;
 use std::path::Path;
@@ -739,25 +740,9 @@ fn module_symbol(
     signature: Option<String>,
     docstring: Option<String>,
 ) -> SymbolInput {
-    let name = module_name
-        .rsplit('/')
-        .next()
-        .unwrap_or(module_name)
-        .to_string();
-    let lines = source.lines().count().max(1) as i64;
-    SymbolInput {
-        kind: "module".to_string(),
-        name,
-        qualname: module_name.to_string(),
-        start_line: 1,
-        start_col: 1,
-        end_line: lines,
-        end_col: 1,
-        start_byte: 0,
-        end_byte: source.len() as i64,
-        signature,
-        docstring,
-    }
+    let mut symbol = module_symbol_fallback(module_name, source, "/", docstring);
+    symbol.signature = signature;
+    symbol
 }
 
 fn decl_kind_and_qualname<'a>(decl: &BicepDecl, module_name: &str) -> (&'a str, String) {

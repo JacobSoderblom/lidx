@@ -3,6 +3,9 @@ use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::tree_helpers::{
+    module_symbol_fallback, module_symbol_with_span, node_text, span,
+};
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
@@ -53,7 +56,7 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
             None => {
                 output
                     .symbols
-                    .push(module_symbol_fallback(module_name, source));
+                    .push(module_symbol_fallback(module_name, source, "/", None));
                 return Ok(output);
             }
         };
@@ -62,7 +65,7 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
         let module_span = span(root);
         output
             .symbols
-            .push(module_symbol_with_span(module_name, module_span));
+            .push(module_symbol_with_span(module_name, module_span, "/", None));
 
         // First pass: collect gRPC server types
         let grpc_servers = collect_grpc_servers(root, source);
@@ -123,35 +126,6 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
     } else {
         parts.join("/")
     }
-}
-
-fn module_symbol_with_span(module_name: &str, span: (i64, i64, i64, i64, i64, i64)) -> SymbolInput {
-    let name = module_name
-        .rsplit('/')
-        .next()
-        .unwrap_or(module_name)
-        .to_string();
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span;
-    SymbolInput {
-        kind: "module".to_string(),
-        name,
-        qualname: module_name.to_string(),
-        start_line,
-        start_col,
-        end_line,
-        end_col,
-        start_byte,
-        end_byte,
-        signature: None,
-        docstring: None,
-    }
-}
-
-fn module_symbol_fallback(module_name: &str, source: &str) -> SymbolInput {
-    module_symbol_with_span(
-        module_name,
-        (1, 1, line_count(source), 1, 0, source.len() as i64),
-    )
 }
 
 fn collect_grpc_servers(root: Node<'_>, source: &str) -> HashMap<String, GrpcServerInfo> {
@@ -1107,30 +1081,6 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
 fn is_simple_call_target(raw: &str) -> bool {
     raw.chars()
         .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.')
-}
-
-fn span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
-    let start = node.start_position();
-    let end = node.end_position();
-    (
-        start.row as i64 + 1,
-        start.column as i64 + 1,
-        end.row as i64 + 1,
-        end.column as i64 + 1,
-        node.start_byte() as i64,
-        node.end_byte() as i64,
-    )
-}
-
-fn node_text(node: Node<'_>, source: &str) -> String {
-    let start = node.start_byte();
-    let end = node.end_byte();
-    source.get(start..end).unwrap_or("").trim().to_string()
-}
-
-fn line_count(source: &str) -> i64 {
-    let count = source.lines().count();
-    if count == 0 { 1 } else { count as i64 }
 }
 
 #[cfg(test)]

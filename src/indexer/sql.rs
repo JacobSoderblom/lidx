@@ -1,4 +1,7 @@
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
+use crate::indexer::tree_helpers::{
+    module_symbol_fallback, module_symbol_with_span, node_text, span,
+};
 use anyhow::Result;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
@@ -33,7 +36,7 @@ impl crate::indexer::extract::LanguageExtractor for SqlExtractor {
             None => {
                 output
                     .symbols
-                    .push(module_symbol_fallback(module_name, source));
+                    .push(module_symbol_fallback(module_name, source, "/", None));
                 return Ok(output);
             }
         };
@@ -41,7 +44,7 @@ impl crate::indexer::extract::LanguageExtractor for SqlExtractor {
         let module_span = span(root);
         output
             .symbols
-            .push(module_symbol_with_span(module_name, module_span));
+            .push(module_symbol_with_span(module_name, module_span, "/", None));
         let ctx = Context {
             module: module_name.to_string(),
         };
@@ -73,35 +76,6 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
     } else {
         parts.join("/")
     }
-}
-
-fn module_symbol_with_span(module_name: &str, span: (i64, i64, i64, i64, i64, i64)) -> SymbolInput {
-    let name = module_name
-        .rsplit('/')
-        .next()
-        .unwrap_or(module_name)
-        .to_string();
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span;
-    SymbolInput {
-        kind: "module".to_string(),
-        name,
-        qualname: module_name.to_string(),
-        start_line,
-        start_col,
-        end_line,
-        end_col,
-        start_byte,
-        end_byte,
-        signature: None,
-        docstring: None,
-    }
-}
-
-fn module_symbol_fallback(module_name: &str, source: &str) -> SymbolInput {
-    module_symbol_with_span(
-        module_name,
-        (1, 1, line_count(source), 1, 0, source.len() as i64),
-    )
 }
 
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -223,28 +197,4 @@ fn object_reference_name(node: Node<'_>, source: &str) -> Option<String> {
     }
     parts.push(name);
     Some(parts.join("."))
-}
-
-fn span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
-    let start = node.start_position();
-    let end = node.end_position();
-    (
-        start.row as i64 + 1,
-        start.column as i64 + 1,
-        end.row as i64 + 1,
-        end.column as i64 + 1,
-        node.start_byte() as i64,
-        node.end_byte() as i64,
-    )
-}
-
-fn node_text(node: Node<'_>, source: &str) -> String {
-    let start = node.start_byte();
-    let end = node.end_byte();
-    source.get(start..end).unwrap_or("").trim().to_string()
-}
-
-fn line_count(source: &str) -> i64 {
-    let count = source.lines().count();
-    if count == 0 { 1 } else { count as i64 }
 }
