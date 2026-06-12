@@ -5,7 +5,6 @@ use super::*;
 use crate::search::{
     RgSearchOptions, annotate_grep_hits, normalize_rg_context, resolve_rg_paths, search_rg,
 };
-use crate::util::normalize_search_paths;
 
 // ---------------------------------------------------------------------------
 // GROUP 1 -- Symbol query handlers
@@ -13,8 +12,7 @@ use crate::util::normalize_search_paths;
 
 pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: ExplainSymbolParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let languages = params.languages.clone();
+    let ctx = HandlerContext::new(indexer, params.common)?;
 
     let max_bytes = params.max_bytes.unwrap_or(40_000).min(200_000);
     let max_refs = params.max_refs.unwrap_or(10);
@@ -63,8 +61,12 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     } else {
         anyhow::bail!("explain_symbol requires id, qualname, or query");
     };
-    let symbol =
-        crate::resolve::resolve_symbol(indexer.db(), sym_ref, languages.as_deref(), graph_version)?;
+    let symbol = crate::resolve::resolve_symbol(
+        indexer.db(),
+        sym_ref,
+        ctx.languages.as_deref(),
+        ctx.graph_version,
+    )?;
 
     // 2. Budget allocation (30% source, 20% callers, 20% callees, 10% tests, 20% expansion) - FIX #4
     let source_budget = max_bytes * 30 / 100;
@@ -105,9 +107,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     };
 
     // 4. Get edges for callers/callees
-    let edges = indexer
-        .db()
-        .edges_for_symbol(symbol.id, languages.as_deref(), graph_version)?;
+    let edges =
+        indexer
+            .db()
+            .edges_for_symbol(symbol.id, ctx.languages.as_deref(), ctx.graph_version)?;
 
     // 5. Build callers (incoming CALLS)
     let mut callers = if sections.contains(&"callers".to_string()) {
@@ -121,7 +124,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             // For class symbols, find all methods and collect callers for each
             let all_symbols = indexer
                 .db()
-                .get_symbols_for_file(&symbol.file_path, graph_version)?;
+                .get_symbols_for_file(&symbol.file_path, ctx.graph_version)?;
             let mut ids: Vec<(i64, String)> = all_symbols
                 .into_iter()
                 .filter(|s| {
@@ -150,9 +153,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             let target_edges = if *target_id == symbol.id {
                 edges.clone()
             } else {
-                indexer
-                    .db()
-                    .edges_for_symbol(*target_id, languages.as_deref(), graph_version)?
+                indexer.db().edges_for_symbol(
+                    *target_id,
+                    ctx.languages.as_deref(),
+                    ctx.graph_version,
+                )?
             };
 
             // Collect resolved callers
@@ -187,8 +192,8 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 let unresolved_edges = indexer.db().incoming_edges_by_qualname_pattern(
                     target_name,
                     "CALLS",
-                    languages.as_deref(),
-                    graph_version,
+                    ctx.languages.as_deref(),
+                    ctx.graph_version,
                 )?;
 
                 for edge in &unresolved_edges {
@@ -238,7 +243,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             // For class symbols, find all methods in the same file within the class's line range
             let all_symbols = indexer
                 .db()
-                .get_symbols_for_file(&symbol.file_path, graph_version)?;
+                .get_symbols_for_file(&symbol.file_path, ctx.graph_version)?;
             let methods: Vec<_> = all_symbols
                 .into_iter()
                 .filter(|s| {
@@ -252,8 +257,8 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             for method in methods {
                 let method_edges = indexer.db().edges_for_symbol(
                     method.id,
-                    languages.as_deref(),
-                    graph_version,
+                    ctx.languages.as_deref(),
+                    ctx.graph_version,
                 )?;
 
                 for edge in &method_edges {
@@ -264,7 +269,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             None => edge.target_qualname.as_deref().and_then(|qn| {
                                 indexer
                                     .db()
-                                    .lookup_symbol_id_fuzzy(qn, languages.as_deref(), graph_version)
+                                    .lookup_symbol_id_fuzzy(
+                                        qn,
+                                        ctx.languages.as_deref(),
+                                        ctx.graph_version,
+                                    )
                                     .ok()
                                     .flatten()
                             }),
@@ -306,7 +315,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         None => edge.target_qualname.as_deref().and_then(|qn| {
                             indexer
                                 .db()
-                                .lookup_symbol_id_fuzzy(qn, languages.as_deref(), graph_version)
+                                .lookup_symbol_id_fuzzy(
+                                    qn,
+                                    ctx.languages.as_deref(),
+                                    ctx.graph_version,
+                                )
                                 .ok()
                                 .flatten()
                         }),
@@ -525,24 +538,22 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: OrientParams = serde_json::from_value(params)?;
     let view = params.view.as_deref().unwrap_or("all");
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
+    let ctx = HandlerContext::new(indexer, params.common)?;
 
     // Resolve optional focus symbol via resolve module
     let focus_sym = if let Some(ref qn) = params.focus_qualname {
         Some(crate::resolve::resolve_symbol(
             indexer.db(),
             crate::resolve::SymbolRef::Qualname(qn.clone()),
-            languages.as_deref(),
-            graph_version,
+            ctx.languages.as_deref(),
+            ctx.graph_version,
         )?)
     } else if let Some(ref query) = params.focus_query {
         Some(crate::resolve::resolve_symbol(
             indexer.db(),
             crate::resolve::SymbolRef::Query(query.clone()),
-            languages.as_deref(),
-            graph_version,
+            ctx.languages.as_deref(),
+            ctx.graph_version,
         )?)
     } else {
         None
@@ -557,8 +568,8 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
     if include_overview {
         let overview = indexer.db().repo_overview(
             indexer.repo_root().clone(),
-            languages.as_deref(),
-            graph_version,
+            ctx.languages.as_deref(),
+            ctx.graph_version,
         )?;
         result.insert("overview".to_string(), json!(overview));
     }
@@ -567,9 +578,9 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
         let max_bytes = params.max_bytes.unwrap_or(8000).clamp(1000, 50000);
         let config = crate::repo_map::RepoMapConfig {
             max_bytes,
-            languages: languages.clone(),
-            paths: paths.clone(),
-            graph_version,
+            languages: ctx.languages.clone(),
+            paths: ctx.paths.clone(),
+            graph_version: ctx.graph_version,
         };
         let map_result = crate::repo_map::build_repo_map(indexer.db(), &config)?;
         result.insert(
@@ -587,9 +598,9 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
         let depth = params.depth.unwrap_or(1).clamp(1, 5);
         let summary = indexer.db().module_summary(
             depth,
-            languages.as_deref(),
-            paths.as_deref(),
-            graph_version,
+            ctx.languages.as_deref(),
+            ctx.paths.as_deref(),
+            ctx.graph_version,
         )?;
         let modules: Vec<ModuleNode> = summary
             .into_iter()
@@ -600,9 +611,10 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
                 languages: m.languages,
             })
             .collect();
-        let edges = indexer
-            .db()
-            .module_edges(depth, languages.as_deref(), graph_version)?;
+        let edges =
+            indexer
+                .db()
+                .module_edges(depth, ctx.languages.as_deref(), ctx.graph_version)?;
         let module_edges: Vec<ModuleEdge> = edges
             .into_iter()
             .map(|(src, dst, calls, imports)| ModuleEdge {
@@ -635,16 +647,14 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
 
 pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: RepoMapParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), None, params.paths)?;
+    let ctx = HandlerContext::new(indexer, params.common)?;
     let max_bytes = params.max_bytes.unwrap_or(8000).clamp(1000, 50000);
 
     let config = crate::repo_map::RepoMapConfig {
         max_bytes,
-        languages,
-        paths,
-        graph_version,
+        languages: ctx.languages,
+        paths: ctx.paths,
+        graph_version: ctx.graph_version,
     };
     let map_result = crate::repo_map::build_repo_map(indexer.db(), &config)?;
     Ok(json!({
@@ -657,30 +667,36 @@ pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Va
 
 pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: DeadSymbolsParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    let ctx = HandlerContext::new(indexer, params.common)?;
     let limit = params.limit.unwrap_or(50);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths.clone())?;
     let include_unused_imports = params.include_unused_imports.unwrap_or(true);
     let include_orphan_tests = params.include_orphan_tests.unwrap_or(true);
 
-    let dead_syms =
-        indexer
-            .db()
-            .dead_symbols(limit, languages.as_deref(), paths.as_deref(), graph_version)?;
+    let dead_syms = indexer.db().dead_symbols(
+        limit,
+        ctx.languages.as_deref(),
+        ctx.paths.as_deref(),
+        ctx.graph_version,
+    )?;
 
     let unused_imports = if include_unused_imports {
-        indexer
-            .db()
-            .unused_imports(limit, languages.as_deref(), paths.as_deref(), graph_version)?
+        indexer.db().unused_imports(
+            limit,
+            ctx.languages.as_deref(),
+            ctx.paths.as_deref(),
+            ctx.graph_version,
+        )?
     } else {
         vec![]
     };
 
     let orphan_tests = if include_orphan_tests {
-        indexer
-            .db()
-            .orphan_tests(limit, languages.as_deref(), paths.as_deref(), graph_version)?
+        indexer.db().orphan_tests(
+            limit,
+            ctx.languages.as_deref(),
+            ctx.paths.as_deref(),
+            ctx.graph_version,
+        )?
     } else {
         vec![]
     };
@@ -703,17 +719,15 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
 
 pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: TopComplexityParams = serde_json::from_value(params)?;
+    let ctx = HandlerContext::new(indexer, params.common)?;
     let limit = params.limit.unwrap_or(10);
     let min_complexity = params.min_complexity.unwrap_or(1);
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
     let results = indexer.db().top_complexity(
         limit,
         min_complexity,
-        languages.as_deref(),
-        paths.as_deref(),
-        graph_version,
+        ctx.languages.as_deref(),
+        ctx.paths.as_deref(),
+        ctx.graph_version,
     )?;
     Ok(json!(results))
 }
@@ -723,19 +737,20 @@ pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Val
     struct ContextParams {
         path: String,
         format: Option<String>,
+        #[serde(alias = "as_of", alias = "version", default)]
         graph_version: Option<i64>,
     }
     let params: ContextParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let ctx = crate::context::build_file_context(
+    let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
+    let file_ctx = crate::context::build_file_context(
         indexer.db(),
         indexer.repo_root(),
         &params.path,
-        graph_version,
+        ctx.graph_version,
     )?;
     match params.format.as_deref() {
-        Some("json") => Ok(crate::context::format_json(&ctx)),
-        _ => Ok(json!({ "context": crate::context::format_text(&ctx) })),
+        Some("json") => Ok(crate::context::format_json(&file_ctx)),
+        _ => Ok(json!({ "context": crate::context::format_text(&file_ctx) })),
     }
 }
 
@@ -745,8 +760,7 @@ pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Val
 
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: TraceFlowParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let languages = params.languages.clone();
+    let ctx = HandlerContext::new(indexer, params.common)?;
     let max_hops = params.max_hops.unwrap_or(5).min(10);
     let include_snippets = params.include_snippets.unwrap_or(true);
     let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
@@ -766,7 +780,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         if crate::indexer::config::is_config_uri(qn) {
             indexer
                 .db()
-                .source_symbols_for_config_uri(qn, &[], graph_version)?
+                .source_symbols_for_config_uri(qn, &[], ctx.graph_version)?
         } else {
             vec![]
         }
@@ -794,21 +808,21 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     let start = crate::resolve::resolve_symbol(
         indexer.db(),
         start_ref,
-        languages.as_deref(),
-        graph_version,
+        ctx.languages.as_deref(),
+        ctx.graph_version,
     )?;
 
     // Resolve optional end symbol
     let end_id = if let Some(id) = params.end_id {
         Some(id)
     } else if let Some(ref qn) = params.end_qualname {
-        indexer.db().lookup_symbol_id(qn, graph_version)?
+        indexer.db().lookup_symbol_id(qn, ctx.graph_version)?
     } else {
         None
     };
 
     // Expand seeds: container members + config URI seeds
-    let mut seed_ids = crate::resolve::expand_seeds(indexer.db(), start.id, graph_version)?;
+    let mut seed_ids = crate::resolve::expand_seeds(indexer.db(), start.id, ctx.graph_version)?;
     for id in &config_uri_seeds {
         if !seed_ids.contains(id) {
             seed_ids.push(*id);
@@ -829,8 +843,8 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         indexer.db(),
         seed_ids,
         end_id,
-        languages.as_deref(),
-        graph_version,
+        ctx.languages.as_deref(),
+        ctx.graph_version,
         &config,
     )?;
 
@@ -941,9 +955,11 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
 // ---------------------------------------------------------------------------
 
 /// Build a MultiLayerConfig from AnalyzeImpactParams with a given limit.
+/// `languages` is the already-normalized filter from the handler context.
 fn build_impact_config(
     params: &AnalyzeImpactParams,
     limit: usize,
+    languages: Option<&[String]>,
 ) -> crate::impact::config::MultiLayerConfig {
     let mut config = crate::impact::config::MultiLayerConfig::builder()
         .max_depth(params.max_depth.unwrap_or(3).min(10))
@@ -968,10 +984,8 @@ fn build_impact_config(
     if let Some(enable_historical) = params.enable_historical {
         config.historical.enabled = enable_historical;
     }
-    if let Some(languages) = params.languages.as_ref()
-        && let Ok(normalized) = scan::normalize_language_filter(Some(languages.as_slice()))
-    {
-        config.direct.languages = normalized;
+    if let Some(languages) = languages {
+        config.direct.languages = Some(languages.to_vec());
     }
     if let Some(ref kinds) = params.kinds {
         config.direct.kinds = kinds.clone();
@@ -1022,7 +1036,7 @@ fn resolve_and_analyze_single(
 
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: AnalyzeImpactParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    let ctx = HandlerContext::new(indexer, params.common.clone())?;
 
     // ---- Batch path: multiple qualnames in one call ----
     if let Some(ref qualnames) = params.qualnames {
@@ -1034,55 +1048,56 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         let total_limit = params.limit.unwrap_or(500).min(2000);
         let per_seed_limit = (total_limit / qualnames.len()).max(50);
 
-        let base_config = build_impact_config(&params, per_seed_limit);
+        let base_config = build_impact_config(&params, per_seed_limit, ctx.languages.as_deref());
 
         let mut results = Vec::with_capacity(qualnames.len());
         let mut total_affected: usize = 0;
         let mut all_files: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for qn in qualnames {
-            let entry = match resolve_and_analyze_single(indexer, qn, &base_config, graph_version) {
-                Ok(result) => {
-                    total_affected += result.summary.total_affected;
-                    for fi in &result.summary.by_file {
-                        all_files.insert(fi.path.clone());
+            let entry =
+                match resolve_and_analyze_single(indexer, qn, &base_config, ctx.graph_version) {
+                    Ok(result) => {
+                        total_affected += result.summary.total_affected;
+                        for fi in &result.summary.by_file {
+                            all_files.insert(fi.path.clone());
+                        }
+                        crate::impact::types::BatchImpactEntry {
+                            seed_qualname: qn.clone(),
+                            seeds: result.seeds,
+                            affected: result.affected,
+                            summary: result.summary,
+                            truncated: result.truncated,
+                            layers: result.layers,
+                        }
                     }
-                    crate::impact::types::BatchImpactEntry {
-                        seed_qualname: qn.clone(),
-                        seeds: result.seeds,
-                        affected: result.affected,
-                        summary: result.summary,
-                        truncated: result.truncated,
-                        layers: result.layers,
+                    Err(e) => {
+                        // Include error entry rather than failing the whole batch
+                        crate::impact::types::BatchImpactEntry {
+                            seed_qualname: qn.clone(),
+                            seeds: vec![],
+                            affected: vec![],
+                            summary: crate::impact::types::ImpactSummary {
+                                by_file: vec![],
+                                by_relationship: std::collections::HashMap::new(),
+                                by_distance: std::collections::HashMap::new(),
+                                total_affected: 0,
+                            },
+                            truncated: false,
+                            layers: crate::impact::types::LayerMetadata {
+                                direct: Some(crate::impact::types::LayerStats {
+                                    enabled: false,
+                                    duration_ms: 0,
+                                    result_count: 0,
+                                    truncated: false,
+                                    error: Some(e.to_string()),
+                                }),
+                                test: None,
+                                historical: None,
+                            },
+                        }
                     }
-                }
-                Err(e) => {
-                    // Include error entry rather than failing the whole batch
-                    crate::impact::types::BatchImpactEntry {
-                        seed_qualname: qn.clone(),
-                        seeds: vec![],
-                        affected: vec![],
-                        summary: crate::impact::types::ImpactSummary {
-                            by_file: vec![],
-                            by_relationship: std::collections::HashMap::new(),
-                            by_distance: std::collections::HashMap::new(),
-                            total_affected: 0,
-                        },
-                        truncated: false,
-                        layers: crate::impact::types::LayerMetadata {
-                            direct: Some(crate::impact::types::LayerStats {
-                                enabled: false,
-                                duration_ms: 0,
-                                result_count: 0,
-                                truncated: false,
-                                error: Some(e.to_string()),
-                            }),
-                            test: None,
-                            historical: None,
-                        },
-                    }
-                }
-            };
+                };
             results.push(entry);
         }
 
@@ -1117,10 +1132,11 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 "upstream" => &["CONFIG_READ", "CONFIG_BIND"],
                 _ => &[],
             };
-            let ids =
-                indexer
-                    .db()
-                    .source_symbols_for_config_uri(qualname, uri_kinds, graph_version)?;
+            let ids = indexer.db().source_symbols_for_config_uri(
+                qualname,
+                uri_kinds,
+                ctx.graph_version,
+            )?;
             if ids.is_empty() {
                 return Err(anyhow::anyhow!(
                     "no symbols found for config URI: {}",
@@ -1150,9 +1166,12 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 "analyze_impact requires id, qualname, or query"
             ));
         };
-        let langs = scan::normalize_language_filter(params.languages.as_deref())?;
-        let symbol =
-            crate::resolve::resolve_symbol(indexer.db(), sym_ref, langs.as_deref(), graph_version)?;
+        let symbol = crate::resolve::resolve_symbol(
+            indexer.db(),
+            sym_ref,
+            ctx.languages.as_deref(),
+            ctx.graph_version,
+        )?;
 
         // Property→parent expansion: if the seed is a property/field/attribute/const,
         // also add the parent class so CONFIG_BIND consumers are reachable
@@ -1163,7 +1182,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         ) && let Some(parent_qn) = symbol.qualname.rsplit_once('.').map(|(p, _)| p)
             && let Ok(Some(parent)) = indexer
                 .db()
-                .get_symbol_by_qualname(parent_qn, graph_version)
+                .get_symbol_by_qualname(parent_qn, ctx.graph_version)
             && !ids.contains(&parent.id)
         {
             ids.push(parent.id);
@@ -1194,10 +1213,9 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         config.historical.enabled = enable_historical;
     }
 
-    // Set languages if specified
-    if let Some(languages) = params.languages.as_ref() {
-        let normalized = scan::normalize_language_filter(Some(languages.as_slice()))?;
-        config.direct.languages = normalized;
+    // Set languages if specified (already normalized by HandlerContext)
+    if let Some(ref languages) = ctx.languages {
+        config.direct.languages = Some(languages.clone());
     }
 
     // Set kinds if specified
@@ -1206,20 +1224,25 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     }
 
     // Perform multi-layer impact analysis
-    let result =
-        crate::impact::analyze_impact_multi_layer(indexer.db(), &seed_ids, config, graph_version)?;
+    let result = crate::impact::analyze_impact_multi_layer(
+        indexer.db(),
+        &seed_ids,
+        config,
+        ctx.graph_version,
+    )?;
 
     Ok(json!(result))
 }
 
 pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: AnalyzeDiffParams = serde_json::from_value(params)?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    // analyze_diff.paths means "changed files", not a search-path filter
+    let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
+    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
     let max_bytes = params.max_bytes.unwrap_or(50_000).min(200_000);
     let max_depth = params.max_depth.unwrap_or(1).min(5);
     let include_tests = params.include_tests.unwrap_or(true);
     let include_risk = params.include_risk.unwrap_or(true);
-    let languages = params.languages.clone();
 
     // Step 1: Get changed files with optional line ranges
     let mut warnings: Vec<String> = Vec::new();
@@ -1248,7 +1271,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
     for cf in &changed_files {
         let symbols = indexer
             .db()
-            .get_symbols_for_file(&cf.path, graph_version)
+            .get_symbols_for_file(&cf.path, ctx.graph_version)
             .unwrap_or_default();
         if symbols.is_empty() {
             warnings.push(format!("Path not found in index: {}", cf.path));
@@ -1284,12 +1307,12 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             let new_signature = sym.signature.clone();
             let mut final_change_type = change_type.clone();
 
-            if change_type == "modified" && graph_version > 1 {
+            if change_type == "modified" && ctx.graph_version > 1 {
                 // Try to find the symbol in the previous graph version
                 if let Some(stable_id) = sym.stable_id.as_ref()
                     && let Ok(Some(old_sym)) = indexer
                         .db()
-                        .get_symbol_by_stable_id(stable_id, graph_version - 1)
+                        .get_symbol_by_stable_id(stable_id, ctx.graph_version - 1)
                 {
                     // Compare signatures
                     if old_sym.signature != sym.signature {
@@ -1348,7 +1371,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             let edges =
                 indexer
                     .db()
-                    .edges_for_symbol(sym.id, languages.as_deref(), graph_version)?;
+                    .edges_for_symbol(sym.id, languages.as_deref(), ctx.graph_version)?;
 
             // Find callers via resolved edges
             for edge in &edges {
@@ -1383,7 +1406,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                         &sym.name,
                         "CALLS",
                         languages.as_deref(),
-                        graph_version,
+                        ctx.graph_version,
                     )
                     .unwrap_or_default();
                 for edge in &unresolved {
@@ -1424,10 +1447,11 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             let mut tests = Vec::new();
             let mut seen_test_ids = HashSet::new();
             // Check resolved edges
-            let edges =
-                indexer
-                    .db()
-                    .edges_for_symbol(cs.symbol.id, languages.as_deref(), graph_version)?;
+            let edges = indexer.db().edges_for_symbol(
+                cs.symbol.id,
+                languages.as_deref(),
+                ctx.graph_version,
+            )?;
             for edge in &edges {
                 if edge.kind == "CALLS"
                     && edge.target_symbol_id == Some(cs.symbol.id)
@@ -1450,7 +1474,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                     &cs.symbol.name,
                     "CALLS",
                     languages.as_deref(),
-                    graph_version,
+                    ctx.graph_version,
                 )
                 .unwrap_or_default();
             for edge in &unresolved {
@@ -1709,7 +1733,8 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
     let context_lines = normalize_rg_context(params.context_lines);
     let include_text = params.include_text.unwrap_or(true);
     let include_symbol = params.include_symbol.unwrap_or(false);
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
+    // resolve_rg_paths handles path/paths with its own normalization for ripgrep
     let paths = resolve_rg_paths(indexer.repo_root(), params.path, params.paths)?;
     let globs = params.globs.unwrap_or_default();
     let options = RgSearchOptions {
@@ -1733,7 +1758,7 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
         &mut results,
         context_lines,
         include_symbol,
-        graph_version,
+        ctx.graph_version,
         Some(&params.query),
     )?;
     Ok(json!(results))
@@ -1822,9 +1847,7 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
         );
     }
 
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
-    let paths = normalize_search_paths(indexer.repo_root(), params.path, params.paths)?;
+    let ctx = HandlerContext::new(indexer, params.common)?;
 
     // Moderate Concern #1: Enforce hard cap on max_bytes
     let max_bytes = params.max_bytes.unwrap_or(100_000).min(MAX_BYTES_HARD_CAP);
@@ -1849,9 +1872,9 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
         include_snippets: params.include_snippets.unwrap_or(true),
         include_related: params.include_related.unwrap_or(true),
         dry_run: params.dry_run.unwrap_or(false),
-        languages,
-        paths,
-        graph_version,
+        languages: ctx.languages,
+        paths: ctx.paths,
+        graph_version: ctx.graph_version,
         strategy,
     };
 
@@ -1863,20 +1886,20 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
 
 pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: OnboardParams = serde_json::from_value(params)?;
-    let languages = scan::normalize_language_filter(params.languages.as_deref())?;
-    let graph_version = resolve_graph_version(indexer, params.graph_version)?;
+    let ctx = HandlerContext::new(indexer, params.common)?;
 
     // 1. Repo overview (compact)
     let overview = indexer.db().repo_overview(
         indexer.repo_root().clone(),
-        languages.as_deref(),
-        graph_version,
+        ctx.languages.as_deref(),
+        ctx.graph_version,
     )?;
 
     // 2. Module summary (depth=1)
-    let modules = indexer
-        .db()
-        .module_summary(1, languages.as_deref(), None, graph_version)?;
+    let modules =
+        indexer
+            .db()
+            .module_summary(1, ctx.languages.as_deref(), None, ctx.graph_version)?;
     let module_nodes: Vec<Value> = modules
         .into_iter()
         .map(|m| {
@@ -1896,7 +1919,7 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
         .collect();
 
     // 4. Index status
-    let changed = indexer.changed_files(languages.as_deref())?;
+    let changed = indexer.changed_files(ctx.languages.as_deref())?;
     let stale =
         !changed.added.is_empty() || !changed.modified.is_empty() || !changed.deleted.is_empty();
     let last_indexed = indexer.db().get_meta_i64("last_indexed")?;

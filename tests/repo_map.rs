@@ -324,3 +324,81 @@ fn repo_map_paths_filter_with_array() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+#[test]
+fn repo_map_path_param_forms_are_equivalent() {
+    let (repo_root, db_path) = setup_repo("py_mvp");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let unfiltered = rpc::handle_method(&mut indexer, "repo_map", serde_json::json!({})).unwrap();
+    let via_paths = rpc::handle_method(
+        &mut indexer,
+        "repo_map",
+        serde_json::json!({"paths": ["pkg"]}),
+    )
+    .unwrap();
+    let via_path_string =
+        rpc::handle_method(&mut indexer, "repo_map", serde_json::json!({"path": "pkg"})).unwrap();
+    // Legacy form: repo_map historically accepted `path` as an alias for the
+    // `paths` array, so the array shape must keep working.
+    let via_path_array = rpc::handle_method(
+        &mut indexer,
+        "repo_map",
+        serde_json::json!({"path": ["pkg"]}),
+    )
+    .unwrap();
+    let via_both = rpc::handle_method(
+        &mut indexer,
+        "repo_map",
+        serde_json::json!({"path": "pkg", "paths": ["pkg"]}),
+    )
+    .unwrap();
+
+    assert_eq!(
+        via_paths, via_path_string,
+        "path as string should behave like the paths array"
+    );
+    assert_eq!(
+        via_paths, via_path_array,
+        "path as array (legacy alias form) should behave like the paths array"
+    );
+    assert_eq!(
+        via_paths, via_both,
+        "path + paths naming the same dir should dedup to one filter"
+    );
+    assert_ne!(
+        unfiltered["text"], via_paths["text"],
+        "the path filter should actually narrow the map"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn repo_map_empty_path_values_mean_no_filter() {
+    let (repo_root, db_path) = setup_repo("py_mvp");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let unfiltered = rpc::handle_method(&mut indexer, "repo_map", serde_json::json!({})).unwrap();
+    let empty_string =
+        rpc::handle_method(&mut indexer, "repo_map", serde_json::json!({"path": ""})).unwrap();
+    let empty_array = rpc::handle_method(
+        &mut indexer,
+        "repo_map",
+        serde_json::json!({"path": [], "paths": []}),
+    )
+    .unwrap();
+
+    assert_eq!(
+        unfiltered, empty_string,
+        "empty path string should mean no filter"
+    );
+    assert_eq!(
+        unfiltered, empty_array,
+        "empty path/paths arrays should mean no filter"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
