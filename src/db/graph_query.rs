@@ -1,4 +1,4 @@
-use super::{Db, edge_from_row, symbol_from_row};
+use super::{Db, edge_from_row, fuzzy_qualname_patterns, symbol_from_row};
 use crate::model::{Edge, Symbol};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
@@ -189,12 +189,13 @@ impl Db {
             .map_err(Into::into)
     }
 
-    /// Fuzzy lookup for symbol IDs, handling short qualnames like "_svc.DeployAsync"
+    /// Fuzzy lookup for symbol IDs, handling short qualnames like
+    /// "_svc.DeployAsync" or "helper::process"
     ///
     /// Strategy:
     /// 1. Try exact match first (fast path)
-    /// 2. Extract method/function name from short qualname (part after last '.')
-    /// 3. Search for symbols whose qualname ends with '.{name}'
+    /// 2. Extract method/function name from short qualname (part after the last `.` or `::`)
+    /// 3. Search for symbols whose qualname ends with '.{name}' or '::{name}'
     /// 4. Prefer shortest qualname match (less nesting = more specific)
     pub fn lookup_symbol_id_fuzzy(
         &self,
@@ -209,27 +210,26 @@ impl Db {
             return Ok(Some(id));
         }
 
-        // Extract the method/function name from the short qualname
-        let name = target_qualname
-            .split('.')
-            .next_back()
-            .unwrap_or(target_qualname);
-
-        // Search for symbols whose qualname ends with '.{name}'
-        let pattern = format!("%.{}", name);
+        // Extract the trailing name and build suffix patterns for both '.' and '::'
+        let (name, dot_pattern, colons_pattern) = fuzzy_qualname_patterns(target_qualname);
 
         let mut sql = String::from(
             "SELECT s.id, s.qualname, LENGTH(s.qualname) as qn_len
              FROM symbols s
              JOIN files f ON s.file_id = f.id
-             WHERE (s.qualname = ? OR s.qualname LIKE ?)
+             WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
                AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                AND s.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
 
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&name, &pattern, &graph_version, &graph_version];
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![
+            &name,
+            &dot_pattern,
+            &colons_pattern,
+            &graph_version,
+            &graph_version,
+        ];
 
         if let Some(languages) = languages
             && !languages.is_empty()
