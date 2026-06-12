@@ -14,8 +14,7 @@
 - Cross-language XREFs (C#->SQL, C#->Python, Proto->C# via RPC_IMPL)
 - Workflow methods: `explain_symbol`, `analyze_diff`, `find_tests_for`, `trace_flow`, `module_map`
 - `gather_context` with budget-controlled context assembly (100% utilization at 50KB)
-- `analyze_impact` / `analyze_impact_v2` with 4-layer architecture (direct, test, historical, semantic)
-- Semantic search via fastembed/ollama (opt-in feature flag)
+- `analyze_impact` / `analyze_impact_v2` with 3-layer architecture (direct, test, historical)
 - Incremental indexing at 20,900 files/sec with stable symbol IDs
 - File watching with adaptive debouncing
 - Response size caps, token budget parameters, signature-only format
@@ -26,13 +25,13 @@
 - Impact analysis stays within single file (C# short qualname resolution fails cross-file)
 - Class-level references return empty (only method-level works)
 - Search score differentiation is weak (fuzzy matches all score 3.5)
-- `analyze_impact_v2` only has direct layer active; historical/semantic/test layers disabled in practice
+- `analyze_impact_v2` only has direct layer active; historical/test layers disabled in practice
 - `gather_context` symbol seeds stay in 1 file (search seeds reach 3 files)
 
 **Design principles for this roadmap:**
 1. Leverage what is unique: offline deterministic AST graph, cross-language edges, zero external deps
 2. Do not duplicate what LLMs do well (writing code, explaining concepts, pattern matching in text)
-3. Do not propose embeddings/vector search as a feature (already implemented as opt-in)
+3. Do not propose embeddings/vector search as a feature — embeddings were implemented and deliberately stripped (see ADR 0003); graph + text search covers all known use cases
 4. Focus on compacting context, not expanding it -- LLMs produce better code with 200 lines of *right* context than 10,000 lines of grep
 5. Every feature must have a concrete, measurable success metric
 
@@ -46,9 +45,9 @@
 
 ### Problem it solves
 
-Impact analysis is the single most requested capability ("what breaks if I change this?"), and lidx already has a 4-layer impact engine. But it produces single-file results because cross-file CALLS edges use short qualnames (`_svc.DeployAsync`) that do not resolve to target symbols stored with full qualnames (`dpb.cs.DataProductService.DeployAsync`). This makes the impact analysis feature appear broken for the exact use case developers care about most: understanding blast radius *across* file boundaries.
+Impact analysis is the single most requested capability ("what breaks if I change this?"), and lidx already has a 3-layer impact engine. But it produces single-file results because cross-file CALLS edges use short qualnames (`_svc.DeployAsync`) that do not resolve to target symbols stored with full qualnames (`dpb.cs.DataProductService.DeployAsync`). This makes the impact analysis feature appear broken for the exact use case developers care about most: understanding blast radius *across* file boundaries.
 
-The evaluation report confirms this is the largest remaining gap (Impact Analysis grade: B-, the lowest category). The v2 multi-layer engine (historical, test, semantic layers) is architecturally complete but effectively disabled because the direct layer -- which feeds the others -- cannot traverse cross-file edges.
+The evaluation report confirms this is the largest remaining gap (Impact Analysis grade: B-, the lowest category). The v2 multi-layer engine (historical, test layers) is architecturally complete but effectively disabled because the direct layer -- which feeds the others -- cannot traverse cross-file edges.
 
 ### What it does
 
@@ -63,7 +62,7 @@ The evaluation report confirms this is the largest remaining gap (Impact Analysi
 ### Success metric
 
 - `analyze_impact(symbol)` returns symbols from 3+ files for a symbol with known cross-file callers (measured on the dpb test repo: DeployAsync should show DeployerServiceImpl.Deploy from a different file)
-- `analyze_impact_v2` returns results from all 4 layers (direct, test, historical, semantic) rather than only direct
+- `analyze_impact_v2` returns results from all 3 layers (direct, test, historical) rather than only direct
 - Impact Analysis evaluation grade moves from B- to A-
 
 ---
@@ -324,7 +323,7 @@ Epic 7: Stale Code and Dead Symbol Detection (P2, S)
 
 2. **Collaborative annotations / knowledge graph.** Adds organizational value but does not improve the core code intelligence that differentiates lidx. Defer until the core is strong.
 
-3. **Embedding model improvements.** Semantic search is already implemented as an opt-in feature. Improving embedding quality is incremental tuning, not a feature epic.
+3. **Embedding or semantic search.** Embeddings were built and deliberately stripped in February 2026 — BGE-small scores were too compressed, ~3000 lines removed. See ADR 0003 for the rationale. Graph + text search covers all known use cases. Revisit only if a design partner specifically requests semantic search as a condition for adoption.
 
 4. **IDE integrations.** lidx is protocol-first (MCP/JSON-RPC). IDE plugins are distribution, not product. The protocol is the product.
 

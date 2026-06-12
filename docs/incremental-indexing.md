@@ -317,8 +317,7 @@ stable_id = "sym_" + blake3_hash(qualname + "\0" + signature + "\0" + kind)[0:16
 
 1. **Parallel file parsing:** Parse multiple files concurrently
 2. **Tree-sitter incremental parsing:** Reuse parse trees for small edits
-3. **Symbol embedding caching:** Reuse embeddings for unchanged symbols
-4. **Smarter file watching:** Integrate with IDE for active file detection
+3. **Smarter file watching:** Integrate with IDE for active file detection
 
 ### Feedback Welcome
 

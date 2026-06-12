@@ -1163,7 +1163,7 @@ impl Db {
 
     /// Get all symbols for a file by path
     ///
-    /// This is used during embedding integration to get symbols after they've been inserted
+    /// Used by symbol resolution, context assembly, and incremental reindexing
     ///
     /// # Arguments
     ///
