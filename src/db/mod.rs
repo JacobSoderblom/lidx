@@ -1163,8 +1163,6 @@ impl Db {
 
     /// Get all symbols for a file by path
     ///
-    /// This is used during embedding integration to get symbols after they've been inserted
-    ///
     /// # Arguments
     ///
     /// * `file_path` - The relative file path

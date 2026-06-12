@@ -220,7 +220,7 @@ pub fn analyze_impact(
 
 /// Multi-layer impact analysis (v2 API)
 ///
-/// Performs impact analysis using multiple layers (direct, test, historical, semantic)
+/// Performs impact analysis using multiple layers (direct, test, historical)
 /// based on the provided configuration. Layers can be enabled/disabled individually.
 ///
 /// This is the new v2 API that supports the full multi-layer architecture.

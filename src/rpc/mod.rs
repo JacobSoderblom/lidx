@@ -11,15 +11,11 @@ use crate::model::{
     ModuleEdge, ModuleNode, RiskAssessment, RiskFactor, Symbol, TestCoverageEntry, TestRef,
     TraceFlowResult,
 };
-#[cfg(test)]
-use crate::model::{Edge, FlowStatusEntry, FlowStatusResult};
 use crate::util::normalize_search_paths;
 use crate::watch;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-#[cfg(test)]
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -511,133 +507,7 @@ fn infer_language(file_path: &str) -> String {
 }
 
 #[cfg(test)]
-fn build_flow_status(
-    routes: Vec<Edge>,
-    calls: Vec<Edge>,
-    include_routes: bool,
-    include_calls: bool,
-    limit: usize,
-    edge_limit: usize,
-) -> FlowStatusResult {
-    let truncated = routes.len() == edge_limit || calls.len() == edge_limit;
-    let mut route_map: HashMap<String, Vec<Edge>> = HashMap::new();
-    for edge in routes {
-        let Some(path) = edge.target_qualname.clone() else {
-            continue;
-        };
-        route_map.entry(path).or_default().push(edge);
-    }
-    let mut call_map: HashMap<String, Vec<Edge>> = HashMap::new();
-    for edge in calls {
-        let Some(path) = edge.target_qualname.clone() else {
-            continue;
-        };
-        call_map.entry(path).or_default().push(edge);
-    }
-    let routes_total = route_map.len();
-    let calls_total = call_map.len();
-    let call_paths: HashSet<String> = call_map.keys().cloned().collect();
-    let route_paths: HashSet<String> = route_map.keys().cloned().collect();
-    let mut routes_without_calls = Vec::new();
-    for (path, edges) in route_map {
-        if call_paths.contains(&path) {
-            continue;
-        }
-        routes_without_calls.push(FlowStatusEntry {
-            path,
-            route_count: edges.len(),
-            call_count: 0,
-            routes: if include_routes { Some(edges) } else { None },
-            calls: None,
-        });
-    }
-    let mut calls_without_routes = Vec::new();
-    for (path, edges) in call_map {
-        if route_paths.contains(&path) {
-            continue;
-        }
-        calls_without_routes.push(FlowStatusEntry {
-            path,
-            route_count: 0,
-            call_count: edges.len(),
-            routes: None,
-            calls: if include_calls { Some(edges) } else { None },
-        });
-    }
-    routes_without_calls.sort_by(|a, b| {
-        b.route_count
-            .cmp(&a.route_count)
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    calls_without_routes.sort_by(|a, b| {
-        b.call_count
-            .cmp(&a.call_count)
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    if limit == 0 {
-        routes_without_calls.clear();
-        calls_without_routes.clear();
-    } else {
-        routes_without_calls.truncate(limit);
-        calls_without_routes.truncate(limit);
-    }
-    FlowStatusResult {
-        routes_total,
-        calls_total,
-        edge_limit,
-        truncated,
-        routes_without_calls,
-        calls_without_routes,
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    use super::build_flow_status;
-    use crate::model::Edge;
-
-    fn edge(kind: &str, path: &str, id: i64) -> Edge {
-        Edge {
-            id,
-            file_path: "test.rs".to_string(),
-            kind: kind.to_string(),
-            source_symbol_id: None,
-            target_symbol_id: None,
-            target_qualname: Some(path.to_string()),
-            detail: None,
-            evidence_snippet: None,
-            evidence_start_line: None,
-            evidence_end_line: None,
-            confidence: None,
-            graph_version: 1,
-            commit_sha: None,
-            trace_id: None,
-            span_id: None,
-            event_ts: None,
-        }
-    }
-
-    #[test]
-    fn flow_status_flags_unmatched_paths() {
-        let routes = vec![
-            edge("HTTP_ROUTE", "/api/users/{}", 1),
-            edge("HTTP_ROUTE", "/api/items/{}", 2),
-        ];
-        let calls = vec![
-            edge("HTTP_CALL", "/api/users/{}", 3),
-            edge("HTTP_CALL", "/api/orders/{}", 4),
-        ];
-        let result = build_flow_status(routes, calls, true, true, 10, 100);
-        assert_eq!(result.routes_total, 2);
-        assert_eq!(result.calls_total, 2);
-        assert_eq!(result.routes_without_calls.len(), 1);
-        assert_eq!(result.calls_without_routes.len(), 1);
-        assert_eq!(result.routes_without_calls[0].path, "/api/items/{}");
-        assert_eq!(result.calls_without_routes[0].path, "/api/orders/{}");
-        assert!(result.routes_without_calls[0].routes.is_some());
-        assert!(result.calls_without_routes[0].calls.is_some());
-    }
-
     // --- Schema generation tests ---
 
     #[test]

@@ -487,63 +487,6 @@ impl<'a> HistoricalImpactLayer<'a> {
 
         Ok(symbol_id)
     }
-
-    /// Get all graph versions within time window (days back from latest)
-    #[allow(dead_code)]
-    fn get_graph_versions_in_window(
-        &self,
-        conn: &rusqlite::Connection,
-        days_back: i64,
-    ) -> Result<Vec<i64>> {
-        // Calculate cutoff timestamp (days back from now)
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        let cutoff = now - (days_back * 24 * 60 * 60);
-
-        // Get versions created after cutoff
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT id FROM graph_versions
-             WHERE created >= ?
-             ORDER BY id ASC",
-        )?;
-
-        let versions = stmt
-            .query_map(rusqlite::params![cutoff], |row| row.get::<_, i64>(0))?
-            .collect::<Result<Vec<i64>, _>>()?;
-
-        Ok(versions)
-    }
-
-    /// Get changed symbol stable IDs between two versions
-    #[allow(dead_code)]
-    fn get_changed_symbols_between_versions(
-        &self,
-        conn: &rusqlite::Connection,
-        _version_a: i64,
-        version_b: i64,
-    ) -> Result<HashSet<String>> {
-        let mut changed = HashSet::new();
-
-        // Symbols added in version_b
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT stable_id FROM symbols
-             WHERE graph_version = ? AND stable_id IS NOT NULL",
-        )?;
-
-        let added = stmt.query_map(rusqlite::params![version_b], |row| row.get::<_, String>(0))?;
-
-        for id in added.flatten() {
-            changed.insert(id);
-        }
-
-        // Symbols deleted from version_a (existed in a but not in b)
-        // Note: This is a simplified heuristic - proper diff would be more complex
-        // For now, we focus on symbols that appear in version_b (recently changed)
-
-        Ok(changed)
-    }
 }
 
 #[cfg(test)]
