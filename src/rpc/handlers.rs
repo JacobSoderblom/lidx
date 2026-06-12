@@ -507,8 +507,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
     // 11. Build next_hops
     let next_hops = vec![
-        json!({"method": "analyze_impact", "params": {"id": symbol.id}, "description": "Analyze downstream impact"}),
-        json!({"method": "subgraph", "params": {"start_ids": [symbol.id], "depth": 2}, "description": "Explore graph neighborhood"}),
+        json!({"method": "analyze_impact", "params": {"id": symbol.id, "direction": "both"}, "description": "Explore full graph neighborhood via impact analysis"}),
         json!({"method": "gather_context", "params": {"seeds": [{"type": "symbol", "qualname": symbol.qualname}], "max_bytes": 80000}, "description": "Assemble full context"}),
     ];
 
@@ -1693,16 +1692,16 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
     if let Some(cs) = changed_symbols.first() {
         next_hops.push(json!({"method": "explain_symbol", "params": {"id": cs.symbol.id}, "description": format!("Explain {}", cs.symbol.name)}));
     }
-    // Add references for top changed symbol
+    // Add upstream callers for top changed method/function
     if let Some(cs) = changed_symbols
         .iter()
         .find(|cs| cs.symbol.kind == "method" || cs.symbol.kind == "function")
     {
-        next_hops.push(json!({"method": "references", "params": {"id": cs.symbol.id, "direction": "in"}, "description": format!("Callers of {}", cs.symbol.name)}));
+        next_hops.push(json!({"method": "analyze_impact", "params": {"id": cs.symbol.id, "direction": "upstream"}, "description": format!("Callers of {}", cs.symbol.name)}));
     }
-    // Add subgraph for exploration
+    // Add bidirectional impact exploration for first changed symbol
     if let Some(cs) = changed_symbols.first() {
-        next_hops.push(json!({"method": "subgraph", "params": {"start_ids": [cs.symbol.id], "depth": 2}, "description": "Explore impact graph"}));
+        next_hops.push(json!({"method": "analyze_impact", "params": {"id": cs.symbol.id, "direction": "both"}, "description": "Explore full impact graph"}));
     }
 
     let result = AnalyzeDiffResult {
