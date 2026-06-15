@@ -22,7 +22,7 @@ pub mod proto;
 pub mod python;
 pub mod rust;
 pub mod scan;
-pub mod sql;
+pub mod sql_extractor;
 pub mod stable_id;
 pub mod test_detection;
 pub mod tree_helpers;
@@ -77,12 +77,12 @@ impl Indexer {
         extractors.insert("tsx".into(), Box::new(javascript::TsxExtractor::new()?));
         extractors.insert("csharp".into(), Box::new(csharp::CSharpExtractor::new()?));
         extractors.insert("go".into(), Box::new(go::GoExtractor::new()?));
-        extractors.insert("sql".into(), Box::new(sql::SqlExtractor::new()?));
+        extractors.insert("sql".into(), Box::new(sql_extractor::SqlExtractor::new()?));
         extractors.insert(
             "postgres".into(),
-            Box::new(postgres::PostgresExtractor::new()?),
+            Box::new(sql_extractor::SqlExtractor::new()?),
         );
-        extractors.insert("tsql".into(), Box::new(sql::SqlExtractor::new()?));
+        extractors.insert("tsql".into(), Box::new(sql_extractor::SqlExtractor::new()?));
         extractors.insert("proto".into(), Box::new(proto::ProtoExtractor::new()?));
         extractors.insert("yaml".into(), Box::new(yaml::YamlExtractor::new()?));
         extractors.insert("bicep".into(), Box::new(bicep::BicepExtractor::new()?));
