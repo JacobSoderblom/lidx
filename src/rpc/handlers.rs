@@ -1190,10 +1190,15 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         ids
     };
 
+    // Used for both the traversal config and recovery next_hops on zero results.
+    let direction = params.direction.unwrap_or_else(|| "both".to_string());
+    // Capture before params.kinds is moved into config.
+    let original_kinds: Option<Vec<String>> = params.kinds.clone();
+
     // Build multi-layer configuration
     let config = crate::impact::config::MultiLayerConfig::builder()
         .max_depth(params.max_depth.unwrap_or(3).min(10))
-        .direction(params.direction.unwrap_or_else(|| "both".to_string()))
+        .direction(direction.clone())
         .include_tests(params.include_tests.unwrap_or(false))
         .include_paths(params.include_paths.unwrap_or(true))
         .limit(params.limit.unwrap_or(500).min(2000))
@@ -1230,6 +1235,87 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         config,
         ctx.graph_version,
     )?;
+
+    // When zero symbols were affected, attach recovery next_hops so the LLM has a path
+    // forward instead of a dead-end payload.
+    if result.affected.is_empty() {
+        let seed_id = seed_ids.first().copied();
+        let seed_params = |dir: &str| {
+            let mut map = serde_json::Map::new();
+            if let Some(id) = seed_id {
+                map.insert("id".to_string(), json!(id));
+            }
+            map.insert("direction".to_string(), json!(dir));
+            map
+        };
+        let mut next_hops: Vec<serde_json::Value> = Vec::new();
+
+        // Suggest flipping direction. Only meaningful for an explicit upstream/downstream
+        // query: "both" already traverses every edge, so a narrower retry cannot find more.
+        // Also recognise aliases accepted by TraversalDirection::from (direct.rs ~30-31):
+        //   up/upstream/callers/in  → upstream  → flip to "downstream"
+        //   down/downstream/callees/out → downstream → flip to "upstream"
+        let alt_direction = match direction.to_lowercase().as_str() {
+            "upstream" | "up" | "callers" | "in" => Some("downstream"),
+            "downstream" | "down" | "callees" | "out" => Some("upstream"),
+            _ => None,
+        };
+        if let Some(alt) = alt_direction {
+            next_hops.push(json!({
+                "method": "analyze_impact",
+                "params": seed_params(alt),
+                "description": format!("Flip direction to '{}' (current '{}' found nothing)", alt, direction),
+            }));
+        }
+
+        // Suggest including CONFIG edge kinds (useful for config/DI consumers).
+        // Only emit this hop when the original call passed a restrictive `kinds` filter
+        // that excluded some of the CONFIG/CALLS subset. When `kinds` was empty/None
+        // (the default: all edge kinds), a restricted retry cannot find more results and
+        // would be a guaranteed dead-end — same reasoning as the direction-flip suppression
+        // above for the "both" case.
+        let config_kind_set = ["CONFIG_BIND", "CONFIG_SOURCE", "CONFIG_READ", "CALLS"];
+        let original_kinds_non_empty = original_kinds.as_ref().is_some_and(|k| !k.is_empty());
+        let original_already_covers_config = original_kinds
+            .as_ref()
+            .is_some_and(|k| config_kind_set.iter().all(|ck| k.iter().any(|ok| ok == ck)));
+        if original_kinds_non_empty && !original_already_covers_config {
+            let mut config_params = seed_params("both");
+            config_params.insert(
+                "kinds".to_string(),
+                json!(["CONFIG_BIND", "CONFIG_SOURCE", "CONFIG_READ", "CALLS"]),
+            );
+            next_hops.push(json!({
+                "method": "analyze_impact",
+                "params": config_params,
+                "description": "Retry with CONFIG edge kinds (finds DI/config consumers missed by graph walk)",
+            }));
+        }
+
+        // Suggest seeding the parent (e.g. the class when the seed is a method/property).
+        // Only when the parent qualname resolves to a real symbol that was not already
+        // seeded — a hop that errors when followed is worse than no hop.
+        if let Some(id) = seed_id
+            && let Ok(Some(sym)) = indexer.db().get_symbol_by_id(id)
+            && let Some(parent_qn) = sym.qualname.rsplit_once('.').map(|(p, _)| p)
+            && let Ok(Some(parent)) = indexer
+                .db()
+                .get_symbol_by_qualname(parent_qn, ctx.graph_version)
+            && !seed_ids.contains(&parent.id)
+        {
+            next_hops.push(json!({
+                "method": "analyze_impact",
+                "params": {"qualname": parent_qn, "direction": direction},
+                "description": format!("Seed parent {} '{}' instead", parent.kind, parent_qn),
+            }));
+        }
+
+        let mut value = serde_json::to_value(&result)?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("next_hops".to_string(), json!(next_hops));
+        }
+        return Ok(value);
+    }
 
     Ok(json!(result))
 }
@@ -1761,6 +1847,65 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
         ctx.graph_version,
         Some(&params.query),
     )?;
+
+    if results.is_empty() {
+        // Recovery next_hops: guide the LLM toward broadening the search.
+        let query = &params.query;
+        let fixed_string = params.fixed_string == Some(true);
+        // Suggested retries must stay valid calls: a fixed-string query may not parse
+        // as a regex, so carry the flag through to every re-search hop.
+        let search_params = |q: &str| {
+            let mut map = serde_json::Map::new();
+            map.insert("query".to_string(), json!(q));
+            if fixed_string {
+                map.insert("fixed_string".to_string(), json!(true));
+            }
+            map
+        };
+        let mut next_hops: Vec<serde_json::Value> = Vec::new();
+
+        // If case_sensitive was set, suggest dropping it. Explicitly set case_sensitive:false
+        // to get genuinely case-insensitive matching (-i flag). Using search_params alone
+        // yields case_sensitive:None which keeps ripgrep's default case-sensitive mode —
+        // the same as the original query.
+        if params.case_sensitive == Some(true) {
+            let mut ci_params = search_params(query);
+            ci_params.insert("case_sensitive".to_string(), json!(false));
+            next_hops.push(json!({
+                "method": "search",
+                "params": ci_params,
+                "description": "Retry with case_sensitive:false (matches any casing)",
+            }));
+        }
+
+        // Suggest explain_symbol using the query as a best-effort symbol lookup.
+        // Note: if the query does not name a known symbol this call may return an error.
+        next_hops.push(json!({
+            "method": "explain_symbol",
+            "params": {"query": query},
+            "description": format!("Try explain_symbol in case '{}' names a symbol", query),
+        }));
+
+        // Suggest a broader search using the first whitespace-separated token. Skip when
+        // truncating a regex could leave an invalid fragment (e.g. an unclosed group).
+        let first_token = query.split_whitespace().next().unwrap_or(query);
+        let token_is_valid_pattern =
+            fixed_string || !first_token.contains(['(', ')', '[', ']', '{', '}', '\\']);
+        if first_token != query.as_str() && token_is_valid_pattern {
+            next_hops.push(json!({
+                "method": "search",
+                "params": search_params(first_token),
+                "description": format!("Widen pattern to first token '{}'", first_token),
+            }));
+        }
+
+        return Ok(json!({
+            "results": [],
+            "query": query,
+            "next_hops": next_hops,
+        }));
+    }
+
     Ok(json!(results))
 }
 
