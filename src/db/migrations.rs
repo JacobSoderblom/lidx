@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -320,6 +320,18 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 
     if existing < 12 {
         conn.execute("DROP TABLE IF EXISTS diagnostics", [])?;
+    }
+
+    if existing < 13 {
+        // Add resolution_confidence column to record how a target_symbol_id was resolved.
+        // Values: "exact" | "receiver_match" | "suffix_guess" | NULL (unresolved or pre-migration).
+        // Deliberately separate from edge.confidence, which encodes extraction certainty.
+        if !has_column(conn, "edges", "resolution_confidence")? {
+            conn.execute(
+                "ALTER TABLE edges ADD COLUMN resolution_confidence TEXT",
+                [],
+            )?;
+        }
     }
 
     if existing < SCHEMA_VERSION {

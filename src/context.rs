@@ -162,25 +162,27 @@ pub fn build_file_context(
         }
     }
 
-    // 4. For incoming callers (the 90% unresolved case), use incoming_edges_by_qualname_pattern
-    // Collect unique symbol names from our file, capped
-    let mut looked_up_names: HashSet<String> = HashSet::new();
+    // 4. For incoming callers (the 90% unresolved case), use receiver-preferred lookup.
+    // Iterate unique qualnames from our file, capped, passing the full qualname so the
+    // query can prefer edges whose target_qualname receiver-segment matches the symbol's parent.
+    let mut looked_up_qualnames: HashSet<String> = HashSet::new();
     for sym in &symbols {
-        if looked_up_names.len() >= MAX_INCOMING_LOOKUPS {
+        if looked_up_qualnames.len() >= MAX_INCOMING_LOOKUPS {
             break;
         }
         // Skip module-level symbols — too generic
         if sym.kind == "module" {
             continue;
         }
-        looked_up_names.insert(sym.name.clone());
+        looked_up_qualnames.insert(sym.qualname.clone());
     }
 
-    for name in &looked_up_names {
+    for qualname in &looked_up_qualnames {
         if callers.len() >= MAX_CALLERS {
             break;
         }
-        let incoming = db.incoming_edges_by_qualname_pattern(name, "CALLS", None, graph_version)?;
+        let incoming =
+            db.incoming_edges_preferring_receiver(qualname, "CALLS", None, graph_version)?;
         for edge in incoming {
             if edge.file_path == file_path {
                 continue; // Same file

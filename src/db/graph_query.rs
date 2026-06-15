@@ -1,4 +1,4 @@
-use super::{Db, edge_from_row, fuzzy_qualname_patterns, symbol_from_row};
+use super::{Db, edge_from_row, symbol_from_row};
 use crate::model::{Edge, Symbol};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
@@ -194,15 +194,17 @@ impl Db {
     ///
     /// Strategy:
     /// 1. Try exact match first (fast path)
-    /// 2. Extract method/function name from short qualname (part after the last `.` or `::`)
-    /// 3. Search for symbols whose qualname ends with '.{name}' or '::{name}'
-    /// 4. Prefer shortest qualname match (less nesting = more specific)
+    /// 2. If the qualname carries a receiver segment (e.g. "connection" in "connection.Open"),
+    ///    prefer candidates whose parent segment matches the receiver
+    /// 3. Fall back to suffix match (`%.Open` / `%::Open`), preferring shortest qualname
     pub fn lookup_symbol_id_fuzzy(
         &self,
         target_qualname: &str,
         languages: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Option<i64>> {
+        use super::{fuzzy_qualname_patterns, qualname_receiver_segment, receiver_match_patterns};
+
         // Fast path: try exact match first
         if let Some(id) =
             self.lookup_symbol_id_filtered(target_qualname, languages, graph_version)?
@@ -213,6 +215,69 @@ impl Db {
         // Extract the trailing name and build suffix patterns for both '.' and '::'
         let (name, dot_pattern, colons_pattern) = fuzzy_qualname_patterns(target_qualname);
 
+        // --- Receiver-segment preference pass ---
+        // If the unresolved qualname carries a receiver (e.g. "connection" in "connection.Open"),
+        // try to find a candidate whose parent segment matches that receiver before falling back
+        // to the broad suffix match.
+        if let Some(recv) = qualname_receiver_segment(target_qualname) {
+            let recv_patterns = receiver_match_patterns(recv, name);
+            let mut recv_sql = String::from(
+                "SELECT s.id
+                 FROM symbols s
+                 JOIN files f ON s.file_id = f.id
+                 WHERE s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
+                   AND s.graph_version = ?
+                   AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+                   AND (",
+            );
+            for (idx, _) in recv_patterns.iter().enumerate() {
+                if idx > 0 {
+                    recv_sql.push_str(" OR ");
+                }
+                recv_sql.push_str("s.qualname LIKE ? ESCAPE '\\'");
+            }
+            recv_sql.push(')');
+            if let Some(languages) = languages
+                && !languages.is_empty()
+            {
+                recv_sql.push_str(" AND f.language IN (");
+                for (idx, _) in languages.iter().enumerate() {
+                    if idx > 0 {
+                        recv_sql.push(',');
+                    }
+                    recv_sql.push('?');
+                }
+                recv_sql.push(')');
+            }
+            recv_sql.push_str(" ORDER BY LENGTH(s.qualname) ASC LIMIT 1");
+
+            let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+                vec![Box::new(graph_version), Box::new(graph_version)];
+            for pat in &recv_patterns {
+                params_vec.push(Box::new(pat.clone()));
+            }
+            if let Some(languages) = languages
+                && !languages.is_empty()
+            {
+                for lang in languages {
+                    params_vec.push(Box::new(lang.clone()));
+                }
+            }
+            let param_refs: Vec<&dyn rusqlite::ToSql> =
+                params_vec.iter().map(|p| p.as_ref()).collect();
+
+            let conn = self.read_conn()?;
+            let receiver_hit: Option<i64> = conn
+                .query_row(&recv_sql, &*param_refs, |row| row.get(0))
+                .optional()?;
+            if receiver_hit.is_some() {
+                return Ok(receiver_hit);
+            }
+        }
+
+        // --- Suffix fallback ---
+        // No receiver match found; fall back to the broad suffix pattern, preferring
+        // the shortest qualname (least nesting = most specific in the absence of better signal).
         let mut sql = String::from(
             "SELECT s.id, s.qualname, LENGTH(s.qualname) as qn_len
              FROM symbols s
@@ -274,7 +339,8 @@ impl Db {
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_confidence
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE (e.source_symbol_id = ? OR e.target_symbol_id = ?)
@@ -317,26 +383,144 @@ impl Db {
         languages: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<Edge>> {
-        // Search for edges where target_qualname ends with '.<symbol_name>' or equals it exactly
-        let pattern = format!("%.{}", symbol_name);
+        let broad_pattern = format!("%.{}", symbol_name);
         let exact = symbol_name.to_string();
+        self.incoming_edges_by_target_patterns(
+            &[broad_pattern],
+            Some(&exact),
+            kind,
+            languages,
+            graph_version,
+        )
+    }
+
+    /// Find incoming edges preferring edges whose `target_qualname` receiver-segment matches the
+    /// parent of the looked-up symbol (`symbol_qualname`).
+    ///
+    /// For example, given `symbol_qualname = "data.SqlConnection.Open"`:
+    /// - The trailing name is `"Open"` and the receiver segment is `"SqlConnection"`.
+    /// - First queries edges whose `target_qualname` matches `%SqlConnection.Open` or
+    ///   `%SqlConnection::Open` (with `ESCAPE '\'`).
+    /// - If those edges exist, returns them (receiver-preferred set).
+    /// - If none are found, falls back to the broad `%.Open` pattern so that legitimate
+    ///   bare-name callers are not lost.
+    /// - If `symbol_qualname` has no receiver segment (bare name or top-level function),
+    ///   returns the broad `%.name` set directly.
+    pub fn incoming_edges_preferring_receiver(
+        &self,
+        symbol_qualname: &str,
+        kind: &str,
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<Vec<Edge>> {
+        use super::{qualname_receiver_segment, qualname_trailing_name, receiver_match_patterns};
+
+        let name = qualname_trailing_name(symbol_qualname);
+        if name.is_empty() {
+            // Degenerate qualname — fall through to broad
+            let broad = format!("%.{}", symbol_qualname);
+            return self.incoming_edges_by_target_patterns(
+                &[broad],
+                Some(symbol_qualname),
+                kind,
+                languages,
+                graph_version,
+            );
+        }
+
+        // Attempt receiver-segment preference when the qualname carries a parent.
+        if let Some(receiver) = qualname_receiver_segment(symbol_qualname) {
+            let recv_patterns = receiver_match_patterns(receiver, name);
+            let preferred = self.incoming_edges_by_target_patterns(
+                &recv_patterns,
+                None, // LIKE patterns only — no bare-exact match on receiver path
+                kind,
+                languages,
+                graph_version,
+            )?;
+            if !preferred.is_empty() {
+                return Ok(preferred);
+            }
+            // Fall back to broad suffix match
+        }
+
+        let broad = format!("%.{}", name);
+        let exact = name.to_string();
+        self.incoming_edges_by_target_patterns(
+            &[broad],
+            Some(&exact),
+            kind,
+            languages,
+            graph_version,
+        )
+    }
+
+    /// Shared query helper for both `incoming_edges_by_qualname_pattern` and
+    /// `incoming_edges_preferring_receiver`.
+    ///
+    /// Builds a query that matches edges where `target_qualname`:
+    /// - LIKE any pattern in `like_patterns` (each pattern should already include `%` wildcards)
+    /// - OR equals `exact_match` when `Some`
+    ///
+    /// All LIKE patterns use `ESCAPE '\'` so that identifiers containing `%`, `_`, or `\`
+    /// are handled safely (patterns produced by [`receiver_match_patterns`] are already escaped).
+    fn incoming_edges_by_target_patterns(
+        &self,
+        like_patterns: &[String],
+        exact_match: Option<&str>,
+        kind: &str,
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<Vec<Edge>> {
+        if like_patterns.is_empty() && exact_match.is_none() {
+            return Ok(vec![]);
+        }
 
         let mut sql = String::from(
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_confidence
              FROM edges e
              JOIN files f ON e.file_id = f.id
-             WHERE (e.target_qualname LIKE ? OR e.target_qualname = ?)
+             WHERE (",
+        );
+
+        let mut first = true;
+        for _ in like_patterns {
+            if !first {
+                sql.push_str(" OR ");
+            }
+            sql.push_str("e.target_qualname LIKE ? ESCAPE '\\'");
+            first = false;
+        }
+        if exact_match.is_some() {
+            if !first {
+                sql.push_str(" OR ");
+            }
+            sql.push_str("e.target_qualname = ?");
+        }
+
+        sql.push_str(
+            ")
                AND e.kind = ?
                AND e.source_symbol_id IS NOT NULL
                AND e.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
 
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&pattern, &exact, &kind, &graph_version, &graph_version];
+        // Build owned params to avoid lifetime conflicts
+        let mut owned: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        for pat in like_patterns {
+            owned.push(Box::new(pat.clone()));
+        }
+        if let Some(ex) = exact_match {
+            owned.push(Box::new(ex.to_string()));
+        }
+        owned.push(Box::new(kind.to_string()));
+        owned.push(Box::new(graph_version));
+        owned.push(Box::new(graph_version));
 
         if let Some(languages) = languages
             && !languages.is_empty()
@@ -349,16 +533,18 @@ impl Db {
                 sql.push('?');
             }
             sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
+            for lang in languages {
+                owned.push(Box::new(lang.clone()));
             }
         }
 
         sql.push_str(" ORDER BY e.id LIMIT 100");
 
+        let params_ref: Vec<&dyn rusqlite::ToSql> = owned.iter().map(|b| b.as_ref()).collect();
+
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, edge_from_row)?;
+        let rows = stmt.query_map(params_ref.as_slice(), edge_from_row)?;
         let mut edges = Vec::new();
         for row in rows {
             edges.push(row?);
@@ -390,7 +576,8 @@ impl Db {
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_confidence
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE e.target_qualname = ?
@@ -482,7 +669,8 @@ impl Db {
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_confidence
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE (e.source_symbol_id IN ({}) OR e.target_symbol_id IN ({}))
@@ -576,7 +764,8 @@ impl Db {
                 "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                         e.target_qualname, e.detail, e.evidence_snippet,
                         e.evidence_start_line, e.evidence_end_line, e.confidence,
-                        e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                        e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                        e.resolution_confidence
                  FROM edges e
                  JOIN files f ON e.file_id = f.id
                  WHERE e.target_symbol_id IS NULL

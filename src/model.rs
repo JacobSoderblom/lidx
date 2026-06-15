@@ -94,6 +94,11 @@ pub struct Edge {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<String>,
     pub event_ts: Option<i64>,
+    /// How the target_symbol_id was resolved: "exact", "receiver_match", "suffix_guess",
+    /// or None for unresolved edges or edges predating this column (migration 13).
+    /// Deliberately separate from `confidence`, which encodes extraction certainty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_confidence: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
