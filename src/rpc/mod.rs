@@ -251,6 +251,17 @@ struct TraceFlowParams {
     common: LangVersionParams,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+struct ContextParams {
+    /// File path (relative to repo root) to retrieve structured context for
+    path: String,
+    /// Output format: "json" for structured JSON output, or omit for text (default: text)
+    format: Option<String>,
+    /// Graph version to query (defaults to current)
+    #[serde(alias = "as_of", alias = "version")]
+    graph_version: Option<i64>,
+}
+
 /// Hard cap on result count to prevent huge responses that blow LLM context windows.
 const MAX_RESPONSE_LIMIT: usize = 500;
 
@@ -649,7 +660,7 @@ mod tests {
                 "method '{}' did not produce an object schema",
                 method
             );
-            // Every schema should either have "type":"object" or be the paramless default
+            // Every schema must describe an object (or a oneOf of objects)
             let obj = schema.as_object().unwrap();
             let has_type = obj.get("type").and_then(|v| v.as_str()) == Some("object");
             let has_one_of = obj.contains_key("oneOf");
@@ -658,6 +669,14 @@ mod tests {
                 "method '{}' schema has neither type:object nor oneOf: {:?}",
                 method,
                 obj.keys().collect::<Vec<_>>()
+            );
+            // Must have real content: properties or required — empty default {} is not acceptable
+            let has_properties = obj.contains_key("properties");
+            let has_required = obj.contains_key("required");
+            assert!(
+                has_properties || has_required,
+                "method '{}' schema is the empty default — register it in method_param_schema",
+                method
             );
         }
     }
@@ -685,6 +704,33 @@ mod tests {
         assert!(
             schema.is_object(),
             "gather_context should have valid schema"
+        );
+
+        // context requires "path"
+        let schema = super::method_param_schema("context");
+        let required = schema.get("required").and_then(|v| v.as_array());
+        assert!(required.is_some(), "context should have required fields");
+        let required: Vec<&str> = required
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            required.contains(&"path"),
+            "context should require 'path', got: {:?}",
+            required
+        );
+        // context should also advertise format and graph_version as optional properties
+        let props = schema.get("properties").and_then(|p| p.as_object());
+        assert!(props.is_some(), "context should have properties");
+        let props = props.unwrap();
+        assert!(
+            props.contains_key("format"),
+            "context schema should advertise 'format'"
+        );
+        assert!(
+            props.contains_key("graph_version"),
+            "context schema should advertise 'graph_version'"
         );
     }
 
