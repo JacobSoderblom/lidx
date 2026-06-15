@@ -1260,6 +1260,8 @@ impl Db {
 
     /// Get all symbols for a file by path
     ///
+    /// Used by symbol resolution, context assembly, and incremental reindexing
+    ///
     /// # Arguments
     ///
     /// * `file_path` - The relative file path
