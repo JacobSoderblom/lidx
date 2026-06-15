@@ -349,8 +349,8 @@ fn collect_content_file_strategy(
                 .filter_map(|item| item.symbol.as_ref())
                 .find(|s| s.id == symbol_id)
             {
-                let incoming = db.incoming_edges_by_qualname_pattern(
-                    &symbol.name,
+                let incoming = db.incoming_edges_preferring_receiver(
+                    &symbol.qualname,
                     "CALLS",
                     config.languages.as_deref(),
                     config.graph_version,

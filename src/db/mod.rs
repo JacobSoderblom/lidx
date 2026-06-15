@@ -861,11 +861,17 @@ impl Db {
             let mut insert_stmt = tx.prepare(
                 "INSERT INTO edges
                  (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail, evidence_snippet,
-                  evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts,
+                  resolution_confidence)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             let mut exact_lookup_stmt =
                 tx.prepare("SELECT id FROM symbols WHERE qualname = ? LIMIT 1")?;
+            // Receiver-segment fuzzy lookup (same language): prefer candidates whose parent
+            // segment matches the receiver in the unresolved qualname (e.g. "connection" in
+            // "connection.Open" matches "SqlConnection.Open").
+            // Patterns are passed as OR list; LIMIT 1 picks the shortest match among them.
+            // NOTE: this statement is rebuilt per edge (since the pattern count varies).
             // Same-language fuzzy lookup: prefer symbols from files matching source language
             let mut fuzzy_same_lang_stmt = tx.prepare(
                 "SELECT s.id
@@ -903,55 +909,78 @@ impl Db {
             for edge in edges {
                 let source_id =
                     resolve_symbol_id(&edge.source_qualname, symbol_map, &mut exact_lookup_stmt)?;
-                let target_id =
+
+                // Resolve target symbol ID with provenance tracking.
+                // Returns (Option<i64>, Option<&'static str>) — (id, resolution_confidence).
+                let (target_id, resolution_confidence) = if let Some(id) =
                     resolve_symbol_id(&edge.target_qualname, symbol_map, &mut exact_lookup_stmt)?
-                        .or_else(|| {
-                            // Fuzzy fallback: try same-language first, then cross-language for bridge edges only
-                            edge.target_qualname.as_ref().and_then(|qn| {
-                                let (method_name, dot_pattern, colons_pattern) =
-                                    fuzzy_qualname_patterns(qn);
-                                // Try same-language first
-                                let same_lang = fuzzy_same_lang_stmt
-                                    .query_row(
-                                        params![
-                                            method_name,
-                                            &dot_pattern,
-                                            &colons_pattern,
-                                            graph_version,
-                                            graph_version,
-                                            &source_lang,
-                                            method_name
-                                        ],
-                                        |row| row.get(0),
-                                    )
-                                    .optional()
-                                    .ok()
-                                    .flatten();
-                                if same_lang.is_some() {
-                                    return same_lang;
-                                }
-                                // Cross-language fallback only for bridge edge kinds
-                                if is_bridge_edge_kind(&edge.kind) {
-                                    fuzzy_any_lang_stmt
-                                        .query_row(
-                                            params![
-                                                method_name,
-                                                &dot_pattern,
-                                                &colons_pattern,
-                                                graph_version,
-                                                graph_version,
-                                                method_name
-                                            ],
-                                            |row| row.get(0),
-                                        )
-                                        .optional()
-                                        .ok()
-                                        .flatten()
-                                } else {
-                                    None
-                                }
-                            })
-                        });
+                {
+                    (Some(id), Some("exact"))
+                } else if let Some(qn) = edge.target_qualname.as_ref() {
+                    let (method_name, dot_pattern, colons_pattern) = fuzzy_qualname_patterns(qn);
+
+                    // --- Receiver-segment pass (same language) ---
+                    let receiver_id = if let Some(recv) = qualname_receiver_segment(qn) {
+                        let recv_patterns = receiver_match_patterns(recv, method_name);
+                        fuzzy_resolve_with_receiver(
+                            &tx,
+                            &recv_patterns,
+                            &source_lang,
+                            graph_version,
+                            true,
+                        )?
+                    } else {
+                        None
+                    };
+
+                    if let Some(id) = receiver_id {
+                        (Some(id), Some("receiver_match"))
+                    } else {
+                        // --- Suffix fallback (same language) ---
+                        let same_lang = fuzzy_same_lang_stmt
+                            .query_row(
+                                params![
+                                    method_name,
+                                    &dot_pattern,
+                                    &colons_pattern,
+                                    graph_version,
+                                    graph_version,
+                                    &source_lang,
+                                    method_name
+                                ],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .ok()
+                            .flatten();
+
+                        if let Some(id) = same_lang {
+                            (Some(id), Some("suffix_guess"))
+                        } else if is_bridge_edge_kind(&edge.kind) {
+                            // Cross-language fallback only for bridge edge kinds
+                            let cross_lang = fuzzy_any_lang_stmt
+                                .query_row(
+                                    params![
+                                        method_name,
+                                        &dot_pattern,
+                                        &colons_pattern,
+                                        graph_version,
+                                        graph_version,
+                                        method_name
+                                    ],
+                                    |row| row.get(0),
+                                )
+                                .optional()
+                                .ok()
+                                .flatten();
+                            (cross_lang, cross_lang.map(|_| "suffix_guess"))
+                        } else {
+                            (None, None)
+                        }
+                    }
+                } else {
+                    (None, None)
+                };
 
                 insert_stmt.execute(params![
                     file_id,
@@ -969,6 +998,7 @@ impl Db {
                     edge.trace_id.as_deref(),
                     edge.span_id.as_deref(),
                     edge.event_ts,
+                    resolution_confidence,
                 ])?;
                 count += 1;
             }
@@ -987,22 +1017,32 @@ impl Db {
     pub fn resolve_null_target_edges(&self, graph_version: i64) -> Result<usize> {
         let mut total_resolved = 0;
 
-        // First pass: exact match
+        // First pass: exact match — also sets resolution_confidence = 'exact'.
+        // The EXISTS guard ensures resolution_confidence is only written for rows
+        // where the subquery actually finds a match; without it the SET would stamp
+        // 'exact' on dangling edges whose subquery returns NULL.
         let exact_resolved = self.conn().execute(
-            "UPDATE edges SET target_symbol_id = (
-                SELECT s.id FROM symbols s
-                WHERE s.qualname = edges.target_qualname
-                AND s.graph_version = edges.graph_version
-                LIMIT 1
-            )
+            "UPDATE edges SET
+                target_symbol_id = (
+                    SELECT s.id FROM symbols s
+                    WHERE s.qualname = edges.target_qualname
+                    AND s.graph_version = edges.graph_version
+                    LIMIT 1
+                ),
+                resolution_confidence = 'exact'
             WHERE target_symbol_id IS NULL
             AND target_qualname IS NOT NULL
-            AND graph_version = ?",
+            AND graph_version = ?
+            AND EXISTS (
+                SELECT 1 FROM symbols s
+                WHERE s.qualname = edges.target_qualname
+                AND s.graph_version = edges.graph_version
+            )",
             params![graph_version],
         )?;
         total_resolved += exact_resolved;
 
-        // Second pass: fuzzy suffix matching in batches
+        // Second pass: fuzzy suffix matching in batches with receiver-segment preference
         const BATCH_SIZE: usize = 1000;
         loop {
             let mut conn = self.conn();
@@ -1062,53 +1102,74 @@ impl Db {
                      LIMIT 1"
                 )?;
 
-                let mut update_stmt =
-                    tx.prepare("UPDATE edges SET target_symbol_id = ? WHERE id = ?")?;
+                let mut update_stmt = tx.prepare(
+                    "UPDATE edges SET target_symbol_id = ?, resolution_confidence = ? WHERE id = ?",
+                )?;
 
                 for (edge_id, target_qualname, source_lang, edge_kind) in &unresolved {
                     let (method_name, dot_pattern, colons_pattern) =
                         fuzzy_qualname_patterns(target_qualname);
 
-                    // Try same-language first
-                    let resolved = fuzzy_same_lang_stmt
-                        .query_row(
-                            params![
-                                method_name,
-                                &dot_pattern,
-                                &colons_pattern,
-                                graph_version,
-                                graph_version,
+                    // --- Receiver-segment pass (same language) ---
+                    let receiver_result =
+                        if let Some(recv) = qualname_receiver_segment(target_qualname) {
+                            let recv_patterns = receiver_match_patterns(recv, method_name);
+                            fuzzy_resolve_with_receiver(
+                                &tx,
+                                &recv_patterns,
                                 source_lang,
-                                method_name
-                            ],
-                            |row| row.get::<_, i64>(0),
-                        )
-                        .optional()?
-                        .or_else(|| {
-                            // Cross-language fallback only for bridge edges
-                            if is_bridge_edge_kind(edge_kind) {
-                                fuzzy_any_lang_stmt
-                                    .query_row(
-                                        params![
-                                            method_name,
-                                            &dot_pattern,
-                                            &colons_pattern,
-                                            graph_version,
-                                            graph_version,
-                                            method_name
-                                        ],
-                                        |row| row.get::<_, i64>(0),
-                                    )
-                                    .optional()
-                                    .ok()
-                                    .flatten()
-                            } else {
-                                None
-                            }
-                        });
+                                graph_version,
+                                true,
+                            )?
+                        } else {
+                            None
+                        };
+
+                    let (resolved, provenance) = if let Some(id) = receiver_result {
+                        (Some(id), "receiver_match")
+                    } else {
+                        // --- Suffix fallback (same language) ---
+                        let same_lang = fuzzy_same_lang_stmt
+                            .query_row(
+                                params![
+                                    method_name,
+                                    &dot_pattern,
+                                    &colons_pattern,
+                                    graph_version,
+                                    graph_version,
+                                    source_lang,
+                                    method_name
+                                ],
+                                |row| row.get::<_, i64>(0),
+                            )
+                            .optional()?;
+
+                        if let Some(id) = same_lang {
+                            (Some(id), "suffix_guess")
+                        } else if is_bridge_edge_kind(edge_kind) {
+                            let cross_lang = fuzzy_any_lang_stmt
+                                .query_row(
+                                    params![
+                                        method_name,
+                                        &dot_pattern,
+                                        &colons_pattern,
+                                        graph_version,
+                                        graph_version,
+                                        method_name
+                                    ],
+                                    |row| row.get::<_, i64>(0),
+                                )
+                                .optional()
+                                .ok()
+                                .flatten();
+                            (cross_lang, "suffix_guess")
+                        } else {
+                            (None, "suffix_guess")
+                        }
+                    };
 
                     if let Some(symbol_id) = resolved {
-                        update_stmt.execute(params![symbol_id, edge_id])?;
+                        update_stmt.execute(params![symbol_id, provenance, edge_id])?;
                         count += 1;
                     }
                 }
@@ -1370,7 +1431,8 @@ impl Db {
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_confidence
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE e.graph_version = ?
@@ -1693,6 +1755,7 @@ fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
         trace_id: row.get(13)?,
         span_id: row.get(14)?,
         event_ts: row.get(15)?,
+        resolution_confidence: row.get(16)?,
     })
 }
 
@@ -1726,6 +1789,141 @@ pub(crate) fn qualname_trailing_name(qn: &str) -> &str {
 pub(crate) fn fuzzy_qualname_patterns(qn: &str) -> (&str, String, String) {
     let name = qualname_trailing_name(qn);
     (name, format!("%.{name}"), format!("%::{name}"))
+}
+
+/// Extract the receiver segment from a qualname — the segment immediately
+/// before the trailing name, using both `.` and `::` separators.
+///
+/// Examples:
+/// - `"connection.Open"` → `Some("connection")`
+/// - `"db.SqlConnection.Open"` → `Some("SqlConnection")`
+/// - `"crate::util::helper::process"` → `Some("helper")`
+/// - `"Open"` → `None` (no separator)
+/// - `"Open."` → `None` (trailing separator produces empty name, skip)
+pub(crate) fn qualname_receiver_segment(qn: &str) -> Option<&str> {
+    let name = qualname_trailing_name(qn);
+    if name.is_empty() {
+        return None;
+    }
+    // The receiver segment is in the prefix: qn without the trailing ".<name>" or "::<name>".
+    let prefix_len = qn.len() - name.len();
+    if prefix_len == 0 {
+        // No separator at all — bare name
+        return None;
+    }
+    // prefix_len includes the separator character(s).
+    // Drop the separator to get the prefix qualname.
+    let separator_prefix = &qn[..prefix_len];
+    // separator_prefix ends with "." or "::"
+    let prefix_without_sep = if let Some(s) = separator_prefix.strip_suffix("::") {
+        s
+    } else {
+        // ends with "."
+        separator_prefix
+            .strip_suffix('.')
+            .unwrap_or(separator_prefix)
+    };
+    if prefix_without_sep.is_empty() {
+        return None;
+    }
+    // The receiver segment is the trailing name of the prefix qualname.
+    let receiver = qualname_trailing_name(prefix_without_sep);
+    if receiver.is_empty() {
+        None
+    } else {
+        Some(receiver)
+    }
+}
+
+/// Escape SQLite LIKE metacharacters (`%`, `_`, `\`) in a literal string segment
+/// so it can be embedded inside a LIKE pattern without acting as wildcards.
+/// Use with `ESCAPE '\'` in the SQL.
+fn like_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Build LIKE patterns that match a qualname where the parent segment of `name`
+/// **ends with** `receiver` (case-insensitive).
+///
+/// For receiver="connection", name="Open":
+/// - `"%connection.Open"` — matches `SqlConnection.Open`, `MyConnection.Open`, etc.
+/// - `"%connection::Open"` — same for `::` separator
+///
+/// SQLite LIKE is ASCII-case-insensitive, so `%connection.Open` will match
+/// `SqlConnection.Open` (because `SqlConnection` ends with `Connection`).
+/// `FileStream.Open` does not match (no `connection` suffix in `FileStream`).
+///
+/// We deliberately do NOT add a `.` or `::` before `receiver` so that
+/// suffix-of-segment matching works: `SqlConnection` ends with `Connection`
+/// not `.Connection`.
+///
+/// Both `receiver` and `name` are escaped with [`like_escape`] so identifiers
+/// containing `_` or `%` are matched literally. Use these patterns with
+/// `ESCAPE '\'` in the SQL.
+fn receiver_match_patterns(receiver: &str, name: &str) -> Vec<String> {
+    let r = like_escape(receiver);
+    let n = like_escape(name);
+    vec![format!("%{r}.{n}"), format!("%{r}::{n}")]
+}
+
+/// Try to resolve a symbol using receiver-segment LIKE patterns inside a transaction.
+///
+/// `recv_patterns` is a list of LIKE patterns produced by [`receiver_match_patterns`],
+/// with metacharacters already escaped. Use with `ESCAPE '\'` (already embedded in the SQL).
+/// Returns the first (shortest qualname) candidate that matches any pattern.
+///
+/// When `same_lang_only` is true, adds `AND f.language = ?` with `lang` as the bound value.
+fn fuzzy_resolve_with_receiver(
+    tx: &rusqlite::Transaction<'_>,
+    recv_patterns: &[String],
+    lang: &str,
+    graph_version: i64,
+    same_lang_only: bool,
+) -> Result<Option<i64>> {
+    if recv_patterns.is_empty() {
+        return Ok(None);
+    }
+    let mut sql = String::from(
+        "SELECT s.id
+         FROM symbols s
+         JOIN files f ON s.file_id = f.id
+         WHERE s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
+           AND s.graph_version = ?
+           AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+           AND (",
+    );
+    for (idx, _) in recv_patterns.iter().enumerate() {
+        if idx > 0 {
+            sql.push_str(" OR ");
+        }
+        sql.push_str("s.qualname LIKE ? ESCAPE '\\'");
+    }
+    sql.push(')');
+    if same_lang_only {
+        sql.push_str(" AND f.language = ?");
+    }
+    sql.push_str(" ORDER BY LENGTH(s.qualname) ASC LIMIT 1");
+
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(graph_version), Box::new(graph_version)];
+    for pat in recv_patterns {
+        params_vec.push(Box::new(pat.clone()));
+    }
+    if same_lang_only {
+        params_vec.push(Box::new(lang.to_string()));
+    }
+
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+    tx.query_row(&sql, &*param_refs, |row| row.get(0))
+        .optional()
+        .map_err(Into::into)
 }
 
 fn resolve_symbol_id(
@@ -3139,6 +3337,112 @@ mod tests {
         assert_eq!(found[0].kind, "CALLS");
     }
 
+    /// RED test: incoming_edges_preferring_receiver filters out over-attributed callers.
+    ///
+    /// Two callees share the method name "Open": `data.SqlConnection.Open` and
+    /// `io.FileStream.Open`.  A third symbol `client.Caller` has two CALLS edges —
+    /// one targeting `SqlConnection.Open` (its receiver) and one targeting
+    /// `FileStream.Open`.
+    ///
+    /// When we look up callers for `data.SqlConnection.Open` using receiver
+    /// preference, only the edge targeting `SqlConnection.Open` should be returned.
+    /// The `FileStream.Open` caller edge must NOT appear (it would under the old
+    /// `%.Open` broad pattern).
+    #[test]
+    fn test_incoming_edges_preferring_receiver_excludes_wrong_receiver() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+
+        let symbols = vec![
+            make_test_symbol("data.SqlConnection.Open", None, "method", 1),
+            make_test_symbol("io.FileStream.Open", None, "method", 10),
+            make_test_symbol("client.Caller", None, "function", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+
+        // Edge 1: Caller → SqlConnection.Open  (correct attribution)
+        // Edge 2: Caller → FileStream.Open      (wrong attribution — different receiver)
+        let edges = vec![
+            make_test_edge("CALLS", "client.Caller", "data.SqlConnection.Open"),
+            make_test_edge("CALLS", "client.Caller", "io.FileStream.Open"),
+        ];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // With receiver preference on "data.SqlConnection.Open" (receiver = "SqlConnection"):
+        // only the edge targeting SqlConnection.Open should be returned.
+        let found = db
+            .incoming_edges_preferring_receiver("data.SqlConnection.Open", "CALLS", None, 1)
+            .unwrap();
+
+        assert_eq!(
+            found.len(),
+            1,
+            "Expected exactly 1 edge (SqlConnection.Open caller), got {}: {:?}",
+            found.len(),
+            found
+                .iter()
+                .map(|e| e.target_qualname.as_deref())
+                .collect::<Vec<_>>()
+        );
+        let tq = found[0].target_qualname.as_deref().unwrap_or("");
+        assert!(
+            tq.contains("SqlConnection"),
+            "Expected target_qualname to contain 'SqlConnection', got {tq:?}"
+        );
+    }
+
+    /// Fallback test: when no receiver-matching edges exist, the broad `%.name` set
+    /// is returned so that legitimate bare-name callers are not lost.
+    #[test]
+    fn test_incoming_edges_preferring_receiver_falls_back_to_broad() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+
+        let symbols = vec![
+            make_test_symbol("data.SqlConnection.Open", None, "method", 1),
+            make_test_symbol("caller.BareNameCaller", None, "function", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+
+        // The edge uses bare name "Open" as target (no receiver segment in target_qualname).
+        // This simulates the common unresolved-edge case where 90% of edges lack a full qualname.
+        let edges = vec![make_test_edge(
+            "CALLS",
+            "caller.BareNameCaller",
+            "Open", // bare name — no receiver
+        )];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Receiver preference for "data.SqlConnection.Open" (receiver = "SqlConnection") finds
+        // nothing, so should fall back to broad %.Open pattern and return the bare-name edge.
+        let found = db
+            .incoming_edges_preferring_receiver("data.SqlConnection.Open", "CALLS", None, 1)
+            .unwrap();
+
+        assert_eq!(
+            found.len(),
+            1,
+            "Expected 1 edge via fallback to broad %.Open, got {}",
+            found.len()
+        );
+    }
+
     #[test]
     fn test_find_symbols_empty_query_returns_empty() {
         let (mut db, _temp) = create_test_db();
@@ -3836,5 +4140,396 @@ mod tests {
         // Shortest qualname wins across both LIKE branches
         let id = db.lookup_symbol_id_fuzzy("process", None, 1).unwrap();
         assert_eq!(id, Some(inserted[1].id));
+    }
+
+    // --- Receiver-segment preference in fuzzy resolution (issue #45) ---
+
+    #[test]
+    fn test_lookup_symbol_id_fuzzy_prefers_receiver_segment_match() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+
+        // Two `Open` methods on different receivers/types.
+        // SqlConnection.Open is longer but its parent segment matches "connection".
+        // FileStream.Open is shorter — without receiver preference, it would win.
+        let symbols = vec![
+            make_test_symbol("data.FileStream.Open", Some("void Open()"), "method", 1),
+            make_test_symbol(
+                "data.sql.SqlConnection.Open",
+                Some("void Open()"),
+                "method",
+                10,
+            ),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.cs", &symbols, 1, None)
+            .unwrap();
+
+        // Target "connection.Open": receiver is "connection".
+        // "SqlConnection" ends with "Connection" (case-insensitive), so it should win.
+        let id = db
+            .lookup_symbol_id_fuzzy("connection.Open", None, 1)
+            .unwrap();
+        assert_eq!(
+            id,
+            Some(inserted[1].id),
+            "Should pick SqlConnection.Open (receiver match) over shorter FileStream.Open"
+        );
+    }
+
+    #[test]
+    fn test_lookup_symbol_id_fuzzy_suffix_fallback_when_no_receiver_match() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+
+        // Only one `Open` method — receiver won't match, but suffix fallback fires.
+        let symbols = vec![make_test_symbol(
+            "io.FileStream.Open",
+            Some("void Open()"),
+            "method",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.cs", &symbols, 1, None)
+            .unwrap();
+
+        // Target "connection.Open": receiver "connection" does not match "FileStream",
+        // but the suffix fallback (".Open") should still resolve it.
+        let id = db
+            .lookup_symbol_id_fuzzy("connection.Open", None, 1)
+            .unwrap();
+        assert_eq!(
+            id,
+            Some(inserted[0].id),
+            "Suffix fallback should fire when no receiver match exists"
+        );
+    }
+
+    #[test]
+    fn test_insert_edges_receiver_match_prefers_correct_open_method() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+
+        // Caller symbol
+        let caller = vec![make_test_symbol(
+            "MyApp.Repository.Save",
+            Some("void Save()"),
+            "method",
+            1,
+        )];
+        // Two Open symbols: FileStream.Open (shorter) and SqlConnection.Open (longer but receiver-matches)
+        let targets = vec![
+            make_test_symbol("io.FileStream.Open", Some("void Open()"), "method", 20),
+            make_test_symbol("data.SqlConnection.Open", Some("void Open()"), "method", 30),
+        ];
+        let caller_inserted = db
+            .insert_symbols(file_id, "src/lib.cs", &caller, 1, None)
+            .unwrap();
+        let target_inserted = db
+            .insert_symbols(file_id, "src/lib.cs", &targets, 1, None)
+            .unwrap();
+
+        // Edge target "connection.Open" — should pick SqlConnection.Open via receiver match
+        let edges = vec![make_test_edge(
+            "CALLS",
+            "MyApp.Repository.Save",
+            "connection.Open",
+        )];
+        let symbol_map: HashMap<String, i64> = caller_inserted
+            .iter()
+            .chain(target_inserted.iter())
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let found = db.edges_for_symbol(caller_inserted[0].id, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].target_symbol_id,
+            Some(target_inserted[1].id),
+            "Should resolve to SqlConnection.Open (receiver match), not FileStream.Open (shorter)"
+        );
+    }
+
+    #[test]
+    fn test_insert_edges_populates_resolution_confidence_and_leaves_confidence_untouched() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+
+        let caller = vec![make_test_symbol(
+            "App.Caller",
+            Some("void Caller()"),
+            "method",
+            1,
+        )];
+        let targets = vec![
+            // exact match — target_qualname will match this exactly
+            make_test_symbol("data.SqlConnection.Open", Some("void Open()"), "method", 10),
+            // suffix-only match (receiver won't match "connection")
+            make_test_symbol("io.FileStream.Open", Some("void Open()"), "method", 20),
+            // another target for a suffix-only edge
+            make_test_symbol(
+                "svc.ProcessRequest",
+                Some("void ProcessRequest()"),
+                "method",
+                30,
+            ),
+        ];
+        let caller_inserted = db
+            .insert_symbols(file_id, "src/lib.cs", &caller, 1, None)
+            .unwrap();
+        let target_inserted = db
+            .insert_symbols(file_id, "src/lib.cs", &targets, 1, None)
+            .unwrap();
+
+        let edges = vec![
+            // Edge 1: exact match (target_qualname = full qualname)
+            make_test_edge("CALLS", "App.Caller", "data.SqlConnection.Open"),
+            // Edge 2: receiver-matched fuzzy
+            make_test_edge("CALLS", "App.Caller", "connection.Open"),
+            // Edge 3: suffix-only fallback (receiver "stream" won't match "FileStream"... wait
+            //   actually "stream" IS a suffix of "FileStream" — let's use a clearly non-matching receiver)
+            make_test_edge("CALLS", "App.Caller", "handler.ProcessRequest"),
+        ];
+        let symbol_map: HashMap<String, i64> = caller_inserted
+            .iter()
+            .chain(target_inserted.iter())
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Read edges back with resolution_confidence
+        let conn = db.read_conn().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT target_qualname, confidence, resolution_confidence
+                 FROM edges
+                 WHERE source_symbol_id = (SELECT id FROM symbols WHERE qualname = 'App.Caller')
+                 ORDER BY id",
+            )
+            .unwrap();
+        let rows: Vec<(String, Option<f64>, Option<String>)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<f64>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(rows.len(), 3);
+
+        // Edge 1 (exact): confidence untouched at 1.0, resolution_confidence = "exact"
+        let (tq1, conf1, rc1) = &rows[0];
+        assert_eq!(tq1, "data.SqlConnection.Open");
+        assert_eq!(*conf1, Some(1.0), "edge.confidence must be untouched");
+        assert_eq!(
+            rc1.as_deref(),
+            Some("exact"),
+            "exact match must set resolution_confidence"
+        );
+
+        // Edge 2 (receiver match): confidence still 1.0, resolution_confidence = "receiver_match"
+        let (tq2, conf2, rc2) = &rows[1];
+        assert_eq!(tq2, "connection.Open");
+        assert_eq!(*conf2, Some(1.0), "edge.confidence must be untouched");
+        assert_eq!(
+            rc2.as_deref(),
+            Some("receiver_match"),
+            "receiver-matched resolution must set resolution_confidence"
+        );
+
+        // Edge 3 (suffix fallback): confidence still 1.0, resolution_confidence = "suffix_guess"
+        let (tq3, conf3, rc3) = &rows[2];
+        assert_eq!(tq3, "handler.ProcessRequest");
+        assert_eq!(*conf3, Some(1.0), "edge.confidence must be untouched");
+        assert_eq!(
+            rc3.as_deref(),
+            Some("suffix_guess"),
+            "suffix-only resolution must set resolution_confidence"
+        );
+    }
+
+    #[test]
+    fn test_resolve_null_target_edges_receiver_match_prefers_correct_open_method() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+
+        let caller = vec![make_test_symbol(
+            "App.Caller",
+            Some("void Caller()"),
+            "method",
+            1,
+        )];
+        let caller_inserted = db
+            .insert_symbols(file_id, "src/lib.cs", &caller, 1, None)
+            .unwrap();
+
+        // Insert the edge before the target symbols exist (simulate out-of-order indexing)
+        let edges = vec![make_test_edge("CALLS", "App.Caller", "connection.Open")];
+        let symbol_map: HashMap<String, i64> = caller_inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Confirm edge is unresolved (both targets didn't exist yet)
+        let conn = db.read_conn().unwrap();
+        let unresolved: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_symbol_id IS NULL AND graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unresolved, 1);
+        drop(conn);
+
+        // Now insert the two Open candidates: FileStream.Open (shorter) and SqlConnection.Open (receiver-match)
+        let targets = vec![
+            make_test_symbol("io.FileStream.Open", Some("void Open()"), "method", 20),
+            make_test_symbol("data.SqlConnection.Open", Some("void Open()"), "method", 30),
+        ];
+        let target_inserted = db
+            .insert_symbols(file_id, "src/lib.cs", &targets, 1, None)
+            .unwrap();
+
+        // Re-resolve
+        let resolved = db.resolve_null_target_edges(1).unwrap();
+        assert!(resolved >= 1);
+
+        // Should resolve to SqlConnection.Open (receiver match)
+        let found = db.edges_for_symbol(caller_inserted[0].id, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].target_symbol_id,
+            Some(target_inserted[1].id),
+            "resolve_null_target_edges should prefer SqlConnection.Open (receiver match)"
+        );
+    }
+
+    #[test]
+    fn test_resolve_null_target_dangling_edge_is_not_tagged_exact() {
+        // An edge whose target_qualname matches no symbol must remain with
+        // resolution_confidence = NULL after resolve_null_target_edges runs.
+        // Before the fix the exact-pass UPDATE set resolution_confidence = 'exact'
+        // unconditionally, even when the subquery returned NULL (no match).
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+        let caller = vec![make_test_symbol(
+            "App.Caller",
+            Some("void Caller()"),
+            "method",
+            1,
+        )];
+        let ins = db
+            .insert_symbols(file_id, "src/lib.cs", &caller, 1, None)
+            .unwrap();
+        // Edge whose target has no matching symbol at all -> stays dangling
+        let edges = vec![make_test_edge(
+            "CALLS",
+            "App.Caller",
+            "totally.Nonexistent.Thing",
+        )];
+        let symbol_map: HashMap<String, i64> =
+            ins.iter().map(|s| (s.qualname.clone(), s.id)).collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+        db.resolve_null_target_edges(1).unwrap();
+        let conn = db.read_conn().unwrap();
+        let rc: Option<String> = conn
+            .query_row(
+                "SELECT resolution_confidence FROM edges WHERE target_symbol_id IS NULL AND graph_version = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            rc, None,
+            "unresolved edge must not carry resolution_confidence='exact'"
+        );
+    }
+
+    #[test]
+    fn test_receiver_match_does_not_false_positive_on_like_metachar_in_receiver() {
+        // Receiver identifiers containing `_` (common in snake_case) must not be
+        // treated as LIKE wildcards. Without escaping, `%db_conn.Execute` would
+        // match `dbXconn.Execute` (the `_` wildcard matches any single char).
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.py", "h1", "python", 100, 0)
+            .unwrap();
+
+        // The desired target: exact receiver match
+        let targets = vec![
+            // "db_conn" is the real receiver — should match
+            make_test_symbol("dal.db_conn.Execute", Some("def Execute()"), "method", 10),
+            // "dbXconn" has an unrelated character where the `_` is — must NOT match
+            make_test_symbol("dal.dbXconn.Execute", Some("def Execute()"), "method", 20),
+        ];
+        db.insert_symbols(file_id, "src/lib.py", &targets, 1, None)
+            .unwrap();
+
+        // `lookup_symbol_id_fuzzy` with qualname "db_conn.Execute" should resolve to
+        // dal.db_conn.Execute (receiver match) and NOT to dal.dbXconn.Execute.
+        let id = db
+            .lookup_symbol_id_fuzzy("db_conn.Execute", None, 1)
+            .unwrap();
+        let conn = db.read_conn().unwrap();
+        let expected_id: i64 = conn
+            .query_row(
+                "SELECT id FROM symbols WHERE qualname = 'dal.db_conn.Execute'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            id,
+            Some(expected_id),
+            "`_` in receiver must be matched literally, not as a LIKE wildcard"
+        );
+    }
+
+    #[test]
+    fn test_qualname_receiver_segment() {
+        // This tests the helper function for extracting the receiver segment
+        // (the segment immediately before the trailing name).
+        let cases: &[(&str, Option<&str>)] = &[
+            ("connection.Open", Some("connection")),
+            ("Connection.Open", Some("Connection")),
+            ("db.SqlConnection.Open", Some("SqlConnection")),
+            ("crate::util::helper::process", Some("helper")),
+            ("_svc.DeployAsync", Some("_svc")),
+            // No separator — no receiver
+            ("Open", None),
+            // Trailing separator — no receiver
+            ("Open.", None),
+            ("Open::", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                qualname_receiver_segment(input),
+                *expected,
+                "input: {input:?}"
+            );
+        }
     }
 }

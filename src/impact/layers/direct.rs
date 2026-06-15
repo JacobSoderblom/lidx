@@ -575,6 +575,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            resolution_confidence: None,
         };
 
         let mut kinds = HashSet::new();
@@ -609,6 +610,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            resolution_confidence: None,
         };
 
         let kinds = HashSet::new();

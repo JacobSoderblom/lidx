@@ -680,6 +680,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            resolution_confidence: None,
         };
 
         let context = extract_protocol_context(&rpc_impl_edge);
@@ -707,6 +708,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            resolution_confidence: None,
         };
 
         let context = extract_protocol_context(&call_edge);
@@ -735,6 +737,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            resolution_confidence: None,
         };
 
         let ctx = extract_protocol_context(&edge).unwrap();
@@ -764,6 +767,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            resolution_confidence: None,
         };
 
         let ctx = extract_protocol_context(&edge).unwrap();
@@ -793,6 +797,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            resolution_confidence: None,
         };
 
         let ctx = extract_protocol_context(&edge).unwrap();
@@ -820,6 +825,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            resolution_confidence: None,
         };
 
         assert!(extract_protocol_context(&edge).is_none());
@@ -844,6 +850,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            resolution_confidence: None,
         };
 
         assert!(
@@ -1346,6 +1353,7 @@ mod tsx_normalization_tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            resolution_confidence: None,
         }
     }
 
