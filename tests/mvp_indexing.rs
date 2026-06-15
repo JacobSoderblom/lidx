@@ -505,3 +505,297 @@ fn explain_symbol_bad_query_shows_suggestions() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+/// After an incremental rename sync, no edge should reference a symbol rowid
+/// that no longer exists in the current graph version.
+///
+/// Scenario:
+/// - helper.py defines `greet()`; caller.py calls it → edge with target_symbol_id = rowid of greet
+/// - We rename `greet` → `greet_v2` in helper.py and sync incrementally
+/// - Old rowid is freed; new symbol gets a new rowid
+/// - Without repair, the edge in caller.py still points at the old rowid (dangling)
+/// - After repair, the edge's target_symbol_id must be NULL (not dangling)
+#[test]
+fn incremental_rename_repairs_dangling_target_symbol_id() {
+    let (repo_root, db_path) = setup_repo("py_rename");
+
+    // Full reindex
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+
+    // Verify helper.greet exists after initial index (the symbol we'll rename)
+    let greet = indexer
+        .db()
+        .get_symbol_by_qualname("helper.greet", graph_version)
+        .unwrap()
+        .expect("helper.greet must exist after initial index");
+
+    // Precondition: caller.py's edges actually resolved to greet's rowid; without
+    // this the dangling/mis-pointing assertions below would pass vacuously.
+    {
+        let conn = indexer.db().read_conn().unwrap();
+        let resolved_to_greet: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_symbol_id = ? AND graph_version = ?",
+                rusqlite::params![greet.id, graph_version],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            resolved_to_greet > 0,
+            "Precondition: at least one edge must resolve to helper.greet's rowid"
+        );
+    }
+
+    // Rename greet → greet_v2 in helper.py; caller.py is unchanged (still calls greet)
+    let helper_path = repo_root.join("helper.py");
+    std::fs::write(
+        &helper_path,
+        "def greet_v2(name: str) -> str:\n    return f\"Hello, {name}\"\n",
+    )
+    .unwrap();
+    // Canonicalize to resolve symlinks (e.g. /tmp → /private/tmp on macOS) so that
+    // normalize_rel_path can strip the repo_root prefix correctly.
+    let helper_path = std::fs::canonicalize(&helper_path).unwrap();
+
+    // Incremental sync of just helper.py
+    indexer.sync_abs_paths(&[helper_path]).unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+
+    // After the sync, no edge should have a non-NULL source_symbol_id or target_symbol_id
+    // that points at a rowid absent from the symbols table. If the old greet rowid was
+    // reused (SQLite reuses freed rowids without AUTOINCREMENT), edges with the old rowid
+    // now point at greet_v2, which is also wrong — but that case is tested differently.
+    // Here we check the core invariant: all non-NULL symbol ids in edges are valid.
+    let conn = indexer.db().read_conn().unwrap();
+    let dangling_source_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges
+             WHERE source_symbol_id IS NOT NULL
+               AND graph_version = ?
+               AND source_symbol_id NOT IN (SELECT id FROM symbols WHERE graph_version = ?)",
+            rusqlite::params![graph_version, graph_version],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let dangling_target_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges
+             WHERE target_symbol_id IS NOT NULL
+               AND graph_version = ?
+               AND target_symbol_id NOT IN (SELECT id FROM symbols WHERE graph_version = ?)",
+            rusqlite::params![graph_version, graph_version],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(
+        dangling_source_count, 0,
+        "No edge should have a source_symbol_id pointing at a non-existent symbol rowid"
+    );
+    assert_eq!(
+        dangling_target_count, 0,
+        "No edge should have a target_symbol_id pointing at a non-existent symbol rowid"
+    );
+
+    // The old greet rowid must not appear as a dangling pointer in edges from caller.py
+    // (which originally called greet). If rowid was reused for greet_v2, those edges
+    // should have been NULLed during repair (not silently re-pointed at greet_v2).
+    let mispointed_greet_edges: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges
+             WHERE target_qualname IN ('helper.greet', 'caller.greet', 'greet')
+               AND target_symbol_id IS NOT NULL
+               AND graph_version = ?",
+            rusqlite::params![graph_version],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        mispointed_greet_edges, 0,
+        "Edges targeting 'helper.greet' must have target_symbol_id = NULL after rename (greet no longer exists)"
+    );
+
+    // The new symbol greet_v2 must exist; old greet must be gone
+    let new_symbol = indexer
+        .db()
+        .get_symbol_by_qualname("helper.greet_v2", graph_version)
+        .unwrap();
+    assert!(
+        new_symbol.is_some(),
+        "helper.greet_v2 must exist after rename sync"
+    );
+    let old_symbol = indexer
+        .db()
+        .get_symbol_by_qualname("helper.greet", graph_version)
+        .unwrap();
+    assert!(
+        old_symbol.is_none(),
+        "helper.greet must not exist after rename sync"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// After both the renamed file and its caller are synced incrementally,
+/// null-target resolution should re-resolve the edge to the new symbol.
+#[test]
+fn incremental_rename_re_resolves_edges_to_new_symbol() {
+    let (repo_root, db_path) = setup_repo("py_rename");
+
+    // Full reindex
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Rename greet → greet_v2 AND update caller to use greet_v2
+    let helper_path = repo_root.join("helper.py");
+    let caller_path = repo_root.join("caller.py");
+    std::fs::write(
+        &helper_path,
+        "def greet_v2(name: str) -> str:\n    return f\"Hello, {name}\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &caller_path,
+        "from helper import greet_v2\n\ndef run():\n    return greet_v2(\"world\")\n",
+    )
+    .unwrap();
+    // Canonicalize to resolve symlinks (e.g. /tmp → /private/tmp on macOS)
+    let helper_path = std::fs::canonicalize(&helper_path).unwrap();
+    let caller_path = std::fs::canonicalize(&caller_path).unwrap();
+
+    // Incremental sync of both files
+    indexer.sync_abs_paths(&[helper_path, caller_path]).unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+
+    // Edge from caller.run → helper.greet_v2 should exist and be fully resolved
+    let new_symbol = indexer
+        .db()
+        .get_symbol_by_qualname("helper.greet_v2", graph_version)
+        .unwrap()
+        .expect("helper.greet_v2 must exist");
+
+    let edges = indexer
+        .db()
+        .edges_for_symbol(new_symbol.id, None, graph_version)
+        .unwrap();
+
+    // There should be at least one CALLS edge with target resolved to greet_v2's rowid
+    let resolved_calls: Vec<_> = edges
+        .iter()
+        .filter(|e| e.kind == "CALLS" && e.target_symbol_id == Some(new_symbol.id))
+        .collect();
+
+    assert!(
+        !resolved_calls.is_empty(),
+        "After rename+caller update, there should be a CALLS edge resolved to helper.greet_v2"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Deleting a file in an incremental sync frees its symbol rowids. If another
+/// file indexed in the same sync reuses a freed rowid (SQLite reuses rowids
+/// without AUTOINCREMENT), edges in unchanged files must not silently re-point
+/// at the new, unrelated symbol — they must be NULLed instead.
+#[test]
+fn incremental_file_delete_does_not_repoint_edges_at_reused_rowids() {
+    let (repo_root, db_path) = setup_repo("py_rename");
+    // Canonicalize the root so joined paths match the Indexer's canonicalized
+    // repo_root even for files that no longer exist on disk.
+    let repo_root = std::fs::canonicalize(&repo_root).unwrap();
+
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+
+    // Precondition: caller.py's edges actually resolved to helper.py's symbols,
+    // otherwise this test would pass vacuously.
+    let greet = indexer
+        .db()
+        .get_symbol_by_qualname("helper.greet", graph_version)
+        .unwrap()
+        .expect("helper.greet must exist after initial index");
+    {
+        let conn = indexer.db().read_conn().unwrap();
+        let resolved_to_greet: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_symbol_id = ? AND graph_version = ?",
+                rusqlite::params![greet.id, graph_version],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            resolved_to_greet > 0,
+            "Precondition: at least one edge must resolve to helper.greet's rowid"
+        );
+    }
+
+    // Delete helper.py and add zebra.py in the SAME sync batch. zebra's new
+    // symbols are prime candidates to reuse helper's freed rowids.
+    let helper_path = repo_root.join("helper.py");
+    std::fs::remove_file(&helper_path).unwrap();
+    let zebra_path = repo_root.join("zebra.py");
+    std::fs::write(
+        &zebra_path,
+        "def zulu(name: str) -> str:\n    return name\n",
+    )
+    .unwrap();
+
+    indexer.sync_abs_paths(&[helper_path, zebra_path]).unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+
+    // No edge that still names a helper symbol may carry a resolved id: helper's
+    // symbols are gone, so a non-NULL id either dangles or points at a reused
+    // rowid belonging to zebra.
+    let mispointed: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT e.target_qualname, s.qualname
+                 FROM edges e JOIN symbols s ON e.target_symbol_id = s.id
+                 WHERE e.target_qualname IN ('helper.greet', 'caller.greet', 'greet', 'helper')
+                   AND e.graph_version = ?",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map(rusqlite::params![graph_version], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        rows.collect::<Result<Vec<_>, _>>().unwrap()
+    };
+    assert!(
+        mispointed.is_empty(),
+        "Edges naming deleted helper symbols must have NULL target_symbol_id, \
+         but some resolve to other symbols (target_qualname -> actual symbol): {mispointed:?}"
+    );
+
+    // And the general invariant: no dangling ids either.
+    for column in ["source_symbol_id", "target_symbol_id"] {
+        let dangling: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM edges
+                     WHERE {column} IS NOT NULL
+                       AND graph_version = ?
+                       AND {column} NOT IN (SELECT id FROM symbols WHERE graph_version = ?)"
+                ),
+                rusqlite::params![graph_version, graph_version],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            dangling, 0,
+            "No edge {column} may dangle after file delete sync"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}

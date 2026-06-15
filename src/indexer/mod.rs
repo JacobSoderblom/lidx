@@ -30,7 +30,7 @@ pub mod xref;
 pub mod yaml;
 
 #[derive(Debug, Default)]
-pub(crate) struct SyncStats {
+pub struct SyncStats {
     pub indexed: usize,
     pub deleted: usize,
     pub skipped: usize,
@@ -164,7 +164,7 @@ impl Indexer {
         })
     }
 
-    pub(crate) fn sync_rel_paths(&mut self, rel_paths: &[String]) -> Result<SyncStats> {
+    pub fn sync_rel_paths(&mut self, rel_paths: &[String]) -> Result<SyncStats> {
         let abs_paths: Vec<PathBuf> = rel_paths
             .iter()
             .map(|rel| self.repo_root.join(rel))
@@ -172,7 +172,7 @@ impl Indexer {
         self.sync_abs_paths(&abs_paths)
     }
 
-    pub(crate) fn sync_abs_paths(&mut self, paths: &[PathBuf]) -> Result<SyncStats> {
+    pub fn sync_abs_paths(&mut self, paths: &[PathBuf]) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
         let mut touched = false;
         let mut indexed_files = Vec::new();
@@ -233,6 +233,21 @@ impl Indexer {
             stats.edges += xref_edges;
         }
         if touched {
+            // Repair dangling symbol ids: edges in unchanged files may still point at
+            // old rowids for symbols that were renamed/re-signed in the files we just
+            // synced. NULL them out so the subsequent re-resolution pass can fix them.
+            let dangling = self.db.repair_dangling_symbol_ids(self.graph_version)?;
+            if dangling > 0 {
+                eprintln!(
+                    "lidx: nullified {dangling} dangling symbol id(s) after incremental sync"
+                );
+            }
+            // Re-run null-target resolution so newly-NULLed edges get re-linked by qualname.
+            let resolved = self.db.resolve_null_target_edges(self.graph_version)?;
+            if resolved > 0 {
+                eprintln!("lidx: resolved {resolved} edge(s) after incremental sync");
+            }
+
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
