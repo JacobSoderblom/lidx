@@ -158,6 +158,26 @@ fn handle_message(message: Value, state: &mut State) -> Option<Value> {
     }
 }
 
+/// Methods called out by name in the "START HERE" instructions line.
+/// Everything else in METHOD_LIST surfaces in the "Other methods" line.
+const FEATURED_METHODS: &[&str] = &[
+    "explain_symbol",
+    "analyze_diff",
+    "trace_flow",
+    "orient",
+    "search",
+    "gather_context",
+];
+
+fn other_methods_list() -> String {
+    rpc::METHOD_LIST
+        .iter()
+        .filter(|&&m| !FEATURED_METHODS.contains(&m))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn initialize_result(message: &Value) -> Value {
     let protocol = message
         .get("params")
@@ -172,18 +192,20 @@ fn initialize_result(message: &Value) -> Value {
             "version": env!("CARGO_PKG_VERSION"),
         },
         "instructions": format!(
-            "Use the {TOOL_NAME} tool to query a code index. Call with method: help for docs.\n\
+            "Use the {TOOL_NAME} tool to query a code index. \
+    Start with method: onboard or orient for an overview.\n\
     \n\
     START HERE: explain_symbol for deep symbol understanding (one call replaces 5+). \
     analyze_diff for change impact. trace_flow for call chains. \
     orient for architecture overview. search for regex. \
     gather_context for LLM-ready context.\n\
     \n\
-    Other methods: analyze_impact, onboard, reindex, top_complexity, repo_map, dead_symbols.\n\
+    Other methods: {other_methods}.\n\
     \n\
     Edge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, \
     HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, \
-    XREF, MODULE_FILE, IMPORTS_FILE. Scope values: code, docs, tests, examples, all."
+    XREF, MODULE_FILE, IMPORTS_FILE. Scope values: code, docs, tests, examples, all.",
+            other_methods = other_methods_list()
         ),
     })
 }
@@ -214,7 +236,7 @@ fn tool_spec() -> Value {
                 },
                 "params": {
                     "oneOf": one_of,
-                    "description": "Method parameters (object). Call with method: help for full parameter docs per method."
+                    "description": "Method parameters (object). See the oneOf schemas above for per-method parameter docs."
                 },
                 "repo": {
                     "type": "string",
@@ -437,6 +459,41 @@ mod tests {
         dir.push(format!("lidx-mcp-{label}-{nanos}-{counter}"));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn featured_methods_are_dispatchable() {
+        for method in FEATURED_METHODS {
+            assert!(
+                rpc::METHOD_LIST.contains(method),
+                "FEATURED_METHODS contains '{method}' which is not in METHOD_LIST; \
+                 the START HERE instructions line has drifted from dispatch"
+            );
+        }
+    }
+
+    #[test]
+    fn instructions_mention_every_method_and_no_phantom_help() {
+        let init = initialize_result(&json!({}));
+        let instructions = init["instructions"].as_str().unwrap();
+        for method in rpc::METHOD_LIST {
+            assert!(
+                instructions.contains(method),
+                "instructions do not mention dispatchable method '{method}'"
+            );
+        }
+        assert!(
+            !instructions.contains("help"),
+            "instructions mention a 'help' method, which is not dispatchable"
+        );
+        let spec = tool_spec();
+        let params_desc = spec["inputSchema"]["properties"]["params"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            !params_desc.contains("help"),
+            "tool spec params description mentions a 'help' method, which is not dispatchable"
+        );
     }
 
     #[test]
