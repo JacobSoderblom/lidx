@@ -808,7 +808,7 @@ impl Db {
                 "SELECT s.id
                  FROM symbols s
                  JOIN files f ON s.file_id = f.id
-                 WHERE (s.qualname = ? OR s.qualname LIKE ?)
+                 WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
                    AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                    AND s.graph_version = ?
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?)
@@ -821,7 +821,7 @@ impl Db {
                 "SELECT s.id
                  FROM symbols s
                  JOIN files f ON s.file_id = f.id
-                 WHERE (s.qualname = ? OR s.qualname LIKE ?)
+                 WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
                    AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                    AND s.graph_version = ?
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?)
@@ -845,14 +845,15 @@ impl Db {
                         .or_else(|| {
                             // Fuzzy fallback: try same-language first, then cross-language for bridge edges only
                             edge.target_qualname.as_ref().and_then(|qn| {
-                                let method_name = qn.split('.').next_back().unwrap_or(qn);
-                                let pattern = format!("%.{}", method_name);
+                                let (method_name, dot_pattern, colons_pattern) =
+                                    fuzzy_qualname_patterns(qn);
                                 // Try same-language first
                                 let same_lang = fuzzy_same_lang_stmt
                                     .query_row(
                                         params![
                                             method_name,
-                                            &pattern,
+                                            &dot_pattern,
+                                            &colons_pattern,
                                             graph_version,
                                             graph_version,
                                             &source_lang,
@@ -872,7 +873,8 @@ impl Db {
                                         .query_row(
                                             params![
                                                 method_name,
-                                                &pattern,
+                                                &dot_pattern,
+                                                &colons_pattern,
                                                 graph_version,
                                                 graph_version,
                                                 method_name
@@ -976,7 +978,7 @@ impl Db {
                     "SELECT s.id
                      FROM symbols s
                      JOIN files f ON s.file_id = f.id
-                     WHERE (s.qualname = ? OR s.qualname LIKE ?)
+                     WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
                        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                        AND s.graph_version = ?
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
@@ -989,7 +991,7 @@ impl Db {
                     "SELECT s.id
                      FROM symbols s
                      JOIN files f ON s.file_id = f.id
-                     WHERE (s.qualname = ? OR s.qualname LIKE ?)
+                     WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
                        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                        AND s.graph_version = ?
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
@@ -1001,18 +1003,16 @@ impl Db {
                     tx.prepare("UPDATE edges SET target_symbol_id = ? WHERE id = ?")?;
 
                 for (edge_id, target_qualname, source_lang, edge_kind) in &unresolved {
-                    let method_name = target_qualname
-                        .split('.')
-                        .next_back()
-                        .unwrap_or(target_qualname);
-                    let pattern = format!("%.{}", method_name);
+                    let (method_name, dot_pattern, colons_pattern) =
+                        fuzzy_qualname_patterns(target_qualname);
 
                     // Try same-language first
                     let resolved = fuzzy_same_lang_stmt
                         .query_row(
                             params![
                                 method_name,
-                                &pattern,
+                                &dot_pattern,
+                                &colons_pattern,
                                 graph_version,
                                 graph_version,
                                 source_lang,
@@ -1028,7 +1028,8 @@ impl Db {
                                     .query_row(
                                         params![
                                             method_name,
-                                            &pattern,
+                                            &dot_pattern,
+                                            &colons_pattern,
                                             graph_version,
                                             graph_version,
                                             method_name
@@ -1599,6 +1600,38 @@ fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
     })
 }
 
+/// Extract the trailing name segment from a qualname, handling both `.` and `::` separators.
+///
+/// Examples:
+/// - `"a.b.process"` → `"process"`
+/// - `"crate::util::helper::process"` → `"process"`
+/// - `"_svc.DeployAsync"` → `"DeployAsync"`
+/// - `"process"` → `"process"` (no separator)
+pub(crate) fn qualname_trailing_name(qn: &str) -> &str {
+    // Find the last occurrence of either '.' or "::"
+    let dot_pos = qn.rfind('.').map(|p| p + 1);
+    let colons_pos = qn.rfind("::").map(|p| p + 2);
+    match (dot_pos, colons_pos) {
+        (Some(d), Some(c)) => &qn[d.max(c)..],
+        (Some(d), None) => &qn[d..],
+        (None, Some(c)) => &qn[c..],
+        (None, None) => qn,
+    }
+}
+
+/// Build the fuzzy suffix-match inputs for a target qualname: the trailing
+/// name (for exact matching) plus LIKE patterns for both `.`- and
+/// `::`-separated qualnames.
+///
+/// Shared by all fuzzy edge-resolution sites (`insert_edges`,
+/// `resolve_null_target_edges`, `lookup_symbol_id_fuzzy`) so the matching
+/// logic cannot drift between them. Deliberately no bare `%name` pattern:
+/// that would let `process` match `reprocess`.
+pub(crate) fn fuzzy_qualname_patterns(qn: &str) -> (&str, String, String) {
+    let name = qualname_trailing_name(qn);
+    (name, format!("%.{name}"), format!("%::{name}"))
+}
+
 fn resolve_symbol_id(
     qualname: &Option<String>,
     symbol_map: &HashMap<String, i64>,
@@ -1646,6 +1679,26 @@ mod tests {
             end_byte: 100,
             signature: signature.map(String::from),
             docstring: None,
+        }
+    }
+
+    fn make_test_edge(
+        kind: &str,
+        source_qualname: &str,
+        target_qualname: &str,
+    ) -> crate::indexer::extract::EdgeInput {
+        crate::indexer::extract::EdgeInput {
+            kind: kind.to_string(),
+            source_qualname: Some(source_qualname.to_string()),
+            target_qualname: Some(target_qualname.to_string()),
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: Some(1.0),
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
         }
     }
 
@@ -3404,5 +3457,288 @@ mod tests {
             .lookup_symbol_id_filtered("mod.Foo", Some(&python_langs), 1)
             .unwrap();
         assert_eq!(id, Some(ins_py[0].id));
+    }
+
+    // --- qualname_trailing_name helper ---
+
+    #[test]
+    fn test_qualname_trailing_name() {
+        let cases: &[(&str, &str)] = &[
+            // '.' separator
+            ("a.b.process", "process"),
+            ("_svc.DeployAsync", "DeployAsync"),
+            // '::' separator
+            ("crate::util::helper::process", "process"),
+            ("foo::bar", "bar"),
+            // no separator
+            ("process", "process"),
+            // mixed separators: last one wins
+            ("crate::Foo.method", "method"),
+            ("pkg.module::func", "func"),
+            // trailing separators yield an empty name; downstream patterns
+            // ('', '%.', '%::') cannot match any real qualname
+            ("foo.", ""),
+            ("foo::", ""),
+            // leading separators are stripped
+            (".foo", "foo"),
+            ("::foo", "foo"),
+            // a lone ':' (not '::') is part of the name, never a split point
+            ("label:name", "label:name"),
+            ("a::b:c", "b:c"),
+            (":", ":"),
+            // degenerate inputs
+            ("", ""),
+            (".", ""),
+            ("::", ""),
+            // repeated separators collapse to the last one
+            ("a..b", "b"),
+            ("a:::b", "b"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(qualname_trailing_name(input), *expected, "input: {input:?}");
+        }
+    }
+
+    // --- lookup_symbol_id_fuzzy with '::' qualnames ---
+
+    #[test]
+    fn test_lookup_symbol_id_fuzzy_resolves_rust_colons_qualname() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol(
+            "crate::util::helper::process",
+            Some("fn process()"),
+            "function",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Bare name target should match via '%::process' suffix pattern
+        let id = db.lookup_symbol_id_fuzzy("process", None, 1).unwrap();
+        assert_eq!(id, Some(inserted[0].id));
+
+        // Short '::'-qualified target should match full qualname via suffix pattern
+        let id = db
+            .lookup_symbol_id_fuzzy("helper::process", None, 1)
+            .unwrap();
+        assert_eq!(id, Some(inserted[0].id));
+    }
+
+    #[test]
+    fn test_lookup_symbol_id_fuzzy_partial_name_does_not_match() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol(
+            "crate::util::reprocess",
+            Some("fn reprocess()"),
+            "function",
+            1,
+        )];
+        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // "process" must NOT match "reprocess" — no bare '%process' suffix
+        let id = db.lookup_symbol_id_fuzzy("process", None, 1).unwrap();
+        assert!(id.is_none());
+    }
+
+    #[test]
+    fn test_lookup_symbol_id_fuzzy_degenerate_targets_return_none() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol(
+            "crate::util::process",
+            Some("fn process()"),
+            "function",
+            1,
+        )];
+        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Trailing separators produce an empty trailing name; the resulting
+        // patterns ('', '%.', '%::') must not match any real qualname
+        assert_eq!(db.lookup_symbol_id_fuzzy("util::", None, 1).unwrap(), None);
+        assert_eq!(db.lookup_symbol_id_fuzzy("util.", None, 1).unwrap(), None);
+        assert_eq!(db.lookup_symbol_id_fuzzy("", None, 1).unwrap(), None);
+
+        // A single ':' is not a separator: "Foo:process" keeps the whole
+        // string as the name and must NOT resolve to "process"
+        assert_eq!(
+            db.lookup_symbol_id_fuzzy("Foo:process", None, 1).unwrap(),
+            None
+        );
+    }
+
+    // --- insert_edges fuzzy resolution with '::' qualnames ---
+
+    #[test]
+    fn test_insert_edges_fuzzy_resolves_rust_colons_target() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+
+        let caller_sym = vec![make_test_symbol(
+            "crate::caller::call_helper",
+            Some("fn call_helper()"),
+            "function",
+            1,
+        )];
+        let callee_sym = vec![make_test_symbol(
+            "crate::util::helper::process",
+            Some("fn process()"),
+            "function",
+            10,
+        )];
+        let caller_inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &caller_sym, 1, None)
+            .unwrap();
+        let callee_inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &callee_sym, 1, None)
+            .unwrap();
+
+        // Edge with bare-name target — no symbol_map entry for "process"
+        let edges = vec![make_test_edge(
+            "CALLS",
+            "crate::caller::call_helper",
+            "process",
+        )];
+        let symbol_map: HashMap<String, i64> = caller_inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // The inserted edge should have resolved target_symbol_id
+        let found = db.edges_for_symbol(caller_inserted[0].id, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].target_symbol_id, Some(callee_inserted[0].id));
+    }
+
+    // --- resolve_null_target_edges with '::' qualnames ---
+
+    #[test]
+    fn test_resolve_null_target_edges_resolves_rust_colons_qualname() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+
+        let caller_sym = vec![make_test_symbol(
+            "crate::caller::do_work",
+            Some("fn do_work()"),
+            "function",
+            1,
+        )];
+        let caller_inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &caller_sym, 1, None)
+            .unwrap();
+
+        // Insert the edge before the callee symbol exists — so target_symbol_id stays NULL.
+        // This simulates out-of-order incremental indexing (caller file indexed before callee file).
+        let edges = vec![make_test_edge("CALLS", "crate::caller::do_work", "compute")];
+        let symbol_map: HashMap<String, i64> = caller_inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Now insert the callee symbol (the callee file is indexed later)
+        let callee_sym = vec![make_test_symbol(
+            "crate::util::helper::compute",
+            Some("fn compute()"),
+            "function",
+            10,
+        )];
+        let callee_inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &callee_sym, 1, None)
+            .unwrap();
+
+        // Confirm edge is unresolved
+        let conn = db.read_conn().unwrap();
+        let unresolved_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_symbol_id IS NULL AND graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unresolved_count, 1);
+        drop(conn);
+
+        // Now run resolve_null_target_edges — should resolve via '%::compute' pattern
+        let resolved = db.resolve_null_target_edges(1).unwrap();
+        assert!(resolved >= 1);
+
+        // Verify the edge now points to the callee
+        let found = db.edges_for_symbol(caller_inserted[0].id, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].target_symbol_id, Some(callee_inserted[0].id));
+    }
+
+    #[test]
+    fn test_insert_edges_fuzzy_prefers_same_language_over_shorter_cross_language() {
+        let (mut db, _temp) = create_test_db();
+        let file_id_rs = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let file_id_py = db
+            .upsert_file("src/app.py", "h2", "python", 100, 0)
+            .unwrap();
+
+        // Python candidate has the shorter qualname — without language
+        // preference, "shortest wins" would pick it
+        let py_syms = vec![make_test_symbol(
+            "m.process",
+            Some("def process()"),
+            "function",
+            1,
+        )];
+        db.insert_symbols(file_id_py, "src/app.py", &py_syms, 1, None)
+            .unwrap();
+
+        let rs_syms = vec![
+            make_test_symbol("crate::caller::run", Some("fn run()"), "function", 1),
+            make_test_symbol(
+                "crate::deeply::nested::util::process",
+                Some("fn process()"),
+                "function",
+                10,
+            ),
+        ];
+        let rs_inserted = db
+            .insert_symbols(file_id_rs, "src/lib.rs", &rs_syms, 1, None)
+            .unwrap();
+
+        // CALLS is not a bridge kind, so only the same-language pass applies;
+        // the '::' pattern must find the Rust symbol within that pass
+        let edges = vec![make_test_edge("CALLS", "crate::caller::run", "process")];
+        let symbol_map: HashMap<String, i64> = rs_inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id_rs, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let found = db.edges_for_symbol(rs_inserted[0].id, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].target_symbol_id, Some(rs_inserted[1].id));
+    }
+
+    #[test]
+    fn test_lookup_symbol_id_fuzzy_shortest_wins_across_separator_styles() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+
+        // One dot-style and one colons-style candidate; the colons one is shorter
+        let symbols = vec![
+            make_test_symbol("a.b.deeply.process", Some("fn process()"), "function", 1),
+            make_test_symbol("x::process", Some("fn process()"), "function", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+
+        // Shortest qualname wins across both LIKE branches
+        let id = db.lookup_symbol_id_fuzzy("process", None, 1).unwrap();
+        assert_eq!(id, Some(inserted[1].id));
     }
 }

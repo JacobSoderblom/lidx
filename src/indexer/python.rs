@@ -238,6 +238,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 });
 
                 let mut grpc_service = None;
+                let mut is_settings_class = false;
                 if let Some(superclasses) = node.child_by_field_name("superclasses") {
                     let mut cursor = superclasses.walk();
                     for child in superclasses.named_children(&mut cursor) {
@@ -245,6 +246,9 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                         if !base.is_empty() {
                             if grpc_service.is_none() {
                                 grpc_service = grpc_service_name_from_base(&base);
+                            }
+                            if is_pydantic_settings_base(&base) {
+                                is_settings_class = true;
                             }
                             output.edges.push(EdgeInput {
                                 kind: "EXTENDS".to_string(),
@@ -257,12 +261,14 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                         }
                     }
                 }
-
                 let mut next_ctx = ctx.clone();
                 next_ctx.class_stack.push(name);
                 next_ctx.current_scope = qualname.clone();
                 next_ctx.grpc_service = grpc_service;
                 if let Some(body) = node.child_by_field_name("body") {
+                    if is_settings_class {
+                        emit_settings_field_config_reads(body, &qualname, source, output);
+                    }
                     walk_block(body, &next_ctx, source, output);
                 }
             }
@@ -427,6 +433,92 @@ fn config_read_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<
         evidence_end_line: Some(end_line),
         ..Default::default()
     })
+}
+
+/// For a pydantic BaseSettings subclass body, emit config edges for each model field.
+/// Each annotated field (`field_name: SomeType`, with or without a default) produces a
+/// pair of edges sharing the same source/target:
+///   CONFIG_READ  source=class_qualname  target="env://FIELD_NAME_UPPERCASED"
+///   CONFIG_BIND  source=class_qualname  target="env://FIELD_NAME_UPPERCASED"
+/// This enables trace_flow to bridge env:// config sources to this settings class.
+///
+/// Non-field statements are skipped: bare (non-annotated) assignments such as
+/// `model_config = ...`, methods, nested `Config` classes, docstrings and comments.
+/// pydantic non-fields are also skipped: `ClassVar[...]` constants and leading-underscore
+/// private attributes, neither of which is bound from the environment.
+fn emit_settings_field_config_reads(
+    body: Node<'_>,
+    class_qualname: &str,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut cursor = body.walk();
+    for stmt in body.named_children(&mut cursor) {
+        // Annotated assignments appear as `expression_statement` wrapping an `assignment`
+        // with a `type` field, e.g. `database_url: str` or `database_url: str = "default"`.
+        let assignment = if stmt.kind() == "expression_statement" {
+            stmt.named_child(0)
+                .filter(|child| child.kind() == "assignment")
+        } else if stmt.kind() == "assignment" {
+            Some(stmt)
+        } else {
+            None
+        };
+        let Some(assignment) = assignment else {
+            continue;
+        };
+        // Only annotated assignments have a `type` field.
+        let Some(type_node) = assignment.child_by_field_name("type") else {
+            continue;
+        };
+        // pydantic excludes `ClassVar[...]`-annotated attributes from the model:
+        // they are class constants, never bound from the environment.
+        if is_class_var_annotation(&node_text(type_node, source)) {
+            continue;
+        }
+        let Some(left) = assignment.child_by_field_name("left") else {
+            continue;
+        };
+        let field_name = node_text(left, source);
+        if field_name.is_empty() {
+            continue;
+        }
+        // pydantic treats leading-underscore names as private attributes
+        // (`PrivateAttr`), which are not model fields and not env-bound.
+        if field_name.starts_with('_') {
+            continue;
+        }
+        let Some(env_uri) = config::normalize_env_var_name(&field_name) else {
+            continue;
+        };
+        let (start_line, _, end_line, _, _, _) = span(stmt);
+        let read_detail =
+            config::build_config_read_detail("env", &env_uri, &field_name, "pydantic");
+        output.edges.push(EdgeInput {
+            kind: config::CONFIG_READ_KIND.to_string(),
+            source_qualname: Some(class_qualname.to_string()),
+            target_qualname: Some(env_uri.clone()),
+            detail: Some(read_detail),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            ..Default::default()
+        });
+        let bind_detail = config::build_config_bind_detail(
+            class_qualname,
+            "BaseSettings",
+            "field_binding",
+            "pydantic",
+        );
+        output.edges.push(EdgeInput {
+            kind: config::CONFIG_BIND_KIND.to_string(),
+            source_qualname: Some(class_qualname.to_string()),
+            target_qualname: Some(env_uri),
+            detail: Some(bind_detail),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            ..Default::default()
+        });
+    }
 }
 
 /// Detect os.environ["KEY"] subscript access → CONFIG_READ
@@ -942,6 +1034,24 @@ fn attribute_base_and_name(node: Node<'_>, source: &str) -> Option<(String, Stri
     }
     let name = node_text(node, source);
     Some((String::new(), name))
+}
+
+/// Returns true if `base` is a pydantic settings base class:
+/// `BaseSettings`, `pydantic.BaseSettings`, or `pydantic_settings.BaseSettings`.
+fn is_pydantic_settings_base(base: &str) -> bool {
+    let trimmed = base.trim();
+    trimmed == "BaseSettings" || trimmed.ends_with(".BaseSettings")
+}
+
+/// Returns true if a type annotation is `ClassVar` / `ClassVar[...]`
+/// (optionally module-qualified, e.g. `typing.ClassVar[int]`). Such
+/// attributes are class constants and are excluded from the pydantic model.
+fn is_class_var_annotation(annotation: &str) -> bool {
+    // Drop any subscript (`ClassVar[int]` -> `ClassVar`) and module path
+    // (`typing.ClassVar` -> `ClassVar`), then compare the bare name.
+    let base = annotation.split('[').next().unwrap_or(annotation).trim();
+    let bare = base.rsplit('.').next().unwrap_or(base).trim();
+    bare == "ClassVar"
 }
 
 fn grpc_service_name_from_base(raw: &str) -> Option<String> {
