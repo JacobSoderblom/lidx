@@ -64,7 +64,7 @@ pub fn link_cross_language_refs(
 }
 
 fn should_scan_file(file: &ScannedFile) -> bool {
-    file.language != "markdown" && file.language != "yaml" && file.language != "bicep"
+    file.language != "yaml" && file.language != "bicep"
 }
 
 fn collect_xref_edges(
@@ -288,9 +288,6 @@ impl SymbolRefIndex {
         let mut by_key: HashMap<String, Vec<KeyRef>> = HashMap::new();
         for record in records {
             if record.kind == "module" || record.kind == "namespace" {
-                continue;
-            }
-            if record.language == "markdown" {
                 continue;
             }
             let idx = symbols.len();

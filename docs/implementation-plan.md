@@ -2,8 +2,8 @@
 
 **Date:** 2026-02-06
 **Author:** Backend Architect
-**Status:** Authoritative implementation plan for Epics 1-7
-**Schema Version Baseline:** 9 (current, see `src/db/migrations.rs`)
+**Status:** Delivered/Archived — Epics 1-7 fully shipped as of 2026-06-12
+**Schema Version Baseline:** 12 (current, see `src/db/migrations.rs`)
 
 ---
 
@@ -16,6 +16,12 @@
 5. [Epic 5: Change Review Workflow](#epic-5-change-review-workflow)
 6. [Epic 6: Cross-Language Data Flow Tracing](#epic-6-cross-language-data-flow-tracing)
 7. [Epic 7: Stale Code and Dead Symbol Detection](#epic-7-stale-code-and-dead-symbol-detection)
+
+## Delivery Notes (2026-06-12)
+
+- `src/rpc.rs` was refactored into the `src/rpc/` module tree (`mod.rs`, `handlers.rs`, `schema.rs`, `compact.rs`, `format.rs`, `validate.rs`)
+- `analyze_impact_v2` was removed; its multi-layer capabilities merged into `analyze_impact`
+- Schema version advanced from 9 → 12 across delivered migrations
 
 ---
 
@@ -394,7 +400,7 @@ For a commit touching files [A, B, C], emit pairs: (A,B), (A,C), (B,C). This is 
   - Return `ImpactSource::CoChange` evidence with actual git data (commit count, last timestamp)
 
 **What changes from current implementation:**
-The existing `HistoricalImpactLayer::find_co_changes()` (line ~170 in historical.rs) currently uses `get_changed_symbols_between_versions()` which compares graph versions. This is a proxy for git history but misses actual commit-level co-change patterns. The new implementation reads from the pre-computed `co_changes` table, which is both faster and more accurate.
+The original `HistoricalImpactLayer::find_co_changes()` computed co-changes by comparing graph versions — a proxy for git history that missed actual commit-level co-change patterns. The delivered implementation reads from the pre-computed `co_changes` table, which is both faster and more accurate.
 
 **Estimated LOC:** ~200
 

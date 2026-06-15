@@ -303,27 +303,6 @@ pub struct RouteRefsResult {
 }
 
 #[derive(Debug, Serialize)]
-pub struct FlowStatusEntry {
-    pub path: String,
-    pub route_count: usize,
-    pub call_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub routes: Option<Vec<Edge>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub calls: Option<Vec<Edge>>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct FlowStatusResult {
-    pub routes_total: usize,
-    pub calls_total: usize,
-    pub edge_limit: usize,
-    pub truncated: bool,
-    pub routes_without_calls: Vec<FlowStatusEntry>,
-    pub calls_without_routes: Vec<FlowStatusEntry>,
-}
-
-#[derive(Debug, Serialize)]
 pub struct IndexStats {
     pub scanned: usize,
     pub indexed: usize,
