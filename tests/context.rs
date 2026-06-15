@@ -223,3 +223,61 @@ fn context_rpc_method_json_format() {
     assert_eq!(result["path"].as_str().unwrap(), "pkg/core.py");
     assert!(result.get("symbol_summary").is_some());
 }
+
+#[test]
+fn context_rpc_method_graph_version_aliases() {
+    let temp = TempRepo::new("py_mvp");
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+
+    let baseline = rpc::handle_method(
+        &mut indexer,
+        "context",
+        serde_json::json!({"path": "pkg/core.py"}),
+    )
+    .unwrap();
+
+    // "as_of" and "version" are accepted aliases for "graph_version". Serde
+    // silently drops unknown keys, so equality with the baseline alone would
+    // not prove an alias is wired — also query a version with no symbols and
+    // require the output to change, which shows the value was consumed.
+    for alias in ["graph_version", "as_of", "version"] {
+        let result = rpc::handle_method(
+            &mut indexer,
+            "context",
+            serde_json::json!({"path": "pkg/core.py", alias: gv}),
+        )
+        .unwrap();
+        assert_eq!(
+            result, baseline,
+            "context with {alias}={gv} should match the default-version output"
+        );
+
+        let empty = rpc::handle_method(
+            &mut indexer,
+            "context",
+            serde_json::json!({"path": "pkg/core.py", alias: gv + 1}),
+        )
+        .unwrap();
+        assert_ne!(
+            empty,
+            baseline,
+            "context with {alias}={} (no symbols) should differ from the current-version output",
+            gv + 1
+        );
+    }
+}
+
+#[test]
+fn context_rpc_method_missing_path_errors() {
+    let temp = TempRepo::new("py_mvp");
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let err = rpc::handle_method(&mut indexer, "context", serde_json::json!({})).unwrap_err();
+    assert!(
+        err.to_string().contains("path"),
+        "missing-path error should mention 'path', got: {err}"
+    );
+}

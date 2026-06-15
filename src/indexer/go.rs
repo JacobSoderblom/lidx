@@ -13,12 +13,26 @@ use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
 
+/// A local variable declaration tagged with the byte range of the block that
+/// directly contains it, for scope-aware resolution.
+#[derive(Clone)]
+struct ScopedVarType {
+    name: String,
+    type_name: String,
+    /// Byte offset of the start of the containing block / func_literal.
+    block_start: usize,
+    /// Byte offset of the end of the containing block / func_literal.
+    block_end: usize,
+}
+
 #[derive(Clone)]
 struct Context {
     module: String,
     current_scope: String,
     grpc_servers: HashMap<String, GrpcServerInfo>,
     grpc_clients: HashMap<String, GrpcClientInfo>,
+    /// Local variable declarations with their containing-block byte ranges.
+    local_var_types: Vec<ScopedVarType>,
 }
 
 #[derive(Clone)]
@@ -75,6 +89,7 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
             current_scope: module_name.to_string(),
             grpc_servers,
             grpc_clients: HashMap::new(),
+            local_var_types: Vec::new(),
         };
         walk_node(root, &ctx, source, &mut output);
         Ok(output)
@@ -247,6 +262,10 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
         let mut clients = ctx.grpc_clients.clone();
         clients.extend(collect_grpc_clients(body, source));
         next_ctx.grpc_clients = clients;
+        // Collect local variable types for config bind resolution (scope-aware)
+        let mut var_types = ctx.local_var_types.clone();
+        var_types.extend(collect_local_var_types(body, source));
+        next_ctx.local_var_types = var_types;
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -307,6 +326,10 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         let mut clients = ctx.grpc_clients.clone();
         clients.extend(collect_grpc_clients(body, source));
         next_ctx.grpc_clients = clients;
+        // Collect local variable types for config bind resolution
+        let mut var_types = ctx.local_var_types.clone();
+        var_types.extend(collect_local_var_types(body, source));
+        next_ctx.local_var_types = var_types;
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -551,6 +574,10 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = config_read_edge(node, ctx, source) {
         output.edges.push(edge);
     }
+    // viper.Unmarshal / viper.UnmarshalKey → CONFIG_BIND
+    if let Some(edge) = viper_config_bind_edge(node, ctx, source) {
+        output.edges.push(edge);
+    }
 
     // General CALLS edge
     let Some(function_node) = node.child_by_field_name("function") else {
@@ -613,6 +640,279 @@ fn config_read_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeI
         evidence_end_line: Some(end_line),
         ..Default::default()
     })
+}
+
+/// Detect `viper.Unmarshal(&cfg)` and `viper.UnmarshalKey("key", &cfg)` → CONFIG_BIND edges.
+/// Resolves the struct type from local variable tracking in the context.
+fn viper_config_bind_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let function_node = node.child_by_field_name("function")?;
+    let (receiver, method) = split_selector_expr(function_node, source)?;
+
+    // Only match viper.Unmarshal or viper.UnmarshalKey
+    if receiver != "viper" && !receiver.ends_with(".viper") {
+        return None;
+    }
+    let struct_arg_index = match method.as_str() {
+        "Unmarshal" => 0,
+        "UnmarshalKey" => 1,
+        _ => return None,
+    };
+
+    let args = call_arguments(node);
+    let struct_arg = args.get(struct_arg_index)?;
+
+    // Argument should be &cfg — a unary_expression with operator "&"
+    let var_name = extract_address_of_var(*struct_arg, source)?;
+
+    // Scope-aware lookup: among all declarations of `var_name` whose containing
+    // block spans the call site, prefer the innermost (smallest block range).
+    // This correctly handles sibling-block shadowing (Finding 1) and closure
+    // shadowing (Finding 2).
+    let call_byte = node.start_byte();
+    let struct_type = resolve_var_type_at(&ctx.local_var_types, &var_name, call_byte)?;
+
+    // Qualify the struct type with the module if it's a simple (unqualified) name
+    let target_qualname = if struct_type.contains('.') {
+        struct_type.to_string()
+    } else {
+        format!("{}.{}", ctx.module, struct_type)
+    };
+
+    let detail = config::build_config_bind_detail(&target_qualname, &method, "unmarshal", "viper");
+    let (start_line, _, end_line, _, _, _) = span(node);
+    Some(EdgeInput {
+        kind: config::CONFIG_BIND_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(target_qualname),
+        detail: Some(detail),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    })
+}
+
+/// Extract the variable name from a `&varName` unary expression node.
+fn extract_address_of_var(node: Node<'_>, source: &str) -> Option<String> {
+    if node.kind() != "unary_expression" {
+        return None;
+    }
+    // Check operator is "&"
+    let operator = node.child_by_field_name("operator")?;
+    if node_text(operator, source) != "&" {
+        return None;
+    }
+    let operand = node.child_by_field_name("operand")?;
+    if operand.kind() == "identifier" {
+        let name = node_text(operand, source);
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// Collect local variable declarations with their containing-block byte ranges.
+/// Handles:
+///   `var cfg DatabaseConfig` (var_declaration → var_spec with explicit type)
+///   `cfg := DatabaseConfig{}` (short_var_declaration with composite_literal)
+///
+/// Each declaration is tagged with the byte range of the innermost block or
+/// func_literal that directly contains it, enabling scope-aware resolution at
+/// the call site (see `resolve_var_type_at`).
+fn collect_local_var_types(node: Node<'_>, source: &str) -> Vec<ScopedVarType> {
+    let mut types = Vec::new();
+    let block_start = node.start_byte();
+    let block_end = node.end_byte();
+    collect_local_var_types_inner(node, source, block_start, block_end, &mut types);
+    types
+}
+
+fn collect_local_var_types_inner(
+    node: Node<'_>,
+    source: &str,
+    block_start: usize,
+    block_end: usize,
+    types: &mut Vec<ScopedVarType>,
+) {
+    match node.kind() {
+        "var_declaration" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "var_spec" {
+                    collect_var_spec_types_scoped(child, source, block_start, block_end, types);
+                }
+            }
+        }
+        "short_var_declaration" => {
+            collect_short_var_types_scoped(node, source, block_start, block_end, types);
+        }
+        _ => {}
+    }
+    // Recurse into all children. When we cross into a new block or func_literal,
+    // update the current block range so declarations inside are tagged correctly.
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        let (child_block_start, child_block_end) =
+            if child.kind() == "block" || child.kind() == "func_literal" {
+                (child.start_byte(), child.end_byte())
+            } else {
+                (block_start, block_end)
+            };
+        collect_local_var_types_inner(child, source, child_block_start, child_block_end, types);
+    }
+}
+
+/// Scope-aware variable type resolver.
+///
+/// Among all entries for `var_name` whose block range contains `call_byte`,
+/// return the type from the innermost (narrowest) block. Returns `None` when:
+/// - no declaration for `var_name` exists at the call site, OR
+/// - multiple declarations exist in the same innermost block with *different*
+///   types (ambiguous — prefer a missed edge over a wrong one).
+fn resolve_var_type_at<'a>(
+    scoped: &'a [ScopedVarType],
+    var_name: &str,
+    call_byte: usize,
+) -> Option<&'a str> {
+    // Candidates: declarations whose block encloses the call site.
+    let candidates: Vec<&ScopedVarType> = scoped
+        .iter()
+        .filter(|sv| sv.name == var_name && sv.block_start <= call_byte && call_byte < sv.block_end)
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Innermost block = the one with the largest start byte (tightest enclosure).
+    let innermost_start = candidates
+        .iter()
+        .map(|sv| sv.block_start)
+        .max()
+        .unwrap_or(0);
+
+    let innermost: Vec<&ScopedVarType> = candidates
+        .iter()
+        .filter(|sv| sv.block_start == innermost_start)
+        .copied()
+        .collect();
+
+    // All innermost entries must agree on the type.
+    let first_type = innermost[0].type_name.as_str();
+    if innermost.iter().all(|sv| sv.type_name == first_type) {
+        Some(first_type)
+    } else {
+        // Ambiguous — skip rather than emit a wrong edge.
+        None
+    }
+}
+
+/// Record scoped name → type entries from a `var_spec` node.
+/// Handles `var a, b TypeName` and `var cfg = TypeName{}`.
+fn collect_var_spec_types_scoped(
+    node: Node<'_>,
+    source: &str,
+    block_start: usize,
+    block_end: usize,
+    types: &mut Vec<ScopedVarType>,
+) {
+    let mut cursor = node.walk();
+    let names: Vec<String> = node
+        .children_by_field_name("name", &mut cursor)
+        .map(|name_node| node_text(name_node, source))
+        .filter(|name| !name.is_empty())
+        .collect();
+
+    let type_name = match node.child_by_field_name("type") {
+        Some(type_node) => named_type_text(type_node, source),
+        // `var cfg = TypeName{}` — infer from the initializer, but only for a
+        // single name; multiple initializers would need positional pairing.
+        None if names.len() == 1 => node
+            .child_by_field_name("value")
+            .and_then(|value| extract_composite_literal_type(value, source)),
+        None => None,
+    };
+    let Some(type_name) = type_name else {
+        return;
+    };
+    for name in names {
+        types.push(ScopedVarType {
+            name,
+            type_name: type_name.clone(),
+            block_start,
+            block_end,
+        });
+    }
+}
+
+/// Record scoped name → type entries from `cfg := TypeName{}` (short_var_declaration),
+/// pairing each left-hand identifier with its right-hand expression positionally.
+fn collect_short_var_types_scoped(
+    node: Node<'_>,
+    source: &str,
+    block_start: usize,
+    block_end: usize,
+    types: &mut Vec<ScopedVarType>,
+) {
+    let Some(left) = node.child_by_field_name("left") else {
+        return;
+    };
+    let Some(right) = node.child_by_field_name("right") else {
+        return;
+    };
+    let mut left_cursor = left.walk();
+    let mut right_cursor = right.walk();
+    let names = left.named_children(&mut left_cursor);
+    let values = right.named_children(&mut right_cursor);
+    for (name_node, value_node) in names.zip(values) {
+        if name_node.kind() != "identifier" {
+            continue;
+        }
+        let name = node_text(name_node, source);
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(type_name) = extract_composite_literal_type(value_node, source) {
+            types.push(ScopedVarType {
+                name,
+                type_name,
+                block_start,
+                block_end,
+            });
+        }
+    }
+}
+
+/// Extract the named type from a composite literal `TypeName{...}`,
+/// drilling through an expression_list wrapper if present.
+fn extract_composite_literal_type(node: Node<'_>, source: &str) -> Option<String> {
+    if node.kind() == "expression_list" {
+        let mut cursor = node.walk();
+        let first = node.named_children(&mut cursor).next()?;
+        return extract_composite_literal_type(first, source);
+    }
+    if node.kind() != "composite_literal" {
+        return None;
+    }
+    named_type_text(node.child_by_field_name("type")?, source)
+}
+
+/// Text of a named type (`TypeName` or `pkg.TypeName`), unwrapping pointer
+/// indirection. Returns None for slice/map/array/chan/func types, which
+/// cannot name a bindable config struct.
+fn named_type_text(node: Node<'_>, source: &str) -> Option<String> {
+    match node.kind() {
+        "pointer_type" => {
+            let mut cursor = node.walk();
+            let inner = node.named_children(&mut cursor).next()?;
+            named_type_text(inner, source)
+        }
+        "type_identifier" | "qualified_type" => {
+            let text = node_text(node, source);
+            if text.is_empty() { None } else { Some(text) }
+        }
+        _ => None,
+    }
 }
 
 fn http_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
@@ -1020,6 +1320,11 @@ fn call_arguments(node: Node<'_>) -> Vec<Node<'_>> {
     };
     let mut cursor = arg_list.walk();
     for child in arg_list.named_children(&mut cursor) {
+        // tree-sitter-go emits `comment` as a named child of argument_list;
+        // skip it so positional indexing (args[0], args[1]) is not disturbed.
+        if child.kind() == "comment" {
+            continue;
+        }
         args.push(child);
     }
     args
@@ -1087,6 +1392,7 @@ fn is_simple_call_target(raw: &str) -> bool {
 mod tests {
     use super::GoExtractor;
     use crate::indexer::channel;
+    use crate::indexer::config;
     use crate::indexer::extract::LanguageExtractor;
     use crate::indexer::http;
     use crate::indexer::proto;
@@ -1203,5 +1509,293 @@ func subscriber() {
             .collect();
         assert!(!pub_edges.is_empty(), "should have CHANNEL_PUBLISH edges");
         assert!(!sub_edges.is_empty(), "should have CHANNEL_SUBSCRIBE edges");
+    }
+
+    /// Extract `source` as module "main" and return only the CONFIG_BIND edges.
+    fn config_bind_edges(source: &str) -> Vec<crate::indexer::extract::EdgeInput> {
+        let mut extractor = GoExtractor::new().unwrap();
+        let file = extractor.extract(source, "main").unwrap();
+        file.edges
+            .into_iter()
+            .filter(|e| e.kind == config::CONFIG_BIND_KIND)
+            .collect()
+    }
+
+    /// Every local declaration form that should bind `cfg` to `DatabaseConfig`:
+    /// explicit type, composite-literal initializers, multi-name var specs,
+    /// and positional short var declarations.
+    #[test]
+    fn viper_unmarshal_resolves_local_declaration_forms() {
+        let declarations = [
+            "var cfg DatabaseConfig",
+            "cfg := DatabaseConfig{}",
+            "var cfg = DatabaseConfig{}",
+            "var primary, cfg DatabaseConfig",
+            r#"name, cfg := "prod", DatabaseConfig{}"#,
+        ];
+        for declaration in declarations {
+            let source = format!(
+                r#"
+package main
+
+type DatabaseConfig struct {{
+    Host string
+}}
+
+func loadConfig() {{
+    {declaration}
+    viper.Unmarshal(&cfg)
+}}
+"#
+            );
+            let bind_edges = config_bind_edges(&source);
+            assert!(
+                bind_edges
+                    .iter()
+                    .any(|e| e.target_qualname.as_deref() == Some("main.DatabaseConfig")),
+                "`{declaration}`: expected CONFIG_BIND edge to main.DatabaseConfig, got: {bind_edges:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn viper_unmarshal_key_emits_config_bind_edge_with_detail() {
+        let source = r#"
+package main
+
+type AppConfig struct {
+    Debug bool
+}
+
+func loadConfig() {
+    var appCfg AppConfig
+    viper.UnmarshalKey("app", &appCfg)
+}
+"#;
+        let bind_edges = config_bind_edges(source);
+        let edge = bind_edges
+            .iter()
+            .find(|e| e.target_qualname.as_deref() == Some("main.AppConfig"))
+            .unwrap_or_else(|| {
+                panic!("Expected CONFIG_BIND edge to main.AppConfig, got: {bind_edges:?}")
+            });
+        let detail: serde_json::Value =
+            serde_json::from_str(edge.detail.as_deref().unwrap()).unwrap();
+        assert_eq!(detail["wrapper_type"], "UnmarshalKey");
+        assert_eq!(detail["binding_kind"], "unmarshal");
+        assert_eq!(detail["framework"], "viper");
+    }
+
+    #[test]
+    fn viper_unmarshal_keeps_qualified_type_unprefixed() {
+        let source = r#"
+package main
+
+func loadConfig() {
+    var cfg settings.Database
+    viper.Unmarshal(&cfg)
+}
+"#;
+        let bind_edges = config_bind_edges(source);
+        assert!(
+            bind_edges
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("settings.Database")),
+            "Expected CONFIG_BIND edge to settings.Database, got: {bind_edges:?}"
+        );
+    }
+
+    #[test]
+    fn viper_unmarshal_into_slice_var_emits_no_config_bind() {
+        let source = r#"
+package main
+
+type ServerConfig struct {
+    Host string
+}
+
+func loadConfig() {
+    var servers []ServerConfig
+    viper.UnmarshalKey("servers", &servers)
+}
+"#;
+        let bind_edges = config_bind_edges(source);
+        assert!(
+            bind_edges.is_empty(),
+            "Expected no CONFIG_BIND edges for slice-typed targets, got: {:?}",
+            bind_edges
+        );
+    }
+
+    #[test]
+    fn viper_unmarshal_ignores_vars_declared_inside_closures() {
+        let source = r#"
+package main
+
+type OtherConfig struct {
+    Host string
+}
+
+func loadConfig() {
+    helper := func() {
+        cfg := OtherConfig{}
+        _ = cfg
+    }
+    helper()
+    viper.Unmarshal(&cfg)
+}
+"#;
+        let bind_edges = config_bind_edges(source);
+        assert!(
+            bind_edges.is_empty(),
+            "Closure-local declarations must not leak into the enclosing scope, got: {:?}",
+            bind_edges
+        );
+    }
+
+    #[test]
+    fn viper_unmarshal_with_unresolvable_args_emits_no_config_bind() {
+        let source = r#"
+package main
+
+func loadConfig() {
+    viper.Unmarshal()
+    viper.Unmarshal(&undeclared)
+    viper.Unmarshal(cfgValue)
+    viper.UnmarshalKey("app")
+}
+"#;
+        let bind_edges = config_bind_edges(source);
+        assert!(
+            bind_edges.is_empty(),
+            "Expected no CONFIG_BIND edges for unresolvable arguments, got: {:?}",
+            bind_edges
+        );
+    }
+
+    #[test]
+    fn non_viper_call_emits_no_config_bind() {
+        let source = r#"
+package main
+
+type DatabaseConfig struct {
+    Host string
+}
+
+func loadConfig() {
+    var cfg DatabaseConfig
+    json.Unmarshal(data, &cfg)
+    yaml.Unmarshal(data, &cfg)
+}
+"#;
+        let bind_edges = config_bind_edges(source);
+        assert!(
+            bind_edges.is_empty(),
+            "Expected no CONFIG_BIND edges for non-viper calls, got: {:?}",
+            bind_edges
+        );
+    }
+
+    // ── Finding 1 ──────────────────────────────────────────────────────────
+    // Sibling-block `cfg` declarations must not bleed across scopes.
+    // viper.Unmarshal(&cfg) in the FIRST if-block must bind to `AConfig`,
+    // not to `BConfig` from the SECOND if-block.
+    #[test]
+    fn viper_unmarshal_sibling_block_cfg_binds_to_enclosing_scope_type() {
+        let source = r#"
+package main
+
+type AConfig struct { Host string }
+type BConfig struct { Host string }
+
+func f() {
+    if a {
+        cfg := AConfig{}
+        viper.Unmarshal(&cfg)
+    }
+    if b {
+        cfg := BConfig{}
+        _ = cfg
+    }
+}
+"#;
+        let bind_edges = config_bind_edges(source);
+        // Must produce exactly one edge, bound to AConfig.
+        assert_eq!(
+            bind_edges.len(),
+            1,
+            "Expected exactly 1 CONFIG_BIND edge, got: {bind_edges:?}"
+        );
+        assert_eq!(
+            bind_edges[0].target_qualname.as_deref(),
+            Some("main.AConfig"),
+            "Expected edge to main.AConfig (not BConfig from sibling block), got: {bind_edges:?}"
+        );
+    }
+
+    // ── Finding 2 ──────────────────────────────────────────────────────────
+    // A `cfg` shadowed inside a closure must NOT resolve to the outer `cfg`.
+    // Acceptable outcomes: bind to `OtherConfig` (if closure locals are tracked)
+    // or emit no edge — but never bind to the outer `DatabaseConfig`.
+    #[test]
+    fn viper_unmarshal_closure_shadow_does_not_bind_to_outer_type() {
+        let source = r#"
+package main
+type DatabaseConfig struct{ Host string }
+type OtherConfig struct{ Host string }
+func f() {
+    var cfg DatabaseConfig
+    helper := func() {
+        cfg := OtherConfig{}
+        viper.Unmarshal(&cfg)
+    }
+    helper()
+}
+"#;
+        let bind_edges = config_bind_edges(source);
+        // Must NOT bind to the outer DatabaseConfig.
+        assert!(
+            !bind_edges
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("main.DatabaseConfig")),
+            "Closure-shadowed cfg must not bind to outer DatabaseConfig, got: {bind_edges:?}"
+        );
+    }
+
+    // ── Finding 3 ──────────────────────────────────────────────────────────
+    // A `comment` node before the struct argument must not shift the positional
+    // index so that the edge is silently dropped.
+    #[test]
+    fn viper_unmarshal_comment_before_arg_does_not_drop_edge() {
+        // tree-sitter represents inline block comments as named children of
+        // argument_list; we feed the raw Go source through the extractor to
+        // exercise the real parser.
+        let source = r#"
+package main
+
+type AppConfig struct { Debug bool }
+
+func loadConfig() {
+    var appCfg AppConfig
+    viper.Unmarshal(/* c */ &appCfg)
+    viper.UnmarshalKey("app", /* c */ &appCfg)
+}
+"#;
+        let bind_edges = config_bind_edges(source);
+        // Both calls should bind to main.AppConfig.
+        assert!(
+            bind_edges
+                .iter()
+                .any(|e| e.target_qualname.as_deref() == Some("main.AppConfig")),
+            "Expected at least one CONFIG_BIND edge to main.AppConfig despite inline comment, got: {bind_edges:?}"
+        );
+        assert_eq!(
+            bind_edges
+                .iter()
+                .filter(|e| e.target_qualname.as_deref() == Some("main.AppConfig"))
+                .count(),
+            2,
+            "Expected two CONFIG_BIND edges to main.AppConfig (Unmarshal + UnmarshalKey), got: {bind_edges:?}"
+        );
     }
 }

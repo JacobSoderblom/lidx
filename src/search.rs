@@ -127,67 +127,6 @@ pub fn search_text(
     Ok(scored.into_iter().map(|entry| entry.hit).collect())
 }
 
-pub fn grep_text(
-    repo_root: &Path,
-    query: &str,
-    limit: usize,
-    include_text: bool,
-    options: SearchOptions<'_>,
-) -> Result<Vec<GrepHit>> {
-    if options.languages.is_some_and(|langs| langs.is_empty()) {
-        return Ok(Vec::new());
-    }
-    if options.paths.is_some_and(|paths| paths.is_empty()) {
-        return Ok(Vec::new());
-    }
-    let fetch_limit = rank_fetch_limit(limit, options.rank);
-    let hits = if let Ok(results) = search_with_rg(repo_root, query, fetch_limit, options, false) {
-        results
-    } else {
-        search_fallback_exact(repo_root, query, fetch_limit, options)?
-    };
-    let mut seen = HashSet::new();
-    let mut scored: Vec<ScoredHit> = Vec::with_capacity(hits.len());
-    for hit in hits {
-        let key = (hit.path.clone(), hit.line, hit.column);
-        if seen.insert(key) {
-            let score = score_exact_hit(&hit);
-            let hit = apply_match_metadata(hit, score, "exact");
-            scored.push(ScoredHit { hit, score });
-        }
-    }
-    if options.rank {
-        scored.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.hit.path.cmp(&b.hit.path))
-                .then_with(|| a.hit.line.cmp(&b.hit.line))
-                .then_with(|| a.hit.column.cmp(&b.hit.column))
-        });
-    }
-    scored.truncate(limit);
-    Ok(scored
-        .into_iter()
-        .map(|entry| GrepHit {
-            path: entry.hit.path,
-            line: entry.hit.line,
-            column: entry.hit.column,
-            line_text: if include_text {
-                Some(entry.hit.line_text)
-            } else {
-                None
-            },
-            context: None,
-            enclosing_symbol: None,
-            score: entry.hit.score,
-            reasons: entry.hit.reasons,
-            engine: None,
-            next_hops: None,
-        })
-        .collect())
-}
-
 fn search_with_rg(
     repo_root: &Path,
     query: &str,

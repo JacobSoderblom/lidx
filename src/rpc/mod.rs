@@ -11,15 +11,11 @@ use crate::model::{
     ModuleEdge, ModuleNode, RiskAssessment, RiskFactor, Symbol, TestCoverageEntry, TestRef,
     TraceFlowResult,
 };
-#[cfg(test)]
-use crate::model::{Edge, FlowStatusEntry, FlowStatusResult};
 use crate::util::normalize_search_paths;
 use crate::watch;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-#[cfg(test)]
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -249,6 +245,17 @@ struct TraceFlowParams {
     max_bytes: Option<usize>,
     #[serde(flatten)]
     common: LangVersionParams,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct ContextParams {
+    /// File path (relative to repo root) to retrieve structured context for
+    path: String,
+    /// Output format: "json" for structured JSON output, or omit for text (default: text)
+    format: Option<String>,
+    /// Graph version to query (defaults to current)
+    #[serde(alias = "as_of", alias = "version")]
+    graph_version: Option<i64>,
 }
 
 /// Hard cap on result count to prevent huge responses that blow LLM context windows.
@@ -511,133 +518,7 @@ fn infer_language(file_path: &str) -> String {
 }
 
 #[cfg(test)]
-fn build_flow_status(
-    routes: Vec<Edge>,
-    calls: Vec<Edge>,
-    include_routes: bool,
-    include_calls: bool,
-    limit: usize,
-    edge_limit: usize,
-) -> FlowStatusResult {
-    let truncated = routes.len() == edge_limit || calls.len() == edge_limit;
-    let mut route_map: HashMap<String, Vec<Edge>> = HashMap::new();
-    for edge in routes {
-        let Some(path) = edge.target_qualname.clone() else {
-            continue;
-        };
-        route_map.entry(path).or_default().push(edge);
-    }
-    let mut call_map: HashMap<String, Vec<Edge>> = HashMap::new();
-    for edge in calls {
-        let Some(path) = edge.target_qualname.clone() else {
-            continue;
-        };
-        call_map.entry(path).or_default().push(edge);
-    }
-    let routes_total = route_map.len();
-    let calls_total = call_map.len();
-    let call_paths: HashSet<String> = call_map.keys().cloned().collect();
-    let route_paths: HashSet<String> = route_map.keys().cloned().collect();
-    let mut routes_without_calls = Vec::new();
-    for (path, edges) in route_map {
-        if call_paths.contains(&path) {
-            continue;
-        }
-        routes_without_calls.push(FlowStatusEntry {
-            path,
-            route_count: edges.len(),
-            call_count: 0,
-            routes: if include_routes { Some(edges) } else { None },
-            calls: None,
-        });
-    }
-    let mut calls_without_routes = Vec::new();
-    for (path, edges) in call_map {
-        if route_paths.contains(&path) {
-            continue;
-        }
-        calls_without_routes.push(FlowStatusEntry {
-            path,
-            route_count: 0,
-            call_count: edges.len(),
-            routes: None,
-            calls: if include_calls { Some(edges) } else { None },
-        });
-    }
-    routes_without_calls.sort_by(|a, b| {
-        b.route_count
-            .cmp(&a.route_count)
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    calls_without_routes.sort_by(|a, b| {
-        b.call_count
-            .cmp(&a.call_count)
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    if limit == 0 {
-        routes_without_calls.clear();
-        calls_without_routes.clear();
-    } else {
-        routes_without_calls.truncate(limit);
-        calls_without_routes.truncate(limit);
-    }
-    FlowStatusResult {
-        routes_total,
-        calls_total,
-        edge_limit,
-        truncated,
-        routes_without_calls,
-        calls_without_routes,
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    use super::build_flow_status;
-    use crate::model::Edge;
-
-    fn edge(kind: &str, path: &str, id: i64) -> Edge {
-        Edge {
-            id,
-            file_path: "test.rs".to_string(),
-            kind: kind.to_string(),
-            source_symbol_id: None,
-            target_symbol_id: None,
-            target_qualname: Some(path.to_string()),
-            detail: None,
-            evidence_snippet: None,
-            evidence_start_line: None,
-            evidence_end_line: None,
-            confidence: None,
-            graph_version: 1,
-            commit_sha: None,
-            trace_id: None,
-            span_id: None,
-            event_ts: None,
-        }
-    }
-
-    #[test]
-    fn flow_status_flags_unmatched_paths() {
-        let routes = vec![
-            edge("HTTP_ROUTE", "/api/users/{}", 1),
-            edge("HTTP_ROUTE", "/api/items/{}", 2),
-        ];
-        let calls = vec![
-            edge("HTTP_CALL", "/api/users/{}", 3),
-            edge("HTTP_CALL", "/api/orders/{}", 4),
-        ];
-        let result = build_flow_status(routes, calls, true, true, 10, 100);
-        assert_eq!(result.routes_total, 2);
-        assert_eq!(result.calls_total, 2);
-        assert_eq!(result.routes_without_calls.len(), 1);
-        assert_eq!(result.calls_without_routes.len(), 1);
-        assert_eq!(result.routes_without_calls[0].path, "/api/items/{}");
-        assert_eq!(result.calls_without_routes[0].path, "/api/orders/{}");
-        assert!(result.routes_without_calls[0].routes.is_some());
-        assert!(result.calls_without_routes[0].calls.is_some());
-    }
-
     // --- Schema generation tests ---
 
     #[test]
@@ -649,7 +530,7 @@ mod tests {
                 "method '{}' did not produce an object schema",
                 method
             );
-            // Every schema should either have "type":"object" or be the paramless default
+            // Every schema must describe an object (or a oneOf of objects)
             let obj = schema.as_object().unwrap();
             let has_type = obj.get("type").and_then(|v| v.as_str()) == Some("object");
             let has_one_of = obj.contains_key("oneOf");
@@ -658,6 +539,14 @@ mod tests {
                 "method '{}' schema has neither type:object nor oneOf: {:?}",
                 method,
                 obj.keys().collect::<Vec<_>>()
+            );
+            // Must have real content: properties or required — empty default {} is not acceptable
+            let has_properties = obj.contains_key("properties");
+            let has_required = obj.contains_key("required");
+            assert!(
+                has_properties || has_required,
+                "method '{}' schema is the empty default — register it in method_param_schema",
+                method
             );
         }
     }
@@ -685,6 +574,33 @@ mod tests {
         assert!(
             schema.is_object(),
             "gather_context should have valid schema"
+        );
+
+        // context requires "path"
+        let schema = super::method_param_schema("context");
+        let required = schema.get("required").and_then(|v| v.as_array());
+        assert!(required.is_some(), "context should have required fields");
+        let required: Vec<&str> = required
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            required.contains(&"path"),
+            "context should require 'path', got: {:?}",
+            required
+        );
+        // context should also advertise format and graph_version as optional properties
+        let props = schema.get("properties").and_then(|p| p.as_object());
+        assert!(props.is_some(), "context should have properties");
+        let props = props.unwrap();
+        assert!(
+            props.contains_key("format"),
+            "context schema should advertise 'format'"
+        );
+        assert!(
+            props.contains_key("graph_version"),
+            "context schema should advertise 'graph_version'"
         );
     }
 
