@@ -311,14 +311,19 @@ impl Db {
         Ok(())
     }
 
-    /// Carry forward symbols and edges for files whose content hash is unchanged
-    /// between `from_version` and `to_version`, instead of re-parsing them.
+    /// Carry forward symbols, edges, and symbol_metrics for files whose content
+    /// hash is unchanged between `from_version` and `to_version`, instead of
+    /// re-parsing them.
     ///
     /// `symbols.id` is `INTEGER PRIMARY KEY`, so a plain `INSERT ... SELECT` gives
     /// the copied rows fresh ids; `stable_id` is preserved on the copy, which is
-    /// what lets the edge copy below re-target the new rows instead of the old
-    /// (now stale) ones. Edge endpoints are remapped by joining each edge's old
-    /// source/target symbol to whichever `to_version` row shares its `stable_id`.
+    /// what lets the edge and symbol_metrics copies below re-target the new rows
+    /// instead of the old (now stale) ones. Edge endpoints and symbol_metrics'
+    /// `symbol_id` are remapped the same way: joining each old row's symbol to
+    /// whichever `to_version` row shares its `stable_id`. `file_metrics` needs no
+    /// such copy — it's keyed by `file_id` alone (no `graph_version` column), and
+    /// `files.id` doesn't change across versions, so an unchanged file's existing
+    /// row is already correctly attached.
     ///
     /// Callers must run this only after every `to_version` symbol write for this
     /// reindex has happened, including freshly re-parsed files — a carried edge
@@ -400,6 +405,47 @@ impl Db {
                 rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
             )?
         };
+
+        // Copy `symbol_metrics` for the symbols just copied above, remapped from
+        // each old symbol id to its `to_version` counterpart by `stable_id` (the
+        // same key the edge copy above uses). Without this, an unchanged file's
+        // metrics stay attached to the old, soon-to-be-pruned version's symbol
+        // ids and metrics-backed queries (top_complexity, dead_symbols, ...) see
+        // none for the current version.
+        //
+        // ponytail: unlike edges' nullable endpoints, `symbol_metrics.symbol_id`
+        // is `NOT NULL UNIQUE`, so a row whose old symbol has no `stable_id`
+        // match in `to_version` (NULL `stable_id`, or a collision the edge copy's
+        // `LIMIT 1` didn't happen to pick) is dropped rather than inserted with a
+        // NULL/dangling id. Ceiling: that symbol's metrics are lost for this
+        // version instead of merely stale; the same rare conditions already make
+        // its edges best-effort-NULL above.
+        {
+            let sql = format!(
+                "INSERT INTO symbol_metrics (symbol_id, file_id, loc, complexity, duplication_hash)
+                 SELECT
+                    (SELECT ns.id FROM symbols ns
+                        WHERE ns.stable_id = os.stable_id AND ns.graph_version = ? LIMIT 1),
+                    sm.file_id, sm.loc, sm.complexity, sm.duplication_hash
+                 FROM symbol_metrics sm
+                 JOIN symbols os ON os.id = sm.symbol_id
+                 WHERE os.graph_version = ? AND os.file_id IN ({placeholders})
+                   AND (SELECT ns.id FROM symbols ns
+                        WHERE ns.stable_id = os.stable_id AND ns.graph_version = ? LIMIT 1) IS NOT NULL"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+                vec![Box::new(to_version), Box::new(from_version)];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            // The trailing `IS NOT NULL` guard's `?` binds after the `IN (...)`
+            // placeholders above it in the SQL text.
+            params.push(Box::new(to_version));
+            tx.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            )?;
+        }
 
         tx.commit()?;
         Ok((symbols_copied, edges_copied))
