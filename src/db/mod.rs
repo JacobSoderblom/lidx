@@ -1075,7 +1075,9 @@ impl Db {
             let mut exact_lookup_stmt = tx.prepare(
                 "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
             )?;
-            // Same-language fuzzy lookup: prefer symbols from files matching source language
+            // Same-language fuzzy lookup: prefer symbols from files matching source language.
+            // LIMIT 2 (not 1): the ambiguity guard in `single_unambiguous_match` needs to see
+            // a second candidate row to know the bare-name/suffix match is ambiguous.
             let mut fuzzy_same_lang_stmt = tx.prepare(
                 "SELECT s.id
                  FROM symbols s
@@ -1085,8 +1087,7 @@ impl Db {
                    AND s.graph_version = ?
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                    AND f.language = ?
-                 ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC, s.id ASC
-                 LIMIT 1"
+                 LIMIT 2"
             )?;
             // Cross-language fuzzy lookup: fallback for bridge edges only
             let mut fuzzy_any_lang_stmt = tx.prepare(
@@ -1097,8 +1098,7 @@ impl Db {
                    AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                    AND s.graph_version = ?
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                 ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC, s.id ASC
-                 LIMIT 1"
+                 LIMIT 2"
             )?;
             // Look up the source file's language for same-language preference
             let source_lang: String = tx
@@ -1123,47 +1123,44 @@ impl Db {
                     graph_version,
                 )?
                 .or_else(|| {
-                    // Fuzzy fallback: try same-language first, then cross-language for bridge edges only
+                    // Fuzzy fallback: try same-language first, then cross-language for bridge edges only.
+                    // Each tier binds only when it has exactly one candidate; a same-named symbol
+                    // with several candidates (e.g. `list.append` vs. a domain `append` method) is
+                    // left NULL rather than guessed at (see `single_unambiguous_match`).
                     edge.target_qualname.as_ref().and_then(|qn| {
                         let (method_name, dot_pattern, colons_pattern) =
                             fuzzy_qualname_patterns(qn);
                         // Try same-language first
-                        let same_lang = fuzzy_same_lang_stmt
-                            .query_row(
-                                params![
-                                    method_name,
-                                    &dot_pattern,
-                                    &colons_pattern,
-                                    graph_version,
-                                    graph_version,
-                                    &source_lang,
-                                    method_name
-                                ],
-                                |row| row.get(0),
-                            )
-                            .optional()
-                            .ok()
-                            .flatten();
+                        let same_lang = single_unambiguous_match(
+                            &mut fuzzy_same_lang_stmt,
+                            params![
+                                method_name,
+                                &dot_pattern,
+                                &colons_pattern,
+                                graph_version,
+                                graph_version,
+                                &source_lang
+                            ],
+                        )
+                        .ok()
+                        .flatten();
                         if same_lang.is_some() {
                             return same_lang;
                         }
                         // Cross-language fallback only for bridge edge kinds
                         if is_bridge_edge_kind(&edge.kind) {
-                            fuzzy_any_lang_stmt
-                                .query_row(
-                                    params![
-                                        method_name,
-                                        &dot_pattern,
-                                        &colons_pattern,
-                                        graph_version,
-                                        graph_version,
-                                        method_name
-                                    ],
-                                    |row| row.get(0),
-                                )
-                                .optional()
-                                .ok()
-                                .flatten()
+                            single_unambiguous_match(
+                                &mut fuzzy_any_lang_stmt,
+                                params![
+                                    method_name,
+                                    &dot_pattern,
+                                    &colons_pattern,
+                                    graph_version,
+                                    graph_version
+                                ],
+                            )
+                            .ok()
+                            .flatten()
                         } else {
                             None
                         }
@@ -1254,7 +1251,9 @@ impl Db {
 
             let mut count = 0;
             {
-                // Same-language fuzzy lookup
+                // Same-language fuzzy lookup. LIMIT 2 (not 1): the ambiguity guard in
+                // `single_unambiguous_match` needs a second candidate row to detect that the
+                // bare-name/suffix match is ambiguous.
                 let mut fuzzy_same_lang_stmt = tx.prepare(
                     "SELECT s.id
                      FROM symbols s
@@ -1264,8 +1263,7 @@ impl Db {
                        AND s.graph_version = ?
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                        AND f.language = ?
-                     ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC, s.id ASC
-                     LIMIT 1"
+                     LIMIT 2"
                 )?;
                 // Cross-language fuzzy lookup (for bridge edges only)
                 let mut fuzzy_any_lang_stmt = tx.prepare(
@@ -1276,8 +1274,7 @@ impl Db {
                        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                        AND s.graph_version = ?
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                     ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC, s.id ASC
-                     LIMIT 1"
+                     LIMIT 2"
                 )?;
 
                 let mut update_stmt =
@@ -1287,43 +1284,37 @@ impl Db {
                     let (method_name, dot_pattern, colons_pattern) =
                         fuzzy_qualname_patterns(target_qualname);
 
-                    // Try same-language first
-                    let resolved = fuzzy_same_lang_stmt
-                        .query_row(
-                            params![
-                                method_name,
-                                &dot_pattern,
-                                &colons_pattern,
-                                graph_version,
-                                graph_version,
-                                source_lang,
-                                method_name
-                            ],
-                            |row| row.get::<_, i64>(0),
-                        )
-                        .optional()?
-                        .or_else(|| {
-                            // Cross-language fallback only for bridge edges
-                            if is_bridge_edge_kind(edge_kind) {
-                                fuzzy_any_lang_stmt
-                                    .query_row(
-                                        params![
-                                            method_name,
-                                            &dot_pattern,
-                                            &colons_pattern,
-                                            graph_version,
-                                            graph_version,
-                                            method_name
-                                        ],
-                                        |row| row.get::<_, i64>(0),
-                                    )
-                                    .optional()
-                                    .ok()
-                                    .flatten()
-                            } else {
-                                None
-                            }
-                        });
+                    // Try same-language first; bind only if it is the sole candidate.
+                    let resolved = single_unambiguous_match(
+                        &mut fuzzy_same_lang_stmt,
+                        params![
+                            method_name,
+                            &dot_pattern,
+                            &colons_pattern,
+                            graph_version,
+                            graph_version,
+                            source_lang
+                        ],
+                    )?
+                    .or_else(|| {
+                        // Cross-language fallback only for bridge edges
+                        if is_bridge_edge_kind(edge_kind) {
+                            single_unambiguous_match(
+                                &mut fuzzy_any_lang_stmt,
+                                params![
+                                    method_name,
+                                    &dot_pattern,
+                                    &colons_pattern,
+                                    graph_version,
+                                    graph_version
+                                ],
+                            )
+                            .ok()
+                            .flatten()
+                        } else {
+                            None
+                        }
+                    });
 
                     if let Some(symbol_id) = resolved {
                         update_stmt.execute(params![symbol_id, edge_id])?;
@@ -1944,6 +1935,35 @@ pub(crate) fn qualname_trailing_name(qn: &str) -> &str {
 pub(crate) fn fuzzy_qualname_patterns(qn: &str) -> (&str, String, String) {
     let name = qualname_trailing_name(qn);
     (name, format!("%.{name}"), format!("%::{name}"))
+}
+
+/// Ambiguity guard for bare-name/suffix fuzzy edge resolution.
+///
+/// `stmt` must be a query shaped `... LIMIT 2`. A call site resolved by bare
+/// method name (no receiver-type information) is only trustworthy when
+/// exactly one same-named candidate survives the kind/language/version
+/// filters; if a second row shows up, the name is ambiguous (e.g. `.append`
+/// matching both `list.append` and a domain `EventStore.append`) and we
+/// return `None` rather than binding to whichever row SQLite happened to
+/// return first.
+///
+/// ponytail: candidate-count(<=1) is the cheapest signal that fixes the
+/// observed over-binding without receiver-type inference; if this proves too
+/// coarse, real disambiguation (resolving the receiver's type before matching
+/// the method) is the upgrade path, not a bigger threshold.
+fn single_unambiguous_match(
+    stmt: &mut rusqlite::Statement<'_>,
+    query_params: &[&dyn rusqlite::ToSql],
+) -> rusqlite::Result<Option<i64>> {
+    let mut rows = stmt.query(query_params)?;
+    let id = match rows.next()? {
+        Some(row) => row.get::<_, i64>(0)?,
+        None => return Ok(None),
+    };
+    if rows.next()?.is_some() {
+        return Ok(None);
+    }
+    Ok(Some(id))
 }
 
 fn resolve_symbol_id(
@@ -4101,6 +4121,86 @@ mod tests {
         let found = db.edges_for_symbol(rs_inserted[0].id, None, 1).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].target_symbol_id, Some(rs_inserted[1].id));
+    }
+
+    // --- ambiguity guard: bare-name fuzzy fallback must not bind arbitrarily ---
+
+    #[test]
+    fn test_insert_edges_ambiguous_bare_name_stays_null_unambiguous_still_resolves() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("pkg/store.py", "h1", "python", 100, 0)
+            .unwrap();
+
+        // Two unrelated same-language "append" methods on different classes, exactly the
+        // pathology from the bug report: `list.append` vs. a domain `EventStore.append`.
+        // A caller who writes `some_list.append(x)` has no receiver-type information
+        // recorded, so the extractor's target_qualname is just an import-relative guess
+        // that resolves to neither of these by exact qualname — both are only reachable
+        // through the bare-name fuzzy fallback, which is exactly what must now refuse.
+        let ambiguous_syms = vec![
+            make_test_symbol("builtins.list.append", Some("def append(x)"), "method", 1),
+            make_test_symbol(
+                "pkg.store.EventStore.append",
+                Some("def append(self, event)"),
+                "method",
+                10,
+            ),
+            // One unambiguous symbol in the same file/version, to prove the guard
+            // doesn't just NULL everything.
+            make_test_symbol("pkg.store.compute", Some("def compute()"), "function", 20),
+            make_test_symbol("pkg.store.caller", Some("def caller()"), "function", 30),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "pkg/store.py", &ambiguous_syms, 1, None)
+            .unwrap();
+        let caller_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.store.caller")
+            .unwrap()
+            .id;
+        let compute_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.store.compute")
+            .unwrap()
+            .id;
+
+        let edges = vec![
+            // Bare-name target with two same-language candidates ("...list.append" and
+            // "...EventStore.append") -> must stay NULL, not bind to whichever the
+            // fuzzy LIKE happens to return first.
+            make_test_edge("CALLS", "pkg.store.caller", "append"),
+            // Bare-name target with exactly one candidate -> must still resolve.
+            make_test_edge("CALLS", "pkg.store.caller", "compute"),
+        ];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let found = db.edges_for_symbol(caller_id, None, 1).unwrap();
+        assert_eq!(found.len(), 2);
+
+        let append_edge = found
+            .iter()
+            .find(|e| e.target_qualname.as_deref() == Some("append"))
+            .unwrap();
+        assert_eq!(
+            append_edge.target_symbol_id, None,
+            "ambiguous bare-name call must not bind to either same-named candidate"
+        );
+
+        let compute_edge = found
+            .iter()
+            .find(|e| e.target_qualname.as_deref() == Some("compute"))
+            .unwrap();
+        assert_eq!(
+            compute_edge.target_symbol_id,
+            Some(compute_id),
+            "unambiguous bare-name call must still resolve"
+        );
     }
 
     #[test]
