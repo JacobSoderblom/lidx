@@ -958,8 +958,9 @@ impl Db {
                   evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
-            let mut exact_lookup_stmt =
-                tx.prepare("SELECT id FROM symbols WHERE qualname = ? LIMIT 1")?;
+            let mut exact_lookup_stmt = tx.prepare(
+                "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
+            )?;
             // Same-language fuzzy lookup: prefer symbols from files matching source language
             let mut fuzzy_same_lang_stmt = tx.prepare(
                 "SELECT s.id
@@ -970,7 +971,7 @@ impl Db {
                    AND s.graph_version = ?
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                    AND f.language = ?
-                 ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
+                 ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC, s.id ASC
                  LIMIT 1"
             )?;
             // Cross-language fuzzy lookup: fallback for bridge edges only
@@ -982,7 +983,7 @@ impl Db {
                    AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                    AND s.graph_version = ?
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                 ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
+                 ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC, s.id ASC
                  LIMIT 1"
             )?;
             // Look up the source file's language for same-language preference
@@ -995,57 +996,65 @@ impl Db {
                 .unwrap_or_else(|_| "unknown".to_string());
 
             for edge in edges {
-                let source_id =
-                    resolve_symbol_id(&edge.source_qualname, symbol_map, &mut exact_lookup_stmt)?;
-                let target_id =
-                    resolve_symbol_id(&edge.target_qualname, symbol_map, &mut exact_lookup_stmt)?
-                        .or_else(|| {
-                            // Fuzzy fallback: try same-language first, then cross-language for bridge edges only
-                            edge.target_qualname.as_ref().and_then(|qn| {
-                                let (method_name, dot_pattern, colons_pattern) =
-                                    fuzzy_qualname_patterns(qn);
-                                // Try same-language first
-                                let same_lang = fuzzy_same_lang_stmt
-                                    .query_row(
-                                        params![
-                                            method_name,
-                                            &dot_pattern,
-                                            &colons_pattern,
-                                            graph_version,
-                                            graph_version,
-                                            &source_lang,
-                                            method_name
-                                        ],
-                                        |row| row.get(0),
-                                    )
-                                    .optional()
-                                    .ok()
-                                    .flatten();
-                                if same_lang.is_some() {
-                                    return same_lang;
-                                }
-                                // Cross-language fallback only for bridge edge kinds
-                                if is_bridge_edge_kind(&edge.kind) {
-                                    fuzzy_any_lang_stmt
-                                        .query_row(
-                                            params![
-                                                method_name,
-                                                &dot_pattern,
-                                                &colons_pattern,
-                                                graph_version,
-                                                graph_version,
-                                                method_name
-                                            ],
-                                            |row| row.get(0),
-                                        )
-                                        .optional()
-                                        .ok()
-                                        .flatten()
-                                } else {
-                                    None
-                                }
-                            })
-                        });
+                let source_id = resolve_symbol_id(
+                    &edge.source_qualname,
+                    symbol_map,
+                    &mut exact_lookup_stmt,
+                    graph_version,
+                )?;
+                let target_id = resolve_symbol_id(
+                    &edge.target_qualname,
+                    symbol_map,
+                    &mut exact_lookup_stmt,
+                    graph_version,
+                )?
+                .or_else(|| {
+                    // Fuzzy fallback: try same-language first, then cross-language for bridge edges only
+                    edge.target_qualname.as_ref().and_then(|qn| {
+                        let (method_name, dot_pattern, colons_pattern) =
+                            fuzzy_qualname_patterns(qn);
+                        // Try same-language first
+                        let same_lang = fuzzy_same_lang_stmt
+                            .query_row(
+                                params![
+                                    method_name,
+                                    &dot_pattern,
+                                    &colons_pattern,
+                                    graph_version,
+                                    graph_version,
+                                    &source_lang,
+                                    method_name
+                                ],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .ok()
+                            .flatten();
+                        if same_lang.is_some() {
+                            return same_lang;
+                        }
+                        // Cross-language fallback only for bridge edge kinds
+                        if is_bridge_edge_kind(&edge.kind) {
+                            fuzzy_any_lang_stmt
+                                .query_row(
+                                    params![
+                                        method_name,
+                                        &dot_pattern,
+                                        &colons_pattern,
+                                        graph_version,
+                                        graph_version,
+                                        method_name
+                                    ],
+                                    |row| row.get(0),
+                                )
+                                .optional()
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        }
+                    })
+                });
 
                 insert_stmt.execute(params![
                     file_id,
@@ -1087,6 +1096,7 @@ impl Db {
                 SELECT s.id FROM symbols s
                 WHERE s.qualname = edges.target_qualname
                 AND s.graph_version = edges.graph_version
+                ORDER BY s.id ASC
                 LIMIT 1
             )
             WHERE target_symbol_id IS NULL
@@ -1140,7 +1150,7 @@ impl Db {
                        AND s.graph_version = ?
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                        AND f.language = ?
-                     ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
+                     ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC, s.id ASC
                      LIMIT 1"
                 )?;
                 // Cross-language fuzzy lookup (for bridge edges only)
@@ -1152,7 +1162,7 @@ impl Db {
                        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                        AND s.graph_version = ?
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                     ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
+                     ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC, s.id ASC
                      LIMIT 1"
                 )?;
 
@@ -1826,6 +1836,7 @@ fn resolve_symbol_id(
     qualname: &Option<String>,
     symbol_map: &HashMap<String, i64>,
     stmt: &mut rusqlite::Statement<'_>,
+    graph_version: i64,
 ) -> Result<Option<i64>> {
     let name = match qualname.as_ref() {
         Some(name) => name,
@@ -1834,7 +1845,9 @@ fn resolve_symbol_id(
     if let Some(id) = symbol_map.get(name) {
         return Ok(Some(*id));
     }
-    let id = stmt.query_row(params![name], |row| row.get(0)).optional()?;
+    let id = stmt
+        .query_row(params![name, graph_version], |row| row.get(0))
+        .optional()?;
     Ok(id)
 }
 
@@ -3758,6 +3771,69 @@ mod tests {
         assert_eq!(
             db.lookup_symbol_id_fuzzy("Foo:process", None, 1).unwrap(),
             None
+        );
+    }
+
+    // --- insert_edges must not resolve targets against stale graph versions ---
+
+    #[test]
+    fn test_insert_edges_target_only_in_older_graph_version_resolves_to_null() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/gather_context.rs", "h1", "rust", 100, 0)
+            .unwrap();
+
+        // graph_version 1: a symbol exists under this qualname (e.g. before the file was
+        // reorganized into a submodule).
+        let old_symbol = vec![make_test_symbol(
+            "crate::gather_context::resolve_seeds",
+            Some("fn resolve_seeds()"),
+            "function",
+            182,
+        )];
+        let old_inserted = db
+            .insert_symbols(file_id, "src/gather_context.rs", &old_symbol, 1, None)
+            .unwrap();
+
+        // graph_version 2: the symbol above no longer exists under that qualname in this
+        // version (it moved/renamed, or its file was deleted). Only the caller is present.
+        let caller_symbol = vec![make_test_symbol(
+            "crate::gather_context::gather",
+            Some("fn gather()"),
+            "function",
+            1,
+        )];
+        let caller_inserted = db
+            .insert_symbols(file_id, "src/gather_context.rs", &caller_symbol, 2, None)
+            .unwrap();
+
+        // An edge written against graph_version 2 still carries the old target_qualname
+        // (this is exactly what a re-run of xref::link_cross_language_refs produces: the
+        // extractor found a reference by name, but no current-version symbol matches it).
+        let edges = vec![make_test_edge(
+            "CALLS",
+            "crate::gather_context::gather",
+            "crate::gather_context::resolve_seeds",
+        )];
+        let symbol_map: HashMap<String, i64> = caller_inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 2, None)
+            .unwrap();
+
+        let found = db.edges_for_symbol(caller_inserted[0].id, None, 2).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].target_symbol_id, None,
+            "target_qualname matches only a graph_version=1 symbol (id {}); it must resolve \
+             to NULL rather than that stale row",
+            old_inserted[0].id
+        );
+        // The unresolved qualname is preserved for later re-resolution / display.
+        assert_eq!(
+            found[0].target_qualname.as_deref(),
+            Some("crate::gather_context::resolve_seeds")
         );
     }
 
