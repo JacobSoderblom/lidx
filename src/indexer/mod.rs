@@ -441,14 +441,57 @@ impl Indexer {
         // produce already exists to resolve against; runs before prune_and_maybe_vacuum so
         // nothing is wasted repairing rows about to be deleted.
         //
-        // ponytail: only runs when this reindex actually indexed or deleted a file. Ceiling: a
-        // purely no-op warm reindex (every file carried forward unchanged) skips it, so an
-        // index that already carries stale NULL/dangling edges from before this fix (or from
-        // some other cause) won't self-heal until a file changes — re-scanning every edge in
-        // the graph on every warm reindex was measured to cost real time for ~zero benefit in
-        // steady state. Upgrade path: a one-off `lidx repair` command/RPC (resolve_null_target_edges
-        // is already exposed at src/rpc/handlers.rs:1916) for on-demand backfill of a stale index.
-        if stats.indexed > 0 || stats.deleted > 0 {
+        // Gate: always run when this reindex actually indexed or deleted a file (cheapest
+        // check, and those runs already pay far more than the repair pass costs). On a
+        // purely-carried-forward run (nothing indexed or deleted), fall back to a COUNT of
+        // this version's edges that `resolve_null_target_edges` would actually attempt to
+        // fix — the same predicate that query itself uses. That COUNT is what distinguishes
+        // a truly idle warm reindex (nothing to do, stay fast) from one carrying forward a
+        // hollow/degraded index: carry_forward_files re-links every edge by stable_id into
+        // the new version and leaves target_symbol_id NULL wherever that lookup misses (a
+        // deleted/renamed target, or a target manually NULLed out by outside SQL), so a
+        // degraded index's holes are visible in the *new* graph_version's edge rows even
+        // when zero files changed. Without this fallback those NULLs — and the stale
+        // target_qualname strings that ride along with them, e.g. after a callee moves
+        // modules — propagate forward untouched on every subsequent reindex, which is
+        // exactly the self-healing gap this exists to close.
+        //
+        // The COUNT alone isn't enough to gate on, though: real codebases always have edges
+        // into external/stdlib symbols (`std::fs::remove_dir_all`, `serde_json::from_str`, a
+        // JS `console.log`) that have a target_qualname but no matching local symbol, so they
+        // are — correctly — never resolved and never will be. Those sit in the COUNT on every
+        // single run, so a bare "count > 0" would make repair run on every warm reindex of any
+        // real repo, not just a degraded one (measured: +~1.2s on this repo, every time —
+        // exactly the regression this function must not cause). Instead compare against the
+        // floor recorded the last time repair actually ran (`unresolved_edge_floor` meta,
+        // absent = 0, i.e. conservative on a never-repaired-under-this-binary db): only a
+        // count *above* that floor — something that used to resolve and no longer does — is
+        // new repair work.
+        //
+        // ponytail: the COUNT only mirrors resolve_null_target_edges' NULL-target predicate,
+        // not repair_dangling_symbol_ids' non-NULL dangling-id predicate — a target that's
+        // wrong-but-non-NULL (not producible by carry_forward_files itself, which always
+        // NULLs a miss) would slip past this fallback on a no-op run. Upgrade path: a one-off
+        // `lidx repair` command/RPC (resolve_null_target_edges is already exposed at
+        // src/rpc/handlers.rs:1916) for on-demand backfill outside of reindex entirely.
+        let unresolved_edge_count = |db: &Db, graph_version: i64| -> Result<i64> {
+            Ok(db.read_conn()?.query_row(
+                "SELECT COUNT(*) FROM edges
+                 WHERE graph_version = ?
+                   AND target_symbol_id IS NULL
+                   AND target_qualname IS NOT NULL",
+                rusqlite::params![graph_version],
+                |row| row.get(0),
+            )?)
+        };
+        let needs_repair = if stats.indexed > 0 || stats.deleted > 0 {
+            true
+        } else {
+            let unresolved = unresolved_edge_count(&self.db, self.graph_version)?;
+            let floor = self.db.get_meta_i64("unresolved_edge_floor")?.unwrap_or(0);
+            unresolved > floor
+        };
+        if needs_repair {
             let dangling = self.db.repair_dangling_symbol_ids(self.graph_version)?;
             if dangling > 0 {
                 eprintln!("lidx: nullified {dangling} dangling symbol id(s) after reindex");
@@ -457,6 +500,8 @@ impl Indexer {
             if resolved > 0 {
                 eprintln!("lidx: resolved {resolved} edge(s) after reindex");
             }
+            let remaining = unresolved_edge_count(&self.db, self.graph_version)?;
+            self.db.set_meta_i64("unresolved_edge_floor", remaining)?;
         }
 
         let now = std::time::SystemTime::now()
