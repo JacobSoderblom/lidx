@@ -434,6 +434,31 @@ impl Indexer {
             xref::link_cross_language_refs(&mut self.db, &scanned, true, self.graph_version)?;
         stats.edges += xref_edges;
 
+        // Repair pass: NULL out dangling symbol ids and re-resolve NULL edge targets by
+        // qualname, same as the incremental (sync_abs_paths) path already does. Runs after
+        // both the fresh-file edge loop and carry_forward_files (and after xref, so XREF/ROUTE
+        // edges get the same treatment) so every current-version symbol this reindex will
+        // produce already exists to resolve against; runs before prune_and_maybe_vacuum so
+        // nothing is wasted repairing rows about to be deleted.
+        //
+        // ponytail: only runs when this reindex actually indexed or deleted a file. Ceiling: a
+        // purely no-op warm reindex (every file carried forward unchanged) skips it, so an
+        // index that already carries stale NULL/dangling edges from before this fix (or from
+        // some other cause) won't self-heal until a file changes — re-scanning every edge in
+        // the graph on every warm reindex was measured to cost real time for ~zero benefit in
+        // steady state. Upgrade path: a one-off `lidx repair` command/RPC (resolve_null_target_edges
+        // is already exposed at src/rpc/handlers.rs:1916) for on-demand backfill of a stale index.
+        if stats.indexed > 0 || stats.deleted > 0 {
+            let dangling = self.db.repair_dangling_symbol_ids(self.graph_version)?;
+            if dangling > 0 {
+                eprintln!("lidx: nullified {dangling} dangling symbol id(s) after reindex");
+            }
+            let resolved = self.db.resolve_null_target_edges(self.graph_version)?;
+            if resolved > 0 {
+                eprintln!("lidx: resolved {resolved} edge(s) after reindex");
+            }
+        }
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
