@@ -439,6 +439,26 @@ impl Indexer {
             .unwrap_or_default()
             .as_secs() as i64;
         self.db.set_meta_i64("last_indexed", now)?;
+
+        // Reclaim rows from graph versions this reindex just aged out. Safe to
+        // run now: this reindex's own carry-forward already read everything it
+        // needed from `previous_graph_version` above.
+        match self.db.prune_and_maybe_vacuum() {
+            Ok((symbols_pruned, edges_pruned, versions_pruned, vacuumed)) => {
+                if versions_pruned > 0 {
+                    eprintln!(
+                        "lidx: pruned {versions_pruned} old graph version(s): {symbols_pruned} symbol row(s), {edges_pruned} edge row(s){}",
+                        if vacuumed {
+                            ", reclaimed space via VACUUM"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+            Err(err) => eprintln!("Warning: graph version prune failed: {err}"),
+        }
+
         stats.duration_ms = started.elapsed().as_millis() as u64;
         Ok(stats)
     }

@@ -84,6 +84,24 @@ pub struct Db {
     read_pool: Pool<SqliteConnectionManager>,
 }
 
+/// Number of most-recent graph versions whose `symbols`/`edges` rows survive
+/// `prune_old_graph_versions`. `carry_forward_files` (reindex's unchanged-file
+/// fast path) is the only code that ever reads a `graph_version` other than
+/// "current" for symbol/edge rows, and it only ever reads one version back
+/// (`previous_graph_version`); the historical-impact, co-change and git-mining
+/// features (src/impact/layers/historical.rs, src/db/co_change.rs,
+/// src/git_mining.rs) read the version-independent `co_changes` table or git
+/// itself, never old `symbols`/`edges` rows. 3 keeps that one required version
+/// plus a spare for an in-flight reader that captured "current" just before a
+/// reindex advanced it.
+pub const DEFAULT_GRAPH_VERSION_RETENTION: i64 = 3;
+
+/// Only run `VACUUM` when pruning actually freed at least this many bytes.
+/// `VACUUM` rewrites the whole file, which is expensive on a large database;
+/// a reindex that pruned nothing (or one old, mostly-carried-forward version)
+/// shouldn't pay that cost every time.
+const VACUUM_RECLAIM_THRESHOLD_BYTES: i64 = 10 * 1024 * 1024;
+
 impl Db {
     pub fn new(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
@@ -385,6 +403,94 @@ impl Db {
 
         tx.commit()?;
         Ok((symbols_copied, edges_copied))
+    }
+
+    /// Delete `symbols`/`edges` rows for every graph version older than the
+    /// `keep` most recent ones (see `DEFAULT_GRAPH_VERSION_RETENTION` for why
+    /// `keep` is safe to set below the total version count). `symbol_metrics`
+    /// rows for pruned symbols are removed via `ON DELETE CASCADE` (foreign
+    /// keys are enabled on every connection, see `Db::new`).
+    ///
+    /// `graph_versions` (the id/created/commit_sha metadata rows), `files`,
+    /// and `co_changes` are untouched: none of them are duplicated per
+    /// reindex the way `symbols`/`edges` are, so none contribute to the
+    /// unbounded growth this prunes.
+    ///
+    /// The retention boundary is found by position in `graph_versions`
+    /// (Nth most recent id), not by arithmetic on the current version number,
+    /// so it stays correct even if version ids are ever non-contiguous.
+    ///
+    /// Returns `(symbols_deleted, edges_deleted, versions_pruned)`.
+    pub fn prune_old_graph_versions(&self, keep: i64) -> Result<(usize, usize, usize)> {
+        let keep = keep.max(1);
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+
+        let boundary: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM graph_versions ORDER BY id DESC LIMIT 1 OFFSET ?",
+                params![keep - 1],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(boundary) = boundary else {
+            // Fewer than `keep` versions exist yet; nothing to prune.
+            return Ok((0, 0, 0));
+        };
+
+        let versions_pruned: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM graph_versions WHERE id < ?",
+            params![boundary],
+            |row| row.get(0),
+        )?;
+        let edges_deleted = tx.execute(
+            "DELETE FROM edges WHERE graph_version < ?",
+            params![boundary],
+        )?;
+        let symbols_deleted = tx.execute(
+            "DELETE FROM symbols WHERE graph_version < ?",
+            params![boundary],
+        )?;
+
+        tx.commit()?;
+        Ok((symbols_deleted, edges_deleted, versions_pruned as usize))
+    }
+
+    /// Bytes SQLite could reclaim from the database file via `VACUUM` right now.
+    pub fn freelist_bytes(&self) -> Result<i64> {
+        let conn = self.conn();
+        let freelist: i64 = conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+        let page_size: i64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        Ok(freelist * page_size)
+    }
+
+    /// Rebuild the database file to reclaim space freed by deletes. Works in
+    /// WAL mode (supported since SQLite 3.15): as part of `VACUUM`'s commit,
+    /// SQLite truncates the WAL file too, so no separate checkpoint is needed.
+    pub fn vacuum(&self) -> Result<()> {
+        self.conn().execute_batch("VACUUM;")?;
+        Ok(())
+    }
+
+    /// Prune graph versions beyond `DEFAULT_GRAPH_VERSION_RETENTION` and, if
+    /// that freed a meaningful amount of space, reclaim it with `VACUUM`.
+    /// Intended to run automatically at the end of every `reindex()`.
+    ///
+    /// Returns `(symbols_deleted, edges_deleted, versions_pruned, vacuumed)`.
+    pub fn prune_and_maybe_vacuum(&self) -> Result<(usize, usize, usize, bool)> {
+        let (symbols_deleted, edges_deleted, versions_pruned) =
+            self.prune_old_graph_versions(DEFAULT_GRAPH_VERSION_RETENTION)?;
+
+        let mut vacuumed = false;
+        if versions_pruned > 0 {
+            let reclaimable = self.freelist_bytes().unwrap_or(0);
+            if reclaimable >= VACUUM_RECLAIM_THRESHOLD_BYTES {
+                self.vacuum()?;
+                vacuumed = true;
+            }
+        }
+
+        Ok((symbols_deleted, edges_deleted, versions_pruned, vacuumed))
     }
 
     pub fn insert_symbols(
