@@ -1128,6 +1128,53 @@ impl Db {
                     // with several candidates (e.g. `list.append` vs. a domain `append` method) is
                     // left NULL rather than guessed at (see `single_unambiguous_match`).
                     edge.target_qualname.as_ref().and_then(|qn| {
+                        // Tier 1: match on the last two qualname segments (`Type::method`),
+                        // when the call site's target_qualname carries more than one
+                        // segment. This lets `Db::new` find `crate::db::Db::new` without
+                        // colliding with unrelated `new` methods (`Vec::new`, `HashMap::new`,
+                        // ...) that share only the bare trailing name. Falls through to tier 2
+                        // when no two-segment candidate exists (e.g. `Vec::new` has no local
+                        // symbol, so this tier finds nothing and bare-name tier below still
+                        // correctly refuses to bind it — see the ambiguity guard).
+                        if let Some((two_seg, two_dot, two_colons)) =
+                            two_segment_qualname_patterns(qn)
+                        {
+                            let same_lang = single_unambiguous_match(
+                                &mut fuzzy_same_lang_stmt,
+                                params![
+                                    &two_seg,
+                                    &two_dot,
+                                    &two_colons,
+                                    graph_version,
+                                    graph_version,
+                                    &source_lang
+                                ],
+                            )
+                            .ok()
+                            .flatten();
+                            if same_lang.is_some() {
+                                return same_lang;
+                            }
+                            if is_bridge_edge_kind(&edge.kind) {
+                                let any_lang = single_unambiguous_match(
+                                    &mut fuzzy_any_lang_stmt,
+                                    params![
+                                        &two_seg,
+                                        &two_dot,
+                                        &two_colons,
+                                        graph_version,
+                                        graph_version
+                                    ],
+                                )
+                                .ok()
+                                .flatten();
+                                if any_lang.is_some() {
+                                    return any_lang;
+                                }
+                            }
+                        }
+
+                        // Tier 2 (existing, unchanged): bare trailing-name match.
                         let (method_name, dot_pattern, colons_pattern) =
                             fuzzy_qualname_patterns(qn);
                         // Try same-language first
@@ -1281,40 +1328,83 @@ impl Db {
                     tx.prepare("UPDATE edges SET target_symbol_id = ? WHERE id = ?")?;
 
                 for (edge_id, target_qualname, source_lang, edge_kind) in &unresolved {
-                    let (method_name, dot_pattern, colons_pattern) =
-                        fuzzy_qualname_patterns(target_qualname);
-
-                    // Try same-language first; bind only if it is the sole candidate.
-                    let resolved = single_unambiguous_match(
-                        &mut fuzzy_same_lang_stmt,
-                        params![
-                            method_name,
-                            &dot_pattern,
-                            &colons_pattern,
-                            graph_version,
-                            graph_version,
-                            source_lang
-                        ],
-                    )?
-                    .or_else(|| {
-                        // Cross-language fallback only for bridge edges
-                        if is_bridge_edge_kind(edge_kind) {
-                            single_unambiguous_match(
-                                &mut fuzzy_any_lang_stmt,
+                    // Tier 1: match on the last two qualname segments (`Type::method`);
+                    // see the equivalent tier in `insert_edges` for rationale.
+                    let two_segment_resolved = two_segment_qualname_patterns(target_qualname)
+                        .and_then(|(two_seg, two_dot, two_colons)| {
+                            let same_lang = single_unambiguous_match(
+                                &mut fuzzy_same_lang_stmt,
                                 params![
-                                    method_name,
-                                    &dot_pattern,
-                                    &colons_pattern,
+                                    &two_seg,
+                                    &two_dot,
+                                    &two_colons,
                                     graph_version,
-                                    graph_version
+                                    graph_version,
+                                    source_lang
                                 ],
                             )
                             .ok()
-                            .flatten()
-                        } else {
-                            None
-                        }
-                    });
+                            .flatten();
+                            if same_lang.is_some() {
+                                return same_lang;
+                            }
+                            if is_bridge_edge_kind(edge_kind) {
+                                single_unambiguous_match(
+                                    &mut fuzzy_any_lang_stmt,
+                                    params![
+                                        &two_seg,
+                                        &two_dot,
+                                        &two_colons,
+                                        graph_version,
+                                        graph_version
+                                    ],
+                                )
+                                .ok()
+                                .flatten()
+                            } else {
+                                None
+                            }
+                        });
+
+                    let resolved = if two_segment_resolved.is_some() {
+                        two_segment_resolved
+                    } else {
+                        // Tier 2 (existing, unchanged): bare trailing-name match.
+                        let (method_name, dot_pattern, colons_pattern) =
+                            fuzzy_qualname_patterns(target_qualname);
+
+                        // Try same-language first; bind only if it is the sole candidate.
+                        single_unambiguous_match(
+                            &mut fuzzy_same_lang_stmt,
+                            params![
+                                method_name,
+                                &dot_pattern,
+                                &colons_pattern,
+                                graph_version,
+                                graph_version,
+                                source_lang
+                            ],
+                        )?
+                        .or_else(|| {
+                            // Cross-language fallback only for bridge edges
+                            if is_bridge_edge_kind(edge_kind) {
+                                single_unambiguous_match(
+                                    &mut fuzzy_any_lang_stmt,
+                                    params![
+                                        method_name,
+                                        &dot_pattern,
+                                        &colons_pattern,
+                                        graph_version,
+                                        graph_version
+                                    ],
+                                )
+                                .ok()
+                                .flatten()
+                            } else {
+                                None
+                            }
+                        })
+                    };
 
                     if let Some(symbol_id) = resolved {
                         update_stmt.execute(params![symbol_id, edge_id])?;
@@ -1935,6 +2025,63 @@ pub(crate) fn qualname_trailing_name(qn: &str) -> &str {
 pub(crate) fn fuzzy_qualname_patterns(qn: &str) -> (&str, String, String) {
     let name = qualname_trailing_name(qn);
     (name, format!("%.{name}"), format!("%::{name}"))
+}
+
+/// Locate the last qualname separator (`.` or `::`) in `s`, returning the
+/// index right after it (the start of the trailing segment). `None` if `s`
+/// has no separator. Factored out of `qualname_trailing_name`'s inline logic
+/// so `qualname_trailing_two_segments` can reuse it without changing that
+/// function's shared behavior.
+fn last_qualname_separator(s: &str) -> Option<usize> {
+    let dot_pos = s.rfind('.').map(|p| p + 1);
+    let colons_pos = s.rfind("::").map(|p| p + 2);
+    match (dot_pos, colons_pos) {
+        (Some(d), Some(c)) => Some(d.max(c)),
+        (Some(d), None) => Some(d),
+        (None, Some(c)) => Some(c),
+        (None, None) => None,
+    }
+}
+
+/// Extract the trailing **two** qualname segments (handling both `.` and
+/// `::` separators), when the qualname has more than one segment.
+///
+/// Examples:
+/// - `"crate::db::Db::new"` -> `Some("Db::new")`
+/// - `"Vec::new"` -> `Some("Vec::new")`
+/// - `"pkg.store.EventStore.append"` -> `Some("EventStore.append")`
+/// - `"process"` -> `None` (only one segment, nothing to disambiguate with)
+fn qualname_trailing_two_segments(qn: &str) -> Option<&str> {
+    let name_start = last_qualname_separator(qn)?;
+    let prefix = qn[..name_start].trim_end_matches(['.', ':']);
+    if prefix.is_empty() {
+        return None;
+    }
+    let seg2_start = last_qualname_separator(prefix).unwrap_or(0);
+    Some(&qn[seg2_start..])
+}
+
+/// Build the fuzzy suffix-match inputs for a call site's last **two**
+/// qualname segments (`Type::method` / `Type.method`), used only by the
+/// two-segment resolution tier in `insert_edges` / `resolve_null_target_edges`.
+/// Returns `None` when the qualname carries only one segment; callers fall
+/// through to the existing bare-name tier (`fuzzy_qualname_patterns`) in that
+/// case. Deliberately additive: `fuzzy_qualname_patterns` itself, and every
+/// other caller of it (`lookup_symbol_id_fuzzy` and its dependents), are
+/// untouched.
+///
+/// ponytail: matching on the last two segments *already present in the
+/// stored target_qualname string* is the cheap fix for the common
+/// `Type::method` call shape (`Db::new` finds `crate::db::Db::new` without
+/// colliding with `Vec::new`). It is not receiver-type inference — no type
+/// resolution, no import tracking — so it won't help qualnames that only
+/// ever carry one segment, or disambiguate two same-named two-segment calls
+/// on unrelated types that happen to share both segments. Resolving the
+/// receiver's actual type before matching the method is the upgrade path if
+/// this ceiling proves too low.
+pub(crate) fn two_segment_qualname_patterns(qn: &str) -> Option<(String, String, String)> {
+    let two = qualname_trailing_two_segments(qn)?;
+    Some((two.to_string(), format!("%.{two}"), format!("%::{two}")))
 }
 
 /// Ambiguity guard for bare-name/suffix fuzzy edge resolution.
@@ -4200,6 +4347,90 @@ mod tests {
             compute_edge.target_symbol_id,
             Some(compute_id),
             "unambiguous bare-name call must still resolve"
+        );
+    }
+
+    // --- two-segment tier: `Type::method` disambiguates same-named methods on different types ---
+
+    #[test]
+    fn test_insert_edges_two_segment_qualname_disambiguates_same_named_methods() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+
+        // Two unrelated Rust types with same-named `new` constructors — the exact
+        // pathology from the bug report (`Db::new` colliding with every other
+        // `new` in the crate, e.g. `Vec::new`, once resolution is limited to the
+        // bare trailing name). Neither call site's target_qualname is a full
+        // path, so it can't be found by exact qualname; bare-name-only
+        // resolution (tier 2) would see two same-named `new` candidates here and
+        // refuse to bind either. The two-segment tier (tier 1) uses the extra
+        // `Type::` segment already present in the call site's recorded
+        // target_qualname to tell them apart.
+        let syms = vec![
+            make_test_symbol("crate::db::Db::new", Some("fn new() -> Self"), "method", 1),
+            make_test_symbol(
+                "crate::cache::Cache::new",
+                Some("fn new() -> Self"),
+                "method",
+                10,
+            ),
+            make_test_symbol("crate::caller::run", Some("fn run()"), "function", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+        let db_new_id = inserted
+            .iter()
+            .find(|s| s.qualname == "crate::db::Db::new")
+            .unwrap()
+            .id;
+        let cache_new_id = inserted
+            .iter()
+            .find(|s| s.qualname == "crate::cache::Cache::new")
+            .unwrap()
+            .id;
+        let caller_id = inserted
+            .iter()
+            .find(|s| s.qualname == "crate::caller::run")
+            .unwrap()
+            .id;
+
+        let edges = vec![
+            make_test_edge("CALLS", "crate::caller::run", "Db::new"),
+            make_test_edge("CALLS", "crate::caller::run", "Cache::new"),
+        ];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let found = db.edges_for_symbol(caller_id, None, 1).unwrap();
+        assert_eq!(found.len(), 2);
+
+        let db_edge = found
+            .iter()
+            .find(|e| e.target_qualname.as_deref() == Some("Db::new"))
+            .unwrap();
+        assert_eq!(
+            db_edge.target_symbol_id,
+            Some(db_new_id),
+            "Db::new must resolve to Db's constructor via the two-segment tier"
+        );
+
+        let cache_edge = found
+            .iter()
+            .find(|e| e.target_qualname.as_deref() == Some("Cache::new"))
+            .unwrap();
+        assert_eq!(
+            cache_edge.target_symbol_id,
+            Some(cache_new_id),
+            "Cache::new must resolve to Cache's constructor, not Db's, even though both share the bare name `new`"
+        );
+        assert_ne!(
+            db_edge.target_symbol_id, cache_edge.target_symbol_id,
+            "same-named methods on different types must not collide"
         );
     }
 
