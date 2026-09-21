@@ -476,6 +476,14 @@ impl Db {
     /// that freed a meaningful amount of space, reclaim it with `VACUUM`.
     /// Intended to run automatically at the end of every `reindex()`.
     ///
+    /// // ponytail: only reachable by running a reindex (see `Indexer::reindex`)
+    /// // — there's no standalone "just prune" CLI/RPC command. Ceiling: a
+    /// // database that's too large/stale for `reindex` to complete (e.g. the
+    /// // scan or carry-forward step itself times out or errors first) has no
+    /// // way to reclaim space without fixing that first. Upgrade path: add a
+    /// // thin `lidx prune --db <path>` subcommand (and/or RPC method) that
+    /// // calls this directly, once that scenario actually comes up.
+    ///
     /// Returns `(symbols_deleted, edges_deleted, versions_pruned, vacuumed)`.
     pub fn prune_and_maybe_vacuum(&self) -> Result<(usize, usize, usize, bool)> {
         let (symbols_deleted, edges_deleted, versions_pruned) =
