@@ -1,4 +1,4 @@
-use crate::db::Db;
+use crate::db::{Db, FileRecord};
 use crate::indexer::extract::ExtractedFile;
 use crate::metrics;
 use crate::model::{ChangedFilesResult, IndexStats};
@@ -265,9 +265,9 @@ impl Indexer {
         self.commit_sha = commit_sha;
         let scanned = scan::scan_repo_with_options(&self.repo_root, self.scan_options)?;
         let existing = self.db.list_files(previous_graph_version)?;
-        let mut existing_map: HashMap<String, String> = HashMap::new();
+        let mut existing_map: HashMap<String, FileRecord> = HashMap::new();
         for record in existing {
-            existing_map.insert(record.path, record.hash);
+            existing_map.insert(record.path.clone(), record);
         }
 
         let mut seen = HashSet::new();
@@ -286,9 +286,29 @@ impl Indexer {
         let mut batch_writer = batch::BatchWriter::with_defaults();
         let mut file_data: Vec<(scan::ScannedFile, ExtractedFile, differ::SymbolDiff, i64)> =
             Vec::new();
+        // Files whose content hash matches `previous_graph_version`: carried forward
+        // (symbols + edges copied via SQL) below instead of being re-parsed.
+        let mut carry_forward_ids: Vec<i64> = Vec::new();
 
         for file in &scanned {
             seen.insert(file.rel_path.clone());
+
+            if let Some(existing_record) = existing_map.get(&file.rel_path)
+                && existing_record.hash == file.hash
+            {
+                // Unchanged: skip the parse (tree-sitter + symbol extraction is the
+                // expensive part) and carry the file's rows forward further down.
+                self.db.upsert_file(
+                    &file.rel_path,
+                    &file.hash,
+                    &file.language,
+                    file.size,
+                    file.modified,
+                )?;
+                carry_forward_ids.push(existing_record.id);
+                stats.skipped += 1;
+                continue;
+            }
 
             // Extract symbols
             let source = match crate::util::read_to_string(&file.abs_path) {
@@ -386,6 +406,21 @@ impl Indexer {
             stats.indexed += 1;
             stats.symbols += diff.added.len() + diff.modified.len() + diff.unchanged.len();
             stats.edges += edges_count;
+        }
+
+        // Carry forward unchanged files' symbols/edges into the new graph version.
+        // Must run after the fresh-file edge loop above, so cross-file edge targets
+        // that land in a re-parsed file already have their new-version symbol row.
+        if !carry_forward_ids.is_empty() {
+            let (carried_symbols, carried_edges) = self.db.carry_forward_files(
+                &carry_forward_ids,
+                previous_graph_version,
+                self.graph_version,
+            )?;
+            eprintln!(
+                "lidx: carried forward {} unchanged file(s): {carried_symbols} symbol(s), {carried_edges} edge(s)",
+                carry_forward_ids.len()
+            );
         }
 
         for path in existing_map.keys() {

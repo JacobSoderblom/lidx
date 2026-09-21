@@ -799,3 +799,162 @@ fn incremental_file_delete_does_not_repoint_edges_at_reused_rowids() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+/// `reindex()` must not re-parse a file whose content hash is unchanged: its
+/// symbols/edges should be carried forward into the new graph version instead
+/// (rather than either being re-extracted, or silently dropped/left stale).
+/// A file that *did* change in the same run must still be fully re-extracted.
+///
+/// Scenario (py_rename fixture: helper.py defines `greet`, caller.py calls it):
+/// - Full reindex (v1).
+/// - helper.py is edited but only via a change that does not affect `greet`'s
+///   stable_id (qualname/signature/kind unchanged) — so it is still classified
+///   "changed" by content hash and gets fully re-extracted, but the resulting
+///   `greet` symbol is content-identical to the v1 one.
+/// - caller.py is left byte-for-byte unchanged, so it must be skipped and
+///   carried forward.
+/// - Second reindex (v2) must then show: caller.py skipped (not re-indexed),
+///   helper.py indexed, and caller.py's `run -> helper.greet` edge present in
+///   v2 with BOTH endpoints correctly remapped to v2 symbol rows — including
+///   the target, which lives in the freshly re-parsed helper.py, proving the
+///   carry-forward copy runs after fresh-file symbol writes.
+#[test]
+fn reindex_carries_forward_unchanged_file_and_reextracts_modified_file() {
+    let (repo_root, db_path) = setup_repo("py_rename");
+
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let v1 = indexer.db().current_graph_version().unwrap();
+
+    let greet_v1 = indexer
+        .db()
+        .get_symbol_by_qualname("helper.greet", v1)
+        .unwrap()
+        .expect("helper.greet must exist after initial index");
+    let run_v1 = indexer
+        .db()
+        .get_symbol_by_qualname("caller.run", v1)
+        .unwrap()
+        .expect("caller.run must exist after initial index");
+
+    // Precondition: caller.run's edge actually resolved to greet's v1 rowid.
+    {
+        let conn = indexer.db().read_conn().unwrap();
+        let resolved: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges
+                 WHERE source_symbol_id = ? AND target_symbol_id = ? AND graph_version = ?",
+                rusqlite::params![run_v1.id, greet_v1.id, v1],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            resolved > 0,
+            "Precondition: caller.run's edge must resolve to helper.greet's v1 rowid"
+        );
+    }
+
+    // Edit helper.py without touching greet's qualname/signature/kind (so its
+    // stable_id is unchanged), but the file hash changes -> full re-extract.
+    let helper_path = repo_root.join("helper.py");
+    std::fs::write(
+        &helper_path,
+        "# a harmless comment\ndef greet(name: str) -> str:\n    return f\"Hello, {name}\"\n",
+    )
+    .unwrap();
+
+    // caller.py is left completely untouched.
+    let stats = indexer.reindex().unwrap();
+    let v2 = indexer.db().current_graph_version().unwrap();
+    assert!(v2 > v1, "reindex must create a new graph version each call");
+
+    assert_eq!(
+        stats.skipped, 1,
+        "caller.py is unchanged and must be skipped, not re-indexed"
+    );
+    assert_eq!(
+        stats.indexed, 1,
+        "helper.py changed and must be (re-)indexed"
+    );
+
+    // helper.greet must exist in v2 as a fresh row (new id) but with the same
+    // stable_id as v1 (content-identical symbol, just a different graph_version row).
+    let greet_v2 = indexer
+        .db()
+        .get_symbol_by_qualname("helper.greet", v2)
+        .unwrap()
+        .expect("helper.greet must exist in v2 after re-extraction");
+    assert_ne!(
+        greet_v2.id, greet_v1.id,
+        "re-extracted symbol must get a fresh row, not reuse the v1 id"
+    );
+    assert_eq!(
+        greet_v2.stable_id, greet_v1.stable_id,
+        "greet's stable_id must be unchanged (qualname/signature/kind untouched)"
+    );
+
+    // caller.run must be carried forward into v2: present, with a fresh id
+    // (copied row), same stable_id as v1.
+    let run_v2 = indexer
+        .db()
+        .get_symbol_by_qualname("caller.run", v2)
+        .unwrap()
+        .expect("caller.run must be carried forward into v2");
+    assert_ne!(
+        run_v2.id, run_v1.id,
+        "carried-forward symbol must get a fresh row, not reuse the v1 id"
+    );
+    assert_eq!(run_v2.stable_id, run_v1.stable_id);
+
+    // The carried-forward CALLS edge (caller.run -> helper.greet) must exist in
+    // v2 with BOTH endpoints remapped to v2 rows: the source (caller.run,
+    // carried forward) and the target (helper.greet, freshly re-parsed this
+    // run). Scoped by source_symbol_id + kind='CALLS' (not target_qualname:
+    // the extractor stores the call's unqualified text "caller.greet" on this
+    // edge and relies on fuzzy resolution for target_symbol_id, same as v1).
+    let conn = indexer.db().read_conn().unwrap();
+    let target_id: Option<i64> = conn
+        .query_row(
+            "SELECT target_symbol_id FROM edges
+             WHERE graph_version = ? AND source_symbol_id = ? AND kind = 'CALLS'",
+            rusqlite::params![v2, run_v2.id],
+            |row| row.get(0),
+        )
+        .expect("carried-forward CALLS edge (caller.run -> helper.greet) must exist in v2");
+    assert_eq!(
+        target_id,
+        Some(greet_v2.id),
+        "carried-forward edge's target must be remapped to helper.greet's v2 row \
+         (which lives in the freshly re-parsed helper.py, not a carried file)"
+    );
+
+    // The carried-forward IMPORTS edge (caller module -> helper.greet) must
+    // also be remapped: same target, different (module-level) source.
+    let import_target_id: Option<i64> = conn
+        .query_row(
+            "SELECT target_symbol_id FROM edges
+             WHERE graph_version = ? AND target_qualname = 'helper.greet' AND kind = 'IMPORTS'",
+            rusqlite::params![v2],
+            |row| row.get(0),
+        )
+        .expect("carried-forward IMPORTS edge must exist in v2");
+    assert_eq!(import_target_id, Some(greet_v2.id));
+
+    // General invariant: no edge in the newest graph version may point at a
+    // symbol row from an older graph version.
+    let cross_version: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges e
+             JOIN symbols s ON s.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND s.graph_version != e.graph_version",
+            rusqlite::params![v2],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        cross_version, 0,
+        "no v2 edge may target a symbol row from an older graph version"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}

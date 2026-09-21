@@ -293,6 +293,100 @@ impl Db {
         Ok(())
     }
 
+    /// Carry forward symbols and edges for files whose content hash is unchanged
+    /// between `from_version` and `to_version`, instead of re-parsing them.
+    ///
+    /// `symbols.id` is `INTEGER PRIMARY KEY`, so a plain `INSERT ... SELECT` gives
+    /// the copied rows fresh ids; `stable_id` is preserved on the copy, which is
+    /// what lets the edge copy below re-target the new rows instead of the old
+    /// (now stale) ones. Edge endpoints are remapped by joining each edge's old
+    /// source/target symbol to whichever `to_version` row shares its `stable_id`.
+    ///
+    /// Callers must run this only after every `to_version` symbol write for this
+    /// reindex has happened, including freshly re-parsed files — a carried edge
+    /// whose target lives in a re-parsed file won't resolve until that file's new
+    /// symbol row exists.
+    ///
+    /// Returns `(symbols_copied, edges_copied)`.
+    pub fn carry_forward_files(
+        &self,
+        file_ids: &[i64],
+        from_version: i64,
+        to_version: i64,
+    ) -> Result<(usize, usize)> {
+        if file_ids.is_empty() {
+            return Ok((0, 0));
+        }
+
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let placeholders = vec!["?"; file_ids.len()].join(",");
+
+        let symbols_copied = {
+            let sql = format!(
+                "INSERT INTO symbols
+                    (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                     start_byte, end_byte, signature, docstring, graph_version, commit_sha, stable_id)
+                 SELECT file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                        start_byte, end_byte, signature, docstring, ?, commit_sha, stable_id
+                 FROM symbols
+                 WHERE graph_version = ? AND file_id IN ({placeholders})"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+                vec![Box::new(to_version), Box::new(from_version)];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            tx.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            )?
+        };
+
+        // ponytail: an edge endpoint with no stable_id match in `to_version`
+        // (deleted target, or a stable_id collision) is copied with that endpoint
+        // NULL rather than dropped — the same best-effort contract the rest of the
+        // edge-resolution code (insert_edges' fuzzy fallback, resolve_null_target_edges)
+        // already has for unresolved targets.
+        let edges_copied = {
+            let sql = format!(
+                "INSERT INTO edges
+                    (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
+                     evidence_snippet, evidence_start_line, evidence_end_line, confidence,
+                     graph_version, commit_sha, trace_id, span_id, event_ts)
+                 SELECT
+                    e.file_id,
+                    (SELECT ns.id FROM symbols ns
+                        WHERE ns.stable_id = src.stable_id AND ns.graph_version = ? LIMIT 1),
+                    (SELECT nt.id FROM symbols nt
+                        WHERE nt.stable_id = tgt.stable_id AND nt.graph_version = ? LIMIT 1),
+                    e.kind, e.target_qualname, e.detail, e.evidence_snippet,
+                    e.evidence_start_line, e.evidence_end_line, e.confidence,
+                    ?, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                 FROM edges e
+                 LEFT JOIN symbols src ON src.id = e.source_symbol_id
+                 LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id
+                 WHERE e.graph_version = ? AND e.file_id IN ({placeholders})"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                Box::new(to_version),
+                Box::new(to_version),
+                Box::new(to_version),
+                Box::new(from_version),
+            ];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            tx.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            )?
+        };
+
+        tx.commit()?;
+        Ok((symbols_copied, edges_copied))
+    }
+
     pub fn insert_symbols(
         &mut self,
         file_id: i64,
