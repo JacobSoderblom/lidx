@@ -458,11 +458,16 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
 /// - `self.attr.method()` / `cls.attr.method()` (exactly one hop off
 ///   `self`/`cls`) → resolved via a class-level annotation on `attr`, if
 ///   any; otherwise `Unresolved`.
-/// - Anything deeper (`self.a.b.method()`, `store.a.method()`), or a chain
-///   rooted in something other than a bare identifier (a call result, a
-///   subscript, ...) → `Unresolved` if the root is `self`/`cls` or a
-///   tracked local, `NotTracked` if the root is an untracked name (a
-///   qualified reference like `pkg.module.Class.method()`).
+/// - Anything else with two or more hops (`self.a.b.method()`,
+///   `store.a.method()`, `ClassName.attr.method()`), or a chain rooted in
+///   something other than a bare identifier (a call result, a subscript,
+///   ...) → always `Unresolved`. The true receiver here is the *last* hop
+///   (`a.b`, `attr`, `ClassName.attr`), not the root identifier, and we
+///   have no attribute-type inference beyond the single-hop self/cls case
+///   above — so even a capitalized, class-looking root (`ClassName.attr`)
+///   does not get the bare-identifier "presumably a class/module
+///   reference" pass; only a *direct* `ClassName.static_method()` (hops ==
+///   0, see above) gets that.
 fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
     if function_node.kind() != "attribute" {
         return ReceiverType::NotTracked;
@@ -507,11 +512,15 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         };
     }
 
-    if is_self || ctx.local_types.contains_key(&root_name) {
-        ReceiverType::Unresolved
-    } else {
-        ReceiverType::NotTracked
-    }
+    // Two or more hops off any root, or a single hop off something other
+    // than self/cls: the receiver is the last hop (`a.b`, `ClassName.attr`),
+    // which we never have type information for. Unlike the hops == 0 case,
+    // there's no "presumably a class/module reference" carve-out here --
+    // `ClassName.attr.method()` binding by bare name is exactly the
+    // chained-attribute leak this gate exists to close (an untyped
+    // class-level list/dict attribute colliding with an unrelated
+    // same-named method elsewhere in the index).
+    ReceiverType::Unresolved
 }
 
 /// Walk a (possibly nested) `attribute` chain down to its root node,
@@ -695,17 +704,35 @@ fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String
 }
 
 /// Recursively collect local-variable bindings from statements within a
-/// single function body, stopping at nested function/class/lambda
-/// boundaries (their own locals are a different scope entirely — see
-/// `Context::local_types`'s doc comment).
+/// single function body, stopping at nested function/class boundaries
+/// (their own locals are a different scope entirely — see
+/// `Context::local_types`'s doc comment). A `lambda` is *not* a boundary
+/// here: unlike `def`, a lambda never gets its own `Context`/`local_types`
+/// in `walk_node` (there's no case for it), so a call inside a lambda body
+/// is walked with the *enclosing* function's `local_types`. If the
+/// lambda's own parameters (e.g. `acc` in `lambda n, acc=funcs:
+/// acc.append(n)`) weren't folded into that same map, a reference to one
+/// inside the lambda body would look like an untracked name and fall
+/// through to the "presumably a class/module reference" bare-name
+/// fallback — exactly the leak this closes. Lambda parameters can't carry
+/// annotations, so they're always bound `Other`.
 fn collect_statement_bindings(
     node: Node<'_>,
     source: &str,
     bindings: &mut Vec<(String, LocalType)>,
 ) {
     match node.kind() {
-        "function_definition" | "async_function_definition" | "class_definition" | "lambda" => {
+        "function_definition" | "async_function_definition" | "class_definition" => {
             return;
+        }
+        "lambda" => {
+            if let Some(params) = node.child_by_field_name("parameters") {
+                collect_lambda_parameter_bindings(params, source, bindings);
+            }
+            // No `return`: still recurse into children below (the default
+            // expression of a parameter, and the lambda's body, may
+            // contain a nested lambda whose own parameters also need
+            // folding in).
         }
         "assignment" => {
             if let Some(left) = node.child_by_field_name("left") {
@@ -783,6 +810,41 @@ fn collect_pattern_identifiers(
             }
         }
         _ => {}
+    }
+}
+
+/// Collect a `lambda`'s own parameter names as `Other` bindings (lambda
+/// parameters can't carry type annotations, so there's no `Known` case —
+/// see `collect_statement_bindings`'s `"lambda"` arm for why these are
+/// folded into the *enclosing* scope's bindings rather than a scope of
+/// their own).
+fn collect_lambda_parameter_bindings(
+    params: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        match param.kind() {
+            "identifier" => {
+                let name = node_text(param, source);
+                if name != "self" && name != "cls" {
+                    bindings.push((name, LocalType::Other));
+                }
+            }
+            "default_parameter" => {
+                if let Some(name_node) = param.child_by_field_name("name") {
+                    bindings.push((node_text(name_node, source), LocalType::Other));
+                }
+            }
+            "list_splat_pattern" | "dictionary_splat_pattern" => {
+                if let Some(name_node) = param.named_child(0) {
+                    bindings.push((node_text(name_node, source), LocalType::Other));
+                }
+            }
+            "tuple_pattern" => collect_pattern_identifiers(param, source, bindings),
+            _ => {}
+        }
     }
 }
 

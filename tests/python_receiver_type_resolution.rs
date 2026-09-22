@@ -192,6 +192,91 @@ fn builtin_local_variable_call_does_not_bind() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// `acc` is a lambda parameter (`lambda n, acc=result: acc.append(n)`),
+/// not a local of the enclosing function. A lambda never gets its own
+/// `Context`/`local_types` in the extractor, so without folding the
+/// lambda's own parameters into the enclosing scope, a call through one of
+/// them looks like an untracked identifier and falls through to the
+/// bare-name tier — this was one of the two surviving leaks in dpb
+/// (`acc.append(n)` inside `walk_expr(expr, lambda n, acc=funcs: ...)`).
+#[test]
+fn lambda_parameter_call_does_not_bind() {
+    let (repo_root, db_path) = setup_repo("py_receiver_type");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+
+    let conn = indexer.db().read_conn().unwrap();
+    let (target_symbol_id, receiver_type, resolution_kind): (
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges
+             WHERE kind = 'CALLS' AND target_qualname = 'acc.append' AND graph_version = ?",
+            params![gv],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+
+    assert_eq!(
+        target_symbol_id, None,
+        "acc.append(n) inside the lambda body must NOT bind to EventStore.append"
+    );
+    assert_eq!(
+        receiver_type.as_deref(),
+        Some(""),
+        "the lambda's own parameter must be tracked (folded into the enclosing scope) and \
+         recorded as unresolved, not left NULL as if it were never a local at all"
+    );
+    assert_eq!(resolution_kind, None);
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// `Registry.instances.append(self)` — a chained attribute off a *class*
+/// reference (not `self`/`cls`) — must also not bind. Before this fix, any
+/// attribute chain of two or more hops rooted in a name the extractor
+/// didn't track as a local was assumed to be "presumably a class/module
+/// reference" and left `NotTracked`, letting the pre-existing bare-name
+/// pipeline resolve it anyway. This is dpb's
+/// `_FakeCredential.instances.append(self)` false positive.
+#[test]
+fn chained_class_attribute_call_does_not_bind() {
+    let (repo_root, db_path) = setup_repo("py_receiver_type");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+
+    let conn = indexer.db().read_conn().unwrap();
+    let (target_symbol_id, receiver_type, resolution_kind): (
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges
+             WHERE kind = 'CALLS' AND target_qualname = 'Registry.instances.append' AND graph_version = ?",
+            params![gv],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+
+    assert_eq!(
+        target_symbol_id, None,
+        "Registry.instances.append(self) must NOT bind to EventStore.append"
+    );
+    assert_eq!(
+        receiver_type.as_deref(),
+        Some(""),
+        "a chained attribute off a class reference must be tracked-but-unresolved, not NULL"
+    );
+    assert_eq!(resolution_kind, None);
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 /// `self._events.append(event)` — a chained attribute off `self` with no
 /// class-level annotation on `_events` — must also not bind. This is the
 /// exact shape of issue #45's `self._buffer.append` example.
