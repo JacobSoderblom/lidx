@@ -1151,6 +1151,21 @@ impl Db {
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                  LIMIT 2"
             )?;
+            // Ancestor lookup for the inherited-method tier (see
+            // `resolve_via_inheritance`): given a type's own symbol id, its
+            // recorded EXTENDS/IMPLEMENTS/INHERITS edges in declaration
+            // order. `edges.id` is insertion order, which mirrors source
+            // order — each extractor emits a class's base-list edges in one
+            // pass, in the order the bases are written.
+            let mut hierarchy_stmt = tx.prepare(
+                "SELECT target_symbol_id, target_qualname
+                 FROM edges
+                 WHERE source_symbol_id = ?
+                   AND kind IN ('EXTENDS', 'IMPLEMENTS', 'INHERITS')
+                   AND graph_version = ?
+                   AND target_qualname IS NOT NULL
+                 ORDER BY id ASC"
+            )?;
             // Look up the source file's language for same-language preference
             let source_lang: String = tx
                 .query_row(
@@ -1199,6 +1214,7 @@ impl Db {
                             graph_version,
                             &mut fuzzy_same_lang_stmt,
                             &mut fuzzy_any_lang_stmt,
+                            &mut hierarchy_stmt,
                         )?,
                         None => (None, None),
                     }
@@ -1342,6 +1358,17 @@ impl Db {
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                      LIMIT 2"
                 )?;
+                // Ancestor lookup for the inherited-method tier — see the
+                // identical statement (and its comment) in `insert_edges`.
+                let mut hierarchy_stmt = tx.prepare(
+                    "SELECT target_symbol_id, target_qualname
+                     FROM edges
+                     WHERE source_symbol_id = ?
+                       AND kind IN ('EXTENDS', 'IMPLEMENTS', 'INHERITS')
+                       AND graph_version = ?
+                       AND target_qualname IS NOT NULL
+                     ORDER BY id ASC"
+                )?;
 
                 let mut update_stmt = tx.prepare(
                     "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
@@ -1357,6 +1384,7 @@ impl Db {
                         graph_version,
                         &mut fuzzy_same_lang_stmt,
                         &mut fuzzy_any_lang_stmt,
+                        &mut hierarchy_stmt,
                     )?;
 
                     if let Some(symbol_id) = resolved {
@@ -2075,14 +2103,16 @@ fn single_unambiguous_match(
 /// pre-existing two-segment-then-bare-name pipeline unchanged. `Some("")` =
 /// tracked but the receiver is a builtin or unresolved type — no lookup is
 /// attempted at all; the edge must stay unbound. `Some(ty)` = tracked with
-/// an inferred receiver type — only a match on `ty`'s own method is
-/// attempted (no bare-name fallback), so an unmatched but known-typed
-/// receiver also stays unbound rather than guessing.
+/// an inferred receiver type — a match on `ty`'s own method is tried first;
+/// if `ty` declares no such method, its recorded EXTENDS/IMPLEMENTS/INHERITS
+/// ancestors are walked for the one that does (see
+/// `resolve_via_inheritance`). No bare-name fallback either way: an
+/// unmatched but known-typed receiver stays unbound rather than guessing.
 ///
 /// Returns `(target_symbol_id, resolution_kind)`, where `resolution_kind`
-/// is one of `"receiver_type"`, `"two_segment"`, `"bare_name"`, or `None`
-/// when nothing binds. Exact-qualname resolution (`"exact"`) happens
-/// separately, before this is called — see callers.
+/// is one of `"receiver_type"`, `"inherited"`, `"two_segment"`,
+/// `"bare_name"`, or `None` when nothing binds. Exact-qualname resolution
+/// (`"exact"`) happens separately, before this is called — see callers.
 #[allow(clippy::too_many_arguments)]
 fn resolve_fuzzy_target(
     target_qualname: &str,
@@ -2092,6 +2122,7 @@ fn resolve_fuzzy_target(
     graph_version: i64,
     same_lang_stmt: &mut rusqlite::Statement<'_>,
     any_lang_stmt: &mut rusqlite::Statement<'_>,
+    hierarchy_stmt: &mut rusqlite::Statement<'_>,
 ) -> rusqlite::Result<(Option<i64>, Option<&'static str>)> {
     match receiver_type {
         // Tracked, but the receiver is a builtin/unresolved type: per the
@@ -2140,7 +2171,19 @@ fn resolve_fuzzy_target(
                     return Ok((any_lang, Some("receiver_type")));
                 }
             }
-            Ok((None, None))
+            // The receiver's own type declares no matching method (or the
+            // match there was itself ambiguous) — walk its recorded
+            // EXTENDS/IMPLEMENTS/INHERITS ancestors for the one that does.
+            resolve_via_inheritance(
+                known_type,
+                method,
+                source_lang,
+                edge_kind,
+                graph_version,
+                same_lang_stmt,
+                any_lang_stmt,
+                hierarchy_stmt,
+            )
         }
 
         // Not tracked: the pre-existing pipeline, unchanged behavior.
@@ -2213,6 +2256,176 @@ fn resolve_fuzzy_target(
             Ok((None, None))
         }
     }
+}
+
+/// Maximum number of EXTENDS/IMPLEMENTS/INHERITS hops `resolve_via_inheritance`
+/// will follow from a receiver's own type before giving up. Real class
+/// hierarchies are rarely more than a handful of levels deep; this bound
+/// exists purely so a cyclic or pathological hierarchy graph can't turn one
+/// unresolved call into unbounded work during indexing.
+///
+/// ponytail: a flat hop cap, not cycle detection — `seen` (below) still
+/// dedupes symbols already visited so a cycle can't be walked twice, but the
+/// cap is what actually bounds worst-case cost. 8 is comfortably past any
+/// hierarchy depth seen in real corpora (dpb tops out well under this).
+const MAX_INHERITANCE_DEPTH: usize = 8;
+
+/// Resolve a bare type name (e.g. a receiver's inferred `ReceiverType::Known`
+/// value, or an ancestor's `target_qualname` text) to the single symbol that
+/// declares it. Reuses the same statement `resolve_fuzzy_target` already
+/// binds method names against — its kind filter already includes
+/// class/interface/struct/trait/record — just seeded with a single-segment
+/// suffix pattern instead of a two-segment one. Ambiguity-guarded like every
+/// other fuzzy tier: more than one same-named type is unresolvable, not a
+/// coin flip. Same-language only — a class hierarchy never crosses a
+/// language boundary, so there is no cross-language fallback to attempt.
+fn resolve_type_symbol(
+    type_name: &str,
+    source_lang: &str,
+    graph_version: i64,
+    same_lang_stmt: &mut rusqlite::Statement<'_>,
+) -> rusqlite::Result<Option<i64>> {
+    let (name, dot_pattern, colons_pattern) = fuzzy_qualname_patterns(type_name);
+    single_unambiguous_match(
+        same_lang_stmt,
+        params![
+            name,
+            &dot_pattern,
+            &colons_pattern,
+            graph_version,
+            graph_version,
+            source_lang
+        ],
+    )
+}
+
+/// When a receiver's own type declares no matching method, walk up its
+/// recorded EXTENDS/IMPLEMENTS/INHERITS edges (`hierarchy_stmt`) for the
+/// ancestor that actually declares it — the base-class/interface method a
+/// call through that receiver would dispatch to.
+///
+/// Ancestors are visited breadth-first, level by level, in the declaration
+/// order their edges were recorded in (`hierarchy_stmt`'s `ORDER BY id
+/// ASC`). Within one level, "first declared, first checked" — if exactly one
+/// ancestor at that level declares the method, that is the bind target and
+/// the walk stops there without looking deeper (a closer ancestor always
+/// wins over a farther one, matching real dispatch). If more than one
+/// ancestor at the *same* level declares it, that is a genuine ambiguity
+/// (C# multiple interfaces, Python multiple bases) and the call is refused,
+/// same as the existing bare-name ambiguity guard — we do not guess which
+/// one the language would actually pick. Bounded by
+/// `MAX_INHERITANCE_DEPTH`; a walk that exhausts its budget without a match
+/// (or without discovering any ancestors to descend into) returns `None`,
+/// same as "not found" anywhere else in this pipeline.
+///
+/// Only called after the receiver's own type has already been checked and
+/// missed — see the `Some(known_type)` arm of `resolve_fuzzy_target`.
+#[allow(clippy::too_many_arguments)]
+fn resolve_via_inheritance(
+    known_type: &str,
+    method: &str,
+    source_lang: &str,
+    edge_kind: &str,
+    graph_version: i64,
+    same_lang_stmt: &mut rusqlite::Statement<'_>,
+    any_lang_stmt: &mut rusqlite::Statement<'_>,
+    hierarchy_stmt: &mut rusqlite::Statement<'_>,
+) -> rusqlite::Result<(Option<i64>, Option<&'static str>)> {
+    let Some(root_id) = resolve_type_symbol(known_type, source_lang, graph_version, same_lang_stmt)?
+    else {
+        return Ok((None, None));
+    };
+
+    let mut frontier = vec![root_id];
+    let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::from([root_id]);
+
+    for _ in 0..MAX_INHERITANCE_DEPTH {
+        // Collect this level's direct ancestors, in declaration order,
+        // across every symbol reached at the previous level.
+        let mut level: Vec<(Option<i64>, String)> = Vec::new();
+        for &sym_id in &frontier {
+            let rows = hierarchy_stmt.query_map(params![sym_id, graph_version], |row| {
+                Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                level.push(row?);
+            }
+        }
+        if level.is_empty() {
+            break;
+        }
+
+        // Does any ancestor at this level declare the method?
+        let mut matches: Vec<i64> = Vec::new();
+        for (_, ancestor_qualname) in &level {
+            let ancestor_name = qualname_trailing_name(ancestor_qualname);
+            let seed = format!("{ancestor_name}.{method}");
+            let Some((seg, dot_pattern, colons_pattern)) = two_segment_qualname_patterns(&seed)
+            else {
+                continue;
+            };
+            let same_lang = single_unambiguous_match(
+                same_lang_stmt,
+                params![
+                    &seg,
+                    &dot_pattern,
+                    &colons_pattern,
+                    graph_version,
+                    graph_version,
+                    source_lang
+                ],
+            )?;
+            let found = if same_lang.is_some() {
+                same_lang
+            } else if is_bridge_edge_kind(edge_kind) {
+                single_unambiguous_match(
+                    any_lang_stmt,
+                    params![&seg, &dot_pattern, &colons_pattern, graph_version, graph_version],
+                )?
+            } else {
+                None
+            };
+            if let Some(id) = found {
+                matches.push(id);
+            }
+        }
+
+        match matches.len() {
+            0 => {}
+            1 => return Ok((Some(matches[0]), Some("inherited"))),
+            _ => return Ok((None, None)), // two unrelated ancestors both declare it: refuse
+        }
+
+        // Nobody at this level declares it — descend to the next level.
+        // Prefer each ancestor's already-resolved target_symbol_id (cheap,
+        // and already vetted by its own EXTENDS/IMPLEMENTS resolution);
+        // only re-resolve by name when it's still NULL, e.g. within the
+        // same insert_edges pass, before the ancestor's own defining file
+        // has been processed.
+        let mut next_frontier = Vec::new();
+        for (ancestor_symbol_id, ancestor_qualname) in &level {
+            let next_id = match ancestor_symbol_id {
+                Some(id) => Some(*id),
+                None => resolve_type_symbol(
+                    qualname_trailing_name(ancestor_qualname),
+                    source_lang,
+                    graph_version,
+                    same_lang_stmt,
+                )?,
+            };
+            if let Some(id) = next_id
+                && seen.insert(id)
+            {
+                next_frontier.push(id);
+            }
+        }
+        if next_frontier.is_empty() {
+            break;
+        }
+        frontier = next_frontier;
+    }
+
+    Ok((None, None))
 }
 
 fn resolve_symbol_id(
@@ -5444,6 +5657,213 @@ mod tests {
             target_symbol_id, None,
             "a repair pass must respect the persisted receiver_type signal just like the \
              original insert — it must not fuzzy-resolve an edge marked unresolved"
+        );
+    }
+
+    #[test]
+    fn test_insert_edges_receiver_type_inherited_method_resolves_via_ancestor() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
+            .unwrap();
+
+        // MssqlCodeWriter inherits write_line from CodeWriter without
+        // overriding it — the dpb gap this tier closes. Only CodeWriter
+        // declares the method; MssqlCodeWriter has no symbol of its own
+        // named write_line.
+        let syms = vec![
+            make_test_symbol(
+                "pkg.CodeWriter.write_line",
+                Some("def write_line(self, s)"),
+                "method",
+                1,
+            ),
+            make_test_symbol("pkg.MssqlCodeWriter", None, "class", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+        let write_line_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.CodeWriter.write_line")
+            .unwrap()
+            .id;
+        let symbol_map: HashMap<String, i64> =
+            inserted.iter().map(|s| (s.qualname.clone(), s.id)).collect();
+
+        // `class MssqlCodeWriter(CodeWriter):` — recorded as an EXTENDS edge,
+        // same as the real Python extractor emits — plus the call site
+        // itself, gated by the inferred receiver type.
+        let edges = vec![
+            make_test_edge_with_receiver_type(
+                "EXTENDS",
+                "pkg.MssqlCodeWriter",
+                "CodeWriter",
+                ReceiverType::NotTracked,
+            ),
+            make_test_edge_with_receiver_type(
+                "CALLS",
+                "pkg.caller.run",
+                "cw.write_line",
+                ReceiverType::Known("MssqlCodeWriter".to_string()),
+            ),
+        ];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'cw.write_line'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id,
+            Some(write_line_id),
+            "a call through a subclass-typed receiver must bind to the base class's method \
+             when the subclass itself declares no override"
+        );
+        assert_eq!(
+            resolution_kind.as_deref(),
+            Some("inherited"),
+            "an inherited bind must be tagged distinctly from a direct receiver_type match"
+        );
+    }
+
+    #[test]
+    fn test_insert_edges_receiver_type_inherited_method_ambiguous_bases_refuses() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
+            .unwrap();
+
+        // `class Foo(A, B):` where *both* A and B declare `method` — Python
+        // multiple inheritance with no way to tell, from the recorded
+        // hierarchy alone, which base the language would actually dispatch
+        // to. Must refuse rather than guess.
+        let syms = vec![
+            make_test_symbol("pkg.A.method", Some("def method(self)"), "method", 1),
+            make_test_symbol("pkg.B.method", Some("def method(self)"), "method", 10),
+            make_test_symbol("pkg.Foo", None, "class", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+        let symbol_map: HashMap<String, i64> =
+            inserted.iter().map(|s| (s.qualname.clone(), s.id)).collect();
+
+        let edges = vec![
+            make_test_edge_with_receiver_type(
+                "EXTENDS",
+                "pkg.Foo",
+                "A",
+                ReceiverType::NotTracked,
+            ),
+            make_test_edge_with_receiver_type(
+                "EXTENDS",
+                "pkg.Foo",
+                "B",
+                ReceiverType::NotTracked,
+            ),
+            make_test_edge_with_receiver_type(
+                "CALLS",
+                "pkg.caller.run",
+                "foo.method",
+                ReceiverType::Known("Foo".to_string()),
+            ),
+        ];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'foo.method'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id, None,
+            "two unrelated ancestors declaring the same method is ambiguous and must not bind"
+        );
+        assert_eq!(resolution_kind, None);
+    }
+
+    #[test]
+    fn test_insert_edges_receiver_type_direct_override_wins_over_inherited() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
+            .unwrap();
+
+        // MssqlCodeWriter *does* override write_line this time — the direct
+        // receiver_type tier must still win, and the ancestor's own
+        // write_line (also present) must not be walked to or preferred.
+        let syms = vec![
+            make_test_symbol(
+                "pkg.MssqlCodeWriter.write_line",
+                Some("def write_line(self, s)"),
+                "method",
+                1,
+            ),
+            make_test_symbol(
+                "pkg.CodeWriter.write_line",
+                Some("def write_line(self, s)"),
+                "method",
+                10,
+            ),
+            make_test_symbol("pkg.MssqlCodeWriter", None, "class", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+        let own_write_line_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.MssqlCodeWriter.write_line")
+            .unwrap()
+            .id;
+        let symbol_map: HashMap<String, i64> =
+            inserted.iter().map(|s| (s.qualname.clone(), s.id)).collect();
+
+        let edges = vec![
+            make_test_edge_with_receiver_type(
+                "EXTENDS",
+                "pkg.MssqlCodeWriter",
+                "CodeWriter",
+                ReceiverType::NotTracked,
+            ),
+            make_test_edge_with_receiver_type(
+                "CALLS",
+                "pkg.caller.run",
+                "cw.write_line",
+                ReceiverType::Known("MssqlCodeWriter".to_string()),
+            ),
+        ];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'cw.write_line'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id,
+            Some(own_write_line_id),
+            "a direct (non-inherited) call must still bind to the receiver's own method, \
+             not walk past it to an ancestor that happens to declare the same name"
+        );
+        assert_eq!(
+            resolution_kind.as_deref(),
+            Some("receiver_type"),
+            "a direct match must keep the existing receiver_type resolution_kind, not \
+             \"inherited\" — the walk must never even run when the direct tier already hit"
         );
     }
 
