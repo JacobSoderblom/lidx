@@ -2,12 +2,47 @@ use serde_json::Value;
 
 use super::{RpcError, RpcResponse};
 
-/// Extract max_response_bytes from params (supports both max_response_bytes and max_tokens)
-pub(super) fn extract_max_response_bytes(params: &serde_json::Value) -> Option<usize> {
+/// Methods whose params already use `max_bytes` for their own internal
+/// content budget (source snippet sizing, section allocation, etc.), with
+/// their own truncation bookkeeping (e.g. explain_symbol's budget.truncated).
+/// For these, `max_bytes` must NOT also be read here as the outer
+/// response-size cap: that would silently apply the same number a second
+/// time via generic array-slicing, on top of (and uncoordinated with) the
+/// method's own budget -- reintroducing the exact "truncation the caller
+/// can't see" bug this module exists to close, just one layer out.
+const METHODS_WITH_OWN_MAX_BYTES: &[&str] = &[
+    "repo_map",
+    "analyze_diff",
+    "orient",
+    "gather_context",
+    "explain_symbol",
+    "trace_flow",
+];
+
+/// Extract the response byte budget from params. Supports three names:
+/// `max_response_bytes` (preferred, most explicit), `max_bytes` (alias --
+/// this is what fixes analyze_impact silently ignoring `max_bytes`, since it
+/// has no params field of its own for it; skipped for methods in
+/// `METHODS_WITH_OWN_MAX_BYTES`, see there), then `max_tokens` (converted at
+/// ~4 bytes/token).
+pub(super) fn extract_max_response_bytes(
+    method: &str,
+    params: &serde_json::Value,
+) -> Option<usize> {
     params
         .get("max_response_bytes")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
+        .or_else(|| {
+            if METHODS_WITH_OWN_MAX_BYTES.contains(&method) {
+                None
+            } else {
+                params
+                    .get("max_bytes")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+            }
+        })
         .or_else(|| {
             params
                 .get("max_tokens")
@@ -97,6 +132,19 @@ pub(super) fn truncate_response(
                 }
             }
 
+            // A handler's own result can carry a sibling `truncated` bool that
+            // it computed for its own reasons (e.g. analyze_impact's internal
+            // depth/limit truncation). Slicing an array field here is *also*
+            // truncation -- so OR it in rather than leaving a stale `false`
+            // sitting next to an array that was just cut. Never flip a true
+            // back to false: this only ever adds honesty, never removes it.
+            if did_truncate
+                && let Some(serde_json::Value::Bool(existing)) = map.get("truncated")
+                && !*existing
+            {
+                map.insert("truncated".to_string(), serde_json::Value::Bool(true));
+            }
+
             (
                 serde_json::Value::Object(map),
                 did_truncate,
@@ -162,25 +210,96 @@ mod tests {
     #[test]
     fn extract_max_response_bytes_from_max_response_bytes() {
         let params = json!({"max_response_bytes": 5000});
-        assert_eq!(extract_max_response_bytes(&params), Some(5000));
+        assert_eq!(
+            extract_max_response_bytes("analyze_impact", &params),
+            Some(5000)
+        );
     }
 
     #[test]
     fn extract_max_response_bytes_from_max_tokens() {
         let params = json!({"max_tokens": 1000});
-        assert_eq!(extract_max_response_bytes(&params), Some(4000));
+        assert_eq!(
+            extract_max_response_bytes("analyze_impact", &params),
+            Some(4000)
+        );
     }
 
     #[test]
     fn extract_max_response_bytes_prefers_max_response_bytes() {
         let params = json!({"max_response_bytes": 5000, "max_tokens": 1000});
-        assert_eq!(extract_max_response_bytes(&params), Some(5000));
+        assert_eq!(
+            extract_max_response_bytes("analyze_impact", &params),
+            Some(5000)
+        );
     }
 
     #[test]
     fn extract_max_response_bytes_none_when_absent() {
         let params = json!({"other": 42});
-        assert_eq!(extract_max_response_bytes(&params), None);
+        assert_eq!(extract_max_response_bytes("analyze_impact", &params), None);
+    }
+
+    #[test]
+    fn extract_max_response_bytes_from_max_bytes_alias() {
+        // analyze_impact has no max_bytes field of its own, so the outer
+        // wrapper is the only place `max_bytes` can take effect for it.
+        let params = json!({"max_bytes": 12345});
+        assert_eq!(
+            extract_max_response_bytes("analyze_impact", &params),
+            Some(12345)
+        );
+    }
+
+    #[test]
+    fn extract_max_response_bytes_prefers_max_response_bytes_over_max_bytes() {
+        let params = json!({"max_response_bytes": 5000, "max_bytes": 9999});
+        assert_eq!(
+            extract_max_response_bytes("analyze_impact", &params),
+            Some(5000)
+        );
+    }
+
+    #[test]
+    fn extract_max_response_bytes_prefers_max_bytes_over_max_tokens() {
+        let params = json!({"max_bytes": 3000, "max_tokens": 1000});
+        assert_eq!(
+            extract_max_response_bytes("analyze_impact", &params),
+            Some(3000)
+        );
+    }
+
+    #[test]
+    fn extract_max_response_bytes_ignores_max_bytes_alias_for_methods_with_their_own() {
+        // gather_context (and repo_map, explain_symbol, trace_flow,
+        // analyze_diff, orient) already use `max_bytes` for their own
+        // internal content budget. If the outer wrapper also read it as the
+        // response-size cap, a caller's internal-budget request would
+        // silently double as a second, uncoordinated truncation layer --
+        // this regressed real gather_context tests during development
+        // (fixed by scoping the alias to methods that lack their own
+        // max_bytes param).
+        let params = json!({"max_bytes": 50});
+        for method in [
+            "repo_map",
+            "analyze_diff",
+            "orient",
+            "gather_context",
+            "explain_symbol",
+            "trace_flow",
+        ] {
+            assert_eq!(
+                extract_max_response_bytes(method, &params),
+                None,
+                "{method} should not have max_bytes read as the outer response cap"
+            );
+        }
+        // Sanity: the same params DO resolve for a method without its own
+        // max_bytes, proving the alias itself still works.
+        assert_eq!(
+            extract_max_response_bytes("analyze_impact", &params),
+            Some(50)
+        );
     }
 
     // --- truncate_response ---
@@ -215,6 +334,51 @@ mod tests {
         assert!(truncated);
         assert_eq!(total, Some(1));
         assert_eq!(result.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn truncate_response_object_corrects_stale_false_truncated_sibling() {
+        // Regression for the analyze_impact self-contradiction: a handler
+        // (e.g. src/impact/) computes its own `truncated: false` because ITS
+        // internal depth/limit budget wasn't hit, but the outer response-size
+        // budget here still has to cut the `affected` array. The stale
+        // `false` must not survive next to an array that just got sliced.
+        let big_affected: Vec<serde_json::Value> = (0..182).map(|i| json!({"id": i})).collect();
+        let val = json!({"affected": big_affected, "truncated": false});
+        let (result, was_truncated, _) = truncate_response(val, 500);
+        assert!(was_truncated);
+        let obj = result.as_object().unwrap();
+        assert!(
+            obj["affected"].as_array().unwrap().len() < 182,
+            "affected array should have been sliced"
+        );
+        assert_eq!(
+            obj["truncated"],
+            json!(true),
+            "sibling `truncated` must be corrected to true once the array was cut, \
+             not left as the stale false the handler wrote before slicing"
+        );
+    }
+
+    #[test]
+    fn truncate_response_object_leaves_true_truncated_sibling_alone() {
+        // If the handler already knew it truncated, we must never flip that
+        // back to false -- OR-ing only ever adds honesty, never removes it.
+        let items: Vec<serde_json::Value> = (0..5).map(|i| json!({"id": i})).collect();
+        let val = json!({"affected": items, "truncated": true});
+        let (result, _, _) = truncate_response(val, 10000);
+        assert_eq!(result["truncated"], json!(true));
+    }
+
+    #[test]
+    fn truncate_response_object_no_truncated_field_unaffected() {
+        // Objects without a `truncated` sibling (e.g. explain_symbol's nested
+        // shape) must not gain one out of nowhere.
+        let big: Vec<serde_json::Value> = (0..100).map(|i| json!({"x": i})).collect();
+        let val = json!({"items": big});
+        let (result, was_truncated, _) = truncate_response(val, 50);
+        assert!(was_truncated);
+        assert!(result.as_object().unwrap().get("truncated").is_none());
     }
 
     #[test]

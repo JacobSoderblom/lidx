@@ -14,7 +14,13 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let params: ExplainSymbolParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
 
-    let max_bytes = params.max_bytes.unwrap_or(40_000).min(200_000);
+    // ponytail: 200_000 is a hard ceiling on the internal section budget, not a
+    // knob anyone tunes; ceiling exists to bound worst-case response size. If a
+    // caller asks for more, we clamp but say so via budget.requested_bytes
+    // rather than silently pretending we honored the request.
+    let requested_max_bytes = params.max_bytes;
+    let max_bytes = requested_max_bytes.unwrap_or(40_000).min(200_000);
+    let max_bytes_clamped = requested_max_bytes.is_some_and(|v| v != max_bytes);
     let max_refs = params.max_refs.unwrap_or(10);
 
     // Normalize sections: resolve aliases and warn on unknowns
@@ -75,7 +81,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let tests_budget = max_bytes * 10 / 100;
     let expansion_budget = max_bytes * 20 / 100;
     let mut used_bytes = 0usize;
-    let mut truncated = false;
+    // Tracks only the source-snippet cut; caller/callee/test truncation is
+    // derived honestly below from `returned.len() < total` for each section
+    // (see step 9.5), so a section capped by max_refs is never reported as
+    // complete just because it didn't also blow its byte budget.
+    let mut source_truncated = false;
 
     // 3. Read source (FIX #5: truncate at line boundaries)
     let source = if sections.contains(&"source".to_string()) {
@@ -88,7 +98,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             let end = (symbol.end_line as usize).min(lines.len());
             let snippet = lines[start..end].join("\n");
             let snippet = if snippet.len() > source_budget {
-                truncated = true;
+                source_truncated = true;
                 // Find last newline before budget limit to avoid mid-line truncation
                 let truncate_pos = snippet[..source_budget]
                     .rfind('\n')
@@ -113,9 +123,17 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             .edges_for_symbol(symbol.id, ctx.languages.as_deref(), ctx.graph_version)?;
 
     // 5. Build callers (incoming CALLS)
-    let mut callers = if sections.contains(&"callers".to_string()) {
+    //
+    // `callers_total` counts every distinct matching caller, independent of
+    // max_refs/byte-budget capping, so the response can honestly say how many
+    // were dropped instead of asserting completeness it doesn't have. Once a
+    // cap is hit we stop resolving+pushing refs (`still_adding = false`) but
+    // keep scanning edges already in hand to finish the count.
+    let (mut callers, callers_total) = if sections.contains(&"callers".to_string()) {
         let mut caller_refs = Vec::new();
         let mut caller_bytes = 0usize;
+        let mut caller_total = 0usize;
+        let mut still_adding = true;
         let mut seen_caller_ids = std::collections::HashSet::new();
 
         // Determine which symbol IDs to collect callers for
@@ -145,10 +163,6 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         };
 
         for (target_id, target_name) in &target_ids {
-            if caller_refs.len() >= max_refs || caller_bytes > callers_budget {
-                break;
-            }
-
             // Get edges for this target
             let target_edges = if *target_id == symbol.id {
                 edges.clone()
@@ -166,74 +180,91 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     && edge.target_symbol_id == Some(*target_id)
                     && let Some(source_id) = edge.source_symbol_id
                     && seen_caller_ids.insert(source_id)
-                    && let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id)
                 {
-                    let evidence = edge.evidence_snippet.clone();
-                    let ref_json = serde_json::to_string(&caller_sym).unwrap_or_default();
-                    caller_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                    if caller_bytes > callers_budget {
-                        truncated = true;
-                        break;
+                    caller_total += 1;
+                    if !still_adding {
+                        continue;
                     }
-                    caller_refs.push(ExplainRef {
-                        signature: caller_sym.signature.clone(),
-                        symbol: caller_sym,
-                        evidence,
-                        edge_kind: "CALLS".to_string(),
-                    });
                     if caller_refs.len() >= max_refs {
-                        break;
+                        still_adding = false;
+                        continue;
                     }
-                }
-            }
-
-            // Check for unresolved callers by qualname
-            if caller_refs.len() < max_refs && caller_bytes <= callers_budget {
-                let unresolved_edges = indexer.db().incoming_edges_by_qualname_pattern(
-                    target_name,
-                    "CALLS",
-                    ctx.languages.as_deref(),
-                    ctx.graph_version,
-                )?;
-
-                for edge in &unresolved_edges {
-                    if let Some(ref target_qn) = edge.target_qualname
-                        && target_qn.ends_with(target_name)
-                        && let Some(source_id) = edge.source_symbol_id
-                        && seen_caller_ids.insert(source_id)
-                        && let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id)
-                    {
+                    if let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id) {
                         let evidence = edge.evidence_snippet.clone();
                         let ref_json = serde_json::to_string(&caller_sym).unwrap_or_default();
-                        caller_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                        if caller_bytes > callers_budget {
-                            truncated = true;
-                            break;
+                        let ref_bytes = ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                        if caller_bytes + ref_bytes > callers_budget {
+                            still_adding = false;
+                            continue;
                         }
+                        caller_bytes += ref_bytes;
                         caller_refs.push(ExplainRef {
                             signature: caller_sym.signature.clone(),
                             symbol: caller_sym,
                             evidence,
                             edge_kind: "CALLS".to_string(),
                         });
-                        if caller_refs.len() >= max_refs {
-                            break;
+                    }
+                }
+            }
+
+            // Check for unresolved callers by qualname
+            let unresolved_edges = indexer.db().incoming_edges_by_qualname_pattern(
+                target_name,
+                "CALLS",
+                ctx.languages.as_deref(),
+                ctx.graph_version,
+            )?;
+
+            for edge in &unresolved_edges {
+                if let Some(ref target_qn) = edge.target_qualname
+                    && target_qn.ends_with(target_name)
+                    && let Some(source_id) = edge.source_symbol_id
+                    && seen_caller_ids.insert(source_id)
+                {
+                    caller_total += 1;
+                    if !still_adding {
+                        continue;
+                    }
+                    if caller_refs.len() >= max_refs {
+                        still_adding = false;
+                        continue;
+                    }
+                    if let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id) {
+                        let evidence = edge.evidence_snippet.clone();
+                        let ref_json = serde_json::to_string(&caller_sym).unwrap_or_default();
+                        let ref_bytes = ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                        if caller_bytes + ref_bytes > callers_budget {
+                            still_adding = false;
+                            continue;
                         }
+                        caller_bytes += ref_bytes;
+                        caller_refs.push(ExplainRef {
+                            signature: caller_sym.signature.clone(),
+                            symbol: caller_sym,
+                            evidence,
+                            edge_kind: "CALLS".to_string(),
+                        });
                     }
                 }
             }
         }
 
         used_bytes += caller_bytes;
-        Some(caller_refs)
+        (Some(caller_refs), caller_total)
     } else {
-        None
+        (None, 0)
     };
 
     // 6. Build callees (outgoing CALLS) - FIX #3: For class symbols, aggregate from methods
-    let mut callees = if sections.contains(&"callees".to_string()) {
+    //
+    // Same honest-counting shape as callers: `callee_total` counts every
+    // distinct match, `still_adding` gates whether we still resolve+push.
+    let (mut callees, callees_total) = if sections.contains(&"callees".to_string()) {
         let mut callee_refs = Vec::new();
         let mut callee_bytes = 0usize;
+        let mut callee_total = 0usize;
+        let mut still_adding = true;
         let mut seen_callee_ids = std::collections::HashSet::new();
 
         // Determine if this is a class-level symbol
@@ -271,30 +302,35 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         let target_id = edge.target_symbol_id;
                         if let Some(target_id) = target_id
                             && seen_callee_ids.insert(target_id)
-                            && let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id)
                         {
-                            let evidence = edge.evidence_snippet.clone();
-                            let ref_json = serde_json::to_string(&callee_sym).unwrap_or_default();
-                            callee_bytes +=
-                                ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                            if callee_bytes > callees_budget {
-                                truncated = true;
-                                break;
+                            callee_total += 1;
+                            if !still_adding {
+                                continue;
                             }
-                            callee_refs.push(ExplainRef {
-                                signature: callee_sym.signature.clone(),
-                                symbol: callee_sym,
-                                evidence,
-                                edge_kind: "CALLS".to_string(),
-                            });
                             if callee_refs.len() >= max_refs {
-                                break;
+                                still_adding = false;
+                                continue;
+                            }
+                            if let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id) {
+                                let evidence = edge.evidence_snippet.clone();
+                                let ref_json =
+                                    serde_json::to_string(&callee_sym).unwrap_or_default();
+                                let ref_bytes =
+                                    ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                                if callee_bytes + ref_bytes > callees_budget {
+                                    still_adding = false;
+                                    continue;
+                                }
+                                callee_bytes += ref_bytes;
+                                callee_refs.push(ExplainRef {
+                                    signature: callee_sym.signature.clone(),
+                                    symbol: callee_sym,
+                                    evidence,
+                                    edge_kind: "CALLS".to_string(),
+                                });
                             }
                         }
                     }
-                }
-                if callee_refs.len() >= max_refs || callee_bytes > callees_budget {
-                    break;
                 }
             }
         } else {
@@ -307,23 +343,31 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     let target_id = edge.target_symbol_id;
                     if let Some(target_id) = target_id
                         && seen_callee_ids.insert(target_id)
-                        && let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id)
                     {
-                        let evidence = edge.evidence_snippet.clone();
-                        let ref_json = serde_json::to_string(&callee_sym).unwrap_or_default();
-                        callee_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                        if callee_bytes > callees_budget {
-                            truncated = true;
-                            break;
+                        callee_total += 1;
+                        if !still_adding {
+                            continue;
                         }
-                        callee_refs.push(ExplainRef {
-                            signature: callee_sym.signature.clone(),
-                            symbol: callee_sym,
-                            evidence,
-                            edge_kind: "CALLS".to_string(),
-                        });
                         if callee_refs.len() >= max_refs {
-                            break;
+                            still_adding = false;
+                            continue;
+                        }
+                        if let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id) {
+                            let evidence = edge.evidence_snippet.clone();
+                            let ref_json = serde_json::to_string(&callee_sym).unwrap_or_default();
+                            let ref_bytes =
+                                ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                            if callee_bytes + ref_bytes > callees_budget {
+                                still_adding = false;
+                                continue;
+                            }
+                            callee_bytes += ref_bytes;
+                            callee_refs.push(ExplainRef {
+                                signature: callee_sym.signature.clone(),
+                                symbol: callee_sym,
+                                evidence,
+                                edge_kind: "CALLS".to_string(),
+                            });
                         }
                     }
                 }
@@ -331,15 +375,17 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         }
 
         used_bytes += callee_bytes;
-        Some(callee_refs)
+        (Some(callee_refs), callee_total)
     } else {
-        None
+        (None, 0)
     };
 
     // 7. Find tests (incoming CALLS from test files)
-    let mut tests = if sections.contains(&"tests".to_string()) {
+    let (mut tests, tests_total) = if sections.contains(&"tests".to_string()) {
         let mut test_refs = Vec::new();
         let mut test_bytes = 0usize;
+        let mut test_total = 0usize;
+        let mut still_adding = true;
         for edge in &edges {
             if edge.kind == "CALLS"
                 && edge.target_symbol_id == Some(symbol.id)
@@ -351,12 +397,17 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     || test_sym.name.starts_with("test_")
                     || test_sym.name.starts_with("Test");
                 if is_test {
-                    let ref_json = serde_json::to_string(&test_sym).unwrap_or_default();
-                    test_bytes += ref_json.len();
-                    if test_bytes > tests_budget {
-                        truncated = true;
-                        break;
+                    test_total += 1;
+                    if !still_adding {
+                        continue;
                     }
+                    let ref_json = serde_json::to_string(&test_sym).unwrap_or_default();
+                    let ref_bytes = ref_json.len();
+                    if test_bytes + ref_bytes > tests_budget {
+                        still_adding = false;
+                        continue;
+                    }
+                    test_bytes += ref_bytes;
                     test_refs.push(ExplainRef {
                         signature: test_sym.signature.clone(),
                         symbol: test_sym,
@@ -364,15 +415,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         edge_kind: "CALLS".to_string(),
                     });
                     if test_refs.len() >= max_refs {
-                        break;
+                        still_adding = false;
                     }
                 }
             }
         }
         used_bytes += test_bytes;
-        Some(test_refs)
+        (Some(test_refs), test_total)
     } else {
-        None
+        (None, 0)
     };
 
     // 8. Find implements (EXTENDS/IMPLEMENTS/INHERITS edges) - FIX #2
@@ -492,17 +543,33 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         json!({"method": "gather_context", "params": {"seeds": [{"type": "symbol", "qualname": symbol.qualname}], "max_bytes": 80000}, "description": "Assemble full context"}),
     ];
 
+    // Honest truncation: true if the source snippet was cut, or if any
+    // returned section holds fewer items than actually exist -- regardless of
+    // whether the shortfall came from max_refs or the byte budget.
+    let truncated = source_truncated
+        || callers.as_ref().is_some_and(|c| c.len() < callers_total)
+        || callees.as_ref().is_some_and(|c| c.len() < callees_total)
+        || tests.as_ref().is_some_and(|t| t.len() < tests_total);
+
     let result = ExplainSymbolResult {
         symbol,
         source,
+        callers_total: callers.as_ref().map(|_| callers_total),
         callers,
+        callees_total: callees.as_ref().map(|_| callees_total),
         callees,
+        tests_total: tests.as_ref().map(|_| tests_total),
         tests,
         implements,
         budget: BudgetInfo {
             budget_bytes: max_bytes,
             used_bytes,
             truncated,
+            requested_bytes: if max_bytes_clamped {
+                requested_max_bytes
+            } else {
+                None
+            },
         },
         next_hops,
         warnings,
@@ -912,6 +979,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             budget_bytes: trace_result.budget_bytes,
             used_bytes: trace_result.used_bytes,
             truncated,
+            requested_bytes: None,
         },
         next_hops,
     };
@@ -1773,6 +1841,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             budget_bytes: max_bytes,
             used_bytes,
             truncated: false,
+            requested_bytes: None,
         },
         next_hops,
         warnings,

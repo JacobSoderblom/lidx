@@ -566,10 +566,19 @@ pub struct ExplainSymbolResult {
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callers: Option<Vec<ExplainRef>>,
+    /// True count of matching callers found, before `max_refs`/byte-budget
+    /// capping. Present whenever `callers` is present, so a caller can always
+    /// tell `callers.len() < callers_total` apart from "there just aren't more".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callers_total: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callees: Option<Vec<ExplainRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub callees_total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tests: Option<Vec<ExplainRef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tests_total: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub implements: Option<Vec<Symbol>>,
     pub budget: BudgetInfo,
@@ -594,6 +603,12 @@ pub struct BudgetInfo {
     pub budget_bytes: usize,
     pub used_bytes: usize,
     pub truncated: bool,
+    /// The `max_bytes` the caller actually requested, when it differs from
+    /// `budget_bytes` because the request was silently clamped to a hard cap.
+    /// `None` when no clamping happened (including when the caller didn't
+    /// pass `max_bytes` at all).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_bytes: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]

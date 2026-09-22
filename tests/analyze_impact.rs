@@ -1217,3 +1217,91 @@ fn analyze_impact_batch_empty_qualnames_errors() {
         "Empty qualnames should return error"
     );
 }
+
+// ---------------------------------------------------------------------------
+// max_bytes -- analyze_impact has no params field of its own for this, so it
+// only works at all via extract_max_response_bytes treating it as an alias
+// for max_response_bytes (see src/rpc/format.rs). Also covers the
+// self-contradiction fix: once the outer response-size truncation slices the
+// `affected` array, the handler's own (now-stale) `truncated: false` must be
+// corrected rather than left sitting next to a gutted array.
+// ---------------------------------------------------------------------------
+
+fn add_many_callers(repo_root: &Path, count: usize) {
+    for i in 0..count {
+        std::fs::write(
+            repo_root.join(format!("caller_{i}.py")),
+            format!("from pkg import utils\n\n\ndef wrapper_{i}():\n    return utils.add(1, 2)\n"),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn analyze_impact_accepts_max_bytes_as_response_budget_alias() {
+    let temp = TempRepo::new("py_mvp");
+    // Enough distinct callers of pkg.utils.add that the upstream `affected`
+    // list is large enough to blow a tiny byte budget.
+    add_many_callers(&temp.repo_root, 40);
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    // Sanity baseline: with no budget params at all, the response fits under
+    // the default cap and comes back unwrapped.
+    let baseline = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "analyze_impact".to_string(),
+        r#"{"qualname":"pkg.utils.add","direction":"upstream"}"#,
+        "1",
+    )
+    .unwrap();
+    let baseline_value: serde_json::Value = serde_json::from_str(&baseline).unwrap();
+    assert!(
+        baseline_value["result"].get("data").is_none(),
+        "sanity check: unbudgeted response should not already be wrapped: {:?}",
+        baseline_value
+    );
+
+    // Before the fix, `max_bytes` was silently ignored for analyze_impact
+    // (it has no params field for it, and the outer wrapper only recognized
+    // max_response_bytes/max_tokens) -- the request below would have come
+    // back unwrapped and un-truncated despite asking for a 300-byte budget.
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "analyze_impact".to_string(),
+        r#"{"qualname":"pkg.utils.add","direction":"upstream","max_bytes":300}"#,
+        "1",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let result = &value["result"];
+    assert_eq!(
+        result.get("max_response_bytes"),
+        Some(&serde_json::json!(300)),
+        "max_bytes should be honored as the response byte budget: {:?}",
+        result
+    );
+    assert_eq!(
+        result.get("truncated"),
+        Some(&serde_json::json!(true)),
+        "outer envelope should report truncation: {:?}",
+        result
+    );
+
+    // The self-contradiction fix: analyze_impact's own result object also
+    // carries a `truncated` field (computed by src/impact/ for its own
+    // depth/limit reasons). Once the outer wrapper additionally slices the
+    // `affected` array to fit the byte budget, that inner field must be
+    // corrected to true too -- not left as a stale `false` sitting right
+    // next to an array that was just cut out from under it.
+    let inner = &result["data"];
+    assert_eq!(
+        inner.get("truncated"),
+        Some(&serde_json::json!(true)),
+        "inner result.truncated must not contradict the outer truncation: {:?}",
+        result
+    );
+}

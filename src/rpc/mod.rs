@@ -356,7 +356,7 @@ const DEFAULT_MAX_RESPONSE_BYTES: usize = 30_000;
 
 pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Result<Value> {
     let start = Instant::now();
-    let max_response_bytes = format::extract_max_response_bytes(&params);
+    let max_response_bytes = format::extract_max_response_bytes(method, &params);
     let value = match method {
         "search" => handlers::handle_search_rg(indexer, params)?,
         "explain_symbol" => handlers::handle_explain_symbol(indexer, params)?,
