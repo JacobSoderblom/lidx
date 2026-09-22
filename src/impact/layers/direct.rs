@@ -604,6 +604,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+            import_candidates: Vec::new(),
         }
     }
 
