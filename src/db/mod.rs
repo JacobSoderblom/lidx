@@ -378,7 +378,8 @@ impl Db {
                 "INSERT INTO edges
                     (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
                      evidence_snippet, evidence_start_line, evidence_end_line, confidence,
-                     graph_version, commit_sha, trace_id, span_id, event_ts)
+                     graph_version, commit_sha, trace_id, span_id, event_ts,
+                     receiver_type, resolution_kind)
                  SELECT
                     e.file_id,
                     (SELECT ns.id FROM symbols ns
@@ -387,7 +388,8 @@ impl Db {
                         WHERE nt.stable_id = tgt.stable_id AND nt.graph_version = ? LIMIT 1),
                     e.kind, e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    ?, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    ?, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.receiver_type, e.resolution_kind
                  FROM edges e
                  LEFT JOIN symbols src ON src.id = e.source_symbol_id
                  LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id
@@ -2501,6 +2503,244 @@ mod tests {
         // confidence must be untouched by this migration — it keeps its
         // pre-existing meaning (Rust CALLS extraction certainty).
         assert!(columns.contains(&"confidence".to_string()));
+    }
+
+    /// Column names for `table`, read straight from the live schema via
+    /// `PRAGMA table_info`, in table-definition order (which matches
+    /// `SELECT *`'s column order — used below to locate each column's value
+    /// positionally).
+    fn table_columns(db: &Db, table: &str) -> Vec<String> {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    /// Regression guard for the whole *class* of bug behind the
+    /// `receiver_type`/`resolution_kind` data-loss fix above (and, before
+    /// that, `symbol_metrics` being dropped wholesale): `carry_forward_files`
+    /// names its copied columns explicitly in Rust-side SQL, so a column
+    /// added to `symbols`/`edges`/`symbol_metrics` after the fact is silently
+    /// NOT copied unless someone remembers to also update this unrelated
+    /// function.
+    ///
+    /// Rather than hardcoding a second column list here (which could drift
+    /// out of sync with the schema exactly the way the SQL itself did), this
+    /// stamps a unique sentinel into every column `PRAGMA table_info` reports
+    /// for each table — except a small, explicit, commented allowlist — runs
+    /// a real carry-forward, and asserts every one of those columns' values
+    /// survived onto the new graph version. A newly added column that
+    /// `carry_forward_files` doesn't copy comes back NULL and fails loudly,
+    /// naming exactly the table and column at fault.
+    #[test]
+    fn carry_forward_files_copies_every_non_exempt_column() {
+        // Columns intentionally excluded from the generic sentinel-and-verify
+        // sweep below. Each entry is exempt for a specific, different reason
+        // -- none of them are "silently dropped", they just aren't a literal
+        // same-value copy, so a sentinel round-trip check doesn't apply.
+        let exempt: &[(&str, &[&str])] = &[
+            (
+                "symbols",
+                &[
+                    // INTEGER PRIMARY KEY: every copy gets a fresh autoincrement
+                    // id by design (that's how the "old" and "new" rows stay
+                    // distinguishable at all).
+                    "id",
+                    // Set to `to_version` by the copy itself -- carrying a file
+                    // "forward" to a new version *is* changing this column.
+                    "graph_version",
+                    // Used verbatim in the copy's own `WHERE file_id IN (...)`
+                    // filter; stamping it with a sentinel would stop the source
+                    // row from being selected at all instead of exercising the
+                    // bug. It's still carried forward unchanged (`SELECT
+                    // file_id`) -- checked by the real-value `file_id`
+                    // assertion below instead of the generic sentinel sweep.
+                    "file_id",
+                ],
+            ),
+            (
+                "edges",
+                &[
+                    "id",
+                    "graph_version",
+                    // Same reasoning as symbols.file_id above: used in this
+                    // copy's own `WHERE e.file_id IN (...)` filter.
+                    "file_id",
+                    // Remapped via a `stable_id` lookup into the new version's
+                    // symbols (see the "ponytail" comment on
+                    // `carry_forward_files`), not a literal copy of the old
+                    // id -- an endpoint with no match is intentionally carried
+                    // as NULL. Binding correctness for these is covered by the
+                    // dangling-edges query elsewhere, not this test.
+                    "source_symbol_id",
+                    "target_symbol_id",
+                ],
+            ),
+            (
+                "symbol_metrics",
+                &[
+                    "id",
+                    // Same stable_id-based remap as edges' endpoints above.
+                    "symbol_id",
+                    // `FOREIGN KEY(file_id) REFERENCES files(id)`: a sentinel
+                    // string here would fail that constraint (foreign keys
+                    // are on for every connection, see `Db::new`), unlike
+                    // symbols/edges' unconstrained `file_id`. It's still
+                    // carried forward unchanged (`sm.file_id`) -- checked by
+                    // the real-value `file_id` assertion below instead of the
+                    // generic sentinel sweep.
+                    "file_id",
+                ],
+            ),
+        ];
+        let is_exempt = |table: &str, column: &str| {
+            exempt
+                .iter()
+                .find(|(t, _)| *t == table)
+                .map(|(_, cols)| cols.contains(&column))
+                .unwrap_or(false)
+        };
+
+        let (mut db, _temp) = create_test_db();
+
+        let file_id = db
+            .upsert_file("carry_guard.py", "hash1", "python", 10, 0)
+            .unwrap();
+
+        let symbols = vec![make_test_symbol(
+            "carry_guard.fn",
+            Some("()"),
+            "function",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "carry_guard.py", &symbols, 1, Some("sha1"))
+            .unwrap();
+        let symbol_id = inserted[0].id;
+        let mut symbol_map = HashMap::new();
+        symbol_map.insert("carry_guard.fn".to_string(), symbol_id);
+
+        // Self-referential CALLS edge: only the DB wiring matters here, not
+        // realistic call semantics.
+        let edges = vec![make_test_edge_with_receiver_type(
+            "CALLS",
+            "carry_guard.fn",
+            "carry_guard.fn",
+            ReceiverType::Known("Foo".to_string()),
+        )];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, Some("sha1"))
+            .unwrap();
+
+        let metrics = vec![SymbolMetricsInput {
+            qualname: "carry_guard.fn".to_string(),
+            loc: 5,
+            complexity: 2,
+            duplication_hash: Some("duphash".to_string()),
+        }];
+        db.insert_symbol_metrics(file_id, &metrics, &symbol_map)
+            .unwrap();
+
+        // Stamp a unique, non-NULL sentinel into every non-exempt column of
+        // the one row on each table, so a column `carry_forward_files`
+        // silently drops comes back NULL instead of "not obviously wrong".
+        for table in ["symbols", "edges", "symbol_metrics"] {
+            for column in table_columns(&db, table) {
+                if is_exempt(table, &column) {
+                    continue;
+                }
+                let sentinel = format!("cf_guard::{table}::{column}");
+                db.conn()
+                    .execute(
+                        &format!("UPDATE {table} SET {column} = ?1"),
+                        params![sentinel],
+                    )
+                    .unwrap_or_else(|e| panic!("seeding sentinel for {table}.{column}: {e}"));
+            }
+        }
+
+        db.carry_forward_files(&[file_id], 1, 2).unwrap();
+
+        let new_symbol_id: i64 = db
+            .conn()
+            .query_row(
+                "SELECT id FROM symbols WHERE file_id = ?1 AND graph_version = 2",
+                params![file_id],
+                |row| row.get(0),
+            )
+            .expect("carry_forward_files must copy the symbols row to the new graph version");
+        let new_edge_id: i64 = db
+            .conn()
+            .query_row(
+                "SELECT id FROM edges WHERE file_id = ?1 AND graph_version = 2",
+                params![file_id],
+                |row| row.get(0),
+            )
+            .expect("carry_forward_files must copy the edges row to the new graph version");
+        let new_metrics_id: i64 = db
+            .conn()
+            .query_row(
+                "SELECT id FROM symbol_metrics WHERE symbol_id = ?1",
+                params![new_symbol_id],
+                |row| row.get(0),
+            )
+            .expect(
+                "carry_forward_files must copy the symbol_metrics row to the new graph version",
+            );
+
+        let new_row_ids: &[(&str, i64)] = &[
+            ("symbols", new_symbol_id),
+            ("edges", new_edge_id),
+            ("symbol_metrics", new_metrics_id),
+        ];
+
+        for (table, row_id) in new_row_ids {
+            for column in table_columns(&db, table) {
+                if is_exempt(table, &column) {
+                    continue;
+                }
+                let expected = rusqlite::types::Value::Text(format!("cf_guard::{table}::{column}"));
+                let actual: rusqlite::types::Value = db
+                    .conn()
+                    .query_row(
+                        &format!("SELECT {column} FROM {table} WHERE id = ?1"),
+                        params![row_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    actual, expected,
+                    "carry_forward_files did not copy `{table}.{column}` into the new graph \
+                     version (found {actual:?}, expected the source row's value {expected:?}). \
+                     Add `{column}` to both the INSERT column list and the SELECT in \
+                     Db::carry_forward_files's `{table}` copy -- or, if `{column}` must \
+                     genuinely never be carried forward, add it to this test's `exempt` list \
+                     with a comment explaining why."
+                );
+            }
+        }
+
+        // `file_id` is excluded from the generic sweep above on all three
+        // tables (see the `exempt` comments), but it must still survive the
+        // copy unchanged -- check it directly against the real value instead
+        // of a sentinel.
+        for (table, row_id) in new_row_ids {
+            let actual_file_id: i64 = db
+                .conn()
+                .query_row(
+                    &format!("SELECT file_id FROM {table} WHERE id = ?1"),
+                    params![row_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                actual_file_id, file_id,
+                "carry_forward_files did not preserve `{table}.file_id` on the copied row"
+            );
+        }
     }
 
     #[test]
