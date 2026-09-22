@@ -150,3 +150,30 @@ fn main() {
         "expected CONFIG_READ for env://API_KEY"
     );
 }
+
+#[test]
+fn multiline_path_call_resolves_like_single_line() {
+    // A call path split across lines (formatting style, not semantics)
+    // must resolve to the same qualname as the single-line form. Rust
+    // only treats `::`-paths as resolvable call targets (a `.`-joined
+    // path is left `None`, unchanged by this test), so the chain break
+    // sits at the `::` separator here.
+    let source = "
+struct Foo;
+impl Foo {
+    fn make() -> Foo { Foo }
+}
+fn caller() {
+    Foo
+        ::make();
+}
+";
+    let mut extractor = RustExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "crate::pkg::mod").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.detail.is_none())
+        .expect("Foo::make() call edge");
+    assert_eq!(call.target_qualname.as_deref(), Some("Foo::make"));
+}

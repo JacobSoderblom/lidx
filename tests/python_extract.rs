@@ -638,3 +638,34 @@ def run():
         "`import x.y as z` must resolve the alias to its dotted module target"
     );
 }
+
+#[test]
+fn multiline_chained_call_resolves_like_single_line() {
+    // Python needs the chain wrapped in parens for the newline to be legal
+    // (a bare `pkg\n.mod` outside brackets is a SyntaxError), but the
+    // `function` field's raw text still carries the interior newlines and
+    // indentation exactly like the C# `UniqueName\n    .Create(...)` case
+    // this fix targets.
+    let source = "
+def caller():
+    (
+        pkg
+        .mod
+        .helper()
+    )
+";
+    let module = module_name_from_rel_path("app/caller.py");
+    let mut extractor = PythonExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.detail.is_none())
+        .expect("pkg.mod.helper() call edge");
+    assert_eq!(
+        call.target_qualname.as_deref(),
+        Some("pkg.mod.helper"),
+        "multi-line chain must resolve to the same qualname as the single-line form"
+    );
+}

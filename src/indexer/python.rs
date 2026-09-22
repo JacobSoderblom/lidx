@@ -4,7 +4,8 @@ use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInpu
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::tree_helpers::{
-    module_symbol_fallback, module_symbol_with_span, node_text, span,
+    collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
+    span,
 };
 use crate::util;
 use anyhow::Result;
@@ -433,8 +434,11 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // Import-aware qualification only makes sense when the receiver isn't
     // already gated by receiver-type inference — see
     // `import_qualified_candidates`'s doc.
+    // `raw` is collapsed here too (same as `resolve_call_target` does
+    // internally) so a multi-line chain feeds this tier the same shape the
+    // single-line form would.
     let import_candidates = if receiver_type == ReceiverType::NotTracked {
-        import_qualified_candidates(&raw, ctx)
+        import_qualified_candidates(&collapse_call_target_whitespace(&raw), ctx)
     } else {
         Vec::new()
     };
@@ -1704,7 +1708,8 @@ fn http_client_label(base: &str) -> Option<&'static str> {
 }
 
 fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
-    let raw = raw.trim();
+    let raw = collapse_call_target_whitespace(raw);
+    let raw = raw.as_str();
     if raw.is_empty() || !is_simple_call_target(raw) {
         return None;
     }

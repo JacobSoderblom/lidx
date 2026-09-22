@@ -511,3 +511,248 @@ public class Startup {
             .collect::<Vec<_>>()
     );
 }
+
+// Multi-line call-target regression tests. tree-sitter hands `node_text` the
+// call target's raw span verbatim, newline and indentation included, when a
+// call is written as a chain across lines (dpb's
+// `UniqueName\n    .Create(...)` in DataProductMapper.cs is the real
+// example). `is_simple_call_target` rejects any embedded whitespace, so
+// before the `collapse_call_target_whitespace` fix every one of these
+// `target_qualname_is_some` tests failed (NULL instead of the qualname).
+// The `target_qualname_is_none` tests guard the other direction: a target
+// that is genuinely not a simple dotted path must stay NULL even once
+// interior whitespace is stripped, because collapsing whitespace never
+// removes the parens/brackets/operators that disqualify it.
+
+#[test]
+fn multiline_chained_call_resolves_like_single_line() {
+    let source = "
+namespace Acme.App;
+public class Foo {
+    public void Method() {
+        UniqueName
+            .Create(1);
+    }
+}
+";
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS"
+                && e.detail.is_none()
+                && e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains("UniqueName"))
+        })
+        .expect("UniqueName.Create(...) call edge");
+    assert_eq!(
+        call.target_qualname.as_deref(),
+        Some("UniqueName.Create"),
+        "multi-line chain must resolve to the same qualname as the single-line form"
+    );
+    // Positive control for the reject-shape tests below: the import-aware
+    // resolution tier (main's `two_segment_receiver_and_method` /
+    // `import_qualified_candidates`) reads the same collapsed call-target
+    // text `resolve_call_target` does. A genuine two-segment `Ident.Ident`
+    // shape like this one is accepted by that tier too — here it produces
+    // a sibling-namespace candidate (`UniqueName` qualified against the
+    // enclosing `Acme.App` namespace) purely because the whitespace was
+    // collapsed first. This proves the fix reaches that tier; the reject
+    // tests below prove it doesn't reach it for shapes that aren't
+    // actually simple.
+    assert_eq!(
+        call.import_candidates,
+        vec!["Acme.App.UniqueName.Create".to_string()],
+        "multi-line chain must also reach the import-candidate builder, got {:?}",
+        call.import_candidates
+    );
+}
+
+#[test]
+fn call_in_receiver_position_stays_null_even_when_split_across_lines() {
+    // `foo(bar).Baz` — the receiver is itself a call, not a simple path.
+    let source = "
+namespace Acme.App;
+public class Foo {
+    public void Method() {
+        foo(bar)
+            .Baz();
+    }
+}
+";
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS"
+                && e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains("Baz"))
+        })
+        .expect("foo(bar).Baz() call edge");
+    assert!(
+        call.target_qualname.is_none(),
+        "call-in-receiver-position must not bind, got {:?}",
+        call.target_qualname
+    );
+    assert!(
+        call.import_candidates.is_empty(),
+        "call-in-receiver-position must not produce import candidates either, got {:?}",
+        call.import_candidates
+    );
+}
+
+#[test]
+fn parenthesized_expression_receiver_stays_null_even_when_split_across_lines() {
+    // `(a + b).ToString` — parenthesized arithmetic expression as receiver.
+    let source = "
+namespace Acme.App;
+public class Foo {
+    public void Method() {
+        (a + b)
+            .ToString();
+    }
+}
+";
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS"
+                && e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains("ToString"))
+        })
+        .expect("(a + b).ToString() call edge");
+    assert!(
+        call.target_qualname.is_none(),
+        "parenthesized-expression receiver must not bind, got {:?}",
+        call.target_qualname
+    );
+    assert!(
+        call.import_candidates.is_empty(),
+        "parenthesized-expression receiver must not produce import candidates either, got {:?}",
+        call.import_candidates
+    );
+}
+
+#[test]
+fn indexer_receiver_stays_null_even_when_split_across_lines() {
+    // `arr[0].Method` — indexer access as receiver.
+    let source = "
+namespace Acme.App;
+public class Foo {
+    public void Method() {
+        arr[0]
+            .Method();
+    }
+}
+";
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS"
+                && e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains("Method"))
+        })
+        .expect("arr[0].Method() call edge");
+    assert!(
+        call.target_qualname.is_none(),
+        "indexer receiver must not bind, got {:?}",
+        call.target_qualname
+    );
+    assert!(
+        call.import_candidates.is_empty(),
+        "indexer receiver must not produce import candidates either, got {:?}",
+        call.import_candidates
+    );
+}
+
+#[test]
+fn null_conditional_receiver_stays_null_even_when_split_across_lines() {
+    // `x?.Method` — null-conditional access.
+    let source = "
+namespace Acme.App;
+public class Foo {
+    public void Method() {
+        x
+            ?.Method();
+    }
+}
+";
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS"
+                && e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains("Method"))
+        })
+        .expect("x?.Method() call edge");
+    assert!(
+        call.target_qualname.is_none(),
+        "null-conditional receiver must not bind, got {:?}",
+        call.target_qualname
+    );
+    assert!(
+        call.import_candidates.is_empty(),
+        "null-conditional receiver must not produce import candidates either, got {:?}",
+        call.import_candidates
+    );
+}
+
+#[test]
+fn await_expression_receiver_stays_null_even_when_split_across_lines() {
+    // `await foo().Bar` — the receiver is an awaited call, not a simple path.
+    let source = "
+namespace Acme.App;
+public class Foo {
+    public async System.Threading.Tasks.Task Method() {
+        await foo()
+            .Bar();
+    }
+}
+";
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS"
+                && e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains("Bar"))
+        })
+        .expect("await foo().Bar() call edge");
+    assert!(
+        call.target_qualname.is_none(),
+        "awaited-call receiver must not bind, got {:?}",
+        call.target_qualname
+    );
+    assert!(
+        call.import_candidates.is_empty(),
+        "awaited-call receiver must not produce import candidates either, got {:?}",
+        call.import_candidates
+    );
+}
