@@ -1195,6 +1195,10 @@ impl Db {
                 // instead of one; still authoritative only when exactly one
                 // resolves. Only after both miss do we consult the
                 // receiver-type-gated fuzzy tiers (see `resolve_fuzzy_target`).
+                //
+                // `receiver_type_for_storage` starts as the extractor's own
+                // signal and is only ever narrowed (never widened) below.
+                let mut receiver_type_for_storage = edge.receiver_type.as_column();
                 let (target_id, resolution_kind) = if exact_target.is_some() {
                     (exact_target, Some("exact"))
                 } else if let Some(import_id) = resolve_import_candidate(
@@ -1205,10 +1209,47 @@ impl Db {
                 )? {
                     (Some(import_id), Some("import"))
                 } else {
+                    // `import_candidates` is populated only when the
+                    // extractor already established (from this file's own
+                    // using/import directives) that the receiver is bound
+                    // by an import — see `EdgeInput::import_candidates`.
+                    // `resolve_import_candidate` above just tried every one
+                    // of those candidates and found no single unambiguous
+                    // local symbol (0 hits, or 2+ distinct ones). That is
+                    // positive information, not silence: the receiver is
+                    // known to come from an import this repo's index
+                    // doesn't (or can't uniquely) resolve — stdlib, a
+                    // third-party package, a BCL type — or the import
+                    // itself is ambiguous. Falling through to the blind
+                    // two-segment/bare-name tiers would then bind on
+                    // name-uniqueness alone, which is exactly the
+                    // false-positive class this guards against (e.g.
+                    // `datetime.now()` binding to an unrelated, uniquely-
+                    // named local `FakeClock.now`). So treat it the same as
+                    // a receiver-type-tracked-but-unresolved edge
+                    // (`Some("")` — "must not bind, no lookup attempted at
+                    // all"): both two-segment and bare-name are skipped,
+                    // not just bare-name, since two-segment's literal
+                    // suffix match is just as able to hit an unrelated
+                    // same-named local symbol.
+                    //
+                    // ponytail: a bare call with no attribute receiver at
+                    // all (`quote(...)`) never reaches this — extractors
+                    // only compute `import_candidates` for a dotted
+                    // `X.method()` shape (see `python::handle_call` /
+                    // `csharp::handle_call`), so a same-named import bound
+                    // to a bare identifier still falls through to
+                    // bare-name unguarded. Upgrade path: teach the
+                    // extractors to compute import candidates for bare
+                    // calls too, keyed off the same `ctx.imports` map they
+                    // already build.
+                    if !edge.import_candidates.is_empty() {
+                        receiver_type_for_storage = Some("");
+                    }
                     match edge.target_qualname.as_deref() {
                         Some(qn) => resolve_fuzzy_target(
                             qn,
-                            edge.receiver_type.as_column(),
+                            receiver_type_for_storage,
                             &edge.kind,
                             &source_lang,
                             graph_version,
@@ -1236,7 +1277,7 @@ impl Db {
                     edge.trace_id.as_deref(),
                     edge.span_id.as_deref(),
                     edge.event_ts,
-                    edge.receiver_type.as_column(),
+                    receiver_type_for_storage,
                     resolution_kind,
                 ])?;
                 count += 1;
@@ -5620,6 +5661,120 @@ mod tests {
              still refuse, exactly as it did before import qualification"
         );
         assert_eq!(resolution_kind, None);
+    }
+
+    #[test]
+    fn test_insert_edges_import_candidate_unresolved_refuses_bare_name_fallback() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/conftest.py", "h1", "python", 100, 0)
+            .unwrap();
+
+        // The actual reported pathology: `datetime.now(timezone.utc)` in a
+        // file that does `from datetime import datetime` (stdlib). The
+        // extractor resolves "datetime" through this file's own import
+        // bindings to a candidate qualname ("datetime.now") that names
+        // nothing in this repo's index -- but `now` also happens to be the
+        // *only* locally-defined symbol named `now` anywhere in the index
+        // (a test double, `FakeClock.now`). Before this fix, a failed
+        // import candidate fell through to the old bare-name tier, which
+        // saw only "one candidate named `now`" and bound to it -- the
+        // stdlib call, resolved to a test fake.
+        let syms = vec![make_test_symbol(
+            "pkg.tests.conftest.FakeClock.now",
+            Some("def now(cls)"),
+            "method",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/conftest.py", &syms, 1, None)
+            .unwrap();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+
+        let edges = vec![make_test_edge_with_import_candidates(
+            "CALLS",
+            "pkg.caller.run",
+            "datetime.now",
+            vec!["datetime.now".to_string()],
+        )];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, receiver_type, resolution_kind): (
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+        ) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges WHERE target_qualname = 'datetime.now'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id, None,
+            "a receiver positively known (via this file's own imports) to come from an \
+             external module must never fall through to bare-name matching, even though \
+             FakeClock.now is the sole local symbol named \"now\""
+        );
+        assert_eq!(
+            receiver_type.as_deref(),
+            Some(""),
+            "a failed import candidate must be persisted as tracked-but-unresolved, the same \
+             column value a receiver-type-tracked builtin uses, so a later repair pass also \
+             refuses to fuzzy-resolve it"
+        );
+        assert_eq!(resolution_kind, None);
+    }
+
+    #[test]
+    fn test_resolve_null_target_edges_respects_failed_import_candidate() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/conftest.py", "h1", "python", 100, 0)
+            .unwrap();
+
+        let syms = vec![make_test_symbol(
+            "pkg.tests.conftest.FakeClock.now",
+            Some("def now(cls)"),
+            "method",
+            1,
+        )];
+        db.insert_symbols(file_id, "src/conftest.py", &syms, 1, None)
+            .unwrap();
+
+        // Insert with an empty symbol_map, as during mid-incremental-reindex,
+        // so the edge lands with target_symbol_id NULL and only the
+        // *persisted* receiver_type is left to guide a later repair pass.
+        let edges = vec![make_test_edge_with_import_candidates(
+            "CALLS",
+            "pkg.caller.run",
+            "datetime.now",
+            vec!["datetime.now".to_string()],
+        )];
+        db.insert_edges(file_id, &edges, &HashMap::new(), 1, None)
+            .unwrap();
+
+        db.resolve_null_target_edges(1).unwrap();
+
+        let target_symbol_id: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id FROM edges WHERE target_qualname = 'datetime.now'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id, None,
+            "the repair pass has no access to the transient import_candidates list, so it must \
+             rely on the persisted receiver_type='' this fix writes -- without it, the repair \
+             pass would resurrect the false bare-name match on its own next run"
+        );
     }
 
     #[test]
