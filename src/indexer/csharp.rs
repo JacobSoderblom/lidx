@@ -1,6 +1,6 @@
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
+use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::tree_helpers::{
@@ -11,6 +11,7 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 use tree_sitter::{Node, Parser};
 
 #[derive(Clone)]
@@ -24,6 +25,40 @@ struct Context {
     route_groups: HashMap<String, String>,
     grpc_service: Option<String>,
     grpc_clients: HashMap<String, String>,
+    /// Types of locally-bound names (parameters + typed/`var` local
+    /// declarations) within the *current* method/constructor body only —
+    /// see `infer_local_types`. Reset fresh on every method/constructor
+    /// entry; never merged across methods. See
+    /// `python::infer_receiver_type` for the mechanism this mirrors.
+    local_types: Rc<HashMap<String, LocalType>>,
+    /// Type-annotated fields and properties of the *directly* enclosing
+    /// type, read once when entering its body — see
+    /// `collect_class_level_attr_types`. Used only to resolve a single-hop
+    /// `this.field.Method()` receiver.
+    class_attr_types: Rc<HashMap<String, LocalType>>,
+    /// The directly enclosing type's own base class, if its `base_list`
+    /// names one and it's resolvable (see `handle_type`) — used only to
+    /// resolve a `base.Method()` receiver. `Other` when the type has no
+    /// base class, only implements interfaces, or the first base-list
+    /// entry isn't cheaply classifiable.
+    base_type: LocalType,
+}
+
+/// Locally-inferred type of a name bound within a single method/constructor
+/// body (or a class-level field/property/parameter-property). Deliberately
+/// coarse — see `python::LocalType` for the shape this mirrors; everything
+/// that isn't a confident, non-builtin type name collapses to `Other`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalType {
+    /// Inferred (via declared type or `new T()` construction) to be this
+    /// non-builtin type name.
+    Known(String),
+    /// Builtin type, `var` without a `new T()` initializer, loop/catch
+    /// target of unresolvable type, or anything else not explicitly
+    /// recognized. A name landing here (rather than simply absent from the
+    /// map) still gates resolution: it means "we looked, and it's not a
+    /// usable type" as opposed to "we never looked".
+    Other,
 }
 
 pub struct CSharpExtractor {
@@ -70,6 +105,13 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             route_groups: HashMap::new(),
             grpc_service: None,
             grpc_clients: HashMap::new(),
+            // ponytail: unlike Python/TypeScript, there's no meaningful
+            // module-top-level scope in C# (locals only ever live inside a
+            // method/constructor body), so this starts and stays empty
+            // outside of `handle_method`/`handle_constructor`.
+            local_types: Rc::new(HashMap::new()),
+            class_attr_types: Rc::new(HashMap::new()),
+            base_type: LocalType::Other,
         };
         if root.kind() == "compilation_unit" {
             walk_compilation_unit(root, &ctx, source, &mut output);
@@ -336,9 +378,36 @@ fn handle_type(
     next_ctx.current_scope = qualname;
     next_ctx.route_prefix = combined_prefix;
     next_ctx.grpc_service = grpc_service;
+    next_ctx.base_type = resolvable_base_type(node, source, type_kind);
     if let Some(body) = node.child_by_field_name("body") {
+        next_ctx.class_attr_types = Rc::new(collect_class_level_attr_types(body, source));
         walk_declaration_list(body, &next_ctx, source, output);
     }
+}
+
+/// The directly enclosing type's own base *class* (not an interface), if
+/// resolvable — used to gate a `base.Method()` receiver. Reuses the same
+/// first-base-entry-is-the-class convention `handle_base_list` already
+/// applies when choosing EXTENDS vs. IMPLEMENTS.
+fn resolvable_base_type(node: Node<'_>, source: &str, type_kind: TypeKind) -> LocalType {
+    if !matches!(type_kind, TypeKind::Class | TypeKind::Record) {
+        return LocalType::Other;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() != "base_list" {
+            continue;
+        }
+        let bases = base_list_types(child, source);
+        let Some(first) = bases.first() else {
+            return LocalType::Other;
+        };
+        if is_likely_interface_name(first) {
+            return LocalType::Other;
+        }
+        return classify_annotation(first);
+    }
+    LocalType::Other
 }
 
 fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -387,6 +456,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         let mut grpc_clients = ctx.grpc_clients.clone();
         grpc_clients.extend(collect_grpc_clients(body, source));
         next_ctx.grpc_clients = grpc_clients;
+        next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -443,6 +513,7 @@ fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = qualname;
+        next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -607,6 +678,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return;
     }
+    let receiver_type = infer_receiver_type(target_node, source, ctx);
     let target = resolve_call_target(&raw, ctx);
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
@@ -617,6 +689,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         target_qualname: target,
         detail,
         evidence_snippet: snippet,
+        receiver_type,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
         ..Default::default()
@@ -2058,6 +2131,416 @@ fn container_qualname(ctx: &Context) -> String {
     } else {
         format!("{base}.{}", ctx.type_stack.join("."))
     }
+}
+
+const CS_BUILTIN_TYPES: &[&str] = &[
+    "bool",
+    "byte",
+    "sbyte",
+    "char",
+    "decimal",
+    "double",
+    "float",
+    "int",
+    "uint",
+    "long",
+    "ulong",
+    "short",
+    "ushort",
+    "object",
+    "string",
+    "void",
+    "dynamic",
+    "var",
+    "Task",
+    "ValueTask",
+    "Array",
+    "String",
+    "Object",
+    "Exception",
+    "List",
+    "Dictionary",
+    "IEnumerable",
+    "IList",
+    "ICollection",
+    "IReadOnlyList",
+    "IReadOnlyCollection",
+    "IReadOnlyDictionary",
+    "HashSet",
+    "Queue",
+    "Stack",
+    "DateTime",
+    "DateTimeOffset",
+    "TimeSpan",
+    "Guid",
+    "Uri",
+    "StringBuilder",
+    "Nullable",
+    "Tuple",
+    "ValueTuple",
+    "Action",
+    "Func",
+    "EventHandler",
+    "CancellationToken",
+    "Type",
+    "Random",
+];
+
+/// Infer the receiver type of a call's callee expression (`function_node`),
+/// mirroring `python::infer_receiver_type` with `this`/`base` standing in
+/// for `self`/`cls`. Only gates resolution; never changes `target_qualname`
+/// (see `resolve_call_target`, which stays text-based and keeps the
+/// receiver's literal text for evidence).
+///
+/// Rules, in order:
+/// - Not a member access at all (`Helper()`) → `NotTracked` (bare call,
+///   nothing to gate).
+/// - `base.Method()` (zero hops) → `Known`/`Unresolved` from the enclosing
+///   type's own resolvable base class (`Context::base_type`); unlike
+///   `this`, `resolve_call_target`'s exact-looking `{currentClass}.Method`
+///   guess is frequently wrong for `base.` calls (the whole point of
+///   calling `base.` is usually that the current class does *not* define
+///   its own override), so this is gated even at zero hops.
+/// - `base.field.Method()` (any deeper hop) → `Unresolved`: the base
+///   type's own field types aren't available to a single-file extractor.
+/// - `this.Method()` (zero hops) → `NotTracked`, already resolved exactly
+///   via `resolve_call_target`'s container-qualname path.
+/// - `this.Field.Method()` / `this.Property.Method()` (exactly one hop off
+///   `this`) → resolved via a type-annotated field or property, if any;
+///   otherwise `Unresolved`.
+/// - `X.Method()` where `X` is a bare identifier: `Known`/`Unresolved` from
+///   this method's local types if `X` is tracked, else `NotTracked` (a
+///   static/class reference, e.g. `Console.WriteLine()`).
+/// - Anything deeper, or a chain rooted in something other than a bare
+///   identifier/`this`/`base` (a call result, a cast, ...), → `Unresolved`
+///   if the root is `this` or a tracked local, `NotTracked` otherwise.
+fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
+    if function_node.kind() != "member_access_expression" {
+        return ReceiverType::NotTracked;
+    }
+    let Some(object) = function_node.child_by_field_name("expression") else {
+        return ReceiverType::NotTracked;
+    };
+    let (root, hops) = member_access_root(object);
+
+    if root.kind() == "base" {
+        if hops == 0 {
+            return match &ctx.base_type {
+                LocalType::Known(ty) => ReceiverType::Known(ty.clone()),
+                LocalType::Other => ReceiverType::Unresolved,
+            };
+        }
+        // ponytail: `base.Field.Method()` would need the base type's own
+        // field types, which may live in another file entirely — out of
+        // reach for single-file, single-pass extraction.
+        return ReceiverType::Unresolved;
+    }
+
+    if root.kind() == "this" {
+        if hops == 0 {
+            return ReceiverType::NotTracked;
+        }
+        if hops == 1 {
+            let attr_name = object
+                .child_by_field_name("name")
+                .map(|n| node_text(n, source));
+            return match attr_name.and_then(|name| ctx.class_attr_types.get(&name).cloned()) {
+                Some(LocalType::Known(ty)) => ReceiverType::Known(ty),
+                _ => ReceiverType::Unresolved,
+            };
+        }
+        // ponytail: deeper chains (`this.a.b.Method()`) would need real
+        // attribute-type inference across assignments — out of scope, same
+        // ceiling as `python::infer_receiver_type`.
+        return ReceiverType::Unresolved;
+    }
+
+    if root.kind() != "identifier" {
+        // Chain rooted in a call result, cast expression, subscript, etc.
+        // — not inferable.
+        return ReceiverType::Unresolved;
+    }
+    let root_name = node_text(root, source);
+    if hops == 0 {
+        return match ctx.local_types.get(&root_name) {
+            Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
+            Some(LocalType::Other) => ReceiverType::Unresolved,
+            None => ReceiverType::NotTracked,
+        };
+    }
+    if ctx.local_types.contains_key(&root_name) {
+        ReceiverType::Unresolved
+    } else {
+        ReceiverType::NotTracked
+    }
+}
+
+/// Walk a (possibly nested) member-access chain down to its root node,
+/// returning the root plus how many hops separate it from `node` (0 =
+/// `node` itself is the root).
+fn member_access_root(node: Node<'_>) -> (Node<'_>, usize) {
+    let mut current = node;
+    let mut hops = 0;
+    while current.kind() == "member_access_expression" {
+        match current.child_by_field_name("expression") {
+            Some(obj) => {
+                current = obj;
+                hops += 1;
+            }
+            None => break,
+        }
+    }
+    (current, hops)
+}
+
+/// Classify a declared-type (or bare constructed-type) expression's text
+/// into a `LocalType`. Generic/array/tuple type shapes are never unwrapped
+/// — they collapse to `Other` just like a builtin would, mirroring
+/// `python::classify_annotation`'s identical ponytail simplification. A
+/// trailing `?` (nullable value *or* reference type) is stripped first, so
+/// `EventStore?` still resolves to `EventStore` while `int?` still
+/// collapses to `Other` via the builtin check.
+fn classify_annotation(text: &str) -> LocalType {
+    let text = text.trim();
+    let text = text.strip_suffix('?').unwrap_or(text).trim();
+    if text.is_empty() {
+        return LocalType::Other;
+    }
+    if text.contains(['<', '[', '(', ')', '{', '*']) {
+        return LocalType::Other;
+    }
+    let bare = text.rsplit('.').next().unwrap_or(text).trim();
+    classify_type_name(bare)
+}
+
+fn classify_type_name(name: &str) -> LocalType {
+    if name.is_empty() || CS_BUILTIN_TYPES.contains(&name) {
+        LocalType::Other
+    } else {
+        LocalType::Known(name.to_string())
+    }
+}
+
+/// Classify a `var` local's initializer shape into a `LocalType`. The only
+/// `Known` case is direct construction (`new EventStore()`); everything
+/// else (a method call's return value, a collection initializer, ...) is
+/// `Other` — mirrors `python::classify_assignment_value`'s identical
+/// ceiling, and matches this task's "`var` only when the initializer is a
+/// direct `new T()`" scope.
+fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
+    if value.kind() == "object_creation_expression"
+        && let Some(type_node) = value.child_by_field_name("type")
+    {
+        return classify_annotation(&node_text(type_node, source));
+    }
+    LocalType::Other
+}
+
+/// The initializer expression of a `variable_declarator`, if any — its
+/// second named child (the first is always `name`); C# doesn't label this
+/// with a field name of its own.
+fn variable_declarator_value(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    let mut children = node.named_children(&mut cursor);
+    children.next();
+    children.next()
+}
+
+/// Infer types for names bound within a single method/constructor body:
+/// parameters and typed/`var` local declarations. Scope is strictly this
+/// method — never a caller, a callee, or another method of the same type
+/// (see `Context::local_types`'s doc comment).
+fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {
+    let mut bindings: Vec<(String, LocalType)> = Vec::new();
+    if let Some(params) = function_node.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        for param in params.named_children(&mut cursor) {
+            if param.kind() != "parameter" {
+                continue;
+            }
+            let Some(name_node) = param.child_by_field_name("name") else {
+                continue;
+            };
+            let name = node_text(name_node, source);
+            if name.is_empty() {
+                continue;
+            }
+            let ty = param
+                .child_by_field_name("type")
+                .map(|t| classify_annotation(&node_text(t, source)))
+                .unwrap_or(LocalType::Other);
+            bindings.push((name, ty));
+        }
+    }
+    if let Some(body) = function_node.child_by_field_name("body") {
+        collect_statement_bindings(body, source, &mut bindings);
+    }
+    bindings_to_local_types(bindings)
+}
+
+/// Fold a scope's raw (name, inferred-type) bindings into a lookup map,
+/// with a name bound more than once anywhere in the scope collapsing to
+/// `Other` — mirrors `python::bindings_to_local_types`.
+fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String, LocalType> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (name, _) in &bindings {
+        *counts.entry(name.clone()).or_default() += 1;
+    }
+    let mut result = HashMap::new();
+    for (name, ty) in bindings {
+        let reassigned = counts.get(&name).copied().unwrap_or(0) > 1;
+        result.insert(name, if reassigned { LocalType::Other } else { ty });
+    }
+    result
+}
+
+/// Recursively collect local-variable bindings from statements within a
+/// single method/constructor body, stopping at nested local-function/
+/// lambda boundaries (their own locals are a different scope entirely —
+/// see `Context::local_types`'s doc comment; reuses the same boundary set
+/// `walk_node` itself stops at via `is_nested_function_node`).
+///
+/// ponytail: tuple-deconstruction targets (`var (a, b) = GetPair();`,
+/// `foreach (var (k, v) in map)`) aren't tracked — the declarator/loop
+/// variable's `name` field isn't a plain identifier in that shape, so it's
+/// skipped rather than bound. This is no worse than before this change
+/// (such names were never gated), just not improved by it.
+fn collect_statement_bindings(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    if is_nested_function_node(node.kind()) {
+        return;
+    }
+    match node.kind() {
+        "variable_declaration" => {
+            let type_node = node.child_by_field_name("type");
+            let is_var = type_node
+                .map(|t| t.kind() == "implicit_type")
+                .unwrap_or(true);
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() != "variable_declarator" {
+                    continue;
+                }
+                let Some(name_node) = child.child_by_field_name("name") else {
+                    continue;
+                };
+                if name_node.kind() != "identifier" {
+                    continue;
+                }
+                let name = node_text(name_node, source);
+                if name.is_empty() {
+                    continue;
+                }
+                let ty = if is_var {
+                    variable_declarator_value(child)
+                        .map(|v| classify_value_expr(v, source))
+                        .unwrap_or(LocalType::Other)
+                } else {
+                    classify_annotation(&node_text(type_node.expect("checked above"), source))
+                };
+                bindings.push((name, ty));
+            }
+        }
+        "catch_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = node_text(name_node, source);
+                if !name.is_empty() {
+                    let ty = node
+                        .child_by_field_name("type")
+                        .map(|t| classify_annotation(&node_text(t, source)))
+                        .unwrap_or(LocalType::Other);
+                    bindings.push((name, ty));
+                }
+            }
+        }
+        "foreach_statement" => {
+            if let Some(left) = node.child_by_field_name("left")
+                && left.kind() == "identifier"
+            {
+                let name = node_text(left, source);
+                if !name.is_empty() {
+                    let ty = node
+                        .child_by_field_name("type")
+                        .filter(|t| t.kind() != "implicit_type")
+                        .map(|t| classify_annotation(&node_text(t, source)))
+                        .unwrap_or(LocalType::Other);
+                    bindings.push((name, ty));
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_statement_bindings(child, source, bindings);
+    }
+}
+
+/// Type-annotated fields (`field_declaration`) and properties
+/// (`property_declaration`) declared directly in a type's body — not
+/// inside any method. Used only to resolve a single-hop
+/// `this.field.Method()` receiver; see `infer_receiver_type`.
+fn collect_class_level_attr_types(
+    class_body: Node<'_>,
+    source: &str,
+) -> HashMap<String, LocalType> {
+    let mut result = HashMap::new();
+    let mut cursor = class_body.walk();
+    for member in class_body.named_children(&mut cursor) {
+        match member.kind() {
+            "field_declaration" => {
+                let mut inner = member.walk();
+                for decl in member.named_children(&mut inner) {
+                    if decl.kind() != "variable_declaration" {
+                        continue;
+                    }
+                    let Some(type_node) = decl.child_by_field_name("type") else {
+                        continue;
+                    };
+                    // Fields can't be `var` in real C#; defensive skip.
+                    if type_node.kind() == "implicit_type" {
+                        continue;
+                    }
+                    let ty = classify_annotation(&node_text(type_node, source));
+                    let mut dcursor = decl.walk();
+                    for declarator in decl.named_children(&mut dcursor) {
+                        if declarator.kind() != "variable_declarator" {
+                            continue;
+                        }
+                        let Some(name_node) = declarator.child_by_field_name("name") else {
+                            continue;
+                        };
+                        if name_node.kind() != "identifier" {
+                            continue;
+                        }
+                        let name = node_text(name_node, source);
+                        if name.is_empty() {
+                            continue;
+                        }
+                        result.insert(name, ty.clone());
+                    }
+                }
+            }
+            "property_declaration" => {
+                let Some(name_node) = member.child_by_field_name("name") else {
+                    continue;
+                };
+                let Some(type_node) = member.child_by_field_name("type") else {
+                    continue;
+                };
+                let name = node_text(name_node, source);
+                if name.is_empty() {
+                    continue;
+                }
+                result.insert(name, classify_annotation(&node_text(type_node, source)));
+            }
+            _ => {}
+        }
+    }
+    result
 }
 
 #[cfg(test)]

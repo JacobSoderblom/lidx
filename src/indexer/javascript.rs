@@ -1,6 +1,6 @@
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
+use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::tree_helpers::{
@@ -11,6 +11,7 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use tree_sitter::{Node, Parser};
 
 const JS_TS_EXTENSIONS: &[&str] = &["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "d.ts"];
@@ -49,6 +50,34 @@ struct Context {
     route_prefix: Option<String>,
     router_aliases: Vec<String>,
     grpc_clients: HashMap<String, GrpcService>,
+    /// Types of locally-bound names (parameters + `const`/`let`/`var`
+    /// declarations) within the *current* function body only — see
+    /// `infer_local_types`. Reset fresh on every function/method entry;
+    /// never merged across functions. See `python::infer_receiver_type` for
+    /// the mechanism this mirrors.
+    local_types: Rc<HashMap<String, LocalType>>,
+    /// Type-annotated fields and constructor parameter properties of the
+    /// *directly* enclosing class, read once when entering the class body —
+    /// see `collect_class_level_attr_types`. Used only to resolve a
+    /// single-hop `this.field.method()` receiver.
+    class_attr_types: Rc<HashMap<String, LocalType>>,
+}
+
+/// Locally-inferred type of a name bound within a single function body (or
+/// module top level). Deliberately coarse — see
+/// `python::LocalType` for the shape this mirrors; everything that isn't a
+/// confident, non-builtin type name collapses to `Other`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalType {
+    /// Inferred (via type annotation or `new T()` construction) to be this
+    /// non-builtin type name.
+    Known(String),
+    /// Builtin type, untyped parameter, destructured binding, loop/catch
+    /// target, or anything else not explicitly recognized. A name landing
+    /// here (rather than simply absent from the map) still gates
+    /// resolution: it means "we looked, and it's not a usable type" as
+    /// opposed to "we never looked".
+    Other,
 }
 
 pub struct JavascriptExtractor {
@@ -299,6 +328,8 @@ fn extract_with_parser(
         route_prefix: None,
         router_aliases: Vec::new(),
         grpc_clients,
+        local_types: Rc::new(infer_module_level_types(root, source)),
+        class_attr_types: Rc::new(HashMap::new()),
     };
     walk_node(root, &ctx, source, &mut output);
     Ok(output)
@@ -483,6 +514,7 @@ fn handle_class(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         next_ctx.route_prefix = Some(prefix);
     }
     if let Some(body) = node.child_by_field_name("body") {
+        next_ctx.class_attr_types = Rc::new(collect_class_level_attr_types(body, source));
         walk_class_body(body, &next_ctx, source, output);
     }
 }
@@ -646,6 +678,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return;
     }
+    let receiver_type = infer_receiver_type(target_node, source, ctx);
     let target = resolve_call_target(&raw, ctx);
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
@@ -656,6 +689,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         target_qualname: target,
         detail,
         evidence_snippet: snippet,
+        receiver_type,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
         ..Default::default()
@@ -2047,6 +2081,7 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
+        next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -2091,6 +2126,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
+        next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -2288,6 +2324,479 @@ fn container_qualname(module: &str, class_stack: &[String]) -> String {
     } else {
         format!("{module}.{}", class_stack.join("."))
     }
+}
+
+const JS_TS_BUILTIN_TYPES: &[&str] = &[
+    "string",
+    "number",
+    "boolean",
+    "any",
+    "unknown",
+    "never",
+    "void",
+    "object",
+    "symbol",
+    "bigint",
+    "null",
+    "undefined",
+    "this",
+    "Array",
+    "Object",
+    "String",
+    "Number",
+    "Boolean",
+    "Function",
+    "Date",
+    "RegExp",
+    "Promise",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "Error",
+    "TypeError",
+    "RangeError",
+    "Symbol",
+    "BigInt",
+    "Record",
+    "Partial",
+    "Required",
+    "Readonly",
+    "ReadonlyArray",
+    "Pick",
+    "Omit",
+    "Exclude",
+    "Extract",
+    "NonNullable",
+    "JSON",
+    "Math",
+    "Buffer",
+];
+
+/// Infer the receiver type of a call's callee expression (`function_node`),
+/// mirroring `python::infer_receiver_type` with `this` standing in for
+/// `self`/`cls`. Only gates resolution; never changes `target_qualname`
+/// (see `resolve_call_target`, which stays text-based and keeps the
+/// receiver's literal text for evidence).
+///
+/// Rules, in order:
+/// - Not a member access at all (`helper()`) → `NotTracked` (bare call,
+///   nothing to gate).
+/// - `super.method()` (any depth) → `NotTracked`: `resolve_call_target`
+///   already maps `super.x` onto the enclosing class exactly like `this.x`;
+///   left exactly as-is, not asked for by this task.
+/// - `this.method()` (zero hops) → `NotTracked`, already resolved exactly
+///   via `resolve_call_target`'s container-qualname path.
+/// - `this.field.method()` (exactly one hop off `this`) → resolved via a
+///   type-annotated class field or constructor parameter property, if any;
+///   otherwise `Unresolved`.
+/// - `X.method()` where `X` is a bare identifier: `Known`/`Unresolved` from
+///   this function's local types if `X` is tracked, else `NotTracked` (a
+///   class/module/namespace reference, e.g. `Console.log()`).
+/// - Anything deeper, or a chain rooted in something other than a bare
+///   identifier/`this` (a call result, a parenthesized/cast expression,
+///   ...), → `Unresolved` if the root is `this` or a tracked local,
+///   `NotTracked` otherwise.
+fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
+    if function_node.kind() != "member_expression"
+        && function_node.kind() != "optional_member_expression"
+    {
+        return ReceiverType::NotTracked;
+    }
+    let Some(object) = function_node.child_by_field_name("object") else {
+        return ReceiverType::NotTracked;
+    };
+    let (root, hops) = member_chain_root(object);
+
+    if root.kind() == "super" {
+        return ReceiverType::NotTracked;
+    }
+
+    if root.kind() == "this" {
+        if hops == 0 {
+            return ReceiverType::NotTracked;
+        }
+        if hops == 1 {
+            let attr_name = object
+                .child_by_field_name("property")
+                .map(|n| node_text(n, source));
+            return match attr_name.and_then(|name| ctx.class_attr_types.get(&name).cloned()) {
+                Some(LocalType::Known(ty)) => ReceiverType::Known(ty),
+                _ => ReceiverType::Unresolved,
+            };
+        }
+        // ponytail: deeper chains (`this.a.b.method()`) would need real
+        // attribute-type inference across assignments — out of scope, same
+        // ceiling as `python::infer_receiver_type`.
+        return ReceiverType::Unresolved;
+    }
+
+    if root.kind() != "identifier" {
+        // Chain rooted in a call result, parenthesized/cast expression,
+        // subscript, etc. — not inferable.
+        return ReceiverType::Unresolved;
+    }
+    let root_name = node_text(root, source);
+    if hops == 0 {
+        return match ctx.local_types.get(&root_name) {
+            Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
+            Some(LocalType::Other) => ReceiverType::Unresolved,
+            None => ReceiverType::NotTracked,
+        };
+    }
+    if ctx.local_types.contains_key(&root_name) {
+        ReceiverType::Unresolved
+    } else {
+        ReceiverType::NotTracked
+    }
+}
+
+/// Walk a (possibly nested) member-access chain down to its root node,
+/// returning the root plus how many hops separate it from `node` (0 =
+/// `node` itself is the root).
+fn member_chain_root(node: Node<'_>) -> (Node<'_>, usize) {
+    let mut current = node;
+    let mut hops = 0;
+    while current.kind() == "member_expression" || current.kind() == "optional_member_expression" {
+        match current.child_by_field_name("object") {
+            Some(obj) => {
+                current = obj;
+                hops += 1;
+            }
+            None => break,
+        }
+    }
+    (current, hops)
+}
+
+/// Classify a type-annotation (or bare constructor-name) expression's text
+/// into a `LocalType`. Generic/union/array/object-literal type shapes are
+/// never unwrapped — they collapse to `Other` just like a builtin would,
+/// mirroring `python::classify_annotation`'s identical ponytail simplification.
+fn classify_annotation(text: &str) -> LocalType {
+    let text = text.trim();
+    if text.is_empty() {
+        return LocalType::Other;
+    }
+    if text.contains(['<', '[', '|', '&', '(', ')', '{']) {
+        return LocalType::Other;
+    }
+    let bare = text.rsplit('.').next().unwrap_or(text).trim();
+    classify_type_name(bare)
+}
+
+fn classify_type_name(name: &str) -> LocalType {
+    if name.is_empty() || JS_TS_BUILTIN_TYPES.contains(&name) {
+        LocalType::Other
+    } else {
+        LocalType::Known(name.to_string())
+    }
+}
+
+/// Extract a type annotation's text from its wrapping `type_annotation`
+/// node (the `: Type` suffix), unwrapped to just `Type`.
+fn annotation_text(type_annotation: Node<'_>, source: &str) -> String {
+    match type_annotation.named_child(0) {
+        Some(inner) => node_text(inner, source),
+        None => node_text(type_annotation, source),
+    }
+}
+
+/// Classify a variable/field initializer's shape into a `LocalType` when no
+/// explicit type annotation is present. The only `Known` case is direct
+/// construction (`new EventStore()`); everything else (array/object/string
+/// literals, another call's return value, ...) is `Other` — mirrors
+/// `python::classify_assignment_value`'s identical ceiling.
+fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
+    if value.kind() == "new_expression"
+        && let Some(ctor) = value.child_by_field_name("constructor")
+    {
+        return classify_annotation(&node_text(ctor, source));
+    }
+    LocalType::Other
+}
+
+/// Infer types for names bound within a single function body: parameters
+/// and `const`/`let`/`var` declarations. Scope is strictly this function —
+/// never a caller, a callee, or another method of the same class (see
+/// `Context::local_types`'s doc comment). No CALLS edges are ever extracted
+/// from inside a nested function/arrow-function expression (see
+/// `is_nested_function_node`, which stops `walk_node` there entirely), so
+/// this deliberately doesn't recurse into one either.
+fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {
+    let mut bindings: Vec<(String, LocalType)> = Vec::new();
+    if let Some(params) = function_node.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        for param in params.named_children(&mut cursor) {
+            collect_param_bindings(param, source, &mut bindings);
+        }
+    }
+    if let Some(body) = function_node.child_by_field_name("body") {
+        collect_statement_bindings(body, source, &mut bindings);
+    }
+    bindings_to_local_types(bindings)
+}
+
+/// Infer types for names bound directly at module top level — its own
+/// single scope, exactly like a function body is; see
+/// `python::infer_module_level_types`.
+fn infer_module_level_types(root: Node<'_>, source: &str) -> HashMap<String, LocalType> {
+    let mut bindings: Vec<(String, LocalType)> = Vec::new();
+    collect_statement_bindings(root, source, &mut bindings);
+    bindings_to_local_types(bindings)
+}
+
+/// Fold a scope's raw (name, inferred-type) bindings into a lookup map,
+/// with a name bound more than once anywhere in the scope collapsing to
+/// `Other` — mirrors `python::bindings_to_local_types`.
+fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String, LocalType> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (name, _) in &bindings {
+        *counts.entry(name.clone()).or_default() += 1;
+    }
+    let mut result = HashMap::new();
+    for (name, ty) in bindings {
+        let reassigned = counts.get(&name).copied().unwrap_or(0) > 1;
+        result.insert(name, if reassigned { LocalType::Other } else { ty });
+    }
+    result
+}
+
+fn collect_param_bindings(param: Node<'_>, source: &str, bindings: &mut Vec<(String, LocalType)>) {
+    match param.kind() {
+        "identifier" => bindings.push((node_text(param, source), LocalType::Other)),
+        "required_parameter" | "optional_parameter" => {
+            let Some(pattern) = param.child_by_field_name("pattern") else {
+                return;
+            };
+            if pattern.kind() == "identifier" {
+                let name = node_text(pattern, source);
+                let ty = param
+                    .child_by_field_name("type")
+                    .map(|t| classify_annotation(&annotation_text(t, source)))
+                    .unwrap_or(LocalType::Other);
+                bindings.push((name, ty));
+            } else {
+                collect_pattern_identifiers(pattern, source, bindings);
+            }
+        }
+        "assignment_pattern" => {
+            if let Some(left) = param.child_by_field_name("left") {
+                collect_pattern_identifiers(left, source, bindings);
+            }
+        }
+        "rest_pattern" => {
+            if let Some(inner) = param.named_child(0) {
+                collect_pattern_identifiers(inner, source, bindings);
+            }
+        }
+        "object_pattern" | "array_pattern" => {
+            collect_pattern_identifiers(param, source, bindings);
+        }
+        _ => {}
+    }
+}
+
+/// Collect every identifier bound by a (possibly nested) destructuring
+/// pattern — array/object patterns, renamed/default/rest sub-patterns —
+/// each pushed as `LocalType::Other`. Used for both destructured parameters
+/// and destructured `const`/`let`/`var`/`for`/`catch` targets; see
+/// `python::collect_pattern_identifiers` for why these must be tracked at
+/// all (as opposed to left absent from the map).
+fn collect_pattern_identifiers(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    match node.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => {
+            bindings.push((node_text(node, source), LocalType::Other));
+        }
+        "array_pattern" | "object_pattern" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_pattern_identifiers(child, source, bindings);
+            }
+        }
+        "pair_pattern" => {
+            if let Some(value) = node.child_by_field_name("value") {
+                collect_pattern_identifiers(value, source, bindings);
+            }
+        }
+        "assignment_pattern" | "object_assignment_pattern" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                collect_pattern_identifiers(left, source, bindings);
+            }
+        }
+        "rest_pattern" => {
+            if let Some(inner) = node.named_child(0) {
+                collect_pattern_identifiers(inner, source, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Node kinds that introduce a fresh local-type scope of their own — a
+/// separate function/method/class body, never inherited from the outer
+/// scope being walked. Mirrors `is_nested_function_node` plus the
+/// declaration/class-body kinds that function doesn't need to cover (its
+/// callers already stop at those separately).
+fn is_local_scope_boundary(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_declaration"
+            | "generator_function_declaration"
+            | "function_expression"
+            | "arrow_function"
+            | "generator_function"
+            | "method_definition"
+            | "class_declaration"
+            | "abstract_class_declaration"
+            | "class"
+    )
+}
+
+/// Recursively collect local-variable bindings from statements within a
+/// single function body (or module top level), stopping at nested
+/// function/class boundaries (their own locals are a different scope
+/// entirely — see `Context::local_types`'s doc comment).
+fn collect_statement_bindings(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    if is_local_scope_boundary(node.kind()) {
+        return;
+    }
+    match node.kind() {
+        "lexical_declaration" | "variable_declaration" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "variable_declarator" {
+                    collect_variable_declarator_binding(child, source, bindings);
+                }
+            }
+        }
+        "for_in_statement" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                collect_pattern_identifiers(left, source, bindings);
+            }
+        }
+        "catch_clause" => {
+            if let Some(param) = node.child_by_field_name("parameter") {
+                collect_pattern_identifiers(param, source, bindings);
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_statement_bindings(child, source, bindings);
+    }
+}
+
+/// A `let y; y = new Foo();` delayed reassignment is deliberately not
+/// tracked — only a `variable_declarator`'s own type/initializer counts, so
+/// a name declared without either always collapses to `Other`.
+fn collect_variable_declarator_binding(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    if name_node.kind() != "identifier" {
+        collect_pattern_identifiers(name_node, source, bindings);
+        return;
+    }
+    let name = node_text(name_node, source);
+    let ty = if let Some(type_node) = node.child_by_field_name("type") {
+        classify_annotation(&annotation_text(type_node, source))
+    } else if let Some(value_node) = node.child_by_field_name("value") {
+        classify_value_expr(value_node, source)
+    } else {
+        LocalType::Other
+    };
+    bindings.push((name, ty));
+}
+
+/// Type-annotated fields (`public_field_definition` / `field_definition`)
+/// and typed constructor parameter properties
+/// (`constructor(private store: EventStore)`) declared directly in a class
+/// body — not inside any other method. Used only to resolve a single-hop
+/// `this.field.method()` receiver; see `infer_receiver_type`.
+fn collect_class_level_attr_types(
+    class_body: Node<'_>,
+    source: &str,
+) -> HashMap<String, LocalType> {
+    let mut result = HashMap::new();
+    let mut cursor = class_body.walk();
+    for member in class_body.named_children(&mut cursor) {
+        match member.kind() {
+            "public_field_definition" | "field_definition" => {
+                let Some(name_node) = member.child_by_field_name("name") else {
+                    continue;
+                };
+                let Some(type_node) = member.child_by_field_name("type") else {
+                    continue;
+                };
+                let name = node_text(name_node, source);
+                if name.is_empty() {
+                    continue;
+                }
+                result.insert(
+                    name,
+                    classify_annotation(&annotation_text(type_node, source)),
+                );
+            }
+            "method_definition" => {
+                let is_ctor = member
+                    .child_by_field_name("name")
+                    .map(|n| node_text(n, source) == "constructor")
+                    .unwrap_or(false);
+                if !is_ctor {
+                    continue;
+                }
+                let Some(params) = member.child_by_field_name("parameters") else {
+                    continue;
+                };
+                let mut pcursor = params.walk();
+                for param in params.named_children(&mut pcursor) {
+                    if !matches!(param.kind(), "required_parameter" | "optional_parameter") {
+                        continue;
+                    }
+                    // ponytail: a parameter property is only recognized via
+                    // an explicit accessibility modifier (public/private/
+                    // protected); a bare `readonly` alone is structurally
+                    // indistinguishable from a plain parameter in this
+                    // tree-sitter-typescript version, so it isn't tracked.
+                    let mut mcursor = param.walk();
+                    let has_modifier = param
+                        .named_children(&mut mcursor)
+                        .any(|c| c.kind() == "accessibility_modifier");
+                    if !has_modifier {
+                        continue;
+                    }
+                    let Some(pattern) = param.child_by_field_name("pattern") else {
+                        continue;
+                    };
+                    if pattern.kind() != "identifier" {
+                        continue;
+                    }
+                    let name = node_text(pattern, source);
+                    let ty = param
+                        .child_by_field_name("type")
+                        .map(|t| classify_annotation(&annotation_text(t, source)))
+                        .unwrap_or(LocalType::Other);
+                    result.insert(name, ty);
+                }
+            }
+            _ => {}
+        }
+    }
+    result
 }
 
 #[cfg(test)]
