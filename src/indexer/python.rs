@@ -1143,9 +1143,19 @@ fn route_edges_from_decorators(
 ) -> Vec<EdgeInput> {
     let mut edges = Vec::new();
     for decorator in decorators {
-        let Some((name, args)) = decorator_call_info(*decorator, source) else {
+        let Some((name, args, has_receiver)) = decorator_call_info(*decorator, source) else {
             continue;
         };
+        // Real FastAPI/Flask route registrations are always a method call
+        // on an app/router instance (`@app.get(...)`, `@router.route(...)`,
+        // `@router.api_route(...)`) — never a bare call. Without this, a
+        // bare decorator whose name happens to collide with an HTTP verb —
+        // `unittest.mock.patch` imported as `from unittest.mock import
+        // patch` and used as `@patch(...)` is the case that bit dpb — was
+        // indexed as a phantom FastAPI PATCH route.
+        if !has_receiver {
+            continue;
+        }
         let name = name.to_ascii_lowercase();
         if let Some(method) = http::normalize_method(&name) {
             let raw_path = args
@@ -1229,13 +1239,21 @@ fn build_route_edge(
     })
 }
 
-fn decorator_call_info<'a>(node: Node<'a>, source: &str) -> Option<(String, CallArgs<'a>)> {
+/// Returns the decorator call's method/function name, its arguments, and
+/// whether the call has an attribute receiver (`@app.get(...)` -> `true`)
+/// versus a bare call (`@patch(...)` -> `false`). The receiver flag lets
+/// `route_edges_from_decorators` require the former shape — see its use
+/// there for why.
+fn decorator_call_info<'a>(node: Node<'a>, source: &str) -> Option<(String, CallArgs<'a>, bool)> {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() == "call" {
             let name = call_target_name(child, source)?;
             let args = parse_call_arguments(child, source);
-            return Some((name, args));
+            let has_receiver = child
+                .child_by_field_name("function")
+                .is_some_and(|f| f.kind() == "attribute");
+            return Some((name, args, has_receiver));
         }
     }
     None
@@ -1472,7 +1490,12 @@ fn channel_edges_from_decorators(
 ) -> Vec<EdgeInput> {
     let mut edges = Vec::new();
     for decorator in decorators {
-        let Some((name, args)) = decorator_call_info(*decorator, source) else {
+        // Channel decorators are matched purely on name suffix
+        // ("...subscribe"/"...publish"), which doesn't collide with
+        // unrelated stdlib/third-party names the way bare HTTP-verb names
+        // do — so unlike `route_edges_from_decorators`, no receiver
+        // requirement is needed here.
+        let Some((name, args, _has_receiver)) = decorator_call_info(*decorator, source) else {
             continue;
         };
         let name_lower = name.to_ascii_lowercase();
@@ -1823,6 +1846,17 @@ fn unquote_string_literal(raw: &str) -> Option<String> {
 /// returned `NotTracked` for this call), using the file's import bindings
 /// (`collect_import_bindings` / `Context::imports`).
 ///
+// ponytail: only the dotted `Name.method()` shape produces candidates. A
+// bare `name()` call whose name was imported (`from urllib.parse import
+// quote; quote(...)`) still gets none, so it can fall through to the
+// bare-name tier and bind a same-named local symbol -- 4 such edges in dpb.
+// Extending this to bare names is a two-line change, but it surfaces a
+// latent carry-forward race: the candidate cannot resolve at insert time
+// during an incremental reindex, `db::insert_edges` then persists
+// receiver_type='' and `resolve_null_target_edges` skips that row forever,
+// so the edge is stuck unresolved instead of repaired. Fix the repair pass
+// first (persist the candidate list so it can retry the import tier).
+///
 /// Unlike C#'s `using NS;` (a namespace-level import that leaves *which*
 /// type in it ambiguous until checked against the DB), Python's `from x
 /// import Y` already binds a specific name to a specific target, so there
@@ -2150,6 +2184,49 @@ requests.post("/api/users/123")
             calls
                 .iter()
                 .any(|edge| edge.target_qualname.as_deref() == Some("/api/users/{}"))
+        );
+    }
+
+    #[test]
+    fn bare_decorator_sharing_an_http_verb_name_is_not_a_route() {
+        // `unittest.mock.patch` imported bare (`from unittest.mock import
+        // patch`) and used as `@patch(...)` on a test method collides with
+        // the "patch" HTTP-verb heuristic `route_edges_from_decorators`
+        // uses for genuine `@app.patch(...)` registrations. Real FastAPI/
+        // Flask route decorators are always called on an app/router
+        // instance; a bare call sharing the verb's name is not one.
+        let source = r#"
+from unittest.mock import patch
+
+class TestThing:
+    @patch("databricks.sdk.WorkspaceClient", autospec=True)
+    def test_something(self, mock_cls):
+        pass
+
+    @app.patch("/api/widgets/{id}")
+    def update_widget(self, request):
+        pass
+"#;
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let routes = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == http::HTTP_ROUTE_KIND)
+            .collect::<Vec<_>>();
+        assert!(
+            routes
+                .iter()
+                .all(|edge| edge.source_qualname.as_deref()
+                    != Some("module.TestThing.test_something")),
+            "a bare @patch(...) decorator (unittest.mock.patch) must not be indexed as an \
+             HTTP_ROUTE, got: {routes:?}"
+        );
+        assert!(
+            routes.iter().any(|edge| edge.source_qualname.as_deref()
+                == Some("module.TestThing.update_widget")
+                && edge.target_qualname.as_deref() == Some("/api/widgets/{}")),
+            "a genuine @app.patch(...) route (attribute-call form) must still be indexed, got: {routes:?}"
         );
     }
 
