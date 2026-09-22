@@ -164,12 +164,21 @@ pub fn build_subscribe_detail(channel: &str, raw: &str, framework: &str) -> Stri
 }
 
 /// Bridge pair: given an edge kind, return the complementary kind(s) for traversal bridging.
+///
+/// `RPC_IMPL` bridges to *two* things: `RPC_CALL` (a cross-service caller
+/// invoking this RPC) and `RPC_ROUTE` (the `.proto` definition this method
+/// implements) -- unlike `HTTP_ROUTE`/`HTTP_CALL`, gRPC has a third edge
+/// kind (the route/definition side) distinct from the call side, so it
+/// needs both. `RPC_ROUTE` only bridges back to `RPC_IMPL`: tracing
+/// downstream from a `.proto` rpc has nothing to reach via `RPC_CALL`
+/// (nothing *calls* a route definition).
 pub fn bridge_complement(kind: &str) -> Option<&'static [&'static str]> {
     match kind {
         "CHANNEL_PUBLISH" => Some(&["CHANNEL_SUBSCRIBE"]),
         "CHANNEL_SUBSCRIBE" => Some(&["CHANNEL_PUBLISH"]),
         "RPC_CALL" => Some(&["RPC_IMPL"]),
-        "RPC_IMPL" => Some(&["RPC_CALL"]),
+        "RPC_IMPL" => Some(&["RPC_CALL", "RPC_ROUTE"]),
+        "RPC_ROUTE" => Some(&["RPC_IMPL"]),
         "HTTP_CALL" => Some(&["HTTP_ROUTE"]),
         "HTTP_ROUTE" => Some(&["HTTP_CALL"]),
         "CONFIG_SOURCE" => Some(&["CONFIG_READ"]),
@@ -295,7 +304,11 @@ mod tests {
         );
         assert_eq!(
             bridge_complement("RPC_IMPL"),
-            Some(&["RPC_CALL"] as &[&str])
+            Some(&["RPC_CALL", "RPC_ROUTE"] as &[&str])
+        );
+        assert_eq!(
+            bridge_complement("RPC_ROUTE"),
+            Some(&["RPC_IMPL"] as &[&str])
         );
         assert_eq!(
             bridge_complement("HTTP_CALL"),

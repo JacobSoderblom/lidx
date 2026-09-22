@@ -26,6 +26,16 @@ struct Context {
     route_groups: HashMap<String, String>,
     grpc_service: Option<String>,
     grpc_clients: HashMap<String, String>,
+    /// Candidate protobuf package names for `grpc_service`, derived from the
+    /// impl class's base-list entry (e.g. `DsDeploy.DeployerService.Base`)
+    /// plus this file's `using` directives — see
+    /// `grpc_package_candidates_from_prefix`. Deliberately *not* derived
+    /// from `namespace_stack`: the impl class's own CLR namespace is chosen
+    /// for the implementation's code organization and has no reliable
+    /// relationship to the proto package it implements (that mismatch was
+    /// the bug this field exists to fix). Set alongside `grpc_service` in
+    /// `handle_type` and consumed only by `grpc_impl_edge`.
+    grpc_package_candidates: Vec<String>,
     /// Types of locally-bound names (parameters + typed/`var` local
     /// declarations) within the *current* method/constructor body only —
     /// see `infer_local_types`. Reset fresh on every method/constructor
@@ -111,6 +121,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             route_groups: HashMap::new(),
             grpc_service: None,
             grpc_clients: HashMap::new(),
+            grpc_package_candidates: Vec::new(),
             // ponytail: unlike Python/TypeScript, there's no meaningful
             // module-top-level scope in C# (locals only ever live inside a
             // method/constructor body), so this starts and stays empty
@@ -376,7 +387,11 @@ fn handle_type(
         handle_base_list(node, &qualname, source, output, type_kind);
     }
 
-    let grpc_service = grpc_service_from_bases(node, source);
+    let grpc_service_info = grpc_service_from_bases(node, source);
+    let grpc_package_candidates = grpc_service_info
+        .as_ref()
+        .map(|(_, prefix)| grpc_package_candidates_from_prefix(prefix.as_deref(), ctx))
+        .unwrap_or_default();
     let class_prefix = route_prefix_from_attributes(node, source);
     let combined_prefix =
         combine_route_prefix(ctx.route_prefix.as_deref(), class_prefix.as_deref());
@@ -384,7 +399,8 @@ fn handle_type(
     next_ctx.type_stack.push(name);
     next_ctx.current_scope = qualname;
     next_ctx.route_prefix = combined_prefix;
-    next_ctx.grpc_service = grpc_service;
+    next_ctx.grpc_service = grpc_service_info.map(|(service, _)| service);
+    next_ctx.grpc_package_candidates = grpc_package_candidates;
     next_ctx.base_type = resolvable_base_type(node, source, type_kind);
     if let Some(body) = node.child_by_field_name("body") {
         next_ctx.class_attr_types = Rc::new(collect_class_level_attr_types(body, source));
@@ -449,7 +465,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         evidence_snippet: None,
         ..Default::default()
     });
-    if let Some(edge) = grpc_impl_edge(node, ctx, source, &name) {
+    for edge in grpc_impl_edge(node, ctx, source, &name) {
         output.edges.push(edge);
     }
     for edge in route_edges_from_method_attributes(node, ctx, source, &qualname) {
@@ -1382,36 +1398,73 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     })
 }
 
-fn grpc_impl_edge(
-    node: Node<'_>,
-    ctx: &Context,
-    source: &str,
-    rpc_name: &str,
-) -> Option<EdgeInput> {
-    let service = ctx.grpc_service.as_deref()?;
-    let package = grpc_package_from_namespace(ctx);
-    let (raw_path, normalized) = proto::normalize_rpc_path(package.as_deref(), service, rpc_name)?;
+/// Builds an `RPC_IMPL` edge per candidate protobuf package in
+/// `ctx.grpc_package_candidates` (see `grpc_package_candidates_from_prefix`),
+/// not just one: a bare `using`-brought proto namespace can't be
+/// disambiguated from other bare `using`s in the same file without a
+/// whole-repo symbol table this single-file extractor doesn't have (see
+/// `import_qualified_candidates` for the same trade-off on the CALLS side).
+/// This is safe here in a way it isn't for CALLS resolution: an `RPC_IMPL`
+/// edge only ever links up with a real `RPC_ROUTE` edge when its
+/// `target_qualname` exactly matches one built from an actual `.proto`
+/// package+service+rpc (see `proto::normalize_rpc_path`), so a wrong
+/// candidate simply never matches anything downstream — it can't bind to
+/// the wrong real route the way an over-eager CALLS edge could.
+/// Deduplicates identical targets (e.g. two candidate packages that
+/// normalize the same way).
+fn grpc_impl_edge(node: Node<'_>, ctx: &Context, source: &str, rpc_name: &str) -> Vec<EdgeInput> {
+    let Some(service) = ctx.grpc_service.as_deref() else {
+        return Vec::new();
+    };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
-    let detail = json!({
-        "framework": "grpc-csharp",
-        "role": "server",
-        "service": service,
-        "rpc": rpc_name,
-        "package": package.as_deref(),
-        "raw": raw_path,
-    })
-    .to_string();
-    Some(EdgeInput {
-        kind: proto::RPC_IMPL_KIND.to_string(),
-        source_qualname: Some(build_qualname(ctx, rpc_name)),
-        target_qualname: Some(normalized),
-        detail: Some(detail),
-        evidence_snippet: snippet,
-        evidence_start_line: Some(start_line),
-        evidence_end_line: Some(end_line),
-        ..Default::default()
-    })
+    let source_qualname = build_qualname(ctx, rpc_name);
+    // ponytail: when no candidate package could be derived at all (no
+    // base-list prefix and no bare `using` in the file), fall back to a
+    // single package-less candidate rather than emitting nothing — covers
+    // a proto file with no `package` statement, and top-level impl classes.
+    // Upgrade path: none needed unless a real cross-file symbol table (like
+    // `db::resolve_import_candidate`'s) becomes available to this
+    // single-file extractor.
+    let packages: Vec<Option<&str>> = if ctx.grpc_package_candidates.is_empty() {
+        vec![None]
+    } else {
+        ctx.grpc_package_candidates
+            .iter()
+            .map(|p| Some(p.as_str()))
+            .collect()
+    };
+    let mut seen_targets = std::collections::HashSet::new();
+    let mut edges = Vec::new();
+    for package in packages {
+        let Some((raw_path, normalized)) = proto::normalize_rpc_path(package, service, rpc_name)
+        else {
+            continue;
+        };
+        if !seen_targets.insert(normalized.clone()) {
+            continue;
+        }
+        let detail = json!({
+            "framework": "grpc-csharp",
+            "role": "server",
+            "service": service,
+            "rpc": rpc_name,
+            "package": package,
+            "raw": raw_path,
+        })
+        .to_string();
+        edges.push(EdgeInput {
+            kind: proto::RPC_IMPL_KIND.to_string(),
+            source_qualname: Some(source_qualname.clone()),
+            target_qualname: Some(normalized),
+            detail: Some(detail),
+            evidence_snippet: snippet.clone(),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            ..Default::default()
+        });
+    }
+    edges
 }
 
 fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
@@ -1518,7 +1571,12 @@ fn normalize_grpc_method_name(name: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-fn grpc_service_from_bases(node: Node<'_>, source: &str) -> Option<String> {
+/// Finds the class's gRPC service base (e.g. `DeployerService.DeployerServiceBase`
+/// or `DsDeploy.DeployerService.DeployerServiceBase`), returning
+/// `(service_name, prefix)` where `prefix` is whatever base-list text comes
+/// before the `<Service>.<Service>Base` pair — `None` for a bare base, or
+/// the raw dotted/aliased text otherwise. See `grpc_service_from_base`.
+fn grpc_service_from_bases(node: Node<'_>, source: &str) -> Option<(String, Option<String>)> {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() != "base_list" {
@@ -1526,22 +1584,21 @@ fn grpc_service_from_bases(node: Node<'_>, source: &str) -> Option<String> {
         }
         let bases = base_list_types(child, source);
         for base in bases {
-            if let Some(service) = grpc_service_from_base(&base) {
-                return Some(service);
+            if let Some(result) = grpc_service_from_base(&base) {
+                return Some(result);
             }
         }
     }
     None
 }
 
-fn grpc_service_from_base(base: &str) -> Option<String> {
+fn grpc_service_from_base(base: &str) -> Option<(String, Option<String>)> {
     let trimmed = base.trim();
     if trimmed.is_empty() || !trimmed.contains('.') {
         return None;
     }
-    let mut parts = trimmed.rsplit('.');
-    let last = parts.next()?.trim();
-    let prev = parts.next()?.trim();
+    let mut parts: Vec<&str> = trimmed.split('.').map(str::trim).collect();
+    let last = parts.pop()?;
     let last = last.split('<').next().unwrap_or(last).trim();
     if !last.ends_with("Base") {
         return None;
@@ -1550,10 +1607,16 @@ fn grpc_service_from_base(base: &str) -> Option<String> {
     if service.is_empty() {
         return None;
     }
+    let prev = parts.pop()?;
     if prev != service {
         return None;
     }
-    Some(service.to_string())
+    let prefix = if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("."))
+    };
+    Some((service.to_string(), prefix))
 }
 
 fn grpc_package_from_namespace(ctx: &Context) -> Option<String> {
@@ -1561,6 +1624,40 @@ fn grpc_package_from_namespace(ctx: &Context) -> Option<String> {
         return None;
     }
     Some(ctx.namespace_stack.join("."))
+}
+
+/// Candidate protobuf package names for a gRPC service impl class, derived
+/// from its base-list entry's namespace `prefix` (see
+/// `grpc_service_from_base`) plus this file's `using` directives —
+/// deliberately *not* from `ctx.namespace_stack` (the impl class's own CLR
+/// namespace), which is the wrong signal this replaces: it's chosen for the
+/// implementation's code organization, not the proto package it implements.
+///
+/// `Some(prefix)`: an alias (`using DsDeploy = Datasource.Deployer.V1;`)
+/// resolves to its target and is the sole candidate (an alias can only ever
+/// mean one thing). A non-alias prefix — already a dotted namespace written
+/// directly in the base list — is used verbatim as the sole candidate.
+///
+/// `None` (bare `ServiceName.ServiceNameBase`, namespace brought in scope by
+/// a bare `using ns;`): every bare `using` in the file is a candidate. This
+/// never picks a winner among them — see `grpc_impl_edge`'s doc comment for
+/// why an RPC_IMPL/RPC_ROUTE mismatch is harmless, unlike the CALLS-edge
+/// ambiguity `import_qualified_candidates` guards against.
+fn grpc_package_candidates_from_prefix(prefix: Option<&str>, ctx: &Context) -> Vec<String> {
+    if let Some(prefix) = prefix {
+        if let Some(fqn) = ctx.imports.aliases.get(prefix) {
+            return vec![fqn.clone()];
+        }
+        return vec![prefix.to_string()];
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = Vec::new();
+    for ns in &ctx.imports.namespaces {
+        if !ns.is_empty() && seen.insert(ns.clone()) {
+            candidates.push(ns.clone());
+        }
+    }
+    candidates
 }
 
 fn grpc_service_from_client_receiver(receiver: Option<&str>) -> Option<String> {
@@ -2831,10 +2928,17 @@ app.MapGroup("/admin").MapPost("/users", HandlePost);
 
     #[test]
     fn extracts_grpc_impl_and_call() {
+        // The impl class's own CLR namespace (`MyApp.Grpc`) deliberately
+        // differs from the proto package (`Example.V1`, brought in scope by
+        // a bare `using`) -- this is the shape every real gRPC impl in the
+        // wild has, and the whole point of the regression this guards: the
+        // route key must come from the `using`, never from
+        // `namespace_stack`.
         let source = r#"
+using Example.V1;
 using Grpc.Core;
 
-namespace Example.V1 {
+namespace MyApp.Grpc {
   public class GreeterService : Greeter.GreeterBase {
     public override Task<HelloReply> SayHello(HelloRequest request, ServerCallContext context) {
       return Task.FromResult(new HelloReply());
@@ -2861,9 +2965,89 @@ client.SayHelloAsync(new HelloRequest());
             .iter()
             .any(|edge| edge.target_qualname.as_deref() == Some("/example.v1.greeter/sayhello")));
         assert!(
+            !impls.iter().any(|edge| edge.target_qualname.as_deref()
+                == Some("/myapp.grpc.greeter/sayhello")),
+            "must not key the route off the impl class's own CLR namespace"
+        );
+        assert!(
             calls
                 .iter()
                 .any(|edge| edge.target_qualname.as_deref() == Some("/greeter/sayhello"))
+        );
+    }
+
+    #[test]
+    fn grpc_impl_route_follows_using_alias_to_proto_package() {
+        // Concrete regression case: dpb's Datasource.Grpc.DeployerServiceImpl
+        // inherits `DsDeploy.DeployerService.DeployerServiceBase`, where
+        // `DsDeploy` is a using-alias for the generated proto namespace. The
+        // impl class itself lives in an unrelated CLR namespace.
+        let source = r#"
+using DsDeploy = Datasource.Deployer.V1;
+using Grpc.Core;
+
+namespace Dpb.DataMgr.Datasource.Grpc {
+  internal class DeployerServiceImpl : DsDeploy.DeployerService.DeployerServiceBase {
+    public override Task<DsDeploy.DeploymentResponse> Deploy(
+        IAsyncStreamReader<DsDeploy.DeploymentChunk> requestStream,
+        ServerCallContext context) {
+      return null;
+    }
+  }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let impls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_IMPL_KIND)
+            .collect::<Vec<_>>();
+        // An alias can only ever mean one thing, so it's the sole candidate
+        // -- no ambiguity, exactly one edge.
+        assert_eq!(impls.len(), 1);
+        assert_eq!(
+            impls[0].target_qualname.as_deref(),
+            Some("/datasource.deployer.v1.deployerservice/deploy")
+        );
+    }
+
+    #[test]
+    fn grpc_impl_bare_base_tries_every_bare_using_as_a_package_candidate() {
+        // No prefix in the base-list text at all (the common case: proto
+        // namespace brought in scope by a bare `using`, not an alias).
+        // Every bare `using` in the file becomes a candidate; a wrong one
+        // just never matches a real RPC_ROUTE downstream, so this is safe
+        // even when ambiguous.
+        let source = r#"
+using DataProduct.Team.V1;
+using Inventory.V1;
+using Grpc.Core;
+
+namespace Dpb.DataMgr.Catalog.Grpc {
+  internal class InventoryServiceImpl : InventoryService.InventoryServiceBase {
+    public override Task<GetInventoryResponse> GetInventory(
+        GetInventoryRequest request, ServerCallContext context) {
+      return null;
+    }
+  }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let impls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_IMPL_KIND)
+            .collect::<Vec<_>>();
+        // Three bare usings -> three distinct candidate targets.
+        assert_eq!(impls.len(), 3);
+        assert!(impls.iter().any(|edge| edge.target_qualname.as_deref()
+            == Some("/inventory.v1.inventoryservice/getinventory")));
+        assert!(
+            !impls.iter().any(|edge| edge.target_qualname.as_deref()
+                == Some("/dpb.datamgr.catalog.grpc.inventoryservice/getinventory")),
+            "must not key the route off the impl class's own CLR namespace"
         );
     }
 
