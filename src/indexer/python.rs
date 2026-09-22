@@ -31,6 +31,12 @@ struct Context {
     /// `collect_class_level_annotations`. Used only to resolve a single-hop
     /// `self.attr.method()` receiver.
     class_attr_types: Rc<HashMap<String, LocalType>>,
+    /// This file's import bindings — bound name -> fully-qualified
+    /// target(s) it stands for, from `from x import Y [as Z]` / `import
+    /// x.y as z` — collected once in `extract()` before the main walk (see
+    /// `collect_import_bindings`). Set once and inherited unchanged through
+    /// every `ctx.clone()`, mirroring C#'s `Context::imports`.
+    imports: Rc<HashMap<String, Vec<String>>>,
 }
 
 /// Locally-inferred type of a name bound within a single function body.
@@ -99,6 +105,7 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             grpc_service: None,
             local_types: Rc::new(infer_module_level_types(root, source)),
             class_attr_types: Rc::new(HashMap::new()),
+            imports: Rc::new(collect_import_bindings(root, source)),
         };
         walk_node(root, &ctx, source, &mut output);
         Ok(output)
@@ -423,6 +430,14 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         return;
     }
     let receiver_type = infer_receiver_type(function_node, source, ctx);
+    // Import-aware qualification only makes sense when the receiver isn't
+    // already gated by receiver-type inference — see
+    // `import_qualified_candidates`'s doc.
+    let import_candidates = if receiver_type == ReceiverType::NotTracked {
+        import_qualified_candidates(&raw, ctx)
+    } else {
+        Vec::new()
+    };
     let target = resolve_call_target(&raw, ctx);
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
@@ -436,6 +451,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
         receiver_type,
+        import_candidates,
         ..Default::default()
     });
 }
@@ -1795,6 +1811,154 @@ fn unquote_string_literal(raw: &str) -> Option<String> {
         return Some(rest[1..rest.len() - 1].to_string());
     }
     None
+}
+
+/// Compute fully-qualified candidate qualnames for a bare `Name.method()`
+/// call whose receiver isn't a tracked local (i.e. `infer_receiver_type`
+/// returned `NotTracked` for this call), using the file's import bindings
+/// (`collect_import_bindings` / `Context::imports`).
+///
+/// Unlike C#'s `using NS;` (a namespace-level import that leaves *which*
+/// type in it ambiguous until checked against the DB), Python's `from x
+/// import Y` already binds a specific name to a specific target, so there
+/// is normally at most one candidate here. A second only shows up if the
+/// *same* name was bound by two different import statements in the same
+/// file — rare, but handled the same ambiguous way as C#'s twin-`using`
+/// case: not collapsed to one, left for the DB layer
+/// (`db::resolve_import_candidate`) to try both and refuse unless exactly
+/// one resolves to a real symbol.
+fn import_qualified_candidates(raw: &str, ctx: &Context) -> Vec<String> {
+    let Some((receiver, method)) = raw.split_once('.') else {
+        return Vec::new();
+    };
+    if receiver.is_empty() || method.is_empty() || method.contains('.') {
+        return Vec::new();
+    }
+    if receiver == "self" || receiver == "cls" {
+        return Vec::new();
+    }
+    let Some(targets) = ctx.imports.get(receiver) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = Vec::new();
+    for target in targets {
+        let candidate = format!("{target}.{method}");
+        if seen.insert(candidate.clone()) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
+/// Walk the whole file once, before the main walk, collecting every
+/// `import_statement`/`import_from_statement` node into a bound-name ->
+/// candidate-target(s) map — see `Context::imports`. A flat scan rather
+/// than something threaded through `walk_node`'s per-scope `Context`, same
+/// simplification as C#'s `collect_import_context`: import bindings don't
+/// meaningfully change per-scope for this extractor's purposes (a
+/// function-local `import` is rare, and treating it as file-wide is
+/// harmless — worst case, a candidate is tried and doesn't match).
+fn collect_import_bindings(root: Node<'_>, source: &str) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    collect_import_bindings_rec(root, source, &mut out);
+    out
+}
+
+fn collect_import_bindings_rec(
+    node: Node<'_>,
+    source: &str,
+    out: &mut HashMap<String, Vec<String>>,
+) {
+    if matches!(node.kind(), "import_statement" | "import_from_statement") {
+        let text = node_text(node, source);
+        for (bound, target) in parse_import_bindings(&text) {
+            let entry = out.entry(bound).or_default();
+            if !entry.contains(&target) {
+                entry.push(target);
+            }
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_import_bindings_rec(child, source, out);
+    }
+}
+
+/// Parse a `from x import Y [as Z], A [as B]` or `import x.y [as z], a.b`
+/// statement's text into `(bound_name, fully_qualified_target)` pairs — the
+/// name this statement introduces into the file's scope, and what it
+/// stands for. Mirrors `parse_imports`'s crude-but-cheap text-based
+/// parsing (same shape support: single-line, unparenthesized, no
+/// wildcards) but additionally resolves `as` aliases, which `parse_imports`
+/// intentionally discards (it only needs the raw IMPORTS-edge target text,
+/// not the name bound into scope).
+///
+/// ponytail: parenthesized multi-line `from x import (A, B as C)` and
+/// wildcard `from x import *` are not tracked as candidate bindings — same
+/// ceiling `parse_imports` already has for the IMPORTS edge itself (it
+/// emits `"{base}.*"`, not a usable target). Upgrade path: a real
+/// per-name AST walk (the grammar's `aliased_import`/`dotted_name` nodes)
+/// if this gap ever bites.
+fn parse_import_bindings(text: &str) -> Vec<(String, String)> {
+    let cleaned = text.replace('\n', " ");
+    let cleaned = cleaned.trim().trim_end_matches(';');
+    let mut out = Vec::new();
+    if let Some(rest) = cleaned.strip_prefix("import ") {
+        for part in rest.split(',') {
+            let mut tokens = part.split_whitespace();
+            let Some(module) = tokens.next() else {
+                continue;
+            };
+            if module.is_empty() {
+                continue;
+            }
+            let bound = match (tokens.next(), tokens.next()) {
+                (Some("as"), Some(alias)) => alias.to_string(),
+                _ => module.split('.').next().unwrap_or(module).to_string(),
+            };
+            if bound.is_empty() {
+                continue;
+            }
+            out.push((bound, module.to_string()));
+        }
+        return out;
+    }
+    if let Some(rest) = cleaned.strip_prefix("from ")
+        && let Some((module, names)) = rest.split_once(" import ")
+    {
+        let base = module.trim();
+        let trimmed_names = names.trim();
+        if base.contains('(') || trimmed_names.contains('(') || trimmed_names == "*" {
+            return out;
+        }
+        for part in names.split(',') {
+            let mut tokens = part.split_whitespace();
+            let Some(item) = tokens.next() else {
+                continue;
+            };
+            if item == "*" {
+                continue;
+            }
+            let bound = match (tokens.next(), tokens.next()) {
+                (Some("as"), Some(alias)) => alias.to_string(),
+                _ => item.to_string(),
+            };
+            if bound.is_empty() {
+                continue;
+            }
+            let target = if base.is_empty() {
+                item.to_string()
+            } else if base == "." || base.ends_with('.') {
+                format!("{base}{item}")
+            } else {
+                format!("{base}.{item}")
+            };
+            out.push((bound, target));
+        }
+    }
+    out
 }
 
 fn parse_imports(text: &str) -> Vec<String> {

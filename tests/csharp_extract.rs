@@ -139,6 +139,132 @@ public class Foo {
     assert_eq!(call.receiver_type, ReceiverType::NotTracked);
 }
 
+// Import-aware receiver resolution regression tests (issue: twin
+// `Dpb.DataMgr.DataProduct.Domain.UniqueName` / `Dpb.DataMgr.Datasource.Domain.UniqueName`
+// classes both defining `Create`, which made every `UniqueName.Create(...)`
+// call site ambiguous and unbound). Each of these fails if
+// `import_qualified_candidates`/`collect_import_context` in `csharp.rs` is
+// reverted back to always producing an empty `import_candidates` list —
+// confirmed by temporarily reverting that change and rerunning.
+
+#[test]
+fn using_imported_bare_type_resolves_to_its_namespace() {
+    let source = r#"
+using Dpb.DataMgr.DataProduct.Domain;
+
+public class Caller {
+    public void Method() {
+        UniqueName.Create();
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/Caller.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("UniqueName.Create"))
+        .expect("UniqueName.Create() call edge");
+    assert_eq!(
+        call.import_candidates,
+        vec!["Dpb.DataMgr.DataProduct.Domain.UniqueName.Create".to_string()],
+        "a single `using` naming the receiver's namespace must produce exactly \
+         that one qualified candidate"
+    );
+}
+
+#[test]
+fn aliased_using_resolves_to_its_target() {
+    let source = r#"
+using DPUniqueName = Dpb.DataMgr.DataProduct.Domain.UniqueName;
+
+public class Caller {
+    public void Method() {
+        DPUniqueName.Create();
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/Caller.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("DPUniqueName.Create"))
+        .expect("DPUniqueName.Create() call edge");
+    assert_eq!(
+        call.import_candidates,
+        vec!["Dpb.DataMgr.DataProduct.Domain.UniqueName.Create".to_string()],
+        "an alias must resolve directly to its aliased target, not a namespace guess"
+    );
+}
+
+#[test]
+fn two_usings_supplying_same_bare_name_both_remain_candidates() {
+    // Neither namespace is picked as a winner here -- the extractor cannot
+    // know, from this file alone, which one (if either) actually declares
+    // `UniqueName`. Both candidates are kept so the DB layer can try them
+    // against the real symbol table and refuse to bind if both turn out to
+    // name a real symbol (see `db::resolve_import_candidate`).
+    let source = r#"
+using Dpb.DataMgr.DataProduct.Domain;
+using Dpb.DataMgr.Datasource.Domain;
+
+public class Caller {
+    public void Method() {
+        UniqueName.Create();
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/Caller.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("UniqueName.Create"))
+        .expect("UniqueName.Create() call edge");
+    let mut candidates = call.import_candidates.clone();
+    candidates.sort();
+    let mut expected = vec![
+        "Dpb.DataMgr.DataProduct.Domain.UniqueName.Create".to_string(),
+        "Dpb.DataMgr.Datasource.Domain.UniqueName.Create".to_string(),
+    ];
+    expected.sort();
+    assert_eq!(
+        candidates, expected,
+        "two usings that could both supply the name must both remain \
+         candidates -- the extractor must not pick one"
+    );
+}
+
+#[test]
+fn type_in_own_namespace_resolves_without_using() {
+    let source = r#"
+namespace Dpb.DataMgr.DataProduct.Domain;
+
+public class Caller {
+    public void Method() {
+        UniqueName.Create();
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/Caller.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("UniqueName.Create"))
+        .expect("UniqueName.Create() call edge");
+    assert_eq!(
+        call.import_candidates,
+        vec!["Dpb.DataMgr.DataProduct.Domain.UniqueName.Create".to_string()],
+        "a type in the call site's own enclosing namespace must resolve without any using"
+    );
+}
+
 #[test]
 fn extract_symbols_and_edges() {
     let source = r#"

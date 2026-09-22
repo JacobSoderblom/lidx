@@ -1174,11 +1174,21 @@ impl Db {
                     graph_version,
                 )?;
                 // Exact qualname match is always tried first, regardless of
-                // receiver_type — it's authoritative when it hits. Only on a
-                // miss do we consult the receiver-type-gated fuzzy tiers
-                // (see `resolve_fuzzy_target`).
+                // receiver_type — it's authoritative when it hits. On a
+                // miss, try the import-qualified candidates (if any) next —
+                // also an exact-match tier, just over several guesses
+                // instead of one; still authoritative only when exactly one
+                // resolves. Only after both miss do we consult the
+                // receiver-type-gated fuzzy tiers (see `resolve_fuzzy_target`).
                 let (target_id, resolution_kind) = if exact_target.is_some() {
                     (exact_target, Some("exact"))
+                } else if let Some(import_id) = resolve_import_candidate(
+                    &edge.import_candidates,
+                    symbol_map,
+                    &mut exact_lookup_stmt,
+                    graph_version,
+                )? {
+                    (Some(import_id), Some("import"))
                 } else {
                     match edge.target_qualname.as_deref() {
                         Some(qn) => resolve_fuzzy_target(
@@ -1227,6 +1237,17 @@ impl Db {
     /// 2. Fuzzy suffix matching for remaining NULLs
     ///
     /// Processing is done in batches of 1000 rows to avoid long lock holds.
+    ///
+    /// ponytail: this repair pass does not retry the import-qualified-
+    /// candidate tier (`resolve_import_candidate`) — `import_candidates` is
+    /// a transient, unpersisted field on `EdgeInput`, not a DB column, so a
+    /// pass that only has the already-persisted `edges` row to work from
+    /// has no import context to try. An edge whose file was never
+    /// import-aware-resolved at `insert_edges` time (e.g. one persisted by
+    /// a build predating this feature) only gains that resolution once its
+    /// own file is re-extracted, not via this repair pass. Upgrade path:
+    /// persist the candidate list (or a normalized "import key") as a real
+    /// column if repair-time import resolution turns out to matter.
     pub fn resolve_null_target_edges(&self, graph_version: i64) -> Result<usize> {
         let mut total_resolved = 0;
 
@@ -2213,6 +2234,49 @@ fn resolve_symbol_id(
     Ok(id)
 }
 
+/// Resolve a call's import-qualified candidate qualnames (see
+/// `EdgeInput::import_candidates` / `csharp::import_qualified_candidates`)
+/// against the real symbol table, binding only when precisely one distinct
+/// symbol is found across *every* candidate — mirrors the ambiguity guard
+/// in `single_unambiguous_match`, just over a short candidate list instead
+/// of a SQL suffix pattern. Each candidate is itself an exact-qualname
+/// lookup (same map-then-SQL path as `resolve_symbol_id`), so this is
+/// authoritative when it hits: a candidate naming a real symbol is never a
+/// coincidental substring/suffix match.
+///
+/// Returns `None` for an empty candidate list (the common case — every
+/// extractor except C# leaves it empty, as does most C# calls), for zero
+/// hits, and for 2+ *distinct* hits (whether from two different candidates
+/// each naming a different real symbol, e.g. two `using`s that both
+/// happen to supply a type by this name, or — in principle — one
+/// candidate naming more than one symbol). Either way, the caller falls
+/// through to the pre-existing exact/two-segment/bare-name tiers
+/// unchanged, so this never bypasses the ambiguity guard, only sometimes
+/// avoids tripping it by qualifying an otherwise-ambiguous receiver first.
+fn resolve_import_candidate(
+    candidates: &[String],
+    symbol_map: &HashMap<String, i64>,
+    stmt: &mut rusqlite::Statement<'_>,
+    graph_version: i64,
+) -> Result<Option<i64>> {
+    let mut found: Option<i64> = None;
+    for candidate in candidates {
+        let id = if let Some(&id) = symbol_map.get(candidate) {
+            Some(id)
+        } else {
+            stmt.query_row(params![candidate, graph_version], |row| row.get(0))
+                .optional()?
+        };
+        let Some(id) = id else { continue };
+        match found {
+            None => found = Some(id),
+            Some(existing) if existing == id => {}
+            Some(_) => return Ok(None),
+        }
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2279,6 +2343,24 @@ mod tests {
             span_id: None,
             event_ts: None,
             receiver_type,
+            import_candidates: Vec::new(),
+        }
+    }
+
+    fn make_test_edge_with_import_candidates(
+        kind: &str,
+        source_qualname: &str,
+        target_qualname: &str,
+        import_candidates: Vec<String>,
+    ) -> crate::indexer::extract::EdgeInput {
+        crate::indexer::extract::EdgeInput {
+            import_candidates,
+            ..make_test_edge_with_receiver_type(
+                kind,
+                source_qualname,
+                target_qualname,
+                ReceiverType::NotTracked,
+            )
         }
     }
 
@@ -3763,6 +3845,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+            import_candidates: Vec::new(),
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -3883,6 +3966,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+            import_candidates: Vec::new(),
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4256,6 +4340,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+            import_candidates: Vec::new(),
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4302,6 +4387,7 @@ mod tests {
                 span_id: None,
                 event_ts: None,
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+                import_candidates: Vec::new(),
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CHANNEL_SUBSCRIBE".to_string(),
@@ -4316,6 +4402,7 @@ mod tests {
                 span_id: None,
                 event_ts: None,
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+                import_candidates: Vec::new(),
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted
@@ -4382,6 +4469,7 @@ mod tests {
             span_id: None,
             event_ts: None,
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+            import_candidates: Vec::new(),
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4439,6 +4527,7 @@ mod tests {
                 span_id: None,
                 event_ts: None,
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+                import_candidates: Vec::new(),
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CONFIG_BIND".to_string(),
@@ -4453,6 +4542,7 @@ mod tests {
                 span_id: None,
                 event_ts: None,
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+                import_candidates: Vec::new(),
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted
@@ -5176,6 +5266,138 @@ mod tests {
             Some(""),
             "the receiver_type column encodes tracked-but-unresolved as an empty string, \
              distinct from NULL (not tracked at all)"
+        );
+        assert_eq!(resolution_kind, None);
+    }
+
+    // --- import tier: import-qualified candidates disambiguate a bare
+    // two-segment call whose receiver is a type name, not a tracked local
+    // (see `EdgeInput::import_candidates` / `csharp::import_qualified_candidates`) ---
+
+    #[test]
+    fn test_insert_edges_import_candidate_resolves_unambiguous_tier() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/Caller.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+
+        // Twin-class-shaped setup: a bare `Widget.Create` two-segment call
+        // is ambiguous by itself, but only ONE of the candidate namespaces
+        // the extractor guessed from this file's `using`s actually names a
+        // real symbol.
+        let syms = vec![
+            make_test_symbol(
+                "Dpb.DomainA.Widget.Create",
+                Some("static Widget Create()"),
+                "method",
+                1,
+            ),
+            make_test_symbol("Dpb.Caller.Run", Some("void Run()"), "method", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/Caller.cs", &syms, 1, None)
+            .unwrap();
+        let widget_create_id = inserted
+            .iter()
+            .find(|s| s.qualname == "Dpb.DomainA.Widget.Create")
+            .unwrap()
+            .id;
+
+        let edges = vec![make_test_edge_with_import_candidates(
+            "CALLS",
+            "Dpb.Caller.Run",
+            "Widget.Create",
+            vec![
+                "Dpb.DomainA.Widget.Create".to_string(),
+                "Dpb.NoSuchNamespace.Widget.Create".to_string(),
+            ],
+        )];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'Widget.Create'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id,
+            Some(widget_create_id),
+            "the one import candidate that names a real symbol must bind, \
+             even though the literal call-site text (\"Widget.Create\") is \
+             ambiguous by itself and the other candidate names nothing"
+        );
+        assert_eq!(resolution_kind.as_deref(), Some("import"));
+    }
+
+    #[test]
+    fn test_insert_edges_import_candidate_ambiguous_across_two_real_symbols_refuses() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/Caller.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+
+        // The actual twin-class pathology this feature exists to fix:
+        // TWO distinct namespaces both really do declare a `Widget` with a
+        // `Create` method, so both import candidates resolve to real (but
+        // different) symbols. The import tier must refuse rather than pick
+        // one -- and so must every tier after it, since the fallback
+        // two-segment pattern ("%.Widget.Create") matches both as well.
+        let syms = vec![
+            make_test_symbol(
+                "Dpb.DomainA.Widget.Create",
+                Some("static Widget Create()"),
+                "method",
+                1,
+            ),
+            make_test_symbol(
+                "Dpb.DomainB.Widget.Create",
+                Some("static Widget Create()"),
+                "method",
+                10,
+            ),
+            make_test_symbol("Dpb.Caller.Run", Some("void Run()"), "method", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/Caller.cs", &syms, 1, None)
+            .unwrap();
+
+        let edges = vec![make_test_edge_with_import_candidates(
+            "CALLS",
+            "Dpb.Caller.Run",
+            "Widget.Create",
+            vec![
+                "Dpb.DomainA.Widget.Create".to_string(),
+                "Dpb.DomainB.Widget.Create".to_string(),
+            ],
+        )];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'Widget.Create'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id, None,
+            "two import candidates that both name real (but different) \
+             symbols must not bind to either -- the ambiguity guard must \
+             still refuse, exactly as it did before import qualification"
         );
         assert_eq!(resolution_kind, None);
     }

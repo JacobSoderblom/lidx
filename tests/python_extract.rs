@@ -586,3 +586,55 @@ __path__.append("/extra")
         "a module-level local must be tracked (gated) the same way a function-local is"
     );
 }
+
+// Import-aware receiver resolution regression tests, mirroring the C#
+// mechanism (see `csharp.rs`'s equivalent tests) — `from x import Y`
+// already binds a specific name to a specific target, so (unlike C#'s
+// `using NS;`) there is normally exactly one candidate; ambiguity only
+// shows up if the same name is bound twice in the same file.
+
+#[test]
+fn from_import_bare_name_resolves_to_its_module() {
+    let source = r#"
+from pkg.domain import Widget
+
+def run():
+    Widget.create()
+"#;
+    let module = module_name_from_rel_path("app/caller.py");
+    let mut extractor = PythonExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("Widget.create"))
+        .expect("Widget.create() call edge");
+    assert_eq!(
+        call.import_candidates,
+        vec!["pkg.domain.Widget.create".to_string()],
+        "`from x import Y` must resolve the bare name to exactly that module-qualified target"
+    );
+}
+
+#[test]
+fn import_module_as_alias_resolves_to_its_target() {
+    let source = r#"
+import pkg.domain as dom
+
+def run():
+    dom.create()
+"#;
+    let module = module_name_from_rel_path("app/caller.py");
+    let mut extractor = PythonExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("dom.create"))
+        .expect("dom.create() call edge");
+    assert_eq!(
+        call.import_candidates,
+        vec!["pkg.domain.create".to_string()],
+        "`import x.y as z` must resolve the alias to its dotted module target"
+    );
+}

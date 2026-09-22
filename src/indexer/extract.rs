@@ -75,6 +75,24 @@ pub struct EdgeInput {
     pub span_id: Option<String>,
     pub event_ts: Option<i64>,
     pub receiver_type: ReceiverType,
+    /// Fully-qualified candidate qualnames for this call's target, derived
+    /// from the calling file's own import context (C# `using` directives /
+    /// aliases / enclosing namespace; Python `from x import Y` / `import
+    /// x.y as z`) — populated only for a bare `Type.method()`-shaped call
+    /// whose receiver is a plain identifier that import-resolves to one or
+    /// more namespaces/targets (see `csharp::import_qualified_candidates`,
+    /// `python::import_qualified_candidates`).
+    ///
+    /// Not a DB column and not persisted: consumed only by
+    /// `Db::insert_edges`'s import-aware exact-match tier
+    /// (`db::resolve_import_candidate`), which binds only when exactly one
+    /// candidate resolves to a real symbol; 0 or 2+ hits fall through
+    /// unchanged to the pre-existing exact/two-segment/bare-name tiers, so
+    /// the ambiguity guard is never bypassed, only sometimes avoided by
+    /// qualifying an otherwise-ambiguous receiver. Empty for every
+    /// extractor that doesn't populate it (TypeScript, Rust, Go, ...) and
+    /// for every call shape the populating extractors don't recognize.
+    pub import_candidates: Vec<String>,
 }
 
 #[derive(Debug, Default)]

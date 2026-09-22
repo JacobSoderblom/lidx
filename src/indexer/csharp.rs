@@ -42,6 +42,11 @@ struct Context {
     /// base class, only implements interfaces, or the first base-list
     /// entry isn't cheaply classifiable.
     base_type: LocalType,
+    /// This file's `using` directives, collected once in `extract()` before
+    /// the main walk — see `ImportContext` / `collect_import_context`. Set
+    /// once and inherited unchanged through every `ctx.clone()` (unlike
+    /// `local_types`/`class_attr_types`, this never changes per-scope).
+    imports: Rc<ImportContext>,
 }
 
 /// Locally-inferred type of a name bound within a single method/constructor
@@ -112,6 +117,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             local_types: Rc::new(HashMap::new()),
             class_attr_types: Rc::new(HashMap::new()),
             base_type: LocalType::Other,
+            imports: Rc::new(collect_import_context(root, source)),
         };
         if root.kind() == "compilation_unit" {
             walk_compilation_unit(root, &ctx, source, &mut output);
@@ -679,6 +685,16 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         return;
     }
     let receiver_type = infer_receiver_type(target_node, source, ctx);
+    // Import-aware qualification only makes sense for a call whose receiver
+    // isn't already gated by receiver-type inference (a tracked local/field
+    // is never a type name) — see `import_qualified_candidates`'s doc.
+    let import_candidates = if receiver_type == ReceiverType::NotTracked {
+        two_segment_receiver_and_method(&raw)
+            .map(|(receiver, method)| import_qualified_candidates(receiver, method, ctx))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let target = resolve_call_target(&raw, ctx);
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
@@ -690,6 +706,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         detail,
         evidence_snippet: snippet,
         receiver_type,
+        import_candidates,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
         ..Default::default()
@@ -2307,6 +2324,187 @@ fn member_access_root(node: Node<'_>) -> (Node<'_>, usize) {
         }
     }
     (current, hops)
+}
+
+/// A file's `using` directives, collected once (see `collect_import_context`)
+/// and consulted only to qualify a bare `Type.Method()` call's receiver into
+/// candidate fully-qualified qualnames — see `import_qualified_candidates`.
+/// Deliberately coarse: this is not a real name-resolution pass (it has no
+/// notion of which types actually live in an imported namespace, since
+/// that requires the whole-repo symbol table this single-file extractor
+/// doesn't have access to). It only narrows *what to try*; the DB layer
+/// (`Db::insert_edges` / `db::resolve_import_candidate`) is what actually
+/// decides, against real symbols, whether a candidate is unambiguous.
+#[derive(Debug, Default, Clone)]
+struct ImportContext {
+    /// Namespaces brought into scope via a bare `using NS;` directive, in
+    /// order of appearance (duplicates harmless — deduped when building
+    /// candidates). A receiver `X` is tried as `{ns}.X` for each of these.
+    namespaces: Vec<String>,
+    /// Alias -> fully-qualified target, from `using Alias = NS.Type;`. A
+    /// receiver exactly matching a key here is qualified directly and is
+    /// the *sole* candidate (an alias can only ever mean one thing, so it
+    /// short-circuits the namespace-guessing path entirely).
+    aliases: HashMap<String, String>,
+}
+
+/// Walk the whole file once, before the main symbol/edge walk, collecting
+/// every `using_directive` node into an `ImportContext`. Import directives
+/// don't nest meaningfully in real C# (block-scoped `using`s inside a
+/// namespace are rare and, even then, apply to the whole file in every
+/// codebase this extractor has been measured against) so this is a flat
+/// scan rather than something threaded through `walk_node`'s per-scope
+/// `Context` — see `Context::imports`, set once in `extract()` and never
+/// mutated afterward.
+fn collect_import_context(root: Node<'_>, source: &str) -> ImportContext {
+    let mut ctx = ImportContext::default();
+    collect_import_context_rec(root, source, &mut ctx);
+    ctx
+}
+
+fn collect_import_context_rec(node: Node<'_>, source: &str, out: &mut ImportContext) {
+    if node.kind() == "using_directive" {
+        record_using_directive(node, source, out);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_import_context_rec(child, source, out);
+    }
+}
+
+fn record_using_directive(node: Node<'_>, source: &str, out: &mut ImportContext) {
+    // `using static Type;` brings a *type's* members into scope directly
+    // (so a bare `Method()` — not `Type.Method()` — could resolve through
+    // it), which is a different shape than everything else this module
+    // handles and isn't covered by the issue this exists to fix.
+    // ponytail: not handled — see module doc. Upgrade path: track the
+    // named type as an implicit extra receiver-free candidate, separate
+    // from `namespaces`/`aliases` (both of which qualify a *receiver*).
+    let text = node_text(node, source);
+    let after_using = text
+        .trim()
+        .strip_prefix("global")
+        .map(str::trim)
+        .unwrap_or_else(|| text.trim())
+        .strip_prefix("using")
+        .map(str::trim)
+        .unwrap_or("");
+    if after_using.starts_with("static") {
+        return;
+    }
+
+    // Alias form: `using Alias = Some.Qualified.Type;` — grammar gives the
+    // alias its own `name` field; the RHS (whatever concrete shape —
+    // `qualified_name`, `identifier`, `generic_name`, ...) is simply the
+    // other named child, not wrapped in any distinguishing node kind (the
+    // grammar's `type` rule is a supertype that never itself materializes
+    // in the tree — confirmed via `tree.root_node().to_sexp()` on a real
+    // alias directive, so this doesn't rely on `handle_using`'s `"type"`
+    // check, which — for this same reason — never actually matches here
+    // either; `handle_using` only works for this shape via its own
+    // fallback loop).
+    if let Some(alias_node) = node.child_by_field_name("name") {
+        let alias = node_text(alias_node, source);
+        if alias.is_empty() {
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.id() == alias_node.id() {
+                continue;
+            }
+            let target = node_text(child, source);
+            if !target.is_empty() {
+                out.aliases.insert(alias, target);
+            }
+            return;
+        }
+        return;
+    }
+
+    // Plain form: `using Some.Namespace;` — the target is a direct named
+    // child (qualified_name/identifier/generic_name/alias_qualified_name),
+    // same shape `handle_using`'s fallback loop already matches.
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if matches!(
+            child.kind(),
+            "qualified_name" | "identifier" | "generic_name" | "alias_qualified_name"
+        ) {
+            let name = node_text(child, source);
+            if !name.is_empty() {
+                out.namespaces.push(name);
+            }
+            return;
+        }
+    }
+}
+
+/// Split a call's raw target text into `(receiver, method)` only when it's
+/// exactly a two-segment `Ident.Ident` shape — a plain type-looking
+/// receiver, not `this`/`base`, not itself dotted, not a generic/indexer
+/// expression. Anything else returns `None` (no import qualification
+/// attempted) — see `import_qualified_candidates`'s caller.
+fn two_segment_receiver_and_method(raw: &str) -> Option<(&str, &str)> {
+    let (receiver, method) = raw.split_once('.')?;
+    if receiver.is_empty() || method.is_empty() || method.contains('.') {
+        return None;
+    }
+    if receiver == "this" || receiver == "base" {
+        return None;
+    }
+    let mut chars = receiver.chars();
+    let first = chars.next()?;
+    if !(first.is_alphabetic() || first == '_') {
+        return None;
+    }
+    if !receiver.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
+        return None;
+    }
+    Some((receiver, method))
+}
+
+/// Compute fully-qualified candidate qualnames for a bare `Type.Method()`
+/// call whose receiver `type_name` is not a tracked local/field (i.e.
+/// `infer_receiver_type` returned `NotTracked` for this call), using the
+/// file's import context plus its current enclosing namespace.
+///
+/// An alias match is authoritative and the sole candidate returned (an
+/// alias can only ever mean one thing). Otherwise, one candidate per
+/// distinct namespace source that could plausibly supply `type_name`: the
+/// call site's own enclosing namespace (a sibling type in the same
+/// namespace needs no `using` at all), plus `{ns}.{type_name}.{method}`
+/// for every bare `using ns;` directive in the file.
+///
+/// This never picks a winner among multiple namespace candidates — that's
+/// the DB layer's job (`db::resolve_import_candidate`), which tries every
+/// candidate against the real symbol table and binds only if exactly one
+/// resolves; 0 or 2+ hits fall through unchanged to the pre-existing
+/// two-segment/bare-name tiers. So an ambiguous `using` situation here
+/// still ends up refused downstream, never guessed.
+fn import_qualified_candidates(type_name: &str, method: &str, ctx: &Context) -> Vec<String> {
+    if let Some(fqn) = ctx.imports.aliases.get(type_name) {
+        return vec![format!("{fqn}.{method}")];
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = Vec::new();
+    let mut push = |ns: &str| {
+        if ns.is_empty() {
+            return;
+        }
+        let candidate = format!("{ns}.{type_name}.{method}");
+        if seen.insert(candidate.clone()) {
+            candidates.push(candidate);
+        }
+    };
+    if !ctx.namespace_stack.is_empty() {
+        push(&ctx.namespace_stack.join("."));
+    }
+    for ns in &ctx.imports.namespaces {
+        push(ns);
+    }
+    candidates
 }
 
 /// Classify a declared-type (or bare constructed-type) expression's text
