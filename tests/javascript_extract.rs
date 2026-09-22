@@ -1,11 +1,104 @@
-use lidx::indexer::extract::LanguageExtractor;
-use lidx::indexer::javascript::{JavascriptExtractor, module_name_from_rel_path};
+use lidx::indexer::extract::{LanguageExtractor, ReceiverType};
+use lidx::indexer::javascript::{
+    JavascriptExtractor, TypescriptExtractor, module_name_from_rel_path,
+};
 
 #[test]
 fn module_name_from_path() {
     assert_eq!(module_name_from_rel_path("src/app.js"), "src/app");
     assert_eq!(module_name_from_rel_path("src/index.js"), "src");
     assert_eq!(module_name_from_rel_path("index.js"), "index");
+}
+
+// Receiver-type-inference regression tests (mirrors the Python mechanism's
+// own test shapes; see `python::infer_receiver_type`'s doc comment). Each
+// of these fails if the corresponding change in `javascript.rs` is
+// reverted: `this_method_resolves_to_enclosing_class` and
+// `bare_function_call_still_resolves` only prove `receiver_type` stays
+// `NotTracked` in cases already exact/unresolved-receiver-free before this
+// change; `typed_parameter_method_resolves_to_declared_type` and
+// `untyped_receiver_does_not_bind` are the discriminating ones — both
+// assert a `receiver_type` value (`Known(..)` / `Unresolved`) that the
+// pre-change extractor could never produce (every edge defaulted to
+// `NotTracked`).
+
+#[test]
+fn this_method_resolves_to_enclosing_class() {
+    let source = r#"
+class Foo {
+    helper() {}
+    method() {
+        this.helper();
+    }
+}
+"#;
+    let mut extractor = JavascriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("src/app.Foo.helper"))
+        .expect("this.helper() call edge");
+    assert_eq!(call.receiver_type, ReceiverType::NotTracked);
+}
+
+#[test]
+fn typed_parameter_method_resolves_to_declared_type() {
+    let source = r#"
+class Foo {
+    method(store: EventStore) {
+        store.append(1);
+    }
+}
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("store.append"))
+        .expect("store.append() call edge");
+    assert_eq!(
+        call.receiver_type,
+        ReceiverType::Known("EventStore".to_string())
+    );
+}
+
+#[test]
+fn untyped_receiver_does_not_bind() {
+    let source = r#"
+class Foo {
+    method(store) {
+        store.append(1);
+    }
+}
+"#;
+    let mut extractor = JavascriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("store.append"))
+        .expect("store.append() call edge");
+    assert_eq!(call.receiver_type, ReceiverType::Unresolved);
+}
+
+#[test]
+fn bare_function_call_still_resolves() {
+    let source = r#"
+function helper() {}
+function main() {
+    helper();
+}
+"#;
+    let mut extractor = JavascriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("src/app.helper"))
+        .expect("helper() call edge");
+    assert_eq!(call.receiver_type, ReceiverType::NotTracked);
 }
 
 #[test]

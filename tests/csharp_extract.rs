@@ -1,10 +1,112 @@
 use lidx::indexer::csharp::{CSharpExtractor, module_name_from_rel_path};
-use lidx::indexer::extract::LanguageExtractor;
+use lidx::indexer::extract::{LanguageExtractor, ReceiverType};
 
 #[test]
 fn module_name_from_path() {
     assert_eq!(module_name_from_rel_path("src/App.cs"), "src/App");
     assert_eq!(module_name_from_rel_path("App.csx"), "App");
+}
+
+// Receiver-type-inference regression tests (mirrors the Python mechanism's
+// own test shapes; see `python::infer_receiver_type`'s doc comment). Each
+// of these fails if the corresponding change in `csharp.rs` is reverted:
+// `this_method_resolves_to_enclosing_class` and
+// `bare_method_call_still_resolves` only prove `receiver_type` stays
+// `NotTracked` in cases already exact/unresolved-receiver-free before this
+// change; `typed_parameter_method_resolves_to_declared_type` and
+// `unresolvable_var_receiver_does_not_bind` are the discriminating ones —
+// both assert a `receiver_type` value (`Known(..)` / `Unresolved`) that the
+// pre-change extractor could never produce (every edge defaulted to
+// `NotTracked`).
+
+#[test]
+fn this_method_resolves_to_enclosing_class() {
+    let source = r#"
+namespace Acme.App;
+public class Foo {
+    public void Helper() {}
+    public void Method() {
+        this.Helper();
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("Acme.App.Foo.Helper"))
+        .expect("this.Helper() call edge");
+    assert_eq!(call.receiver_type, ReceiverType::NotTracked);
+}
+
+#[test]
+fn typed_parameter_method_resolves_to_declared_type() {
+    let source = r#"
+namespace Acme.App;
+public class Foo {
+    public void Method(EventStore store) {
+        store.Append(1);
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("store.Append"))
+        .expect("store.Append() call edge");
+    assert_eq!(
+        call.receiver_type,
+        ReceiverType::Known("EventStore".to_string())
+    );
+}
+
+#[test]
+fn unresolvable_var_receiver_does_not_bind() {
+    let source = r#"
+namespace Acme.App;
+public class Foo {
+    public void Method() {
+        var store = GetStore();
+        store.Append(1);
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("store.Append"))
+        .expect("store.Append() call edge");
+    assert_eq!(call.receiver_type, ReceiverType::Unresolved);
+}
+
+#[test]
+fn bare_method_call_still_resolves() {
+    let source = r#"
+namespace Acme.App;
+public class Foo {
+    public void Helper() {}
+    public void Method() {
+        Helper();
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("Acme.App.Foo.Helper"))
+        .expect("Helper() call edge");
+    assert_eq!(call.receiver_type, ReceiverType::NotTracked);
 }
 
 #[test]
