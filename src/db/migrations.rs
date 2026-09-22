@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -70,6 +70,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             event_ts INTEGER,
             receiver_type TEXT,
             resolution_kind TEXT,
+            import_candidates TEXT,
             FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
         );
 
@@ -339,6 +340,26 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         }
         if !has_column(conn, "edges", "resolution_kind")? {
             conn.execute("ALTER TABLE edges ADD COLUMN resolution_kind TEXT", [])?;
+        }
+    }
+
+    if existing < 14 {
+        // import_candidates: the extractor's import-qualified candidate
+        // qualnames for this CALLS edge's receiver (see
+        // `EdgeInput::import_candidates`), JSON-encoded as `["a.b", ...]`,
+        // NULL when the extractor produced none (the common case — only a
+        // dotted `X.method()` call whose receiver import-resolves gets
+        // any). Previously a transient, unpersisted field: an edge whose
+        // import tier failed only because its target file hadn't been
+        // carried forward yet (see `carry_forward_files`, which runs after
+        // the fresh-file edge loop during an incremental reindex) was
+        // stamped `receiver_type=''` and then permanently skipped by
+        // `resolve_null_target_edges`, since that repair pass had no
+        // import context of its own to retry with. Persisting the
+        // candidate list lets the repair pass retry the same exact-match
+        // import tier once the target's symbol row exists.
+        if !has_column(conn, "edges", "import_candidates")? {
+            conn.execute("ALTER TABLE edges ADD COLUMN import_candidates TEXT", [])?;
         }
     }
 

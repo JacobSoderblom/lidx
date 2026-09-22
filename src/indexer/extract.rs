@@ -83,8 +83,7 @@ pub struct EdgeInput {
     /// more namespaces/targets (see `csharp::import_qualified_candidates`,
     /// `python::import_qualified_candidates`).
     ///
-    /// Not a DB column and not persisted: consumed only by
-    /// `Db::insert_edges`'s import-aware exact-match tier
+    /// Consumed by `Db::insert_edges`'s import-aware exact-match tier
     /// (`db::resolve_import_candidate`), which binds only when exactly one
     /// candidate resolves to a real symbol; 0 or 2+ hits fall through
     /// unchanged to the pre-existing exact/two-segment/bare-name tiers, so
@@ -92,6 +91,15 @@ pub struct EdgeInput {
     /// qualifying an otherwise-ambiguous receiver. Empty for every
     /// extractor that doesn't populate it (TypeScript, Rust, Go, ...) and
     /// for every call shape the populating extractors don't recognize.
+    ///
+    /// Also persisted (JSON-encoded) to the `edges.import_candidates`
+    /// column by `insert_edges` whenever non-empty, so
+    /// `Db::resolve_null_target_edges` can retry this same tier later —
+    /// e.g. once an incremental reindex's carry-forward step gives the
+    /// candidate's target file a current-version symbol row it didn't have
+    /// yet at insert time. See the migration 14 comment in
+    /// `db::migrations` and the `ponytail:` doc on
+    /// `resolve_null_target_edges`.
     pub import_candidates: Vec<String>,
 }
 

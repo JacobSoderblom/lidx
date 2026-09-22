@@ -379,7 +379,7 @@ impl Db {
                     (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
                      evidence_snippet, evidence_start_line, evidence_end_line, confidence,
                      graph_version, commit_sha, trace_id, span_id, event_ts,
-                     receiver_type, resolution_kind)
+                     receiver_type, resolution_kind, import_candidates)
                  SELECT
                     e.file_id,
                     (SELECT ns.id FROM symbols ns
@@ -389,7 +389,7 @@ impl Db {
                     e.kind, e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
                     ?, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
-                    e.receiver_type, e.resolution_kind
+                    e.receiver_type, e.resolution_kind, e.import_candidates
                  FROM edges e
                  LEFT JOIN symbols src ON src.id = e.source_symbol_id
                  LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id
@@ -1120,8 +1120,8 @@ impl Db {
                 "INSERT INTO edges
                  (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail, evidence_snippet,
                   evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts,
-                  receiver_type, resolution_kind)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  receiver_type, resolution_kind, import_candidates)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             let mut exact_lookup_stmt = tx.prepare(
                 "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
@@ -1279,6 +1279,7 @@ impl Db {
                     edge.event_ts,
                     receiver_type_for_storage,
                     resolution_kind,
+                    encode_import_candidates(&edge.import_candidates),
                 ])?;
                 count += 1;
             }
@@ -1289,22 +1290,21 @@ impl Db {
 
     /// Batch re-resolution of existing edges with NULL target_symbol_id
     ///
-    /// This method attempts to resolve unresolved edges in two passes:
+    /// This method attempts to resolve unresolved edges in three passes:
     /// 1. Exact match on target_qualname
-    /// 2. Fuzzy suffix matching for remaining NULLs
+    /// 2. Retry of the import-qualified-candidate tier (`resolve_import_candidate`)
+    /// 3. Fuzzy suffix matching for remaining NULLs
     ///
     /// Processing is done in batches of 1000 rows to avoid long lock holds.
     ///
-    /// ponytail: this repair pass does not retry the import-qualified-
-    /// candidate tier (`resolve_import_candidate`) — `import_candidates` is
-    /// a transient, unpersisted field on `EdgeInput`, not a DB column, so a
-    /// pass that only has the already-persisted `edges` row to work from
-    /// has no import context to try. An edge whose file was never
-    /// import-aware-resolved at `insert_edges` time (e.g. one persisted by
-    /// a build predating this feature) only gains that resolution once its
-    /// own file is re-extracted, not via this repair pass. Upgrade path:
-    /// persist the candidate list (or a normalized "import key") as a real
-    /// column if repair-time import resolution turns out to matter.
+    /// ponytail: pass 2 only retries edges whose `import_candidates` column
+    /// is non-NULL, i.e. ones inserted after migration 14 added that
+    /// column. An edge from a build predating this feature (or one whose
+    /// extractor never populates `import_candidates`, e.g. TypeScript/Rust/
+    /// Go) has no import context to try and falls straight through to pass
+    /// 3, unchanged from before. That's the pre-existing ceiling on this
+    /// repair pass generally (see `repair_dangling_symbol_ids`'s doc), not
+    /// a new one introduced here.
     pub fn resolve_null_target_edges(&self, graph_version: i64) -> Result<usize> {
         let mut total_resolved = 0;
 
@@ -1335,8 +1335,88 @@ impl Db {
         )?;
         total_resolved += exact_resolved;
 
-        // Second pass: fuzzy suffix matching in batches
         const BATCH_SIZE: usize = 1000;
+
+        // Second pass: retry the import-qualified-candidate tier for edges
+        // whose target wasn't resolvable yet at `insert_edges` time. This
+        // closes the incremental-reindex gap `EdgeInput::import_candidates`
+        // describes: during an incremental reindex, fresh files' edges are
+        // inserted *before* unchanged files are carried forward into the
+        // new graph version (see the ordering comment above
+        // `carry_forward_files`'s call site in `Indexer::reindex`), so an
+        // import candidate whose target lives in a carried-forward file has
+        // no current-version symbol row to match yet. `insert_edges`
+        // persists that as `target_symbol_id = NULL, receiver_type = ''`
+        // (see the guard in `insert_edges` and its `import_candidates`
+        // check) — deliberately, so pass 3 below refuses to fuzzy-resolve
+        // it — but until this pass existed nothing ever retried the import
+        // tier itself once the target's row showed up, so the edge stayed
+        // unresolved forever. Still an exact-match tier, not fuzzy: reuses
+        // `resolve_import_candidate`'s own ambiguity guard (0 or 2+
+        // distinct hits across a row's candidates leaves it unresolved),
+        // with an empty symbol_map since this pass has no in-flight batch
+        // to consult — every candidate is looked up straight against the
+        // DB.
+        let empty_symbol_map: HashMap<String, i64> = HashMap::new();
+        loop {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+
+            let batch: Vec<(i64, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id, import_candidates FROM edges
+                     WHERE target_symbol_id IS NULL
+                     AND import_candidates IS NOT NULL
+                     AND graph_version = ?
+                     LIMIT ?",
+                )?;
+                let rows = stmt.query_map(params![graph_version, BATCH_SIZE], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
+
+            if batch.is_empty() {
+                break;
+            }
+
+            let mut count = 0;
+            {
+                let mut exact_lookup_stmt = tx.prepare(
+                    "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
+                )?;
+                let mut update_stmt = tx.prepare(
+                    "UPDATE edges SET target_symbol_id = ?, resolution_kind = 'import' WHERE id = ?",
+                )?;
+
+                for (edge_id, candidates_json) in &batch {
+                    let candidates = decode_import_candidates(candidates_json);
+                    if let Some(target_id) = resolve_import_candidate(
+                        &candidates,
+                        &empty_symbol_map,
+                        &mut exact_lookup_stmt,
+                        graph_version,
+                    )? {
+                        update_stmt.execute(params![target_id, edge_id])?;
+                        count += 1;
+                    }
+                }
+            }
+
+            tx.commit()?;
+            total_resolved += count;
+
+            // Every row in `batch` is either now resolved or was tried and
+            // found unresolvable (0 or 2+ distinct hits) — nothing here
+            // will change on a re-select, so a zero-progress batch means
+            // stop, exactly like pass 3 below. Without this, a batch full
+            // of unresolvable-but-still-NULL rows would re-select forever.
+            if count == 0 {
+                break;
+            }
+        }
+
+        // Third pass: fuzzy suffix matching in batches
         loop {
             let mut conn = self.conn();
             let tx = conn.transaction()?;
@@ -2493,6 +2573,32 @@ fn resolve_symbol_id(
         .query_row(params![name, graph_version], |row| row.get(0))
         .optional()?;
     Ok(id)
+}
+
+/// Encode `EdgeInput::import_candidates` for the `edges.import_candidates`
+/// column: `None` (stored as SQL NULL) when the extractor produced no
+/// candidates for this edge — the overwhelming common case, since only a
+/// dotted `X.method()` call whose receiver import-resolves produces any —
+/// so `resolve_null_target_edges` can select "rows worth retrying via the
+/// import tier" with a cheap `IS NOT NULL` instead of parsing every row.
+/// `Some(json)` otherwise, a plain JSON array of strings.
+fn encode_import_candidates(candidates: &[String]) -> Option<String> {
+    if candidates.is_empty() {
+        None
+    } else {
+        // A `Vec<String>` always serializes; the `unwrap_or(None)` is only
+        // to avoid a panic path in this DB-write hot loop, not because
+        // failure is expected.
+        serde_json::to_string(candidates).ok()
+    }
+}
+
+/// Inverse of `encode_import_candidates`, for `resolve_null_target_edges`'s
+/// import-candidate retry pass. Malformed JSON (shouldn't happen — nothing
+/// but `encode_import_candidates` ever writes this column) decodes to an
+/// empty candidate list rather than failing the whole repair pass.
+fn decode_import_candidates(raw: &str) -> Vec<String> {
+    serde_json::from_str(raw).unwrap_or_default()
 }
 
 /// Resolve a call's import-qualified candidate qualnames (see
