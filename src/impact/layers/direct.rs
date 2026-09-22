@@ -86,9 +86,24 @@ pub fn is_test_file(path: &str) -> bool {
 }
 
 /// Check if an edge matches the filtering criteria
+///
+/// An empty `kinds` set means "no explicit filter" and matches every edge kind —
+/// except XREF. XREF is deliberately fuzzy, cross-language, string-literal name
+/// matching (confidence 0.7: e.g. a Rust `use serde::Deserialize` or a Python
+/// docstring saying "deserialize" both name-match a C# `Deserialize` method).
+/// It must never ride along in the unfiltered default and get presented with the
+/// same authority as a real CALLS/IMPORTS edge. A caller who wants XREF opts in
+/// explicitly by including "XREF" in `kinds`, exactly like `trace_flow` requires.
+// ponytail: hardcoded to the single kind XREF, not a generic "fuzzy kinds"
+// list — XREF is the only edge kind carrying non-graph, string-literal
+// evidence today. If a second such kind is added, promote this to a slice.
 fn edge_matches_filter(edge: &Edge, kinds: &HashSet<String>, include_tests: bool) -> bool {
     // Check edge kind
-    if !kinds.is_empty() && !kinds.contains(&edge.kind) {
+    if kinds.is_empty() {
+        if edge.kind == "XREF" {
+            return false;
+        }
+    } else if !kinds.contains(&edge.kind) {
         return false;
     }
     // Check test file
@@ -527,6 +542,49 @@ mod tests {
 
         // Empty kinds means no filtering
         kinds.clear();
+        assert!(edge_matches_filter(&edge, &kinds, true));
+    }
+
+    #[test]
+    fn edge_filter_excludes_xref_by_default() {
+        let mut edge = Edge {
+            id: 1,
+            file_path: "src/main.rs".to_string(),
+            kind: "XREF".to_string(),
+            source_symbol_id: Some(1),
+            target_symbol_id: Some(2),
+            target_qualname: None,
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: None,
+            graph_version: 1,
+            commit_sha: None,
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        };
+
+        // Empty kinds is the RPC default when a caller doesn't restrict anything.
+        // XREF must NOT ride along: it's fuzzy, string-literal, cross-language
+        // name-match evidence (confidence 0.7), not a real graph edge.
+        let kinds = HashSet::new();
+        assert!(!edge_matches_filter(&edge, &kinds, true));
+
+        // Explicit opt-in: caller asks for XREF by name.
+        let mut xref_kinds = HashSet::new();
+        xref_kinds.insert("XREF".to_string());
+        assert!(edge_matches_filter(&edge, &xref_kinds, true));
+
+        // A non-empty kinds set that doesn't include XREF still excludes it.
+        let mut other_kinds = HashSet::new();
+        other_kinds.insert("CALLS".to_string());
+        assert!(!edge_matches_filter(&edge, &other_kinds, true));
+
+        // Sanity: the empty-set special case is XREF-only, not a general filter.
+        edge.kind = "CALLS".to_string();
+        let kinds = HashSet::new();
         assert!(edge_matches_filter(&edge, &kinds, true));
     }
 
