@@ -745,3 +745,25 @@ export async function buildApp() {
     );
     assert_eq!(routes[0].target_qualname.as_deref(), Some("/"));
 }
+
+#[test]
+fn multiline_chained_call_resolves_like_single_line() {
+    let source = "
+function caller() {
+    UniqueName
+        .Create();
+}
+";
+    let mut extractor = JavascriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.detail.is_none())
+        .expect("UniqueName.Create() call edge");
+    assert_eq!(
+        call.target_qualname.as_deref(),
+        Some("UniqueName.Create"),
+        "multi-line chain must resolve to the same qualname as the single-line form"
+    );
+}

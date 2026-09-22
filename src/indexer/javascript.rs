@@ -4,7 +4,8 @@ use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInpu
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::tree_helpers::{
-    module_symbol_fallback, module_symbol_with_span, node_text, span,
+    collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
+    span,
 };
 use crate::util;
 use anyhow::Result;
@@ -1107,6 +1108,12 @@ fn grpc_service_from_raw_path(raw_path: &str) -> Option<(GrpcService, String)> {
     ))
 }
 
+// ponytail: this receiver text has the same multi-line-whitespace gap
+// `resolve_call_target` had (a client written across lines would also be
+// rejected here) but it feeds GRPC_CALL edges, not CALLS, which is outside
+// this fix's scope. Ceiling: a multi-line gRPC client receiver still
+// produces no GrpcService. Apply the same `collapse_call_target_whitespace`
+// treatment here if that gap is ever reported.
 fn grpc_service_from_path(raw: &str) -> Option<GrpcService> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || !is_simple_call_target(trimmed) {
@@ -2010,7 +2017,8 @@ fn call_target_node(node: Node<'_>) -> Option<Node<'_>> {
 }
 
 fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
-    let raw = raw.trim();
+    let raw = collapse_call_target_whitespace(raw);
+    let raw = raw.as_str();
     if raw.is_empty() || !is_simple_call_target(raw) {
         return None;
     }
