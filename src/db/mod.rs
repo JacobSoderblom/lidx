@@ -1164,7 +1164,7 @@ impl Db {
                    AND kind IN ('EXTENDS', 'IMPLEMENTS', 'INHERITS')
                    AND graph_version = ?
                    AND target_qualname IS NOT NULL
-                 ORDER BY id ASC"
+                 ORDER BY id ASC",
             )?;
             // Look up the source file's language for same-language preference
             let source_lang: String = tx
@@ -1367,7 +1367,7 @@ impl Db {
                        AND kind IN ('EXTENDS', 'IMPLEMENTS', 'INHERITS')
                        AND graph_version = ?
                        AND target_qualname IS NOT NULL
-                     ORDER BY id ASC"
+                     ORDER BY id ASC",
                 )?;
 
                 let mut update_stmt = tx.prepare(
@@ -2331,7 +2331,8 @@ fn resolve_via_inheritance(
     any_lang_stmt: &mut rusqlite::Statement<'_>,
     hierarchy_stmt: &mut rusqlite::Statement<'_>,
 ) -> rusqlite::Result<(Option<i64>, Option<&'static str>)> {
-    let Some(root_id) = resolve_type_symbol(known_type, source_lang, graph_version, same_lang_stmt)?
+    let Some(root_id) =
+        resolve_type_symbol(known_type, source_lang, graph_version, same_lang_stmt)?
     else {
         return Ok((None, None));
     };
@@ -2380,7 +2381,13 @@ fn resolve_via_inheritance(
             } else if is_bridge_edge_kind(edge_kind) {
                 single_unambiguous_match(
                     any_lang_stmt,
-                    params![&seg, &dot_pattern, &colons_pattern, graph_version, graph_version],
+                    params![
+                        &seg,
+                        &dot_pattern,
+                        &colons_pattern,
+                        graph_version,
+                        graph_version
+                    ],
                 )?
             } else {
                 None
@@ -5688,8 +5695,10 @@ mod tests {
             .find(|s| s.qualname == "pkg.CodeWriter.write_line")
             .unwrap()
             .id;
-        let symbol_map: HashMap<String, i64> =
-            inserted.iter().map(|s| (s.qualname.clone(), s.id)).collect();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
 
         // `class MssqlCodeWriter(CodeWriter):` — recorded as an EXTENDS edge,
         // same as the real Python extractor emits — plus the call site
@@ -5751,22 +5760,14 @@ mod tests {
         let inserted = db
             .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
             .unwrap();
-        let symbol_map: HashMap<String, i64> =
-            inserted.iter().map(|s| (s.qualname.clone(), s.id)).collect();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
 
         let edges = vec![
-            make_test_edge_with_receiver_type(
-                "EXTENDS",
-                "pkg.Foo",
-                "A",
-                ReceiverType::NotTracked,
-            ),
-            make_test_edge_with_receiver_type(
-                "EXTENDS",
-                "pkg.Foo",
-                "B",
-                ReceiverType::NotTracked,
-            ),
+            make_test_edge_with_receiver_type("EXTENDS", "pkg.Foo", "A", ReceiverType::NotTracked),
+            make_test_edge_with_receiver_type("EXTENDS", "pkg.Foo", "B", ReceiverType::NotTracked),
             make_test_edge_with_receiver_type(
                 "CALLS",
                 "pkg.caller.run",
@@ -5825,8 +5826,10 @@ mod tests {
             .find(|s| s.qualname == "pkg.MssqlCodeWriter.write_line")
             .unwrap()
             .id;
-        let symbol_map: HashMap<String, i64> =
-            inserted.iter().map(|s| (s.qualname.clone(), s.id)).collect();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
 
         let edges = vec![
             make_test_edge_with_receiver_type(
