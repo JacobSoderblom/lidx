@@ -3850,6 +3850,16 @@ mod tests {
 
     #[test]
     fn test_incoming_edges_by_qualname_pattern() {
+        // `incoming_edges_by_qualname_pattern` used to re-attribute edges by a
+        // `target_qualname LIKE '%.{bare_name}'` suffix match — i.e. it invented
+        // an attribution for whatever the read path was showing, independent of
+        // what the write path had actually resolved. That's issue #45 (see also
+        // the `edges_for_symbols` fix in graph_query.rs for the same class of
+        // bug): the function is now permanently neutered to return no edges, so
+        // this asserts the new (empty) contract rather than the old resurrection
+        // behavior. `test_edges_for_symbols_does_not_resurrect_null_target_edge`
+        // and `test_edges_for_symbols_case_differing_name_in_another_language_does_not_match`
+        // below cover the underlying guiding principle with a non-vacuous setup.
         let (mut db, _temp) = create_test_db();
         let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
         let symbols = vec![
@@ -3881,11 +3891,190 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
+        // Even though a matching, already-*resolved* edge exists (mod.Caller ->
+        // mod.Callee, bound via insert_edges' own exact-match tier), the
+        // function must return nothing: it no longer performs qualname-pattern
+        // matching at all.
         let found = db
             .incoming_edges_by_qualname_pattern("Callee", "CALLS", None, 1)
             .unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].kind, "CALLS");
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_edges_for_symbols_does_not_resurrect_null_target_edge() {
+        // Regression for the read-path resurrection bug: a bare-name call with
+        // two same-language candidates is genuinely ambiguous, so the write
+        // path (insert_edges' ambiguity guard) deliberately leaves it
+        // unresolved. Neither candidate symbol must see it as an incoming call.
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("pkg/store.py", "h1", "python", 100, 0)
+            .unwrap();
+        let symbols = vec![
+            make_test_symbol("builtins.list.append", Some("def append(x)"), "method", 1),
+            make_test_symbol(
+                "pkg.store.EventStore.append",
+                Some("def append(self, event)"),
+                "method",
+                10,
+            ),
+            make_test_symbol("pkg.store.caller", Some("def caller()"), "function", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "pkg/store.py", &symbols, 1, None)
+            .unwrap();
+        let list_append_id = inserted
+            .iter()
+            .find(|s| s.qualname == "builtins.list.append")
+            .unwrap()
+            .id;
+        let event_store_append_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.store.EventStore.append")
+            .unwrap()
+            .id;
+
+        let edges = vec![make_test_edge("CALLS", "pkg.store.caller", "append")];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Confirm the edge really is unresolved (the write path refused it).
+        let unresolved_count: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_symbol_id IS NULL AND graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unresolved_count, 1);
+
+        let by_symbol = db
+            .edges_for_symbols(&[list_append_id, event_store_append_id], None, 1)
+            .unwrap();
+        assert!(
+            by_symbol[&list_append_id].is_empty(),
+            "ambiguous unresolved edge must not be attributed to list.append"
+        );
+        assert!(
+            by_symbol[&event_store_append_id].is_empty(),
+            "ambiguous unresolved edge must not be attributed to EventStore.append either"
+        );
+    }
+
+    #[test]
+    fn test_edges_for_symbols_case_differing_name_in_another_language_does_not_match() {
+        // Regression for the exact bug the user hit: a C# `value.Trim()` call
+        // (receiver type unresolved, so the write path correctly leaves it
+        // NULL) must never be shown as a callee/caller of an unrelated Python
+        // `trim` function just because SQLite's LIKE is case-insensitive for
+        // ASCII (`'value.Trim' LIKE '%.trim'`).
+        let (mut db, _temp) = create_test_db();
+        let cs_file = db
+            .upsert_file("UniqueName.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+        let py_file = db
+            .upsert_file("functions.py", "h2", "python", 100, 0)
+            .unwrap();
+
+        let cs_symbols = vec![make_test_symbol(
+            "Dpb.UniqueName.Create",
+            Some("static Create(string value)"),
+            "method",
+            1,
+        )];
+        let cs_inserted = db
+            .insert_symbols(cs_file, "UniqueName.cs", &cs_symbols, 1, None)
+            .unwrap();
+
+        let py_symbols = vec![make_test_symbol(
+            "py.dpbuilder.functions.trim",
+            Some("def trim(e)"),
+            "function",
+            1,
+        )];
+        let py_inserted = db
+            .insert_symbols(py_file, "functions.py", &py_symbols, 1, None)
+            .unwrap();
+        let py_trim_id = py_inserted[0].id;
+
+        // receiver_type: Unresolved -- tracked but the receiver's type
+        // (`value`, a local `string?`) could not be determined, so resolution
+        // must not bind this edge at all (exact match also can't hit: no
+        // symbol is named exactly "value.Trim").
+        let edges = vec![make_test_edge_with_receiver_type(
+            "CALLS",
+            "Dpb.UniqueName.Create",
+            "value.Trim",
+            ReceiverType::Unresolved,
+        )];
+        let symbol_map: HashMap<String, i64> = cs_inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(cs_file, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Confirm the edge is unresolved before exercising the read path.
+        let target_symbol_id: Option<i64> = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT target_symbol_id FROM edges WHERE target_qualname = 'value.Trim'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(target_symbol_id, None);
+
+        let by_symbol = db.edges_for_symbols(&[py_trim_id], None, 1).unwrap();
+        assert!(
+            by_symbol[&py_trim_id].is_empty(),
+            "C# value.Trim() must not resurrect as a caller of Python trim()"
+        );
+
+        let incoming = db
+            .incoming_edges_by_qualname_pattern("trim", "CALLS", None, 1)
+            .unwrap();
+        assert!(incoming.is_empty());
+    }
+
+    #[test]
+    fn test_edges_for_symbols_still_shows_genuinely_resolved_edge() {
+        // Sanity check that the fix above didn't throw out the happy path:
+        // an edge the write path *did* resolve must still show up.
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            make_test_symbol("mod.Caller", Some("fn caller()"), "function", 1),
+            make_test_symbol("mod.Callee", Some("fn callee()"), "function", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+        let caller_id = inserted[0].id;
+        let callee_id = inserted[1].id;
+
+        let edges = vec![make_test_edge("CALLS", "mod.Caller", "mod.Callee")];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let by_symbol = db
+            .edges_for_symbols(&[caller_id, callee_id], None, 1)
+            .unwrap();
+        assert_eq!(by_symbol[&caller_id].len(), 1);
+        assert_eq!(by_symbol[&caller_id][0].target_symbol_id, Some(callee_id));
+        assert_eq!(by_symbol[&callee_id].len(), 1);
     }
 
     #[test]
@@ -4588,6 +4777,74 @@ mod tests {
         let found = db.edges_for_symbol(caller_inserted[0].id, None, 1).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].target_symbol_id, Some(callee_inserted[0].id));
+    }
+
+    #[test]
+    fn test_resolve_null_target_edges_binds_fully_qualified_exact_match() {
+        // Regression for the "fully-qualified target doesn't bind" report
+        // (dpb's `Dpb.DataMgr.DataProduct.Domain.UniqueName.Create`): a caller
+        // file references the callee by its full qualname *before* the callee
+        // file has been indexed (out-of-order incremental indexing), exactly
+        // like `test_resolve_null_target_edges_resolves_rust_colons_qualname`
+        // above but with the target already fully qualified rather than bare.
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+
+        let caller_sym = vec![make_test_symbol(
+            "crate::caller::do_work",
+            Some("fn do_work()"),
+            "function",
+            1,
+        )];
+        let caller_inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &caller_sym, 1, None)
+            .unwrap();
+
+        // Edge target is the callee's full, exact qualname — not a bare name —
+        // but the callee symbol doesn't exist yet.
+        let edges = vec![make_test_edge(
+            "CALLS",
+            "crate::caller::do_work",
+            "crate::util::helper::compute",
+        )];
+        let symbol_map: HashMap<String, i64> = caller_inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Now the callee file is indexed.
+        let callee_sym = vec![make_test_symbol(
+            "crate::util::helper::compute",
+            Some("fn compute()"),
+            "function",
+            10,
+        )];
+        let callee_inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &callee_sym, 1, None)
+            .unwrap();
+
+        let resolved = db.resolve_null_target_edges(1).unwrap();
+        assert_eq!(
+            resolved, 1,
+            "exact-match repair pass should bind the fully-qualified target"
+        );
+
+        let found = db.edges_for_symbol(caller_inserted[0].id, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].target_symbol_id, Some(callee_inserted[0].id));
+
+        let resolution_kind: Option<String> = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT resolution_kind FROM edges WHERE id = ?",
+                params![found[0].id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolution_kind.as_deref(), Some("exact"));
     }
 
     #[test]

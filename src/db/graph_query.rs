@@ -308,62 +308,40 @@ impl Db {
         Ok(edges)
     }
 
-    /// Find incoming edges by target_qualname pattern
-    /// Used for finding callers when target_symbol_id is null but target_qualname is set
+    /// Historically: find incoming edges by target_qualname pattern, for
+    /// callers where `target_symbol_id` is null but `target_qualname` is
+    /// set. Deliberately neutered to always return no edges (issue #45).
+    ///
+    /// `target_symbol_id IS NULL` now means "the write path could not
+    /// attribute this edge" (see `insert_edges` / `resolve_null_target_edges`'s
+    /// ambiguity guard). The old implementation matched such edges by
+    /// `target_qualname LIKE '%.{symbol_name}'` — a bare method-name suffix
+    /// with no receiver/type scoping, no language filter applied to the
+    /// pattern itself, and SQLite's `LIKE` is case-insensitive for ASCII
+    /// (`'value.Trim' LIKE '%.trim'` is true). In a real repo that matched
+    /// *any* same-named method on *any* type in *any* language — e.g. every
+    /// `X.Create(...)` call site was offered up as a caller of one specific
+    /// `Y.Create`, and a C# `value.Trim()` call matched a Python `trim`
+    /// function. That is the read path inventing an attribution the write
+    /// path explicitly refused; per the guiding principle it must not
+    /// happen, and there is no narrower pattern here that stays correct (a
+    /// bare name is exactly the ambiguous case the write path already
+    /// rejected). Callers already treat this as a best-effort supplementary
+    /// source and tolerate an empty result.
+    ///
+    /// ponytail: kept as a stub (not deleted, along with its five call
+    /// sites) so this stays a minimal diff and the historical intent stays
+    /// documented; if "find callers of a target the write path refused"
+    /// turns out to still be wanted, the real fix is call-site receiver
+    /// typing at write time, not read-time name guessing.
     pub fn incoming_edges_by_qualname_pattern(
         &self,
-        symbol_name: &str,
-        kind: &str,
-        languages: Option<&[String]>,
-        graph_version: i64,
+        _symbol_name: &str,
+        _kind: &str,
+        _languages: Option<&[String]>,
+        _graph_version: i64,
     ) -> Result<Vec<Edge>> {
-        // Search for edges where target_qualname ends with '.<symbol_name>' or equals it exactly
-        let pattern = format!("%.{}", symbol_name);
-        let exact = symbol_name.to_string();
-
-        let mut sql = String::from(
-            "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
-                    e.target_qualname, e.detail, e.evidence_snippet,
-                    e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
-             FROM edges e
-             JOIN files f ON e.file_id = f.id
-             WHERE (e.target_qualname LIKE ? OR e.target_qualname = ?)
-               AND e.kind = ?
-               AND e.source_symbol_id IS NOT NULL
-               AND e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&pattern, &exact, &kind, &graph_version, &graph_version];
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        sql.push_str(" ORDER BY e.id LIMIT 100");
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, edge_from_row)?;
-        let mut edges = Vec::new();
-        for row in rows {
-            edges.push(row?);
-        }
-        Ok(edges)
+        Ok(Vec::new())
     }
 
     /// Find edges by exact target_qualname match and edge kind filter.
@@ -529,10 +507,8 @@ impl Db {
             result.insert(*id, Vec::new());
         }
 
-        let mut seen_edge_ids = HashSet::new();
         for row in rows {
             let edge = row?;
-            seen_edge_ids.insert(edge.id);
             // Add edge to both source and target symbol lists
             if let Some(source_id) = edge.source_symbol_id
                 && ids.contains(&source_id)
@@ -546,96 +522,19 @@ impl Db {
             }
         }
 
-        // Second query: unresolved edges where target_qualname matches symbol names
-        // This catches cross-file CALLS edges with short qualnames like "_svc.DeployAsync"
-        let symbols_sql = format!(
-            "SELECT id, name FROM symbols WHERE id IN ({}) AND graph_version = ?",
-            placeholders
-        );
-        let mut symbols_params: Vec<&dyn rusqlite::ToSql> =
-            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        symbols_params.push(&graph_version);
-
-        let mut stmt = conn.prepare(&symbols_sql)?;
-        let mut symbol_rows = stmt.query(&*symbols_params)?;
-        let mut symbol_names: HashMap<String, i64> = HashMap::new();
-        while let Some(row) = symbol_rows.next()? {
-            let id: i64 = row.get(0)?;
-            let name: String = row.get(1)?;
-            symbol_names.insert(name, id);
-        }
-
-        // Build patterns for LIKE queries: %.MethodName
-        let mut patterns: Vec<String> = Vec::new();
-        for name in symbol_names.keys() {
-            patterns.push(format!("%.{}", name));
-        }
-
-        if !patterns.is_empty() {
-            let mut unresolved_sql = String::from(
-                "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
-                        e.target_qualname, e.detail, e.evidence_snippet,
-                        e.evidence_start_line, e.evidence_end_line, e.confidence,
-                        e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
-                 FROM edges e
-                 JOIN files f ON e.file_id = f.id
-                 WHERE e.target_symbol_id IS NULL
-                   AND e.graph_version = ?
-                   AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                   AND (",
-            );
-
-            let mut unresolved_params: Vec<&dyn rusqlite::ToSql> =
-                vec![&graph_version, &graph_version];
-
-            for (idx, pattern) in patterns.iter().enumerate() {
-                if idx > 0 {
-                    unresolved_sql.push_str(" OR ");
-                }
-                unresolved_sql.push_str("e.target_qualname LIKE ?");
-                unresolved_params.push(pattern as &dyn rusqlite::ToSql);
-            }
-            unresolved_sql.push(')');
-
-            if let Some(languages) = languages
-                && !languages.is_empty()
-            {
-                unresolved_sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        unresolved_sql.push(',');
-                    }
-                    unresolved_sql.push('?');
-                }
-                unresolved_sql.push(')');
-                for language in languages {
-                    unresolved_params.push(language as &dyn rusqlite::ToSql);
-                }
-            }
-            unresolved_sql.push_str(" ORDER BY e.id");
-
-            let mut stmt = conn.prepare(&unresolved_sql)?;
-            let rows = stmt.query_map(&*unresolved_params, edge_from_row)?;
-
-            for row in rows {
-                let edge = row?;
-                // Skip if we already saw this edge in the first query
-                if seen_edge_ids.contains(&edge.id) {
-                    continue;
-                }
-
-                // Match target_qualname to symbol name and add to that symbol's edge list
-                if let Some(target_qn) = &edge.target_qualname {
-                    for (name, symbol_id) in &symbol_names {
-                        if target_qn.ends_with(&format!(".{}", name)) {
-                            result.entry(*symbol_id).or_default().push(edge.clone());
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
+        // A second query used to widen this result set by matching
+        // `target_symbol_id IS NULL` edges against symbol *names* (via a
+        // `LIKE '%.Name'` suffix pattern) — i.e. it re-attributed edges the
+        // write path had deliberately left unresolved. That's exactly the
+        // guess the write path already refused to make: SQLite's LIKE is
+        // case-insensitive for ASCII (`'value.Trim' LIKE '%.trim'` is true)
+        // and the pattern carried no language scoping, so it matched same-
+        // named methods across unrelated classes and even unrelated
+        // languages (see the C#-`Trim`-to-Python-`trim` false callee).
+        // `target_symbol_id IS NULL` now means "could not be attributed" —
+        // the read path must not invent one. A target that *can* be bound
+        // legitimately (e.g. an exact qualname match) belongs in the write
+        // path (`insert_edges` / `resolve_null_target_edges`), not here.
         Ok(result)
     }
 

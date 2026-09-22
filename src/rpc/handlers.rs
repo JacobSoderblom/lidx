@@ -263,21 +263,12 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
                 for edge in &method_edges {
                     if edge.kind == "CALLS" && edge.source_symbol_id == Some(method.id) {
-                        // Resolve target_id, with fuzzy fallback for unresolved edges
-                        let target_id = match edge.target_symbol_id {
-                            Some(id) => Some(id),
-                            None => edge.target_qualname.as_deref().and_then(|qn| {
-                                indexer
-                                    .db()
-                                    .lookup_symbol_id_fuzzy(
-                                        qn,
-                                        ctx.languages.as_deref(),
-                                        ctx.graph_version,
-                                    )
-                                    .ok()
-                                    .flatten()
-                            }),
-                        };
+                        // `target_symbol_id` is NULL means the write path could not
+                        // attribute this call (ambiguous or unresolved receiver) —
+                        // the read path must not invent one via fuzzy qualname
+                        // lookup (that's how a C# `value.Trim()` call used to
+                        // surface a Python `trim` function as its callee).
+                        let target_id = edge.target_symbol_id;
                         if let Some(target_id) = target_id
                             && seen_callee_ids.insert(target_id)
                             && let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id)
@@ -310,20 +301,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             // For non-class symbols, use direct edges
             for edge in &edges {
                 if edge.kind == "CALLS" && edge.source_symbol_id == Some(symbol.id) {
-                    let target_id = match edge.target_symbol_id {
-                        Some(id) => Some(id),
-                        None => edge.target_qualname.as_deref().and_then(|qn| {
-                            indexer
-                                .db()
-                                .lookup_symbol_id_fuzzy(
-                                    qn,
-                                    ctx.languages.as_deref(),
-                                    ctx.graph_version,
-                                )
-                                .ok()
-                                .flatten()
-                        }),
-                    };
+                    // See the class-symbol branch above: NULL target_symbol_id
+                    // means the write path deliberately refused to attribute
+                    // this call, so the read path must not guess one either.
+                    let target_id = edge.target_symbol_id;
                     if let Some(target_id) = target_id
                         && seen_callee_ids.insert(target_id)
                         && let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id)

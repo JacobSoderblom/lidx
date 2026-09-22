@@ -48,7 +48,6 @@ pub fn build_subgraph_filtered(
     let mut edge_ids: HashSet<i64> = HashSet::new();
     let mut edges: Vec<Edge> = Vec::new();
     let mut module_target_cache: HashMap<String, Option<i64>> = HashMap::new();
-    let mut calls_target_cache: HashMap<String, Option<i64>> = HashMap::new();
     let mut symbol_cache: HashMap<i64, String> = HashMap::new();
     let mut symbol_checked: HashSet<i64> = HashSet::new();
 
@@ -93,23 +92,13 @@ pub fn build_subgraph_filtered(
                     edge.target_symbol_id = Some(resolved_id);
                 }
             }
-            // Resolve CALLS edges with NULL target_symbol_id
-            if edge.kind == "CALLS"
-                && edge.target_symbol_id.is_none()
-                && let Some(target_qualname) = edge.target_qualname.as_deref()
-            {
-                let resolved = if let Some(cached) = calls_target_cache.get(target_qualname) {
-                    *cached
-                } else {
-                    let id =
-                        db.lookup_symbol_id_fuzzy(target_qualname, languages, graph_version)?;
-                    calls_target_cache.insert(target_qualname.to_string(), id);
-                    id
-                };
-                if let Some(resolved_id) = resolved {
-                    edge.target_symbol_id = Some(resolved_id);
-                }
-            }
+            // CALLS edges with NULL target_symbol_id are ones the write path
+            // deliberately refused to attribute (ambiguous or unresolved
+            // receiver) — the read path must not guess one via fuzzy
+            // qualname lookup. This used to call `lookup_symbol_id_fuzzy`
+            // here, silently binding to whichever same-named candidate it
+            // found first (no ambiguity guard), the same class of bug as
+            // `edges_for_symbols` / `incoming_edges_by_qualname_pattern`.
         }
         if let Some(filter) = filter {
             if filter.exclude_all {
