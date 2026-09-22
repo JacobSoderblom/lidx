@@ -3903,10 +3903,15 @@ mod tests {
 
     #[test]
     fn test_edges_for_symbols_does_not_resurrect_null_target_edge() {
-        // Regression for the read-path resurrection bug: a bare-name call with
-        // two same-language candidates is genuinely ambiguous, so the write
-        // path (insert_edges' ambiguity guard) deliberately leaves it
-        // unresolved. Neither candidate symbol must see it as an incoming call.
+        // Regression for the read-path resurrection bug: a receiver-qualified
+        // call (`buf.append(x)`) whose receiver type isn't in scope has two
+        // same-language, same-bare-name candidates, so it's genuinely
+        // ambiguous and the write path (insert_edges' ambiguity guard)
+        // deliberately leaves it unresolved. Neither candidate symbol must
+        // see it as an incoming call. The target is deliberately dotted
+        // ("buf.append", not bare "append") so this exercises the exact
+        // `target_qualname.ends_with(".{name}")` suffix match the old
+        // `edges_for_symbols` second query used to resurrect through.
         let (mut db, _temp) = create_test_db();
         let file_id = db
             .upsert_file("pkg/store.py", "h1", "python", 100, 0)
@@ -3935,7 +3940,7 @@ mod tests {
             .unwrap()
             .id;
 
-        let edges = vec![make_test_edge("CALLS", "pkg.store.caller", "append")];
+        let edges = vec![make_test_edge("CALLS", "pkg.store.caller", "buf.append")];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
             .map(|s| (s.qualname.clone(), s.id))
