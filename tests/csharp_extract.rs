@@ -265,6 +265,223 @@ public class Caller {
     );
 }
 
+// Extension-method CALLS resolution regression tests (issue: `public static
+// X Foo(this T t, ...)` extension methods were effectively invisible to
+// CALLS resolution -- a call like `row.ToDomain(...)` never produced any
+// candidate naming the extension method's real declaring class, because the
+// receiver text (`row`) is an instance, never the class name, unlike the
+// `UniqueName.Create()` static-call shape `import_qualified_candidates`
+// already handled). Each of these fails if `record_extension_method` /
+// `extension_method_candidates` in `csharp.rs` is reverted (confirmed by
+// temporarily neutering that logic and rerunning).
+//
+// `CSharpExtractor` accumulates its `extension_registry` across every
+// `extract()` call on the same instance (see `Context::extension_registry`'s
+// doc) -- these tests call `extract()` twice on one extractor to simulate
+// the declaring file being processed before the calling file, exactly as a
+// real cold reindex would (in whichever relative order the two files
+// happen to be scanned in).
+
+#[test]
+fn extension_method_call_resolves_via_cross_file_registry() {
+    // Mirrors the real dpb shape: `PipelineMapper.ToDomain` is declared as
+    // an extension method in one file and called as `row.ToDomain(...)` in
+    // another, reachable only because the calling file's `using` names the
+    // declaring namespace.
+    let mut extractor = CSharpExtractor::new().unwrap();
+
+    let declaring = r#"
+namespace Dpb.DataMgr.DataProduct.Mappers {
+  internal static class PipelineMapper {
+    public static PipelineRun ToDomain(this PipelineRunRow row, UniqueName dataProduct) {
+      return null;
+    }
+  }
+}
+"#;
+    extractor.extract(declaring, "declaring").unwrap();
+
+    let caller = r#"
+using Dpb.DataMgr.DataProduct.Mappers;
+
+namespace Dpb.DataMgr.DataProduct.Persistence {
+  internal class MssqlPipelineRepository {
+    public PipelineRun Method(PipelineRunRow row, UniqueName dataProduct) {
+      return row.ToDomain(dataProduct);
+    }
+  }
+}
+"#;
+    let extracted = extractor.extract(caller, "caller").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("row.ToDomain"))
+        .expect("row.ToDomain(...) call edge");
+    assert_eq!(
+        call.import_candidates,
+        vec!["Dpb.DataMgr.DataProduct.Mappers.PipelineMapper.ToDomain".to_string()],
+        "row.ToDomain() must resolve to the extension method declared (in an earlier file \
+         this run) under an imported namespace, got {:?}",
+        call.import_candidates
+    );
+}
+
+#[test]
+fn extension_method_candidates_filtered_by_known_receiver_type() {
+    // Two extension methods named `Convert`, declared for two different
+    // receiver types, both imported into scope -- name-and-scope alone
+    // would leave this ambiguous (two distinct real symbols), but the
+    // call's own known receiver type (`TypeA`, a typed parameter) narrows
+    // it to exactly one.
+    let mut extractor = CSharpExtractor::new().unwrap();
+
+    let declaring_a = r#"
+namespace Dpb.Mappers.A {
+  public static class ConverterA {
+    public static string Convert(this TypeA value) { return null; }
+  }
+}
+"#;
+    extractor.extract(declaring_a, "declaring_a").unwrap();
+
+    let declaring_b = r#"
+namespace Dpb.Mappers.B {
+  public static class ConverterB {
+    public static string Convert(this TypeB value) { return null; }
+  }
+}
+"#;
+    extractor.extract(declaring_b, "declaring_b").unwrap();
+
+    let caller = r#"
+using Dpb.Mappers.A;
+using Dpb.Mappers.B;
+
+namespace Dpb.App {
+  public class Caller {
+    public string Method(TypeA value) {
+      return value.Convert();
+    }
+  }
+}
+"#;
+    let extracted = extractor.extract(caller, "caller").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("value.Convert"))
+        .expect("value.Convert() call edge");
+    assert_eq!(
+        call.import_candidates,
+        vec!["Dpb.Mappers.A.ConverterA.Convert".to_string()],
+        "a known receiver type (TypeA) must exclude the TypeB-typed overload from another \
+         in-scope extension class, got {:?}",
+        call.import_candidates
+    );
+}
+
+#[test]
+fn extension_method_not_imported_produces_no_candidates() {
+    // Same extension method as the cross-file test above, but the calling
+    // file never imports its namespace and isn't in it either -- it must
+    // not be offered as a candidate (an out-of-scope extension method
+    // wouldn't even compile as `value.Convert()` in real C#).
+    let mut extractor = CSharpExtractor::new().unwrap();
+
+    let declaring = r#"
+namespace Dpb.Mappers.A {
+  public static class ConverterA {
+    public static string Convert(this TypeA value) { return null; }
+  }
+}
+"#;
+    extractor.extract(declaring, "declaring").unwrap();
+
+    let caller = r#"
+namespace Dpb.App {
+  public class Caller {
+    public string Method(TypeA value) {
+      return value.Convert();
+    }
+  }
+}
+"#;
+    let extracted = extractor.extract(caller, "caller").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("value.Convert"))
+        .expect("value.Convert() call edge");
+    assert!(
+        call.import_candidates.is_empty(),
+        "an extension method whose declaring namespace isn't imported (and isn't the caller's \
+         own namespace) must not be offered as a candidate, got {:?}",
+        call.import_candidates
+    );
+}
+
+// Static-field-then-method CALLS resolution regression test (issue: a call
+// like `HealthMeters.CheckDuration.Record(...)` -- `HealthMeters` a type,
+// `CheckDuration` one of its static fields holding a `Histogram<double>`,
+// `Record` called on *that field's value* -- produced no import candidates
+// at all, because the pre-fix two-segment-only tier rejected any dotted
+// suffix outright. With no candidates, the `1d6a5a7` guard (which only acts
+// on a non-empty, all-failing candidate list) never saw evidence to act on,
+// so the call fell through unguarded to the bare-name tier and wrongly
+// bound to an unrelated same-named `Record` method elsewhere in the repo.
+// The real target, `System.Diagnostics.Metrics.Histogram<double>.Record`,
+// is external and can never resolve from this repo's own symbol table --
+// the correct outcome is that this call stays unresolved, which requires
+// only that a candidate exists for the DB-layer guard to fail on, not that
+// it succeeds.
+
+#[test]
+fn static_field_then_method_chain_produces_guard_evidence_not_empty() {
+    let source = r#"
+using Dpb.Common.Telemetry;
+
+namespace Dpb.Common.Telemetry {
+  public static class HealthMeters {
+    public static readonly Histogram<double> CheckDuration = null;
+  }
+}
+
+namespace Dpb.Common.Health {
+  public class HealthPublisher {
+    public void Method() {
+      HealthMeters.CheckDuration.Record(1.0);
+    }
+  }
+}
+"#;
+    let module = module_name_from_rel_path("src/HealthPublisher.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS"
+                && e.target_qualname.as_deref() == Some("HealthMeters.CheckDuration.Record")
+        })
+        .expect("HealthMeters.CheckDuration.Record(...) call edge");
+    let mut candidates = call.import_candidates.clone();
+    candidates.sort();
+    let mut expected = vec![
+        "Dpb.Common.Health.HealthMeters.CheckDuration.Record".to_string(),
+        "Dpb.Common.Telemetry.HealthMeters.CheckDuration.Record".to_string(),
+    ];
+    expected.sort();
+    assert_eq!(
+        candidates, expected,
+        "a static-field-then-method chain rooted at a type name must produce import \
+         candidates (even though none can ever resolve) so the existing 1d6a5a7 guard has \
+         evidence to refuse binding on, got {:?}",
+        call.import_candidates
+    );
+}
+
 #[test]
 fn extract_symbols_and_edges() {
     let source = r#"

@@ -10,6 +10,7 @@ use crate::indexer::tree_helpers::{
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
@@ -25,7 +26,14 @@ struct Context {
     route_prefix: Option<String>,
     route_groups: HashMap<String, String>,
     grpc_service: Option<String>,
-    grpc_clients: HashMap<String, String>,
+    /// Locally-bound gRPC client variable names -> `(service, prefix)`,
+    /// where `prefix` is whatever qualifying namespace/alias text preceded
+    /// the `{Service}Client` type in its construction (e.g. `DsDeploy` in
+    /// `new DsDeploy.DeployerServiceClient(channel)`) — mirrors
+    /// `grpc_service_from_bases`'s `(service, prefix)` shape on the impl
+    /// side. `None` when the client type was written unqualified. See
+    /// `collect_grpc_clients_inner` / `grpc_client_from_object_creation`.
+    grpc_clients: HashMap<String, (String, Option<String>)>,
     /// Candidate protobuf package names for `grpc_service`, derived from the
     /// impl class's base-list entry (e.g. `DsDeploy.DeployerService.Base`)
     /// plus this file's `using` directives — see
@@ -58,7 +66,50 @@ struct Context {
     /// once and inherited unchanged through every `ctx.clone()` (unlike
     /// `local_types`/`class_attr_types`, this never changes per-scope).
     imports: Rc<ImportContext>,
+    /// Every extension method (`public static X Foo(this T x, ...)`) seen
+    /// so far in *any* file processed by this `CSharpExtractor` instance
+    /// during the current reindex — see `ExtensionRegistry` and
+    /// `record_extension_method`. Shared (same underlying map, not a
+    /// per-file copy) via `Rc<RefCell<_>>` so a declaration recorded while
+    /// walking one file is visible to call sites in a later file — the only
+    /// way a single-file extractor can name a cross-file extension method's
+    /// real declaring class (see `extension_method_candidates`'s doc for why
+    /// that's unavoidable). Grows monotonically; never pruned or reset
+    /// between files, so a full cold reindex ends with every extension
+    /// method the repo declares, in file-processing order. A call site
+    /// whose extension method hasn't been visited *yet* this run simply
+    /// gets no candidate from this source — see the ponytail note on
+    /// `extension_method_candidates`.
+    extension_registry: ExtensionRegistry,
 }
+
+/// One extension method declaration, as recorded by `record_extension_method`
+/// into `Context::extension_registry` — see that field's doc for why this
+/// state is accumulated across files instead of derived per-call.
+#[derive(Debug, Clone)]
+struct ExtensionMethodEntry {
+    /// The method's own fully-qualified qualname (declaring namespace +
+    /// class + method name) — exactly the string `SymbolInput::qualname`
+    /// carries for this same declaration, so it's an exact match for
+    /// whatever `Db::insert_edges`'s exact-qualname lookup sees once this
+    /// file has been indexed.
+    qualname: String,
+    /// The declaring class's enclosing namespace (`ctx.namespace_stack`
+    /// joined), i.e. what a calling file's `using` directive must name for
+    /// this extension method to be in scope there — see
+    /// `namespace_in_scope`.
+    namespace: String,
+    /// The extended (`this`) parameter's type name, when it classifies as a
+    /// concrete non-builtin type (see `classify_annotation`) — `None` for a
+    /// generic type parameter, builtin, or otherwise unclassifiable shape,
+    /// meaning "can't rule this entry out by type" rather than "matches
+    /// anything for certain".
+    receiver_type: Option<String>,
+}
+
+/// Keyed by bare method name (e.g. "ToDomain") -> every extension method
+/// declaration seen under that name so far this run.
+type ExtensionRegistry = Rc<RefCell<HashMap<String, Vec<ExtensionMethodEntry>>>>;
 
 /// Locally-inferred type of a name bound within a single method/constructor
 /// body (or a class-level field/property/parameter-property). Deliberately
@@ -79,6 +130,9 @@ enum LocalType {
 
 pub struct CSharpExtractor {
     parser: Parser,
+    /// Accumulates across every file this extractor instance processes —
+    /// see `Context::extension_registry`'s doc.
+    extension_registry: ExtensionRegistry,
 }
 
 impl CSharpExtractor {
@@ -86,7 +140,10 @@ impl CSharpExtractor {
         let mut parser = Parser::new();
         let language = tree_sitter_c_sharp::LANGUAGE;
         parser.set_language(&language.into())?;
-        Ok(Self { parser })
+        Ok(Self {
+            parser,
+            extension_registry: Rc::new(RefCell::new(HashMap::new())),
+        })
     }
 }
 
@@ -130,6 +187,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             class_attr_types: Rc::new(HashMap::new()),
             base_type: LocalType::Other,
             imports: Rc::new(collect_import_context(root, source)),
+            extension_registry: Rc::clone(&self.extension_registry),
         };
         if root.kind() == "compilation_unit" {
             walk_compilation_unit(root, &ctx, source, &mut output);
@@ -471,6 +529,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     for edge in route_edges_from_method_attributes(node, ctx, source, &qualname) {
         output.edges.push(edge);
     }
+    record_extension_method(node, ctx, source, &name, &qualname);
     if let Some(body) = node.child_by_field_name("body") {
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
@@ -679,7 +738,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = http_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
-    if let Some(edge) = grpc_call_edge(node, ctx, source) {
+    for edge in grpc_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
     if let Some(edge) = channel_publish_edge(node, ctx, source) {
@@ -707,15 +766,40 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // is never a type name) — see `import_qualified_candidates`'s doc.
     // `raw` is collapsed here too (same as `resolve_call_target` does
     // internally) so a multi-line `UniqueName\n    .Create()` chain feeds
-    // this tier the same two-segment shape the single-line form would.
-    let import_candidates = if receiver_type == ReceiverType::NotTracked {
+    // this tier the same shape the single-line form would.
+    let type_call_candidates = if receiver_type == ReceiverType::NotTracked {
         let collapsed = collapse_call_target_whitespace(&raw);
-        two_segment_receiver_and_method(&collapsed)
-            .map(|(receiver, method)| import_qualified_candidates(receiver, method, ctx))
+        type_prefixed_receiver_and_suffix(&collapsed)
+            .map(|(receiver, suffix)| import_qualified_candidates(receiver, suffix, ctx))
             .unwrap_or_default()
     } else {
         Vec::new()
     };
+    // Extension-method candidates are attempted for *any* receiver shape —
+    // unlike the static-call tier above, an extension call's receiver is
+    // routinely a tracked local/field (`_connection.EnsureOpenAsync()`) or
+    // an unresolved one (`row.ToDomain()`), never a type name, so gating on
+    // `NotTracked` would miss the common case. Only a genuine
+    // `receiver.Method()` shape qualifies — a bare `Helper()` call has no
+    // receiver to extend and always resolves through the ordinary
+    // exact/container tier first regardless. See
+    // `extension_method_candidates`'s doc for why this needs its own
+    // (cross-file, accumulated) evidence source rather than reusing
+    // `import_qualified_candidates`.
+    let extension_candidates = call_target_parts(target_node, source)
+        .filter(|parts| parts.receiver.is_some())
+        .map(|parts| extension_method_candidates(&parts.name, &receiver_type, ctx))
+        .unwrap_or_default();
+    // Union rather than replace: on the rare chance both tiers produce a
+    // (necessarily different) candidate, let `resolve_import_candidate`'s
+    // own ambiguity guard see both and refuse rather than silently
+    // preferring one.
+    let mut import_candidates = type_call_candidates;
+    for candidate in extension_candidates {
+        if !import_candidates.contains(&candidate) {
+            import_candidates.push(candidate);
+        }
+    }
     let target = resolve_call_target(&raw, ctx);
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
@@ -1224,7 +1308,10 @@ fn collect_route_groups(node: Node<'_>, source: &str) -> HashMap<String, String>
     groups
 }
 
-fn collect_global_grpc_clients(node: Node<'_>, source: &str) -> HashMap<String, String> {
+fn collect_global_grpc_clients(
+    node: Node<'_>,
+    source: &str,
+) -> HashMap<String, (String, Option<String>)> {
     let mut clients = HashMap::new();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -1236,7 +1323,7 @@ fn collect_global_grpc_clients(node: Node<'_>, source: &str) -> HashMap<String, 
     clients
 }
 
-fn collect_grpc_clients(node: Node<'_>, source: &str) -> HashMap<String, String> {
+fn collect_grpc_clients(node: Node<'_>, source: &str) -> HashMap<String, (String, Option<String>)> {
     let mut clients = HashMap::new();
     collect_grpc_clients_inner(node, source, &mut clients);
     clients
@@ -1266,7 +1353,11 @@ fn collect_route_groups_inner(node: Node<'_>, source: &str, groups: &mut HashMap
     }
 }
 
-fn collect_grpc_clients_inner(node: Node<'_>, source: &str, clients: &mut HashMap<String, String>) {
+fn collect_grpc_clients_inner(
+    node: Node<'_>,
+    source: &str,
+    clients: &mut HashMap<String, (String, Option<String>)>,
+) {
     match node.kind() {
         "method_declaration"
         | "local_function_statement"
@@ -1280,9 +1371,9 @@ fn collect_grpc_clients_inner(node: Node<'_>, source: &str, clients: &mut HashMa
         _ => {}
     }
     if node.kind() == "variable_declarator"
-        && let Some((name, service)) = grpc_client_from_declarator(node, source)
+        && let Some((name, service_and_prefix)) = grpc_client_from_declarator(node, source)
     {
-        clients.insert(name, service);
+        clients.insert(name, service_and_prefix);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -1318,52 +1409,103 @@ fn map_group_prefix_in_node(node: Node<'_>, source: &str) -> Option<String> {
     None
 }
 
-fn grpc_client_from_declarator(node: Node<'_>, source: &str) -> Option<(String, String)> {
+fn grpc_client_from_declarator(
+    node: Node<'_>,
+    source: &str,
+) -> Option<(String, (String, Option<String>))> {
     let name_node = node.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     if name.is_empty() {
         return None;
     }
-    let service = node
+    let service_and_prefix = node
         .child_by_field_name("initializer")
         .and_then(|initializer| grpc_client_from_initializer(initializer, source))
         .or_else(|| grpc_client_from_initializer(node, source))?;
-    Some((name, service))
+    Some((name, service_and_prefix))
 }
 
-fn grpc_client_from_initializer(node: Node<'_>, source: &str) -> Option<String> {
+fn grpc_client_from_initializer(node: Node<'_>, source: &str) -> Option<(String, Option<String>)> {
     if node.kind() == "object_creation_expression"
-        && let Some(service) = grpc_client_from_object_creation(node, source)
+        && let Some(result) = grpc_client_from_object_creation(node, source)
     {
-        return Some(service);
+        return Some(result);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        if let Some(service) = grpc_client_from_initializer(child, source) {
-            return Some(service);
+        if let Some(result) = grpc_client_from_initializer(child, source) {
+            return Some(result);
         }
     }
     None
 }
 
-fn grpc_client_from_object_creation(node: Node<'_>, source: &str) -> Option<String> {
+/// `new {prefix.}{Service}Client(...)` -> `(service, prefix)` — same
+/// `(service, prefix)` shape `grpc_service_from_base` returns on the impl
+/// side, so `grpc_call_edge` can feed both through the same
+/// `grpc_package_candidates_from_prefix`. Unlike the impl side's
+/// `X.XBase` self-reference requirement, a generated client type has no
+/// such stutter to validate against — any qualifying prefix before
+/// `{Service}Client` is taken at face value.
+fn grpc_client_from_object_creation(
+    node: Node<'_>,
+    source: &str,
+) -> Option<(String, Option<String>)> {
     if node.kind() != "object_creation_expression" {
         return None;
     }
     let type_node = node.child_by_field_name("type")?;
     let type_name = node_text(type_node, source);
-    let type_name = type_name.trim();
-    if type_name.is_empty() {
+    split_client_service_and_prefix(type_name.trim())
+}
+
+/// Strip a trailing `Client` suffix (generated gRPC client type convention)
+/// from a possibly dot-qualified type/receiver text, returning
+/// `(service, prefix)` where `prefix` is whatever dotted segments preceded
+/// the final `{Service}Client` segment, *excluding* the generated-code
+/// self-reference — grpc-csharp always nests `{Service}Client` inside a
+/// `{Service}` wrapper class (`Greeter.GreeterClient`), the same stutter
+/// `grpc_service_from_base` already strips for `{Service}.{Service}Base` on
+/// the impl side, so a lone matching segment right before `{Service}Client`
+/// is consumed rather than mistaken for a real namespace/alias prefix.
+/// `None` when nothing qualifying remains. Shared by both client-detection
+/// paths: a `new {prefix.}{Service}Client(...)` construction
+/// (`grpc_client_from_object_creation`) and a call-site receiver that is
+/// itself an inline construction (`grpc_service_from_client_receiver`).
+fn split_client_service_and_prefix(text: &str) -> Option<(String, Option<String>)> {
+    let text = text.trim();
+    if text.is_empty() {
         return None;
     }
-    let last = type_name.rsplit('.').next().unwrap_or(type_name).trim();
+    let mut parts: Vec<&str> = text.split('.').map(str::trim).collect();
+    let last = parts.pop()?;
     let last = last.split('<').next().unwrap_or(last).trim();
-    if let Some(service) = last.strip_suffix("Client")
-        && !service.is_empty()
-    {
-        return Some(service.to_string());
+    let service = if let Some(service) = last.strip_suffix("Client") {
+        service
+    } else {
+        let lower = last.to_ascii_lowercase();
+        if lower.ends_with("client") && last.len() > "client".len() {
+            &last[..last.len() - "client".len()]
+        } else {
+            return None;
+        }
+    };
+    if service.is_empty() {
+        return None;
     }
-    None
+    if parts.last() == Some(&service) {
+        parts.pop();
+    }
+    let prefix = parts
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>();
+    let prefix = if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix.join("."))
+    };
+    Some((service.to_string(), prefix))
 }
 
 fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
@@ -1467,37 +1609,79 @@ fn grpc_impl_edge(node: Node<'_>, ctx: &Context, source: &str, rpc_name: &str) -
     edges
 }
 
-fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+/// Builds an `RPC_CALL` edge per candidate protobuf package, mirroring
+/// `grpc_impl_edge`'s treatment of `RPC_IMPL` (see that function's doc) —
+/// the client side had the identical CLR-namespace bug `1c83726` fixed for
+/// the impl side: the generated `{Service}Client` type's own qualifying
+/// prefix (from `new {prefix.}{Service}Client(...)`, captured by
+/// `grpc_client_from_object_creation` and carried in `ctx.grpc_clients`),
+/// not `ctx.namespace_stack` (the *calling* code's own CLR namespace, which
+/// has no reliable relationship to the proto package a client it happens to
+/// construct belongs to), is what determines the package. Reuses
+/// `grpc_package_candidates_from_prefix` rather than duplicating its
+/// alias-resolution/bare-`using`-fallback logic.
+fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
     if node.kind() != "invocation_expression" {
-        return None;
+        return Vec::new();
     }
-    let target_node = node.child_by_field_name("function")?;
-    let target = call_target_parts(target_node, source)?;
-    let rpc_name = normalize_grpc_method_name(&target.name)?;
-    let service = grpc_service_from_client_receiver(target.receiver.as_deref())
-        .or_else(|| grpc_service_from_client_binding(target.receiver.as_deref(), ctx))?;
-    let package = grpc_package_from_namespace(ctx);
-    let (raw_path, normalized) =
-        proto::normalize_rpc_path(package.as_deref(), &service, &rpc_name)?;
-    let detail = json!({
-        "framework": "grpc-csharp",
-        "role": "client",
-        "service": service,
-        "rpc": rpc_name,
-        "package": package.as_deref(),
-        "raw": raw_path,
-    })
-    .to_string();
-    Some(EdgeInput {
-        kind: proto::RPC_CALL_KIND.to_string(),
-        source_qualname: Some(ctx.current_scope.clone()),
-        target_qualname: Some(normalized),
-        detail: Some(detail),
-        evidence_snippet: None,
-        evidence_start_line: Some(span(node).0),
-        evidence_end_line: Some(span(node).2),
-        ..Default::default()
-    })
+    let Some(target_node) = node.child_by_field_name("function") else {
+        return Vec::new();
+    };
+    let Some(target) = call_target_parts(target_node, source) else {
+        return Vec::new();
+    };
+    let Some(rpc_name) = normalize_grpc_method_name(&target.name) else {
+        return Vec::new();
+    };
+    let Some((service, prefix)) = grpc_service_from_client_receiver(target.receiver.as_deref())
+        .or_else(|| grpc_service_from_client_binding(target.receiver.as_deref(), ctx))
+    else {
+        return Vec::new();
+    };
+    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+    let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+    let source_qualname = ctx.current_scope.clone();
+    // Same ponytail fallback as `grpc_impl_edge`: no derivable prefix and no
+    // bare `using` in the file still emits one package-less candidate
+    // rather than nothing, covering a proto file with no `package`
+    // statement.
+    let packages: Vec<Option<String>> =
+        match grpc_package_candidates_from_prefix(prefix.as_deref(), ctx) {
+            candidates if candidates.is_empty() => vec![None],
+            candidates => candidates.into_iter().map(Some).collect(),
+        };
+    let mut seen_targets = std::collections::HashSet::new();
+    let mut edges = Vec::new();
+    for package in packages {
+        let Some((raw_path, normalized)) =
+            proto::normalize_rpc_path(package.as_deref(), &service, &rpc_name)
+        else {
+            continue;
+        };
+        if !seen_targets.insert(normalized.clone()) {
+            continue;
+        }
+        let detail = json!({
+            "framework": "grpc-csharp",
+            "role": "client",
+            "service": service,
+            "rpc": rpc_name,
+            "package": package,
+            "raw": raw_path,
+        })
+        .to_string();
+        edges.push(EdgeInput {
+            kind: proto::RPC_CALL_KIND.to_string(),
+            source_qualname: Some(source_qualname.clone()),
+            target_qualname: Some(normalized),
+            detail: Some(detail),
+            evidence_snippet: snippet.clone(),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            ..Default::default()
+        });
+    }
+    edges
 }
 
 fn channel_publish_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
@@ -1619,13 +1803,6 @@ fn grpc_service_from_base(base: &str) -> Option<(String, Option<String>)> {
     Some((service.to_string(), prefix))
 }
 
-fn grpc_package_from_namespace(ctx: &Context) -> Option<String> {
-    if ctx.namespace_stack.is_empty() {
-        return None;
-    }
-    Some(ctx.namespace_stack.join("."))
-}
-
 /// Candidate protobuf package names for a gRPC service impl class, derived
 /// from its base-list entry's namespace `prefix` (see
 /// `grpc_service_from_base`) plus this file's `using` directives —
@@ -1660,7 +1837,7 @@ fn grpc_package_candidates_from_prefix(prefix: Option<&str>, ctx: &Context) -> V
     candidates
 }
 
-fn grpc_service_from_client_receiver(receiver: Option<&str>) -> Option<String> {
+fn grpc_service_from_client_receiver(receiver: Option<&str>) -> Option<(String, Option<String>)> {
     let mut value = receiver?.trim().to_string();
     if value.is_empty() {
         return None;
@@ -1669,37 +1846,24 @@ fn grpc_service_from_client_receiver(receiver: Option<&str>) -> Option<String> {
         value.truncate(idx);
     }
     value = value.trim_start_matches("new ").trim().to_string();
-    let last = value.rsplit('.').next().unwrap_or(value.as_str()).trim();
-    if last.is_empty() {
-        return None;
-    }
-    if let Some(service) = last.strip_suffix("Client")
-        && !service.is_empty()
-    {
-        return Some(service.to_string());
-    }
-    let lower = last.to_ascii_lowercase();
-    if lower.ends_with("client") {
-        let service = &last[..last.len() - 6];
-        if !service.is_empty() {
-            return Some(service.to_string());
-        }
-    }
-    None
+    split_client_service_and_prefix(&value)
 }
 
-fn grpc_service_from_client_binding(receiver: Option<&str>, ctx: &Context) -> Option<String> {
+fn grpc_service_from_client_binding(
+    receiver: Option<&str>,
+    ctx: &Context,
+) -> Option<(String, Option<String>)> {
     let receiver = receiver?.trim();
     if receiver.is_empty() {
         return None;
     }
-    if let Some(service) = ctx.grpc_clients.get(receiver) {
-        return Some(service.clone());
+    if let Some(service_and_prefix) = ctx.grpc_clients.get(receiver) {
+        return Some(service_and_prefix.clone());
     }
     if let Some(last) = receiver.rsplit('.').next()
-        && let Some(service) = ctx.grpc_clients.get(last)
+        && let Some(service_and_prefix) = ctx.grpc_clients.get(last)
     {
-        return Some(service.clone());
+        return Some(service_and_prefix.clone());
     }
     None
 }
@@ -2544,14 +2708,52 @@ fn record_using_directive(node: Node<'_>, source: &str, out: &mut ImportContext)
     }
 }
 
-/// Split a call's raw target text into `(receiver, method)` only when it's
-/// exactly a two-segment `Ident.Ident` shape — a plain type-looking
-/// receiver, not `this`/`base`, not itself dotted, not a generic/indexer
-/// expression. Anything else returns `None` (no import qualification
-/// attempted) — see `import_qualified_candidates`'s caller.
-fn two_segment_receiver_and_method(raw: &str) -> Option<(&str, &str)> {
-    let (receiver, method) = raw.split_once('.')?;
-    if receiver.is_empty() || method.is_empty() || method.contains('.') {
+/// Split a call's raw target text into `(receiver, suffix)` when its first
+/// (`.`-delimited) segment looks like a C# type name (starts with an
+/// uppercase letter) and is itself a plain identifier — not `this`/`base`,
+/// not a generic/indexer/call expression. `suffix` is everything after
+/// that first segment's dot and may itself be dotted (`CheckDuration.Record`
+/// for `HealthMeters.CheckDuration.Record`) — a static member access can be
+/// chained arbitrarily deep (`Type.Field.Method()`, `Type.Nested.Method()`),
+/// and every one of those shapes is exactly as much "this call is rooted at
+/// a type name" evidence as the plain two-segment case. Anything else
+/// returns `None` (no import qualification attempted) — see
+/// `import_qualified_candidates`'s caller.
+///
+/// The uppercase check matters: without it, an ordinary instance call like
+/// `row.ToDomain()` also matches this shape (`row` is just as dot-free as
+/// `UniqueName`), and `import_qualified_candidates` would then build
+/// candidates like `{ns}.row.ToDomain` — guaranteed to miss (`row` isn't a
+/// class), which previously did active harm: a non-empty but unresolvable
+/// `import_candidates` list makes `Db::insert_edges` persist
+/// `receiver_type = ""` (see `1d6a5a7`'s guard), permanently blocking the
+/// bare-name fallback tier that would otherwise have had a real shot at
+/// resolving the call correctly (or, for extension-method receivers,
+/// blocking `extension_method_candidates` from being the sole source of
+/// truth). C# identifier convention (locals/fields lowerCamelCase or
+/// `_prefixed`, types PascalCase) makes this a cheap, reliable filter — this
+/// tier exists specifically for static-access shapes rooted at a type name
+/// (`UniqueName.Create()`, `HealthMeters.CheckDuration.Record()`), and every
+/// real type name in C# starts uppercase.
+///
+/// Allowing a dotted suffix is itself a fix, not just a generalization: a
+/// call like `HealthMeters.CheckDuration.Record(...)` (a static field's
+/// value, `Record` called on the `Histogram<double>` it holds — see
+/// `1d6a5a7`'s "positive evidence of an external receiver" reasoning) used
+/// to produce *no* candidate at all here (the old two-segment-only version
+/// rejected any dotted suffix outright), so the `1d6a5a7` guard never saw
+/// evidence to act on and the call fell through unguarded to the bare-name
+/// tier — which then wrongly bound it to any unrelated same-named `Record`
+/// method elsewhere in the repo. The candidate this produces
+/// (`{ns}.HealthMeters.CheckDuration.Record`) is essentially guaranteed to
+/// find no real symbol either (nothing is nested under a field), which is
+/// exactly the point: a non-empty, unresolvable candidate list is what
+/// lets the existing guard correctly refuse to bind, instead of an empty
+/// list that left the call looking like it had no receiver-type signal at
+/// all.
+fn type_prefixed_receiver_and_suffix(raw: &str) -> Option<(&str, &str)> {
+    let (receiver, suffix) = raw.split_once('.')?;
+    if receiver.is_empty() || suffix.is_empty() {
         return None;
     }
     if receiver == "this" || receiver == "base" {
@@ -2559,25 +2761,31 @@ fn two_segment_receiver_and_method(raw: &str) -> Option<(&str, &str)> {
     }
     let mut chars = receiver.chars();
     let first = chars.next()?;
-    if !(first.is_alphabetic() || first == '_') {
+    if !first.is_uppercase() {
         return None;
     }
     if !receiver.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
         return None;
     }
-    Some((receiver, method))
+    Some((receiver, suffix))
 }
 
 /// Compute fully-qualified candidate qualnames for a bare `Type.Method()`
-/// call whose receiver `type_name` is not a tracked local/field (i.e.
-/// `infer_receiver_type` returned `NotTracked` for this call), using the
-/// file's import context plus its current enclosing namespace.
+/// (or deeper, `Type.Field.Method()`-shaped) call whose receiver `type_name`
+/// is not a tracked local/field (i.e. `infer_receiver_type` returned
+/// `NotTracked` for this call), using the file's import context plus its
+/// current enclosing namespace. `suffix` is appended verbatim, dots and
+/// all, so a two-segment call passes a bare method name and a deeper chain
+/// passes its own dotted remainder unchanged — see
+/// `type_prefixed_receiver_and_suffix`'s doc for why a candidate that's
+/// bound to fail (a deeper chain very rarely names a real symbol) is still
+/// exactly the useful output here.
 ///
 /// An alias match is authoritative and the sole candidate returned (an
 /// alias can only ever mean one thing). Otherwise, one candidate per
 /// distinct namespace source that could plausibly supply `type_name`: the
 /// call site's own enclosing namespace (a sibling type in the same
-/// namespace needs no `using` at all), plus `{ns}.{type_name}.{method}`
+/// namespace needs no `using` at all), plus `{ns}.{type_name}.{suffix}`
 /// for every bare `using ns;` directive in the file.
 ///
 /// This never picks a winner among multiple namespace candidates — that's
@@ -2586,9 +2794,9 @@ fn two_segment_receiver_and_method(raw: &str) -> Option<(&str, &str)> {
 /// resolves; 0 or 2+ hits fall through unchanged to the pre-existing
 /// two-segment/bare-name tiers. So an ambiguous `using` situation here
 /// still ends up refused downstream, never guessed.
-fn import_qualified_candidates(type_name: &str, method: &str, ctx: &Context) -> Vec<String> {
+fn import_qualified_candidates(type_name: &str, suffix: &str, ctx: &Context) -> Vec<String> {
     if let Some(fqn) = ctx.imports.aliases.get(type_name) {
-        return vec![format!("{fqn}.{method}")];
+        return vec![format!("{fqn}.{suffix}")];
     }
     let mut seen = std::collections::HashSet::new();
     let mut candidates = Vec::new();
@@ -2596,7 +2804,7 @@ fn import_qualified_candidates(type_name: &str, method: &str, ctx: &Context) -> 
         if ns.is_empty() {
             return;
         }
-        let candidate = format!("{ns}.{type_name}.{method}");
+        let candidate = format!("{ns}.{type_name}.{suffix}");
         if seen.insert(candidate.clone()) {
             candidates.push(candidate);
         }
@@ -2606,6 +2814,155 @@ fn import_qualified_candidates(type_name: &str, method: &str, ctx: &Context) -> 
     }
     for ns in &ctx.imports.namespaces {
         push(ns);
+    }
+    candidates
+}
+
+/// If `node` (a `method_declaration` already known to have a non-empty
+/// name/qualname) is a C# extension method — `static`, with a first
+/// parameter carrying the `this` modifier — record it into
+/// `ctx.extension_registry` under its bare method name. Every other method
+/// is a no-op. See `Context::extension_registry` for why this exists and
+/// `extension_method_candidates` for how it's consumed.
+fn record_extension_method(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    name: &str,
+    qualname: &str,
+) {
+    if !has_modifier(node, source, "static") {
+        return;
+    }
+    let Some(params) = node.child_by_field_name("parameters") else {
+        return;
+    };
+    let mut cursor = params.walk();
+    let Some(first_param) = params
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "parameter")
+    else {
+        return;
+    };
+    if !has_modifier(first_param, source, "this") {
+        return;
+    }
+    let receiver_type = first_param
+        .child_by_field_name("type")
+        .map(|t| classify_annotation(&node_text(t, source)))
+        .and_then(|ty| match ty {
+            LocalType::Known(name) => Some(name),
+            LocalType::Other => None,
+        });
+    let namespace = ctx.namespace_stack.join(".");
+    ctx.extension_registry
+        .borrow_mut()
+        .entry(name.to_string())
+        .or_default()
+        .push(ExtensionMethodEntry {
+            qualname: qualname.to_string(),
+            namespace,
+            receiver_type,
+        });
+}
+
+/// Whether `node` has a direct `modifier` child whose text is exactly
+/// `keyword` — e.g. `has_modifier(method_node, source, "static")` or
+/// `has_modifier(parameter_node, source, "this")`. Every C# modifier
+/// (`public`, `static`, `this`, `readonly`, ...) parses to the same
+/// `modifier` node kind wrapping a single keyword token, regardless of
+/// which declaration it appears on — confirmed via a parse-tree dump of a
+/// real extension method (`public static T Foo(this U u)`), same technique
+/// `record_using_directive`'s doc references.
+fn has_modifier(node: Node<'_>, source: &str, keyword: &str) -> bool {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .any(|c| c.kind() == "modifier" && node_text(c, source).trim() == keyword)
+}
+
+/// Whether `namespace` (an extension method's declaring namespace — see
+/// `ExtensionMethodEntry::namespace`) is in scope for the *current* call
+/// site: either the call site's own enclosing namespace (no `using`
+/// needed — real C# lets sibling types in the same namespace see each
+/// other), a namespace named by one of this file's bare `using ns;`
+/// directives, or the target of a `using Alias = ns;` directive. Mirrors
+/// the same namespace sources `import_qualified_candidates` already
+/// consults, just checking membership instead of building guesses.
+fn namespace_in_scope(namespace: &str, ctx: &Context) -> bool {
+    if namespace.is_empty() {
+        return false;
+    }
+    if !ctx.namespace_stack.is_empty() && ctx.namespace_stack.join(".") == namespace {
+        return true;
+    }
+    if ctx.imports.namespaces.iter().any(|ns| ns == namespace) {
+        return true;
+    }
+    ctx.imports.aliases.values().any(|fqn| fqn == namespace)
+}
+
+/// Candidate fully-qualified qualnames for a call that may be invoking an
+/// *extension* method — `receiver.Method(...)`, where `Method` isn't
+/// declared on the receiver's own type (or the receiver's type is unknown
+/// entirely) but on some `static` class whose namespace this file has
+/// imported. This is the mechanism the "extension methods are invisible to
+/// CALLS resolution" defect needs fixed: unlike `import_qualified_candidates`
+/// (which qualifies a *type-looking*
+/// receiver into `{ns}.{receiver}.{method}`), an extension call's receiver
+/// is an *instance* — its text is never the declaring class's name, so no
+/// amount of namespace-guessing from the call site alone can construct the
+/// declaring class's qualname. The only place that name is ever available
+/// is the declaration itself, so this looks it up in
+/// `ctx.extension_registry` (built by `record_extension_method` as this
+/// extractor processes every file this run — see that field's doc).
+///
+/// Returns candidates only when there's positive, already-observed
+/// evidence: every registry entry under `method_name` is filtered to those
+/// (a) whose declaring namespace is in scope here (`namespace_in_scope`)
+/// and (b) not positively *incompatible* with `receiver_type` (an entry
+/// with a known, different receiver type is excluded; an entry with an
+/// unclassifiable/generic receiver type, or a call whose own receiver type
+/// isn't confidently known, is never excluded on this basis — see
+/// `ExtensionMethodEntry::receiver_type`'s doc). An empty result here means
+/// "no evidence either way", not "not an extension method" — the caller
+/// must leave `import_candidates` empty in that case rather than pass
+/// along a list that would (via the `1d6a5a7` guard) wrongly foreclose
+/// every other resolution tier for what might just be an ordinary call.
+///
+/// ponytail: order-dependent within a single reindex — a call site in a
+/// file processed *before* its extension method's declaring file gets no
+/// candidate here (the registry entry doesn't exist yet). A full cold
+/// reindex still ends up with the complete registry, so only the specific
+/// pairing of (this call site's file, that method's declaring file)
+/// processed in the "wrong" relative order is affected, not the run as a
+/// whole. Upgrade path: persist a lightweight extension-method index
+/// keyed by name (declaring qualname + namespace + receiver type) so a
+/// later file's call sites can look up an earlier *or* later declaration —
+/// that's DB-layer work (`src/db/`), out of this extractor's reach.
+fn extension_method_candidates(
+    method_name: &str,
+    receiver_type: &ReceiverType,
+    ctx: &Context,
+) -> Vec<String> {
+    let registry = ctx.extension_registry.borrow();
+    let Some(entries) = registry.get(method_name) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = Vec::new();
+    for entry in entries {
+        if !namespace_in_scope(&entry.namespace, ctx) {
+            continue;
+        }
+        if let (ReceiverType::Known(call_ty), Some(entry_ty)) =
+            (receiver_type, &entry.receiver_type)
+            && call_ty != entry_ty
+        {
+            continue;
+        }
+        if seen.insert(entry.qualname.clone()) {
+            candidates.push(entry.qualname.clone());
+        }
     }
     candidates
 }
@@ -2933,7 +3290,10 @@ app.MapGroup("/admin").MapPost("/users", HandlePost);
         // a bare `using`) -- this is the shape every real gRPC impl in the
         // wild has, and the whole point of the regression this guards: the
         // route key must come from the `using`, never from
-        // `namespace_stack`.
+        // `namespace_stack`, on *both* the impl and the call side (the call
+        // site here sits at file scope, outside any namespace, so a
+        // namespace-derived key would previously have been empty/wrong
+        // there too -- see the client-side assertions below).
         let source = r#"
 using Example.V1;
 using Grpc.Core;
@@ -2969,10 +3329,26 @@ client.SayHelloAsync(new HelloRequest());
                 == Some("/myapp.grpc.greeter/sayhello")),
             "must not key the route off the impl class's own CLR namespace"
         );
+        // Client-side key must land on the exact same route key the impl
+        // side does -- this is the RPC_IMPL/RPC_ROUTE overlap Defect 2
+        // exists to fix. `Greeter.GreeterClient`'s `Greeter.` prefix is the
+        // generated-code self-reference (mirrors `Greeter.GreeterBase` on
+        // the impl side), not a namespace, so it's consumed rather than
+        // treated as a candidate; the two bare `using`s are what actually
+        // supply the package, same as the impl side.
         assert!(
             calls
                 .iter()
-                .any(|edge| edge.target_qualname.as_deref() == Some("/greeter/sayhello"))
+                .any(|edge| edge.target_qualname.as_deref() == Some("/example.v1.greeter/sayhello")),
+            "call-side key must match the impl/route key, got {:?}",
+            calls.iter().map(|e| &e.target_qualname).collect::<Vec<_>>()
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|edge| edge.target_qualname.as_deref() == Some("/greeter/sayhello")),
+            "must not key the call off the impl class's own CLR namespace (here, no namespace \
+             at all, since the call site is at file scope)"
         );
     }
 
