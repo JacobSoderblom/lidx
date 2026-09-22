@@ -88,6 +88,36 @@ public class Foo {
 }
 
 #[test]
+fn bare_field_reference_without_this_does_not_bind_to_unrelated_type() {
+    // C# lets a method reference its own class's field by bare name (no
+    // `this.` prefix) — and a `static` field can *only* be reached that
+    // way. Found via real-corpus evidence on dpb: `NumberToCode.TryGetValue(...)`
+    // (a `Dictionary<int, T>` field referenced bare) was colliding with an
+    // unrelated `Result<T>.TryGetValue` domain method until
+    // `class_attr_types` was also consulted for bare identifiers.
+    let source = r#"
+namespace Acme.App;
+public class Lookup {
+    private static readonly System.Collections.Generic.Dictionary<int, string> NumberToCode = new();
+    public void Method() {
+        NumberToCode.TryGetValue(1, out var mapped);
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS" && e.target_qualname.as_deref() == Some("NumberToCode.TryGetValue")
+        })
+        .expect("NumberToCode.TryGetValue() call edge");
+    assert_eq!(call.receiver_type, ReceiverType::Unresolved);
+}
+
+#[test]
 fn bare_method_call_still_resolves() {
     let source = r#"
 namespace Acme.App;

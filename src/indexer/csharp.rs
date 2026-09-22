@@ -2261,18 +2261,34 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         return ReceiverType::Unresolved;
     }
     let root_name = node_text(root, source);
-    if hops == 0 {
-        return match ctx.local_types.get(&root_name) {
-            Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
-            Some(LocalType::Other) => ReceiverType::Unresolved,
-            None => ReceiverType::NotTracked,
-        };
+    // C#, unlike TypeScript/Python, lets a method body reference an
+    // instance *or static* field of its own class by its bare name, with
+    // no `this.` prefix at all — and a `static` field can *only* ever be
+    // reached that way (`this.` on a static member doesn't compile). So a
+    // bare identifier is checked against `local_types` first (a local
+    // shadows a same-named field, standard C# scoping), falling back to
+    // `class_attr_types` — reusing the exact same field/property map
+    // `this.field.Method()` already consults, just from an additional call
+    // site.
+    if let Some(local) = ctx.local_types.get(&root_name) {
+        if hops == 0 {
+            return match local {
+                LocalType::Known(ty) => ReceiverType::Known(ty.clone()),
+                LocalType::Other => ReceiverType::Unresolved,
+            };
+        }
+        return ReceiverType::Unresolved;
     }
-    if ctx.local_types.contains_key(&root_name) {
-        ReceiverType::Unresolved
-    } else {
-        ReceiverType::NotTracked
+    if let Some(attr) = ctx.class_attr_types.get(&root_name) {
+        if hops == 0 {
+            return match attr {
+                LocalType::Known(ty) => ReceiverType::Known(ty.clone()),
+                LocalType::Other => ReceiverType::Unresolved,
+            };
+        }
+        return ReceiverType::Unresolved;
     }
+    ReceiverType::NotTracked
 }
 
 /// Walk a (possibly nested) member-access chain down to its root node,
