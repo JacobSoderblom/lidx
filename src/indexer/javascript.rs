@@ -260,7 +260,14 @@ fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> O
     let is_relative =
         target.starts_with("./") || target.starts_with("../") || target.starts_with('/');
     if !is_relative {
-        return None;
+        // Not a relative specifier: it's either a genuine third-party import
+        // (e.g. `next/navigation`) or an alias remapped through the owning
+        // tsconfig.json's `compilerOptions.paths` (e.g. `@/lib/foo`). Only
+        // the latter ever resolves, and only when a concrete path-mapping
+        // entry backs it *and* the mapped location is a real file — no
+        // fuzzy fallback, so an unmapped bare specifier stays unresolved
+        // exactly as before.
+        return resolve_tsconfig_alias(repo_root, file_rel_path, target);
     }
     let base_dir = Path::new(file_rel_path)
         .parent()
@@ -272,9 +279,19 @@ fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> O
         rel.push(target);
         rel
     };
+    probe_module_candidates(repo_root, &rel)
+}
+
+/// Checks whether `rel` (extension-less or not, relative to `repo_root`)
+/// names a real source file, trying it as given, each JS/TS extension, and
+/// each extension under an `index` file in that directory — the same three
+/// tiers Node/TypeScript module resolution tries for a relative specifier.
+/// Shared by plain relative imports and by tsconfig alias resolution so
+/// both go through identical, filesystem-verified matching.
+fn probe_module_candidates(repo_root: &Path, rel: &Path) -> Option<String> {
     if rel.extension().is_some() {
-        if repo_root.join(&rel).is_file() {
-            return Some(util::normalize_path(&rel));
+        if repo_root.join(rel).is_file() {
+            return Some(util::normalize_path(rel));
         }
         return None;
     }
@@ -291,6 +308,258 @@ fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> O
         }
     }
     None
+}
+
+/// Resolves a non-relative import specifier (`@/lib/foo`) through the
+/// nearest ancestor `tsconfig.json`'s `compilerOptions.paths`, scoped to
+/// that config's own directory (and its `baseUrl`) so two sibling projects
+/// with their own tsconfigs — e.g. `node/datacatalog-ui` and
+/// `node/dpb-app`, each mapping `@/*` to a different root — never bleed
+/// into each other.
+///
+/// Returns `None` (never a guess) unless a `paths` entry syntactically
+/// matches the specifier *and* the mapped location, run back through the
+/// same extension/index probing relative imports use, is a real file.
+fn resolve_tsconfig_alias(repo_root: &Path, file_rel_path: &str, target: &str) -> Option<String> {
+    let config_dir = find_owning_tsconfig_dir(repo_root, file_rel_path)?;
+    let aliases = load_tsconfig_aliases(repo_root, &config_dir)?;
+    for (pattern, targets) in &aliases.entries {
+        let Some(capture) = match_alias_pattern(pattern, target) else {
+            continue;
+        };
+        let pattern_has_star = pattern.contains('*');
+        for target_template in targets {
+            let Some(mapped_tail) =
+                substitute_alias_target(target_template, &capture, pattern_has_star)
+            else {
+                continue;
+            };
+            let mut rel = aliases.base_dir.clone();
+            rel.push(mapped_tail);
+            if let Some(resolved) = probe_module_candidates(repo_root, &rel) {
+                return Some(resolved);
+            }
+        }
+    }
+    None
+}
+
+/// Walks from `file_rel_path`'s directory up toward `repo_root`, returning
+/// the directory (relative to `repo_root`) of the nearest ancestor
+/// `tsconfig.json`, if any. This is what makes alias resolution per-project
+/// rather than global: a file under `node/dpb-app/` finds
+/// `node/dpb-app/tsconfig.json` before it ever sees
+/// `node/datacatalog-ui/tsconfig.json`, even though both define `@/*`.
+fn find_owning_tsconfig_dir(repo_root: &Path, file_rel_path: &str) -> Option<PathBuf> {
+    let start_dir = Path::new(file_rel_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    for dir in start_dir.ancestors() {
+        if repo_root.join(dir).join("tsconfig.json").is_file() {
+            return Some(dir.to_path_buf());
+        }
+    }
+    None
+}
+
+/// A tsconfig's `compilerOptions.paths`, parsed once per lookup: the
+/// directory `paths` targets are resolved against (`baseUrl`, itself
+/// resolved against the config's own directory — defaulting to that
+/// directory when `baseUrl` is absent, per tsconfig semantics), and the
+/// pattern/target entries in TypeScript's own longest-prefix-first order.
+struct TsconfigAliases {
+    base_dir: PathBuf,
+    entries: Vec<(String, Vec<String>)>,
+}
+
+// ponytail: a tsconfig that `extends` another one (relative path or, like
+// `@docusaurus/tsconfig`, a package) is read for its own `compilerOptions`
+// only — an extended `paths`/`baseUrl` isn't inherited. Ceiling: an alias
+// defined solely in a base config the project extends resolves nothing
+// here. Neither `node/datacatalog-ui/tsconfig.json` nor
+// `node/dpb-app/tsconfig.json` (the two configs this fix targets) extend
+// anything, so this doesn't affect either. Follow the (relative-path-only)
+// `extends` chain here if a project that needs it is reported.
+fn load_tsconfig_aliases(repo_root: &Path, config_dir: &Path) -> Option<TsconfigAliases> {
+    let raw = util::read_to_string(&repo_root.join(config_dir).join("tsconfig.json")).ok()?;
+    let cleaned = strip_jsonc(&raw);
+    let value: serde_json::Value = serde_json::from_str(&cleaned).ok()?;
+    let compiler_options = value.get("compilerOptions")?;
+    let paths = compiler_options.get("paths")?.as_object()?;
+    if paths.is_empty() {
+        return None;
+    }
+    let base_url = compiler_options
+        .get("baseUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or(".");
+    let base_dir = config_dir.join(base_url);
+
+    let mut entries: Vec<(String, Vec<String>)> = Vec::new();
+    for (pattern, targets_value) in paths {
+        let Some(targets_array) = targets_value.as_array() else {
+            continue;
+        };
+        let targets: Vec<String> = targets_array
+            .iter()
+            .filter_map(|t| t.as_str().map(|s| s.to_string()))
+            .collect();
+        if targets.is_empty() {
+            continue;
+        }
+        entries.push((pattern.clone(), targets));
+    }
+    if entries.is_empty() {
+        return None;
+    }
+    // TypeScript tries the pattern with the longest non-wildcard prefix
+    // first when more than one pattern could match the same specifier.
+    entries.sort_by(|(a, _), (b, _)| {
+        let a_len = a.split('*').next().unwrap_or(a).len();
+        let b_len = b.split('*').next().unwrap_or(b).len();
+        b_len.cmp(&a_len)
+    });
+    Some(TsconfigAliases { base_dir, entries })
+}
+
+/// Matches a specifier against one `paths` pattern key (`"@/*"`, or an
+/// exact key with no wildcard at all). A pattern with more than one `*` is
+/// not a shape tsconfig itself allows — treated as malformed and refused
+/// rather than guessed at. Returns the text the `*` captured (empty string
+/// for an exact, wildcard-free match).
+fn match_alias_pattern(pattern: &str, specifier: &str) -> Option<String> {
+    match pattern.find('*') {
+        Some(idx) => {
+            let prefix = &pattern[..idx];
+            let suffix = &pattern[idx + 1..];
+            if suffix.contains('*') {
+                return None;
+            }
+            if specifier.starts_with(prefix)
+                && specifier.ends_with(suffix)
+                && specifier.len() >= prefix.len() + suffix.len()
+            {
+                Some(specifier[prefix.len()..specifier.len() - suffix.len()].to_string())
+            } else {
+                None
+            }
+        }
+        None => {
+            if specifier == pattern {
+                Some(String::new())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Substitutes a pattern's captured wildcard text into one of its `paths`
+/// targets (`"./*"`, `"./src/*"`, or an exact target). Refuses rather than
+/// guesses when the target's wildcard shape doesn't match the pattern's
+/// (tsconfig requires them to agree): a wildcard pattern needs a target
+/// with exactly one `*` to substitute into, and an exact pattern needs an
+/// exact (wildcard-free) target, since a literal target can't disambiguate
+/// which file a wildcard capture meant.
+fn substitute_alias_target(target: &str, capture: &str, pattern_has_star: bool) -> Option<String> {
+    match target.find('*') {
+        Some(idx) => {
+            if !pattern_has_star || target[idx + 1..].contains('*') {
+                return None;
+            }
+            let mut out = String::with_capacity(target.len() + capture.len());
+            out.push_str(&target[..idx]);
+            out.push_str(capture);
+            out.push_str(&target[idx + 1..]);
+            Some(out)
+        }
+        None => {
+            if pattern_has_star {
+                None
+            } else {
+                Some(target.to_string())
+            }
+        }
+    }
+}
+
+/// Strips `//` and `/* */` comments from JSONC text (tsconfig.json's actual
+/// format) so it parses as plain JSON, without disturbing comment-like text
+/// inside string literals. Trailing commas before a closing `}`/`]` — the
+/// other JSONC-ism tsconfig files sometimes carry — are dropped in the same
+/// pass.
+fn strip_jsonc(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                out.push(ch);
+                while let Some(sch) = chars.next() {
+                    out.push(sch);
+                    if sch == '\\' {
+                        if let Some(escaped) = chars.next() {
+                            out.push(escaped);
+                        }
+                    } else if sch == '"' {
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                chars.next();
+                for sch in chars.by_ref() {
+                    if sch == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = '\0';
+                for sch in chars.by_ref() {
+                    if prev == '*' && sch == '/' {
+                        break;
+                    }
+                    prev = sch;
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    strip_trailing_commas(&out)
+}
+
+/// Removes a comma that (ignoring whitespace) is immediately followed by a
+/// closing `}` or `]`, without touching commas inside string literals.
+fn strip_trailing_commas(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '"' {
+            out.push(ch);
+            while let Some(sch) = chars.next() {
+                out.push(sch);
+                if sch == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        out.push(escaped);
+                    }
+                } else if sch == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == ',' {
+            let next_significant = chars.clone().find(|c| !c.is_whitespace());
+            if matches!(next_significant, Some('}') | Some(']')) {
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn extract_with_parser(
@@ -1108,14 +1377,9 @@ fn grpc_service_from_raw_path(raw_path: &str) -> Option<(GrpcService, String)> {
     ))
 }
 
-// ponytail: this receiver text has the same multi-line-whitespace gap
-// `resolve_call_target` had (a client written across lines would also be
-// rejected here) but it feeds GRPC_CALL edges, not CALLS, which is outside
-// this fix's scope. Ceiling: a multi-line gRPC client receiver still
-// produces no GrpcService. Apply the same `collapse_call_target_whitespace`
-// treatment here if that gap is ever reported.
 fn grpc_service_from_path(raw: &str) -> Option<GrpcService> {
-    let trimmed = raw.trim();
+    let trimmed = collapse_call_target_whitespace(raw);
+    let trimmed = trimmed.as_str();
     if trimmed.is_empty() || !is_simple_call_target(trimmed) {
         return None;
     }
@@ -2809,7 +3073,10 @@ fn collect_class_level_attr_types(
 
 #[cfg(test)]
 mod tests {
-    use super::JavascriptExtractor;
+    use super::{
+        JavascriptExtractor, grpc_service_from_path, match_alias_pattern, strip_jsonc,
+        substitute_alias_target,
+    };
     use crate::indexer::extract::LanguageExtractor;
     use crate::indexer::http;
     use crate::indexer::proto;
@@ -2875,5 +3142,119 @@ client.sayHello({ name: "world" }, () => {});
         assert!(calls.iter().any(|edge| {
             edge.target_qualname.as_deref() == Some("/helloworld.greeter/sayhello")
         }));
+    }
+
+    #[test]
+    fn grpc_service_from_path_collapses_interior_whitespace() {
+        // Direct unit-level proof for the `144d675`-style fix: a gRPC
+        // client's constructor path split across lines (formatting, same
+        // semantics) must resolve identically to the single-line form.
+        let single_line =
+            grpc_service_from_path("proto.helloworld.Greeter").expect("single-line path");
+        let multi_line = grpc_service_from_path("proto.helloworld\n    .Greeter")
+            .expect("multi-line path must resolve just like the single-line form");
+        assert_eq!(
+            multi_line.package.as_deref(),
+            single_line.package.as_deref()
+        );
+        assert_eq!(multi_line.service, single_line.service);
+        assert_eq!(multi_line.package.as_deref(), Some("helloworld"));
+        assert_eq!(multi_line.service, "Greeter");
+    }
+
+    #[test]
+    fn grpc_client_multiline_receiver_resolves_like_single_line() {
+        // End-to-end companion to the unit test above: a `new` expression
+        // whose constructor path is split across lines must still register
+        // in `collect_grpc_clients` and produce a resolved GRPC_CALL edge,
+        // exactly like `extracts_grpc_js_impl_and_call`'s single-line form.
+        let source = r#"
+const grpc = require("@grpc/grpc-js");
+const proto = { helloworld: { Greeter: { service: {} } } };
+function sayHello(call, callback) {}
+const server = new grpc.Server();
+server.addService(proto.helloworld.Greeter.service, { sayHello });
+const client = new proto.helloworld
+    .Greeter("localhost:50051", grpc.credentials.createInsecure());
+client.sayHello({ name: "world" }, () => {});
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "index").unwrap();
+        let calls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_CALL_KIND)
+            .collect::<Vec<_>>();
+        assert!(
+            calls.iter().any(|edge| {
+                edge.target_qualname.as_deref() == Some("/helloworld.greeter/sayhello")
+            }),
+            "multi-line gRPC client receiver must still resolve to a GRPC_CALL edge, got {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn match_alias_pattern_extracts_wildcard_capture() {
+        assert_eq!(
+            match_alias_pattern("@/*", "@/lib/foo").as_deref(),
+            Some("lib/foo")
+        );
+        assert_eq!(match_alias_pattern("@/*", "next/navigation"), None);
+        assert_eq!(match_alias_pattern("@utils", "@utils").as_deref(), Some(""));
+        assert_eq!(match_alias_pattern("@utils", "@utils/extra"), None);
+        // More than one '*' isn't a shape tsconfig itself allows in a
+        // pattern; refused rather than guessed at.
+        assert_eq!(match_alias_pattern("@/*/*", "@/a/b"), None);
+    }
+
+    #[test]
+    fn substitute_alias_target_requires_matching_wildcard_shape() {
+        assert_eq!(
+            substitute_alias_target("./*", "lib/foo", true).as_deref(),
+            Some("./lib/foo")
+        );
+        assert_eq!(
+            substitute_alias_target("./src/*", "lib/foo", true).as_deref(),
+            Some("./src/lib/foo")
+        );
+        // A literal target can't disambiguate a wildcard capture: refused.
+        assert_eq!(substitute_alias_target("./fixed", "lib/foo", true), None);
+        // An exact (wildcard-free) pattern needs an exact target.
+        assert_eq!(
+            substitute_alias_target("./utils/index.ts", "", false).as_deref(),
+            Some("./utils/index.ts")
+        );
+        assert_eq!(substitute_alias_target("./*", "", false), None);
+    }
+
+    #[test]
+    fn strip_jsonc_removes_comments_and_trailing_commas_outside_strings() {
+        let input = r#"{
+  // leading comment
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./*"], // trailing line comment
+    },
+    /* block
+       comment */
+    "baseUrl": ".",
+  },
+  "note": "a // not a comment and /* not a comment either",
+}"#;
+        let cleaned = strip_jsonc(input);
+        let value: serde_json::Value =
+            serde_json::from_str(&cleaned).expect("cleaned text must parse as plain JSON");
+        assert_eq!(
+            value["compilerOptions"]["paths"]["@/*"][0]
+                .as_str()
+                .unwrap(),
+            "./*"
+        );
+        assert_eq!(value["compilerOptions"]["baseUrl"].as_str().unwrap(), ".");
+        assert_eq!(
+            value["note"].as_str().unwrap(),
+            "a // not a comment and /* not a comment either"
+        );
     }
 }
