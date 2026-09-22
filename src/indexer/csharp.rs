@@ -28,12 +28,24 @@ struct Context {
     grpc_service: Option<String>,
     /// Locally-bound gRPC client variable names -> `(service, prefix)`,
     /// where `prefix` is whatever qualifying namespace/alias text preceded
-    /// the `{Service}Client` type in its construction (e.g. `DsDeploy` in
-    /// `new DsDeploy.DeployerServiceClient(channel)`) — mirrors
-    /// `grpc_service_from_bases`'s `(service, prefix)` shape on the impl
-    /// side. `None` when the client type was written unqualified. See
-    /// `collect_grpc_clients_inner` / `grpc_client_from_object_creation`.
+    /// the `{Service}.{Service}Client` type in its construction (e.g.
+    /// `DsDeploy` in `new DsDeploy.DeployerService.DeployerServiceClient(channel)`)
+    /// — mirrors `grpc_service_from_bases`'s `(service, prefix)` shape on
+    /// the impl side. `None` when the client type carries no further
+    /// qualification beyond the mandatory `{Service}.{Service}Client`
+    /// self-reference. Also carries class-level fields/properties of the
+    /// *directly enclosing* type (see `collect_class_level_grpc_client_fields`,
+    /// merged in `handle_type`), so a bare `Client.Method()` or
+    /// `this.Client.Method()` call from within that same type resolves too.
+    /// See `collect_grpc_clients_inner` / `grpc_client_from_object_creation`
+    /// / `split_client_service_and_prefix`.
     grpc_clients: HashMap<String, (String, Option<String>)>,
+    /// Cross-file fallback for a gRPC-client-typed field/property accessed
+    /// through a receiver whose own declaring type isn't visible from this
+    /// file (`scope.Client.Deploy(...)`, where `scope`'s type — and its
+    /// `Client` field — are declared in a different file entirely). See
+    /// `GrpcClientFieldRegistry`'s doc.
+    grpc_client_fields: GrpcClientFieldRegistry,
     /// Candidate protobuf package names for `grpc_service`, derived from the
     /// impl class's base-list entry (e.g. `DsDeploy.DeployerService.Base`)
     /// plus this file's `using` directives — see
@@ -111,6 +123,28 @@ struct ExtensionMethodEntry {
 /// declaration seen under that name so far this run.
 type ExtensionRegistry = Rc<RefCell<HashMap<String, Vec<ExtensionMethodEntry>>>>;
 
+/// Keyed by bare field/property name (e.g. "Client") -> every
+/// `(service, prefix)` a gRPC-client-typed field or property declared under
+/// that name has been seen with so far this run, across every file — see
+/// `collect_class_level_grpc_client_fields`. Mirrors `ExtensionRegistry`'s
+/// cross-file, name-keyed, order-dependent design (same ponytail caveat:
+/// a call site in a file processed before the field's declaring file gets
+/// no candidate from this source) for the identical reason: a generated
+/// gRPC client is very often exposed through a same-named field on a small,
+/// repeated test-fixture shape (dpb's own corpus: eight distinct generated
+/// clients, all exposed as a field literally named `Client`, in a different
+/// file than every one of their call sites), so this exists purely to
+/// bridge that gap. A lookup here (`grpc_service_from_client_binding`) fans
+/// out over every candidate rather than picking one — the receiver's own
+/// declaring type is invisible from here, so there's no way to disambiguate
+/// — exactly the same "a wrong candidate simply never matches a real route
+/// downstream" tolerance `grpc_impl_edge`/`grpc_call_edge` already rely on
+/// for candidate *packages*. Every entry here already passed
+/// `split_client_service_and_prefix`'s mandatory self-reference check
+/// before being admitted, so this can only ever fan out over genuine
+/// generated-code candidates, never arbitrary `...Client`-suffixed types.
+type GrpcClientFieldRegistry = Rc<RefCell<HashMap<String, Vec<(String, Option<String>)>>>>;
+
 /// Locally-inferred type of a name bound within a single method/constructor
 /// body (or a class-level field/property/parameter-property). Deliberately
 /// coarse — see `python::LocalType` for the shape this mirrors; everything
@@ -133,6 +167,9 @@ pub struct CSharpExtractor {
     /// Accumulates across every file this extractor instance processes —
     /// see `Context::extension_registry`'s doc.
     extension_registry: ExtensionRegistry,
+    /// Accumulates across every file this extractor instance processes —
+    /// see `GrpcClientFieldRegistry`'s doc.
+    grpc_client_fields: GrpcClientFieldRegistry,
 }
 
 impl CSharpExtractor {
@@ -143,6 +180,7 @@ impl CSharpExtractor {
         Ok(Self {
             parser,
             extension_registry: Rc::new(RefCell::new(HashMap::new())),
+            grpc_client_fields: Rc::new(RefCell::new(HashMap::new())),
         })
     }
 }
@@ -178,6 +216,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             route_groups: HashMap::new(),
             grpc_service: None,
             grpc_clients: HashMap::new(),
+            grpc_client_fields: Rc::clone(&self.grpc_client_fields),
             grpc_package_candidates: Vec::new(),
             // ponytail: unlike Python/TypeScript, there's no meaningful
             // module-top-level scope in C# (locals only ever live inside a
@@ -462,6 +501,21 @@ fn handle_type(
     next_ctx.base_type = resolvable_base_type(node, source, type_kind);
     if let Some(body) = node.child_by_field_name("body") {
         next_ctx.class_attr_types = Rc::new(collect_class_level_attr_types(body, source));
+        let grpc_fields = collect_class_level_grpc_client_fields(body, source);
+        if !grpc_fields.is_empty() {
+            let mut clients = next_ctx.grpc_clients.clone();
+            {
+                let mut registry = next_ctx.grpc_client_fields.borrow_mut();
+                for (field_name, service_and_prefix) in grpc_fields {
+                    let entries = registry.entry(field_name.clone()).or_default();
+                    if !entries.contains(&service_and_prefix) {
+                        entries.push(service_and_prefix.clone());
+                    }
+                    clients.entry(field_name).or_insert(service_and_prefix);
+                }
+            }
+            next_ctx.grpc_clients = clients;
+        }
         walk_declaration_list(body, &next_ctx, source, output);
     }
 }
@@ -1368,16 +1422,78 @@ fn collect_grpc_clients_inner(
         | "enum_declaration" => {
             return;
         }
+        // Intercept one level above `variable_declarator` so the
+        // declaration's own explicit type (a sibling of the declarator, not
+        // a field of it) is in reach — see
+        // `collect_grpc_clients_from_declaration`'s doc for why that's
+        // needed. Every `variable_declarator` is a child of exactly one
+        // `variable_declaration` (local var or field; `foreach`/`catch`/
+        // deconstruction bindings use different node shapes entirely — see
+        // `collect_statement_bindings`'s identical assumption), so handling
+        // it here and stopping is equivalent in coverage to the old
+        // bottom-up match on `variable_declarator` directly, just able to
+        // see the declared type too.
+        "variable_declaration" => {
+            collect_grpc_clients_from_declaration(node, source, clients);
+            return;
+        }
         _ => {}
-    }
-    if node.kind() == "variable_declarator"
-        && let Some((name, service_and_prefix)) = grpc_client_from_declarator(node, source)
-    {
-        clients.insert(name, service_and_prefix);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         collect_grpc_clients_inner(child, source, clients);
+    }
+}
+
+/// Registers every `variable_declarator` in a single `variable_declaration`
+/// (a local variable statement, or — via `collect_class_level_grpc_client_fields`'s
+/// reuse of this same function for a field's inner `variable_declaration` —
+/// a field) as a gRPC client binding, preferring whatever the initializer
+/// itself names (an explicitly typed `new Greeter.GreeterClient(...)`,
+/// however deeply nested — e.g. inside a ternary — since that's at least as
+/// specific as the declaration's own type, and it's the only signal
+/// available at all for a `var` declaration) and falling back to the
+/// declaration's own explicit type otherwise.
+///
+/// That fallback is what makes a C# 9 target-typed `new(channel)`
+/// resolvable at all: `implicit_object_creation_expression` has no `type`
+/// child of its own (see `grpc_client_from_object_creation`'s doc), so
+/// `grpc_client_from_initializer` never finds anything there — the target
+/// type only ever exists on the declaration wrapped around it
+/// (`TeamService.TeamServiceClient client = new(channel);`). The same
+/// fallback also covers a field whose own initializer isn't a construction
+/// at all (`public readonly TeamService.TeamServiceClient Client = default!;`,
+/// dpb's actual shape — the client is really constructed elsewhere and
+/// assigned in via a constructor parameter), since the declared type alone
+/// is sufficient evidence once it's passed `split_client_service_and_prefix`.
+fn collect_grpc_clients_from_declaration(
+    node: Node<'_>,
+    source: &str,
+    clients: &mut HashMap<String, (String, Option<String>)>,
+) {
+    let declared = node
+        .child_by_field_name("type")
+        .filter(|t| t.kind() != "implicit_type")
+        .and_then(|t| split_client_service_and_prefix(&node_text(t, source)));
+    let mut cursor = node.walk();
+    for declarator in node.named_children(&mut cursor) {
+        if declarator.kind() != "variable_declarator" {
+            continue;
+        }
+        let Some(name_node) = declarator.child_by_field_name("name") else {
+            continue;
+        };
+        let name = node_text(name_node, source);
+        if name.is_empty() {
+            continue;
+        }
+        let from_initializer = declarator
+            .child_by_field_name("initializer")
+            .and_then(|initializer| grpc_client_from_initializer(initializer, source))
+            .or_else(|| grpc_client_from_initializer(declarator, source));
+        if let Some(service_and_prefix) = from_initializer.or_else(|| declared.clone()) {
+            clients.insert(name, service_and_prefix);
+        }
     }
 }
 
@@ -1409,22 +1525,6 @@ fn map_group_prefix_in_node(node: Node<'_>, source: &str) -> Option<String> {
     None
 }
 
-fn grpc_client_from_declarator(
-    node: Node<'_>,
-    source: &str,
-) -> Option<(String, (String, Option<String>))> {
-    let name_node = node.child_by_field_name("name")?;
-    let name = node_text(name_node, source);
-    if name.is_empty() {
-        return None;
-    }
-    let service_and_prefix = node
-        .child_by_field_name("initializer")
-        .and_then(|initializer| grpc_client_from_initializer(initializer, source))
-        .or_else(|| grpc_client_from_initializer(node, source))?;
-    Some((name, service_and_prefix))
-}
-
 fn grpc_client_from_initializer(node: Node<'_>, source: &str) -> Option<(String, Option<String>)> {
     if node.kind() == "object_creation_expression"
         && let Some(result) = grpc_client_from_object_creation(node, source)
@@ -1443,10 +1543,17 @@ fn grpc_client_from_initializer(node: Node<'_>, source: &str) -> Option<(String,
 /// `new {prefix.}{Service}Client(...)` -> `(service, prefix)` — same
 /// `(service, prefix)` shape `grpc_service_from_base` returns on the impl
 /// side, so `grpc_call_edge` can feed both through the same
-/// `grpc_package_candidates_from_prefix`. Unlike the impl side's
-/// `X.XBase` self-reference requirement, a generated client type has no
-/// such stutter to validate against — any qualifying prefix before
-/// `{Service}Client` is taken at face value.
+/// `grpc_package_candidates_from_prefix`. Mirrors the impl side's
+/// `X.XBase` self-reference requirement exactly (see
+/// `split_client_service_and_prefix`) — this is also, deliberately, the
+/// *only* way this ever returns `Some` for a bare, unqualified
+/// `new WhateverClient(...)`, which is what an Azure SDK client
+/// (`BlobServiceClient`, `SecretClient`, `ServiceBusClient`, ...) or the
+/// Microsoft Graph SDK's `GraphServiceClient` always looks like in real
+/// code (confirmed against dpb: every non-gRPC `...Client` construction in
+/// that repo is either bare or, when fully qualified, doesn't carry the
+/// `{Service}.{Service}Client` stutter) — see that function's doc for why
+/// requiring it is the corroborating signal.
 fn grpc_client_from_object_creation(
     node: Node<'_>,
     source: &str,
@@ -1460,21 +1567,35 @@ fn grpc_client_from_object_creation(
 }
 
 /// Strip a trailing `Client` suffix (generated gRPC client type convention)
-/// from a possibly dot-qualified type/receiver text, returning
-/// `(service, prefix)` where `prefix` is whatever dotted segments preceded
-/// the final `{Service}Client` segment, *excluding* the generated-code
-/// self-reference — grpc-csharp always nests `{Service}Client` inside a
-/// `{Service}` wrapper class (`Greeter.GreeterClient`), the same stutter
-/// `grpc_service_from_base` already strips for `{Service}.{Service}Base` on
-/// the impl side, so a lone matching segment right before `{Service}Client`
-/// is consumed rather than mistaken for a real namespace/alias prefix.
-/// `None` when nothing qualifying remains. Shared by both client-detection
-/// paths: a `new {prefix.}{Service}Client(...)` construction
-/// (`grpc_client_from_object_creation`) and a call-site receiver that is
-/// itself an inline construction (`grpc_service_from_client_receiver`).
+/// from a dot-qualified type/receiver text, returning `(service, prefix)`
+/// where `prefix` is whatever dotted segments preceded the
+/// `{Service}.{Service}Client` pair, *excluding* that pair itself.
+///
+/// The `{Service}.` segment immediately before `{Service}Client` is
+/// mandatory, not optional — grpc-csharp always nests the generated client
+/// class inside a `{Service}` wrapper class of the exact same name
+/// (`Greeter.GreeterClient`), so requiring that literal self-reference
+/// stutter, exactly as `grpc_service_from_base` already requires it for
+/// `{Service}.{Service}Base` on the impl side, is what tells a real
+/// generated gRPC client apart from an unrelated `...Client`-suffixed SDK
+/// type. This used to be optional here ("any qualifying prefix is taken at
+/// face value"), which is exactly what let every Azure SDK / Graph SDK
+/// client in dpb (`BlobServiceClient`, `SecretClient`, `ServiceBusClient`,
+/// `GraphServiceClient`, ...) masquerade as a gRPC client and fan out one
+/// bogus RPC_CALL candidate per bare `using` in its file — see
+/// `grpc_call_edge`'s doc. A bare, unqualified type (no `.` at all — how
+/// every one of those SDK types is actually constructed in dpb) can never
+/// carry the stutter, so it's rejected up front the same way
+/// `grpc_service_from_base` rejects a bare `XBase`.
+///
+/// `None` when the stutter isn't present. Shared by both client-detection
+/// paths: a `new {prefix.}{Service}.{Service}Client(...)` construction, a
+/// declared field/local type of that same shape (`collect_class_level_grpc_client_fields`
+/// / `collect_grpc_clients_from_declaration`), and a call-site receiver
+/// that is itself an inline construction (`grpc_service_from_client_receiver`).
 fn split_client_service_and_prefix(text: &str) -> Option<(String, Option<String>)> {
     let text = text.trim();
-    if text.is_empty() {
+    if text.is_empty() || !text.contains('.') {
         return None;
     }
     let mut parts: Vec<&str> = text.split('.').map(str::trim).collect();
@@ -1493,8 +1614,10 @@ fn split_client_service_and_prefix(text: &str) -> Option<(String, Option<String>
     if service.is_empty() {
         return None;
     }
-    if parts.last() == Some(&service) {
-        parts.pop();
+    // Mandatory self-reference stutter — see the doc comment above.
+    let prev = parts.pop()?;
+    if prev != service {
+        return None;
     }
     let prefix = parts
         .into_iter()
@@ -1609,17 +1732,26 @@ fn grpc_impl_edge(node: Node<'_>, ctx: &Context, source: &str, rpc_name: &str) -
     edges
 }
 
-/// Builds an `RPC_CALL` edge per candidate protobuf package, mirroring
-/// `grpc_impl_edge`'s treatment of `RPC_IMPL` (see that function's doc) —
-/// the client side had the identical CLR-namespace bug `1c83726` fixed for
-/// the impl side: the generated `{Service}Client` type's own qualifying
-/// prefix (from `new {prefix.}{Service}Client(...)`, captured by
-/// `grpc_client_from_object_creation` and carried in `ctx.grpc_clients`),
-/// not `ctx.namespace_stack` (the *calling* code's own CLR namespace, which
-/// has no reliable relationship to the proto package a client it happens to
-/// construct belongs to), is what determines the package. Reuses
-/// `grpc_package_candidates_from_prefix` rather than duplicating its
-/// alias-resolution/bare-`using`-fallback logic.
+/// Builds an `RPC_CALL` edge per candidate `(service, protobuf package)`
+/// pair, mirroring `grpc_impl_edge`'s treatment of `RPC_IMPL` (see that
+/// function's doc) — the client side had the identical CLR-namespace bug
+/// `1c83726` fixed for the impl side: the generated `{Service}.{Service}Client`
+/// type's own qualifying prefix (from `new {prefix.}{Service}.{Service}Client(...)`,
+/// captured by `grpc_client_from_object_creation` and carried in
+/// `ctx.grpc_clients`), not `ctx.namespace_stack` (the *calling* code's own
+/// CLR namespace, which has no reliable relationship to the proto package a
+/// client it happens to construct belongs to), is what determines the
+/// package. Reuses `grpc_package_candidates_from_prefix` rather than
+/// duplicating its alias-resolution/bare-`using`-fallback logic.
+///
+/// Candidate *services* (plural) only when resolution fell through to
+/// `grpc_service_from_client_binding`'s cross-file registry fallback — see
+/// `GrpcClientFieldRegistry`'s doc for why that one's inherently ambiguous
+/// (the receiver's own declaring type isn't visible from here) and why
+/// fanning out over every one of them, rather than picking a winner, is
+/// still safe: crossed with candidate packages below, a wrong `(service,
+/// package)` pair just never matches a real `RPC_IMPL`/`RPC_ROUTE` target
+/// downstream, exactly like a wrong candidate package alone already didn't.
 fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
     if node.kind() != "invocation_expression" {
         return Vec::new();
@@ -1633,53 +1765,58 @@ fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput>
     let Some(rpc_name) = normalize_grpc_method_name(&target.name) else {
         return Vec::new();
     };
-    let Some((service, prefix)) = grpc_service_from_client_receiver(target.receiver.as_deref())
-        .or_else(|| grpc_service_from_client_binding(target.receiver.as_deref(), ctx))
-    else {
+    let services: Vec<(String, Option<String>)> =
+        match grpc_service_from_client_receiver(target.receiver.as_deref()) {
+            Some(service_and_prefix) => vec![service_and_prefix],
+            None => grpc_service_from_client_binding(target.receiver.as_deref(), ctx),
+        };
+    if services.is_empty() {
         return Vec::new();
-    };
+    }
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     let source_qualname = ctx.current_scope.clone();
-    // Same ponytail fallback as `grpc_impl_edge`: no derivable prefix and no
-    // bare `using` in the file still emits one package-less candidate
-    // rather than nothing, covering a proto file with no `package`
-    // statement.
-    let packages: Vec<Option<String>> =
-        match grpc_package_candidates_from_prefix(prefix.as_deref(), ctx) {
-            candidates if candidates.is_empty() => vec![None],
-            candidates => candidates.into_iter().map(Some).collect(),
-        };
     let mut seen_targets = std::collections::HashSet::new();
     let mut edges = Vec::new();
-    for package in packages {
-        let Some((raw_path, normalized)) =
-            proto::normalize_rpc_path(package.as_deref(), &service, &rpc_name)
-        else {
-            continue;
-        };
-        if !seen_targets.insert(normalized.clone()) {
-            continue;
+    for (service, prefix) in services {
+        // Same ponytail fallback as `grpc_impl_edge`: no derivable prefix
+        // and no bare `using` in the file still emits one package-less
+        // candidate rather than nothing, covering a proto file with no
+        // `package` statement.
+        let packages: Vec<Option<String>> =
+            match grpc_package_candidates_from_prefix(prefix.as_deref(), ctx) {
+                candidates if candidates.is_empty() => vec![None],
+                candidates => candidates.into_iter().map(Some).collect(),
+            };
+        for package in packages {
+            let Some((raw_path, normalized)) =
+                proto::normalize_rpc_path(package.as_deref(), &service, &rpc_name)
+            else {
+                continue;
+            };
+            if !seen_targets.insert(normalized.clone()) {
+                continue;
+            }
+            let detail = json!({
+                "framework": "grpc-csharp",
+                "role": "client",
+                "service": service,
+                "rpc": rpc_name,
+                "package": package,
+                "raw": raw_path,
+            })
+            .to_string();
+            edges.push(EdgeInput {
+                kind: proto::RPC_CALL_KIND.to_string(),
+                source_qualname: Some(source_qualname.clone()),
+                target_qualname: Some(normalized),
+                detail: Some(detail),
+                evidence_snippet: snippet.clone(),
+                evidence_start_line: Some(start_line),
+                evidence_end_line: Some(end_line),
+                ..Default::default()
+            });
         }
-        let detail = json!({
-            "framework": "grpc-csharp",
-            "role": "client",
-            "service": service,
-            "rpc": rpc_name,
-            "package": package,
-            "raw": raw_path,
-        })
-        .to_string();
-        edges.push(EdgeInput {
-            kind: proto::RPC_CALL_KIND.to_string(),
-            source_qualname: Some(source_qualname.clone()),
-            target_qualname: Some(normalized),
-            detail: Some(detail),
-            evidence_snippet: snippet.clone(),
-            evidence_start_line: Some(start_line),
-            evidence_end_line: Some(end_line),
-            ..Default::default()
-        });
     }
     edges
 }
@@ -1849,23 +1986,35 @@ fn grpc_service_from_client_receiver(receiver: Option<&str>) -> Option<(String, 
     split_client_service_and_prefix(&value)
 }
 
+/// Resolves a call-site receiver to every candidate `(service, prefix)` it
+/// could name, trying — in order — an exact match against this file's own
+/// `ctx.grpc_clients` (locally-bound variable, or a field/property of the
+/// directly enclosing type), then the receiver's trailing segment against
+/// the same map (`obj.client.Method()`-style single-hop field access within
+/// this file), then that trailing segment against the cross-file
+/// `ctx.grpc_client_fields` registry — see that type's doc for why this
+/// last tier can return more than one candidate and why that's still safe.
+/// The first tier to produce anything wins; later tiers are strictly less
+/// precise so they're only consulted once an earlier one comes up empty.
 fn grpc_service_from_client_binding(
     receiver: Option<&str>,
     ctx: &Context,
-) -> Option<(String, Option<String>)> {
-    let receiver = receiver?.trim();
-    if receiver.is_empty() {
-        return None;
-    }
+) -> Vec<(String, Option<String>)> {
+    let Some(receiver) = receiver.map(str::trim).filter(|r| !r.is_empty()) else {
+        return Vec::new();
+    };
     if let Some(service_and_prefix) = ctx.grpc_clients.get(receiver) {
-        return Some(service_and_prefix.clone());
+        return vec![service_and_prefix.clone()];
     }
-    if let Some(last) = receiver.rsplit('.').next()
-        && let Some(service_and_prefix) = ctx.grpc_clients.get(last)
-    {
-        return Some(service_and_prefix.clone());
+    let last = receiver.rsplit('.').next().unwrap_or(receiver);
+    if let Some(service_and_prefix) = ctx.grpc_clients.get(last) {
+        return vec![service_and_prefix.clone()];
     }
-    None
+    ctx.grpc_client_fields
+        .borrow()
+        .get(last)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn http_request_message_parts(node: Node<'_>, source: &str) -> Option<(String, String)> {
@@ -3217,6 +3366,65 @@ fn collect_class_level_attr_types(
     result
 }
 
+/// Type-annotated fields (`field_declaration`) and properties
+/// (`property_declaration`) declared directly in a type's body whose
+/// declared type itself is a corroborated gRPC client type (see
+/// `split_client_service_and_prefix`) — regardless of what, if anything,
+/// initializes them. A field's own initializer is very often `default!`,
+/// with the client set for real in a constructor parameter instead (dpb's
+/// actual shape, e.g. `public readonly TeamService.TeamServiceClient
+/// Client = default!;`); the *declared type* is the only signal this needs.
+/// Reuses `collect_grpc_clients_from_declaration` for the field case (same
+/// `field_declaration -> variable_declaration -> variable_declarator` shape
+/// a local variable statement has) rather than duplicating its
+/// declared-type-first logic. Feeds `Context::grpc_clients` (in-class
+/// access — `handle_type` merges this in) and `Context::grpc_client_fields`
+/// (cross-file access — see that type's doc for why a field is the more
+/// important half of this defect: dpb's real call sites are all
+/// `scope.Client.Method()`, never same-class).
+fn collect_class_level_grpc_client_fields(
+    class_body: Node<'_>,
+    source: &str,
+) -> HashMap<String, (String, Option<String>)> {
+    let mut result = HashMap::new();
+    let mut cursor = class_body.walk();
+    for member in class_body.named_children(&mut cursor) {
+        match member.kind() {
+            "field_declaration" => {
+                let mut inner = member.walk();
+                for decl in member.named_children(&mut inner) {
+                    if decl.kind() != "variable_declaration" {
+                        continue;
+                    }
+                    collect_grpc_clients_from_declaration(decl, source, &mut result);
+                }
+            }
+            "property_declaration" => {
+                let Some(name_node) = member.child_by_field_name("name") else {
+                    continue;
+                };
+                let Some(type_node) = member.child_by_field_name("type") else {
+                    continue;
+                };
+                if type_node.kind() == "implicit_type" {
+                    continue;
+                }
+                let name = node_text(name_node, source);
+                if name.is_empty() {
+                    continue;
+                }
+                if let Some(service_and_prefix) =
+                    split_client_service_and_prefix(&node_text(type_node, source))
+                {
+                    result.insert(name, service_and_prefix);
+                }
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3425,6 +3633,168 @@ namespace Dpb.DataMgr.Catalog.Grpc {
                 == Some("/dpb.datamgr.catalog.grpc.inventoryservice/getinventory")),
             "must not key the route off the impl class's own CLR namespace"
         );
+    }
+
+    #[test]
+    fn grpc_call_resolves_target_typed_new_from_declared_type() {
+        // C# 9 target-typed `new(...)` -- `implicit_object_creation_expression`
+        // -- has no `type` node of its own (see
+        // `grpc_client_from_object_creation`'s doc), so the type has to come
+        // from the declaration wrapped around it instead. This is dpb's own
+        // shape (e.g. `dotnet/tests/Dpb.DataMgr.Tests/Fixtures/TeamServiceScope.cs`:
+        // `TeamService.TeamServiceClient client = new(channel);`). Mirrors
+        // `extracts_grpc_impl_and_call`'s call-side assertions exactly, just
+        // with the client constructed the way dpb's fixtures actually write
+        // it, to prove the route key lands on the same target either way.
+        let source = r#"
+using Example.V1;
+
+Greeter.GreeterClient client = new(channel);
+client.SayHelloAsync(new HelloRequest());
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let calls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_CALL_KIND)
+            .collect::<Vec<_>>();
+        assert!(
+            calls
+                .iter()
+                .any(|edge| edge.target_qualname.as_deref() == Some("/example.v1.greeter/sayhello")),
+            "a target-typed new(...) construction must resolve to the same route key an \
+             explicitly-typed construction would, got {:?}",
+            calls.iter().map(|e| &e.target_qualname).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn grpc_call_resolves_client_field_exposed_from_a_different_file() {
+        // dpb's actual end-to-end shape: a test-fixture "Scope" class
+        // exposes its gRPC client through a field (`Client`, itself
+        // constructed elsewhere -- often via target-typed `new(...)` inside
+        // the class's own static factory method, and merely assigned here
+        // through a constructor parameter, never reconstructed), and every
+        // real call site is in a *different* file
+        // (`scope.Client.SomeRpcAsync(...)` in a `*Tests.cs` file, the field
+        // declared in a `*ServiceScope.cs` fixture file) -- see
+        // `GrpcClientFieldRegistry`'s doc. Calling `extract` twice on the
+        // same `CSharpExtractor` mirrors a real cold reindex processing both
+        // files against one shared extractor instance.
+        let fixture_source = r#"
+using Example.V1;
+using Grpc.Net.Client;
+
+public class GreeterScope
+{
+    public readonly Greeter.GreeterClient Client = default!;
+
+    private GreeterScope(Greeter.GreeterClient client) => Client = client;
+
+    public static GreeterScope Create(GrpcChannel channel)
+    {
+        Greeter.GreeterClient client = new(channel);
+        return new(client);
+    }
+}
+"#;
+        let test_source = r#"
+using Example.V1;
+
+var scope = GreeterScope.Create(channel);
+scope.Client.SayHelloAsync(new HelloRequest());
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        extractor
+            .extract(fixture_source, "fixtures/greeter_scope")
+            .unwrap();
+        let file = extractor
+            .extract(test_source, "tests/greeter_tests")
+            .unwrap();
+        let calls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_CALL_KIND)
+            .collect::<Vec<_>>();
+        assert!(
+            calls
+                .iter()
+                .any(|edge| edge.target_qualname.as_deref() == Some("/example.v1.greeter/sayhello")),
+            "a gRPC client exposed through a same-named field declared in a different file must \
+             still resolve, got {:?}",
+            calls.iter().map(|e| &e.target_qualname).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn azure_style_client_type_is_not_mistaken_for_a_grpc_client() {
+        // Concrete regression case: dpb's own false-positive source. Azure
+        // SDK (`BlobServiceClient`, `SecretClient`, `ServiceBusClient`) and
+        // Microsoft Graph SDK (`GraphServiceClient`) types are all
+        // `...Client`-suffixed but never carry the mandatory
+        // `{Service}.{Service}Client` self-reference stutter a real
+        // generated gRPC client always has -- confirmed against dpb, every
+        // one of these is constructed either fully unqualified or (rarely)
+        // fully qualified without the stutter (`new
+        // Azure.Storage.Blobs.BlobServiceClient(...)`), never as
+        // `BlobService.BlobServiceClient`. Neither shape should register as
+        // a gRPC client at all, so no RPC_CALL should ever come from using
+        // one, however it's later called.
+        let source = r#"
+using Azure.Storage.Blobs;
+
+var blobService = new BlobServiceClient(connectionString);
+var containerClient = blobService.GetBlobContainerClient(containerId);
+containerClient.CreateIfNotExistsAsync();
+
+var fullyQualified = new Azure.Storage.Blobs.BlobServiceClient(connectionString);
+fullyQualified.GetBlobContainerClient(containerId);
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let calls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_CALL_KIND)
+            .collect::<Vec<_>>();
+        assert!(
+            calls.is_empty(),
+            "an Azure SDK ...Client type (no gRPC self-reference stutter) must never produce an \
+             RPC_CALL, got {:?}",
+            calls.iter().map(|e| &e.target_qualname).collect::<Vec<_>>()
+        );
+    }
+
+    /// Neuters `split_client_service_and_prefix`'s mandatory self-reference
+    /// stutter requirement (see that function's doc) directly, to prove
+    /// `azure_style_client_type_is_not_mistaken_for_a_grpc_client` is
+    /// non-vacuous: with the corroboration check disabled, the exact same
+    /// Azure SDK construction from that test *does* register (as a bogus
+    /// "BlobService" client), showing the test would fail to catch a
+    /// regression that reintroduced the old, unguarded behavior.
+    #[test]
+    fn split_client_service_and_prefix_without_stutter_check_would_match_azure_types() {
+        fn split_without_stutter_requirement(text: &str) -> Option<(String, Option<String>)> {
+            let text = text.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let mut parts: Vec<&str> = text.split('.').map(str::trim).collect();
+            let last = parts.pop()?;
+            let last = last.split('<').next().unwrap_or(last).trim();
+            let service = last.strip_suffix("Client")?;
+            if service.is_empty() {
+                return None;
+            }
+            Some((service.to_string(), None))
+        }
+        assert_eq!(
+            split_without_stutter_requirement("BlobServiceClient"),
+            Some(("BlobService".to_string(), None))
+        );
+        // The real (fixed) function must reject the same input.
+        assert_eq!(split_client_service_and_prefix("BlobServiceClient"), None);
     }
 
     #[test]
