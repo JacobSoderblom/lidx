@@ -1,4 +1,4 @@
-use lidx::indexer::extract::LanguageExtractor;
+use lidx::indexer::extract::{LanguageExtractor, ReceiverType};
 use lidx::indexer::python::{PythonExtractor, module_name_from_rel_path};
 
 #[test]
@@ -500,5 +500,89 @@ def make():
     assert!(
         config_edge_targets(&extracted, "CONFIG_BIND").is_empty(),
         "function-local settings class should not emit config edges"
+    );
+}
+
+#[test]
+fn tuple_unpacking_target_is_tracked_as_unresolved_receiver() {
+    // Regression for a gap found while measuring on a real corpus (dpb):
+    // `base_var, body = f()` then `body.append(x)` — `body` is bound via
+    // tuple-unpacking, not a simple `identifier = ...` assignment. If it
+    // isn't tracked as a local at all, `body.append(...)` falls through to
+    // the untyped legacy resolution pipeline exactly like the false
+    // positives this fix targets (it was observed binding to a domain
+    // `append` method it has nothing to do with).
+    let source = r#"
+def render():
+    base_var, body = split()
+    body.append("line")
+"#;
+    let module = module_name_from_rel_path("app/gen.py");
+    let mut extractor = PythonExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("body.append"))
+        .expect("body.append(...) call must be extracted");
+
+    assert_eq!(
+        call.receiver_type,
+        ReceiverType::Unresolved,
+        "a tuple-unpacked local must be tracked (gated), not silently left \
+         untracked and deferred to the legacy pipeline"
+    );
+}
+
+#[test]
+fn for_loop_unpacking_target_is_tracked_as_unresolved_receiver() {
+    let source = r#"
+def render():
+    for key, body in pairs():
+        body.append("line")
+"#;
+    let module = module_name_from_rel_path("app/gen.py");
+    let mut extractor = PythonExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("body.append"))
+        .expect("body.append(...) call must be extracted");
+
+    assert_eq!(call.receiver_type, ReceiverType::Unresolved);
+}
+
+#[test]
+fn module_level_local_is_tracked_as_unresolved_receiver() {
+    // Regression for a second gap found on the same real corpus: a call at
+    // *module* top level through a module-level local (e.g. the common
+    // namespace-package idiom `__path__ = pkgutil.extend_path(...)` then
+    // `__path__.append(...)`) is its own single scope, exactly like a
+    // function body — but `local_types` used to start out empty for module
+    // scope, so this fell through to the untyped legacy pipeline exactly
+    // like the tuple-unpacking gap above.
+    let source = r#"
+import pkgutil
+
+__path__ = pkgutil.extend_path(__path__, __name__)
+__path__.append("/extra")
+"#;
+    let module = module_name_from_rel_path("app/__init__.py");
+    let mut extractor = PythonExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("__path__.append"))
+        .expect("__path__.append(...) call must be extracted");
+
+    assert_eq!(
+        call.receiver_type,
+        ReceiverType::Unresolved,
+        "a module-level local must be tracked (gated) the same way a function-local is"
     );
 }

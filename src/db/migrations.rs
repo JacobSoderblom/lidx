@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -68,6 +68,8 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             trace_id TEXT,
             span_id TEXT,
             event_ts INTEGER,
+            receiver_type TEXT,
+            resolution_kind TEXT,
             FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
         );
 
@@ -320,6 +322,24 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 
     if existing < 12 {
         conn.execute("DROP TABLE IF EXISTS diagnostics", [])?;
+    }
+
+    if existing < 13 {
+        // receiver_type: the extractor's receiver-type signal for a CALLS
+        // edge (NULL = not tracked/legacy tiers, '' = tracked but
+        // unresolved/builtin, other = the inferred type name). Persisted
+        // (not just used transiently at insert time) so `resolve_null_target_edges`
+        // re-resolves a repaired edge under the same gating on later passes.
+        // resolution_kind: provenance for HOW target_symbol_id was resolved
+        // ('exact' | 'receiver_type' | 'two_segment' | 'bare_name'), NULL
+        // when unresolved. Deliberately separate from `confidence`, which
+        // keeps its pre-existing meaning (Rust CALLS extraction certainty).
+        if !has_column(conn, "edges", "receiver_type")? {
+            conn.execute("ALTER TABLE edges ADD COLUMN receiver_type TEXT", [])?;
+        }
+        if !has_column(conn, "edges", "resolution_kind")? {
+            conn.execute("ALTER TABLE edges ADD COLUMN resolution_kind TEXT", [])?;
+        }
     }
 
     if existing < SCHEMA_VERSION {

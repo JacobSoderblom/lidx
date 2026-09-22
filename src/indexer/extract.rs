@@ -13,6 +13,54 @@ pub struct SymbolInput {
     pub docstring: Option<String>,
 }
 
+/// Inferred type of a method call's receiver (e.g. the `store` in
+/// `store.append(x)`), used to gate fuzzy CALLS-edge resolution so a call
+/// through a receiver of unknown or builtin type does not bind to an
+/// unrelated same-named method elsewhere in the index (see issue #45's
+/// measurement: 84% of bound CALLS edges on a real corpus were exactly this
+/// — a local variable's `.append`/`.write_line`/... colliding with an
+/// unrelated domain method of the same name).
+///
+/// Populated by the Python extractor for wave 1; the DB resolution path
+/// this gates is language-agnostic, so future extractors (TypeScript, C#)
+/// can populate it the same way without further DB changes.
+///
+/// ponytail: this is deliberately not a type checker. See
+/// `python::infer_receiver_type` and `python::infer_local_types` for
+/// exactly which shapes are inferred and which collapse to `Unresolved`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ReceiverType {
+    /// No receiver-type signal for this edge: either it isn't a method
+    /// call with an inferable receiver shape (a bare function call), or
+    /// the base is a name this extractor doesn't track as local (e.g. a
+    /// direct class/module reference like `ClassName.static_method()`).
+    /// Resolution falls back to the pre-existing exact/two-segment/
+    /// bare-name tiers, unchanged.
+    #[default]
+    NotTracked,
+    /// This edge is a method call through a receiver whose type is a
+    /// builtin (list/str/dict/...) or otherwise could not be determined.
+    /// Resolution must not bind this edge.
+    Unresolved,
+    /// The receiver's type was inferred to be this name. Resolution must
+    /// require the target method to belong to a matching type.
+    Known(String),
+}
+
+impl ReceiverType {
+    /// Encode as the `edges.receiver_type` column value: `None` = not
+    /// tracked (legacy resolution tiers apply), `Some("")` = tracked but
+    /// unresolved/builtin (must not bind, no lookup attempted at all),
+    /// `Some(ty)` = tracked with this inferred type name.
+    pub fn as_column(&self) -> Option<&str> {
+        match self {
+            ReceiverType::NotTracked => None,
+            ReceiverType::Unresolved => Some(""),
+            ReceiverType::Known(ty) => Some(ty.as_str()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct EdgeInput {
     pub kind: String,
@@ -26,6 +74,7 @@ pub struct EdgeInput {
     pub trace_id: Option<String>,
     pub span_id: Option<String>,
     pub event_ts: Option<i64>,
+    pub receiver_type: ReceiverType,
 }
 
 #[derive(Debug, Default)]

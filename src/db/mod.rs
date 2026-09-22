@@ -1,6 +1,8 @@
 use crate::config::Config;
 use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::differ::SymbolDiff;
+#[cfg(test)]
+use crate::indexer::extract::ReceiverType;
 use crate::indexer::extract::{EdgeInput, SymbolInput};
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use crate::model::{Edge, GraphVersion, Symbol};
@@ -1115,8 +1117,9 @@ impl Db {
             let mut insert_stmt = tx.prepare(
                 "INSERT INTO edges
                  (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail, evidence_snippet,
-                  evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts,
+                  receiver_type, resolution_kind)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             let mut exact_lookup_stmt = tx.prepare(
                 "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
@@ -1162,103 +1165,32 @@ impl Db {
                     &mut exact_lookup_stmt,
                     graph_version,
                 )?;
-                let target_id = resolve_symbol_id(
+                let exact_target = resolve_symbol_id(
                     &edge.target_qualname,
                     symbol_map,
                     &mut exact_lookup_stmt,
                     graph_version,
-                )?
-                .or_else(|| {
-                    // Fuzzy fallback: try same-language first, then cross-language for bridge edges only.
-                    // Each tier binds only when it has exactly one candidate; a same-named symbol
-                    // with several candidates (e.g. `list.append` vs. a domain `append` method) is
-                    // left NULL rather than guessed at (see `single_unambiguous_match`).
-                    edge.target_qualname.as_ref().and_then(|qn| {
-                        // Tier 1: match on the last two qualname segments (`Type::method`),
-                        // when the call site's target_qualname carries more than one
-                        // segment. This lets `Db::new` find `crate::db::Db::new` without
-                        // colliding with unrelated `new` methods (`Vec::new`, `HashMap::new`,
-                        // ...) that share only the bare trailing name. Falls through to tier 2
-                        // when no two-segment candidate exists (e.g. `Vec::new` has no local
-                        // symbol, so this tier finds nothing and bare-name tier below still
-                        // correctly refuses to bind it — see the ambiguity guard).
-                        if let Some((two_seg, two_dot, two_colons)) =
-                            two_segment_qualname_patterns(qn)
-                        {
-                            let same_lang = single_unambiguous_match(
-                                &mut fuzzy_same_lang_stmt,
-                                params![
-                                    &two_seg,
-                                    &two_dot,
-                                    &two_colons,
-                                    graph_version,
-                                    graph_version,
-                                    &source_lang
-                                ],
-                            )
-                            .ok()
-                            .flatten();
-                            if same_lang.is_some() {
-                                return same_lang;
-                            }
-                            if is_bridge_edge_kind(&edge.kind) {
-                                let any_lang = single_unambiguous_match(
-                                    &mut fuzzy_any_lang_stmt,
-                                    params![
-                                        &two_seg,
-                                        &two_dot,
-                                        &two_colons,
-                                        graph_version,
-                                        graph_version
-                                    ],
-                                )
-                                .ok()
-                                .flatten();
-                                if any_lang.is_some() {
-                                    return any_lang;
-                                }
-                            }
-                        }
-
-                        // Tier 2 (existing, unchanged): bare trailing-name match.
-                        let (method_name, dot_pattern, colons_pattern) =
-                            fuzzy_qualname_patterns(qn);
-                        // Try same-language first
-                        let same_lang = single_unambiguous_match(
+                )?;
+                // Exact qualname match is always tried first, regardless of
+                // receiver_type — it's authoritative when it hits. Only on a
+                // miss do we consult the receiver-type-gated fuzzy tiers
+                // (see `resolve_fuzzy_target`).
+                let (target_id, resolution_kind) = if exact_target.is_some() {
+                    (exact_target, Some("exact"))
+                } else {
+                    match edge.target_qualname.as_deref() {
+                        Some(qn) => resolve_fuzzy_target(
+                            qn,
+                            edge.receiver_type.as_column(),
+                            &edge.kind,
+                            &source_lang,
+                            graph_version,
                             &mut fuzzy_same_lang_stmt,
-                            params![
-                                method_name,
-                                &dot_pattern,
-                                &colons_pattern,
-                                graph_version,
-                                graph_version,
-                                &source_lang
-                            ],
-                        )
-                        .ok()
-                        .flatten();
-                        if same_lang.is_some() {
-                            return same_lang;
-                        }
-                        // Cross-language fallback only for bridge edge kinds
-                        if is_bridge_edge_kind(&edge.kind) {
-                            single_unambiguous_match(
-                                &mut fuzzy_any_lang_stmt,
-                                params![
-                                    method_name,
-                                    &dot_pattern,
-                                    &colons_pattern,
-                                    graph_version,
-                                    graph_version
-                                ],
-                            )
-                            .ok()
-                            .flatten()
-                        } else {
-                            None
-                        }
-                    })
-                });
+                            &mut fuzzy_any_lang_stmt,
+                        )?,
+                        None => (None, None),
+                    }
+                };
 
                 insert_stmt.execute(params![
                     file_id,
@@ -1276,6 +1208,8 @@ impl Db {
                     edge.trace_id.as_deref(),
                     edge.span_id.as_deref(),
                     edge.event_ts,
+                    edge.receiver_type.as_column(),
+                    resolution_kind,
                 ])?;
                 count += 1;
             }
@@ -1294,15 +1228,26 @@ impl Db {
     pub fn resolve_null_target_edges(&self, graph_version: i64) -> Result<usize> {
         let mut total_resolved = 0;
 
-        // First pass: exact match
+        // First pass: exact match. Unconditional — exact qualname equality
+        // is authoritative regardless of receiver_type. Tag resolution_kind
+        // only for rows this pass actually binds (the correlated subquery
+        // is evaluated against the pre-update row on both sides, so this is
+        // unambiguous regardless of SQLite's SET-clause evaluation order).
         let exact_resolved = self.conn().execute(
-            "UPDATE edges SET target_symbol_id = (
-                SELECT s.id FROM symbols s
-                WHERE s.qualname = edges.target_qualname
-                AND s.graph_version = edges.graph_version
-                ORDER BY s.id ASC
-                LIMIT 1
-            )
+            "UPDATE edges SET
+                target_symbol_id = (
+                    SELECT s.id FROM symbols s
+                    WHERE s.qualname = edges.target_qualname
+                    AND s.graph_version = edges.graph_version
+                    ORDER BY s.id ASC
+                    LIMIT 1
+                ),
+                resolution_kind = CASE WHEN (
+                    SELECT s.id FROM symbols s
+                    WHERE s.qualname = edges.target_qualname
+                    AND s.graph_version = edges.graph_version
+                    LIMIT 1
+                ) IS NOT NULL THEN 'exact' ELSE resolution_kind END
             WHERE target_symbol_id IS NULL
             AND target_qualname IS NOT NULL
             AND graph_version = ?",
@@ -1316,15 +1261,19 @@ impl Db {
             let mut conn = self.conn();
             let tx = conn.transaction()?;
 
-            // Find batch of unresolved edges (include source file language and edge kind)
-            let unresolved: Vec<(i64, String, String, String)> = {
+            // Find batch of unresolved edges (include source file language, edge kind, and
+            // the persisted receiver_type signal). Edges tracked as receiver_type = '' (a
+            // builtin/unresolved receiver) are excluded here — they must never be
+            // fuzzy-resolved, on this pass or any later repair pass.
+            let unresolved: Vec<(i64, String, String, String, Option<String>)> = {
                 let mut stmt = tx.prepare(
-                    "SELECT e.id, e.target_qualname, COALESCE(f.language, 'unknown'), e.kind
+                    "SELECT e.id, e.target_qualname, COALESCE(f.language, 'unknown'), e.kind, e.receiver_type
                      FROM edges e
                      JOIN files f ON e.file_id = f.id
                      WHERE e.target_symbol_id IS NULL
                      AND e.target_qualname IS NOT NULL
                      AND e.graph_version = ?
+                     AND (e.receiver_type IS NULL OR e.receiver_type != '')
                      LIMIT ?",
                 )?;
                 let rows = stmt.query_map(params![graph_version, BATCH_SIZE], |row| {
@@ -1333,6 +1282,7 @@ impl Db {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()?
@@ -1370,90 +1320,24 @@ impl Db {
                      LIMIT 2"
                 )?;
 
-                let mut update_stmt =
-                    tx.prepare("UPDATE edges SET target_symbol_id = ? WHERE id = ?")?;
+                let mut update_stmt = tx.prepare(
+                    "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
+                )?;
 
-                for (edge_id, target_qualname, source_lang, edge_kind) in &unresolved {
-                    // Tier 1: match on the last two qualname segments (`Type::method`);
-                    // see the equivalent tier in `insert_edges` for rationale.
-                    let two_segment_resolved = two_segment_qualname_patterns(target_qualname)
-                        .and_then(|(two_seg, two_dot, two_colons)| {
-                            let same_lang = single_unambiguous_match(
-                                &mut fuzzy_same_lang_stmt,
-                                params![
-                                    &two_seg,
-                                    &two_dot,
-                                    &two_colons,
-                                    graph_version,
-                                    graph_version,
-                                    source_lang
-                                ],
-                            )
-                            .ok()
-                            .flatten();
-                            if same_lang.is_some() {
-                                return same_lang;
-                            }
-                            if is_bridge_edge_kind(edge_kind) {
-                                single_unambiguous_match(
-                                    &mut fuzzy_any_lang_stmt,
-                                    params![
-                                        &two_seg,
-                                        &two_dot,
-                                        &two_colons,
-                                        graph_version,
-                                        graph_version
-                                    ],
-                                )
-                                .ok()
-                                .flatten()
-                            } else {
-                                None
-                            }
-                        });
-
-                    let resolved = if two_segment_resolved.is_some() {
-                        two_segment_resolved
-                    } else {
-                        // Tier 2 (existing, unchanged): bare trailing-name match.
-                        let (method_name, dot_pattern, colons_pattern) =
-                            fuzzy_qualname_patterns(target_qualname);
-
-                        // Try same-language first; bind only if it is the sole candidate.
-                        single_unambiguous_match(
-                            &mut fuzzy_same_lang_stmt,
-                            params![
-                                method_name,
-                                &dot_pattern,
-                                &colons_pattern,
-                                graph_version,
-                                graph_version,
-                                source_lang
-                            ],
-                        )?
-                        .or_else(|| {
-                            // Cross-language fallback only for bridge edges
-                            if is_bridge_edge_kind(edge_kind) {
-                                single_unambiguous_match(
-                                    &mut fuzzy_any_lang_stmt,
-                                    params![
-                                        method_name,
-                                        &dot_pattern,
-                                        &colons_pattern,
-                                        graph_version,
-                                        graph_version
-                                    ],
-                                )
-                                .ok()
-                                .flatten()
-                            } else {
-                                None
-                            }
-                        })
-                    };
+                for (edge_id, target_qualname, source_lang, edge_kind, receiver_type) in &unresolved
+                {
+                    let (resolved, resolution_kind) = resolve_fuzzy_target(
+                        target_qualname,
+                        receiver_type.as_deref(),
+                        edge_kind,
+                        source_lang,
+                        graph_version,
+                        &mut fuzzy_same_lang_stmt,
+                        &mut fuzzy_any_lang_stmt,
+                    )?;
 
                     if let Some(symbol_id) = resolved {
-                        update_stmt.execute(params![symbol_id, edge_id])?;
+                        update_stmt.execute(params![symbol_id, resolution_kind, edge_id])?;
                         count += 1;
                     }
                 }
@@ -2159,6 +2043,155 @@ fn single_unambiguous_match(
     Ok(Some(id))
 }
 
+/// Resolve a CALLS-shaped edge's target through the fuzzy tiers, gated by
+/// its `receiver_type` signal (see `edges.receiver_type` / `ReceiverType`).
+/// Shared by `insert_edges` and `resolve_null_target_edges` so the two
+/// resolution paths cannot drift apart.
+///
+/// `receiver_type`: `None` = not tracked by the extractor — run the
+/// pre-existing two-segment-then-bare-name pipeline unchanged. `Some("")` =
+/// tracked but the receiver is a builtin or unresolved type — no lookup is
+/// attempted at all; the edge must stay unbound. `Some(ty)` = tracked with
+/// an inferred receiver type — only a match on `ty`'s own method is
+/// attempted (no bare-name fallback), so an unmatched but known-typed
+/// receiver also stays unbound rather than guessing.
+///
+/// Returns `(target_symbol_id, resolution_kind)`, where `resolution_kind`
+/// is one of `"receiver_type"`, `"two_segment"`, `"bare_name"`, or `None`
+/// when nothing binds. Exact-qualname resolution (`"exact"`) happens
+/// separately, before this is called — see callers.
+#[allow(clippy::too_many_arguments)]
+fn resolve_fuzzy_target(
+    target_qualname: &str,
+    receiver_type: Option<&str>,
+    edge_kind: &str,
+    source_lang: &str,
+    graph_version: i64,
+    same_lang_stmt: &mut rusqlite::Statement<'_>,
+    any_lang_stmt: &mut rusqlite::Statement<'_>,
+) -> rusqlite::Result<(Option<i64>, Option<&'static str>)> {
+    match receiver_type {
+        // Tracked, but the receiver is a builtin/unresolved type: per the
+        // resolution rule, must not bind — not even via exact-looking
+        // patterns. No query at all.
+        Some("") => Ok((None, None)),
+
+        // Tracked with a known receiver type: the *only* tier tried is a
+        // suffix match on `{type}.{method}` — reusing the same two-segment
+        // pattern machinery, just seeded from the inferred type instead of
+        // the call site's literal text. No bare-name fallback: an unmatched
+        // known type must stay unbound rather than guess.
+        Some(known_type) => {
+            let method = qualname_trailing_name(target_qualname);
+            let seed = format!("{known_type}.{method}");
+            let Some((seg, dot_pattern, colons_pattern)) = two_segment_qualname_patterns(&seed)
+            else {
+                return Ok((None, None));
+            };
+            let same_lang = single_unambiguous_match(
+                same_lang_stmt,
+                params![
+                    &seg,
+                    &dot_pattern,
+                    &colons_pattern,
+                    graph_version,
+                    graph_version,
+                    source_lang
+                ],
+            )?;
+            if same_lang.is_some() {
+                return Ok((same_lang, Some("receiver_type")));
+            }
+            if is_bridge_edge_kind(edge_kind) {
+                let any_lang = single_unambiguous_match(
+                    any_lang_stmt,
+                    params![
+                        &seg,
+                        &dot_pattern,
+                        &colons_pattern,
+                        graph_version,
+                        graph_version
+                    ],
+                )?;
+                if any_lang.is_some() {
+                    return Ok((any_lang, Some("receiver_type")));
+                }
+            }
+            Ok((None, None))
+        }
+
+        // Not tracked: the pre-existing pipeline, unchanged behavior.
+        None => {
+            if let Some((two_seg, two_dot, two_colons)) =
+                two_segment_qualname_patterns(target_qualname)
+            {
+                let same_lang = single_unambiguous_match(
+                    same_lang_stmt,
+                    params![
+                        &two_seg,
+                        &two_dot,
+                        &two_colons,
+                        graph_version,
+                        graph_version,
+                        source_lang
+                    ],
+                )?;
+                if same_lang.is_some() {
+                    return Ok((same_lang, Some("two_segment")));
+                }
+                if is_bridge_edge_kind(edge_kind) {
+                    let any_lang = single_unambiguous_match(
+                        any_lang_stmt,
+                        params![
+                            &two_seg,
+                            &two_dot,
+                            &two_colons,
+                            graph_version,
+                            graph_version
+                        ],
+                    )?;
+                    if any_lang.is_some() {
+                        return Ok((any_lang, Some("two_segment")));
+                    }
+                }
+            }
+
+            let (method_name, dot_pattern, colons_pattern) =
+                fuzzy_qualname_patterns(target_qualname);
+            let same_lang = single_unambiguous_match(
+                same_lang_stmt,
+                params![
+                    method_name,
+                    &dot_pattern,
+                    &colons_pattern,
+                    graph_version,
+                    graph_version,
+                    source_lang
+                ],
+            )?;
+            if same_lang.is_some() {
+                return Ok((same_lang, Some("bare_name")));
+            }
+            if is_bridge_edge_kind(edge_kind) {
+                let any_lang = single_unambiguous_match(
+                    any_lang_stmt,
+                    params![
+                        method_name,
+                        &dot_pattern,
+                        &colons_pattern,
+                        graph_version,
+                        graph_version
+                    ],
+                )?;
+                if any_lang.is_some() {
+                    return Ok((any_lang, Some("bare_name")));
+                }
+            }
+            Ok((None, None))
+        }
+    }
+}
+
 fn resolve_symbol_id(
     qualname: &Option<String>,
     symbol_map: &HashMap<String, i64>,
@@ -2217,6 +2250,20 @@ mod tests {
         source_qualname: &str,
         target_qualname: &str,
     ) -> crate::indexer::extract::EdgeInput {
+        make_test_edge_with_receiver_type(
+            kind,
+            source_qualname,
+            target_qualname,
+            ReceiverType::NotTracked,
+        )
+    }
+
+    fn make_test_edge_with_receiver_type(
+        kind: &str,
+        source_qualname: &str,
+        target_qualname: &str,
+        receiver_type: ReceiverType,
+    ) -> crate::indexer::extract::EdgeInput {
         crate::indexer::extract::EdgeInput {
             kind: kind.to_string(),
             source_qualname: Some(source_qualname.to_string()),
@@ -2229,6 +2276,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            receiver_type,
         }
     }
 
@@ -2428,6 +2476,31 @@ mod tests {
             columns.contains(&"stable_id".to_string()),
             "symbols table should have stable_id column after migration"
         );
+    }
+
+    #[test]
+    fn test_database_migration_adds_receiver_type_and_resolution_kind_columns() {
+        let (db, _temp) = create_test_db();
+
+        let conn = db.read_conn().unwrap();
+        let mut stmt = conn.prepare("PRAGMA table_info(edges)").unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(
+            columns.contains(&"receiver_type".to_string()),
+            "edges table should have receiver_type column after migration"
+        );
+        assert!(
+            columns.contains(&"resolution_kind".to_string()),
+            "edges table should have resolution_kind column after migration"
+        );
+        // confidence must be untouched by this migration — it keeps its
+        // pre-existing meaning (Rust CALLS extraction certainty).
+        assert!(columns.contains(&"confidence".to_string()));
     }
 
     #[test]
@@ -3449,6 +3522,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -3558,6 +3632,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -3746,6 +3821,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -3791,6 +3867,7 @@ mod tests {
                 trace_id: None,
                 span_id: None,
                 event_ts: None,
+                receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CHANNEL_SUBSCRIBE".to_string(),
@@ -3804,6 +3881,7 @@ mod tests {
                 trace_id: None,
                 span_id: None,
                 event_ts: None,
+                receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted
@@ -3869,6 +3947,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -3925,6 +4004,7 @@ mod tests {
                 trace_id: None,
                 span_id: None,
                 event_ts: None,
+                receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CONFIG_BIND".to_string(),
@@ -3938,6 +4018,7 @@ mod tests {
                 trace_id: None,
                 span_id: None,
                 event_ts: None,
+                receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted
@@ -4477,6 +4558,168 @@ mod tests {
         assert_ne!(
             db_edge.target_symbol_id, cache_edge.target_symbol_id,
             "same-named methods on different types must not collide"
+        );
+    }
+
+    // --- receiver-type tier: gate resolution on the extractor's inferred receiver type ---
+
+    #[test]
+    fn test_insert_edges_receiver_type_known_resolves_via_receiver_type_tier() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
+            .unwrap();
+
+        // A domain `append` method — the exact collision pathology from
+        // issue #45: any call site literally named "<var>.append" would,
+        // under the old bare-name tier, be the *only* candidate and bind
+        // confidently to this method regardless of the variable's real type.
+        let syms = vec![make_test_symbol(
+            "pkg.store.EventStore.append",
+            Some("def append(self, event)"),
+            "method",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+        let append_id = inserted[0].id;
+
+        // Receiver type inferred from an annotated parameter (`store:
+        // EventStore`) — target_qualname is the call site's literal text
+        // ("store.append"), NOT rewritten to use the type name; only
+        // receiver_type carries the inferred type.
+        let edges = vec![make_test_edge_with_receiver_type(
+            "CALLS",
+            "pkg.caller.run",
+            "store.append",
+            ReceiverType::Known("EventStore".to_string()),
+        )];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'store.append'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id,
+            Some(append_id),
+            "a known receiver type must resolve to that type's own method"
+        );
+        assert_eq!(resolution_kind.as_deref(), Some("receiver_type"));
+    }
+
+    #[test]
+    fn test_insert_edges_receiver_type_unresolved_never_binds() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
+            .unwrap();
+
+        // Same domain `append` method as above — the only "append" symbol
+        // in the index, so the old bare-name tier would bind confidently.
+        let syms = vec![make_test_symbol(
+            "pkg.store.EventStore.append",
+            Some("def append(self, event)"),
+            "method",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+
+        // Receiver type inferred as a builtin (`cells = []`) — tracked, but
+        // must not bind at all, not even speculatively.
+        let edges = vec![make_test_edge_with_receiver_type(
+            "CALLS",
+            "pkg.caller.run",
+            "cells.append",
+            ReceiverType::Unresolved,
+        )];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, receiver_type, resolution_kind): (
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+        ) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges WHERE target_qualname = 'cells.append'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id, None,
+            "a builtin/unresolved receiver type must never bind, even though EventStore.append \
+             is the sole candidate for the bare name \"append\""
+        );
+        assert_eq!(
+            receiver_type.as_deref(),
+            Some(""),
+            "the receiver_type column encodes tracked-but-unresolved as an empty string, \
+             distinct from NULL (not tracked at all)"
+        );
+        assert_eq!(resolution_kind, None);
+    }
+
+    #[test]
+    fn test_resolve_null_target_edges_respects_persisted_receiver_type() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
+            .unwrap();
+
+        let syms = vec![make_test_symbol(
+            "pkg.store.EventStore.append",
+            Some("def append(self, event)"),
+            "method",
+            1,
+        )];
+        db.insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+
+        // Insert with a symbol_map that deliberately can't resolve anything
+        // (simulating the edge landing with target_symbol_id NULL, as it
+        // would mid-incremental-reindex), then run the repair pass.
+        let edges = vec![make_test_edge_with_receiver_type(
+            "CALLS",
+            "pkg.caller.run",
+            "cells.append",
+            ReceiverType::Unresolved,
+        )];
+        db.insert_edges(file_id, &edges, &HashMap::new(), 1, None)
+            .unwrap();
+
+        db.resolve_null_target_edges(1).unwrap();
+
+        let target_symbol_id: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id FROM edges WHERE target_qualname = 'cells.append'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id, None,
+            "a repair pass must respect the persisted receiver_type signal just like the \
+             original insert — it must not fuzzy-resolve an edge marked unresolved"
         );
     }
 
