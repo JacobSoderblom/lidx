@@ -271,6 +271,39 @@ pub struct GraphVersion {
     pub commit_sha: Option<String>,
 }
 
+/// Is this XREF edge trustworthy enough to traverse?
+///
+/// XREF is name matching over string literals, and it comes in two grades that
+/// the extractor already distinguishes:
+///
+/// - `qualname_exact` (confidence 1.0) -- a *qualified* token matched, e.g. the
+///   literal `"dpb.catalog_publication"` inside a SQL query naming that exact
+///   table. Across dpb all 61 of these land on real schema or proto objects.
+/// - `name_exact` (confidence 0.7-0.8) -- a single bare word matched, e.g. the
+///   token `Deserialize` matching a Rust `use serde::Deserialize`, a Python
+///   docstring and an unrelated C# method. All 550 of these are noise, and they
+///   fabricated a 16-step multi-language blast radius for one C# method.
+///
+/// Only the qualified grade may drive an answer. The bare grade stays in the
+/// database for anyone querying it directly, but no traversal crosses it.
+// ponytail: keyed off the `match` field the extractor already writes, rather
+// than a confidence threshold -- confidences get retuned, the grade names do
+// not. If a third grade appears, this becomes a match on an enum.
+pub fn xref_is_traversable(edge: &Edge) -> bool {
+    if edge.kind != "XREF" {
+        return true;
+    }
+    edge.detail
+        .as_deref()
+        .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+        .and_then(|v| {
+            v.get("match")
+                .and_then(|m| m.as_str())
+                .map(|m| m == "qualname_exact")
+        })
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Serialize)]
 pub struct EdgeReference {
     pub edge: Edge,

@@ -87,23 +87,22 @@ pub fn is_test_file(path: &str) -> bool {
 
 /// Check if an edge matches the filtering criteria
 ///
-/// An empty `kinds` set means "no explicit filter" and matches every edge kind —
-/// except XREF. XREF is deliberately fuzzy, cross-language, string-literal name
-/// matching (confidence 0.7: e.g. a Rust `use serde::Deserialize` or a Python
-/// docstring saying "deserialize" both name-match a C# `Deserialize` method).
-/// It must never ride along in the unfiltered default and get presented with the
-/// same authority as a real CALLS/IMPORTS edge. A caller who wants XREF opts in
-/// explicitly by including "XREF" in `kinds`, exactly like `trace_flow` requires.
-// ponytail: hardcoded to the single kind XREF, not a generic "fuzzy kinds"
-// list — XREF is the only edge kind carrying non-graph, string-literal
-// evidence today. If a second such kind is added, promote this to a slice.
+/// An empty `kinds` set means "no explicit filter" and matches every edge kind.
+///
+/// XREF is the exception, and its *grade* decides rather than its kind. A bare
+/// `name_exact` match (confidence 0.7: a Rust `use serde::Deserialize`, a Python
+/// docstring and an unrelated C# method all share the token `Deserialize`) must
+/// never be presented with the authority of a real CALLS edge, asked for or not.
+/// A qualified `qualname_exact` match (a literal `"dpb.pipeline_run"` naming
+/// that exact table) is genuine and is kept. See
+/// `crate::model::xref_is_traversable`.
 fn edge_matches_filter(edge: &Edge, kinds: &HashSet<String>, include_tests: bool) -> bool {
     // Check edge kind
-    if kinds.is_empty() {
-        if edge.kind == "XREF" {
-            return false;
-        }
-    } else if !kinds.contains(&edge.kind) {
+    if !kinds.is_empty() && !kinds.contains(&edge.kind) {
+        return false;
+    }
+    // A bare-name XREF never drives an answer, asked for or not.
+    if !crate::model::xref_is_traversable(edge) {
         return false;
     }
     // Check test file
@@ -546,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_filter_excludes_xref_by_default() {
+    fn edge_filter_crosses_only_qualified_xref() {
         let mut edge = Edge {
             id: 1,
             file_path: "src/main.rs".to_string(),
@@ -566,15 +565,30 @@ mod tests {
             event_ts: None,
         };
 
-        // Empty kinds is the RPC default when a caller doesn't restrict anything.
-        // XREF must NOT ride along: it's fuzzy, string-literal, cross-language
-        // name-match evidence (confidence 0.7), not a real graph edge.
+        // A bare `name_exact` XREF is the Deserialize-class fabrication: one
+        // shared word, confidence 0.7. It must never drive an answer.
+        edge.detail = Some(
+            r#"{"confidence":0.7,"match":"name_exact","source":"string_literal","token":"Deserialize"}"#
+                .to_string(),
+        );
+
+        // Not on the unrestricted default...
         let kinds = HashSet::new();
         assert!(!edge_matches_filter(&edge, &kinds, true));
 
-        // Explicit opt-in: caller asks for XREF by name.
+        // ...and not even when a caller names XREF explicitly. Asking for the
+        // kind does not make a bare word match trustworthy.
         let mut xref_kinds = HashSet::new();
         xref_kinds.insert("XREF".to_string());
+        assert!(!edge_matches_filter(&edge, &xref_kinds, true));
+
+        // A qualified match is real evidence -- a SQL literal naming that exact
+        // table -- and is crossed, including on the unrestricted default.
+        edge.detail = Some(
+            r#"{"confidence":1.0,"match":"qualname_exact","source":"string_literal","token":"dpb.pipeline_run"}"#
+                .to_string(),
+        );
+        assert!(edge_matches_filter(&edge, &HashSet::new(), true));
         assert!(edge_matches_filter(&edge, &xref_kinds, true));
 
         // A non-empty kinds set that doesn't include XREF still excludes it.
@@ -582,10 +596,11 @@ mod tests {
         other_kinds.insert("CALLS".to_string());
         assert!(!edge_matches_filter(&edge, &other_kinds, true));
 
-        // Sanity: the empty-set special case is XREF-only, not a general filter.
+        // Sanity: the grade check is XREF-only, not a general filter. A CALLS
+        // edge with no detail at all still passes.
         edge.kind = "CALLS".to_string();
-        let kinds = HashSet::new();
-        assert!(edge_matches_filter(&edge, &kinds, true));
+        edge.detail = None;
+        assert!(edge_matches_filter(&edge, &HashSet::new(), true));
     }
 
     #[test]

@@ -31,10 +31,15 @@ impl Default for TraceConfig {
             max_bytes: 30_000,
             direction: TraceDirection::Downstream,
             include_snippets: true,
+            // XREF is listed, but only its qualified grade is ever crossed --
+            // see `xref_is_traversable`. RPC_ROUTE must be listed or a trace
+            // from a .proto rpc is filtered out before bridge_complement is
+            // consulted, silently yielding paths_found: 0.
             allowed_kinds: vec![
                 "CALLS".into(),
                 "RPC_IMPL".into(),
                 "RPC_CALL".into(),
+                "RPC_ROUTE".into(),
                 "XREF".into(),
                 "CHANNEL_PUBLISH".into(),
                 "CHANNEL_SUBSCRIBE".into(),
@@ -124,7 +129,9 @@ pub fn trace_flow(
         let mut bridge_targets: Vec<(String, String)> = Vec::new();
 
         for edge in &edges {
-            if !config.allowed_kinds.contains(&edge.kind) {
+            if !config.allowed_kinds.contains(&edge.kind)
+                || !crate::model::xref_is_traversable(edge)
+            {
                 continue;
             }
 
@@ -480,6 +487,76 @@ mod tests {
     use crate::model::Edge;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn sample_edge(kind: &str) -> Edge {
+        Edge {
+            id: 1,
+            file_path: "Service.cs".to_string(),
+            kind: kind.to_string(),
+            source_symbol_id: Some(100),
+            target_symbol_id: Some(200),
+            target_qualname: None,
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: None,
+            graph_version: 1,
+            commit_sha: None,
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        }
+    }
+
+    /// RPC_ROUTE must be in the default kind set, or a trace from a .proto rpc
+    /// is filtered out before bridge_complement is ever consulted and the
+    /// proto->impl linkage silently returns paths_found: 0.
+    #[test]
+    fn default_allowed_kinds_include_both_sides_of_the_rpc_bridge() {
+        let kinds = TraceConfig::default().allowed_kinds;
+        assert!(
+            kinds.contains(&"RPC_ROUTE".to_string()),
+            "RPC_ROUTE must be traversable by default so proto rpcs reach their impls: {kinds:?}"
+        );
+        assert!(kinds.contains(&"RPC_IMPL".to_string()));
+        assert!(kinds.contains(&"CALLS".to_string()));
+    }
+
+    /// XREF is listed in the defaults, but the *grade* gates it: a bare
+    /// `name_exact` match (one shared word, confidence 0.7) is never crossed,
+    /// while a qualified `qualname_exact` match (a SQL literal naming that
+    /// exact table) is. Without this, `trace_flow` upstream from one C# method
+    /// fabricated an 18-step trace of which 16 steps were phantom.
+    #[test]
+    fn only_qualified_xref_is_traversable() {
+        let bare = r#"{"confidence":0.7,"match":"name_exact","source":"string_literal","token":"Deserialize"}"#;
+        let qualified = r#"{"confidence":1.0,"match":"qualname_exact","source":"string_literal","token":"dpb.pipeline_run"}"#;
+
+        let mut edge = sample_edge("XREF");
+        edge.detail = Some(bare.to_string());
+        assert!(
+            !crate::model::xref_is_traversable(&edge),
+            "a bare name_exact XREF must never be crossed"
+        );
+
+        edge.detail = Some(qualified.to_string());
+        assert!(
+            crate::model::xref_is_traversable(&edge),
+            "a qualified XREF is real evidence and must be crossed"
+        );
+
+        // An XREF with no detail at all cannot prove its grade, so it is refused.
+        edge.detail = None;
+        assert!(!crate::model::xref_is_traversable(&edge));
+
+        // Non-XREF kinds are unaffected, detail or not.
+        let mut calls = sample_edge("CALLS");
+        calls.detail = None;
+        assert!(crate::model::xref_is_traversable(&calls));
+        calls.detail = Some(bare.to_string());
+        assert!(crate::model::xref_is_traversable(&calls));
+    }
 
     static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
