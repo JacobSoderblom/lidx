@@ -127,39 +127,17 @@ fn cache_symbols(
     Ok(())
 }
 
-/// Resolve the next symbol ID to visit from an edge, trying multiple fallback strategies:
-/// 1. Direct symbol ID from edge (source/target based on direction)
-/// 2. Downstream: resolve unresolved target via qualname lookup
-/// 3. Upstream: use source_symbol_id when target is unresolved
-fn resolve_next_id(
-    edge: &Edge,
-    current_id: i64,
-    direction: TraversalDirection,
-    resolved_qualnames: &HashMap<String, i64>,
-) -> Option<i64> {
+/// Resolve the next symbol ID to visit from an edge.
+///
+/// This is exactly `next_symbol`: a direct source/target lookup based on
+/// direction. `target_symbol_id` (or `source_symbol_id`) being None means
+/// the write path could not attribute this edge -- the read path must not
+/// invent an attribution via fuzzy qualname lookup (that used to surface,
+/// e.g., a Python `trim` function as the callee of an unrelated C#
+/// `value.Trim()` call; see the equivalent fix in subgraph.rs /
+/// rpc/handlers.rs). A NULL-target edge is simply not traversed.
+fn resolve_next_id(edge: &Edge, current_id: i64, direction: TraversalDirection) -> Option<i64> {
     next_symbol(edge, current_id, direction)
-        .or_else(|| {
-            if edge.source_symbol_id == Some(current_id) {
-                edge.target_qualname
-                    .as_ref()
-                    .and_then(|qn| resolved_qualnames.get(qn).copied())
-            } else {
-                None
-            }
-        })
-        .or_else(|| {
-            if matches!(
-                direction,
-                TraversalDirection::Upstream | TraversalDirection::Both
-            ) && edge.target_symbol_id.is_none()
-                && edge.source_symbol_id.is_some()
-                && edge.source_symbol_id != Some(current_id)
-            {
-                edge.source_symbol_id
-            } else {
-                None
-            }
-        })
 }
 
 /// Follow cross-service edges via bridge complements (CHANNEL_PUBLISH↔SUBSCRIBE, RPC_CALL↔IMPL, etc.)
@@ -350,41 +328,6 @@ pub fn analyze_direct_impact(
             }
         }
 
-        // First pass: collect unresolved target qualnames for batch resolution
-        let mut unresolved_qualnames: Vec<String> = Vec::new();
-        for current_id in &current_level {
-            if let Some(edges) = edges_by_symbol.get(current_id) {
-                for edge in edges {
-                    if !edge_matches_filter(edge, kinds, include_tests) {
-                        continue;
-                    }
-                    if next_symbol(edge, *current_id, direction).is_none()
-                        && let Some(ref qn) = edge.target_qualname
-                    {
-                        // For downstream/both: resolve target when source is current
-                        if edge.source_symbol_id == Some(*current_id)
-                            && matches!(
-                                direction,
-                                TraversalDirection::Downstream | TraversalDirection::Both
-                            )
-                        {
-                            unresolved_qualnames.push(qn.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Batch resolve qualnames to symbol IDs (using fuzzy matching for short qualnames)
-        let mut resolved_qualnames: HashMap<String, i64> = HashMap::new();
-        for qn in &unresolved_qualnames {
-            if !resolved_qualnames.contains_key(qn)
-                && let Ok(Some(id)) = db.lookup_symbol_id_fuzzy(qn, languages, graph_version)
-            {
-                resolved_qualnames.insert(qn.clone(), id);
-            }
-        }
-
         // Collect all neighbor IDs for batch symbol loading
         let mut neighbor_ids = Vec::new();
         for current_id in &current_level {
@@ -393,8 +336,7 @@ pub fn analyze_direct_impact(
                     if !edge_matches_filter(edge, kinds, include_tests) {
                         continue;
                     }
-                    if let Some(id) =
-                        resolve_next_id(edge, *current_id, direction, &resolved_qualnames)
+                    if let Some(id) = resolve_next_id(edge, *current_id, direction)
                         && !visited.contains(&id)
                     {
                         neighbor_ids.push(id);
@@ -431,9 +373,7 @@ pub fn analyze_direct_impact(
                         bridge_targets.push((tq.clone(), edge.kind.clone(), *current_id));
                     }
 
-                    let Some(next_id) =
-                        resolve_next_id(edge, *current_id, direction, &resolved_qualnames)
-                    else {
+                    let Some(next_id) = resolve_next_id(edge, *current_id, direction) else {
                         continue;
                     };
 
@@ -617,5 +557,176 @@ mod tests {
 
         edge.file_path = "src/main.rs".to_string();
         assert!(edge_matches_filter(&edge, &kinds, false));
+    }
+
+    // -- Regression tests: the read path must not re-attribute edges the
+    // write path refused to resolve (NULL target_symbol_id). These build a
+    // minimal DB directly so `insert_edges`' ambiguity guard deterministically
+    // leaves an edge unresolved. --
+
+    fn test_db() -> (crate::db::Db, tempfile::TempDir) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let db_path = temp.path().join("test.db");
+        let db = crate::db::Db::new(&db_path).unwrap();
+        (db, temp)
+    }
+
+    fn symbol(qualname: &str, kind: &str, start_line: i64) -> crate::indexer::extract::SymbolInput {
+        crate::indexer::extract::SymbolInput {
+            kind: kind.to_string(),
+            name: qualname.rsplit('.').next().unwrap_or(qualname).to_string(),
+            qualname: qualname.to_string(),
+            start_line,
+            start_col: 0,
+            end_line: start_line + 5,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 100,
+            signature: None,
+            docstring: None,
+        }
+    }
+
+    fn calls_edge(
+        source_qualname: &str,
+        target_qualname: &str,
+    ) -> crate::indexer::extract::EdgeInput {
+        crate::indexer::extract::EdgeInput {
+            kind: "CALLS".to_string(),
+            source_qualname: Some(source_qualname.to_string()),
+            target_qualname: Some(target_qualname.to_string()),
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: Some(1.0),
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+            receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+        }
+    }
+
+    /// A bare-name call with two same-language candidates is genuinely
+    /// ambiguous, so `insert_edges`' ambiguity guard leaves it unresolved.
+    /// `analyze_direct_impact` must not traverse it via a fuzzy qualname
+    /// guess -- neither candidate should appear as an affected symbol.
+    #[test]
+    fn downstream_does_not_traverse_null_target_edge() {
+        let (mut db, _temp) = test_db();
+        let file_id = db
+            .upsert_file("pkg/store.py", "h1", "python", 100, 0)
+            .unwrap();
+        let symbols = vec![
+            symbol("builtins.list.append", "method", 1),
+            symbol("pkg.store.EventStore.append", "method", 10),
+            symbol("pkg.store.caller", "function", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "pkg/store.py", &symbols, 1, None)
+            .unwrap();
+        let caller_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.store.caller")
+            .unwrap()
+            .id;
+
+        let edges = vec![calls_edge("pkg.store.caller", "append")];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Confirm the write path really did refuse to attribute this edge.
+        let unresolved: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_symbol_id IS NULL AND graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            unresolved, 1,
+            "edge should be unresolved (ambiguous bare name)"
+        );
+
+        let mut kinds = HashSet::new();
+        kinds.insert("CALLS".to_string());
+        let result = analyze_direct_impact(
+            &db,
+            &[caller_id],
+            5,
+            TraversalDirection::Downstream,
+            &kinds,
+            true,
+            100,
+            None,
+            1,
+        )
+        .unwrap();
+        assert!(
+            result.impacts.is_empty(),
+            "NULL-target edge must not be traversed downstream, got {:?}",
+            result.impacts
+        );
+    }
+
+    /// Sanity check that the fix didn't throw out the happy path: an edge
+    /// the write path genuinely resolved (exact qualname match, no
+    /// ambiguity) must still be traversed.
+    #[test]
+    fn downstream_still_traverses_genuinely_resolved_edge() {
+        let (mut db, _temp) = test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            symbol("mod.Caller", "function", 1),
+            symbol("mod.Callee", "function", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+        let caller_id = inserted
+            .iter()
+            .find(|s| s.qualname == "mod.Caller")
+            .unwrap()
+            .id;
+        let callee_id = inserted
+            .iter()
+            .find(|s| s.qualname == "mod.Callee")
+            .unwrap()
+            .id;
+
+        let edges = vec![calls_edge("mod.Caller", "mod.Callee")];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let mut kinds = HashSet::new();
+        kinds.insert("CALLS".to_string());
+        let result = analyze_direct_impact(
+            &db,
+            &[caller_id],
+            5,
+            TraversalDirection::Downstream,
+            &kinds,
+            true,
+            100,
+            None,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            result.impacts.len(),
+            1,
+            "resolved edge should still produce an affected symbol"
+        );
+        assert_eq!(result.impacts[0].0, callee_id);
     }
 }

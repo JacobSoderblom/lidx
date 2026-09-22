@@ -1,5 +1,5 @@
 use crate::db::Db;
-use crate::indexer::channel::{boundary_type_for_kind, bridge_complement, is_bridge_edge_kind};
+use crate::indexer::channel::{boundary_type_for_kind, bridge_complement};
 use crate::indexer::scan::language_for_path;
 use crate::model::{Edge, Symbol, TraceHop};
 use anyhow::Result;
@@ -147,33 +147,18 @@ pub fn trace_flow(
                 bridge_targets.push((tq.clone(), edge.kind.clone()));
             }
 
-            let next_id = match next_id {
-                Some(id) => id,
-                None => {
-                    if let Some(ref qn) = edge.target_qualname {
-                        let prev_lang = detect_language(&prev_file);
-                        let same_lang = vec![prev_lang];
-                        let resolved = db
-                            .lookup_symbol_id_fuzzy(qn, Some(&same_lang), graph_version)
-                            .ok()
-                            .flatten()
-                            .or_else(|| {
-                                if is_bridge_edge_kind(&edge.kind) {
-                                    db.lookup_symbol_id_fuzzy(qn, languages, graph_version)
-                                        .ok()
-                                        .flatten()
-                                } else {
-                                    None
-                                }
-                            });
-                        match resolved {
-                            Some(id) => id,
-                            None => continue,
-                        }
-                    } else {
-                        continue;
-                    }
-                }
+            // `next_id` is None when the write path left this edge's
+            // target_symbol_id (or, for upstream, source_symbol_id) NULL --
+            // it could not attribute the edge. The read path must not
+            // invent an attribution via fuzzy qualname lookup here (that's
+            // how a C# `value.Trim()` call used to surface a Python `trim`
+            // function as its callee/caller); see the equivalent fix in
+            // subgraph.rs / rpc/handlers.rs. Bridge-kind edges (message
+            // bus, RPC, HTTP) still cross language boundaries below via
+            // `bridge_targets`, which binds by an exact target_qualname
+            // match, not a fuzzy one.
+            let Some(next_id) = next_id else {
+                continue;
             };
 
             if !visited.insert(next_id) {
@@ -1385,5 +1370,166 @@ mod tsx_normalization_tests {
                 "{label} -> .py should have boundary type"
             );
         }
+    }
+}
+
+// Regression tests for the read path no longer re-attributing edges the
+// write path refused to resolve (NULL target_symbol_id). These build a
+// minimal DB directly (not through a fixture repo) so the ambiguity guard
+// in `insert_edges` deterministically leaves an edge unresolved.
+#[cfg(test)]
+mod null_target_regression_tests {
+    use super::*;
+    use crate::db::Db;
+    use crate::indexer::extract::{EdgeInput, ReceiverType, SymbolInput};
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn test_db() -> (Db, TempDir) {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("test.db");
+        let db = Db::new(&db_path).unwrap();
+        (db, temp)
+    }
+
+    fn symbol(qualname: &str, kind: &str, start_line: i64) -> SymbolInput {
+        SymbolInput {
+            kind: kind.to_string(),
+            name: qualname.rsplit('.').next().unwrap_or(qualname).to_string(),
+            qualname: qualname.to_string(),
+            start_line,
+            start_col: 0,
+            end_line: start_line + 5,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 100,
+            signature: None,
+            docstring: None,
+        }
+    }
+
+    fn calls_edge(source_qualname: &str, target_qualname: &str) -> EdgeInput {
+        EdgeInput {
+            kind: "CALLS".to_string(),
+            source_qualname: Some(source_qualname.to_string()),
+            target_qualname: Some(target_qualname.to_string()),
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: Some(1.0),
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+            receiver_type: ReceiverType::NotTracked,
+        }
+    }
+
+    /// A bare-name call with two same-language candidates is genuinely
+    /// ambiguous, so `insert_edges`' ambiguity guard leaves it unresolved
+    /// (target_symbol_id NULL). `trace_flow` must not traverse it via a
+    /// fuzzy qualname guess -- neither candidate should appear as a
+    /// downstream hop from the caller.
+    #[test]
+    fn downstream_does_not_traverse_null_target_edge() {
+        let (mut db, _temp) = test_db();
+        let file_id = db
+            .upsert_file("pkg/store.py", "h1", "python", 100, 0)
+            .unwrap();
+        let symbols = vec![
+            symbol("builtins.list.append", "method", 1),
+            symbol("pkg.store.EventStore.append", "method", 10),
+            symbol("pkg.store.caller", "function", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "pkg/store.py", &symbols, 1, None)
+            .unwrap();
+        let caller_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.store.caller")
+            .unwrap()
+            .id;
+
+        let edges = vec![calls_edge("pkg.store.caller", "append")];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Confirm the write path really did refuse to attribute this edge.
+        let unresolved: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_symbol_id IS NULL AND graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            unresolved, 1,
+            "edge should be unresolved (ambiguous bare name)"
+        );
+
+        let config = TraceConfig {
+            direction: TraceDirection::Downstream,
+            allowed_kinds: vec!["CALLS".into()],
+            ..Default::default()
+        };
+        let result = trace_flow(&db, vec![caller_id], None, None, 1, &config).unwrap();
+        assert!(
+            result.hops.is_empty(),
+            "NULL-target edge must not be traversed downstream, got {:?}",
+            result.hops
+        );
+    }
+
+    /// Sanity check that the fix didn't throw out the happy path: an edge
+    /// the write path genuinely resolved (exact qualname match, no
+    /// ambiguity) must still be traversed.
+    #[test]
+    fn downstream_still_traverses_genuinely_resolved_edge() {
+        let (mut db, _temp) = test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            symbol("mod.Caller", "function", 1),
+            symbol("mod.Callee", "function", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+        let caller_id = inserted
+            .iter()
+            .find(|s| s.qualname == "mod.Caller")
+            .unwrap()
+            .id;
+        let callee_id = inserted
+            .iter()
+            .find(|s| s.qualname == "mod.Callee")
+            .unwrap()
+            .id;
+
+        let edges = vec![calls_edge("mod.Caller", "mod.Callee")];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let config = TraceConfig {
+            direction: TraceDirection::Downstream,
+            allowed_kinds: vec!["CALLS".into()],
+            ..Default::default()
+        };
+        let result = trace_flow(&db, vec![caller_id], None, None, 1, &config).unwrap();
+        assert_eq!(
+            result.hops.len(),
+            1,
+            "resolved edge should still produce a hop"
+        );
+        assert_eq!(result.hops[0].symbol.id, callee_id);
     }
 }
