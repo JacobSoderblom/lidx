@@ -24,8 +24,10 @@
 //! ponytail: this is today's order, kept as-is by the #73 refactor. It
 //! differs from the #70 spec order in two ways: there is no same
 //! scope/module tier yet, and known-external refusal runs before the name
-//! tiers rather than last. Revisit with the language profiles (#74) and
-//! stricter guards (#75).
+//! tiers rather than last. Language resolution profiles (`LanguageProfile`)
+//! now drive the separator and import-miss-fallback per-language checks
+//! this tier order used to hardcode; a same scope/module tier and stricter
+//! guards are still open (#75).
 
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
@@ -128,6 +130,96 @@ impl Resolution {
     }
 }
 
+/// A language's qualname conventions and import-miss fallback policy,
+/// consulted here instead of a hardcoded per-language check.
+/// Registered next to the extractor that needs a non-default one (see
+/// `crate::indexer::rust::PROFILE`); every other language falls back to
+/// `LanguageProfile::DEFAULT` via `profile_for`. Scope is deliberately
+/// narrow: separators, the import→module qualname mapping, and the
+/// import-miss policy. Visibility rules and inheritance lookup are #70's
+/// later phases, not this struct.
+#[derive(Clone, Copy)]
+pub(crate) struct LanguageProfile {
+    /// Qualname separator(s) this language's extractor writes, most
+    /// specific first. Drives the same-language resolution rounds
+    /// (`same_lang_patterns`); the AnyLang Bridge Edge round stays
+    /// content-driven (checks every separator, since the target's
+    /// language isn't known in advance there).
+    pub separators: &'static [&'static str],
+    /// Normalize a raw import-binding target (as the extractor's `use`/
+    /// `import` parsing found it — still possibly relative, e.g. Rust
+    /// `super::x`) to an absolute module qualname, given the qualname of
+    /// the module the binding was written in. `Some(rewrite)` only for a
+    /// language whose import syntax has such a relative form; `rewrite`
+    /// itself returns `None` for a target that needs no change (already
+    /// absolute) or can't be rewritten (e.g. `super::` past the crate
+    /// root).
+    pub normalize_import_target: Option<fn(raw: &str, module: &str) -> Option<String>>,
+    /// Whether an import-tier miss (candidates present, none resolved)
+    /// refuses the name-based fallback tiers, or falls through to them.
+    pub import_miss: ImportMissPolicy,
+    /// Whether `resolve_import` retries a missed candidate as a qualname
+    /// suffix. Off for languages whose candidates are already absolute
+    /// (Rust), where a suffix hit would be a same-named local module.
+    pub import_suffix_matching: bool,
+}
+
+impl LanguageProfile {
+    /// Dot-separated, no relative-import syntax, import-tier miss refuses
+    /// the name tiers, suffix matching enabled — every language's policy
+    /// today except Rust and Python.
+    pub(crate) const DEFAULT: LanguageProfile = LanguageProfile {
+        separators: &["."],
+        normalize_import_target: None,
+        import_miss: ImportMissPolicy::Refuse,
+        import_suffix_matching: true,
+    };
+}
+
+/// Whether `Resolver::resolve` falls through to the name-based tiers after
+/// an import-tier miss — see `LanguageProfile::import_miss`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImportMissPolicy {
+    /// The receiver is known to come from something this index doesn't
+    /// (or can't uniquely) resolve; falling through would bind on
+    /// name-uniqueness alone (e.g. `datetime.now()` binding to an
+    /// unrelated local `FakeClock.now`). Every language's policy except
+    /// Rust and Python.
+    Refuse,
+    /// This language's import targets are already absolute repo
+    /// qualnames, so a miss just means the literal target wasn't indexed
+    /// (e.g. a `pub use` re-export chain) — not evidence it's external.
+    /// Rust's policy.
+    FallThrough,
+    /// Python's own heuristic (`Resolver::is_repo_python_import`): fall
+    /// through only when the import is rooted in a repo package (or is a
+    /// relative import). Python's module qualname is its repo-relative
+    /// path while the import names the installed package path, so a
+    /// failed exact/suffix match is as likely a re-export
+    /// (`pkg/__init__.py` re-exporting `X`) as truly external. Needs a DB
+    /// lookup, so it stays its own variant rather than folding into
+    /// `Refuse`/`FallThrough`.
+    PythonRepoHeuristic,
+}
+
+/// Look up a language's resolution profile by its `files.language` value:
+/// the extractor-registered `PROFILE` for a language that has one, else
+/// `LanguageProfile::DEFAULT`. A language absent from the indexed repo is
+/// never looked up — this runs only against the `files.language` of a
+/// reference actually being resolved.
+///
+/// Python's `PythonRepoHeuristic` variant still needs a DB lookup
+/// (`Resolver::is_repo_python_import`, below) that only this module can
+/// do, but the *choice* of that variant is `python::PROFILE`'s, same as
+/// Rust's.
+fn profile_for(lang: &str) -> LanguageProfile {
+    match lang {
+        "rust" => crate::indexer::rust::PROFILE,
+        "python" => crate::indexer::python::PROFILE,
+        _ => LanguageProfile::DEFAULT,
+    }
+}
+
 /// Same-language fuzzy candidates. `LIMIT 2`, not 1: `Resolver::unique`
 /// needs to see a second row to know a match is ambiguous. The language
 /// `CASE` must agree with `resolution_language_family`.
@@ -167,8 +259,8 @@ const EXACT_SQL: &str =
     "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1";
 
 /// Suffix round of `resolve_import`: params are (trailing name,
-/// `.{candidate}`, graph_version). `substr(.., -n)` is an exact tail
-/// comparison, so `_`/`%` in names are not LIKE wildcards. `LIMIT 2` feeds
+/// `.{candidate}`, graph_version). `substr(.., -n)` is an exact tail comparison,
+/// so `_`/`%` in names are not LIKE wildcards. `LIMIT 2` feeds
 /// `Resolver::unique`'s ambiguity guard.
 const IMPORT_SUFFIX_SQL: &str = "SELECT id FROM symbols
      WHERE name = ?1 AND substr(qualname, -length(?2)) = ?2 AND graph_version = ?3
@@ -232,27 +324,27 @@ impl<'c> Resolver<'c> {
         {
             return Ok(resolved(id, ResolutionKind::Exact));
         }
-        if let Some(id) = self.resolve_import(r.import_candidates, symbol_map)? {
+        if let Some(id) = self.resolve_import(r.import_candidates, symbol_map, r.source_lang)? {
             return Ok(resolved(id, ResolutionKind::Import));
         }
 
         // `import_candidates` is populated only when the extractor already
         // established (from this file's own using/import directives) that
         // the receiver is bound by an import, and the import tier just
-        // found no single local symbol for it. That is positive
-        // information: the receiver comes from something this index
-        // doesn't (or can't uniquely) resolve. Falling through to the
-        // name-based tiers would bind on name-uniqueness alone — e.g.
-        // `datetime.now()` binding to an unrelated local `FakeClock.now`.
-        //
-        // Python only: an import rooted in a repo package (or a relative
-        // one) that failed is most likely a re-export (`from pkg import X`
-        // where `pkg/__init__.py` re-exports X), not evidence the target is
-        // external, so it keeps the name-based tiers. JS/TS gets no such
-        // exception: its extractor resolves the specifier to a file
-        // itself, so a miss there is a re-export or external package.
-        let refuse_names = !r.import_candidates.is_empty()
-            && (r.source_lang != "python" || !self.is_repo_python_import(r.import_candidates)?);
+        // found no single local symbol for it. Whether that refuses the
+        // name-based tiers (binding on name-uniqueness alone would risk
+        // e.g. `datetime.now()` landing on an unrelated local
+        // `FakeClock.now`) or falls through to them is this language's
+        // `LanguageProfile::import_miss` policy.
+        let refuse_names = !r.import_candidates.is_empty() && {
+            match profile_for(r.source_lang).import_miss {
+                ImportMissPolicy::Refuse => true,
+                ImportMissPolicy::FallThrough => false,
+                ImportMissPolicy::PythonRepoHeuristic => {
+                    !self.is_repo_python_import(r.import_candidates)?
+                }
+            }
+        };
         let receiver_type = if refuse_names {
             Some("")
         } else {
@@ -309,22 +401,29 @@ impl<'c> Resolver<'c> {
         Ok(Some(id))
     }
 
-    /// Match `(name, dot_pattern, colons_pattern)` in the source's language,
-    /// then — Bridge Edge kinds only — in any language.
+    /// Match `name` in the source language's own same-language round
+    /// (patterns built from `profile_for(source_lang)`'s separators), then
+    /// — Bridge Edge kinds only — in any language, using
+    /// `any_lang_patterns` (always both `.` and `::`: the target's
+    /// language isn't known in advance for a bridge match).
     fn unique_by_pattern(
         &mut self,
-        (name, dot_pattern, colons_pattern): (&str, &str, &str),
+        name: &str,
+        any_lang_patterns: (&str, &str),
         source_lang: &str,
         edge_kind: &str,
     ) -> Result<Option<i64>> {
+        let profile = profile_for(source_lang);
+        let (same_p1, same_p2) = same_lang_patterns(name, &profile);
         let gv = self.graph_version;
         let same = self.unique(
             Lookup::SameLang,
-            params![name, dot_pattern, colons_pattern, gv, gv, source_lang],
+            params![name, same_p1, same_p2, gv, gv, source_lang],
         )?;
         if same.is_some() || !is_bridge_edge_kind(edge_kind) {
             return Ok(same);
         }
+        let (dot_pattern, colons_pattern) = any_lang_patterns;
         self.unique(
             Lookup::AnyLang,
             params![name, dot_pattern, colons_pattern, gv, gv],
@@ -353,12 +452,12 @@ impl<'c> Resolver<'c> {
 
             Some(known_type) => {
                 let method = qualname_trailing_name(target_qualname);
-                let seed = format!("{known_type}.{method}");
+                let seed = format!("{known_type}{}{method}", primary_separator(source_lang));
                 let Some((seg, dot, colons)) = two_segment_qualname_patterns(&seed) else {
                     return Ok(None);
                 };
                 if let Some(id) =
-                    self.unique_by_pattern((&seg, &dot, &colons), source_lang, edge_kind)?
+                    self.unique_by_pattern(&seg, (&dot, &colons), source_lang, edge_kind)?
                 {
                     return Ok(Some((id, ResolutionKind::ReceiverType)));
                 }
@@ -372,13 +471,13 @@ impl<'c> Resolver<'c> {
             None => {
                 if let Some((seg, dot, colons)) = two_segment_qualname_patterns(target_qualname)
                     && let Some(id) =
-                        self.unique_by_pattern((&seg, &dot, &colons), source_lang, edge_kind)?
+                        self.unique_by_pattern(&seg, (&dot, &colons), source_lang, edge_kind)?
                 {
                     return Ok(Some((id, ResolutionKind::TwoSegment)));
                 }
                 let (name, dot, colons) = fuzzy_qualname_patterns(target_qualname);
                 Ok(self
-                    .unique_by_pattern((name, &dot, &colons), source_lang, edge_kind)?
+                    .unique_by_pattern(name, (&dot, &colons), source_lang, edge_kind)?
                     .map(|id| (id, ResolutionKind::BareName)))
             }
         }
@@ -388,12 +487,10 @@ impl<'c> Resolver<'c> {
     /// ancestor's `target_qualname` text) to the single symbol declaring
     /// it. Same-language only — a class hierarchy never crosses languages.
     fn resolve_type_symbol(&mut self, type_name: &str, source_lang: &str) -> Result<Option<i64>> {
-        let (name, dot, colons) = fuzzy_qualname_patterns(type_name);
+        let name = qualname_trailing_name(type_name);
+        let (p1, p2) = same_lang_patterns(name, &profile_for(source_lang));
         let gv = self.graph_version;
-        self.unique(
-            Lookup::SameLang,
-            params![name, &dot, &colons, gv, gv, source_lang],
-        )
+        self.unique(Lookup::SameLang, params![name, p1, p2, gv, gv, source_lang])
     }
 
     /// When a receiver's own type declares no matching method, walk up its
@@ -440,12 +537,12 @@ impl<'c> Resolver<'c> {
             let mut matches: Vec<i64> = Vec::new();
             for (_, ancestor_qualname) in &level {
                 let ancestor_name = qualname_trailing_name(ancestor_qualname);
-                let seed = format!("{ancestor_name}.{method}");
+                let seed = format!("{ancestor_name}{}{method}", primary_separator(source_lang));
                 let Some((seg, dot, colons)) = two_segment_qualname_patterns(&seed) else {
                     continue;
                 };
                 if let Some(id) =
-                    self.unique_by_pattern((&seg, &dot, &colons), source_lang, edge_kind)?
+                    self.unique_by_pattern(&seg, (&dot, &colons), source_lang, edge_kind)?
                 {
                     matches.push(id);
                 }
@@ -494,8 +591,10 @@ impl<'c> Resolver<'c> {
     /// distinct symbol is found across *every* candidate. Each candidate is
     /// an exact-qualname lookup, so this is authoritative when it hits.
     ///
-    /// Only when *no* candidate hits exactly, a second round retries each
-    /// one as a dotted-path suffix (`IMPORT_SUFFIX_SQL`), same
+    /// Only when *no* candidate hits exactly, and this language's profile
+    /// says suffix matching is meaningful for it
+    /// (`LanguageProfile::import_suffix_matching`), a second round retries
+    /// each one as a path suffix (`IMPORT_SUFFIX_SQL`), same
     /// one-distinct-hit rule. Needed for Python, where a file's module
     /// qualname is its repo-relative path (`py.pkg.src.pkg.mod`) while the
     /// import names the installed package path (`pkg.mod`). Still the full
@@ -504,14 +603,20 @@ impl<'c> Resolver<'c> {
         &mut self,
         candidates: &[String],
         symbol_map: &HashMap<String, i64>,
+        source_lang: &str,
     ) -> Result<Option<i64>> {
-        for exact_round in [true, false] {
+        let rounds: &[bool] = if profile_for(source_lang).import_suffix_matching {
+            &[true, false]
+        } else {
+            &[true]
+        };
+        for &exact_round in rounds {
             let mut found: Option<i64> = None;
             for candidate in candidates {
                 let id = if exact_round {
                     self.exact(candidate, symbol_map)?
                 } else {
-                    let name = candidate.rsplit('.').next().unwrap_or(candidate);
+                    let name = qualname_trailing_name(candidate);
                     let suffix = format!(".{candidate}");
                     let gv = self.graph_version;
                     self.unique(Lookup::ImportSuffix, params![name, suffix, gv])?
@@ -625,16 +730,22 @@ impl Db {
         loop {
             let mut conn = self.conn();
             let tx = conn.transaction()?;
-            let batch: Vec<(i64, String)> = {
+            let batch: Vec<(i64, String, String)> = {
                 let mut stmt = tx.prepare(
-                    "SELECT id, import_candidates FROM edges
-                     WHERE target_symbol_id IS NULL
-                     AND import_candidates IS NOT NULL
-                     AND graph_version = ?
+                    "SELECT e.id, e.import_candidates, COALESCE(f.language, 'unknown')
+                     FROM edges e
+                     JOIN files f ON e.file_id = f.id
+                     WHERE e.target_symbol_id IS NULL
+                     AND e.import_candidates IS NOT NULL
+                     AND e.graph_version = ?
                      LIMIT ?",
                 )?;
                 let rows = stmt.query_map(params![graph_version, BATCH_SIZE], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()?
             };
@@ -648,10 +759,10 @@ impl Db {
                 let mut update_stmt = tx.prepare(
                     "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
                 )?;
-                for (edge_id, candidates_json) in &batch {
+                for (edge_id, candidates_json, source_lang) in &batch {
                     let candidates = decode_import_candidates(candidates_json);
                     if let Some(target_id) =
-                        resolver.resolve_import(&candidates, &empty_symbol_map)?
+                        resolver.resolve_import(&candidates, &empty_symbol_map, source_lang)?
                     {
                         update_stmt.execute(params![
                             target_id,
@@ -799,6 +910,29 @@ fn fuzzy_qualname_patterns(qn: &str) -> (&str, String, String) {
     (name, format!("%.{name}"), format!("%::{name}"))
 }
 
+/// A language's primary (first-declared) qualname separator, for joining a
+/// type name and a method name before a two-segment lookup — e.g. Rust's
+/// `Greeter` + `greet` becomes `Greeter::greet`, not `Greeter.greet`.
+fn primary_separator(source_lang: &str) -> &'static str {
+    profile_for(source_lang)
+        .separators
+        .first()
+        .copied()
+        .unwrap_or(".")
+}
+
+/// Same-language LIKE patterns for a trailing name, using only the
+/// separator(s) `profile` declares — e.g. a Rust same-language round never
+/// bothers checking a `.`-suffix pattern, since no Rust qualname contains
+/// one. Every profile today declares exactly one separator, so both SQL
+/// slots get that same pattern; a future two-separator profile would get
+/// one each.
+fn same_lang_patterns(name: &str, profile: &LanguageProfile) -> (String, String) {
+    let first = profile.separators.first().copied().unwrap_or(".");
+    let second = profile.separators.get(1).copied().unwrap_or(first);
+    (format!("%{first}{name}"), format!("%{second}{name}"))
+}
+
 /// Index right after the last qualname separator (`.` or `::`) in `s`, or
 /// `None` when `s` has none.
 fn last_qualname_separator(s: &str) -> Option<usize> {
@@ -843,7 +977,61 @@ fn two_segment_qualname_patterns(qn: &str) -> Option<(String, String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{fuzzy_qualname_patterns, qualname_trailing_name, two_segment_qualname_patterns};
+    use super::{
+        ImportMissPolicy, LanguageProfile, fuzzy_qualname_patterns, primary_separator, profile_for,
+        qualname_trailing_name, same_lang_patterns, two_segment_qualname_patterns,
+    };
+
+    #[test]
+    fn profile_for_registers_rust_and_python_only() {
+        assert_eq!(profile_for("rust").separators, &["::"]);
+        assert_eq!(
+            profile_for("rust").import_miss,
+            ImportMissPolicy::FallThrough
+        );
+        assert!(profile_for("rust").normalize_import_target.is_some());
+
+        assert_eq!(profile_for("python").separators, &["."]);
+        assert_eq!(
+            profile_for("python").import_miss,
+            ImportMissPolicy::PythonRepoHeuristic
+        );
+        assert!(profile_for("python").normalize_import_target.is_none());
+
+        // Every other language — including one absent from any indexed
+        // repo — gets the shared default untouched.
+        for lang in ["csharp", "javascript", "typescript", "go", "made-up-lang"] {
+            assert_eq!(profile_for(lang).separators, &["."], "{lang}");
+            assert_eq!(
+                profile_for(lang).import_miss,
+                ImportMissPolicy::Refuse,
+                "{lang}"
+            );
+            assert!(
+                profile_for(lang).normalize_import_target.is_none(),
+                "{lang}"
+            );
+        }
+    }
+
+    #[test]
+    fn primary_separator_reads_the_profile() {
+        assert_eq!(primary_separator("rust"), "::");
+        assert_eq!(primary_separator("python"), ".");
+        assert_eq!(primary_separator("csharp"), ".");
+    }
+
+    #[test]
+    fn same_lang_patterns_use_only_the_profiles_separators() {
+        assert_eq!(
+            same_lang_patterns("greet", &LanguageProfile::DEFAULT),
+            ("%.greet".to_string(), "%.greet".to_string())
+        );
+        assert_eq!(
+            same_lang_patterns("greet", &profile_for("rust")),
+            ("%::greet".to_string(), "%::greet".to_string())
+        );
+    }
 
     #[test]
     fn fuzzy_patterns_anchor_on_a_separator() {

@@ -78,19 +78,22 @@ pub struct EdgeInput {
     /// Fully-qualified candidate qualnames for this call's target, derived
     /// from the calling file's own import context (C# `using` directives /
     /// aliases / enclosing namespace; Python `from x import Y` / `import
-    /// x.y as z`; TS/JS `import { f } from "./m"`) — populated for a call
-    /// whose root identifier import-resolves: `Type.method()` in C#, bare
-    /// or dotted calls in Python and TS/JS (see
-    /// `csharp::import_qualified_candidates`,
-    /// `python::import_qualified_candidates`, `javascript::resolve_imports`).
+    /// x.y as z`; TS/JS `import { f } from "./m"`; Rust `use` bindings) —
+    /// populated for a call whose root identifier import-resolves:
+    /// `Type.method()` in C#, bare or dotted calls in Python and TS/JS, a
+    /// bare call in Rust (see `csharp::import_qualified_candidates`,
+    /// `python::import_qualified_candidates`, `javascript::resolve_imports`,
+    /// `rust::import_qualified_candidates`).
     ///
     /// Consumed by `Db::insert_edges`'s import tier
     /// (`db::resolver::Resolver::resolve_import`: exact qualname, then an unambiguous
     /// suffix match), which binds only when exactly one symbol resolves.
-    /// On a miss the edge normally refuses the fuzzy tiers — an imported
-    /// name must not bind a same-named unrelated symbol — except for a
-    /// Python import into a repo package (see `is_repo_python_import`).
-    /// Empty for Rust and Go, and for call shapes no extractor recognizes.
+    /// On a miss, whether the edge then refuses the fuzzy tiers — an
+    /// imported name must not bind a same-named unrelated symbol — or falls
+    /// through to them is this language's `db::resolver::LanguageProfile::import_miss`
+    /// policy (Rust always falls through; Python only for a repo package,
+    /// see `is_repo_python_import`; every other language refuses).
+    /// Empty for Go, and for call shapes no extractor recognizes.
     ///
     /// Also persisted (JSON-encoded) to the `edges.import_candidates`
     /// column by `insert_edges` whenever non-empty, so
