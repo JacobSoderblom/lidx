@@ -9,11 +9,10 @@ use std::path::PathBuf;
     about = "Code indexer v1",
     after_help = r#"Examples:
   lidx reindex --repo .
-  lidx request --method repo_overview --params '{"summary":true}'
-  lidx request --method list_languages --params '{}'
+  lidx request --method orient --params '{"view":"overview"}'
   lidx request --method search --params '{"query":"Indexer","limit":10}'
-  lidx request --method references --params '{"qualname":"crate::indexer::Indexer::reindex","direction":"out","kinds":["CALLS"]}'
-  lidx request --method search_rg --params '{"query":"def\\s+greet","context_lines":8}'
+  lidx request --method trace_flow --params '{"start_qualname":"crate::indexer::Indexer::reindex","direction":"downstream","kinds":["CALLS"],"max_hops":1}'
+  lidx request --method search --params '{"query":"def\\s+greet","context_lines":8}'
   lidx serve --repo . --watch auto
   lidx mcp-serve --repo .
 "#

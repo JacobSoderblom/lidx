@@ -122,6 +122,26 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             .db()
             .edges_for_symbol(symbol.id, ctx.languages.as_deref(), ctx.graph_version)?;
 
+    // 4b. Cross-boundary neighbours (RPC/HTTP/channel/config), appended after
+    // the CALLS refs in callers/callees/tests below. Same seed set as the
+    // CALLS aggregation: a class also speaks for its members.
+    let cross_seeds = if symbol.kind == "class" {
+        crate::resolve::expand_seeds(indexer.db(), symbol.id, ctx.graph_version)?
+    } else {
+        vec![symbol.id]
+    };
+    let wants = |s: &str| sections.iter().any(|x| x == s);
+    let incoming_cross = if wants("callers") || wants("tests") {
+        cross_boundary_refs(indexer.db(), &cross_seeds, false, &ctx)?
+    } else {
+        Vec::new()
+    };
+    let outgoing_cross = if wants("callees") {
+        cross_boundary_refs(indexer.db(), &cross_seeds, true, &ctx)?
+    } else {
+        Vec::new()
+    };
+
     // 5. Build callers (incoming CALLS)
     //
     // `callers_total` counts every distinct matching caller, independent of
@@ -203,6 +223,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             symbol: caller_sym,
                             evidence,
                             edge_kind: "CALLS".to_string(),
+                            protocol_context: None,
                         });
                     }
                 }
@@ -244,10 +265,32 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             symbol: caller_sym,
                             evidence,
                             edge_kind: "CALLS".to_string(),
+                            protocol_context: None,
                         });
                     }
                 }
             }
+        }
+
+        for r in &incoming_cross {
+            if !seen_caller_ids.insert(r.symbol.id) {
+                continue;
+            }
+            caller_total += 1;
+            if !still_adding {
+                continue;
+            }
+            if caller_refs.len() >= max_refs {
+                still_adding = false;
+                continue;
+            }
+            let ref_bytes = serde_json::to_string(r).map_or(0, |j| j.len());
+            if caller_bytes + ref_bytes > callers_budget {
+                still_adding = false;
+                continue;
+            }
+            caller_bytes += ref_bytes;
+            caller_refs.push(r.clone());
         }
 
         used_bytes += caller_bytes;
@@ -327,6 +370,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                     symbol: callee_sym,
                                     evidence,
                                     edge_kind: "CALLS".to_string(),
+                                    protocol_context: None,
                                 });
                             }
                         }
@@ -367,11 +411,33 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                 symbol: callee_sym,
                                 evidence,
                                 edge_kind: "CALLS".to_string(),
+                                protocol_context: None,
                             });
                         }
                     }
                 }
             }
+        }
+
+        for r in &outgoing_cross {
+            if !seen_callee_ids.insert(r.symbol.id) {
+                continue;
+            }
+            callee_total += 1;
+            if !still_adding {
+                continue;
+            }
+            if callee_refs.len() >= max_refs {
+                still_adding = false;
+                continue;
+            }
+            let ref_bytes = serde_json::to_string(r).map_or(0, |j| j.len());
+            if callee_bytes + ref_bytes > callees_budget {
+                still_adding = false;
+                continue;
+            }
+            callee_bytes += ref_bytes;
+            callee_refs.push(r.clone());
         }
 
         used_bytes += callee_bytes;
@@ -386,38 +452,57 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         let mut test_bytes = 0usize;
         let mut test_total = 0usize;
         let mut still_adding = true;
+        let mut calls_test_ids = std::collections::HashSet::new();
         for edge in &edges {
             if edge.kind == "CALLS"
                 && edge.target_symbol_id == Some(symbol.id)
                 && let Some(source_id) = edge.source_symbol_id
                 && let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id)
+                && looks_like_test(&test_sym)
             {
-                let is_test = test_sym.file_path.contains("test")
-                    || test_sym.file_path.contains("spec")
-                    || test_sym.name.starts_with("test_")
-                    || test_sym.name.starts_with("Test");
-                if is_test {
-                    test_total += 1;
-                    if !still_adding {
-                        continue;
-                    }
-                    let ref_json = serde_json::to_string(&test_sym).unwrap_or_default();
-                    let ref_bytes = ref_json.len();
-                    if test_bytes + ref_bytes > tests_budget {
-                        still_adding = false;
-                        continue;
-                    }
-                    test_bytes += ref_bytes;
-                    test_refs.push(ExplainRef {
-                        signature: test_sym.signature.clone(),
-                        symbol: test_sym,
-                        evidence: edge.evidence_snippet.clone(),
-                        edge_kind: "CALLS".to_string(),
-                    });
-                    if test_refs.len() >= max_refs {
-                        still_adding = false;
-                    }
+                calls_test_ids.insert(test_sym.id);
+                test_total += 1;
+                if !still_adding {
+                    continue;
                 }
+                let ref_json = serde_json::to_string(&test_sym).unwrap_or_default();
+                let ref_bytes = ref_json.len();
+                if test_bytes + ref_bytes > tests_budget {
+                    still_adding = false;
+                    continue;
+                }
+                test_bytes += ref_bytes;
+                test_refs.push(ExplainRef {
+                    signature: test_sym.signature.clone(),
+                    symbol: test_sym,
+                    evidence: edge.evidence_snippet.clone(),
+                    edge_kind: "CALLS".to_string(),
+                    protocol_context: None,
+                });
+                if test_refs.len() >= max_refs {
+                    still_adding = false;
+                }
+            }
+        }
+        // Tests reaching the symbol over RPC/HTTP/a channel (e.g. a gRPC
+        // client test against a service impl) count too.
+        for r in &incoming_cross {
+            if !looks_like_test(&r.symbol) || !calls_test_ids.insert(r.symbol.id) {
+                continue;
+            }
+            test_total += 1;
+            if !still_adding {
+                continue;
+            }
+            let ref_bytes = serde_json::to_string(r).map_or(0, |j| j.len());
+            if test_bytes + ref_bytes > tests_budget {
+                still_adding = false;
+                continue;
+            }
+            test_bytes += ref_bytes;
+            test_refs.push(r.clone());
+            if test_refs.len() >= max_refs {
+                still_adding = false;
             }
         }
         used_bytes += test_bytes;
@@ -576,6 +661,122 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     };
 
     Ok(serde_json::to_value(&result)?)
+}
+
+fn looks_like_test(sym: &Symbol) -> bool {
+    sym.file_path.contains("test")
+        || sym.file_path.contains("spec")
+        || sym.name.starts_with("test_")
+        || sym.name.starts_with("Test")
+}
+
+/// Client side of each bridge pair (see `bridge_complement`): the kinds an
+/// explained symbol's *outgoing* cross-boundary edges carry.
+const CLIENT_BRIDGE_KINDS: &[&str] = &["RPC_CALL", "HTTP_CALL", "CHANNEL_PUBLISH", "CONFIG_READ"];
+/// Server side of each bridge pair: the kinds a callee-of-a-bridge carries.
+const SERVER_BRIDGE_KINDS: &[&str] = &[
+    "RPC_IMPL",
+    "HTTP_ROUTE",
+    "CHANNEL_SUBSCRIBE",
+    "CONFIG_SOURCE",
+];
+
+/// One-hop cross-boundary neighbours of `seeds` for explain_symbol, found by
+/// running trace_flow's own traversal (direct resolved edges + bridge
+/// crossing by exact target_qualname) with `max_hops: 0`.
+///
+/// Every ref is labelled with the *client-side* kind (RPC_CALL, HTTP_CALL,
+/// CHANNEL_PUBLISH, CONFIG_READ) or CONFIG_BIND, so a test -> impl gRPC hop
+/// reads RPC_CALL from both ends.
+///
+/// RPC_CALL fan-out: a C# client call emits one RPC_CALL per candidate
+/// (package, service) pair, all with a NULL target. Only candidates that
+/// bridge to a real RPC_IMPL surface, deduped by target symbol, so the
+/// unresolvable guesses never appear or count toward `callees_total`.
+fn cross_boundary_refs(
+    db: &crate::db::Db,
+    seeds: &[i64],
+    outgoing: bool,
+    ctx: &HandlerContext,
+) -> Result<Vec<ExplainRef>> {
+    // Outgoing starts from the client kinds and crosses to the server side;
+    // incoming starts from the server kinds and crosses back to the clients.
+    let mut allowed_kinds: Vec<String> = if outgoing {
+        CLIENT_BRIDGE_KINDS
+    } else {
+        SERVER_BRIDGE_KINDS
+    }
+    .iter()
+    .map(|k| k.to_string())
+    .collect();
+    if outgoing {
+        // Resolved method -> options-class binding; a direct edge, no bridge.
+        allowed_kinds.push("CONFIG_BIND".to_string());
+    }
+    let config = crate::traversal::TraceConfig {
+        max_hops: 0,
+        max_bytes: usize::MAX,
+        allowed_kinds,
+        ..Default::default()
+    };
+    let hops = crate::traversal::trace_flow(
+        db,
+        seeds.to_vec(),
+        None,
+        ctx.languages.as_deref(),
+        ctx.graph_version,
+        &config,
+    )?
+    .hops;
+    let mut refs: Vec<ExplainRef> = hops
+        .into_iter()
+        .filter_map(|hop| {
+            let edge_kind = if config.allowed_kinds.contains(&hop.edge_kind) {
+                // Direct edge from a seed. Incoming wants only bridged hops.
+                if !outgoing {
+                    return None;
+                }
+                hop.edge_kind
+            } else if outgoing {
+                // Bridged hop carries the far (server) side's kind.
+                crate::indexer::channel::bridge_complement(&hop.edge_kind)?[0].to_string()
+            } else if CLIENT_BRIDGE_KINDS.contains(&hop.edge_kind.as_str()) {
+                hop.edge_kind
+            } else {
+                // e.g. RPC_ROUTE: the .proto declaration, not a caller.
+                return None;
+            };
+            Some(ExplainRef {
+                signature: hop.symbol.signature.clone(),
+                symbol: hop.symbol,
+                evidence: hop.snippet,
+                edge_kind,
+                protocol_context: hop.protocol_context,
+            })
+        })
+        .collect();
+    if !outgoing {
+        // CONFIG_BIND is resolved and unbridged, so trace_flow's downstream
+        // walk never sees it arriving; read it straight off the seeds.
+        for &seed in seeds {
+            for edge in db.edges_for_symbol(seed, ctx.languages.as_deref(), ctx.graph_version)? {
+                if edge.kind == "CONFIG_BIND"
+                    && edge.target_symbol_id == Some(seed)
+                    && let Some(source_id) = edge.source_symbol_id
+                    && let Some(sym) = db.get_symbol_by_id(source_id)?
+                {
+                    refs.push(ExplainRef {
+                        signature: sym.signature.clone(),
+                        symbol: sym,
+                        evidence: edge.evidence_snippet,
+                        edge_kind: edge.kind,
+                        protocol_context: None,
+                    });
+                }
+            }
+        }
+    }
+    Ok(refs)
 }
 
 // ---------------------------------------------------------------------------
@@ -2133,4 +2334,92 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
         "index_status": { "stale": stale, "hint": hint },
         "suggested_queries": suggested,
     }))
+}
+
+#[cfg(test)]
+mod explain_symbol_cross_boundary_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// A python gRPC server, its .proto, and a test that calls it both
+    /// directly (`helper()`, a CALLS edge) and over gRPC (an RPC_CALL edge
+    /// with a NULL target that only trace_flow's bridge resolves).
+    fn grpc_repo() -> (TempDir, Indexer) {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("users.proto"),
+            "syntax = \"proto3\";\n\nservice UserService {\n  rpc GetUser (GetUserRequest) returns (User);\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("server.py"),
+            "import users_pb2_grpc\n\n\nclass UserService(users_pb2_grpc.UserServiceServicer):\n    def GetUser(self, request, context):\n        return None\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("test_client.py"),
+            "import users_pb2_grpc\n\n\ndef helper():\n    return 1\n\n\ndef test_get_user(channel):\n    helper()\n    users_pb2_grpc.UserServiceStub(channel).GetUser(None)\n",
+        )
+        .unwrap();
+        let mut indexer =
+            Indexer::new(root.to_path_buf(), root.join(".lidx").join(".lidx.sqlite")).unwrap();
+        indexer.reindex().unwrap();
+        (dir, indexer)
+    }
+
+    fn explain(indexer: &mut Indexer, qualname: &str) -> Value {
+        handle_explain_symbol(indexer, json!({"qualname": qualname})).unwrap()
+    }
+
+    fn refs<'a>(v: &'a Value, section: &str) -> Vec<(&'a str, &'a str)> {
+        v[section]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["symbol"]["qualname"].as_str().unwrap(),
+                    r["edge_kind"].as_str().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn callees_include_rpc_hop_after_calls_with_kind_and_protocol_context() {
+        let (_dir, mut indexer) = grpc_repo();
+        let v = explain(&mut indexer, "test_client.test_get_user");
+        assert_eq!(
+            refs(&v, "callees"),
+            vec![
+                ("test_client.helper", "CALLS"),
+                ("server.UserService.GetUser", "RPC_CALL"),
+            ],
+            "{v:#}"
+        );
+        assert_eq!(v["callees_total"], 2);
+        let ctx = &v["callees"][1]["protocol_context"];
+        assert_eq!(ctx["service"], "UserService", "{v:#}");
+        assert_eq!(ctx["rpc"], "GetUser", "{v:#}");
+        assert!(v["callees"][0].get("protocol_context").is_none());
+    }
+
+    #[test]
+    fn callers_and_tests_include_rpc_clients_but_not_the_proto_declaration() {
+        let (_dir, mut indexer) = grpc_repo();
+        let v = explain(&mut indexer, "server.UserService.GetUser");
+        assert_eq!(
+            refs(&v, "callers"),
+            vec![("test_client.test_get_user", "RPC_CALL")],
+            "{v:#}"
+        );
+        assert_eq!(v["callers_total"], 1);
+        assert_eq!(
+            refs(&v, "tests"),
+            vec![("test_client.test_get_user", "RPC_CALL")],
+            "{v:#}"
+        );
+        assert_eq!(v["tests_total"], 1);
+    }
 }

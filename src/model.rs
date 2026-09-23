@@ -621,7 +621,7 @@ pub struct ExplainSymbolResult {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ExplainRef {
     pub symbol: Symbol,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -629,6 +629,10 @@ pub struct ExplainRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
     pub edge_kind: String,
+    /// Service/rpc, route, channel or config key for a cross-boundary
+    /// (RPC_CALL, HTTP_CALL, CHANNEL_PUBLISH, CONFIG_READ, ...) ref.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_context: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
