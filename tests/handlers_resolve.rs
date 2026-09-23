@@ -271,7 +271,9 @@ fn analyze_impact_resolves_by_query() {
 }
 
 #[test]
-fn analyze_impact_query_not_found_returns_error() {
+fn analyze_impact_query_not_found_returns_structured_recovery() {
+    // Since #44: unresolvable query/qualname returns a structured recovery payload
+    // (with next_hops) instead of a flat {error: ...} so the caller has a path forward.
     let (temp, _indexer) = indexed_repo("py_mvp");
     let response = call_raw(
         &temp,
@@ -279,9 +281,21 @@ fn analyze_impact_query_not_found_returns_error() {
         r#"{"query":"xyzzy_nonexistent_symbol_xyz"}"#,
     );
     assert!(
-        response.get("error").is_some(),
-        "unresolvable query should return error: {:?}",
+        response.get("error").is_none(),
+        "unresolvable analyze_impact query must return a structured payload, not a flat error: {:?}",
         response
+    );
+    let result = &response["result"];
+    assert!(
+        result.get("next_hops").is_some(),
+        "structured recovery payload must have next_hops: {:?}",
+        result
+    );
+    assert_eq!(
+        result["resolved"],
+        serde_json::json!(false),
+        "structured recovery payload must have resolved:false: {:?}",
+        result
     );
 }
 

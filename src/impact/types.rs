@@ -235,6 +235,9 @@ pub struct BatchImpactEntry {
     pub summary: ImpactSummary,
     pub truncated: bool,
     pub layers: LayerMetadata,
+    /// Present only when seed resolution failed; contains next_hops and a message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<serde_json::Value>,
 }
 
 /// Result of batch impact analysis (multiple seeds in one call)

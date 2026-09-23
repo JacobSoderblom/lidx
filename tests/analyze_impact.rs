@@ -380,11 +380,12 @@ fn analyze_impact_deterministic_output() {
 
 #[test]
 fn analyze_impact_symbol_not_found() {
+    // Since #44: unresolvable qualname returns a structured recovery payload (with
+    // next_hops) rather than a flat {error: ...} so the caller has a path forward.
     let temp = TempRepo::new("py_mvp");
     let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
     indexer.reindex().unwrap();
 
-    // Try non-existent symbol
     let response = rpc::call(
         temp.repo_root.clone(),
         temp.db_path.clone(),
@@ -396,10 +397,23 @@ fn analyze_impact_symbol_not_found() {
 
     let value: serde_json::Value = serde_json::from_str(&response).unwrap();
 
-    // Should return error
+    // Must be a successful response (not a flat error), with a structured recovery payload
     assert!(
-        value.get("error").is_some(),
-        "Should return error for nonexistent symbol"
+        value.get("error").is_none(),
+        "unresolvable qualname must return structured recovery, not flat error: {:?}",
+        value
+    );
+    let result = &value["result"];
+    assert!(
+        result.get("next_hops").is_some(),
+        "recovery payload must have next_hops: {:?}",
+        result
+    );
+    assert_eq!(
+        result["resolved"],
+        serde_json::json!(false),
+        "recovery payload must have resolved:false: {:?}",
+        result
     );
 }
 
