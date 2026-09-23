@@ -342,35 +342,6 @@ fn collect_content_file_strategy(
                     }
                 }
             }
-
-            if let Some(symbol) = c
-                .items
-                .iter()
-                .filter_map(|item| item.symbol.as_ref())
-                .find(|s| s.id == symbol_id)
-            {
-                let incoming = db.incoming_edges_by_qualname_pattern(
-                    &symbol.name,
-                    "CALLS",
-                    config.languages.as_deref(),
-                    config.graph_version,
-                )?;
-                for edge in &incoming {
-                    let matches = edge.target_qualname.as_ref().is_some_and(|qn| {
-                        qn == &symbol.qualname || qn.ends_with(&format!(".{}", symbol.name))
-                    });
-                    if matches
-                        && let Some(source_id) = edge.source_symbol_id
-                        && !current_symbol_ids.contains(&source_id)
-                        && !seen_caller_ids.contains(&source_id)
-                        && let Some(caller) = db.get_symbol_by_id(source_id)?
-                        && !current_file_paths.contains(&caller.file_path)
-                    {
-                        caller_symbols.push(caller);
-                        seen_caller_ids.insert(source_id);
-                    }
-                }
-            }
         }
 
         for caller in caller_symbols {

@@ -158,31 +158,28 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
         // Determine which symbol IDs to collect callers for
         let is_class_symbol = symbol.kind == "class";
-        let target_ids: Vec<(i64, String)> = if is_class_symbol {
+        let target_ids: Vec<i64> = if is_class_symbol {
             // For class symbols, find all methods and collect callers for each
             let all_symbols = indexer
                 .db()
                 .get_symbols_for_file(&symbol.file_path, ctx.graph_version)?;
-            let mut ids: Vec<(i64, String)> = all_symbols
+            let mut ids: Vec<i64> = all_symbols
                 .into_iter()
                 .filter(|s| {
                     (s.kind == "method" || s.kind == "function")
                         && s.start_line >= symbol.start_line
                         && s.end_line <= symbol.end_line
                 })
-                .map(|s| {
-                    let name = s.name.clone();
-                    (s.id, name)
-                })
+                .map(|s| s.id)
                 .collect();
             // Also include the class itself
-            ids.push((symbol.id, symbol.name.clone()));
+            ids.push(symbol.id);
             ids
         } else {
-            vec![(symbol.id, symbol.name.clone())]
+            vec![symbol.id]
         };
 
-        for (target_id, target_name) in &target_ids {
+        for target_id in &target_ids {
             // Get edges for this target
             let target_edges = if *target_id == symbol.id {
                 edges.clone()
@@ -198,48 +195,6 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             for edge in &target_edges {
                 if edge.kind == "CALLS"
                     && edge.target_symbol_id == Some(*target_id)
-                    && let Some(source_id) = edge.source_symbol_id
-                    && seen_caller_ids.insert(source_id)
-                {
-                    caller_total += 1;
-                    if !still_adding {
-                        continue;
-                    }
-                    if caller_refs.len() >= max_refs {
-                        still_adding = false;
-                        continue;
-                    }
-                    if let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id) {
-                        let evidence = edge.evidence_snippet.clone();
-                        let ref_json = serde_json::to_string(&caller_sym).unwrap_or_default();
-                        let ref_bytes = ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                        if caller_bytes + ref_bytes > callers_budget {
-                            still_adding = false;
-                            continue;
-                        }
-                        caller_bytes += ref_bytes;
-                        caller_refs.push(ExplainRef {
-                            signature: caller_sym.signature.clone(),
-                            symbol: caller_sym,
-                            evidence,
-                            edge_kind: "CALLS".to_string(),
-                            protocol_context: None,
-                        });
-                    }
-                }
-            }
-
-            // Check for unresolved callers by qualname
-            let unresolved_edges = indexer.db().incoming_edges_by_qualname_pattern(
-                target_name,
-                "CALLS",
-                ctx.languages.as_deref(),
-                ctx.graph_version,
-            )?;
-
-            for edge in &unresolved_edges {
-                if let Some(ref target_qn) = edge.target_qualname
-                    && target_qn.ends_with(target_name)
                     && let Some(source_id) = edge.source_symbol_id
                     && seen_caller_ids.insert(source_id)
                 {
@@ -1725,40 +1680,6 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                     });
                 }
             }
-
-            // Qualname fallback for unresolved incoming edges
-            if downstream.len() < max_downstream {
-                let unresolved = indexer
-                    .db()
-                    .incoming_edges_by_qualname_pattern(
-                        &sym.name,
-                        "CALLS",
-                        languages.as_deref(),
-                        ctx.graph_version,
-                    )
-                    .unwrap_or_default();
-                for edge in &unresolved {
-                    if downstream.len() >= max_downstream {
-                        break;
-                    }
-                    if let Some(source_id) = edge.source_symbol_id
-                        && seen_ids.insert(source_id)
-                        && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
-                    {
-                        next_level.push(caller.clone());
-                        downstream.push(DiffImpactEntry {
-                            symbol: caller,
-                            relationship: if current_distance == 1 {
-                                "caller".to_string()
-                            } else {
-                                format!("caller_depth_{}", current_distance)
-                            },
-                            distance: current_distance,
-                            confidence: base_confidence * 0.8,
-                        });
-                    }
-                }
-            }
         }
 
         if next_level.is_empty() || downstream.len() >= max_downstream {
@@ -1768,7 +1689,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         base_confidence *= 0.8; // Decay confidence per level
     }
 
-    // Step 4: Test coverage (with qualname fallback)
+    // Step 4: Test coverage
     let test_coverage = if include_tests {
         let mut coverage = Vec::new();
         for cs in &changed_symbols {
@@ -1784,29 +1705,6 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 if edge.kind == "CALLS"
                     && edge.target_symbol_id == Some(cs.symbol.id)
                     && let Some(source_id) = edge.source_symbol_id
-                    && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
-                    && is_test_symbol(&caller)
-                    && seen_test_ids.insert(source_id)
-                {
-                    tests.push(TestRef {
-                        test_qualname: caller.qualname.clone(),
-                        test_file: caller.file_path.clone(),
-                        coverage_type: "direct".to_string(),
-                    });
-                }
-            }
-            // Qualname fallback for unresolved edges
-            let unresolved = indexer
-                .db()
-                .incoming_edges_by_qualname_pattern(
-                    &cs.symbol.name,
-                    "CALLS",
-                    languages.as_deref(),
-                    ctx.graph_version,
-                )
-                .unwrap_or_default();
-            for edge in &unresolved {
-                if let Some(source_id) = edge.source_symbol_id
                     && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
                     && is_test_symbol(&caller)
                     && seen_test_ids.insert(source_id)

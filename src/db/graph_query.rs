@@ -1,4 +1,4 @@
-use super::{Db, edge_from_row, fuzzy_qualname_patterns, symbol_from_row};
+use super::{Db, edge_from_row, symbol_from_row};
 use crate::model::{Edge, EdgeSnapshotRow, Symbol};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
@@ -189,81 +189,6 @@ impl Db {
             .map_err(Into::into)
     }
 
-    /// Fuzzy lookup for symbol IDs, handling short qualnames like
-    /// "_svc.DeployAsync" or "helper::process"
-    ///
-    /// Strategy:
-    /// 1. Try exact match first (fast path)
-    /// 2. Extract method/function name from short qualname (part after the last `.` or `::`)
-    /// 3. Search for symbols whose qualname ends with '.{name}' or '::{name}'
-    /// 4. Prefer shortest qualname match (less nesting = more specific)
-    pub fn lookup_symbol_id_fuzzy(
-        &self,
-        target_qualname: &str,
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Option<i64>> {
-        // Fast path: try exact match first
-        if let Some(id) =
-            self.lookup_symbol_id_filtered(target_qualname, languages, graph_version)?
-        {
-            return Ok(Some(id));
-        }
-
-        // Extract the trailing name and build suffix patterns for both '.' and '::'
-        let (name, dot_pattern, colons_pattern) = fuzzy_qualname_patterns(target_qualname);
-
-        let mut sql = String::from(
-            "SELECT s.id, s.qualname, LENGTH(s.qualname) as qn_len
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
-               AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
-               AND s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![
-            &name,
-            &dot_pattern,
-            &colons_pattern,
-            &graph_version,
-            &graph_version,
-        ];
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        sql.push_str(" ORDER BY qn_len ASC LIMIT 10");
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt.query(&*params)?;
-
-        let mut candidates: Vec<(i64, String)> = Vec::new();
-        while let Some(row) = rows.next()? {
-            let id: i64 = row.get(0)?;
-            let qualname: String = row.get(1)?;
-            candidates.push((id, qualname));
-        }
-
-        // Prefer the shortest qualname (already ordered by qn_len ASC)
-        Ok(candidates.first().map(|(id, _)| *id))
-    }
-
     pub fn edges_for_symbol(
         &self,
         id: i64,
@@ -306,42 +231,6 @@ impl Db {
             edges.push(row?);
         }
         Ok(edges)
-    }
-
-    /// Historically: find incoming edges by target_qualname pattern, for
-    /// callers where `target_symbol_id` is null but `target_qualname` is
-    /// set. Deliberately neutered to always return no edges (issue #45).
-    ///
-    /// `target_symbol_id IS NULL` now means "the write path could not
-    /// attribute this edge" (see `insert_edges` / `resolve_null_target_edges`'s
-    /// ambiguity guard). The old implementation matched such edges by
-    /// `target_qualname LIKE '%.{symbol_name}'` — a bare method-name suffix
-    /// with no receiver/type scoping, no language filter applied to the
-    /// pattern itself, and SQLite's `LIKE` is case-insensitive for ASCII
-    /// (`'value.Trim' LIKE '%.trim'` is true). In a real repo that matched
-    /// *any* same-named method on *any* type in *any* language — e.g. every
-    /// `X.Create(...)` call site was offered up as a caller of one specific
-    /// `Y.Create`, and a C# `value.Trim()` call matched a Python `trim`
-    /// function. That is the read path inventing an attribution the write
-    /// path explicitly refused; per the guiding principle it must not
-    /// happen, and there is no narrower pattern here that stays correct (a
-    /// bare name is exactly the ambiguous case the write path already
-    /// rejected). Callers already treat this as a best-effort supplementary
-    /// source and tolerate an empty result.
-    ///
-    /// ponytail: kept as a stub (not deleted, along with its five call
-    /// sites) so this stays a minimal diff and the historical intent stays
-    /// documented; if "find callers of a target the write path refused"
-    /// turns out to still be wanted, the real fix is call-site receiver
-    /// typing at write time, not read-time name guessing.
-    pub fn incoming_edges_by_qualname_pattern(
-        &self,
-        _symbol_name: &str,
-        _kind: &str,
-        _languages: Option<&[String]>,
-        _graph_version: i64,
-    ) -> Result<Vec<Edge>> {
-        Ok(Vec::new())
     }
 
     /// Find edges by exact target_qualname match and edge kind filter.

@@ -921,7 +921,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         })
         .unwrap_or_default();
     // Union rather than replace: on the rare chance both tiers produce a
-    // (necessarily different) candidate, let `resolve_import_candidate`'s
+    // (necessarily different) candidate, let `Resolver::resolve_import`'s
     // own ambiguity guard see both and refuse rather than silently
     // preferring one.
     let mut import_candidates = type_call_candidates;
@@ -1765,7 +1765,7 @@ fn grpc_impl_edge(node: Node<'_>, ctx: &Context, source: &str, rpc_name: &str) -
     // single package-less candidate rather than emitting nothing — covers
     // a proto file with no `package` statement, and top-level impl classes.
     // Upgrade path: none needed unless a real cross-file symbol table (like
-    // `db::resolve_import_candidate`'s) becomes available to this
+    // `db::resolver::Resolver::resolve_import`'s) becomes available to this
     // single-file extractor.
     let packages: Vec<Option<&str>> = if ctx.grpc_package_candidates.is_empty() {
         vec![None]
@@ -3178,7 +3178,7 @@ fn member_access_root(node: Node<'_>) -> (Node<'_>, usize) {
 /// notion of which types actually live in an imported namespace, since
 /// that requires the whole-repo symbol table this single-file extractor
 /// doesn't have access to). It only narrows *what to try*; the DB layer
-/// (`Db::insert_edges` / `db::resolve_import_candidate`) is what actually
+/// (`Db::insert_edges` / `db::resolver::Resolver::resolve_import`) is what actually
 /// decides, against real symbols, whether a candidate is unambiguous.
 #[derive(Debug, Default, Clone)]
 struct ImportContext {
@@ -3367,7 +3367,7 @@ fn type_prefixed_receiver_and_suffix(raw: &str) -> Option<(&str, &str)> {
 /// for every bare `using ns;` directive in the file.
 ///
 /// This never picks a winner among multiple namespace candidates — that's
-/// the DB layer's job (`db::resolve_import_candidate`), which tries every
+/// the DB layer's job (`db::resolver::Resolver::resolve_import`), which tries every
 /// candidate against the real symbol table and binds only if exactly one
 /// resolves; 0 or 2+ hits fall through unchanged to the pre-existing
 /// two-segment/bare-name tiers. So an ambiguous `using` situation here

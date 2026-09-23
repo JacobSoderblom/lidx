@@ -1892,7 +1892,7 @@ fn unquote_string_literal(raw: &str) -> Option<String> {
 /// *same* name was bound by two different import statements in the same
 /// file — rare, but handled the same ambiguous way as C#'s twin-`using`
 /// case: not collapsed to one, left for the DB layer
-/// (`db::resolve_import_candidate`) to try both and refuse unless exactly
+/// (`db::resolver::Resolver::resolve_import`) to try both and refuse unless exactly
 /// one resolves to a real symbol.
 fn import_qualified_candidates(raw: &str, ctx: &Context) -> Vec<String> {
     let Some((receiver, method)) = raw.split_once('.') else {

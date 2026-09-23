@@ -110,21 +110,7 @@ pub fn trace_flow(
             break;
         }
 
-        let mut edges = db.edges_for_symbol(current_id, languages, graph_version)?;
-
-        if is_upstream && let Ok(Some(current_sym)) = db.get_symbol_by_id(current_id) {
-            for kind in &config.allowed_kinds {
-                let mut unresolved = db
-                    .incoming_edges_by_qualname_pattern(
-                        &current_sym.name,
-                        kind,
-                        languages,
-                        graph_version,
-                    )
-                    .unwrap_or_default();
-                edges.append(&mut unresolved);
-            }
-        }
+        let edges = db.edges_for_symbol(current_id, languages, graph_version)?;
 
         let mut bridge_targets: Vec<(String, String)> = Vec::new();
 

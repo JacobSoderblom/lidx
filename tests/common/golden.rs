@@ -21,7 +21,7 @@
 //! The trailing `<resolution kind>` column is optional. When present, it
 //! must match the exact tier that resolved the edge (`exact`, `import`,
 //! `receiver_type`, `inherited`, `two_segment`, or `bare_name` -- see
-//! `resolve_fuzzy_target` in `src/db/mod.rs`), not merely the target
+//! `Resolver::resolve_by_name` in `src/db/resolver.rs`), not merely the target
 //! qualname: a call that lands on the right symbol for the wrong reason
 //! (e.g. a `receiver_type` bind silently degrading to `bare_name` because a
 //! same-named decoy no longer disambiguates it) still fails the line. When
