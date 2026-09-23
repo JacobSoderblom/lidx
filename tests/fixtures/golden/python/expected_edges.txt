@@ -1,0 +1,68 @@
+# Golden expected-edges fixture: tests/fixtures/golden/python
+#
+# Format: one edge per line --
+#   <source qualname> <EDGE_KIND> <target qualname | UNRESOLVED> [<resolution kind>]
+#
+# A line starting with `#` (after trimming) is a full-line comment and is
+# ignored. A line may end with a trailing `# xfail: <why>` marker to record
+# a known-failing edge: excluded from precision/recall, reported every run,
+# and flagged loudly if it starts resolving correctly (see
+# tests/common/golden.rs's module doc comment and ScoreboardReport).
+#
+# The optional trailing `<resolution kind>` column pins the exact tier
+# (exact, import, receiver_type, inherited, two_segment, bare_name) that
+# must have resolved the edge, not just its target -- see that same module
+# doc for why. Present on every resolved line below: this fixture carries a
+# same-named decoy for every target (see greeter.py's LoudGreeter,
+# animals.py's Cat, other_module.py), so each shape can only pass through
+# the resolution path it names.
+#
+# Scope: CALLS edges whose source is any symbol defined in this fixture's
+# own files (not just the sources named below) count toward precision/
+# recall (see tests/common/golden.rs's `compare`). CONTAINS, EXTENDS,
+# IMPORTS, etc. are out of scope entirely, so they can't swamp the score.
+#
+# Baseline measured 2026-09-23: precision 1.0, recall 1.0 (8/8 CALLS
+# edges). No known-failing lines today -- every required call shape in
+# this fixture already resolves correctly, including with same-named
+# decoys present for every resolved target.
+
+# Plain call: a bare same-module function call. other_module.local_util is
+# a same-named decoy in a different module.
+caller.entry CALLS caller.local_util exact
+
+# `from x import y` call: format_greeting is bound by name only, not
+# through an attribute access on `helper`. other_module.format_greeting is
+# a same-named decoy.
+caller.call_imported_helper CALLS helper.format_greeting import
+
+# Method call on self. greeter.LoudGreeter.format is a same-named decoy.
+greeter.Greeter.greet CALLS greeter.Greeter.format exact
+
+# Receiver-typed call: the annotated parameter `g: Greeter` pins the type.
+# greeter.LoudGreeter.greet is a same-named decoy -- without receiver-type
+# resolution actually gating the bind, this would go ambiguous (two
+# `greet`s) rather than silently landing on the right one.
+caller.call_receiver_typed CALLS greeter.Greeter.greet receiver_type
+
+# Inherited method call: Dog declares no `speak` of its own -- must
+# dispatch to Animal.speak via Dog's recorded EXTENDS edge.
+# animals.Cat.speak is a same-named decoy -- without the inheritance tier
+# actually gating the bind, this would go ambiguous (two `speak`s) rather
+# than silently landing on the right one.
+caller.call_inherited CALLS animals.Animal.speak inherited
+
+# Ambiguous bare name: `run` is defined in two unrelated modules and
+# imported from neither here -- must stay unresolved, not guess.
+caller.call_ambiguous CALLS UNRESOLVED
+
+# Call into an external library: `requests` is never indexed (it isn't
+# part of this fixture repo), so this must stay unresolved.
+caller.call_external CALLS UNRESOLVED
+
+# Cross-file incoming call, for the incremental golden test: downstream.py
+# imports and calls caller.entry, so the incremental scenario has a
+# genuine incoming edge that must still resolve correctly after caller.py
+# alone is re-synced (see golden_python.rs's incremental test doc for what
+# that test actually verifies here).
+downstream.use_entry CALLS caller.entry import
