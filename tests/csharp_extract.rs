@@ -206,7 +206,7 @@ fn two_usings_supplying_same_bare_name_both_remain_candidates() {
     // know, from this file alone, which one (if either) actually declares
     // `UniqueName`. Both candidates are kept so the DB layer can try them
     // against the real symbol table and refuse to bind if both turn out to
-    // name a real symbol (see `db::resolve_import_candidate`).
+    // name a real symbol (see `db::resolver::Resolver::resolve_import`).
     let source = r#"
 using Dpb.DataMgr.DataProduct.Domain;
 using Dpb.DataMgr.Datasource.Domain;

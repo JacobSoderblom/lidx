@@ -149,7 +149,7 @@ fn reindex_resolves_edge_into_carried_forward_file_after_repair() {
 /// `python::resolve_call_target`), which never fuzzy-suffix-matches
 /// "helper.greet" (the alias "h" isn't a suffix of "helper"). The *only*
 /// path back to the real symbol is the import-candidate tier
-/// (`db::resolve_import_candidate`, fed `import_candidates = ["helper.greet"]`
+/// (`db::resolver::Resolver::resolve_import`, fed `import_candidates = ["helper.greet"]`
 /// from the file's own `import helper as h`), and prior to persisting
 /// `import_candidates` as a DB column, `resolve_null_target_edges` had no
 /// way to retry that tier once helper.py's symbol row was carried forward

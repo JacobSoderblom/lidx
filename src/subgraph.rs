@@ -95,10 +95,7 @@ pub fn build_subgraph_filtered(
             // CALLS edges with NULL target_symbol_id are ones the write path
             // deliberately refused to attribute (ambiguous or unresolved
             // receiver) — the read path must not guess one via fuzzy
-            // qualname lookup. This used to call `lookup_symbol_id_fuzzy`
-            // here, silently binding to whichever same-named candidate it
-            // found first (no ambiguity guard), the same class of bug as
-            // `edges_for_symbols` / `incoming_edges_by_qualname_pattern`.
+            // qualname lookup. Edge resolution belongs to `db::resolver`.
         }
         if let Some(filter) = filter {
             if filter.exclude_all {

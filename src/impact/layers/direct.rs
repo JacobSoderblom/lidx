@@ -297,50 +297,7 @@ pub fn analyze_direct_impact(
         }
 
         // Batch fetch edges for all symbols at this level
-        let mut edges_by_symbol = db.edges_for_symbols(&current_level, languages, graph_version)?;
-
-        // For upstream/both directions, also fetch incoming edges via qualname pattern
-        // This catches callers where target_symbol_id is NULL but target_qualname matches
-        if matches!(
-            direction,
-            TraversalDirection::Upstream | TraversalDirection::Both
-        ) {
-            for &current_id in &current_level {
-                if let Some(sym) = symbol_cache.get(&current_id) {
-                    // Search for CALLS and CONFIG_BIND edges targeting this symbol
-                    let mut all_incoming = db.incoming_edges_by_qualname_pattern(
-                        &sym.name,
-                        "CALLS",
-                        languages,
-                        graph_version,
-                    )?;
-                    let config_bind_incoming = db.incoming_edges_by_qualname_pattern(
-                        &sym.name,
-                        "CONFIG_BIND",
-                        languages,
-                        graph_version,
-                    )?;
-                    all_incoming.extend(config_bind_incoming);
-                    if !all_incoming.is_empty() {
-                        let entry = edges_by_symbol.entry(current_id).or_default();
-                        let existing_ids: HashSet<i64> = entry.iter().map(|e| e.id).collect();
-                        for edge in all_incoming {
-                            if !existing_ids.contains(&edge.id) {
-                                // Verify qualname actually matches this symbol
-                                let matches = edge.target_qualname.as_ref().is_some_and(|qn| {
-                                    qn == &sym.qualname
-                                        || qn == &sym.name
-                                        || qn.ends_with(&format!(".{}", sym.name))
-                                });
-                                if matches {
-                                    entry.push(edge);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let edges_by_symbol = db.edges_for_symbols(&current_level, languages, graph_version)?;
 
         // Collect all neighbor IDs for batch symbol loading
         let mut neighbor_ids = Vec::new();

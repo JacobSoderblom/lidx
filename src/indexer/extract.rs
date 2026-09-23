@@ -85,7 +85,7 @@ pub struct EdgeInput {
     /// `python::import_qualified_candidates`, `javascript::resolve_imports`).
     ///
     /// Consumed by `Db::insert_edges`'s import tier
-    /// (`db::resolve_import_candidate`: exact qualname, then an unambiguous
+    /// (`db::resolver::Resolver::resolve_import`: exact qualname, then an unambiguous
     /// suffix match), which binds only when exactly one symbol resolves.
     /// On a miss the edge normally refuses the fuzzy tiers — an imported
     /// name must not bind a same-named unrelated symbol — except for a

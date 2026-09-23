@@ -13,7 +13,6 @@ use std::path::Path;
 const MAX_CALLERS: usize = 15;
 const MAX_CALLEES: usize = 15;
 const MAX_XREFS: usize = 15;
-const MAX_INCOMING_LOOKUPS: usize = 20;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CrossRef {
@@ -162,52 +161,7 @@ pub fn build_file_context(
         }
     }
 
-    // 4. For incoming callers (the 90% unresolved case), use incoming_edges_by_qualname_pattern
-    // Collect unique symbol names from our file, capped
-    let mut looked_up_names: HashSet<String> = HashSet::new();
-    for sym in &symbols {
-        if looked_up_names.len() >= MAX_INCOMING_LOOKUPS {
-            break;
-        }
-        // Skip module-level symbols — too generic
-        if sym.kind == "module" {
-            continue;
-        }
-        looked_up_names.insert(sym.name.clone());
-    }
-
-    for name in &looked_up_names {
-        if callers.len() >= MAX_CALLERS {
-            break;
-        }
-        let incoming = db.incoming_edges_by_qualname_pattern(name, "CALLS", None, graph_version)?;
-        for edge in incoming {
-            if edge.file_path == file_path {
-                continue; // Same file
-            }
-            if callers.len() >= MAX_CALLERS {
-                break;
-            }
-            let caller_name = edge.target_qualname.as_deref().unwrap_or("?").to_string();
-            let key = (caller_name.clone(), edge.file_path.clone());
-            if caller_seen.insert(key) {
-                // Try to resolve source symbol name
-                let src_name = if let Some(src_id) = edge.source_symbol_id {
-                    db.get_symbol_by_id(src_id)?
-                        .map(|s| short_name(&s.qualname))
-                        .unwrap_or_else(|| format!("id:{}", src_id))
-                } else {
-                    edge.file_path.clone()
-                };
-                callers.push(CrossRef {
-                    symbol_name: src_name,
-                    file_path: edge.file_path.clone(),
-                });
-            }
-        }
-    }
-
-    // 5. Detect test files from callers
+    // 4. Detect test files from callers
     let mut test_files: Vec<String> = Vec::new();
     let mut test_file_set: HashSet<String> = HashSet::new();
     for cr in &callers {
