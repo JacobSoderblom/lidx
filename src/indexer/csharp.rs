@@ -871,7 +871,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let Some(target_node) = call_target_node(node) else {
         return;
     };
-    let raw = node_text(target_node, source);
+    let raw = call_target_text(target_node, source);
     if raw.is_empty() {
         return;
     }
@@ -903,7 +903,12 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // `import_qualified_candidates`.
     let extension_candidates = call_target_parts(target_node, source)
         .filter(|parts| parts.receiver.is_some())
-        .map(|parts| extension_method_candidates(&parts.name, &receiver_type, ctx))
+        .map(|parts| {
+            // `call_target_parts` keeps `<T>` for the CONFIG_BIND/HTTP
+            // detectors; an extension method's symbol name never has it.
+            let name = parts.name.split('<').next().unwrap_or(&parts.name);
+            extension_method_candidates(name, &receiver_type, ctx)
+        })
         .unwrap_or_default();
     // Union rather than replace: on the rare chance both tiers produce a
     // (necessarily different) candidate, let `resolve_import_candidate`'s
@@ -2389,6 +2394,36 @@ fn argument_expr(node: Node<'_>) -> Option<Node<'_>> {
         expr = Some(child);
     }
     expr
+}
+
+/// A callee's text with the method's explicit generic type-argument list
+/// dropped: `_sql.QueryAsync<long?>` -> `_sql.QueryAsync`, `Helper<int>` ->
+/// `Helper`. tree-sitter-c-sharp parses that list as part of a
+/// `generic_name` (the whole callee, or a `member_access_expression`'s
+/// `name`); left in, `is_simple_call_target` rejects the `<`/`>` and the
+/// CALLS edge's `target_qualname` ends up empty. Type arguments on the
+/// *receiver* (`Foo<int>.Bar()`) are left alone.
+fn call_target_text(node: Node<'_>, source: &str) -> String {
+    let generic = match node.kind() {
+        "generic_name" => Some(node),
+        "member_access_expression" => node
+            .child_by_field_name("name")
+            .filter(|name| name.kind() == "generic_name"),
+        _ => None,
+    };
+    let type_args = generic.and_then(|g| {
+        let mut cursor = g.walk();
+        g.named_children(&mut cursor)
+            .find(|child| child.kind() == "type_argument_list")
+    });
+    match type_args {
+        Some(args) => source
+            .get(node.start_byte()..args.start_byte())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        None => node_text(node, source),
+    }
 }
 
 fn call_target_parts(node: Node<'_>, source: &str) -> Option<CallTarget> {
@@ -4364,5 +4399,80 @@ public class MyService : BaseService, IMyService {
         assert_eq!(result[0].1, "IOptions");
         assert_eq!(result[1].0, "CacheOptions");
         assert_eq!(result[1].1, "IOptionsMonitor");
+    }
+
+    /// Explicit generic type arguments (`_sql.QueryAsync<long>(...)`) used
+    /// to leave `target_qualname` empty because the raw callee text carried
+    /// the `<...>` list, which `is_simple_call_target` rejects. Each generic
+    /// form must now match its non-generic twin exactly (target, receiver
+    /// typing, extension candidates).
+    #[test]
+    fn generic_method_calls_get_same_target_as_non_generic() {
+        let source = r#"
+namespace Acme.Strategies;
+public static class SqlHelperExt {
+    public static Task<T> ProbeAsync<T>(this IngestSqlHelper h) => default;
+}
+public class IngestSqlHelper {
+    public Task<T> QueryAsync<T>(SqlConnection c, string sql) => default;
+}
+public class ProductDeltaStrategy {
+    private readonly IngestSqlHelper _sql;
+    public async Task RunAsync(SqlConnection destConn, CancellationToken ct) {
+        var (bid, err) = await _sql.QueryAsync<long?>(destConn, "select 1");
+        var plain = await _sql.QueryAsync(destConn, "select 2");
+        await _sql.ProbeAsync<int>();
+        await _sql.ProbeAsync();
+        var s = Factory.Create<Widget>();
+        var b = Helper<int>(1);
+        var t = this.Helper<int>(2);
+        var m = await Mapper.Map<Dictionary<string, List<int>>>(plain);
+    }
+    private int Helper<T>(T x) => 0;
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let call = |needle: &str| {
+            file.edges
+                .iter()
+                .find(|e| {
+                    e.kind == "CALLS"
+                        && e.evidence_snippet
+                            .as_deref()
+                            .is_some_and(|s| s.starts_with(needle))
+                })
+                .unwrap_or_else(|| panic!("no CALLS edge for {needle}"))
+        };
+        let generic = call("_sql.QueryAsync<long?>");
+        let plain = call("_sql.QueryAsync(destConn");
+        assert_eq!(generic.target_qualname.as_deref(), Some("_sql.QueryAsync"));
+        assert_eq!(generic.target_qualname, plain.target_qualname);
+        assert_eq!(
+            generic.receiver_type,
+            ReceiverType::Known("IngestSqlHelper".to_string())
+        );
+        assert_eq!(generic.receiver_type, plain.receiver_type);
+        let ext_generic = call("_sql.ProbeAsync<int>");
+        let ext_plain = call("_sql.ProbeAsync()");
+        assert!(!ext_plain.import_candidates.is_empty());
+        assert_eq!(ext_generic.import_candidates, ext_plain.import_candidates);
+        assert_eq!(ext_generic.target_qualname, ext_plain.target_qualname);
+        assert_eq!(
+            call("Factory.Create<Widget>").target_qualname.as_deref(),
+            Some("Factory.Create")
+        );
+        assert_eq!(
+            call("Helper<int>(1)").target_qualname.as_deref(),
+            Some("Acme.Strategies.ProductDeltaStrategy.Helper")
+        );
+        assert_eq!(
+            call("this.Helper<int>(2)").target_qualname.as_deref(),
+            Some("Acme.Strategies.ProductDeltaStrategy.Helper")
+        );
+        assert_eq!(
+            call("Mapper.Map<").target_qualname.as_deref(),
+            Some("Mapper.Map")
+        );
     }
 }
