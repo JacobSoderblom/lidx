@@ -6,36 +6,62 @@
 //! resolver internals directly), and compares it against a fixture's
 //! plain-text expected-edges file (`parse_expected_edges` / `compare`).
 //!
+//! `setup_repo`/`copy_dir` (materializing a fixture into a temp dir) live
+//! in `tests/common/mod.rs`, shared with any future golden-corpus fixture;
+//! this module only holds the snapshot/compare machinery.
+//!
 //! ## Expected-edges file format
 //!
 //! One edge per line:
 //!
 //! ```text
-//! <source qualname> <EDGE_KIND> <target qualname | UNRESOLVED>
+//! <source qualname> <EDGE_KIND> <target qualname | UNRESOLVED> [<resolution kind>]
 //! ```
+//!
+//! The trailing `<resolution kind>` column is optional. When present, it
+//! must match the exact tier that resolved the edge (`exact`, `import`,
+//! `receiver_type`, `inherited`, `two_segment`, or `bare_name` -- see
+//! `resolve_fuzzy_target` in `src/db/mod.rs`), not merely the target
+//! qualname: a call that lands on the right symbol for the wrong reason
+//! (e.g. a `receiver_type` bind silently degrading to `bare_name` because a
+//! same-named decoy no longer disambiguates it) still fails the line. When
+//! absent, the line is satisfied by target qualname alone, regardless of
+//! which tier produced it. Put the column on lines where a specific tier is
+//! the point of the fixture shape (e.g. `receiver_type`, `inherited`);
+//! leave it off lines where any resolution route is fine.
 //!
 //! A line starting with `#` (after trimming) is a full-line comment and is
 //! ignored. A line may also end with a trailing `# xfail: <why>` marker —
 //! chosen over a leading `!` because it composes with the existing `#`
 //! comment syntax instead of adding a second one. A known-failing line:
 //!
-//! - is excluded from the precision/recall accounting entirely (it is
-//!   neither a true positive nor a "wrong" edge while it keeps failing);
-//! - is reported every run, via `ScoreboardReport::xfail_still_failing`;
+//! - is excluded from the precision/recall accounting entirely, along with
+//!   whatever edge(s) that call site actually produces instead (matched by
+//!   source + edge kind, not just the exact xfail target) -- neither counts
+//!   as a true positive nor as a "wrong" edge while the line keeps failing;
+//! - is reported every run, via `ScoreboardReport::xfail_still_failing`,
+//!   alongside what the call site actually produced instead (if anything);
 //! - causes `ScoreboardReport::assert_floors` to panic loudly if the graph
 //!   now resolves it correctly (`xfail_now_passing`), so the marker gets
 //!   removed by hand rather than silently staying stale.
 //!
 //! Any other trailing `# ...` text is treated as an ordinary comment, not
 //! a marker.
+//!
+//! ## Scope
+//!
+//! Precision/recall are scoped to edges whose kind the expected file
+//! declares (e.g. only `CALLS`) *and* whose source symbol is defined in one
+//! of the fixture's own source files (see `fixture_source_modules`) -- not
+//! just symbols the expected file happens to mention by name. A stray edge
+//! from any fixture-defined symbol with no expected line for it counts as
+//! "wrong"; a symbol the fixture never defines (an external library, or a
+//! decoy some *other* fixture provides) is out of scope entirely.
 
 use lidx::db::Db;
 use lidx::model::EdgeSnapshotRow;
-use std::collections::{BTreeSet, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 
 pub fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -44,53 +70,55 @@ pub fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn temp_repo_dir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-    dir.push(format!("lidx-{label}-{nanos}-{counter}"));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn copy_dir(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
+/// Module-qualname prefixes for every direct source file under a fixture
+/// directory (e.g. `{"caller", "greeter", "animals", ...}` for
+/// `golden/python`) -- the "fixture's own symbols" scope `compare` filters
+/// edge sources against. Only files whose extension is a language this
+/// harness understands (currently just `.py`) count; `expected_edges.txt`
+/// itself is skipped.
+pub fn fixture_source_modules(fixture: &str) -> HashSet<String> {
+    let dir = fixture_path(fixture);
+    let mut modules = HashSet::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
-        let target = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir(&path, &target);
-        } else {
-            std::fs::copy(&path, &target).unwrap();
+        if path.extension().and_then(|e| e.to_str()) != Some("py") {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            modules.insert(stem.to_string());
         }
     }
+    modules
 }
 
-/// Copy `fixture` (a path under `tests/fixtures/`, may contain `/`) into a
-/// fresh temp dir and return `(repo_root, db_path)` — same shape as every
-/// other integration test's `setup_repo`.
-pub fn setup_repo(fixture: &str) -> (PathBuf, PathBuf) {
-    let src = fixture_path(fixture);
-    let label = fixture.replace('/', "-");
-    let repo_root = temp_repo_dir(&label);
-    copy_dir(&src, &repo_root);
-    let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
-    (repo_root, db_path)
+/// True when `source_qualname` names a symbol defined in one of
+/// `modules` (a module itself, or `module.anything`).
+fn is_fixture_source(source_qualname: &str, modules: &HashSet<String>) -> bool {
+    modules.iter().any(|module| {
+        source_qualname == module.as_str()
+            || source_qualname
+                .strip_prefix(module.as_str())
+                .is_some_and(|rest| rest.starts_with('.'))
+    })
 }
 
-/// A normalized edge key: source qualname, edge kind, and the target's
-/// qualname (or `None` for `UNRESOLVED`). Deliberately drops
-/// `resolution_kind` — the expected-edges file doesn't encode it, so
-/// comparison never depends on it.
+/// A normalized edge key: source qualname, edge kind, the target's
+/// qualname (or `None` for `UNRESOLVED`), and the tier that resolved it
+/// (or `None` for `UNRESOLVED`, or when an expected line doesn't name one).
+///
+/// `resolution_kind` is *not* part of existence matching (see `base` in
+/// this module) -- two `EdgeKey`s with the same source/kind/target but
+/// different `resolution_kind` still refer to "the same edge" for
+/// wrong/missed/xfail purposes. It's carried here so `compare` can run its
+/// separate, opt-in tier check for expected lines that name one, and so
+/// every printed edge shows which tier actually produced it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EdgeKey {
     pub source_qualname: String,
     pub kind: String,
     pub target_qualname: Option<String>,
+    pub resolution_kind: Option<String>,
 }
 
 impl std::fmt::Display for EdgeKey {
@@ -101,7 +129,11 @@ impl std::fmt::Display for EdgeKey {
             self.source_qualname,
             self.kind,
             self.target_qualname.as_deref().unwrap_or("UNRESOLVED")
-        )
+        )?;
+        if let Some(kind) = self.resolution_kind.as_deref() {
+            write!(f, " [{kind}]")?;
+        }
+        Ok(())
     }
 }
 
@@ -111,8 +143,20 @@ impl From<&EdgeSnapshotRow> for EdgeKey {
             source_qualname: row.source_qualname.clone(),
             kind: row.kind.clone(),
             target_qualname: row.target_qualname.clone(),
+            resolution_kind: row.resolution_kind.clone(),
         }
     }
+}
+
+/// `(source, edge kind, target)`, ignoring `resolution_kind` -- the
+/// granularity every existence check (wrong/missed/xfail) matches on. See
+/// this module's doc comment and `EdgeKey::resolution_kind`.
+fn base(key: &EdgeKey) -> (&str, &str, Option<&str>) {
+    (
+        key.source_qualname.as_str(),
+        key.kind.as_str(),
+        key.target_qualname.as_deref(),
+    )
 }
 
 /// Read `graph_version`'s edges via the public `Db::edges_snapshot`
@@ -134,8 +178,9 @@ pub struct ExpectedEdge {
 
 /// Parse an expected-edges file's text — see this module's doc comment for
 /// the format. Panics on a malformed data line (not a comment, but not
-/// exactly `<source> <KIND> <target|UNRESOLVED>` either): a fixture typo
-/// should fail loudly and immediately, not silently drop a row.
+/// exactly `<source> <KIND> <target|UNRESOLVED> [<resolution kind>]`
+/// either): a fixture typo should fail loudly and immediately, not
+/// silently drop a row.
 pub fn parse_expected_edges(text: &str) -> Vec<ExpectedEdge> {
     let mut out = Vec::new();
     for (line_no, raw_line) in text.lines().enumerate() {
@@ -151,10 +196,9 @@ pub fn parse_expected_edges(text: &str) -> Vec<ExpectedEdge> {
             .map(|m| m.to_ascii_lowercase().starts_with("xfail"))
             .unwrap_or(false);
         let tokens: Vec<&str> = fields.split_whitespace().collect();
-        assert_eq!(
-            tokens.len(),
-            3,
-            "expected-edges line {} is malformed (want '<source> <KIND> <target|UNRESOLVED>'): {:?}",
+        assert!(
+            tokens.len() == 3 || tokens.len() == 4,
+            "expected-edges line {} is malformed (want '<source> <KIND> <target|UNRESOLVED> [<resolution kind>]'): {:?}",
             line_no + 1,
             raw_line
         );
@@ -163,16 +207,45 @@ pub fn parse_expected_edges(text: &str) -> Vec<ExpectedEdge> {
         } else {
             Some(tokens[2].to_string())
         };
+        let resolution_kind = tokens.get(3).map(|s| s.to_string());
         out.push(ExpectedEdge {
             key: EdgeKey {
                 source_qualname: tokens[0].to_string(),
                 kind: tokens[1].to_string(),
                 target_qualname: target,
+                resolution_kind,
             },
             xfail,
         });
     }
     out
+}
+
+/// One `xfail` line's current status: the expected (known-failing) edge,
+/// and whatever the call site actually produced instead (same source +
+/// edge kind, but not the same target) -- empty when the call site
+/// currently produces nothing in scope at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XfailStatus {
+    pub expected: EdgeKey,
+    pub actual: Vec<EdgeKey>,
+}
+
+impl std::fmt::Display for XfailStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "known-failing: want {}", self.expected)?;
+        if self.actual.is_empty() {
+            write!(f, " -- got nothing")
+        } else {
+            let got = self
+                .actual
+                .iter()
+                .map(|e| e.target_qualname.as_deref().unwrap_or("UNRESOLVED"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            write!(f, " -- got {got}")
+        }
+    }
 }
 
 /// Precision/recall over an expected-edges file, plus the exact wrong,
@@ -187,13 +260,16 @@ pub struct ScoreboardReport {
     pub scoped_count: usize,
     /// Non-`xfail` expected edges (the recall denominator).
     pub expected_count: usize,
-    /// In scope, in the snapshot, not expected (and not a known-failing
-    /// line's edge either).
+    /// In scope, in the snapshot, not satisfying any expected (non-`xfail`)
+    /// line (and not a known-failing line's edge either) -- either an
+    /// unexpected edge outright, or one whose target matched but whose
+    /// resolution tier didn't match what the line named.
     pub wrong: Vec<EdgeKey>,
-    /// Expected (non-`xfail`), not in the snapshot.
+    /// Expected (non-`xfail`), not satisfied by the snapshot -- either
+    /// wholly absent, or present with the wrong resolution tier.
     pub missed: Vec<EdgeKey>,
     /// `xfail` lines still absent from the snapshot — reported, not fatal.
-    pub xfail_still_failing: Vec<EdgeKey>,
+    pub xfail_still_failing: Vec<XfailStatus>,
     /// `xfail` lines now present in the snapshot — the marker is stale.
     pub xfail_now_passing: Vec<EdgeKey>,
 }
@@ -209,10 +285,23 @@ fn format_edges(edges: &[EdgeKey]) -> String {
         .join("\n")
 }
 
+fn format_xfail(statuses: &[XfailStatus]) -> String {
+    if statuses.is_empty() {
+        return "  (none)".to_string();
+    }
+    statuses
+        .iter()
+        .map(|s| format!("  {s}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 impl ScoreboardReport {
     /// Prints a human-readable summary every run (wrong/missed/xfail
     /// listed by name), then panics if precision or recall drop below the
-    /// given floor, or if any known-failing line has started passing.
+    /// given floor, or if any known-failing line has started passing. The
+    /// panic message doesn't re-list wrong/missed/xfail edges -- they're
+    /// already in the run's output above, printed exactly once.
     pub fn assert_floors(&self, precision_floor: f64, recall_floor: f64) {
         println!(
             "golden edge scoreboard: precision {:.4} ({}/{}), recall {:.4} ({}/{})",
@@ -234,25 +323,21 @@ impl ScoreboardReport {
         if !self.xfail_still_failing.is_empty() {
             println!(
                 "known-failing (still failing, as expected):\n{}",
-                format_edges(&self.xfail_still_failing)
+                format_xfail(&self.xfail_still_failing)
             );
         }
 
         let mut failures = Vec::new();
         if self.precision < precision_floor {
             failures.push(format!(
-                "precision {:.4} dropped below floor {:.4}\nwrong edges:\n{}",
-                self.precision,
-                precision_floor,
-                format_edges(&self.wrong)
+                "precision {:.4} dropped below floor {:.4} -- see wrong edges above",
+                self.precision, precision_floor
             ));
         }
         if self.recall < recall_floor {
             failures.push(format!(
-                "recall {:.4} dropped below floor {:.4}\nmissed edges:\n{}",
-                self.recall,
-                recall_floor,
-                format_edges(&self.missed)
+                "recall {:.4} dropped below floor {:.4} -- see missed edges above",
+                self.recall, recall_floor
             ));
         }
         if !self.xfail_now_passing.is_empty() {
@@ -273,55 +358,130 @@ impl ScoreboardReport {
 
 /// Compare a graph snapshot against an expected-edges file.
 ///
-/// Precision/recall are scoped to the edge kinds and sources the expected
-/// file itself declares (e.g. only `CALLS` edges from fixture-defined
-/// sources) — an edge kind or source the fixture never mentions (like
-/// `CONTAINS`/`IMPORTS`, or a symbol outside the fixture) is out of scope
-/// entirely, so it can't dilute the score.
+/// Precision/recall are scoped to the edge kinds the expected file itself
+/// declares (e.g. only `CALLS`), restricted further to edges whose source
+/// symbol is defined in `fixture_modules` (see `fixture_source_modules`) --
+/// every symbol the fixture itself defines, not just the ones the expected
+/// file happens to name. An edge kind the fixture never mentions (like
+/// `CONTAINS`/`IMPORTS`), or a source symbol outside the fixture entirely
+/// (an external library), is out of scope and can't dilute the score.
 ///
 /// A known-failing (`xfail`) line's edge is excluded from precision and
 /// recall in both directions: whether or not the snapshot has it, it
-/// contributes to neither the numerator nor the denominator. It is instead
-/// tracked in `xfail_still_failing` / `xfail_now_passing`.
-pub fn compare(snapshot: &BTreeSet<EdgeKey>, expected: &[ExpectedEdge]) -> ScoreboardReport {
+/// contributes to neither the numerator nor the denominator -- and neither
+/// does whatever else that same source+kind call site actually produced
+/// instead. It is instead tracked in `xfail_still_failing` /
+/// `xfail_now_passing`.
+///
+/// An expected line that names a `resolution_kind` (the optional 4th
+/// column) additionally requires the snapshot edge to have been resolved
+/// through that exact tier -- a target-qualname match through a *different*
+/// tier than the one the line names still counts as missed (recall) and
+/// wrong (precision), surfaced as a resolution-kind mismatch.
+pub fn compare(
+    snapshot: &BTreeSet<EdgeKey>,
+    expected: &[ExpectedEdge],
+    fixture_modules: &HashSet<String>,
+) -> ScoreboardReport {
     let expected_kinds: HashSet<&str> = expected.iter().map(|e| e.key.kind.as_str()).collect();
-    let expected_sources: HashSet<&str> = expected
-        .iter()
-        .map(|e| e.key.source_qualname.as_str())
-        .collect();
 
     let scoped: BTreeSet<EdgeKey> = snapshot
         .iter()
         .filter(|edge| {
             expected_kinds.contains(edge.kind.as_str())
-                && expected_sources.contains(edge.source_qualname.as_str())
+                && is_fixture_source(&edge.source_qualname, fixture_modules)
         })
         .cloned()
         .collect();
 
-    let expected_ok: BTreeSet<EdgeKey> = expected
+    let expected_ok: Vec<&ExpectedEdge> = expected.iter().filter(|e| !e.xfail).collect();
+    let expected_xfail: Vec<&ExpectedEdge> = expected.iter().filter(|e| e.xfail).collect();
+
+    let xfail_source_kind: HashSet<(&str, &str)> = expected_xfail
         .iter()
-        .filter(|e| !e.xfail)
-        .map(|e| e.key.clone())
-        .collect();
-    let expected_xfail: BTreeSet<EdgeKey> = expected
-        .iter()
-        .filter(|e| e.xfail)
-        .map(|e| e.key.clone())
+        .map(|e| (e.key.source_qualname.as_str(), e.key.kind.as_str()))
         .collect();
 
-    // Snapshot edges a known-failing line already accounts for are tracked
-    // separately below, not folded into precision/recall.
-    let effective_scoped: BTreeSet<EdgeKey> = scoped.difference(&expected_xfail).cloned().collect();
-
-    let true_positives: Vec<EdgeKey> = effective_scoped
-        .intersection(&expected_ok)
+    // A known-failing call site's actual output -- right or wrong -- sits
+    // out of precision/recall entirely; it's tracked in xfail_* below
+    // instead of folded into wrong/missed.
+    let effective_scoped: BTreeSet<EdgeKey> = scoped
+        .iter()
+        .filter(|edge| {
+            !xfail_source_kind.contains(&(edge.source_qualname.as_str(), edge.kind.as_str()))
+        })
         .cloned()
         .collect();
-    let wrong: Vec<EdgeKey> = effective_scoped.difference(&expected_ok).cloned().collect();
-    let missed: Vec<EdgeKey> = expected_ok.difference(&scoped).cloned().collect();
-    let xfail_now_passing: Vec<EdgeKey> = expected_xfail.intersection(&scoped).cloned().collect();
-    let xfail_still_failing: Vec<EdgeKey> = expected_xfail.difference(&scoped).cloned().collect();
+
+    // Every in-scope, non-xfail-excluded snapshot edge, indexed by its
+    // existence-matching base -- usually one edge per base, but a fixture
+    // could in principle have more than one call site sharing a target.
+    let mut actual_by_base: HashMap<(&str, &str, Option<&str>), Vec<&EdgeKey>> = HashMap::new();
+    for edge in &effective_scoped {
+        actual_by_base.entry(base(edge)).or_default().push(edge);
+    }
+
+    let mut true_positives: Vec<EdgeKey> = Vec::new();
+    let mut missed: Vec<EdgeKey> = Vec::new();
+    let mut wrong: Vec<EdgeKey> = Vec::new();
+    let mut matched_bases: HashSet<(&str, &str, Option<&str>)> = HashSet::new();
+
+    for expected_edge in &expected_ok {
+        let b = base(&expected_edge.key);
+        let Some(actual) = actual_by_base.get(&b) else {
+            missed.push(expected_edge.key.clone());
+            continue;
+        };
+        matched_bases.insert(b);
+        match expected_edge.key.resolution_kind.as_deref() {
+            None => true_positives.push(expected_edge.key.clone()),
+            Some(want) => {
+                if actual
+                    .iter()
+                    .any(|e| e.resolution_kind.as_deref() == Some(want))
+                {
+                    true_positives.push(expected_edge.key.clone());
+                } else {
+                    missed.push(expected_edge.key.clone());
+                    wrong.extend(actual.iter().map(|e| (*e).clone()));
+                }
+            }
+        }
+    }
+
+    // Any remaining in-scope edge whose base was never matched to an
+    // expected line at all is a plain unexpected edge.
+    wrong.extend(
+        effective_scoped
+            .iter()
+            .filter(|edge| !matched_bases.contains(&base(edge)))
+            .cloned(),
+    );
+    wrong.sort();
+    wrong.dedup();
+
+    let xfail_still_failing: Vec<XfailStatus> = expected_xfail
+        .iter()
+        .filter(|e| !scoped.iter().any(|edge| base(edge) == base(&e.key)))
+        .map(|e| {
+            let actual: Vec<EdgeKey> = scoped
+                .iter()
+                .filter(|edge| {
+                    edge.source_qualname == e.key.source_qualname && edge.kind == e.key.kind
+                })
+                .cloned()
+                .collect();
+            XfailStatus {
+                expected: e.key.clone(),
+                actual,
+            }
+        })
+        .collect();
+    let xfail_now_passing: Vec<EdgeKey> = expected_xfail
+        .iter()
+        .filter(|e| scoped.iter().any(|edge| base(edge) == base(&e.key)))
+        .map(|e| e.key.clone())
+        .collect();
 
     let precision = if effective_scoped.is_empty() {
         1.0
@@ -351,11 +511,23 @@ pub fn compare(snapshot: &BTreeSet<EdgeKey>, expected: &[ExpectedEdge]) -> Score
 mod tests {
     use super::*;
 
+    fn modules(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
     fn key(source: &str, kind: &str, target: Option<&str>) -> EdgeKey {
         EdgeKey {
             source_qualname: source.to_string(),
             kind: kind.to_string(),
             target_qualname: target.map(str::to_string),
+            resolution_kind: None,
+        }
+    }
+
+    fn key_with_kind(source: &str, kind: &str, target: Option<&str>, resolution: &str) -> EdgeKey {
+        EdgeKey {
+            resolution_kind: Some(resolution.to_string()),
+            ..key(source, kind, target)
         }
     }
 
@@ -371,6 +543,17 @@ a.d CALLS UNRESOLVED
         assert_eq!(edges[0].key, key("a.b", "CALLS", Some("a.c")));
         assert!(!edges[0].xfail);
         assert_eq!(edges[1].key, key("a.d", "CALLS", None));
+    }
+
+    #[test]
+    fn parses_optional_resolution_kind_column() {
+        let text = "a.b CALLS a.c receiver_type\n";
+        let edges = parse_expected_edges(text);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(
+            edges[0].key.resolution_kind.as_deref(),
+            Some("receiver_type")
+        );
     }
 
     #[test]
@@ -402,7 +585,7 @@ a.d CALLS UNRESOLVED
         snapshot.insert(key("a.b", "CALLS", Some("a.c"))); // matches
         snapshot.insert(key("a.d", "CALLS", Some("a.WRONG"))); // wrong target
 
-        let report = compare(&snapshot, &expected);
+        let report = compare(&snapshot, &expected, &modules(&["a"]));
 
         assert_eq!(report.true_positive_count, 1);
         assert_eq!(report.wrong, vec![key("a.d", "CALLS", Some("a.WRONG"))]);
@@ -421,8 +604,97 @@ a.d CALLS UNRESOLVED
         snapshot.insert(key("a.b", "CONTAINS", Some("a.c.Thing")));
         snapshot.insert(key("z.unrelated", "CALLS", Some("z.other")));
 
-        let report = compare(&snapshot, &expected);
+        let report = compare(&snapshot, &expected, &modules(&["a"]));
 
+        assert_eq!(report.precision, 1.0);
+        assert_eq!(report.recall, 1.0);
+        assert!(report.wrong.is_empty());
+        assert!(report.missed.is_empty());
+    }
+
+    #[test]
+    fn source_outside_fixture_modules_is_out_of_scope_even_if_named_in_expected() {
+        // A symbol the fixture doesn't define at all (e.g. belongs to a
+        // different fixture, or is purely hypothetical) never enters
+        // scope, even though it shares a module prefix with an expected
+        // source -- only `fixture_modules` decides scope now, not the
+        // expected file's own source list.
+        let expected = parse_expected_edges("a.b CALLS a.c\n");
+        let mut snapshot = BTreeSet::new();
+        snapshot.insert(key("a.b", "CALLS", Some("a.c")));
+        snapshot.insert(key("q.other", "CALLS", Some("q.thing")));
+
+        let report = compare(&snapshot, &expected, &modules(&["a"]));
+
+        assert_eq!(report.precision, 1.0);
+        assert!(report.wrong.is_empty());
+    }
+
+    #[test]
+    fn fixture_symbol_with_no_expected_line_counts_as_wrong() {
+        // The whole point of comment 5: scope is "every symbol the
+        // fixture defines", not "every source the expected file
+        // mentions". A spurious edge from an in-fixture symbol that the
+        // expected file never talks about must still count.
+        let expected = parse_expected_edges("a.b CALLS a.c\n");
+        let mut snapshot = BTreeSet::new();
+        snapshot.insert(key("a.b", "CALLS", Some("a.c")));
+        snapshot.insert(key("a.spurious", "CALLS", Some("a.other")));
+
+        let report = compare(&snapshot, &expected, &modules(&["a"]));
+
+        assert_eq!(
+            report.wrong,
+            vec![key("a.spurious", "CALLS", Some("a.other"))]
+        );
+        assert!((report.precision - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn resolution_kind_is_ignored_when_expected_line_does_not_name_one() {
+        let expected = parse_expected_edges("a.b CALLS a.c\n");
+        let mut snapshot = BTreeSet::new();
+        snapshot.insert(key_with_kind("a.b", "CALLS", Some("a.c"), "bare_name"));
+
+        let report = compare(&snapshot, &expected, &modules(&["a"]));
+
+        assert_eq!(report.precision, 1.0);
+        assert_eq!(report.recall, 1.0);
+    }
+
+    #[test]
+    fn resolution_kind_mismatch_is_missed_and_wrong() {
+        let expected = parse_expected_edges("a.b CALLS a.c receiver_type\n");
+        let mut snapshot = BTreeSet::new();
+        // Right target, but resolved through a weaker tier than the line
+        // names -- e.g. `receiver_type` silently degrading to
+        // `bare_name`. Must not be counted as a true positive.
+        snapshot.insert(key_with_kind("a.b", "CALLS", Some("a.c"), "bare_name"));
+
+        let report = compare(&snapshot, &expected, &modules(&["a"]));
+
+        assert_eq!(report.true_positive_count, 0);
+        assert_eq!(report.precision, 0.0);
+        assert_eq!(report.recall, 0.0);
+        assert_eq!(
+            report.missed,
+            vec![key_with_kind("a.b", "CALLS", Some("a.c"), "receiver_type")]
+        );
+        assert_eq!(
+            report.wrong,
+            vec![key_with_kind("a.b", "CALLS", Some("a.c"), "bare_name")]
+        );
+    }
+
+    #[test]
+    fn resolution_kind_match_is_a_true_positive() {
+        let expected = parse_expected_edges("a.b CALLS a.c receiver_type\n");
+        let mut snapshot = BTreeSet::new();
+        snapshot.insert(key_with_kind("a.b", "CALLS", Some("a.c"), "receiver_type"));
+
+        let report = compare(&snapshot, &expected, &modules(&["a"]));
+
+        assert_eq!(report.true_positive_count, 1);
         assert_eq!(report.precision, 1.0);
         assert_eq!(report.recall, 1.0);
         assert!(report.wrong.is_empty());
@@ -434,16 +706,43 @@ a.d CALLS UNRESOLVED
         let expected = parse_expected_edges("a.b CALLS a.c  # xfail: not implemented\n");
         let snapshot: BTreeSet<EdgeKey> = BTreeSet::new();
 
-        let report = compare(&snapshot, &expected);
+        let report = compare(&snapshot, &expected, &modules(&["a"]));
 
+        assert_eq!(report.xfail_still_failing.len(), 1);
         assert_eq!(
-            report.xfail_still_failing,
-            vec![key("a.b", "CALLS", Some("a.c"))]
+            report.xfail_still_failing[0].expected,
+            key("a.b", "CALLS", Some("a.c"))
         );
+        assert!(report.xfail_still_failing[0].actual.is_empty());
         assert!(report.xfail_now_passing.is_empty());
         assert_eq!(report.precision, 1.0);
         assert_eq!(report.recall, 1.0);
         // Must not panic: a still-failing xfail line never fails the test.
+        report.assert_floors(1.0, 1.0);
+    }
+
+    #[test]
+    fn xfail_line_with_competing_emitted_edge_does_not_fail_or_lower_precision() {
+        // The reviewer's repro: the call site behind an xfail line still
+        // emits *some* edge (right or wrong) -- that edge must not be
+        // counted as "wrong" just because it shares the xfail key's
+        // source and kind but not its exact (stale/aspirational) target.
+        let expected = parse_expected_edges(
+            "caller.call_ambiguous CALLS ambiguous_a.run  # xfail: want import-aware\n",
+        );
+        let mut snapshot = BTreeSet::new();
+        snapshot.insert(key("caller.call_ambiguous", "CALLS", None)); // UNRESOLVED
+
+        let report = compare(&snapshot, &expected, &modules(&["caller", "ambiguous_a"]));
+
+        assert!(report.wrong.is_empty());
+        assert_eq!(report.precision, 1.0);
+        assert_eq!(report.recall, 1.0);
+        assert_eq!(report.xfail_still_failing.len(), 1);
+        assert_eq!(
+            report.xfail_still_failing[0].actual,
+            vec![key("caller.call_ambiguous", "CALLS", None)]
+        );
         report.assert_floors(1.0, 1.0);
     }
 
@@ -454,7 +753,7 @@ a.d CALLS UNRESOLVED
         let mut snapshot = BTreeSet::new();
         snapshot.insert(key("a.b", "CALLS", Some("a.c")));
 
-        let report = compare(&snapshot, &expected);
+        let report = compare(&snapshot, &expected, &modules(&["a"]));
 
         assert_eq!(
             report.xfail_now_passing,

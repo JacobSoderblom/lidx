@@ -11,3 +11,13 @@ class Dog(Animal):
 
     def bark(self) -> str:
         return "Woof"
+
+
+class Cat:
+    """Decoy: an unrelated class with its own `speak`, so
+    `call_inherited`'s `d: Dog` annotation must dispatch via `Dog`'s
+    recorded EXTENDS edge to `Animal.speak` specifically -- not just land
+    on the only other `speak` in the repo."""
+
+    def speak(self) -> str:
+        return "Meow"
