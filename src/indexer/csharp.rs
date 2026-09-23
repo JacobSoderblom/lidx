@@ -289,9 +289,16 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     {
         output.edges.push(edge);
     }
-    if is_nested_function_node(node.kind()) {
+    if is_local_function_node(node.kind()) {
         return;
     }
+    // A lambda/anonymous-method body is a nested *scope*, not a new symbol
+    // — fall through into the generic recursion below with the same `ctx`
+    // so calls inside it (e.g. `_connection.EnsureOpenAsync()` inside a
+    // Polly pipeline callback) attribute to the enclosing named symbol via
+    // `ctx.current_scope`, instead of being silently dropped. None of the
+    // match arms below fire for a lambda-body node kind, so no special case
+    // is needed here beyond not returning early.
     match node.kind() {
         "namespace_declaration" => {
             handle_namespace(node, ctx, source, output);
@@ -2201,15 +2208,76 @@ fn is_simple_call_target(raw: &str) -> bool {
         .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == '$' || ch == '@')
 }
 
-fn is_nested_function_node(kind: &str) -> bool {
+/// A C# local function (`void Helper() { ... }` declared inside a method
+/// body). Unlike a lambda, this is a genuinely separate named scope — it
+/// could reasonably become its own symbol one day — so `walk_node` and
+/// `collect_statement_bindings` both still treat it as a hard boundary and
+/// its calls remain unindexed. Narrower than fixing `is_lambda_node` below,
+/// and not what dpb's `_connection.EnsureOpenAsync` gap needs.
+fn is_local_function_node(kind: &str) -> bool {
+    kind == "local_function_statement"
+}
+
+/// A C# anonymous function: `lambda_expression` covers both `x => ...` and
+/// `(x, y) => ...` in the pinned tree-sitter-c-sharp grammar (0.23, which
+/// unified what older grammars split into `simple_lambda_expression` /
+/// `parenthesized_lambda_expression` — kept here too in case that ever
+/// changes back); `anonymous_method_expression` is the legacy `delegate
+/// (...) { ... }` form. Both lexically capture the enclosing `this` and
+/// locals exactly like a nested block would — C# has no JS-style dynamic
+/// `this` rebinding for any of these — so unlike `is_local_function_node`,
+/// `walk_node` and `collect_statement_bindings` both recurse straight
+/// through a node of this kind with the *same* `Context`/bindings map: it's
+/// a nested scope, not a new symbol. See `collect_statement_bindings`'s
+/// call site for how the lambda's own parameters get folded in so a
+/// reference to one isn't mistaken for an outer name.
+fn is_lambda_node(kind: &str) -> bool {
     matches!(
         kind,
-        "local_function_statement"
-            | "anonymous_method_expression"
+        "anonymous_method_expression"
             | "lambda_expression"
             | "parenthesized_lambda_expression"
             | "simple_lambda_expression"
     )
+}
+
+/// Parameter names (+ inferred types, where explicitly annotated) bound by
+/// a lambda/anonymous-method `parameters` field — either a `parameter_list`
+/// (`(x, y) => ...`, shared shape with a method's own parameter list) or a
+/// single unparenthesized `implicit_parameter` (`x => ...`, always
+/// untyped). Folded into the *enclosing* method's `local_types` map by
+/// `collect_statement_bindings` rather than given a scope of their own —
+/// see `is_lambda_node`'s doc comment.
+fn collect_lambda_parameter_bindings(
+    params: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    if params.kind() == "implicit_parameter" {
+        let name = node_text(params, source);
+        if !name.is_empty() {
+            bindings.push((name, LocalType::Other));
+        }
+        return;
+    }
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        if param.kind() != "parameter" {
+            continue;
+        }
+        let Some(name_node) = param.child_by_field_name("name") else {
+            continue;
+        };
+        let name = node_text(name_node, source);
+        if name.is_empty() {
+            continue;
+        }
+        let ty = param
+            .child_by_field_name("type")
+            .map(|t| classify_annotation(&node_text(t, source)))
+            .unwrap_or(LocalType::Other);
+        bindings.push((name, ty));
+    }
 }
 
 fn walk_declaration_list(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -3069,10 +3137,17 @@ fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String
 }
 
 /// Recursively collect local-variable bindings from statements within a
-/// single method/constructor body, stopping at nested local-function/
-/// lambda boundaries (their own locals are a different scope entirely —
-/// see `Context::local_types`'s doc comment; reuses the same boundary set
-/// `walk_node` itself stops at via `is_nested_function_node`).
+/// single method/constructor body, stopping at a nested local-function
+/// boundary (its own locals are a different scope entirely — see
+/// `Context::local_types`'s doc comment; reuses `is_local_function_node`,
+/// the same boundary `walk_node` itself stops at). A lambda/anonymous
+/// method is *not* a boundary here — see `is_lambda_node`'s doc comment —
+/// so a call inside one is walked with the *enclosing* method's
+/// `local_types`, and the lambda's own parameters are folded into that same
+/// map below (mirrors `python::collect_statement_bindings`'s `"lambda"`
+/// arm) so a reference to one of them isn't mistaken for an outer name and
+/// misattributed to whatever the enclosing scope happens to bind that name
+/// to.
 ///
 /// ponytail: tuple-deconstruction targets (`var (a, b) = GetPair();`,
 /// `foreach (var (k, v) in map)`) aren't tracked — the declarator/loop
@@ -3084,8 +3159,16 @@ fn collect_statement_bindings(
     source: &str,
     bindings: &mut Vec<(String, LocalType)>,
 ) {
-    if is_nested_function_node(node.kind()) {
+    if is_local_function_node(node.kind()) {
         return;
+    }
+    if is_lambda_node(node.kind())
+        && let Some(params) = node.child_by_field_name("parameters")
+    {
+        collect_lambda_parameter_bindings(params, source, bindings);
+        // No `return`: still recurse into children below (the body may
+        // declare further locals, or contain a nested lambda whose own
+        // parameters also need folding in).
     }
     match node.kind() {
         "variable_declaration" => {
