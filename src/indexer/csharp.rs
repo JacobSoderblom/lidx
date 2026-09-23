@@ -871,7 +871,17 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let Some(target_node) = call_target_node(node) else {
         return;
     };
-    let raw = call_target_text(target_node, source);
+    // ponytail: `new List<T>()` keeps its type args (and so stays
+    // unresolved): stripped to `List`, a BCL generic type falls to the
+    // bare-name tier and binds a same-named repo *method* (51 edges to a
+    // gRPC `List` rpc on dpb, for 3 genuine repo generic classes gained).
+    // Upgrade path: a constructor-only kind filter (class/struct/record)
+    // in the fuzzy tiers, then strip here too.
+    let raw = if node.kind() == "object_creation_expression" {
+        node_text(target_node, source)
+    } else {
+        call_target_text(target_node, source)
+    };
     if raw.is_empty() {
         return;
     }
@@ -4427,6 +4437,7 @@ public class ProductDeltaStrategy {
         var b = Helper<int>(1);
         var t = this.Helper<int>(2);
         var m = await Mapper.Map<Dictionary<string, List<int>>>(plain);
+        var l = new List<int>();
     }
     private int Helper<T>(T x) => 0;
 }
@@ -4446,6 +4457,13 @@ public class ProductDeltaStrategy {
         };
         let generic = call("_sql.QueryAsync<long?>");
         let plain = call("_sql.QueryAsync(destConn");
+        // A generic *constructor* keeps its type args, so it can't be
+        // bare-name bound to an unrelated `List` method.
+        let ctor = call("new List<int>")
+            .target_qualname
+            .clone()
+            .unwrap_or_default();
+        assert!(!ctor.ends_with(".List") && ctor != "List", "{ctor}");
         assert_eq!(generic.target_qualname.as_deref(), Some("_sql.QueryAsync"));
         assert_eq!(generic.target_qualname, plain.target_qualname);
         assert_eq!(
