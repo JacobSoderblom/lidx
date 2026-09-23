@@ -4872,6 +4872,67 @@ mod tests {
     }
 
     #[test]
+    fn test_edge_lookups_use_selective_index_not_graph_version() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/a.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols: Vec<_> = (0..200)
+            .map(|i| make_test_symbol(&format!("m.f{i}"), None, "function", i + 1))
+            .collect();
+        let inserted = db
+            .insert_symbols(file_id, "src/a.rs", &symbols, 1, None)
+            .unwrap();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        let edges: Vec<_> = (0..199)
+            .map(|i| crate::indexer::extract::EdgeInput {
+                kind: "CALLS".to_string(),
+                source_qualname: Some(format!("m.f{i}")),
+                target_qualname: Some(format!("m.f{}", i + 1)),
+                ..Default::default()
+            })
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+        let plan: String = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT id FROM edges
+                 WHERE target_symbol_id = 5 AND graph_version = 1",
+                [],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("idx_edges_target"), "{plan}");
+    }
+
+    #[test]
+    fn test_migration_15_drops_graph_version_indexes_from_existing_db() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("old.db");
+        drop(Db::new(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE INDEX idx_edges_graph_version ON edges(graph_version);
+             UPDATE meta SET value = '14' WHERE key = 'schema_version';",
+        )
+        .unwrap();
+        drop(conn);
+        drop(Db::new(&path).unwrap());
+        let left: i64 = Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name LIKE 'idx_%graph_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
     fn test_rpc_bridge_requires_real_route_when_protos_indexed() {
         let (mut db, _temp) = create_test_db();
         let file_id = db

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -196,14 +196,6 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             conn.execute("ALTER TABLE edges ADD COLUMN event_ts INTEGER", [])?;
         }
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_symbols_graph_version ON symbols(graph_version)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_edges_graph_version ON edges(graph_version)",
-            [],
-        )?;
-        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_edges_trace ON edges(trace_id)",
             [],
         )?;
@@ -361,6 +353,21 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         if !has_column(conn, "edges", "import_candidates")? {
             conn.execute("ALTER TABLE edges ADD COLUMN import_candidates TEXT", [])?;
         }
+    }
+
+    if existing < 15 {
+        // At most DEFAULT_GRAPH_VERSION_RETENTION (3) versions are kept, so
+        // a graph_version index matches a third of the rows or more -- but
+        // without planner stats SQLite rates
+        // it as selective as idx_edges_target and picked it for every
+        // per-symbol edge lookup, making each one a full scan (dpb:
+        // dead_symbols 384s -> 0.19s, trace_flow 5s -> 0.09s once dropped).
+        // ANALYZE fixes the plan too, but pooled read connections keep
+        // stale stats until reopened; dropping the index needs no upkeep.
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_symbols_graph_version;
+             DROP INDEX IF EXISTS idx_edges_graph_version;",
+        )?;
     }
 
     if existing < SCHEMA_VERSION {
