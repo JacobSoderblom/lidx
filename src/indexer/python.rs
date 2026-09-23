@@ -467,6 +467,9 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
 /// text-based and keeps the receiver's literal text for evidence).
 ///
 /// Rules, in order:
+/// - Bare `helper()` where `helper` is bound in the current scope
+///   (`local_types`: a parameter, an assignment, or a nested `def`) →
+///   `Unresolved` (the call targets that local, not an indexed symbol).
 /// - Not an attribute access at all (`helper()`) → `NotTracked` (bare call,
 ///   nothing to gate).
 /// - `X.method()` where `X` is a bare identifier:
@@ -489,6 +492,16 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
 ///   reference" pass; only a *direct* `ClassName.static_method()` (hops ==
 ///   0, see above) gets that.
 fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
+    if function_node.kind() == "identifier"
+        && ctx
+            .local_types
+            .contains_key(&node_text(function_node, source))
+    {
+        // Bare `name()` where `name` is bound in this scope: Python calls
+        // that local, which is never an indexed symbol. `Unresolved` stops
+        // it binding by name-uniqueness to an unrelated same-named symbol.
+        return ReceiverType::Unresolved;
+    }
     if function_node.kind() != "attribute" {
         return ReceiverType::NotTracked;
     }
@@ -688,9 +701,31 @@ fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, L
 
     if let Some(body) = function_node.child_by_field_name("body") {
         collect_statement_bindings(body, source, &mut bindings);
+        collect_nested_def_names(body, source, &mut bindings);
     }
 
     bindings_to_local_types(bindings)
+}
+
+/// Names bound by `def` statements nested in a function body (without
+/// descending into those defs or into nested classes). Nested defs are
+/// never indexed (`walk_node` skips them at `fn_depth > 0`), so tracking the
+/// name as a local is what stops a bare call to one binding to an unrelated
+/// same-named symbol. Kept out of `collect_statement_bindings` because that
+/// also serves module scope, where top-level defs *are* indexed.
+fn collect_nested_def_names(node: Node<'_>, source: &str, bindings: &mut Vec<(String, LocalType)>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "function_definition" | "async_function_definition" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    bindings.push((node_text(name, source), LocalType::Other));
+                }
+            }
+            "class_definition" | "lambda" => {}
+            _ => collect_nested_def_names(child, source, bindings),
+        }
+    }
 }
 
 /// Infer types for names bound directly at module top level (not inside any
@@ -1844,18 +1879,11 @@ fn unquote_string_literal(raw: &str) -> Option<String> {
 /// Compute fully-qualified candidate qualnames for a bare `Name.method()`
 /// call whose receiver isn't a tracked local (i.e. `infer_receiver_type`
 /// returned `NotTracked` for this call), using the file's import bindings
-/// (`collect_import_bindings` / `Context::imports`).
-///
-// ponytail: only the dotted `Name.method()` shape produces candidates. A
-// bare `name()` call whose name was imported (`from urllib.parse import
-// quote; quote(...)`) still gets none, so it can fall through to the
-// bare-name tier and bind a same-named local symbol -- 4 such edges in dpb.
-// Extending this to bare names is a two-line change, but it surfaces a
-// latent carry-forward race: the candidate cannot resolve at insert time
-// during an incremental reindex, `db::insert_edges` then persists
-// receiver_type='' and `resolve_null_target_edges` skips that row forever,
-// so the edge is stuck unresolved instead of repaired. Fix the repair pass
-// first (persist the candidate list so it can retry the import tier).
+/// (`collect_import_bindings` / `Context::imports`). A bare `name()` call
+/// whose name was imported (`from urllib.parse import quote; quote(...)`)
+/// gets the import target itself, so the DB layer can bind it, or, for an
+/// import from outside the repo, refuse to let it fall through to a
+/// same-named repo symbol (see the guard in `db::insert_edges`).
 ///
 /// Unlike C#'s `using NS;` (a namespace-level import that leaves *which*
 /// type in it ambiguous until checked against the DB), Python's `from x
@@ -1868,7 +1896,7 @@ fn unquote_string_literal(raw: &str) -> Option<String> {
 /// one resolves to a real symbol.
 fn import_qualified_candidates(raw: &str, ctx: &Context) -> Vec<String> {
     let Some((receiver, method)) = raw.split_once('.') else {
-        return Vec::new();
+        return ctx.imports.get(raw).cloned().unwrap_or_default();
     };
     if receiver.is_empty() || method.is_empty() || method.contains('.') {
         return Vec::new();
@@ -2146,7 +2174,7 @@ fn package_prefixes_have_init(repo_root: &Path, parts: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::PythonExtractor;
-    use crate::indexer::extract::LanguageExtractor;
+    use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor, ReceiverType};
     use crate::indexer::http;
     use crate::indexer::proto;
 
@@ -2264,5 +2292,59 @@ def main(channel):
                 .iter()
                 .any(|edge| edge.target_qualname.as_deref() == Some("/userservice/getuser"))
         );
+    }
+
+    fn calls_at_line(file: &ExtractedFile, line: i64) -> Vec<&EdgeInput> {
+        file.edges
+            .iter()
+            .filter(|e| e.kind == "CALLS" && e.evidence_start_line == Some(line))
+            .collect()
+    }
+
+    #[test]
+    fn bare_call_to_imported_name_carries_import_target_as_candidate() {
+        // dpb `_helpers/identifiers.py`: without a candidate, `quote(...)`
+        // fell through to the bare-name tier and bound
+        // `MssqlCodeWriter.quote`.
+        let source =
+            "from urllib.parse import quote\n\ndef file_component(name):\n    return quote(name)\n";
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let calls = calls_at_line(&file, 4);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].receiver_type, ReceiverType::NotTracked);
+        assert_eq!(
+            calls[0].import_candidates,
+            vec!["urllib.parse.quote".to_string()]
+        );
+    }
+
+    #[test]
+    fn bare_call_to_nested_def_is_unresolved_not_bare_name() {
+        // dpb `dpbuilder_testing/mssql.py`: a nested `def quote` inside a
+        // method; its calls bound to an unrelated `MssqlCodeWriter.quote`.
+        let source = r#"
+class Backend:
+    def conn_str(self, db):
+        def quote(value):
+            return "{" + str(value) + "}"
+        return quote(db)
+
+def top():
+    return helper()
+
+def helper():
+    return 1
+"#;
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let nested = calls_at_line(&file, 6);
+        assert_eq!(nested.len(), 1, "{nested:?}");
+        assert_eq!(nested[0].receiver_type, ReceiverType::Unresolved);
+        assert!(nested[0].import_candidates.is_empty());
+        // A call to a real top-level function is untouched.
+        let top = calls_at_line(&file, 9);
+        assert_eq!(top.len(), 1, "{top:?}");
+        assert_eq!(top[0].receiver_type, ReceiverType::NotTracked);
     }
 }
