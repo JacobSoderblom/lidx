@@ -1166,6 +1166,12 @@ impl Db {
                    AND target_qualname IS NOT NULL
                  ORDER BY id ASC",
             )?;
+            let mut import_suffix_stmt = tx.prepare(IMPORT_SUFFIX_LOOKUP_SQL)?;
+            let mut repo_module_stmt = tx.prepare(
+                "SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
+                 WHERE s.name = ? AND s.kind = 'module' AND f.language = 'python'
+                 LIMIT 1",
+            )?;
             // Look up the source file's language for same-language preference
             let source_lang: String = tx
                 .query_row(
@@ -1205,6 +1211,7 @@ impl Db {
                     &edge.import_candidates,
                     symbol_map,
                     &mut exact_lookup_stmt,
+                    &mut import_suffix_stmt,
                     graph_version,
                 )? {
                     (Some(import_id), Some("import"))
@@ -1233,17 +1240,20 @@ impl Db {
                     // suffix match is just as able to hit an unrelated
                     // same-named local symbol.
                     //
-                    // ponytail: a bare call with no attribute receiver at
-                    // all (`quote(...)`) never reaches this — extractors
-                    // only compute `import_candidates` for a dotted
-                    // `X.method()` shape (see `python::handle_call` /
-                    // `csharp::handle_call`), so a same-named import bound
-                    // to a bare identifier still falls through to
-                    // bare-name unguarded. Upgrade path: teach the
-                    // extractors to compute import candidates for bare
-                    // calls too, keyed off the same `ctx.imports` map they
-                    // already build.
-                    if !edge.import_candidates.is_empty() {
+                    // Python only: an import rooted in a repo package (or a
+                    // relative one) that still failed to resolve is most
+                    // likely a re-export (`from pkg import X` where `pkg/
+                    // __init__.py` re-exports X from a submodule). That is
+                    // not evidence the target lives outside the repo, so
+                    // it keeps the pre-existing fuzzy tiers rather than
+                    // being refused. See `is_repo_python_import`.
+                    if !edge.import_candidates.is_empty()
+                        && (source_lang != "python"
+                            || !is_repo_python_import(
+                                &edge.import_candidates,
+                                &mut repo_module_stmt,
+                            )?)
+                    {
                         receiver_type_for_storage = Some("");
                     }
                     match edge.target_qualname.as_deref() {
@@ -1388,6 +1398,7 @@ impl Db {
                 let mut update_stmt = tx.prepare(
                     "UPDATE edges SET target_symbol_id = ?, resolution_kind = 'import' WHERE id = ?",
                 )?;
+                let mut import_suffix_stmt = tx.prepare(IMPORT_SUFFIX_LOOKUP_SQL)?;
 
                 for (edge_id, candidates_json) in &batch {
                     let candidates = decode_import_candidates(candidates_json);
@@ -1395,6 +1406,7 @@ impl Db {
                         &candidates,
                         &empty_symbol_map,
                         &mut exact_lookup_stmt,
+                        &mut import_suffix_stmt,
                         graph_version,
                     )? {
                         update_stmt.execute(params![target_id, edge_id])?;
@@ -2620,28 +2632,78 @@ fn decode_import_candidates(raw: &str) -> Vec<String> {
 /// through to the pre-existing exact/two-segment/bare-name tiers
 /// unchanged, so this never bypasses the ambiguity guard, only sometimes
 /// avoids tripping it by qualifying an otherwise-ambiguous receiver first.
+///
+/// Only when *no* candidate hits exactly, a second round retries each one
+/// as a dotted-path suffix (`suffix_stmt`, `IMPORT_SUFFIX_LOOKUP_SQL`), same
+/// one-distinct-hit rule. Needed for Python, where a file's module qualname
+/// is its repo-relative path (`py.pkg.src.pkg.mod`) while the import names
+/// the installed package path (`pkg.mod`), so the exact round never hits
+/// for a src-layout repo. Still the full import path, never a bare name.
 fn resolve_import_candidate(
     candidates: &[String],
     symbol_map: &HashMap<String, i64>,
     stmt: &mut rusqlite::Statement<'_>,
+    suffix_stmt: &mut rusqlite::Statement<'_>,
     graph_version: i64,
 ) -> Result<Option<i64>> {
-    let mut found: Option<i64> = None;
-    for candidate in candidates {
-        let id = if let Some(&id) = symbol_map.get(candidate) {
-            Some(id)
-        } else {
-            stmt.query_row(params![candidate, graph_version], |row| row.get(0))
-                .optional()?
-        };
-        let Some(id) = id else { continue };
-        match found {
-            None => found = Some(id),
-            Some(existing) if existing == id => {}
-            Some(_) => return Ok(None),
+    for exact_round in [true, false] {
+        let mut found: Option<i64> = None;
+        for candidate in candidates {
+            let id = if !exact_round {
+                let name = candidate.rsplit('.').next().unwrap_or(candidate);
+                let suffix = format!(".{candidate}");
+                single_unambiguous_match(suffix_stmt, params![name, suffix, graph_version])?
+            } else if let Some(&id) = symbol_map.get(candidate) {
+                Some(id)
+            } else {
+                stmt.query_row(params![candidate, graph_version], |row| row.get(0))
+                    .optional()?
+            };
+            let Some(id) = id else { continue };
+            match found {
+                None => found = Some(id),
+                Some(existing) if existing == id => {}
+                Some(_) => return Ok(None),
+            }
+        }
+        if found.is_some() {
+            return Ok(found);
         }
     }
-    Ok(found)
+    Ok(None)
+}
+
+/// Suffix round of `resolve_import_candidate`: params are (trailing name,
+/// `.{candidate}`, graph_version). `substr(.., -n)` is an exact tail
+/// comparison, so `_`/`%` in names are not LIKE wildcards. `LIMIT 2` feeds
+/// `single_unambiguous_match`'s ambiguity guard.
+const IMPORT_SUFFIX_LOOKUP_SQL: &str = "SELECT id FROM symbols
+     WHERE name = ?1 AND substr(qualname, -length(?2)) = ?2 AND graph_version = ?3
+     LIMIT 2";
+
+/// Whether a Python edge's unresolved import candidates point into this
+/// repo: a relative import (`.mod.x`, leading dot), or one whose root
+/// package has a Python `module` symbol here (`stmt`, any graph version so
+/// an incremental reindex that has not yet carried the package forward
+/// still counts it). When false, the import is external (stdlib,
+/// third-party) and must shadow the bare name — see the guard in
+/// `insert_edges`.
+///
+/// ponytail: root-name only, so a repo submodule sharing a stdlib root
+/// name (`pkg.common.logging` vs `import logging`) makes that stdlib
+/// import look repo-local and keeps today's fuzzy behavior for it. Upgrade
+/// path: match the import's full module path, not just its root.
+fn is_repo_python_import(
+    candidates: &[String],
+    stmt: &mut rusqlite::Statement<'_>,
+) -> Result<bool> {
+    for candidate in candidates {
+        let root = candidate.split('.').next().unwrap_or("");
+        if root.is_empty() || stmt.exists(params![root])? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -5959,6 +6021,153 @@ mod tests {
              rely on the persisted receiver_type='' this fix writes -- without it, the repair \
              pass would resurrect the false bare-name match on its own next run"
         );
+    }
+
+    /// Insert `syms` into one python file, then one CALLS edge carrying
+    /// `candidates`; return the stored (target_symbol_id, receiver_type,
+    /// resolution_kind) and the qualname -> id map.
+    #[allow(clippy::type_complexity)]
+    fn insert_python_import_call(
+        syms: &[(&str, &str)],
+        target: &str,
+        candidates: &[&str],
+    ) -> (
+        (Option<i64>, Option<String>, Option<String>),
+        HashMap<String, i64>,
+    ) {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("py/pkg/src/pkg/a.py", "h1", "python", 100, 0)
+            .unwrap();
+        let syms: Vec<_> = syms
+            .iter()
+            .enumerate()
+            .map(|(i, (qn, kind))| make_test_symbol(qn, None, kind, i as i64 * 10 + 1))
+            .collect();
+        let inserted = db
+            .insert_symbols(file_id, "py/pkg/src/pkg/a.py", &syms, 1, None)
+            .unwrap();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        let edges = vec![make_test_edge_with_import_candidates(
+            "CALLS",
+            "py.pkg.src.pkg.a.caller",
+            target,
+            candidates.iter().map(|c| c.to_string()).collect(),
+        )];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+        let row = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges WHERE kind = 'CALLS'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        (row, symbol_map)
+    }
+
+    #[test]
+    fn test_insert_edges_bare_external_import_shadows_unique_repo_method() {
+        // `from urllib.parse import quote; quote(x)` in a repo whose only
+        // `quote` is an unrelated method. The external import must shadow
+        // the name: no bare-name binding to `MssqlCodeWriter.quote`.
+        let ((target, receiver_type, _), _) = insert_python_import_call(
+            &[
+                ("py.pkg.src.pkg", "module"),
+                ("py.pkg.src.pkg.writer.MssqlCodeWriter.quote", "method"),
+            ],
+            "py.pkg.src.pkg.a.quote",
+            &["urllib.parse.quote"],
+        );
+        assert_eq!(target, None, "external import must not bind a repo symbol");
+        assert_eq!(receiver_type.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn test_insert_edges_import_candidate_matches_src_layout_qualname_by_suffix() {
+        // dpb shape: module qualnames carry the repo path prefix
+        // (`py.pkg.src.`) the import statement does not.
+        let ((target, _, kind), map) = insert_python_import_call(
+            &[
+                ("py.pkg.src.pkg", "module"),
+                ("py.pkg.src.pkg.runtime.run", "function"),
+                ("py.other.src.other.run", "function"),
+            ],
+            "py.pkg.src.pkg.a.run",
+            &["pkg.runtime.run"],
+        );
+        assert_eq!(target, Some(map["py.pkg.src.pkg.runtime.run"]));
+        assert_eq!(kind.as_deref(), Some("import"));
+    }
+
+    #[test]
+    fn test_insert_edges_unresolved_repo_import_keeps_fuzzy_fallback() {
+        // `from pkg import helper` where `pkg/__init__.py` re-exports
+        // `helper` from `pkg.core`: the candidate names nothing, but its
+        // root is a repo package, so the pre-existing bare-name tier still
+        // runs instead of the edge being refused as external.
+        let ((target, receiver_type, kind), map) = insert_python_import_call(
+            &[
+                ("py.pkg.src.pkg", "module"),
+                ("py.pkg.src.pkg.core.helper", "function"),
+            ],
+            "py.pkg.src.pkg.a.helper",
+            &["pkg.helper"],
+        );
+        assert_eq!(target, Some(map["py.pkg.src.pkg.core.helper"]));
+        assert_eq!(kind.as_deref(), Some("bare_name"));
+        assert_eq!(receiver_type, None);
+    }
+
+    #[test]
+    fn test_resolve_null_target_edges_import_suffix_round_repairs_edge() {
+        // Incremental-reindex shape: the edge lands before its target's
+        // symbol exists, then the repair pass must find it via the suffix
+        // round (exact never matches a src-layout qualname).
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("py/pkg/src/pkg/a.py", "h1", "python", 100, 0)
+            .unwrap();
+        let edges = vec![make_test_edge_with_import_candidates(
+            "CALLS",
+            "py.pkg.src.pkg.a.caller",
+            "py.pkg.src.pkg.a.run",
+            vec!["pkg.runtime.run".to_string()],
+        )];
+        db.insert_edges(file_id, &edges, &HashMap::new(), 1, None)
+            .unwrap();
+        let other = db
+            .upsert_file("py/pkg/src/pkg/runtime.py", "h2", "python", 100, 0)
+            .unwrap();
+        let inserted = db
+            .insert_symbols(
+                other,
+                "py/pkg/src/pkg/runtime.py",
+                &[make_test_symbol(
+                    "py.pkg.src.pkg.runtime.run",
+                    None,
+                    "function",
+                    1,
+                )],
+                1,
+                None,
+            )
+            .unwrap();
+        db.resolve_null_target_edges(1).unwrap();
+        let (target, kind): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, resolution_kind FROM edges WHERE kind = 'CALLS'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(target, Some(inserted[0].id));
+        assert_eq!(kind.as_deref(), Some("import"));
     }
 
     #[test]
