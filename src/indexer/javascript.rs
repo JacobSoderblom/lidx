@@ -62,6 +62,14 @@ struct Context {
     /// see `collect_class_level_attr_types`. Used only to resolve a
     /// single-hop `this.field.method()` receiver.
     class_attr_types: Rc<HashMap<String, LocalType>>,
+    /// Qualname of the module-level `const`/`let`/`var` symbol whose
+    /// initializer is currently being walked. The first function-like node
+    /// (arrow, `function`/`function*` expression, object-literal method)
+    /// met inside that initializer becomes a scope owned by this symbol —
+    /// see `owned_function_scope`. Calls in the initializer *outside* any
+    /// function (`const x = f()`, the `dynamic(...)` in `const X =
+    /// dynamic(() => ...)`) still attribute to the module.
+    fn_owner: Option<String>,
 }
 
 /// Locally-inferred type of a name bound within a single function body (or
@@ -600,6 +608,7 @@ fn extract_with_parser(
         grpc_clients,
         local_types: Rc::new(infer_module_level_types(root, source)),
         class_attr_types: Rc::new(HashMap::new()),
+        fn_owner: None,
     };
     walk_node(root, &ctx, source, &mut output);
     Ok(output)
@@ -692,6 +701,36 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         for edge in process_env_destructuring_edges(node, ctx, source) {
             output.edges.push(edge);
         }
+        // `export const X = (...) => {...}` and friends: a module-level
+        // declarator `handle_variable_declaration` emitted a symbol for.
+        // Walk its initializer with that symbol pending as the owner of
+        // any function found inside (see `Context::fn_owner`). Only at
+        // module scope: a handler const inside a component/function body
+        // stays attributed to that component, like it does for a
+        // `function` declaration. Destructuring (`const {a} = f()`) has no
+        // single owner, so it's left alone.
+        if ctx.current_scope == ctx.module
+            && ctx.class_stack.is_empty()
+            && let Some(name_node) = node.child_by_field_name("name")
+            && name_node.kind() == "identifier"
+            && let Some(value) = node.child_by_field_name("value")
+        {
+            let mut next_ctx = ctx.clone();
+            next_ctx.fn_owner = Some(build_qualname(
+                &ctx.module,
+                &ctx.class_stack,
+                &node_text(name_node, source),
+            ));
+            walk_node(value, &next_ctx, source, output);
+            return;
+        }
+    }
+    if let Some(next_ctx) = owned_function_scope(node, ctx, source) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk_node(child, &next_ctx, source, output);
+        }
+        return;
     }
     // process.env.KEY (member_expression) or process.env["KEY"] (subscript_expression)
     if (node.kind() == "member_expression" || node.kind() == "optional_member_expression")
@@ -2372,6 +2411,39 @@ fn is_lambda_node(kind: &str) -> bool {
     kind == "arrow_function"
 }
 
+/// When `node` is the first function-like node inside a module-level
+/// declarator's initializer (`ctx.fn_owner` set — see
+/// `Context::fn_owner`), the context its body should be walked with: that
+/// declarator's symbol as `current_scope`, mirroring what
+/// `handle_function` does for a `function` declaration. An arrow keeps the
+/// module's `local_types` (module-level inference already folds arrow
+/// params/locals in — see `is_lambda_node`); a `function`/`function*`
+/// expression or object-literal method gets its own, like
+/// `handle_function`. Walking a plain `function` expression here is safe
+/// despite `is_dynamic_this_function_node`: at module scope there is no
+/// enclosing class for a `this.x()` to be misresolved against
+/// (`class_attr_types` is empty). `fn_depth` is deliberately not bumped,
+/// so a named `function` declared inside still gets its own symbol and
+/// its calls, exactly as before.
+// ponytail: object-literal properties get no symbols of their own, so
+// `apiClient = { get: () => f() }` attributes `f` to `apiClient`, not
+// `apiClient.get`.
+fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<Context> {
+    let owner = ctx.fn_owner.as_ref()?;
+    let kind = node.kind();
+    if !(is_lambda_node(kind) || is_dynamic_this_function_node(kind) || kind == "method_definition")
+    {
+        return None;
+    }
+    let mut next_ctx = ctx.clone();
+    next_ctx.current_scope = owner.clone();
+    next_ctx.fn_owner = None;
+    if !is_lambda_node(kind) {
+        next_ctx.local_types = Rc::new(infer_local_types(node, source));
+    }
+    Some(next_ctx)
+}
+
 /// Parameter names (+ inferred types, where explicitly annotated) bound by
 /// an arrow function's `parameter` (single bare identifier, `x => ...`) or
 /// `parameters` (parenthesized list, `(x, y) => ...`) field. Folded into
@@ -3347,5 +3419,95 @@ client.sayHello({ name: "world" }, () => {});
             value["note"].as_str().unwrap(),
             "a // not a comment and /* not a comment either"
         );
+    }
+
+    /// Source qualname of the single CALLS edge whose (module-qualified)
+    /// target ends in `.target`.
+    fn call_source(file: &crate::indexer::extract::ExtractedFile, target: &str) -> String {
+        let suffix = format!(".{target}");
+        let hits: Vec<_> = file
+            .edges
+            .iter()
+            .filter(|e| {
+                e.kind == "CALLS"
+                    && e.target_qualname
+                        .as_deref()
+                        .is_some_and(|t| t.ends_with(&suffix))
+            })
+            .collect();
+        assert_eq!(hits.len(), 1, "expected one CALLS -> {target}");
+        hits[0].source_qualname.clone().unwrap()
+    }
+
+    #[test]
+    fn const_arrow_calls_attribute_to_const_tsx() {
+        let source = r#"
+import { useState } from 'react';
+const Lazy = dynamic(() => loadGraph(), { ssr: false });
+export const ProductTabs: FC<Props> = ({ item }) => {
+  const [tab, setTab] = useState('a');
+  const onClick = () => track(tab);
+  function inner() { return deep(); }
+  return <Tabs value={tab}>{renderRows(item)}</Tabs>;
+};
+const { a } = pick();
+setup();
+"#;
+        let mut extractor = super::TsxExtractor::new().unwrap();
+        let file = extractor.extract(source, "components.tabs").unwrap();
+        assert_eq!(
+            call_source(&file, "useState"),
+            "components.tabs.ProductTabs"
+        );
+        assert_eq!(
+            call_source(&file, "renderRows"),
+            "components.tabs.ProductTabs"
+        );
+        // A handler const nested inside the component stays the component's.
+        assert_eq!(call_source(&file, "track"), "components.tabs.ProductTabs");
+        // Nested named function: innermost wins.
+        assert_eq!(call_source(&file, "deep"), "components.tabs.inner");
+        // The HOC-style wrapper call itself is a module-level call ...
+        assert_eq!(call_source(&file, "dynamic"), "components.tabs");
+        // ... but the callback passed to it belongs to the const.
+        assert_eq!(call_source(&file, "loadGraph"), "components.tabs.Lazy");
+        // Destructuring and bare module-level calls stay on the module.
+        assert_eq!(call_source(&file, "pick"), "components.tabs");
+        assert_eq!(call_source(&file, "setup"), "components.tabs");
+    }
+
+    #[test]
+    fn const_arrow_and_object_property_calls_attribute_to_const_ts() {
+        let source = r#"
+export const load = async (id: string): Promise<Item> => fetchItem(id);
+export const apiClient = {
+  get: <T>(endpoint: string) => apiClientFetch<T>(endpoint, { method: 'GET' }),
+  post(endpoint: string, data?: unknown) { return apiPost(endpoint, data); },
+};
+const cfg = buildConfig();
+"#;
+        let mut extractor = super::TypescriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "lib.api").unwrap();
+        assert_eq!(call_source(&file, "fetchItem"), "lib.api.load");
+        assert_eq!(call_source(&file, "apiClientFetch"), "lib.api.apiClient");
+        assert_eq!(call_source(&file, "apiPost"), "lib.api.apiClient");
+        assert_eq!(call_source(&file, "buildConfig"), "lib.api");
+    }
+
+    #[test]
+    fn const_function_expression_calls_attribute_to_const_js() {
+        let source = r#"
+const handler = function (req) { return process(req); };
+var gen = function* () { yield step(); };
+let arrow = x => transform(x);
+module.exports = { handler };
+init();
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "srv").unwrap();
+        assert_eq!(call_source(&file, "process"), "srv.handler");
+        assert_eq!(call_source(&file, "step"), "srv.gen");
+        assert_eq!(call_source(&file, "transform"), "srv.arrow");
+        assert_eq!(call_source(&file, "init"), "srv");
     }
 }
