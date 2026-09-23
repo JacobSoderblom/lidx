@@ -4810,6 +4810,84 @@ mod tests {
     }
 
     #[test]
+    fn test_rpc_bridge_requires_real_route_when_protos_indexed() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/Svc.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+        let symbols = vec![
+            make_test_symbol("A.Test", None, "method", 1),
+            make_test_symbol("B.Impl.Deploy", None, "method", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/Svc.cs", &symbols, 1, None)
+            .unwrap();
+        let edge = |kind: &str, src: Option<&str>, tq: &str| crate::indexer::extract::EdgeInput {
+            kind: kind.to_string(),
+            source_qualname: src.map(str::to_string),
+            target_qualname: Some(tq.to_string()),
+            ..Default::default()
+        };
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        // Both sides guessed the same bogus package; no .proto defines it.
+        let guessed = "/dpb.datamgr.deployerservice/deploy";
+        db.insert_edges(
+            file_id,
+            &[
+                edge("RPC_CALL", Some("A.Test"), guessed),
+                edge("RPC_IMPL", Some("B.Impl.Deploy"), guessed),
+            ],
+            &symbol_map,
+            1,
+            None,
+        )
+        .unwrap();
+        // No RPC_ROUTE anywhere yet: unguarded, the pair still bridges.
+        let found = db
+            .edges_by_target_qualname_and_kinds(guessed, &["RPC_IMPL"], None, 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+
+        // Once any real route is indexed, an unbacked path no longer bridges.
+        let proto_id = db
+            .upsert_file("protos/d.proto", "h2", "proto", 10, 0)
+            .unwrap();
+        let real = "/datasource.deployer.v1.deployerservice/deploy";
+        db.insert_edges(
+            proto_id,
+            &[edge("RPC_ROUTE", None, real)],
+            &HashMap::new(),
+            1,
+            None,
+        )
+        .unwrap();
+        let found = db
+            .edges_by_target_qualname_and_kinds(guessed, &["RPC_IMPL"], None, 1)
+            .unwrap();
+        assert!(found.is_empty());
+
+        // A route-backed path still bridges.
+        let file2 = db
+            .upsert_file("src/Real.cs", "h3", "csharp", 100, 0)
+            .unwrap();
+        db.insert_edges(
+            file2,
+            &[edge("RPC_IMPL", Some("B.Impl.Deploy"), real)],
+            &symbol_map,
+            1,
+            None,
+        )
+        .unwrap();
+        let found = db
+            .edges_by_target_qualname_and_kinds(real, &["RPC_IMPL"], None, 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
     fn test_source_symbols_for_config_uri_with_data() {
         let (mut db, _temp) = create_test_db();
         let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();

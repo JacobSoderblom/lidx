@@ -375,12 +375,26 @@ impl Db {
                AND e.kind IN ({kind_placeholders})
                AND e.source_symbol_id IS NOT NULL
                AND e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)"
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+               AND (e.kind NOT IN ('RPC_CALL', 'RPC_IMPL')
+                    OR EXISTS (SELECT 1 FROM edges r
+                               WHERE r.target_qualname = e.target_qualname
+                                 AND r.kind = 'RPC_ROUTE' AND r.graph_version = ?)
+                    OR NOT EXISTS (SELECT 1 FROM edges r
+                                   WHERE r.kind = 'RPC_ROUTE' AND r.graph_version = ?))"
         );
+        // ponytail: RPC_CALL and RPC_IMPL both fan out one edge per
+        // *guessed* proto package (bare `using`s), so two wrong guesses can
+        // share a path and bridge unrelated services. Only bridge on a path
+        // a real `.proto` RPC_ROUTE backs; repos with no RPC_ROUTE at all
+        // (protos live elsewhere) keep the unguarded behaviour. Ceiling: a
+        // route whose .proto isn't indexed is still exposed to that noise.
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&target_qualname as &dyn rusqlite::ToSql];
         for kind in kinds {
             params.push(kind as &dyn rusqlite::ToSql);
         }
+        params.push(&graph_version);
+        params.push(&graph_version);
         params.push(&graph_version);
         params.push(&graph_version);
         if let Some(languages) = languages
