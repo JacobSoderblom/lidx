@@ -1,3 +1,4 @@
+use crate::db::resolver::{ImportMissPolicy, LanguageProfile};
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
@@ -14,6 +15,19 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use tree_sitter::{Node, Parser};
+
+/// Python's resolution profile, registered here alongside this extractor
+/// and looked up by `db::resolver::profile_for("python")`. Otherwise the
+/// shared default: dot-separated, no relative-import rewriting (Python's
+/// `from . import x` relative imports are already resolved to an absolute
+/// dotted candidate by this extractor's own import parsing), suffix
+/// matching on. `PythonRepoHeuristic`'s DB lookup
+/// (`Resolver::is_repo_python_import`) stays in `db::resolver` — it's a
+/// resolver-only heuristic, not data this extractor supplies.
+pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    import_miss: ImportMissPolicy::PythonRepoHeuristic,
+    ..LanguageProfile::DEFAULT
+};
 
 #[derive(Clone)]
 struct Context {

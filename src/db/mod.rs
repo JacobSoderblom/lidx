@@ -19,7 +19,7 @@ mod co_change;
 mod graph_query;
 mod migrations;
 mod overview;
-mod resolver;
+pub(crate) mod resolver;
 
 #[derive(Debug, Clone)]
 pub struct ModuleSummaryEntry {
