@@ -2693,11 +2693,24 @@ const IMPORT_SUFFIX_LOOKUP_SQL: &str = "SELECT id FROM symbols
 /// name (`pkg.common.logging` vs `import logging`) makes that stdlib
 /// import look repo-local and keeps today's fuzzy behavior for it. Upgrade
 /// path: match the import's full module path, not just its root.
+///
+/// ponytail: a `_pb2`/`_pb2_grpc` segment is protoc output, never checked
+/// in, so it counts as external even under a repo package — otherwise
+/// `pb.ColumnDef(...)` from `from pkg.v1 import pkg_pb2 as pb` fuzzy-binds
+/// to a same-named repo dataclass (41 such edges in dpb). Other gitignored
+/// generated modules still slip through; upgrade path: check the repo
+/// module's own bindings for the next segment.
 fn is_repo_python_import(
     candidates: &[String],
     stmt: &mut rusqlite::Statement<'_>,
 ) -> Result<bool> {
     for candidate in candidates {
+        if candidate
+            .split('.')
+            .any(|seg| seg.ends_with("_pb2") || seg.ends_with("_pb2_grpc"))
+        {
+            continue;
+        }
         let root = candidate.split('.').next().unwrap_or("");
         if root.is_empty() || stmt.exists(params![root])? {
             return Ok(true);
@@ -6182,6 +6195,22 @@ mod tests {
         assert_eq!(target, Some(map["py.pkg.src.pkg.core.helper"]));
         assert_eq!(kind.as_deref(), Some("bare_name"));
         assert_eq!(receiver_type, None);
+    }
+
+    #[test]
+    fn test_insert_edges_generated_pb2_import_under_repo_package_is_external() {
+        // `from pkg.v1 import pkg_pb2 as pb; pb.ColumnDef(...)`: the pb2
+        // module is protoc output, so the repo dataclass of the same name
+        // must not be picked up by the fuzzy tiers.
+        let ((target, _, _), _) = insert_python_import_call(
+            &[
+                ("py.pkg.src.pkg", "module"),
+                ("py.pkg.src.pkg.schema.ColumnDef", "class"),
+            ],
+            "pb.ColumnDef",
+            &["pkg.v1.pkg_pb2.ColumnDef"],
+        );
+        assert_eq!(target, None);
     }
 
     #[test]
