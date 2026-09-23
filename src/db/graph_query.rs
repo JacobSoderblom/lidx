@@ -1,5 +1,5 @@
 use super::{Db, edge_from_row, fuzzy_qualname_patterns, symbol_from_row};
-use crate::model::{Edge, Symbol};
+use crate::model::{Edge, EdgeSnapshotRow, Symbol};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
@@ -607,6 +607,45 @@ impl Db {
         for row in rows {
             results.push(row?);
         }
+        Ok(results)
+    }
+
+    /// Read every edge in `graph_version` as a normalized
+    /// `(source qualname, kind, target qualname | None, resolution kind)`
+    /// row, joining `source_symbol_id`/`target_symbol_id` to their symbols'
+    /// *current* qualnames rather than the edge's raw stored
+    /// `target_qualname` text.
+    ///
+    /// Test support for the golden-corpus correctness scoreboard (see
+    /// `tests/common/golden.rs`): the one seam a test needs to compare the
+    /// graph against an expected-edges fixture without touching SQL or
+    /// resolver internals directly. Edges with no resolved source symbol
+    /// (file-level edges such as `IMPORTS`/`MODULE_FILE`) are omitted —
+    /// the scoreboard only covers edges attributable to a real symbol.
+    pub fn edges_snapshot(&self, graph_version: i64) -> Result<Vec<EdgeSnapshotRow>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT src.qualname, e.kind, tgt.qualname, e.resolution_kind
+             FROM edges e
+             JOIN files f ON e.file_id = f.id
+             JOIN symbols src ON e.source_symbol_id = src.id
+             LEFT JOIN symbols tgt ON e.target_symbol_id = tgt.id
+             WHERE e.graph_version = ?
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![graph_version, graph_version], |row| {
+            Ok(EdgeSnapshotRow {
+                source_qualname: row.get(0)?,
+                kind: row.get(1)?,
+                target_qualname: row.get(2)?,
+                resolution_kind: row.get(3)?,
+            })
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        results.sort();
         Ok(results)
     }
 }

@@ -96,6 +96,21 @@ pub struct Edge {
     pub event_ts: Option<i64>,
 }
 
+/// One edge, normalized for the golden-corpus correctness scoreboard
+/// (`Db::edges_snapshot`): the source and (if resolved) target's actual
+/// qualnames, rather than the edge's raw stored `target_qualname` text
+/// (which is the call site's literal, pre-resolution guess — see
+/// `resolve_call_target` — and often differs from the resolved symbol's
+/// real qualname).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EdgeSnapshotRow {
+    pub source_qualname: String,
+    pub kind: String,
+    /// `None` when `target_symbol_id` is NULL (unresolved).
+    pub target_qualname: Option<String>,
+    pub resolution_kind: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RepoOverview {
     pub repo_root: String,

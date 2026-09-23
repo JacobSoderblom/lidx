@@ -1,0 +1,44 @@
+# Golden expected-edges fixture: tests/fixtures/golden/python
+#
+# Format: one edge per line --
+#   <source qualname> <EDGE_KIND> <target qualname | UNRESOLVED>
+#
+# A line starting with `#` (after trimming) is a full-line comment and is
+# ignored. A line may end with a trailing `# xfail: <why>` marker to record
+# a known-failing edge: excluded from precision/recall, reported every run,
+# and flagged loudly if it starts resolving correctly (see
+# tests/common/golden.rs's module doc comment and ScoreboardReport).
+#
+# Scope: only CALLS edges whose source is one of this fixture's own
+# symbols count toward precision/recall (see tests/golden_python.rs).
+# CONTAINS, EXTENDS, IMPORTS, etc. are out of scope entirely, so they
+# can't swamp the score.
+#
+# Baseline measured 2026-09-23: precision 1.0, recall 1.0 (7/7 CALLS
+# edges). No known-failing lines today -- every required call shape in
+# this fixture already resolves correctly.
+
+# Plain call: a bare same-module function call.
+caller.entry CALLS caller.local_util
+
+# `from x import y` call: format_greeting is bound by name only, not
+# through an attribute access on `helper`.
+caller.call_imported_helper CALLS helper.format_greeting
+
+# Method call on self.
+greeter.Greeter.greet CALLS greeter.Greeter.format
+
+# Receiver-typed call: the annotated parameter `g: Greeter` pins the type.
+caller.call_receiver_typed CALLS greeter.Greeter.greet
+
+# Inherited method call: Dog declares no `speak` of its own -- must
+# dispatch to Animal.speak via Dog's recorded EXTENDS edge.
+caller.call_inherited CALLS animals.Animal.speak
+
+# Ambiguous bare name: `run` is defined in two unrelated modules and
+# imported from neither here -- must stay unresolved, not guess.
+caller.call_ambiguous CALLS UNRESOLVED
+
+# Call into an external library: `requests` is never indexed (it isn't
+# part of this fixture repo), so this must stay unresolved.
+caller.call_external CALLS UNRESOLVED
