@@ -673,7 +673,19 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         output.edges.push(edge);
     }
     if node.kind() == "call_expression" || node.kind() == "new_expression" {
-        handle_call(node, ctx, source, output);
+        // `handle_call` returns `true` when it has already fully walked a
+        // callback argument itself with adjusted context (currently just
+        // `fastify_register_walk`, which re-walks a `.register(cb, {
+        // prefix })` callback with the accumulated route prefix folded
+        // in). Recursing into this node's children generically afterwards
+        // — now that an arrow-function argument is no longer a walk
+        // boundary (see `is_lambda_node`) — would walk that same callback
+        // body a second time with the *un*-prefixed `ctx`, duplicating its
+        // edges under the wrong prefix. Returning here skips only the
+        // generic recursion for *this* node; sibling calls are unaffected.
+        if handle_call(node, ctx, source, output) {
+            return;
+        }
     }
     // const { DB_URL } = process.env (destructuring)
     if node.kind() == "variable_declarator" {
@@ -692,9 +704,16 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     {
         output.edges.push(edge);
     }
-    if is_nested_function_node(node.kind()) {
+    if is_dynamic_this_function_node(node.kind()) {
         return;
     }
+    // An arrow function body is a nested *scope*, not a new symbol — fall
+    // through into the generic recursion below with the same `ctx` so
+    // calls inside it attribute to the enclosing named symbol instead of
+    // being silently dropped (see `is_lambda_node`'s doc comment for why
+    // this is safe only for arrow functions, not plain `function`
+    // expressions). None of the match arms below fire for "arrow_function"
+    // itself, so no special case is needed here beyond not returning early.
     match node.kind() {
         "class_declaration" | "abstract_class_declaration" => {
             handle_class(node, ctx, source, output);
@@ -924,8 +943,13 @@ fn walk_class_body(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     }
 }
 
-fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    fastify_register_walk(node, ctx, source, output);
+/// Returns `true` when `fastify_register_walk` already fully walked a
+/// `.register(...)` callback argument itself (with the accumulated route
+/// prefix folded into its context) — see that function's doc comment and
+/// this function's call site in `walk_node` for why the caller must then
+/// skip its own generic recursion into this node's children.
+fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) -> bool {
+    let register_handled = fastify_register_walk(node, ctx, source, output);
     for edge in http_route_edges(node, ctx, source) {
         output.edges.push(edge);
     }
@@ -942,11 +966,11 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         output.edges.push(edge);
     }
     let Some(target_node) = call_target_node(node) else {
-        return;
+        return register_handled;
     };
     let raw = node_text(target_node, source);
     if raw.is_empty() {
-        return;
+        return register_handled;
     }
     let receiver_type = infer_receiver_type(target_node, source, ctx);
     let target = resolve_call_target(&raw, ctx);
@@ -964,6 +988,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_end_line: Some(end_line),
         ..Default::default()
     });
+    register_handled
 }
 
 /// Detect process.env.KEY → CONFIG_READ
@@ -2310,11 +2335,62 @@ fn is_simple_call_target(raw: &str) -> bool {
         .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == '$' || ch == '#')
 }
 
-fn is_nested_function_node(kind: &str) -> bool {
+/// A plain (non-arrow) JS/TS function expression or generator expression —
+/// `function() {...}` / `function*() {...}`, named or anonymous, most often
+/// seen as a callback. Unlike an arrow function, one of these dynamically
+/// rebinds `this` (and `arguments`) to whatever the caller supplies at call
+/// time, instead of inheriting the enclosing lexical `this`. Walking its
+/// body with the *enclosing* scope's unchanged `Context` — same
+/// `current_scope`, same `this`-relative resolution in `infer_receiver_type`
+/// — would misattribute a `this.method()` call inside it to the wrong
+/// class method, which is worse than not indexing the call at all. So
+/// `walk_node` and `is_local_scope_boundary` both still treat this as a
+/// hard boundary; see `is_lambda_node` below for the one kind that's safe
+/// to fall through instead. (`"function"` is the bare `function` keyword
+/// token itself — unnamed, so `named_children()` never yields it and this
+/// arm is unreachable in practice — kept only for parity with the
+/// pre-existing list this replaces.)
+fn is_dynamic_this_function_node(kind: &str) -> bool {
     matches!(
         kind,
-        "function" | "function_expression" | "arrow_function" | "generator_function"
+        "function" | "function_expression" | "generator_function"
     )
+}
+
+/// A JS/TS arrow function (`x => ...`, `(x, y) => ...`, `async (x) => ...`).
+/// Always lexically captures the enclosing `this`/`arguments` — never
+/// rebinds them like a plain `function` expression does (see
+/// `is_dynamic_this_function_node`) — so it's safe for `walk_node` and
+/// `collect_statement_bindings` to recurse straight through one with the
+/// *same* `Context`/bindings map: it's a nested scope, not a new symbol.
+/// Calls inside it (e.g. `.map(x => this.transform(x))`, `useEffect(() =>
+/// fetchData(), [])`) attribute to the enclosing named symbol via
+/// `ctx.current_scope`, and the arrow's own parameters are folded into the
+/// enclosing `local_types` map — see `collect_statement_bindings`'s call
+/// site — so a reference to one of them isn't mistaken for an outer name.
+fn is_lambda_node(kind: &str) -> bool {
+    kind == "arrow_function"
+}
+
+/// Parameter names (+ inferred types, where explicitly annotated) bound by
+/// an arrow function's `parameter` (single bare identifier, `x => ...`) or
+/// `parameters` (parenthesized list, `(x, y) => ...`) field. Folded into
+/// the *enclosing* function's `local_types` map by
+/// `collect_statement_bindings` rather than given a scope of their own —
+/// see `is_lambda_node`'s doc comment.
+fn collect_lambda_parameter_bindings(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    if let Some(params) = node.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        for param in params.named_children(&mut cursor) {
+            collect_param_bindings(param, source, bindings);
+        }
+    } else if let Some(param) = node.child_by_field_name("parameter") {
+        collect_param_bindings(param, source, bindings);
+    }
 }
 
 fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -2792,9 +2868,12 @@ fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
 /// and `const`/`let`/`var` declarations. Scope is strictly this function —
 /// never a caller, a callee, or another method of the same class (see
 /// `Context::local_types`'s doc comment). No CALLS edges are ever extracted
-/// from inside a nested function/arrow-function expression (see
-/// `is_nested_function_node`, which stops `walk_node` there entirely), so
-/// this deliberately doesn't recurse into one either.
+/// from inside a nested plain `function`/`function*` expression (see
+/// `is_dynamic_this_function_node`, which stops `walk_node` there
+/// entirely), so this deliberately doesn't recurse into one either. An
+/// arrow function is different — see `is_lambda_node` — so
+/// `collect_statement_bindings` (which this calls into) does recurse into
+/// one of those, folding its parameters into this same map.
 fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
     if let Some(params) = function_node.child_by_field_name("parameters") {
@@ -2911,16 +2990,17 @@ fn collect_pattern_identifiers(
 
 /// Node kinds that introduce a fresh local-type scope of their own — a
 /// separate function/method/class body, never inherited from the outer
-/// scope being walked. Mirrors `is_nested_function_node` plus the
+/// scope being walked. Mirrors `is_dynamic_this_function_node` plus the
 /// declaration/class-body kinds that function doesn't need to cover (its
-/// callers already stop at those separately).
+/// callers already stop at those separately). `arrow_function` is
+/// deliberately *not* included — see `is_lambda_node`'s doc comment and
+/// this function's call site below.
 fn is_local_scope_boundary(kind: &str) -> bool {
     matches!(
         kind,
         "function_declaration"
             | "generator_function_declaration"
             | "function_expression"
-            | "arrow_function"
             | "generator_function"
             | "method_definition"
             | "class_declaration"
@@ -2932,7 +3012,12 @@ fn is_local_scope_boundary(kind: &str) -> bool {
 /// Recursively collect local-variable bindings from statements within a
 /// single function body (or module top level), stopping at nested
 /// function/class boundaries (their own locals are a different scope
-/// entirely — see `Context::local_types`'s doc comment).
+/// entirely — see `Context::local_types`'s doc comment). An arrow function
+/// is *not* a boundary here — see `is_lambda_node`'s doc comment — so a
+/// call inside one is walked with the *enclosing* function's
+/// `local_types`, and the arrow's own parameters are folded into that same
+/// map below (mirrors `python::collect_statement_bindings`'s `"lambda"`
+/// arm) so a reference to one of them isn't mistaken for an outer name.
 fn collect_statement_bindings(
     node: Node<'_>,
     source: &str,
@@ -2940,6 +3025,12 @@ fn collect_statement_bindings(
 ) {
     if is_local_scope_boundary(node.kind()) {
         return;
+    }
+    if is_lambda_node(node.kind()) {
+        collect_lambda_parameter_bindings(node, source, bindings);
+        // No `return`: still recurse into children below (the body may
+        // declare further locals, or contain a nested arrow function whose
+        // own parameters also need folding in).
     }
     match node.kind() {
         "lexical_declaration" | "variable_declaration" => {

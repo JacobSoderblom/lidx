@@ -973,3 +973,85 @@ public class Foo {
         call.import_candidates
     );
 }
+
+// Regression test for the dpb-corpus finding that `_connection.EnsureOpenAsync`
+// had zero CALLS edges anywhere in the index: every one of its call sites sat
+// inside a lambda passed to a Polly resilience pipeline
+// (`_pipeline.ExecuteAsync(async () => { ... })`), and `walk_node` returned
+// immediately at the lambda boundary (`is_lambda_node`) without ever
+// descending into its body. Fails if that early return is restored (or if
+// `collect_statement_bindings`'s matching lambda-parameter fold-in is
+// reverted, per this test's sibling below).
+#[test]
+fn call_inside_lambda_body_attributes_to_enclosing_method() {
+    let source = r#"
+namespace Acme.App;
+public class ConnectionManager {
+    private readonly IDbConnection _connection;
+    private readonly ResiliencePipeline _pipeline;
+    public async System.Threading.Tasks.Task EnsureOpenAsync() {
+        await _pipeline.ExecuteAsync(async () => {
+            await _connection.EnsureOpenAsync();
+        });
+    }
+}
+"#;
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS" && e.target_qualname.as_deref() == Some("_connection.EnsureOpenAsync")
+        })
+        .expect("_connection.EnsureOpenAsync() call edge inside the lambda body");
+    assert_eq!(
+        call.source_qualname.as_deref(),
+        Some("Acme.App.ConnectionManager.EnsureOpenAsync"),
+        "a call inside a lambda is a nested scope, not a new symbol — it must \
+         attribute to the enclosing named method, not be dropped or attributed \
+         to a synthetic lambda symbol"
+    );
+    assert_eq!(
+        call.receiver_type,
+        ReceiverType::Known("IDbConnection".to_string()),
+        "the field's type must still resolve correctly from inside the lambda"
+    );
+}
+
+// A lambda's own parameter must be folded into the enclosing method's
+// `local_types` (mirrors `python_receiver_type_resolution.rs`'s
+// `lambda_parameter_call_does_not_bind`), or a reference to it inside the
+// body would be mistaken for an outer name — e.g. here, a lambda parameter
+// named `_connection` shadows the class field of the same name, and must
+// NOT resolve to the field's `IDbConnection` type. Fails if
+// `collect_lambda_parameter_bindings` is not called (the reference would
+// then fall through to `class_attr_types` and wrongly resolve `Known`).
+#[test]
+fn lambda_parameter_shadowing_field_does_not_bind_to_field_type() {
+    let source = r#"
+namespace Acme.App;
+public class ConnectionManager {
+    private readonly IDbConnection _connection;
+    public void Subscribe(System.Action<IDbConnection> onEach) {
+        Register(_connection => { onEach(_connection); _connection.Close(); });
+    }
+    public void Register(System.Action<IDbConnection> handler) {}
+}
+"#;
+    let module = module_name_from_rel_path("src/app.cs");
+    let mut extractor = CSharpExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("_connection.Close"))
+        .expect("_connection.Close() call edge inside the lambda body");
+    assert_eq!(
+        call.receiver_type,
+        ReceiverType::Unresolved,
+        "the lambda's own parameter shadows the class field of the same name \
+         and must not be resolved via the field's type"
+    );
+}

@@ -767,3 +767,92 @@ function caller() {
         "multi-line chain must resolve to the same qualname as the single-line form"
     );
 }
+
+// Regression tests for the walker returning at every arrow-function boundary
+// (`is_dynamic_this_function_node`'s predecessor stopped there too) without
+// ever descending into the body — meaning a call written inside `.map()`,
+// `.then()`, `useEffect(() => ...)`, etc. produced no CALLS edge anywhere,
+// no matter what it was attributed to. Mirrors the C# `csharp_extract.rs`
+// pair (`call_inside_lambda_body_attributes_to_enclosing_method` /
+// `lambda_parameter_shadowing_field_does_not_bind_to_field_type`) — a
+// lambda body is a nested scope, not a new symbol.
+
+#[test]
+fn call_inside_arrow_function_body_attributes_to_enclosing_method() {
+    let source = r#"
+class Foo {
+    helper(item) {}
+    method(items) {
+        items.forEach(item => {
+            this.helper(item);
+        });
+    }
+}
+"#;
+    let mut extractor = JavascriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("src/app.Foo.helper"))
+        .expect("this.helper(item) call edge inside the forEach arrow body");
+    assert_eq!(
+        call.source_qualname.as_deref(),
+        Some("src/app.Foo.method"),
+        "a call inside an arrow function is a nested scope, not a new symbol \
+         — it must attribute to the enclosing named method, and `this` must \
+         still resolve to the enclosing class (arrow functions never rebind \
+         `this`)"
+    );
+}
+
+#[test]
+fn typed_local_resolves_inside_arrow_function_body() {
+    let source = r#"
+class Foo {
+    method(store: EventStore, promise: Promise<void>) {
+        promise.then(() => {
+            store.append(1);
+        });
+    }
+}
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("store.append"))
+        .expect("store.append(1) call edge inside the .then() arrow body");
+    assert_eq!(
+        call.receiver_type,
+        ReceiverType::Known("EventStore".to_string()),
+        "the enclosing method's typed parameter must still resolve from inside the arrow body"
+    );
+}
+
+#[test]
+fn arrow_function_parameter_shadowing_local_does_not_bind_to_declared_type() {
+    let source = r#"
+class Foo {
+    method(store: EventStore) {
+        withStore((store) => {
+            store.append(1);
+        });
+    }
+}
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("store.append"))
+        .expect("store.append(1) call edge inside the arrow body");
+    assert_eq!(
+        call.receiver_type,
+        ReceiverType::Unresolved,
+        "the arrow function's own (untyped) parameter shadows the outer \
+         `store: EventStore` and must not be resolved via the outer type"
+    );
+}
