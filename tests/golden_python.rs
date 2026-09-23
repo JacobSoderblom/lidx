@@ -43,7 +43,7 @@ fn full_reindex_matches_expected_edges() {
 
     let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
     let report = golden::compare(&snapshot, &expected_edges(), &fixture_modules());
-    report.assert_floors(PRECISION_FLOOR, RECALL_FLOOR);
+    report.assert_floors("python", PRECISION_FLOOR, RECALL_FLOOR);
 }
 
 /// Incremental scenario: edit the caller file only (its content hash
@@ -94,5 +94,5 @@ fn incremental_sync_after_editing_caller_matches_expected_edges() {
     let graph_version = indexer.db().current_graph_version().unwrap();
     let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
     let report = golden::compare(&snapshot, &expected_edges(), &fixture_modules());
-    report.assert_floors(PRECISION_FLOOR, RECALL_FLOOR);
+    report.assert_floors("python", PRECISION_FLOOR, RECALL_FLOOR);
 }
