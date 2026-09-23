@@ -70,36 +70,51 @@ pub fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// Module-qualname prefixes for every direct source file under a fixture
-/// directory (e.g. `{"caller", "greeter", "animals", ...}` for
-/// `golden/python`) -- the "fixture's own symbols" scope `compare` filters
-/// edge sources against. Only files whose extension is a language this
-/// harness understands (currently just `.py`) count; `expected_edges.txt`
-/// itself is skipped.
+/// Qualname roots for every Python, TypeScript or Go source file under a
+/// fixture directory -- the "fixture's own symbols" scope `compare` filters
+/// edge sources against. A root is the stem of the file's first path
+/// component: the module for a top-level file (`caller.py` -> `caller`),
+/// the package directory for a nested one (`helper/helper.go` ->
+/// `helper`). Rust and C# qualnames are rooted in `crate` and the
+/// namespace instead, so those fixtures pass their roots directly (see
+/// `tests/golden_languages.rs`).
 pub fn fixture_source_modules(fixture: &str) -> HashSet<String> {
-    let dir = fixture_path(fixture);
-    let mut modules = HashSet::new();
-    for entry in std::fs::read_dir(&dir).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("py") {
-            continue;
-        }
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            modules.insert(stem.to_string());
+    fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut HashSet<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, root, out);
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str());
+            if !matches!(ext, Some("py" | "ts" | "go")) {
+                continue;
+            }
+            let first = path
+                .strip_prefix(root)
+                .unwrap()
+                .components()
+                .next()
+                .unwrap();
+            let stem = std::path::Path::new(first.as_os_str()).file_stem().unwrap();
+            out.insert(stem.to_string_lossy().into_owned());
         }
     }
+    let root = fixture_path(fixture);
+    let mut modules = HashSet::new();
+    walk(&root, &root, &mut modules);
     modules
 }
 
 /// True when `source_qualname` names a symbol defined in one of
-/// `modules` (a module itself, or `module.anything`).
+/// `modules` (a module itself, or `module` followed by a qualname
+/// separator: `.` for Python/C#/TS, `::` for Rust, `/` for Go paths).
 fn is_fixture_source(source_qualname: &str, modules: &HashSet<String>) -> bool {
     modules.iter().any(|module| {
         source_qualname == module.as_str()
             || source_qualname
                 .strip_prefix(module.as_str())
-                .is_some_and(|rest| rest.starts_with('.'))
+                .is_some_and(|rest| rest.starts_with(['.', '/']) || rest.starts_with("::"))
     })
 }
 
@@ -302,15 +317,16 @@ impl ScoreboardReport {
     /// given floor, or if any known-failing line has started passing. The
     /// panic message doesn't re-list wrong/missed/xfail edges -- they're
     /// already in the run's output above, printed exactly once.
-    pub fn assert_floors(&self, precision_floor: f64, recall_floor: f64) {
+    pub fn assert_floors(&self, language: &str, precision_floor: f64, recall_floor: f64) {
         println!(
-            "golden edge scoreboard: precision {:.4} ({}/{}), recall {:.4} ({}/{})",
+            "golden edge scoreboard [{language}]: precision {:.4} ({}/{}), recall {:.4} ({}/{}), known-failing {}",
             self.precision,
             self.true_positive_count,
             self.scoped_count,
             self.recall,
             self.true_positive_count,
-            self.expected_count
+            self.expected_count,
+            self.xfail_still_failing.len()
         );
         println!(
             "wrong edges (in snapshot, not expected):\n{}",
@@ -651,6 +667,15 @@ a.d CALLS UNRESOLVED
     }
 
     #[test]
+    fn fixture_scope_accepts_rust_and_go_separators() {
+        let scope = modules(&["crate", "caller"]);
+        assert!(is_fixture_source("crate::caller::entry", &scope));
+        assert!(is_fixture_source("caller/caller.Entry", &scope));
+        assert!(!is_fixture_source("crater::x", &scope));
+        assert!(!is_fixture_source("crate:x", &scope));
+    }
+
+    #[test]
     fn resolution_kind_is_ignored_when_expected_line_does_not_name_one() {
         let expected = parse_expected_edges("a.b CALLS a.c\n");
         let mut snapshot = BTreeSet::new();
@@ -718,7 +743,7 @@ a.d CALLS UNRESOLVED
         assert_eq!(report.precision, 1.0);
         assert_eq!(report.recall, 1.0);
         // Must not panic: a still-failing xfail line never fails the test.
-        report.assert_floors(1.0, 1.0);
+        report.assert_floors("test", 1.0, 1.0);
     }
 
     #[test]
@@ -743,7 +768,7 @@ a.d CALLS UNRESOLVED
             report.xfail_still_failing[0].actual,
             vec![key("caller.call_ambiguous", "CALLS", None)]
         );
-        report.assert_floors(1.0, 1.0);
+        report.assert_floors("test", 1.0, 1.0);
     }
 
     #[test]
@@ -761,6 +786,6 @@ a.d CALLS UNRESOLVED
         );
         // A known-failing line that now passes must fail the test, even
         // though precision/recall floors alone are satisfied.
-        report.assert_floors(1.0, 1.0);
+        report.assert_floors("test", 1.0, 1.0);
     }
 }

@@ -1,0 +1,45 @@
+# Golden expected-edges fixture: tests/fixtures/golden/csharp
+#
+# Format, xfail marker, resolution-kind column and scope: see
+# tests/fixtures/golden/python/expected_edges.txt and tests/common/golden.rs.
+# Only CALLS edges are scored.
+#
+# Baseline measured 2026-09-23: precision 1.0 (10/10), recall 1.0 (10/10),
+# 1 known-failing line.
+
+# Plain call to a same-class private static method. Golden.Other.Helper
+# has a same-named LocalUtil decoy.
+Golden.App.Caller.Entry CALLS Golden.App.Caller.LocalUtil exact
+
+# `using Golden.Helpers` then Helper.FormatGreeting. Golden.Other.Helper
+# is a same-named class decoy.
+Golden.App.Caller.CallImportedHelper CALLS Golden.Helpers.Helper.FormatGreeting import
+
+# Fully qualified namespace path.
+Golden.App.Caller.CallNamespacePath CALLS Golden.Helpers.Helper.FormatGreeting exact
+
+# Method call on this. LoudGreeter.Format is a same-named decoy.
+Golden.Greeting.Greeter.Greet CALLS Golden.Greeting.Greeter.Format exact
+
+# Receiver-typed call. LoudGreeter.Greet is a same-named decoy.
+Golden.App.Caller.CallReceiverTyped CALLS Golden.Greeting.Greeter.Greet receiver_type
+
+# Inherited method call: Dog : Animal, no Speak override. Cat.Speak is a
+# same-named decoy.
+Golden.App.Caller.CallInherited CALLS Golden.Animals.Animal.Speak inherited
+
+# Interface call through ISpeaker. Cat.Say is a same-named decoy.
+Golden.App.Caller.CallInterface CALLS Golden.Animals.ISpeaker.Say receiver_type
+
+# Ambiguous class name: Runner exists in Golden.Ambiguous.A and .B; the
+# using picks A.
+Golden.App.Caller.CallAmbiguous CALLS Golden.Ambiguous.A.Runner.Run  # xfail: receiver type Runner is ambiguous and usings are not used to disambiguate it
+
+# External call: System.Console is never indexed.
+Golden.App.Caller.CallExternal CALLS UNRESOLVED
+
+# Private static helper in the same class.
+Golden.Helpers.Helper.FormatGreeting CALLS Golden.Helpers.Helper.Decorate exact
+
+# Cross-file incoming call into Caller.Entry.
+Golden.Downstream.Downstream.UseEntry CALLS Golden.App.Caller.Entry receiver_type

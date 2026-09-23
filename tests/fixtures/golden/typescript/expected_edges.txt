@@ -1,0 +1,43 @@
+# Golden expected-edges fixture: tests/fixtures/golden/typescript
+#
+# Format, xfail marker, resolution-kind column and scope: see
+# tests/fixtures/golden/python/expected_edges.txt and tests/common/golden.rs.
+# Only CALLS edges are scored.
+#
+# Baseline measured 2026-09-23: precision 1.0 (10/10), recall 1.0 (10/10),
+# 1 known-failing line.
+
+# Plain call. other_module.localUtil is a same-named decoy.
+caller.entry CALLS caller.localUtil exact
+
+# Named import. other_module.formatGreeting is a same-named decoy.
+caller.callImportedHelper CALLS helper.formatGreeting import
+
+# Namespace import (import * as helperNs).
+caller.callNamespaceImport CALLS helper.formatGreeting import
+
+# Method call on this. LoudGreeter.format is a same-named decoy.
+greeter.Greeter.greet CALLS greeter.Greeter.format exact
+
+# Receiver-typed call. LoudGreeter.greet is a same-named decoy.
+caller.callReceiverTyped CALLS greeter.Greeter.greet receiver_type
+
+# Inherited method call: Dog extends Animal. Cat.speak is a decoy.
+caller.callInherited CALLS animals.Animal.speak inherited
+
+# Interface call through Speaker. Cat.say is a same-named decoy.
+caller.callInterface CALLS animals.Speaker.say  # xfail: interface method signatures are not extracted as symbols
+
+# Ambiguous name: run exists in ambiguous_a and ambiguous_b; the import
+# picks ambiguous_a.
+caller.callAmbiguous CALLS ambiguous_a.run import
+
+# External call: axios is never indexed.
+caller.callExternal CALLS UNRESOLVED
+
+# Non-exported function in the same module. other_module.decorate is a
+# same-named decoy.
+helper.formatGreeting CALLS helper.decorate exact
+
+# Cross-file incoming call into caller.entry.
+downstream.useEntry CALLS caller.entry import

@@ -1,0 +1,50 @@
+# Golden expected-edges fixture: tests/fixtures/golden/rust
+#
+# Format, xfail marker, resolution-kind column and scope: see
+# tests/fixtures/golden/python/expected_edges.txt and tests/common/golden.rs.
+# Only CALLS edges are scored.
+#
+# Baseline measured 2026-09-23: precision 1.0 (7/7), recall 1.0 (7/7),
+# 5 known-failing lines.
+
+# Plain call to a private same-module fn. other_module::local_util is a
+# same-named decoy.
+crate::caller::entry CALLS crate::caller::local_util exact
+
+# `use crate::helper::format_greeting` then a bare call.
+crate::caller::call_imported_helper CALLS crate::helper::format_greeting  # xfail: use-imported bare call is never bound to its use path
+
+# Fully qualified `crate::` path.
+crate::caller::call_crate_path CALLS crate::helper::format_greeting exact
+
+# `super::` path (the crate root here). Lands on the right target, but
+# only through the two_segment fallback, so no tier is pinned.
+crate::caller::call_super_path CALLS crate::helper::format_greeting
+
+# `self::` path.
+crate::caller::call_self_path CALLS crate::caller::local_util  # xfail: self:: prefix is not stripped before resolution
+
+# Method call on self. LoudGreeter::format is a same-named decoy.
+crate::greeter::Greeter::greet CALLS crate::greeter::Greeter::format exact
+
+# Receiver-typed call: `g: &Greeter`. LoudGreeter::greet is a decoy.
+crate::caller::call_receiver_typed CALLS crate::greeter::Greeter::greet  # xfail: Rust params carry no receiver type for method calls
+
+# Trait default method: Dog implements Speak without overriding speak.
+# Cat::speak is a same-named decoy.
+crate::caller::call_inherited CALLS crate::animals::Speak::speak  # xfail: no receiver type, and impl Trait for Type is not walked for default methods
+
+# Ambiguous name: run exists in ambiguous_a and ambiguous_b; the use
+# statement picks ambiguous_a.
+crate::caller::call_ambiguous CALLS crate::ambiguous_a::run  # xfail: use-imported bare call is never bound to its use path
+
+# External path: std is never indexed.
+crate::caller::call_external CALLS UNRESOLVED
+
+# pub item calling a private item in its own module. other_module::decorate
+# is a same-named private decoy.
+crate::helper::format_greeting CALLS crate::helper::decorate exact
+
+# Cross-module incoming call, through a use-import. Lands on the right
+# target via the bare_name fallback, so no tier is pinned.
+crate::downstream::use_entry CALLS crate::caller::entry
