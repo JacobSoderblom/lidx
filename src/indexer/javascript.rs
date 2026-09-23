@@ -358,7 +358,20 @@ fn probe_module_candidates(repo_root: &Path, rel: &Path) -> Option<String> {
         if repo_root.join(rel).is_file() {
             return Some(util::normalize_path(rel));
         }
-        return None;
+        // NodeNext/ESM TypeScript imports the emitted name: `./x.js` is
+        // `x.ts` on disk (likewise .jsx→.tsx, .mjs→.mts, .cjs→.cts).
+        let ts_ext = match rel.extension().and_then(|e| e.to_str()) {
+            Some("js") => &["ts", "tsx"][..],
+            Some("jsx") => &["tsx"][..],
+            Some("mjs") => &["mts"][..],
+            Some("cjs") => &["cts"][..],
+            _ => &[][..],
+        };
+        return ts_ext
+            .iter()
+            .map(|ext| rel.with_extension(ext))
+            .find(|candidate| repo_root.join(candidate).is_file())
+            .map(|candidate| util::normalize_path(&candidate));
     }
     for ext in JS_TS_EXTENSIONS {
         let candidate = rel.with_extension(ext);
@@ -3761,6 +3774,24 @@ export function Button() {
         assert_eq!(
             callee(&conn, "components/button.Button", "classNames").as_deref(),
             Some("lib/utils.cn")
+        );
+    }
+
+    #[test]
+    fn esm_js_suffixed_import_binds_to_ts_source() {
+        let (_dir, conn) = index_repo(&[
+            (
+                "src/schemas.ts",
+                "export function compileSchema(s: string) { return s; }\n",
+            ),
+            (
+                "src/main.ts",
+                "import { compileSchema } from './schemas.js';\nexport function boot() { return compileSchema('x'); }\n",
+            ),
+        ]);
+        assert_eq!(
+            callee(&conn, "src/main.boot", "compileSchema").as_deref(),
+            Some("src/schemas.compileSchema")
         );
     }
 
