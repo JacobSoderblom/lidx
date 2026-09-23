@@ -70,7 +70,25 @@ struct Context {
     /// function (`const x = f()`, the `dynamic(...)` in `const X =
     /// dynamic(() => ...)`) still attribute to the module.
     fn_owner: Option<String>,
+    /// This file's top-level `import` bindings — see `collect_import_bindings`.
+    import_bindings: Rc<ImportBindings>,
 }
+
+/// Local name bound by a top-level `import` → (module specifier, imported
+/// export name). The export name is `None` for a namespace import (`* as
+/// ns`); for a default import it is the local name itself.
+///
+/// ponytail: a default import is assumed to name the export it binds
+/// (`import formatName from './fmt'` ↔ `export default function
+/// formatName`). A default export declared under a different name, or an
+/// anonymous one, misses — and a missed import candidate refuses fuzzy
+/// resolution, so it stays unbound rather than guessed.
+type ImportBindings = HashMap<String, (String, Option<String>)>;
+
+/// Separates specifier from imported member in the placeholder candidates
+/// `handle_call` records; `resolve_import_file_edges` rewrites each into a
+/// real qualname once the specifier can be resolved against the repo.
+const IMPORT_PLACEHOLDER_SEP: char = '\0';
 
 /// Locally-inferred type of a name bound within a single function body (or
 /// module top level). Deliberately coarse — see
@@ -222,6 +240,33 @@ pub fn resolve_import_file_edges(
     _file_module: &str,
     edges: &mut Vec<EdgeInput>,
 ) {
+    // Rewrite `handle_call`'s placeholder import candidates into the
+    // imported symbol's qualname in the resolved file. A specifier that
+    // doesn't resolve to a repo file (`react`, `next/navigation`, a missing
+    // relative file) keeps a `{specifier}:{member}` candidate that can never
+    // match a symbol: its only job is to keep the list non-empty so
+    // `Db::insert_edges` refuses fuzzy resolution for a call known to go
+    // through an import.
+    //
+    // ponytail: re-exports are not chased — `import { x } from '@/lib'`
+    // where `lib/index.ts` does `export * from './x'` yields candidate
+    // `lib.x`, misses, and stays unbound. Upgrade path: follow `export
+    // ... from` edges of the resolved file.
+    let mut resolved_specs: HashMap<String, Option<String>> = HashMap::new();
+    for edge in edges.iter_mut() {
+        for candidate in edge.import_candidates.iter_mut() {
+            let Some((spec, member)) = candidate.split_once(IMPORT_PLACEHOLDER_SEP) else {
+                continue;
+            };
+            let dst = resolved_specs
+                .entry(spec.to_string())
+                .or_insert_with(|| resolve_import_path(repo_root, file_rel_path, spec));
+            *candidate = match dst {
+                Some(dst) => format!("{}.{member}", module_name_from_rel_path(dst)),
+                None => format!("{spec}:{member}"),
+            };
+        }
+    }
     let mut resolved = Vec::new();
     for edge in edges.iter() {
         if edge.kind != "IMPORTS" {
@@ -280,13 +325,25 @@ fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> O
     let base_dir = Path::new(file_rel_path)
         .parent()
         .unwrap_or_else(|| Path::new(""));
-    let rel = if target.starts_with('/') {
+    let joined = if target.starts_with('/') {
         PathBuf::from(target.trim_start_matches('/'))
     } else {
-        let mut rel = PathBuf::from(base_dir);
-        rel.push(target);
-        rel
+        base_dir.join(target)
     };
+    // Collapse `..` lexically so `components/../lib/utils` yields the same
+    // repo path (and module qualname) as `lib/utils`.
+    let mut rel = PathBuf::new();
+    for comp in joined.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                if !rel.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::Normal(part) => rel.push(part),
+            _ => {}
+        }
+    }
     probe_module_candidates(repo_root, &rel)
 }
 
@@ -609,6 +666,7 @@ fn extract_with_parser(
         local_types: Rc::new(infer_module_level_types(root, source)),
         class_attr_types: Rc::new(HashMap::new()),
         fn_owner: None,
+        import_bindings: Rc::new(collect_import_bindings(root, source)),
     };
     walk_node(root, &ctx, source, &mut output);
     Ok(output)
@@ -1013,6 +1071,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     }
     let receiver_type = infer_receiver_type(target_node, source, ctx);
     let target = resolve_call_target(&raw, ctx);
+    let import_candidates = import_placeholder(&raw, ctx).into_iter().collect();
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
@@ -1025,9 +1084,93 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         receiver_type,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
+        import_candidates,
         ..Default::default()
     });
     register_handled
+}
+
+/// Collect `import` bindings declared at the top level of `root`.
+fn collect_import_bindings(root: Node<'_>, source: &str) -> ImportBindings {
+    let mut bindings = ImportBindings::new();
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        if stmt.kind() != "import_statement" {
+            continue;
+        }
+        let Some(spec) = stmt
+            .child_by_field_name("source")
+            .and_then(|n| unquote_string_literal(&node_text(n, source)))
+        else {
+            continue;
+        };
+        let mut stmt_cursor = stmt.walk();
+        for clause in stmt.named_children(&mut stmt_cursor) {
+            if clause.kind() != "import_clause" {
+                continue;
+            }
+            let mut clause_cursor = clause.walk();
+            for part in clause.named_children(&mut clause_cursor) {
+                match part.kind() {
+                    "identifier" => {
+                        let local = node_text(part, source);
+                        bindings.insert(local.clone(), (spec.clone(), Some(local)));
+                    }
+                    "namespace_import" => {
+                        let mut ns_cursor = part.walk();
+                        let local = part
+                            .named_children(&mut ns_cursor)
+                            .find(|n| n.kind() == "identifier");
+                        if let Some(local) = local {
+                            bindings.insert(node_text(local, source), (spec.clone(), None));
+                        }
+                    }
+                    "named_imports" => {
+                        let mut named_cursor = part.walk();
+                        for item in part.named_children(&mut named_cursor) {
+                            let Some(name) = item.child_by_field_name("name") else {
+                                continue;
+                            };
+                            let name = node_text(name, source);
+                            let name = unquote_string_literal(&name).unwrap_or(name);
+                            let local = item
+                                .child_by_field_name("alias")
+                                .map(|n| node_text(n, source))
+                                .unwrap_or_else(|| name.clone());
+                            bindings.insert(local, (spec.clone(), Some(name)));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    bindings
+}
+
+/// Placeholder import candidate (`{specifier}\0{member}`) for a call whose
+/// root identifier is an import binding not shadowed by a local: `cn()` →
+/// `cn`, `api.get()` (namespace) → `get`, `Foo.bar()` (named) → `Foo.bar`.
+fn import_placeholder(raw: &str, ctx: &Context) -> Option<String> {
+    let raw = collapse_call_target_whitespace(raw);
+    if !is_simple_call_target(&raw) {
+        return None;
+    }
+    let (root, rest) = match raw.split_once('.') {
+        Some((root, rest)) => (root, Some(rest)),
+        None => (raw.as_str(), None),
+    };
+    if ctx.local_types.contains_key(root) {
+        return None;
+    }
+    let (spec, imported) = ctx.import_bindings.get(root)?;
+    let member = match (imported, rest) {
+        (Some(name), Some(rest)) => format!("{name}.{rest}"),
+        (Some(name), None) => name.clone(),
+        (None, Some(rest)) => rest.to_string(),
+        (None, None) => return None,
+    };
+    Some(format!("{spec}{IMPORT_PLACEHOLDER_SEP}{member}"))
 }
 
 /// Detect process.env.KEY → CONFIG_READ
@@ -3509,5 +3652,161 @@ init();
         assert_eq!(call_source(&file, "step"), "srv.gen");
         assert_eq!(call_source(&file, "transform"), "srv.arrow");
         assert_eq!(call_source(&file, "init"), "srv");
+    }
+}
+
+#[cfg(test)]
+mod import_resolution_tests {
+    use crate::indexer::Indexer;
+    use rusqlite::Connection;
+
+    /// Index `files` (repo-relative path, source) as a fresh repo with a
+    /// `@/*` tsconfig path alias and open the resulting DB.
+    fn index_repo(files: &[(&str, &str)]) -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{ "compilerOptions": { "paths": { "@/*": ["./*"] } } }"#,
+        )
+        .unwrap();
+        for (rel, source) in files {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, source).unwrap();
+        }
+        let db_path = root.join(".lidx").join("db.sqlite");
+        Indexer::new(root.to_path_buf(), db_path.clone())
+            .unwrap()
+            .reindex()
+            .unwrap();
+        let conn = Connection::open(db_path).unwrap();
+        (dir, conn)
+    }
+
+    /// Resolved target qualname of the single CALLS edge from `caller`
+    /// whose literal target ends in `.{name}`; `None` when it stays unbound.
+    fn callee(conn: &Connection, caller: &str, name: &str) -> Option<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.qualname FROM edges e
+                 JOIN symbols s ON e.source_symbol_id = s.id
+                 LEFT JOIN symbols t ON e.target_symbol_id = t.id
+                 WHERE e.kind = 'CALLS' AND s.qualname = ?1
+                   AND e.target_qualname LIKE '%.' || ?2",
+            )
+            .unwrap();
+        let rows: Vec<Option<String>> = stmt
+            .query_map([caller, name], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 1, "expected one CALLS {caller} -> {name}");
+        rows.into_iter().next().unwrap()
+    }
+
+    const BUTTON: &str = r#"
+import { cn } from '@/lib/utils';
+import { cn as classNames } from '../lib/utils';
+import * as api from '../lib/api';
+import formatName from '@/lib/fmt';
+import { useState } from 'react';
+export function Button() {
+  cn('a');
+  classNames('b');
+  api.get('x');
+  formatName('y');
+  useState(0);
+  return null;
+}
+"#;
+
+    fn button_repo() -> (tempfile::TempDir, Connection) {
+        index_repo(&[
+            (
+                "lib/utils.ts",
+                "export function cn(...a: string[]) { return a.join(' '); }\n",
+            ),
+            (
+                "lib/api.ts",
+                "export function get(p: string) { return p; }\n",
+            ),
+            (
+                "lib/fmt.ts",
+                "export default function formatName(n: string) { return n; }\n",
+            ),
+            // Decoy: the only repo symbol named `useState`, in the caller's
+            // language family. The caller imports `useState` from `react`,
+            // so it must never bind here.
+            (
+                "other/hooks.ts",
+                "export function useState(x: number) { return x; }\n",
+            ),
+            ("components/button.tsx", BUTTON),
+        ])
+    }
+
+    #[test]
+    fn tsx_named_import_via_alias_binds_to_ts_export() {
+        let (_dir, conn) = button_repo();
+        assert_eq!(
+            callee(&conn, "components/button.Button", "cn").as_deref(),
+            Some("lib/utils.cn")
+        );
+    }
+
+    #[test]
+    fn tsx_renamed_relative_import_binds_to_ts_export() {
+        let (_dir, conn) = button_repo();
+        assert_eq!(
+            callee(&conn, "components/button.Button", "classNames").as_deref(),
+            Some("lib/utils.cn")
+        );
+    }
+
+    #[test]
+    fn tsx_namespace_import_member_call_binds_to_ts_export() {
+        let (_dir, conn) = button_repo();
+        assert_eq!(
+            callee(&conn, "components/button.Button", "get").as_deref(),
+            Some("lib/api.get")
+        );
+    }
+
+    #[test]
+    fn tsx_default_import_binds_to_ts_default_export() {
+        let (_dir, conn) = button_repo();
+        assert_eq!(
+            callee(&conn, "components/button.Button", "formatName").as_deref(),
+            Some("lib/fmt.formatName")
+        );
+    }
+
+    #[test]
+    fn local_binding_shadowing_an_import_gets_no_import_candidate() {
+        use crate::indexer::extract::LanguageExtractor;
+        let source = r#"
+import { cn } from '@/lib/utils';
+export function a(cn: (x: string) => string) { return cn('x'); }
+export function b() { return cn('y'); }
+"#;
+        let mut extractor = super::TypescriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "m").unwrap();
+        let candidates = |src: &str| {
+            file.edges
+                .iter()
+                .find(|e| e.kind == "CALLS" && e.source_qualname.as_deref() == Some(src))
+                .unwrap()
+                .import_candidates
+                .clone()
+        };
+        assert!(candidates("m.a").is_empty());
+        assert_eq!(candidates("m.b").len(), 1);
+    }
+
+    #[test]
+    fn external_package_import_never_binds_to_same_named_repo_symbol() {
+        let (_dir, conn) = button_repo();
+        assert_eq!(callee(&conn, "components/button.Button", "useState"), None);
     }
 }

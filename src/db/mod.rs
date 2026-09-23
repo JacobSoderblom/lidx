@@ -1137,7 +1137,7 @@ impl Db {
                    AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                    AND s.graph_version = ?
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                   AND f.language = ?
+                   AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = ?
                  LIMIT 2"
             )?;
             // Cross-language fuzzy lookup: fallback for bridge edges only
@@ -1246,7 +1246,12 @@ impl Db {
                     // __init__.py` re-exports X from a submodule). That is
                     // not evidence the target lives outside the repo, so
                     // it keeps the pre-existing fuzzy tiers rather than
-                    // being refused. See `is_repo_python_import`.
+                    // being refused. See `is_repo_python_import`. JS/TS
+                    // gets no such exception: its extractor resolves the
+                    // specifier to a file itself, so a miss there is a
+                    // re-export or external package, and fuzzy binding
+                    // would now reach across the whole ts/tsx/js family
+                    // (see `resolution_language_family`).
                     if !edge.import_candidates.is_empty()
                         && (source_lang != "python"
                             || !is_repo_python_import(
@@ -1310,8 +1315,7 @@ impl Db {
     /// ponytail: pass 2 only retries edges whose `import_candidates` column
     /// is non-NULL, i.e. ones inserted after migration 14 added that
     /// column. An edge from a build predating this feature (or one whose
-    /// extractor never populates `import_candidates`, e.g. TypeScript/Rust/
-    /// Go) has no import context to try and falls straight through to pass
+    /// extractor never populates `import_candidates`, e.g. Rust/Go) has no import context to try and falls straight through to pass
     /// 3, unchanged from before. That's the pre-existing ceiling on this
     /// repair pass generally (see `repair_dangling_symbol_ids`'s doc), not
     /// a new one introduced here.
@@ -1477,7 +1481,7 @@ impl Db {
                        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
                        AND s.graph_version = ?
                        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                       AND f.language = ?
+                       AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = ?
                      LIMIT 2"
                 )?;
                 // Cross-language fuzzy lookup (for bridge edges only)
@@ -2227,6 +2231,25 @@ fn single_unambiguous_match(
     Ok(Some(id))
 }
 
+/// The language value the same-language fuzzy tiers compare against.
+/// `typescript`, `tsx` and `javascript` are separate `files.language` values
+/// only because each needs its own tree-sitter grammar; a `.tsx` file calls
+/// into `.ts` modules as a matter of course, so for resolution they are one
+/// family. Must agree with the `CASE` on `f.language` in the same-language
+/// fuzzy statements.
+///
+/// Relaxing the gate is safe from the `FakeClock.now` class of bug (commit
+/// 1d6a5a7) only because the JS/TS extractor records an import candidate
+/// for every call through an import binding: when that candidate misses
+/// (external package, re-export), `insert_edges` refuses the fuzzy tiers
+/// outright, so a bare call to an imported name never binds by uniqueness.
+fn resolution_language_family(lang: &str) -> &str {
+    match lang {
+        "typescript" | "tsx" => "javascript",
+        other => other,
+    }
+}
+
 /// Resolve a CALLS-shaped edge's target through the fuzzy tiers, gated by
 /// its `receiver_type` signal (see `edges.receiver_type` / `ReceiverType`).
 /// Shared by `insert_edges` and `resolve_null_target_edges` so the two
@@ -2257,6 +2280,7 @@ fn resolve_fuzzy_target(
     any_lang_stmt: &mut rusqlite::Statement<'_>,
     hierarchy_stmt: &mut rusqlite::Statement<'_>,
 ) -> rusqlite::Result<(Option<i64>, Option<&'static str>)> {
+    let source_lang = resolution_language_family(source_lang);
     match receiver_type {
         // Tracked, but the receiver is a builtin/unresolved type: per the
         // resolution rule, must not bind — not even via exact-looking
@@ -5568,6 +5592,154 @@ mod tests {
         let found = db.edges_for_symbol(rs_inserted[0].id, None, 1).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].target_symbol_id, Some(rs_inserted[1].id));
+    }
+
+    // --- JS/TS family: tsx/typescript/javascript resolve as one language ---
+
+    /// Insert `symbols` into a fresh file per (path, language) and return
+    /// every inserted symbol's id by qualname.
+    fn insert_files(
+        db: &mut Db,
+        files: &[(&str, &str, Vec<SymbolInput>)],
+    ) -> (HashMap<String, i64>, HashMap<String, i64>) {
+        let mut ids = HashMap::new();
+        let mut file_ids = HashMap::new();
+        for (i, (path, lang, syms)) in files.iter().enumerate() {
+            let file_id = db
+                .upsert_file(path, &format!("h{i}"), lang, 100, 0)
+                .unwrap();
+            file_ids.insert(path.to_string(), file_id);
+            for s in db.insert_symbols(file_id, path, syms, 1, None).unwrap() {
+                ids.insert(s.qualname.clone(), s.id);
+            }
+        }
+        (ids, file_ids)
+    }
+
+    fn only_target(db: &Db, source_id: i64) -> Option<i64> {
+        let found = db.edges_for_symbol(source_id, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+        found[0].target_symbol_id
+    }
+
+    #[test]
+    fn test_insert_edges_tsx_receiver_typed_call_binds_method_declared_in_ts() {
+        let (mut db, _temp) = create_test_db();
+        let (ids, file_ids) = insert_files(
+            &mut db,
+            &[
+                (
+                    "lib/svc.ts",
+                    "typescript",
+                    vec![
+                        make_test_symbol("lib/svc.CatalogService", None, "class", 1),
+                        make_test_symbol("lib/svc.CatalogService.list", None, "method", 2),
+                    ],
+                ),
+                (
+                    "app/page.tsx",
+                    "tsx",
+                    vec![make_test_symbol("app/page.Page", None, "function", 1)],
+                ),
+            ],
+        );
+        let edges = vec![make_test_edge_with_receiver_type(
+            "CALLS",
+            "app/page.Page",
+            "svc.list",
+            ReceiverType::Known("CatalogService".to_string()),
+        )];
+        db.insert_edges(file_ids["app/page.tsx"], &edges, &ids, 1, None)
+            .unwrap();
+        assert_eq!(
+            only_target(&db, ids["app/page.Page"]),
+            Some(ids["lib/svc.CatalogService.list"])
+        );
+    }
+
+    #[test]
+    fn test_insert_edges_ts_family_never_binds_python_or_csharp() {
+        let (mut db, _temp) = create_test_db();
+        let (ids, file_ids) = insert_files(
+            &mut db,
+            &[
+                (
+                    "py/mod.py",
+                    "python",
+                    vec![make_test_symbol("py.mod.pyOnly", None, "function", 1)],
+                ),
+                (
+                    "cs/C.cs",
+                    "csharp",
+                    vec![make_test_symbol("Ns.C.csOnly", None, "method", 1)],
+                ),
+                (
+                    "app/page.tsx",
+                    "tsx",
+                    vec![
+                        make_test_symbol("app/page.A", None, "function", 1),
+                        make_test_symbol("app/page.B", None, "function", 10),
+                    ],
+                ),
+            ],
+        );
+        let edges = vec![
+            make_test_edge("CALLS", "app/page.A", "app/page.pyOnly"),
+            make_test_edge("CALLS", "app/page.B", "app/page.csOnly"),
+        ];
+        db.insert_edges(file_ids["app/page.tsx"], &edges, &ids, 1, None)
+            .unwrap();
+        db.resolve_null_target_edges(1).unwrap();
+        assert_eq!(only_target(&db, ids["app/page.A"]), None);
+        assert_eq!(only_target(&db, ids["app/page.B"]), None);
+    }
+
+    #[test]
+    fn test_insert_edges_ts_import_candidate_miss_refuses_family_fuzzy() {
+        let (mut db, _temp) = create_test_db();
+        let (ids, file_ids) = insert_files(
+            &mut db,
+            &[
+                (
+                    "other/hooks.ts",
+                    "typescript",
+                    vec![
+                        make_test_symbol("other/hooks.useState", None, "function", 1),
+                        make_test_symbol("other/hooks.helper", None, "function", 5),
+                    ],
+                ),
+                (
+                    "app/page.tsx",
+                    "tsx",
+                    vec![
+                        make_test_symbol("app/page.A", None, "function", 1),
+                        make_test_symbol("app/page.B", None, "function", 10),
+                    ],
+                ),
+            ],
+        );
+        let edges = vec![
+            // External package import (`import { useState } from 'react'`).
+            make_test_edge_with_import_candidates(
+                "CALLS",
+                "app/page.A",
+                "app/page.useState",
+                vec!["react:useState".to_string()],
+            ),
+            // Repo import whose export isn't declared in the resolved file
+            // (a barrel re-export): still must not guess by name.
+            make_test_edge_with_import_candidates(
+                "CALLS",
+                "app/page.B",
+                "app/page.helper",
+                vec!["lib.helper".to_string()],
+            ),
+        ];
+        db.insert_edges(file_ids["app/page.tsx"], &edges, &ids, 1, None)
+            .unwrap();
+        db.resolve_null_target_edges(1).unwrap();
+        assert_eq!(only_target(&db, ids["app/page.A"]), None);
+        assert_eq!(only_target(&db, ids["app/page.B"]), None);
     }
 
     // --- ambiguity guard: bare-name fuzzy fallback must not bind arbitrarily ---
