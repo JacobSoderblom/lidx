@@ -286,22 +286,9 @@ impl Db {
             "DELETE FROM edges WHERE file_id = ? AND graph_version = ?",
             params![file_id, graph_version],
         )?;
-        // NULL out edges in other files that reference this file's symbols BEFORE
-        // deleting them. SQLite reuses freed rowids (INTEGER PRIMARY KEY without
-        // AUTOINCREMENT), so a reference that survives the deletion could silently
-        // re-point at an unrelated symbol indexed later in the same sync.
-        for column in ["source_symbol_id", "target_symbol_id"] {
-            self.conn().execute(
-                &format!(
-                    "UPDATE edges SET {column} = NULL
-                     WHERE {column} IN (
-                         SELECT id FROM symbols WHERE file_id = ?1 AND graph_version = ?2
-                     )
-                     AND graph_version = ?2 AND file_id != ?1"
-                ),
-                params![file_id, graph_version],
-            )?;
-        }
+        // Deleting these symbols nulls any other file's edge that still
+        // references one of them via `edges`' `ON DELETE SET NULL` foreign
+        // key (issue #76) -- no manual nulling needed here.
         self.conn().execute(
             "DELETE FROM symbols WHERE file_id = ? AND graph_version = ?",
             params![file_id, graph_version],
@@ -661,58 +648,13 @@ impl Db {
         let mut all_symbols =
             Vec::with_capacity(diff.added.len() + diff.modified.len() + diff.unchanged.len());
 
-        // PHASE 1: DELETE removed symbols (by stable_id)
-        // Before deleting, NULL out any edges in other files that reference these
-        // symbols by rowid. If we delete first, SQLite may immediately reuse the
-        // freed rowid for a new symbol (INTEGER PRIMARY KEY without AUTOINCREMENT),
-        // which would make the edges appear valid after the fact.
+        // PHASE 1: DELETE removed symbols (by stable_id). Any edge --
+        // in this file or another -- that still references one of these
+        // rowids gets nulled automatically by `edges`' `ON DELETE SET
+        // NULL` foreign key (issue #76); no manual nulling needed here.
         if !diff.deleted.is_empty() {
             let placeholders = vec!["?"; diff.deleted.len()].join(",");
 
-            // Step 1a: Collect rowids of the symbols about to be deleted
-            let rowid_sql = format!(
-                "SELECT id FROM symbols WHERE stable_id IN ({}) AND graph_version = ?",
-                placeholders
-            );
-            let deleted_rowids: Vec<i64> = {
-                let mut stmt = tx.prepare(&rowid_sql)?;
-                let rows = stmt.query_map(
-                    rusqlite::params_from_iter(
-                        diff.deleted
-                            .iter()
-                            .map(|stable_id| stable_id as &dyn rusqlite::ToSql)
-                            .chain([&graph_version as &dyn rusqlite::ToSql]),
-                    ),
-                    |row| row.get::<_, i64>(0),
-                )?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            };
-
-            // Step 1b: NULL out edges in other files that reference these rowids,
-            // so no dangling reference survives the symbol deletion.
-            if !deleted_rowids.is_empty() {
-                let edge_placeholders = vec!["?"; deleted_rowids.len()].join(",");
-                for column in ["source_symbol_id", "target_symbol_id"] {
-                    tx.execute(
-                        &format!(
-                            "UPDATE edges SET {column} = NULL
-                             WHERE {column} IN ({edge_placeholders})
-                             AND graph_version = ? AND file_id != ?"
-                        ),
-                        rusqlite::params_from_iter(
-                            deleted_rowids
-                                .iter()
-                                .map(|id| id as &dyn rusqlite::ToSql)
-                                .chain([
-                                    &graph_version as &dyn rusqlite::ToSql,
-                                    &file_id as &dyn rusqlite::ToSql,
-                                ]),
-                        ),
-                    )?;
-                }
-            }
-
-            // Step 1c: Delete the symbols
             let delete_sql = format!(
                 "DELETE FROM symbols WHERE stable_id IN ({}) AND graph_version = ?",
                 placeholders
@@ -1231,39 +1173,6 @@ impl Db {
             rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
         )?;
         Ok(())
-    }
-
-    /// Null out edge source/target symbol ids that reference rowids absent from the
-    /// current graph version's symbols table.
-    ///
-    /// This is necessary after an incremental sync because:
-    /// - Renaming a symbol deletes its old row and inserts a new one with a fresh rowid.
-    /// - Edges in **unchanged** files still carry the old rowid in source_symbol_id /
-    ///   target_symbol_id (no FK enforcement, so they silently dangle).
-    /// - SQLite reuses freed rowids (INTEGER PRIMARY KEY without AUTOINCREMENT), so the
-    ///   dangling id can silently point at a new unrelated symbol.
-    ///
-    /// Setting dangling ids to NULL lets `resolve_null_target_edges` re-resolve them
-    /// by qualname in a subsequent pass.
-    ///
-    /// Returns the number of edges updated.
-    pub fn repair_dangling_symbol_ids(&self, graph_version: i64) -> Result<usize> {
-        let mut total = 0;
-        for column in ["source_symbol_id", "target_symbol_id"] {
-            total += self.conn().execute(
-                &format!(
-                    "UPDATE edges
-                     SET {column} = NULL
-                     WHERE {column} IS NOT NULL
-                       AND graph_version = ?
-                       AND {column} NOT IN (
-                           SELECT id FROM symbols WHERE graph_version = ?
-                       )"
-                ),
-                params![graph_version, graph_version],
-            )?;
-        }
-        Ok(total)
     }
 
     pub fn upsert_file_metrics(&mut self, file_id: i64, metrics: &FileMetricsInput) -> Result<()> {
