@@ -96,3 +96,105 @@ fn incremental_sync_after_editing_caller_matches_expected_edges() {
     let report = golden::compare(&snapshot, &expected_edges(), &fixture_modules());
     report.assert_floors("python", PRECISION_FLOOR, RECALL_FLOOR);
 }
+
+/// Incremental scenario (issue #76): rename `caller.entry` to
+/// `caller.entry_renamed` in `caller.py`, then sync just that path.
+/// `downstream.py` (never resynced) still calls the old name via
+/// `downstream.use_entry CALLS caller.entry`.
+///
+/// The rename deletes `caller.entry`'s symbol row and inserts a fresh one
+/// for `caller.entry_renamed` -- on a plain (non-`AUTOINCREMENT`) rowid
+/// table, SQLite can hand the new symbol the exact rowid just freed by the
+/// old one. Without a never-reused id sequence and an on-delete-set-null
+/// foreign key, `downstream.use_entry`'s edge -- never touched by this
+/// sync, so it still carries the old row id in `target_symbol_id` -- can
+/// silently end up pointing at whatever unrelated symbol now holds that
+/// reused id, instead of going unresolved. This asserts the graph never
+/// lets that happen: the old name is gone from every edge in the
+/// snapshot, and `downstream.use_entry` is either unresolved or correctly
+/// rebound to the new name, never silently wrong.
+#[test]
+fn incremental_rename_leaves_no_dangling_or_wrong_targets() {
+    let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let caller_path = repo_root.join("caller.py");
+    let contents = std::fs::read_to_string(&caller_path).unwrap();
+    let renamed = contents.replace("def entry(", "def entry_renamed(");
+    assert_ne!(
+        contents, renamed,
+        "fixture must define caller.entry as `def entry(...)` for this test's rename to apply"
+    );
+    std::fs::write(&caller_path, renamed).unwrap();
+    indexer.sync_rel_paths(&["caller.py".to_string()]).unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+
+    let stale: Vec<_> = snapshot
+        .iter()
+        .filter(|e| e.target_qualname.as_deref() == Some("caller.entry"))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "an edge still resolves to the renamed-away caller.entry: {stale:?}"
+    );
+
+    let downstream_edge = snapshot
+        .iter()
+        .find(|e| e.source_qualname == "downstream.use_entry" && e.kind == "CALLS")
+        .expect("downstream.use_entry CALLS edge missing from snapshot entirely");
+    assert!(
+        matches!(
+            downstream_edge.target_qualname.as_deref(),
+            None | Some("caller.entry_renamed")
+        ),
+        "downstream.use_entry CALLS resolved to an unexpected target: {:?}",
+        downstream_edge.target_qualname
+    );
+}
+
+/// Incremental scenario (issue #76): delete `caller.py` (which
+/// `downstream.py` imports and calls into), then sync the deletion. No
+/// edge may keep pointing at a symbol that no longer exists, and none may
+/// silently rebind to an unrelated symbol that happens to reuse a freed
+/// row id.
+#[test]
+fn incremental_delete_file_leaves_no_dangling_or_wrong_targets() {
+    let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let caller_path = repo_root.join("caller.py");
+    std::fs::remove_file(&caller_path).unwrap();
+    indexer.sync_rel_paths(&["caller.py".to_string()]).unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+
+    let stale: Vec<_> = snapshot
+        .iter()
+        .filter(|e| {
+            e.target_qualname
+                .as_deref()
+                .is_some_and(|q| q.starts_with("caller."))
+        })
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "an edge still resolves into deleted caller.py: {stale:?}"
+    );
+
+    let downstream_edge = snapshot
+        .iter()
+        .find(|e| e.source_qualname == "downstream.use_entry" && e.kind == "CALLS");
+    if let Some(edge) = downstream_edge {
+        assert_eq!(
+            edge.target_qualname, None,
+            "downstream.use_entry CALLS should be unresolved after caller.py is deleted, \
+             not silently pointing at an unrelated symbol: {:?}",
+            edge.target_qualname
+        );
+    }
+}
