@@ -1,4 +1,4 @@
-use crate::db::resolver::{ImportMissPolicy, LanguageProfile};
+use crate::db::resolver::{ImportMissPolicy, LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
@@ -23,6 +23,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     normalize_import_target: Some(normalize_import_target),
     import_miss: ImportMissPolicy::FallThrough,
     import_suffix_matching: false,
+    visibility: VisibilityRule::Recorded,
 };
 
 /// `LanguageProfile::normalize_import_target` for Rust: rewrite
@@ -483,6 +484,9 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     };
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = extract_signature(node, source);
+    if !has_pub_visibility(node) {
+        output.private_qualnames.push(qualname.clone());
+    }
     output.symbols.push(SymbolInput {
         kind: kind.to_string(),
         name: name.clone(),
@@ -673,6 +677,10 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_snippet: snippet,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
+        // A bare identifier callee (`foo()`) vs. anything else
+        // (`self.foo()`, `Type::method()`, `obj.foo()`) — see
+        // `EdgeInput::bare_call`'s doc.
+        bare_call: function_node.kind() == "identifier",
         ..Default::default()
     });
 }
@@ -1782,6 +1790,20 @@ fn qualify_type_name(module: &str, type_name: &str) -> String {
         return type_name.to_string();
     }
     format!("{module}::{type_name}")
+}
+
+/// Whether `node` (a `function_item`) carries a leading `pub`/`pub(...)`
+/// visibility modifier — tree-sitter-rust exposes it as a direct
+/// `visibility_modifier` child regardless of which `pub(...)` form is
+/// used. Absence means module-private: only callers in the same file can
+/// see it (see `db::resolver::VisibilityRule::Recorded`, issue #75).
+/// `pub(crate)`/`pub(super)`/etc. are all treated as public here — lidx
+/// doesn't model crate boundaries, so the distinction between them doesn't
+/// change which calls should be allowed to bind.
+fn has_pub_visibility(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .any(|c| c.kind() == "visibility_modifier")
 }
 
 fn extract_signature(node: Node<'_>, source: &str) -> Option<String> {

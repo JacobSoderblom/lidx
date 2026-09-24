@@ -1,6 +1,10 @@
 mod ambiguous_a;
 mod ambiguous_b;
+mod ambiguous_fallback_caller;
+mod ambiguous_fallback_x;
+mod ambiguous_fallback_y;
 mod animals;
+mod bare_call_method;
 mod caller;
 mod downstream;
 mod greeter;
@@ -11,4 +15,6 @@ mod reexport_use;
 mod scoped_glob;
 mod shadowing;
 mod suffix_matching;
+mod visibility_private_owner;
+mod visibility_private_prober;
 mod visibility_use;

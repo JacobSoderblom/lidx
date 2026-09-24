@@ -1,3 +1,4 @@
+use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
@@ -14,6 +15,19 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use tree_sitter::{Node, Parser};
+
+/// JavaScript/TypeScript's resolution profile: the shared default, plus a
+/// recorded-visibility rule — `handle_method` records `visibility =
+/// "private"` for an explicit `private` accessibility modifier or a
+/// `#`-prefixed class field (see `is_private_member`), and `handle_function`
+/// records it for a top-level function/class/etc. not directly wrapped in
+/// an `export` statement (see `is_exported`). Registered for "javascript",
+/// "typescript" and "tsx" alike (`db::resolver::profile_for`) since they
+/// share one resolution family.
+pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    visibility: VisibilityRule::Recorded,
+    ..LanguageProfile::DEFAULT
+};
 
 const JS_TS_EXTENSIONS: &[&str] = &["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "d.ts"];
 const HTTP_METHOD_NAMES: &[&str] = &[
@@ -1098,6 +1112,10 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
         import_candidates,
+        // A bare identifier callee (`foo()`) vs. anything qualified
+        // (`this.foo()`, `obj.foo()`, ...) — see `EdgeInput::bare_call`'s
+        // doc.
+        bare_call: target_node.kind() == "identifier",
         ..Default::default()
     });
     register_handled
@@ -2632,6 +2650,9 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = extract_signature(node, source);
+    if !is_exported(node) {
+        output.private_qualnames.push(qualname.clone());
+    }
     output.symbols.push(SymbolInput {
         kind: "function".to_string(),
         name: name.clone(),
@@ -2662,6 +2683,31 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     }
 }
 
+/// Whether `node`'s immediate parent is an `export` statement (`export
+/// function foo() {}`, `export default function foo() {}`,
+/// `export class Foo {}`) — the shape most exported top-level
+/// declarations take. Misses a name exported separately (`function foo()
+/// {} export { foo };`), which is treated as module-private; see
+/// `PROFILE`'s doc.
+fn is_exported(node: Node<'_>) -> bool {
+    node.parent()
+        .is_some_and(|p| matches!(p.kind(), "export_statement" | "export_declaration"))
+}
+
+/// Whether `node` (a `method_definition`) is private: an explicit
+/// `private` accessibility modifier (TypeScript), or a `#`-prefixed name
+/// (a JS/TS private class field/method).
+fn is_private_member(node: Node<'_>, source: &str) -> bool {
+    let mut cursor = node.walk();
+    let has_modifier = node
+        .named_children(&mut cursor)
+        .any(|c| c.kind() == "accessibility_modifier" && node_text(c, source) == "private");
+    has_modifier
+        || node
+            .child_by_field_name("name")
+            .is_some_and(|n| node_text(n, source).starts_with('#'))
+}
+
 fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     let Some(name_node) = node.child_by_field_name("name") else {
         return;
@@ -2673,6 +2719,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = extract_signature(node, source);
+    if is_private_member(node, source) {
+        output.private_qualnames.push(qualname.clone());
+    }
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),

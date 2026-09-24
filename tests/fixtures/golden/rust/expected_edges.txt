@@ -6,7 +6,11 @@
 #
 # Baseline measured 2026-09-23: precision 1.0 (7/7), recall 1.0 (7/7),
 # 5 known-failing lines. After #74 (language resolution profiles):
-# precision 1.0 (30/30), recall 1.0 (30/30), 2 known-failing.
+# precision 1.0 (30/30), recall 1.0 (30/30), 2 known-failing. After #75
+# (stricter name fallback and visibility rules): precision 1.0 (34/34),
+# recall 1.0 (34/34), 2 known-failing -- three new UNRESOLVED lines below
+# exercise cases that resolved *wrongly* before #75 (see that commit's PR
+# description for what each one used to bind to).
 #
 # The shadowing cases pin UNRESOLVED even where real Rust binds to
 # `b::helper` (f2, shadow_block_use, shadow_closure_use) or `a::helper`
@@ -151,3 +155,30 @@ crate::suffix_matching::run CALLS UNRESOLVED
 # A glob `use` inside the function takes precedence over the file-scope
 # `use` (rustc binds this to `b::helper`); the shadow rule suppresses it.
 crate::shadowing::shadow_glob_use CALLS UNRESOLVED
+
+# --- Issue #75: stricter name fallback and visibility rules ---
+
+# Plain call to a private item in its own module -- unaffected by the new
+# visibility guard (same file).
+crate::visibility_private_owner::call_locally CALLS crate::visibility_private_owner::secret_helper exact
+
+# Bare, unqualified call to `secret_helper`, whose only definition
+# (`visibility_private_owner::secret_helper`) is private and in a
+# different file. Before #75 this was the sole same-language candidate
+# the bare-name fallback found and bound to -- wrong, since a private
+# item is not visible outside its own file. #75's visibility guard must
+# refuse it.
+crate::visibility_private_prober::call_remotely CALLS UNRESOLVED
+
+# Bare, receiver-less call to `process`, whose only definition
+# (`Widget::process`) is a `method`. Before #75 the bare-name fallback
+# bound to it anyway (kind wasn't gated on receiver shape) -- wrong, since
+# a receiver-less call can never dispatch to an instance method. #75's
+# bare-call guard must refuse it.
+crate::bare_call_method::bare_caller CALLS UNRESOLVED
+
+# Bare, unimported call to `shared_probe`, declared identically (public
+# free function) in two other files. The guarded name fallback must see
+# two same-language, same-kind, visible candidates and refuse rather than
+# pick whichever SQLite returns first.
+crate::ambiguous_fallback_caller::calls_ambiguous_probe CALLS UNRESOLVED

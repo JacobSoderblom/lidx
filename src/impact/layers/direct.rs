@@ -635,6 +635,7 @@ mod tests {
             event_ts: None,
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             import_candidates: Vec::new(),
+            bare_call: false,
         }
     }
 

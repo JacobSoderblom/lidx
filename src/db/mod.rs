@@ -351,9 +351,9 @@ impl Db {
             let sql = format!(
                 "INSERT INTO symbols
                     (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
-                     start_byte, end_byte, signature, docstring, graph_version, commit_sha, stable_id)
+                     start_byte, end_byte, signature, docstring, graph_version, commit_sha, stable_id, visibility)
                  SELECT file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
-                        start_byte, end_byte, signature, docstring, ?, commit_sha, stable_id
+                        start_byte, end_byte, signature, docstring, ?, commit_sha, stable_id, visibility
                  FROM symbols
                  WHERE graph_version = ? AND file_id IN ({placeholders})"
             );
@@ -379,7 +379,7 @@ impl Db {
                     (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
                      evidence_snippet, evidence_start_line, evidence_end_line, confidence,
                      graph_version, commit_sha, trace_id, span_id, event_ts,
-                     receiver_type, resolution_kind, import_candidates)
+                     receiver_type, resolution_kind, import_candidates, has_receiver)
                  SELECT
                     e.file_id,
                     (SELECT ns.id FROM symbols ns
@@ -389,7 +389,7 @@ impl Db {
                     e.kind, e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
                     ?, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
-                    e.receiver_type, e.resolution_kind, e.import_candidates
+                    e.receiver_type, e.resolution_kind, e.import_candidates, e.has_receiver
                  FROM edges e
                  LEFT JOIN symbols src ON src.id = e.source_symbol_id
                  LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id
@@ -1120,21 +1120,23 @@ impl Db {
                 "INSERT INTO edges
                  (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail, evidence_snippet,
                   evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts,
-                  receiver_type, resolution_kind, import_candidates)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  receiver_type, resolution_kind, import_candidates, has_receiver)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             let mut exact_lookup_stmt = tx.prepare(
                 "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
             )?;
             let mut resolver = resolver::Resolver::new(&tx, graph_version)?;
-            // Look up the source file's language for same-language preference
-            let source_lang: String = tx
+            // Look up the source file's language and path — same-language
+            // preference and the guarded name-fallback's visibility check
+            // (`resolver::Reference::source_file_path`) respectively.
+            let (source_lang, source_file_path): (String, String) = tx
                 .query_row(
-                    "SELECT language FROM files WHERE id = ?",
+                    "SELECT language, path FROM files WHERE id = ?",
                     params![file_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .unwrap_or_else(|_| "unknown".to_string());
+                .unwrap_or_else(|_| ("unknown".to_string(), String::new()));
 
             for edge in edges {
                 let source_id = resolve_symbol_id(
@@ -1151,6 +1153,8 @@ impl Db {
                         receiver_type: extracted_receiver_type,
                         import_candidates: &edge.import_candidates,
                         source_lang: &source_lang,
+                        source_file_path: &source_file_path,
+                        bare_call: edge.bare_call,
                     },
                     symbol_map,
                 )?;
@@ -1174,12 +1178,58 @@ impl Db {
                     resolution.stored_receiver_type(extracted_receiver_type),
                     resolution.kind_column(),
                     resolver::encode_import_candidates(&edge.import_candidates),
+                    !edge.bare_call,
                 ])?;
                 count += 1;
             }
         }
         tx.commit()?;
         Ok(count)
+    }
+
+    /// Set `symbols.visibility` for `file_id`'s symbols in `graph_version`
+    /// from `private_qualnames` (see `ExtractedFile::private_qualnames`):
+    /// `'private'` for a qualname in the list, `NULL` (unrestricted) for
+    /// every other symbol in the file. Always resets the whole file's
+    /// symbols in one statement — not just the ones currently in the
+    /// list — so an incremental re-index that removes a `pub`/`private`
+    /// modifier clears the stale mark rather than leaving it from the
+    /// previous extraction.
+    ///
+    /// Called once per file, after that file's symbols are inserted/
+    /// updated and before its edges are resolved (visibility is a
+    /// cross-file resolver input — see `db::resolver::VisibilityRule`).
+    pub fn set_private_symbols(
+        &mut self,
+        file_id: i64,
+        graph_version: i64,
+        private_qualnames: &[String],
+    ) -> Result<()> {
+        if private_qualnames.is_empty() {
+            self.conn().execute(
+                "UPDATE symbols SET visibility = NULL
+                 WHERE file_id = ? AND graph_version = ? AND visibility IS NOT NULL",
+                params![file_id, graph_version],
+            )?;
+            return Ok(());
+        }
+        let placeholders = vec!["?"; private_qualnames.len()].join(",");
+        let sql = format!(
+            "UPDATE symbols
+                SET visibility = CASE WHEN qualname IN ({placeholders}) THEN 'private' ELSE NULL END
+             WHERE file_id = ? AND graph_version = ?"
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = private_qualnames
+            .iter()
+            .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
+            .collect();
+        params.push(Box::new(file_id));
+        params.push(Box::new(graph_version));
+        self.conn().execute(
+            &sql,
+            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+        )?;
+        Ok(())
     }
 
     /// Null out edge source/target symbol ids that reference rowids absent from the
@@ -1839,6 +1889,7 @@ mod tests {
             event_ts: None,
             receiver_type,
             import_candidates: Vec::new(),
+            bare_call: false,
         }
     }
 
@@ -3320,6 +3371,7 @@ mod tests {
             event_ts: None,
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             import_candidates: Vec::new(),
+            bare_call: false,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -3700,6 +3752,7 @@ mod tests {
             event_ts: None,
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             import_candidates: Vec::new(),
+            bare_call: false,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -3747,6 +3800,7 @@ mod tests {
                 event_ts: None,
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
                 import_candidates: Vec::new(),
+                bare_call: false,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CHANNEL_SUBSCRIBE".to_string(),
@@ -3762,6 +3816,7 @@ mod tests {
                 event_ts: None,
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
                 import_candidates: Vec::new(),
+                bare_call: false,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted
@@ -3968,6 +4023,7 @@ mod tests {
             event_ts: None,
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             import_candidates: Vec::new(),
+            bare_call: false,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4026,6 +4082,7 @@ mod tests {
                 event_ts: None,
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
                 import_candidates: Vec::new(),
+                bare_call: false,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CONFIG_BIND".to_string(),
@@ -4041,6 +4098,7 @@ mod tests {
                 event_ts: None,
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
                 import_candidates: Vec::new(),
+                bare_call: false,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted

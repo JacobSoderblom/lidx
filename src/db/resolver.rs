@@ -47,6 +47,15 @@ pub(crate) struct Reference<'a> {
     pub import_candidates: &'a [String],
     /// `files.language` of the file the edge was found in.
     pub source_lang: &'a str,
+    /// `files.path` of the file the edge was found in — the guarded
+    /// name-fallback tier's `VisibilityRule` check (same-file escape
+    /// hatch, and Go's package-directory comparison).
+    pub source_file_path: &'a str,
+    /// `EdgeInput::bare_call` — true for a genuinely bare identifier call
+    /// (`foo()`), gating the guarded name-fallback tier's method-kind
+    /// exclusion. Meaningless (ignored) for any `edge_kind` other than
+    /// `CALLS`.
+    pub bare_call: bool,
 }
 
 /// How a resolved target was found. `as_str` is the `edges.resolution_kind`
@@ -77,9 +86,12 @@ impl ResolutionKind {
 
 /// Why a reference stayed unresolved.
 ///
-/// ponytail: no `CrossLanguageRefused`/`Private` yet — today's tiers never
-/// refuse for those reasons (a same-language miss just falls through).
-/// Add them with the stricter guards in #75.
+/// ponytail: no `CrossLanguageRefused` yet — the guarded name fallback
+/// already never crosses languages (`unique_by_pattern`'s same-language
+/// round always runs first, and the any-language round is gated by
+/// `is_bridge_edge_kind`), so a cross-language miss there just falls
+/// through to `NoCandidates`/`Ambiguous` rather than needing its own
+/// reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnresolvedReason {
     /// No tier found any candidate.
@@ -90,6 +102,12 @@ pub(crate) enum UnresolvedReason {
     /// this index (stdlib, third-party, or an ambiguous import), or is a
     /// builtin/unresolved type. The name-based tiers are refused outright.
     External,
+    /// The guarded name fallback (tier 5) found a same-language, same-kind
+    /// candidate by name, but every one of them was private/unexported and
+    /// in a different file (or, for Go, a different package) than the
+    /// reference — see `VisibilityRule`. Only this tier checks visibility;
+    /// an exact/import/receiver-type/inherited match never refuses on it.
+    Private,
 }
 
 /// The outcome of resolving one [`Reference`].
@@ -130,14 +148,12 @@ impl Resolution {
     }
 }
 
-/// A language's qualname conventions and import-miss fallback policy,
-/// consulted here instead of a hardcoded per-language check.
-/// Registered next to the extractor that needs a non-default one (see
-/// `crate::indexer::rust::PROFILE`); every other language falls back to
-/// `LanguageProfile::DEFAULT` via `profile_for`. Scope is deliberately
-/// narrow: separators, the import→module qualname mapping, and the
-/// import-miss policy. Visibility rules and inheritance lookup are #70's
-/// later phases, not this struct.
+/// A language's qualname conventions, import-miss fallback policy and
+/// visibility rule, consulted here instead of a hardcoded per-language
+/// check. Registered next to the extractor that needs a non-default one
+/// (see `crate::indexer::rust::PROFILE`); every other language falls back
+/// to `LanguageProfile::DEFAULT` via `profile_for`. Inheritance lookup is
+/// #70's later phase, not this struct.
 #[derive(Clone, Copy)]
 pub(crate) struct LanguageProfile {
     /// Qualname separator(s) this language's extractor writes, most
@@ -162,18 +178,86 @@ pub(crate) struct LanguageProfile {
     /// suffix. Off for languages whose candidates are already absolute
     /// (Rust), where a suffix hit would be a same-named local module.
     pub import_suffix_matching: bool,
+    /// How the guarded name-fallback tier (`Resolver::same_lang_lookup`,
+    /// tier 5 only — see the module doc) decides whether a same-language,
+    /// same-kind, cross-file candidate is visible to the reference. Never
+    /// consulted by the exact/import/receiver-type/inherited tiers.
+    pub visibility: VisibilityRule,
 }
 
 impl LanguageProfile {
     /// Dot-separated, no relative-import syntax, import-tier miss refuses
-    /// the name tiers, suffix matching enabled — every language's policy
-    /// today except Rust and Python.
+    /// the name tiers, suffix matching enabled, no visibility rule — every
+    /// language's policy today except Rust, Python, C#, TypeScript/
+    /// JavaScript and Go.
     pub(crate) const DEFAULT: LanguageProfile = LanguageProfile {
         separators: &["."],
         normalize_import_target: None,
         import_miss: ImportMissPolicy::Refuse,
         import_suffix_matching: true,
+        visibility: VisibilityRule::None,
     };
+}
+
+/// How `Resolver::same_lang_lookup` (the guarded name-fallback tier only)
+/// decides whether a cross-file candidate is visible to the reference —
+/// see `LanguageProfile::visibility`. A same-file candidate is always
+/// visible regardless of this rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VisibilityRule {
+    /// No visibility signal is recorded or derivable for this language
+    /// (Python: no enforced private/public distinction worth tracking
+    /// here). Every cross-file, same-name candidate is visible.
+    None,
+    /// `symbols.visibility` column: `Some("private")` is refused across
+    /// files, anything else (recorded `"public"`... today just `NULL`,
+    /// meaning "no modifier recorded") is visible. Rust (`pub`), C# and
+    /// TypeScript/JavaScript (`private`).
+    Recorded,
+    /// Go: an exported name (its trailing segment starts uppercase) is
+    /// visible anywhere; an unexported one is visible only within its own
+    /// package — approximated as the same directory prefix the qualname
+    /// and file path share (`<dir>/<file-stem>.<name>` / `<dir>/<file-
+    /// stem>.go`), so a call from a sibling file in the same package
+    /// still resolves (see the golden Go fixture's `siblingUtil` case).
+    GoCapitalization,
+}
+
+impl VisibilityRule {
+    /// Whether a cross-file candidate (already known to be in a
+    /// *different* file than the reference — `same_lang_lookup` checks
+    /// same-file separately, first) is visible under this rule.
+    fn is_visible(
+        self,
+        candidate_visibility: Option<&str>,
+        candidate_qualname: &str,
+        candidate_file_path: &str,
+        source_file_path: &str,
+    ) -> bool {
+        match self {
+            VisibilityRule::None => true,
+            VisibilityRule::Recorded => candidate_visibility != Some("private"),
+            VisibilityRule::GoCapitalization => {
+                let exported = qualname_trailing_name(candidate_qualname)
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase());
+                exported || package_dir(candidate_file_path) == package_dir(source_file_path)
+            }
+        }
+    }
+}
+
+/// The directory portion of a `/`-separated path or qualname, up to but
+/// not including the last `/` — `""` for a root-level file with no `/` at
+/// all. Shared by a Go qualname (`<dir>/<file-stem>.<name>`) and a Go file
+/// path (`<dir>/<file-stem>.go`): both share the same prefix up to the
+/// file stem, so this one function reads either.
+fn package_dir(s: &str) -> &str {
+    match s.rfind('/') {
+        Some(i) => &s[..i],
+        None => "",
+    }
 }
 
 /// Whether `Resolver::resolve` falls through to the name-based tiers after
@@ -216,14 +300,22 @@ fn profile_for(lang: &str) -> LanguageProfile {
     match lang {
         "rust" => crate::indexer::rust::PROFILE,
         "python" => crate::indexer::python::PROFILE,
+        "csharp" => crate::indexer::csharp::PROFILE,
+        "javascript" | "typescript" | "tsx" => crate::indexer::javascript::PROFILE,
+        "go" => crate::indexer::go::PROFILE,
         _ => LanguageProfile::DEFAULT,
     }
 }
 
-/// Same-language fuzzy candidates. `LIMIT 2`, not 1: `Resolver::unique`
-/// needs to see a second row to know a match is ambiguous. The language
-/// `CASE` must agree with `resolution_language_family`.
-const SAME_LANG_SQL: &str = "SELECT s.id
+/// Same-language fuzzy candidates. `LIMIT 8`, not 1: `Resolver::unique`/
+/// `Resolver::same_lang_lookup` need to see every extra row (bounded) to
+/// know a match is ambiguous, and `same_lang_lookup` additionally filters
+/// some rows out (bare-call method exclusion, visibility) before making
+/// that call — see its doc. The language `CASE` must agree with
+/// `resolution_language_family`. The extra columns past `s.id` are read
+/// only by `same_lang_lookup`; `resolve_type_symbol`'s plain `unique` call
+/// (tiers 4's type-name lookups, which don't filter) ignores them.
+const SAME_LANG_SQL: &str = "SELECT s.id, s.kind, s.visibility, s.qualname, f.path
      FROM symbols s
      JOIN files f ON s.file_id = f.id
      WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
@@ -231,7 +323,7 @@ const SAME_LANG_SQL: &str = "SELECT s.id
        AND s.graph_version = ?
        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
        AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = ?
-     LIMIT 2";
+     LIMIT 8";
 
 /// Cross-language fuzzy candidates, for Bridge Edge kinds only.
 const ANY_LANG_SQL: &str = "SELECT s.id
@@ -292,6 +384,10 @@ pub(crate) struct Resolver<'c> {
     repo_python_module: Statement<'c>,
     /// Set when any tier of the current `resolve` saw 2+ candidates.
     saw_ambiguous: bool,
+    /// Set when `same_lang_lookup` (the guarded name-fallback tier only)
+    /// found same-language, same-kind candidate(s) by name but refused
+    /// every one of them as not visible — see `VisibilityRule`.
+    saw_private: bool,
 }
 
 impl<'c> Resolver<'c> {
@@ -306,6 +402,7 @@ impl<'c> Resolver<'c> {
             import_suffix: conn.prepare(IMPORT_SUFFIX_SQL)?,
             repo_python_module: conn.prepare(REPO_PYTHON_MODULE_SQL)?,
             saw_ambiguous: false,
+            saw_private: false,
         })
     }
 
@@ -318,6 +415,7 @@ impl<'c> Resolver<'c> {
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
         self.saw_ambiguous = false;
+        self.saw_private = false;
 
         if let Some(qn) = r.target_qualname
             && let Some(id) = self.exact(qn, symbol_map)?
@@ -352,13 +450,21 @@ impl<'c> Resolver<'c> {
         };
 
         let found = match r.target_qualname {
-            Some(qn) => self.resolve_by_name(qn, receiver_type, r.edge_kind, r.source_lang)?,
+            Some(qn) => self.resolve_by_name(
+                qn,
+                receiver_type,
+                r.edge_kind,
+                r.source_lang,
+                r.source_file_path,
+                r.bare_call,
+            )?,
             None => None,
         };
         Ok(match found {
             Some((id, kind)) => resolved(id, kind),
             None if receiver_type == Some("") => Resolution::Unresolved(UnresolvedReason::External),
             None if self.saw_ambiguous => Resolution::Unresolved(UnresolvedReason::Ambiguous),
+            None if self.saw_private => Resolution::Unresolved(UnresolvedReason::Private),
             None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
         })
     }
@@ -405,20 +511,31 @@ impl<'c> Resolver<'c> {
     /// (patterns built from `profile_for(source_lang)`'s separators), then
     /// — Bridge Edge kinds only — in any language, using
     /// `any_lang_patterns` (always both `.` and `::`: the target's
-    /// language isn't known in advance for a bridge match).
+    /// language isn't known in advance for a bridge match). The any-
+    /// language round never applies `exclude_method`/`enforce_visibility`:
+    /// those guards are specific to the guarded, same-language-only
+    /// fallback (see the module doc and issue #75); a Bridge Edge crossing
+    /// languages already has its own, separate cross-language contract.
+    #[allow(clippy::too_many_arguments)]
     fn unique_by_pattern(
         &mut self,
         name: &str,
         any_lang_patterns: (&str, &str),
         source_lang: &str,
         edge_kind: &str,
+        exclude_method: bool,
+        enforce_visibility: bool,
+        source_file_path: &str,
     ) -> Result<Option<i64>> {
         let profile = profile_for(source_lang);
         let (same_p1, same_p2) = same_lang_patterns(name, &profile);
         let gv = self.graph_version;
-        let same = self.unique(
-            Lookup::SameLang,
+        let same = self.same_lang_lookup(
             params![name, same_p1, same_p2, gv, gv, source_lang],
+            exclude_method,
+            enforce_visibility,
+            source_lang,
+            source_file_path,
         )?;
         if same.is_some() || !is_bridge_edge_kind(edge_kind) {
             return Ok(same);
@@ -430,6 +547,93 @@ impl<'c> Resolver<'c> {
         )
     }
 
+    /// The guarded name-fallback tier's same-language candidate lookup
+    /// (tier 5 only — see the module doc): runs `SAME_LANG_SQL`, then
+    /// applies, in order, the bare-call method exclusion and the
+    /// language's `VisibilityRule`, and finally the one-candidate guard
+    /// over whatever survives both.
+    ///
+    /// `exclude_method`/`enforce_visibility` are `false` for every other
+    /// caller (`resolve_type_symbol`'s type-name lookups, reached from
+    /// tier 4's receiver-type/inherited resolution) — those still go
+    /// through `unique(Lookup::SameLang, ...)` unchanged, which reads only
+    /// this query's first column and applies no filtering: unmatched
+    /// same-language rows made this tier ambiguous before #75 and still
+    /// do.
+    ///
+    /// A same-file candidate is always visible, regardless of
+    /// `enforce_visibility` — a symbol is never private to its own file.
+    /// When nothing survives filtering but at least one same-name,
+    /// same-kind row existed before filtering, that's specifically a
+    /// privacy refusal (`saw_private`), not a plain miss — `resolve`
+    /// reports `Unresolved(Private)` for it, distinct from
+    /// `NoCandidates`/`Ambiguous`.
+    fn same_lang_lookup(
+        &mut self,
+        query_params: &[&dyn ToSql],
+        exclude_method: bool,
+        enforce_visibility: bool,
+        source_lang: &str,
+        source_file_path: &str,
+    ) -> Result<Option<i64>> {
+        struct Candidate {
+            id: i64,
+            kind: String,
+            visibility: Option<String>,
+            qualname: String,
+            file_path: String,
+        }
+
+        let rows: Vec<Candidate> = {
+            let mut rows = self.same_lang.query(query_params)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next()? {
+                out.push(Candidate {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    visibility: row.get(2)?,
+                    qualname: row.get(3)?,
+                    file_path: row.get(4)?,
+                });
+            }
+            out
+        };
+
+        let visibility_rule = profile_for(source_lang).visibility;
+        let mut kind_eligible = 0usize;
+        let mut visible: Vec<i64> = Vec::new();
+        for c in &rows {
+            if exclude_method && c.kind == "method" {
+                continue;
+            }
+            kind_eligible += 1;
+            let ok = !enforce_visibility
+                || c.file_path == source_file_path
+                || visibility_rule.is_visible(
+                    c.visibility.as_deref(),
+                    &c.qualname,
+                    &c.file_path,
+                    source_file_path,
+                );
+            if ok {
+                visible.push(c.id);
+            }
+        }
+
+        match visible.len() {
+            1 => Ok(Some(visible[0])),
+            0 if kind_eligible > 0 => {
+                self.saw_private = true;
+                Ok(None)
+            }
+            0 => Ok(None),
+            _ => {
+                self.saw_ambiguous = true;
+                Ok(None)
+            }
+        }
+    }
+
     /// Tiers 4–5, gated by the reference's `receiver_type` signal (see
     /// `edges.receiver_type` / `ReceiverType`):
     ///
@@ -439,12 +643,20 @@ impl<'c> Resolver<'c> {
     /// - `Some(ty)` = known receiver type: `ty`'s own method, else its
     ///   closest declaring ancestor. No bare-name fallback — an unmatched
     ///   known type stays unbound rather than guessing.
+    ///
+    /// `source_file_path` and `bare_call` feed the guarded fallback's
+    /// (tier 5, the `None` arm) visibility and bare-call guards only —
+    /// tier 4 (the `Some` arm) passes `exclude_method`/`enforce_visibility`
+    /// as `false` and never consults either.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_by_name(
         &mut self,
         target_qualname: &str,
         receiver_type: Option<&str>,
         edge_kind: &str,
         source_lang: &str,
+        source_file_path: &str,
+        bare_call: bool,
     ) -> Result<Option<(i64, ResolutionKind)>> {
         let source_lang = resolution_language_family(source_lang);
         match receiver_type {
@@ -456,28 +668,62 @@ impl<'c> Resolver<'c> {
                 let Some((seg, dot, colons)) = two_segment_qualname_patterns(&seed) else {
                     return Ok(None);
                 };
-                if let Some(id) =
-                    self.unique_by_pattern(&seg, (&dot, &colons), source_lang, edge_kind)?
-                {
+                if let Some(id) = self.unique_by_pattern(
+                    &seg,
+                    (&dot, &colons),
+                    source_lang,
+                    edge_kind,
+                    false,
+                    false,
+                    source_file_path,
+                )? {
                     return Ok(Some((id, ResolutionKind::ReceiverType)));
                 }
                 // The receiver's own type declares no matching method (or
                 // the match there was itself ambiguous) — walk its ancestors.
                 Ok(self
-                    .resolve_via_inheritance(known_type, method, source_lang, edge_kind)?
+                    .resolve_via_inheritance(
+                        known_type,
+                        method,
+                        source_lang,
+                        edge_kind,
+                        source_file_path,
+                    )?
                     .map(|id| (id, ResolutionKind::Inherited)))
             }
 
             None => {
+                // A bare call (no receiver at all, syntactically) can never
+                // dispatch to a `method` — only a receiver decides which
+                // instance's method runs. Gated to `CALLS` only: other edge
+                // kinds (RPC_CALL, HTTP_CALL, CHANNEL_*, XREF, ...) have
+                // their own detection and don't set `bare_call`, so this
+                // never restricts them (see `EdgeInput::bare_call`).
+                let exclude_method = edge_kind == "CALLS" && bare_call;
                 if let Some((seg, dot, colons)) = two_segment_qualname_patterns(target_qualname)
-                    && let Some(id) =
-                        self.unique_by_pattern(&seg, (&dot, &colons), source_lang, edge_kind)?
+                    && let Some(id) = self.unique_by_pattern(
+                        &seg,
+                        (&dot, &colons),
+                        source_lang,
+                        edge_kind,
+                        exclude_method,
+                        true,
+                        source_file_path,
+                    )?
                 {
                     return Ok(Some((id, ResolutionKind::TwoSegment)));
                 }
                 let (name, dot, colons) = fuzzy_qualname_patterns(target_qualname);
                 Ok(self
-                    .unique_by_pattern(name, (&dot, &colons), source_lang, edge_kind)?
+                    .unique_by_pattern(
+                        name,
+                        (&dot, &colons),
+                        source_lang,
+                        edge_kind,
+                        exclude_method,
+                        true,
+                        source_file_path,
+                    )?
                     .map(|id| (id, ResolutionKind::BareName)))
             }
         }
@@ -508,6 +754,7 @@ impl<'c> Resolver<'c> {
         method: &str,
         source_lang: &str,
         edge_kind: &str,
+        source_file_path: &str,
     ) -> Result<Option<i64>> {
         let Some(root_id) = self.resolve_type_symbol(known_type, source_lang)? else {
             return Ok(None);
@@ -541,9 +788,15 @@ impl<'c> Resolver<'c> {
                 let Some((seg, dot, colons)) = two_segment_qualname_patterns(&seed) else {
                     continue;
                 };
-                if let Some(id) =
-                    self.unique_by_pattern(&seg, (&dot, &colons), source_lang, edge_kind)?
-                {
+                if let Some(id) = self.unique_by_pattern(
+                    &seg,
+                    (&dot, &colons),
+                    source_lang,
+                    edge_kind,
+                    false,
+                    false,
+                    source_file_path,
+                )? {
                     matches.push(id);
                 }
             }
@@ -675,6 +928,19 @@ fn resolved(target_id: i64, kind: ResolutionKind) -> Resolution {
     Resolution::Resolved { target_id, kind }
 }
 
+/// One `resolve_null_target_edges` pass-3 row: everything `Resolver::
+/// resolve_by_name` needs for one unresolved edge. A named struct rather
+/// than a tuple, since it's wide enough to trip `clippy::type_complexity`.
+struct UnresolvedNameRow {
+    edge_id: i64,
+    target_qualname: String,
+    source_lang: String,
+    edge_kind: String,
+    receiver_type: Option<String>,
+    file_path: String,
+    has_receiver: bool,
+}
+
 impl Db {
     /// Repair pass: retry resolution for edges whose target is still NULL,
     /// now that more symbols may exist (e.g. after an incremental reindex
@@ -788,9 +1054,9 @@ impl Db {
         loop {
             let mut conn = self.conn();
             let tx = conn.transaction()?;
-            let unresolved: Vec<(i64, String, String, String, Option<String>)> = {
+            let unresolved: Vec<UnresolvedNameRow> = {
                 let mut stmt = tx.prepare(
-                    "SELECT e.id, e.target_qualname, COALESCE(f.language, 'unknown'), e.kind, e.receiver_type
+                    "SELECT e.id, e.target_qualname, COALESCE(f.language, 'unknown'), e.kind, e.receiver_type, f.path, e.has_receiver
                      FROM edges e
                      JOIN files f ON e.file_id = f.id
                      WHERE e.target_symbol_id IS NULL
@@ -800,13 +1066,15 @@ impl Db {
                      LIMIT ?",
                 )?;
                 let rows = stmt.query_map(params![graph_version, BATCH_SIZE], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
+                    Ok(UnresolvedNameRow {
+                        edge_id: row.get(0)?,
+                        target_qualname: row.get(1)?,
+                        source_lang: row.get(2)?,
+                        edge_kind: row.get(3)?,
+                        receiver_type: row.get(4)?,
+                        file_path: row.get(5)?,
+                        has_receiver: row.get(6)?,
+                    })
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()?
             };
@@ -820,15 +1088,16 @@ impl Db {
                 let mut update_stmt = tx.prepare(
                     "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
                 )?;
-                for (edge_id, target_qualname, source_lang, edge_kind, receiver_type) in &unresolved
-                {
+                for row in &unresolved {
                     if let Some((target_id, kind)) = resolver.resolve_by_name(
-                        target_qualname,
-                        receiver_type.as_deref(),
-                        edge_kind,
-                        source_lang,
+                        &row.target_qualname,
+                        row.receiver_type.as_deref(),
+                        &row.edge_kind,
+                        &row.source_lang,
+                        &row.file_path,
+                        !row.has_receiver,
                     )? {
-                        update_stmt.execute(params![target_id, kind.as_str(), edge_id])?;
+                        update_stmt.execute(params![target_id, kind.as_str(), row.edge_id])?;
                         count += 1;
                     }
                 }
@@ -978,18 +1247,21 @@ fn two_segment_qualname_patterns(qn: &str) -> Option<(String, String, String)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ImportMissPolicy, LanguageProfile, fuzzy_qualname_patterns, primary_separator, profile_for,
+        ImportMissPolicy, LanguageProfile, Reference, Resolution, Resolver, UnresolvedReason,
+        VisibilityRule, fuzzy_qualname_patterns, package_dir, primary_separator, profile_for,
         qualname_trailing_name, same_lang_patterns, two_segment_qualname_patterns,
     };
+    use rusqlite::{Connection, params};
 
     #[test]
-    fn profile_for_registers_rust_and_python_only() {
+    fn profile_for_registers_every_visibility_rule() {
         assert_eq!(profile_for("rust").separators, &["::"]);
         assert_eq!(
             profile_for("rust").import_miss,
             ImportMissPolicy::FallThrough
         );
         assert!(profile_for("rust").normalize_import_target.is_some());
+        assert_eq!(profile_for("rust").visibility, VisibilityRule::Recorded);
 
         assert_eq!(profile_for("python").separators, &["."]);
         assert_eq!(
@@ -997,10 +1269,15 @@ mod tests {
             ImportMissPolicy::PythonRepoHeuristic
         );
         assert!(profile_for("python").normalize_import_target.is_none());
+        // Issue #75 gives Rust/C#/TypeScript/Go a visibility rule, not
+        // Python — no enforced private/public distinction worth tracking
+        // for it (see `VisibilityRule::None`'s doc).
+        assert_eq!(profile_for("python").visibility, VisibilityRule::None);
 
-        // Every other language — including one absent from any indexed
-        // repo — gets the shared default untouched.
-        for lang in ["csharp", "javascript", "typescript", "go", "made-up-lang"] {
+        // C#, JavaScript/TypeScript and Go each register a profile now too
+        // (issue #75) -- separators/import_miss/normalize_import_target
+        // stay the shared default, only `visibility` differs.
+        for lang in ["csharp", "javascript", "typescript", "tsx"] {
             assert_eq!(profile_for(lang).separators, &["."], "{lang}");
             assert_eq!(
                 profile_for(lang).import_miss,
@@ -1011,7 +1288,24 @@ mod tests {
                 profile_for(lang).normalize_import_target.is_none(),
                 "{lang}"
             );
+            assert_eq!(
+                profile_for(lang).visibility,
+                VisibilityRule::Recorded,
+                "{lang}"
+            );
         }
+        assert_eq!(
+            profile_for("go").visibility,
+            VisibilityRule::GoCapitalization
+        );
+
+        // A language absent from any indexed repo still gets the shared,
+        // fully-permissive default.
+        assert_eq!(profile_for("made-up-lang").visibility, VisibilityRule::None);
+        assert_eq!(
+            profile_for("made-up-lang").import_miss,
+            ImportMissPolicy::Refuse
+        );
     }
 
     #[test]
@@ -1102,5 +1396,172 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(qualname_trailing_name(input), *expected, "input: {input:?}");
         }
+    }
+
+    #[test]
+    fn package_dir_reads_the_prefix_before_the_last_slash() {
+        assert_eq!(package_dir("caller/caller.Entry"), "caller");
+        assert_eq!(package_dir("caller/sibling.go"), "caller");
+        assert_eq!(package_dir("pkg/sub/file.Name"), "pkg/sub");
+        // Root-level, no directory at all.
+        assert_eq!(package_dir("main.go"), "");
+        assert_eq!(package_dir(""), "");
+    }
+
+    #[test]
+    fn visibility_rule_none_never_refuses() {
+        assert!(VisibilityRule::None.is_visible(Some("private"), "a.b", "x.rs", "y.rs"));
+    }
+
+    #[test]
+    fn visibility_rule_recorded_refuses_only_explicit_private() {
+        let rule = VisibilityRule::Recorded;
+        assert!(!rule.is_visible(Some("private"), "a.b", "x.rs", "y.rs"));
+        // `NULL`/unrecorded and any other recorded value stay visible —
+        // only an explicit "private" mark refuses.
+        assert!(rule.is_visible(None, "a.b", "x.rs", "y.rs"));
+        assert!(rule.is_visible(Some("public"), "a.b", "x.rs", "y.rs"));
+    }
+
+    #[test]
+    fn visibility_rule_go_capitalization_allows_exported_anywhere() {
+        let rule = VisibilityRule::GoCapitalization;
+        assert!(rule.is_visible(
+            None,
+            "other/other.FormatGreeting",
+            "other/other.go",
+            "caller/caller.go"
+        ));
+    }
+
+    #[test]
+    fn visibility_rule_go_capitalization_allows_unexported_within_same_package_only() {
+        let rule = VisibilityRule::GoCapitalization;
+        // Same package (directory), different file — the `siblingUtil`
+        // shape from the golden Go fixture.
+        assert!(rule.is_visible(
+            None,
+            "caller/sibling.siblingUtil",
+            "caller/sibling.go",
+            "caller/caller.go"
+        ));
+        // Different package — refused.
+        assert!(!rule.is_visible(
+            None,
+            "secretpkg/secret.secretUtil",
+            "secretpkg/secret.go",
+            "prober/prober.go"
+        ));
+    }
+
+    /// An in-memory, fully migrated connection for `Resolver`-level tests
+    /// that need real SQL (ambiguity across two rows, cross-language
+    /// filtering) rather than pure-function unit tests.
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::migrate(&conn).unwrap();
+        conn
+    }
+
+    fn insert_file(conn: &Connection, path: &str, language: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO files (path, hash, language, size, modified) VALUES (?, 'h', ?, 0, 0)",
+            params![path, language],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn insert_symbol(
+        conn: &Connection,
+        file_id: i64,
+        kind: &str,
+        name: &str,
+        qualname: &str,
+        visibility: Option<&str>,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO symbols
+                (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                 start_byte, end_byte, graph_version, visibility)
+             VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 1, ?)",
+            params![file_id, kind, name, qualname, visibility],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn reference<'a>(
+        target_qualname: &'a str,
+        edge_kind: &'a str,
+        source_lang: &'a str,
+        source_file_path: &'a str,
+        bare_call: bool,
+    ) -> Reference<'a> {
+        Reference {
+            target_qualname: Some(target_qualname),
+            edge_kind,
+            receiver_type: None,
+            import_candidates: &[],
+            source_lang,
+            source_file_path,
+            bare_call,
+        }
+    }
+
+    /// Issue #75, acceptance criterion 3: the guarded name fallback binds
+    /// only with exactly one candidate.
+    #[test]
+    fn resolve_refuses_ambiguous_guarded_fallback_candidates() {
+        let conn = test_conn();
+        let file_a = insert_file(&conn, "pkg_a/mod.py", "python");
+        let file_b = insert_file(&conn, "pkg_b/mod.py", "python");
+        insert_symbol(&conn, file_a, "function", "util", "pkg_a.util", None);
+        insert_symbol(&conn, file_b, "function", "util", "pkg_b.util", None);
+
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let symbol_map = std::collections::HashMap::new();
+        let r = reference("caller.util", "CALLS", "python", "caller.py", true);
+        let resolution = resolver.resolve(&r, &symbol_map).unwrap();
+
+        assert_eq!(
+            resolution,
+            Resolution::Unresolved(UnresolvedReason::Ambiguous)
+        );
+    }
+
+    /// Issue #75, acceptance criterion 4: the guarded name fallback never
+    /// crosses languages, except for Bridge Edge kinds.
+    #[test]
+    fn resolve_never_crosses_languages_except_bridge_edges() {
+        let conn = test_conn();
+        let py_file = insert_file(&conn, "svc/mod.py", "python");
+        insert_symbol(
+            &conn,
+            py_file,
+            "function",
+            "shared_name",
+            "svc.shared_name",
+            None,
+        );
+
+        // A non-bridge CALLS edge from Rust must not cross into the
+        // Python-only candidate.
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let symbol_map = std::collections::HashMap::new();
+        let non_bridge = reference("caller::shared_name", "CALLS", "rust", "caller.rs", true);
+        assert_eq!(
+            resolver.resolve(&non_bridge, &symbol_map).unwrap(),
+            Resolution::Unresolved(UnresolvedReason::NoCandidates)
+        );
+
+        // The same shape, but a Bridge Edge kind, may cross into it.
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let bridge = reference("caller::shared_name", "RPC_CALL", "rust", "caller.rs", true);
+        let resolved = resolver.resolve(&bridge, &symbol_map).unwrap();
+        assert!(
+            matches!(resolved, Resolution::Resolved { .. }),
+            "{resolved:?}"
+        );
     }
 }

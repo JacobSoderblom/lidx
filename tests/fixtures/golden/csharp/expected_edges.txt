@@ -5,7 +5,11 @@
 # Only CALLS edges are scored.
 #
 # Baseline measured 2026-09-23: precision 1.0 (10/10), recall 1.0 (10/10),
-# 1 known-failing line.
+# 1 known-failing line. After #75 (stricter name fallback and visibility
+# rules): precision 1.0 (11/11), recall 1.0 (11/11), 1 known-failing -- the
+# one new UNRESOLVED line below exercises a case that resolved *wrongly*
+# before #75 (see that commit's PR description for what it used to bind
+# to).
 
 # Plain call to a same-class private static method. Golden.Other.Helper
 # has a same-named LocalUtil decoy.
@@ -43,3 +47,21 @@ Golden.Helpers.Helper.FormatGreeting CALLS Golden.Helpers.Helper.Decorate exact
 
 # Cross-file incoming call into Caller.Entry.
 Golden.Downstream.Downstream.UseEntry CALLS Golden.App.Caller.Entry receiver_type
+
+# --- Issue #75: stricter name fallback and visibility rules ---
+#
+# No case below exercises the visibility guard specifically: C#'s
+# `import_qualified_candidates` (pre-#75) always attaches an own-namespace
+# candidate to any `Type.Method()` call, so a miss there already refuses
+# the name-based tiers outright (`ImportMissPolicy::Refuse`) before the
+# guarded fallback -- and hence the visibility check -- is ever reached. A
+# bare (no-dot) call reaches it, but is always `method`-kind, so the
+# bare-call guard below already excludes it before visibility would matter.
+# The `visibility` column and check are still implemented and exercised by
+# the Rust and Go golden fixtures.
+
+# Bare, receiver-less call to Recalc, whose only definition
+# (Utility.Recalc) is a method. Before #75 the bare-name fallback bound to
+# it anyway -- wrong, since a receiver-less call can never dispatch to an
+# instance method. #75's bare-call guard must refuse it.
+Golden.BareCallMethod.BareCaller.CallBare CALLS UNRESOLVED

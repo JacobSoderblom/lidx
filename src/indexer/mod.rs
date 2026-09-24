@@ -375,6 +375,15 @@ impl Indexer {
 
         // Now process edges for all files
         for (file, extracted, diff, file_id) in file_data {
+            // Mark this file's private/unexported symbols before resolving
+            // any edges (its own or another file's) against them — see
+            // `Db::set_private_symbols`.
+            self.db.set_private_symbols(
+                file_id,
+                self.graph_version,
+                &extracted.private_qualnames,
+            )?;
+
             // Delete existing edges
             self.db.delete_edges_for_file(file_id, self.graph_version)?;
 
@@ -624,6 +633,11 @@ impl Indexer {
             self.graph_version,
             self.commit_sha.as_deref(),
         )?;
+
+        // Mark this file's private/unexported symbols before resolving any
+        // edges against them — see `Db::set_private_symbols`.
+        self.db
+            .set_private_symbols(file_id, self.graph_version, &extracted.private_qualnames)?;
 
         // For edges, still use delete-all-insert for now (can optimize in future)
         // Delete existing edges for this file

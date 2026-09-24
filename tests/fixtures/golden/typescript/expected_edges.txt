@@ -5,7 +5,11 @@
 # Only CALLS edges are scored.
 #
 # Baseline measured 2026-09-23: precision 1.0 (10/10), recall 1.0 (10/10),
-# 1 known-failing line.
+# 1 known-failing line. After #75 (stricter name fallback and visibility
+# rules): precision 1.0 (13/13), recall 1.0 (13/13), 1 known-failing -- the
+# two new UNRESOLVED lines below exercise cases that resolved *wrongly*
+# before #75 (see that commit's PR description for what each one used to
+# bind to).
 
 # Plain call. other_module.localUtil is a same-named decoy.
 caller.entry CALLS caller.localUtil exact
@@ -41,3 +45,23 @@ helper.formatGreeting CALLS helper.decorate exact
 
 # Cross-file incoming call into caller.entry.
 downstream.useEntry CALLS caller.entry import
+
+# --- Issue #75: stricter name fallback and visibility rules ---
+
+# Plain call to a private static method on its own class -- unaffected by
+# the new visibility guard (same file). Resolves via the two-segment
+# fallback (`SecretHelper.doSecret` is kept as literal call-site text, not
+# rewritten to `this.doSecret`), not exact.
+visibilityPrivateOwner.SecretHelper.callLocally CALLS visibilityPrivateOwner.SecretHelper.doSecret two_segment
+
+# Unimported `SecretHelper.doSecret()`, whose only definition is private
+# and in a different file. Before #75 this was the sole two-segment match
+# the name fallback found and bound to -- wrong, since a private method is
+# not visible outside its own file. #75's visibility guard must refuse it.
+visibilityPrivateProber.Prober.callRemotely CALLS UNRESOLVED
+
+# Bare, receiver-less call to recalc, whose only definition
+# (Utility.recalc) is a method. Before #75 the bare-name fallback bound to
+# it anyway -- wrong, since a receiver-less call can never dispatch to an
+# instance method. #75's bare-call guard must refuse it.
+bareCallMethod.bareCaller CALLS UNRESOLVED
