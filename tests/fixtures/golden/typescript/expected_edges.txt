@@ -6,10 +6,11 @@
 #
 # Baseline measured 2026-09-23: precision 1.0 (10/10), recall 1.0 (10/10),
 # 1 known-failing line. After #75 (stricter name fallback and visibility
-# rules): precision 1.0 (13/13), recall 1.0 (13/13), 1 known-failing -- the
-# two new UNRESOLVED lines below exercise cases that resolved *wrongly*
-# before #75 (see that commit's PR description for what each one used to
-# bind to).
+# rules): precision 1.0 (13/13), recall 1.0 (13/13), 1 known-failing. After
+# the #75 follow-up review (findings A/B/C/D/E/G): precision 1.0 (15/15),
+# recall 1.0 (15/15), 1 known-failing -- new UNRESOLVED lines exercise
+# cases that resolved *wrongly* before the fix (see the commit for what
+# each one used to bind to).
 
 # Plain call. other_module.localUtil is a same-named decoy.
 caller.entry CALLS caller.localUtil exact
@@ -65,3 +66,11 @@ visibilityPrivateProber.Prober.callRemotely CALLS UNRESOLVED
 # it anyway -- wrong, since a receiver-less call can never dispatch to an
 # instance method. #75's bare-call guard must refuse it.
 bareCallMethod.bareCaller CALLS UNRESOLVED
+
+# --- Issue #75 follow-up (finding E): a top-level function reachable via
+# CommonJS (`module.exports`) but never wrapped in an `export` statement
+# must not be recorded private. Before the fix, this was wrongly refused.
+commonjsExportUse.useHelperOne CALLS commonjsExportOwner.helperOne bare_name
+
+# The module-level `require(...)` call itself: `require` is never indexed.
+commonjsExportUse CALLS UNRESOLVED

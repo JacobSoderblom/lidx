@@ -375,18 +375,18 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // is written only by extractors that record an explicit modifier
         // (Rust `pub`, C#/TS `private`) -- NULL means "not recorded",
         // which the resolver treats as unrestricted, same as before this
-        // column existed. `has_receiver` distinguishes a bare identifier
-        // call (`foo()`) from any receiver-qualified one (`obj.foo()`,
-        // `self.foo()`, `Type::method()`) so the guarded fallback can
-        // refuse to bind a bare call to a `method`-kind symbol; existing
-        // rows default to `1` (has a receiver) so nothing pre-migration
-        // is newly restricted until it's re-resolved.
+        // column existed. `bare_call` mirrors `EdgeInput::bare_call`: true
+        // for a genuinely bare identifier call (`foo()`), false for any
+        // receiver-qualified one (`obj.foo()`, `self.foo()`,
+        // `Type::method()`) or for an edge kind that doesn't set it —
+        // existing rows default to `0` (not confirmed bare) so nothing
+        // pre-migration is newly restricted until it's re-resolved.
         if !has_column(conn, "symbols", "visibility")? {
             conn.execute("ALTER TABLE symbols ADD COLUMN visibility TEXT", [])?;
         }
-        if !has_column(conn, "edges", "has_receiver")? {
+        if !has_column(conn, "edges", "bare_call")? {
             conn.execute(
-                "ALTER TABLE edges ADD COLUMN has_receiver INTEGER NOT NULL DEFAULT 1",
+                "ALTER TABLE edges ADD COLUMN bare_call INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
         }

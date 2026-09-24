@@ -23,7 +23,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     normalize_import_target: Some(normalize_import_target),
     import_miss: ImportMissPolicy::FallThrough,
     import_suffix_matching: false,
-    visibility: VisibilityRule::Recorded,
+    visibility: VisibilityRule::RustModule,
 };
 
 /// `LanguageProfile::normalize_import_target` for Rust: rewrite
@@ -76,6 +76,14 @@ struct Context {
     /// Names the current function must not get an import candidate for
     /// (`collect_shadowed_names`); empty outside a function body.
     shadowed_names: Rc<HashSet<String>>,
+    /// Set on entry to a trait declaration's own body (default methods)
+    /// or a `impl Trait for Type` block's body (trait method
+    /// implementations) — either way, the method's real visibility is the
+    /// trait's own, not whatever `pub`/no-`pub` appears on the item
+    /// itself, which Rust doesn't require or even always allow there. See
+    /// `handle_function`'s use of it: it never records such a method as
+    /// private (issue #75 follow-up, finding B).
+    in_trait_scope: bool,
 }
 
 pub struct RustExtractor {
@@ -124,6 +132,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             grpc_clients: HashMap::new(),
             imports: Rc::new(collect_use_bindings(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
+            in_trait_scope: false,
         };
         walk_node(root, &ctx, source, &mut output);
         Ok(output)
@@ -325,6 +334,10 @@ fn handle_trait(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
 
     let mut next_ctx = ctx.clone();
     next_ctx.container_stack.push(qualname);
+    // A default method declared directly in the trait is exactly as
+    // visible as the trait itself, regardless of its own (often absent)
+    // `pub` — see `Context::in_trait_scope`.
+    next_ctx.in_trait_scope = true;
     if let Some(body) = body_node(node) {
         walk_node(body, &next_ctx, source, output);
     }
@@ -484,7 +497,10 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     };
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = extract_signature(node, source);
-    if !has_pub_visibility(node) {
+    // A trait default method or trait-impl method has no `pub` to check —
+    // it's exactly as visible as the trait itself (see
+    // `Context::in_trait_scope`, issue #75 follow-up, finding B).
+    if !ctx.in_trait_scope && !has_pub_visibility(node) {
         output.private_qualnames.push(qualname.clone());
     }
     output.symbols.push(SymbolInput {
@@ -594,6 +610,7 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         return;
     }
     let type_qualname = qualify_type_name(&ctx.module, &type_name);
+    let is_trait_impl = node.child_by_field_name("trait").is_some();
 
     let mut grpc_service = None;
     if let Some(trait_node) = node.child_by_field_name("trait") {
@@ -619,6 +636,11 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let mut next_ctx = ctx.clone();
     next_ctx.container_stack.push(type_qualname);
     next_ctx.grpc_service = grpc_service;
+    // A trait impl's methods are exactly as visible as the trait itself —
+    // Rust doesn't attach (and often doesn't allow) `pub` to them
+    // directly — but an inherent impl's methods keep their own `pub`/
+    // private status as normal. See `Context::in_trait_scope`.
+    next_ctx.in_trait_scope = is_trait_impl;
     walk_node(body, &next_ctx, source, output);
 }
 

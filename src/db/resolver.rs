@@ -51,6 +51,14 @@ pub(crate) struct Reference<'a> {
     /// name-fallback tier's `VisibilityRule` check (same-file escape
     /// hatch, and Go's package-directory comparison).
     pub source_file_path: &'a str,
+    /// The calling symbol's own qualname (`edges.source_symbol_id`'s
+    /// qualname, i.e. `EdgeInput::source_qualname` as extracted, not a
+    /// resolved id) — Rust's `VisibilityRule::RustModule` compares it
+    /// against a private candidate's owning module, since a private item
+    /// is visible to that module's descendants too, not just its own
+    /// file (issue #75 follow-up, finding D). `None` when the caller
+    /// itself didn't resolve to a symbol.
+    pub source_qualname: Option<&'a str>,
     /// `EdgeInput::bare_call` — true for a genuinely bare identifier call
     /// (`foo()`), gating the guarded name-fallback tier's method-kind
     /// exclusion. Meaningless (ignored) for any `edge_kind` other than
@@ -211,9 +219,18 @@ pub(crate) enum VisibilityRule {
     None,
     /// `symbols.visibility` column: `Some("private")` is refused across
     /// files, anything else (recorded `"public"`... today just `NULL`,
-    /// meaning "no modifier recorded") is visible. Rust (`pub`), C# and
-    /// TypeScript/JavaScript (`private`).
+    /// meaning "no modifier recorded") is visible. C# and
+    /// TypeScript/JavaScript (`private`) — access is scoped to the class,
+    /// not to an enclosing namespace/module, so there is no Rust-style
+    /// "visible to a descendant scope" exception to make.
     Recorded,
+    /// Rust's `pub`: the `symbols.visibility` check, plus a private
+    /// candidate stays visible to its own module *and every descendant
+    /// module* (`mod child;` puts a child module in its own file, and
+    /// Rust lets it see its parent's private items) — a same-file check
+    /// alone under-refuses relative to real `pub`/module-privacy
+    /// semantics (issue #75 follow-up, finding D).
+    RustModule,
     /// Go: an exported name (its trailing segment starts uppercase) is
     /// visible anywhere; an unexported one is visible only within its own
     /// package — approximated as the same directory prefix the qualname
@@ -227,16 +244,23 @@ impl VisibilityRule {
     /// Whether a cross-file candidate (already known to be in a
     /// *different* file than the reference — `same_lang_lookup` checks
     /// same-file separately, first) is visible under this rule.
+    /// `source_qualname` is the calling symbol's own qualname (`None` if
+    /// it didn't resolve to one) — only `RustModule` consults it.
     fn is_visible(
         self,
         candidate_visibility: Option<&str>,
         candidate_qualname: &str,
         candidate_file_path: &str,
         source_file_path: &str,
+        source_qualname: Option<&str>,
     ) -> bool {
         match self {
             VisibilityRule::None => true,
             VisibilityRule::Recorded => candidate_visibility != Some("private"),
+            VisibilityRule::RustModule => {
+                candidate_visibility != Some("private")
+                    || is_descendant_rust_module(candidate_qualname, source_qualname)
+            }
             VisibilityRule::GoCapitalization => {
                 let exported = qualname_trailing_name(candidate_qualname)
                     .chars()
@@ -246,6 +270,30 @@ impl VisibilityRule {
             }
         }
     }
+}
+
+/// The qualname minus its own trailing name segment — the module, type,
+/// etc. it's declared directly inside — or `None` when `qn` has no
+/// separator at all (a crate-root item).
+fn qualname_container(qn: &str) -> Option<&str> {
+    let name_start = last_qualname_separator(qn)?;
+    Some(qn[..name_start].trim_end_matches(['.', ':']))
+}
+
+/// Rust module-privacy (`VisibilityRule::RustModule`): a private
+/// candidate is visible when the caller's own module is the candidate's
+/// owning module, or nested inside it (`crate::a` owns a private item
+/// that `crate::a::child`, `crate::a::child::grandchild`, ... can all
+/// still see) — see issue #75 follow-up, finding D.
+fn is_descendant_rust_module(candidate_qualname: &str, source_qualname: Option<&str>) -> bool {
+    let Some(source_qualname) = source_qualname else {
+        return false;
+    };
+    let Some(owner_module) = qualname_container(candidate_qualname) else {
+        return false;
+    };
+    let caller_module = qualname_container(source_qualname).unwrap_or(source_qualname);
+    caller_module == owner_module || caller_module.starts_with(&format!("{owner_module}::"))
 }
 
 /// The directory portion of a `/`-separated path or qualname, up to but
@@ -307,23 +355,27 @@ fn profile_for(lang: &str) -> LanguageProfile {
     }
 }
 
-/// Same-language fuzzy candidates. `LIMIT 8`, not 1: `Resolver::unique`/
-/// `Resolver::same_lang_lookup` need to see every extra row (bounded) to
-/// know a match is ambiguous, and `same_lang_lookup` additionally filters
-/// some rows out (bare-call method exclusion, visibility) before making
-/// that call — see its doc. The language `CASE` must agree with
-/// `resolution_language_family`. The extra columns past `s.id` are read
-/// only by `same_lang_lookup`; `resolve_type_symbol`'s plain `unique` call
-/// (tiers 4's type-name lookups, which don't filter) ignores them.
-const SAME_LANG_SQL: &str = "SELECT s.id, s.kind, s.visibility, s.qualname, f.path
+/// Same-language fuzzy candidates, for `Resolver::same_lang_lookup`
+/// (shared by tiers 4 and 5 — see its doc). Deliberately no `LIMIT`: the
+/// method-kind exclusion is a query param (`? = 0 OR s.kind != 'method'`)
+/// rather than a post-filter, and `same_lang_lookup` consumes the result
+/// lazily with an early exit as soon as a second visible candidate is
+/// found — so an unbounded query here doesn't mean unbounded work, but a
+/// `LIMIT` would silently truncate the candidate set *before* visibility
+/// filtering and corrupt the ambiguity count (issue #75 follow-up, a
+/// truncated set could read as "exactly one" when a further, cut-off row
+/// was the real unambiguous match, or bind to a decoy instead of refusing
+/// as ambiguous). The language `CASE` must agree with
+/// `resolution_language_family`.
+const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path
      FROM symbols s
      JOIN files f ON s.file_id = f.id
      WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
+       AND (? = 0 OR s.kind != 'method')
        AND s.graph_version = ?
        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-       AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = ?
-     LIMIT 8";
+       AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = ?";
 
 /// Cross-language fuzzy candidates, for Bridge Edge kinds only.
 const ANY_LANG_SQL: &str = "SELECT s.id
@@ -364,12 +416,47 @@ const REPO_PYTHON_MODULE_SQL: &str = "SELECT 1 FROM symbols s JOIN files f ON s.
      WHERE s.name = ? AND s.kind = 'module' AND f.language = 'python'
      LIMIT 1";
 
-/// Which prepared candidate query `Resolver::unique` runs.
+/// Which prepared candidate query `Resolver::unique` runs. `SameLang` has
+/// its own dedicated method (`same_lang_lookup`) instead — it needs
+/// per-row filtering that `unique`'s plain "at most one row" check
+/// doesn't do.
 #[derive(Clone, Copy)]
 enum Lookup {
-    SameLang,
     AnyLang,
     ImportSuffix,
+}
+
+/// The guarded name-fallback tier's two guards (see the module doc and
+/// issue #75), bundled so `unique_by_pattern`/`same_lang_lookup` take one
+/// argument instead of two loose bools.
+#[derive(Clone, Copy)]
+struct FallbackGuard {
+    /// Refuse a `method`-kind candidate — set for a bare (receiver-less)
+    /// `CALLS` edge; see `EdgeInput::bare_call`.
+    exclude_method: bool,
+    /// Refuse a cross-file candidate the language's `VisibilityRule`
+    /// deems not visible.
+    enforce_visibility: bool,
+}
+
+impl FallbackGuard {
+    /// Neither guard applies — tier 4 (receiver-type/inherited
+    /// resolution) and `resolve_type_symbol`'s type-name lookups.
+    const NONE: FallbackGuard = FallbackGuard {
+        exclude_method: false,
+        enforce_visibility: false,
+    };
+}
+
+/// The reference's own file and its calling symbol's qualname — the
+/// `VisibilityRule` context `same_lang_lookup` needs, bundled into one
+/// argument (rather than two loose ones) to keep
+/// `resolve_by_name`/`unique_by_pattern`'s parameter count under
+/// clippy's `too_many_arguments` threshold.
+#[derive(Clone, Copy)]
+struct CallerContext<'a> {
+    file_path: &'a str,
+    qualname: Option<&'a str>,
 }
 
 /// Resolves references against one graph version. Prepared statements
@@ -455,7 +542,10 @@ impl<'c> Resolver<'c> {
                 receiver_type,
                 r.edge_kind,
                 r.source_lang,
-                r.source_file_path,
+                CallerContext {
+                    file_path: r.source_file_path,
+                    qualname: r.source_qualname,
+                },
                 r.bare_call,
             )?,
             None => None,
@@ -491,7 +581,6 @@ impl<'c> Resolver<'c> {
     /// a bigger threshold.
     fn unique(&mut self, lookup: Lookup, query_params: &[&dyn ToSql]) -> Result<Option<i64>> {
         let stmt = match lookup {
-            Lookup::SameLang => &mut self.same_lang,
             Lookup::AnyLang => &mut self.any_lang,
             Lookup::ImportSuffix => &mut self.import_suffix,
         };
@@ -512,30 +601,28 @@ impl<'c> Resolver<'c> {
     /// — Bridge Edge kinds only — in any language, using
     /// `any_lang_patterns` (always both `.` and `::`: the target's
     /// language isn't known in advance for a bridge match). The any-
-    /// language round never applies `exclude_method`/`enforce_visibility`:
-    /// those guards are specific to the guarded, same-language-only
-    /// fallback (see the module doc and issue #75); a Bridge Edge crossing
-    /// languages already has its own, separate cross-language contract.
-    #[allow(clippy::too_many_arguments)]
+    /// language round never applies `guard`: it's specific to the guarded,
+    /// same-language-only fallback (see the module doc and issue #75); a
+    /// Bridge Edge crossing languages already has its own, separate
+    /// cross-language contract.
     fn unique_by_pattern(
         &mut self,
         name: &str,
         any_lang_patterns: (&str, &str),
         source_lang: &str,
         edge_kind: &str,
-        exclude_method: bool,
-        enforce_visibility: bool,
-        source_file_path: &str,
+        guard: FallbackGuard,
+        caller: CallerContext<'_>,
     ) -> Result<Option<i64>> {
         let profile = profile_for(source_lang);
         let (same_p1, same_p2) = same_lang_patterns(name, &profile);
         let gv = self.graph_version;
+        let exclude_method: i64 = guard.exclude_method as i64;
         let same = self.same_lang_lookup(
-            params![name, same_p1, same_p2, gv, gv, source_lang],
-            exclude_method,
-            enforce_visibility,
+            params![name, same_p1, same_p2, exclude_method, gv, gv, source_lang],
+            guard,
             source_lang,
-            source_file_path,
+            caller,
         )?;
         if same.is_some() || !is_bridge_edge_kind(edge_kind) {
             return Ok(same);
@@ -547,76 +634,64 @@ impl<'c> Resolver<'c> {
         )
     }
 
-    /// The guarded name-fallback tier's same-language candidate lookup
-    /// (tier 5 only — see the module doc): runs `SAME_LANG_SQL`, then
-    /// applies, in order, the bare-call method exclusion and the
-    /// language's `VisibilityRule`, and finally the one-candidate guard
-    /// over whatever survives both.
+    /// Same-language candidate lookup shared by tier 4
+    /// (`resolve_type_symbol`'s type-name lookups, `FallbackGuard::NONE`)
+    /// and tier 5, the guarded name fallback (`unique_by_pattern`, a real
+    /// `guard`) — see the module doc. Runs `SAME_LANG_SQL` (which already
+    /// excludes `method`-kind rows in the query itself when
+    /// `guard.exclude_method`, not as a post-filter — see that constant's
+    /// doc for why), applies `guard.enforce_visibility`'s `VisibilityRule`
+    /// per row, and requires exactly one survivor.
     ///
-    /// `exclude_method`/`enforce_visibility` are `false` for every other
-    /// caller (`resolve_type_symbol`'s type-name lookups, reached from
-    /// tier 4's receiver-type/inherited resolution) — those still go
-    /// through `unique(Lookup::SameLang, ...)` unchanged, which reads only
-    /// this query's first column and applies no filtering: unmatched
-    /// same-language rows made this tier ambiguous before #75 and still
-    /// do.
+    /// Consumes the result lazily and stops as soon as a *second* visible
+    /// candidate is found — correctness doesn't need to see the rest once
+    /// ambiguity is certain, and this keeps a repo-wide decoy pile (a
+    /// common short name matching hundreds of symbols) from costing more
+    /// than the two rows needed to prove ambiguity. Finding 0 or 1 visible
+    /// candidates does require draining every matching row, but that set
+    /// is exactly the rows `SAME_LANG_SQL` already scoped to this
+    /// name/kind/language — not an arbitrarily large one.
     ///
     /// A same-file candidate is always visible, regardless of
-    /// `enforce_visibility` — a symbol is never private to its own file.
-    /// When nothing survives filtering but at least one same-name,
-    /// same-kind row existed before filtering, that's specifically a
-    /// privacy refusal (`saw_private`), not a plain miss — `resolve`
-    /// reports `Unresolved(Private)` for it, distinct from
-    /// `NoCandidates`/`Ambiguous`.
+    /// `guard.enforce_visibility` — a symbol is never private to its own
+    /// file. When nothing survives filtering but at least one same-name
+    /// row existed, that's specifically a privacy refusal (`saw_private`),
+    /// not a plain miss — `resolve` reports `Unresolved(Private)` for it,
+    /// distinct from `NoCandidates`/`Ambiguous`.
     fn same_lang_lookup(
         &mut self,
         query_params: &[&dyn ToSql],
-        exclude_method: bool,
-        enforce_visibility: bool,
+        guard: FallbackGuard,
         source_lang: &str,
-        source_file_path: &str,
+        caller: CallerContext<'_>,
     ) -> Result<Option<i64>> {
-        struct Candidate {
-            id: i64,
-            kind: String,
-            visibility: Option<String>,
-            qualname: String,
-            file_path: String,
-        }
-
-        let rows: Vec<Candidate> = {
-            let mut rows = self.same_lang.query(query_params)?;
-            let mut out = Vec::new();
-            while let Some(row) = rows.next()? {
-                out.push(Candidate {
-                    id: row.get(0)?,
-                    kind: row.get(1)?,
-                    visibility: row.get(2)?,
-                    qualname: row.get(3)?,
-                    file_path: row.get(4)?,
-                });
-            }
-            out
-        };
-
         let visibility_rule = profile_for(source_lang).visibility;
+        let mut rows = self.same_lang.query(query_params)?;
         let mut kind_eligible = 0usize;
         let mut visible: Vec<i64> = Vec::new();
-        for c in &rows {
-            if exclude_method && c.kind == "method" {
-                continue;
-            }
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let visibility: Option<String> = row.get(1)?;
+            let qualname: String = row.get(2)?;
+            let file_path: String = row.get(3)?;
+            // `SAME_LANG_SQL` already excludes `method`-kind rows when
+            // `guard.exclude_method` — every row reaching here is kind-eligible.
             kind_eligible += 1;
-            let ok = !enforce_visibility
-                || c.file_path == source_file_path
+            let ok = !guard.enforce_visibility
+                || file_path == caller.file_path
                 || visibility_rule.is_visible(
-                    c.visibility.as_deref(),
-                    &c.qualname,
-                    &c.file_path,
-                    source_file_path,
+                    visibility.as_deref(),
+                    &qualname,
+                    &file_path,
+                    caller.file_path,
+                    caller.qualname,
                 );
             if ok {
-                visible.push(c.id);
+                visible.push(id);
+                if visible.len() >= 2 {
+                    self.saw_ambiguous = true;
+                    return Ok(None);
+                }
             }
         }
 
@@ -626,11 +701,8 @@ impl<'c> Resolver<'c> {
                 self.saw_private = true;
                 Ok(None)
             }
-            0 => Ok(None),
-            _ => {
-                self.saw_ambiguous = true;
-                Ok(None)
-            }
+            // Only reachable with 0 (the `>= 2` case already returned above).
+            _ => Ok(None),
         }
     }
 
@@ -644,18 +716,16 @@ impl<'c> Resolver<'c> {
     ///   closest declaring ancestor. No bare-name fallback — an unmatched
     ///   known type stays unbound rather than guessing.
     ///
-    /// `source_file_path` and `bare_call` feed the guarded fallback's
-    /// (tier 5, the `None` arm) visibility and bare-call guards only —
-    /// tier 4 (the `Some` arm) passes `exclude_method`/`enforce_visibility`
-    /// as `false` and never consults either.
-    #[allow(clippy::too_many_arguments)]
+    /// `caller` and `bare_call` feed the guarded fallback's (tier 5, the
+    /// `None` arm) visibility and bare-call guards only — tier 4 (the
+    /// `Some` arm) passes `FallbackGuard::NONE` and never consults either.
     fn resolve_by_name(
         &mut self,
         target_qualname: &str,
         receiver_type: Option<&str>,
         edge_kind: &str,
         source_lang: &str,
-        source_file_path: &str,
+        caller: CallerContext<'_>,
         bare_call: bool,
     ) -> Result<Option<(i64, ResolutionKind)>> {
         let source_lang = resolution_language_family(source_lang);
@@ -673,22 +743,15 @@ impl<'c> Resolver<'c> {
                     (&dot, &colons),
                     source_lang,
                     edge_kind,
-                    false,
-                    false,
-                    source_file_path,
+                    FallbackGuard::NONE,
+                    caller,
                 )? {
                     return Ok(Some((id, ResolutionKind::ReceiverType)));
                 }
                 // The receiver's own type declares no matching method (or
                 // the match there was itself ambiguous) — walk its ancestors.
                 Ok(self
-                    .resolve_via_inheritance(
-                        known_type,
-                        method,
-                        source_lang,
-                        edge_kind,
-                        source_file_path,
-                    )?
+                    .resolve_via_inheritance(known_type, method, source_lang, edge_kind, caller)?
                     .map(|id| (id, ResolutionKind::Inherited)))
             }
 
@@ -699,16 +762,18 @@ impl<'c> Resolver<'c> {
                 // kinds (RPC_CALL, HTTP_CALL, CHANNEL_*, XREF, ...) have
                 // their own detection and don't set `bare_call`, so this
                 // never restricts them (see `EdgeInput::bare_call`).
-                let exclude_method = edge_kind == "CALLS" && bare_call;
+                let guard = FallbackGuard {
+                    exclude_method: edge_kind == "CALLS" && bare_call,
+                    enforce_visibility: true,
+                };
                 if let Some((seg, dot, colons)) = two_segment_qualname_patterns(target_qualname)
                     && let Some(id) = self.unique_by_pattern(
                         &seg,
                         (&dot, &colons),
                         source_lang,
                         edge_kind,
-                        exclude_method,
-                        true,
-                        source_file_path,
+                        guard,
+                        caller,
                     )?
                 {
                     return Ok(Some((id, ResolutionKind::TwoSegment)));
@@ -720,9 +785,8 @@ impl<'c> Resolver<'c> {
                         (&dot, &colons),
                         source_lang,
                         edge_kind,
-                        exclude_method,
-                        true,
-                        source_file_path,
+                        guard,
+                        caller,
                     )?
                     .map(|id| (id, ResolutionKind::BareName)))
             }
@@ -732,11 +796,25 @@ impl<'c> Resolver<'c> {
     /// Resolve a bare type name (a receiver's inferred type, or an
     /// ancestor's `target_qualname` text) to the single symbol declaring
     /// it. Same-language only — a class hierarchy never crosses languages.
-    fn resolve_type_symbol(&mut self, type_name: &str, source_lang: &str) -> Result<Option<i64>> {
+    /// `FallbackGuard::NONE`: tier 4, neither guard applies.
+    fn resolve_type_symbol(
+        &mut self,
+        type_name: &str,
+        source_lang: &str,
+        source_file_path: &str,
+    ) -> Result<Option<i64>> {
         let name = qualname_trailing_name(type_name);
         let (p1, p2) = same_lang_patterns(name, &profile_for(source_lang));
         let gv = self.graph_version;
-        self.unique(Lookup::SameLang, params![name, p1, p2, gv, gv, source_lang])
+        self.same_lang_lookup(
+            params![name, p1, p2, 0i64, gv, gv, source_lang],
+            FallbackGuard::NONE,
+            source_lang,
+            CallerContext {
+                file_path: source_file_path,
+                qualname: None,
+            },
+        )
     }
 
     /// When a receiver's own type declares no matching method, walk up its
@@ -754,9 +832,10 @@ impl<'c> Resolver<'c> {
         method: &str,
         source_lang: &str,
         edge_kind: &str,
-        source_file_path: &str,
+        caller: CallerContext<'_>,
     ) -> Result<Option<i64>> {
-        let Some(root_id) = self.resolve_type_symbol(known_type, source_lang)? else {
+        let Some(root_id) = self.resolve_type_symbol(known_type, source_lang, caller.file_path)?
+        else {
             return Ok(None);
         };
 
@@ -793,9 +872,8 @@ impl<'c> Resolver<'c> {
                     (&dot, &colons),
                     source_lang,
                     edge_kind,
-                    false,
-                    false,
-                    source_file_path,
+                    FallbackGuard::NONE,
+                    caller,
                 )? {
                     matches.push(id);
                 }
@@ -822,6 +900,7 @@ impl<'c> Resolver<'c> {
                     None => self.resolve_type_symbol(
                         qualname_trailing_name(ancestor_qualname),
                         source_lang,
+                        caller.file_path,
                     )?,
                 };
                 if let Some(id) = next_id
@@ -938,7 +1017,8 @@ struct UnresolvedNameRow {
     edge_kind: String,
     receiver_type: Option<String>,
     file_path: String,
-    has_receiver: bool,
+    bare_call: bool,
+    source_qualname: Option<String>,
 }
 
 impl Db {
@@ -1056,9 +1136,10 @@ impl Db {
             let tx = conn.transaction()?;
             let unresolved: Vec<UnresolvedNameRow> = {
                 let mut stmt = tx.prepare(
-                    "SELECT e.id, e.target_qualname, COALESCE(f.language, 'unknown'), e.kind, e.receiver_type, f.path, e.has_receiver
+                    "SELECT e.id, e.target_qualname, COALESCE(f.language, 'unknown'), e.kind, e.receiver_type, f.path, e.bare_call, src.qualname
                      FROM edges e
                      JOIN files f ON e.file_id = f.id
+                     LEFT JOIN symbols src ON src.id = e.source_symbol_id
                      WHERE e.target_symbol_id IS NULL
                      AND e.target_qualname IS NOT NULL
                      AND e.graph_version = ?
@@ -1073,7 +1154,8 @@ impl Db {
                         edge_kind: row.get(3)?,
                         receiver_type: row.get(4)?,
                         file_path: row.get(5)?,
-                        has_receiver: row.get(6)?,
+                        bare_call: row.get(6)?,
+                        source_qualname: row.get(7)?,
                     })
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()?
@@ -1094,8 +1176,11 @@ impl Db {
                         row.receiver_type.as_deref(),
                         &row.edge_kind,
                         &row.source_lang,
-                        &row.file_path,
-                        !row.has_receiver,
+                        CallerContext {
+                            file_path: &row.file_path,
+                            qualname: row.source_qualname.as_deref(),
+                        },
+                        row.bare_call,
                     )? {
                         update_stmt.execute(params![target_id, kind.as_str(), row.edge_id])?;
                         count += 1;
@@ -1261,7 +1346,7 @@ mod tests {
             ImportMissPolicy::FallThrough
         );
         assert!(profile_for("rust").normalize_import_target.is_some());
-        assert_eq!(profile_for("rust").visibility, VisibilityRule::Recorded);
+        assert_eq!(profile_for("rust").visibility, VisibilityRule::RustModule);
 
         assert_eq!(profile_for("python").separators, &["."]);
         assert_eq!(
@@ -1410,17 +1495,71 @@ mod tests {
 
     #[test]
     fn visibility_rule_none_never_refuses() {
-        assert!(VisibilityRule::None.is_visible(Some("private"), "a.b", "x.rs", "y.rs"));
+        assert!(VisibilityRule::None.is_visible(Some("private"), "a.b", "x.rs", "y.rs", None));
     }
 
     #[test]
     fn visibility_rule_recorded_refuses_only_explicit_private() {
         let rule = VisibilityRule::Recorded;
-        assert!(!rule.is_visible(Some("private"), "a.b", "x.rs", "y.rs"));
+        assert!(!rule.is_visible(Some("private"), "a.b", "x.rs", "y.rs", None));
         // `NULL`/unrecorded and any other recorded value stay visible —
         // only an explicit "private" mark refuses.
-        assert!(rule.is_visible(None, "a.b", "x.rs", "y.rs"));
-        assert!(rule.is_visible(Some("public"), "a.b", "x.rs", "y.rs"));
+        assert!(rule.is_visible(None, "a.b", "x.rs", "y.rs", None));
+        assert!(rule.is_visible(Some("public"), "a.b", "x.rs", "y.rs", None));
+    }
+
+    #[test]
+    fn visibility_rule_rust_module_refuses_private_outside_owner_module() {
+        let rule = VisibilityRule::RustModule;
+        // Unrelated module, no descendant relationship — refused.
+        assert!(!rule.is_visible(
+            Some("private"),
+            "crate::a::helper",
+            "a.rs",
+            "b.rs",
+            Some("crate::b::caller")
+        ));
+    }
+
+    #[test]
+    fn visibility_rule_rust_module_allows_private_from_descendant_module() {
+        let rule = VisibilityRule::RustModule;
+        // `crate::a::child` is a descendant of `crate::a`, the owning
+        // module of the private candidate — visible (issue #75 follow-up,
+        // finding D).
+        assert!(rule.is_visible(
+            Some("private"),
+            "crate::a::helper",
+            "a.rs",
+            "a/child.rs",
+            Some("crate::a::child::f")
+        ));
+        // The owning module itself (not just a descendant) is visible too.
+        assert!(rule.is_visible(
+            Some("private"),
+            "crate::a::helper",
+            "a.rs",
+            "a/other.rs",
+            Some("crate::a::other_fn")
+        ));
+        // A parent module does *not* inherit visibility into a child's
+        // private items — Rust privacy only flows downward.
+        assert!(!rule.is_visible(
+            Some("private"),
+            "crate::a::child::secret",
+            "a/child.rs",
+            "a.rs",
+            Some("crate::a::caller")
+        ));
+        // No source qualname at all (caller didn't resolve to a symbol) —
+        // can't establish descendance, so refused.
+        assert!(!rule.is_visible(
+            Some("private"),
+            "crate::a::helper",
+            "a.rs",
+            "a/child.rs",
+            None
+        ));
     }
 
     #[test]
@@ -1430,7 +1569,8 @@ mod tests {
             None,
             "other/other.FormatGreeting",
             "other/other.go",
-            "caller/caller.go"
+            "caller/caller.go",
+            None
         ));
     }
 
@@ -1443,14 +1583,16 @@ mod tests {
             None,
             "caller/sibling.siblingUtil",
             "caller/sibling.go",
-            "caller/caller.go"
+            "caller/caller.go",
+            None
         ));
         // Different package — refused.
         assert!(!rule.is_visible(
             None,
             "secretpkg/secret.secretUtil",
             "secretpkg/secret.go",
-            "prober/prober.go"
+            "prober/prober.go",
+            None
         ));
     }
 
@@ -1496,6 +1638,7 @@ mod tests {
         edge_kind: &'a str,
         source_lang: &'a str,
         source_file_path: &'a str,
+        source_qualname: Option<&'a str>,
         bare_call: bool,
     ) -> Reference<'a> {
         Reference {
@@ -1505,6 +1648,7 @@ mod tests {
             import_candidates: &[],
             source_lang,
             source_file_path,
+            source_qualname,
             bare_call,
         }
     }
@@ -1521,7 +1665,7 @@ mod tests {
 
         let mut resolver = Resolver::new(&conn, 1).unwrap();
         let symbol_map = std::collections::HashMap::new();
-        let r = reference("caller.util", "CALLS", "python", "caller.py", true);
+        let r = reference("caller.util", "CALLS", "python", "caller.py", None, true);
         let resolution = resolver.resolve(&r, &symbol_map).unwrap();
 
         assert_eq!(
@@ -1549,7 +1693,14 @@ mod tests {
         // Python-only candidate.
         let mut resolver = Resolver::new(&conn, 1).unwrap();
         let symbol_map = std::collections::HashMap::new();
-        let non_bridge = reference("caller::shared_name", "CALLS", "rust", "caller.rs", true);
+        let non_bridge = reference(
+            "caller::shared_name",
+            "CALLS",
+            "rust",
+            "caller.rs",
+            None,
+            true,
+        );
         assert_eq!(
             resolver.resolve(&non_bridge, &symbol_map).unwrap(),
             Resolution::Unresolved(UnresolvedReason::NoCandidates)
@@ -1557,11 +1708,68 @@ mod tests {
 
         // The same shape, but a Bridge Edge kind, may cross into it.
         let mut resolver = Resolver::new(&conn, 1).unwrap();
-        let bridge = reference("caller::shared_name", "RPC_CALL", "rust", "caller.rs", true);
+        let bridge = reference(
+            "caller::shared_name",
+            "RPC_CALL",
+            "rust",
+            "caller.rs",
+            None,
+            true,
+        );
         let resolved = resolver.resolve(&bridge, &symbol_map).unwrap();
         assert!(
             matches!(resolved, Resolution::Resolved { .. }),
             "{resolved:?}"
+        );
+    }
+
+    /// Issue #75 follow-up (finding G): a truncated candidate set must
+    /// never corrupt the ambiguity count. Nine unrelated classes each
+    /// declare a `method`-kind `zzq` (decoys the bare-call guard excludes
+    /// by kind), and two unrelated modules each declare a `function`-kind
+    /// `zzq` (the two candidates a bare, receiver-less `zzq()` call is
+    /// genuinely ambiguous between). Before the fix, `SAME_LANG_SQL`'s
+    /// `LIMIT 8` truncated the raw (pre-kind-filter) result to 8 rows,
+    /// which — in insertion order — held the first function decoy plus
+    /// seven of the nine method decoys, cutting the second function
+    /// candidate off entirely; kind-filtering the truncated set left
+    /// exactly one survivor, so it wrongly bound instead of refusing as
+    /// ambiguous.
+    #[test]
+    fn resolve_refuses_ambiguous_guarded_fallback_candidates_past_the_old_limit() {
+        let conn = test_conn();
+        // Inserted first, so its row would have sorted first pre-fix too —
+        // matches the reported repro shape exactly.
+        let fn_a_file = insert_file(&conn, "a_fn.py", "python");
+        insert_symbol(&conn, fn_a_file, "function", "zzq", "a_fn.zzq", None);
+
+        for i in 0..9 {
+            let file = insert_file(&conn, &format!("c{i}.py"), "python");
+            insert_symbol(
+                &conn,
+                file,
+                "method",
+                "zzq",
+                &format!("c{i}.C{i}.zzq"),
+                None,
+            );
+        }
+
+        let fn_z_file = insert_file(&conn, "z_fn.py", "python");
+        insert_symbol(&conn, fn_z_file, "function", "zzq", "z_fn.zzq", None);
+
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let symbol_map = std::collections::HashMap::new();
+        // Bare call, no receiver: `exclude_method` exempts every
+        // `method`-kind decoy, leaving only the two `function`-kind
+        // candidates in contention.
+        let r = reference("caller.zzq", "CALLS", "python", "caller.py", None, true);
+        let resolution = resolver.resolve(&r, &symbol_map).unwrap();
+
+        assert_eq!(
+            resolution,
+            Resolution::Unresolved(UnresolvedReason::Ambiguous),
+            "{resolution:?}"
         );
     }
 }

@@ -961,11 +961,19 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_end_line: Some(end_line),
         // A bare identifier callee (`Foo()`) vs. anything qualified
         // (`this.Foo()`, `obj.Foo()`, ...) — see `EdgeInput::bare_call`'s
-        // doc. `new Foo()` is never "bare": a constructor call has no
-        // receiver concept at all, and its target is a `method`-kind
-        // (`.ctor`) symbol.
+        // doc. Two exceptions where `Foo()`-shaped text still isn't
+        // "bare" for gating purposes:
+        // - `new Foo()`: a constructor call has no receiver concept at
+        //   all, and its target is a `method`-kind (`.ctor`) symbol.
+        // - Any unqualified call inside a class/struct/interface body
+        //   (`ctx.type_stack` non-empty): C# gives it an implicit `this`
+        //   (or, for a static caller, the enclosing type itself) —
+        //   unlike a free function call in Python/Go/Rust/TS, it always
+        //   has a receiver, just not a written one (issue #75 follow-up,
+        //   finding C).
         bare_call: node.kind() != "object_creation_expression"
-            && target_node.kind() == "identifier",
+            && target_node.kind() == "identifier"
+            && ctx.type_stack.is_empty(),
         ..Default::default()
     });
 }

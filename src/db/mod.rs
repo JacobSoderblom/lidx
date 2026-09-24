@@ -379,7 +379,7 @@ impl Db {
                     (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
                      evidence_snippet, evidence_start_line, evidence_end_line, confidence,
                      graph_version, commit_sha, trace_id, span_id, event_ts,
-                     receiver_type, resolution_kind, import_candidates, has_receiver)
+                     receiver_type, resolution_kind, import_candidates, bare_call)
                  SELECT
                     e.file_id,
                     (SELECT ns.id FROM symbols ns
@@ -389,7 +389,7 @@ impl Db {
                     e.kind, e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
                     ?, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
-                    e.receiver_type, e.resolution_kind, e.import_candidates, e.has_receiver
+                    e.receiver_type, e.resolution_kind, e.import_candidates, e.bare_call
                  FROM edges e
                  LEFT JOIN symbols src ON src.id = e.source_symbol_id
                  LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id
@@ -1120,7 +1120,7 @@ impl Db {
                 "INSERT INTO edges
                  (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail, evidence_snippet,
                   evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts,
-                  receiver_type, resolution_kind, import_candidates, has_receiver)
+                  receiver_type, resolution_kind, import_candidates, bare_call)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             let mut exact_lookup_stmt = tx.prepare(
@@ -1154,6 +1154,7 @@ impl Db {
                         import_candidates: &edge.import_candidates,
                         source_lang: &source_lang,
                         source_file_path: &source_file_path,
+                        source_qualname: edge.source_qualname.as_deref(),
                         bare_call: edge.bare_call,
                     },
                     symbol_map,
@@ -1178,7 +1179,7 @@ impl Db {
                     resolution.stored_receiver_type(extracted_receiver_type),
                     resolution.kind_column(),
                     resolver::encode_import_candidates(&edge.import_candidates),
-                    !edge.bare_call,
+                    edge.bare_call,
                 ])?;
                 count += 1;
             }

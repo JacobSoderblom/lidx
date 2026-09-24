@@ -19,9 +19,11 @@ use tree_sitter::{Node, Parser};
 /// JavaScript/TypeScript's resolution profile: the shared default, plus a
 /// recorded-visibility rule — `handle_method` records `visibility =
 /// "private"` for an explicit `private` accessibility modifier or a
-/// `#`-prefixed class field (see `is_private_member`), and `handle_function`
-/// records it for a top-level function/class/etc. not directly wrapped in
-/// an `export` statement (see `is_exported`). Registered for "javascript",
+/// `#`-prefixed class field (see `is_private_member`). Top-level
+/// functions are never recorded private: not being directly wrapped in an
+/// `export` statement doesn't mean unreachable from another file
+/// (CommonJS `module.exports`, a separate `export { name }`, re-exports —
+/// issue #75 follow-up, finding E). Registered for "javascript",
 /// "typescript" and "tsx" alike (`db::resolver::profile_for`) since they
 /// share one resolution family.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
@@ -2650,9 +2652,14 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = extract_signature(node, source);
-    if !is_exported(node) {
-        output.private_qualnames.push(qualname.clone());
-    }
+    // No export-based visibility mark here (issue #75 follow-up, finding
+    // E): "not directly `export`ed" isn't the same as "unreachable from
+    // another file" — CommonJS (`module.exports = { helperOne }`), a
+    // separate named export (`export { helperOne }`), and re-exports all
+    // make a plain top-level function reachable without it ever being
+    // wrapped in an `export` statement itself. Only an explicit
+    // TypeScript/JS access modifier is trustworthy enough to record (see
+    // `is_private_member`, used by `handle_method` below).
     output.symbols.push(SymbolInput {
         kind: "function".to_string(),
         name: name.clone(),
@@ -2681,17 +2688,6 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
         next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
-}
-
-/// Whether `node`'s immediate parent is an `export` statement (`export
-/// function foo() {}`, `export default function foo() {}`,
-/// `export class Foo {}`) — the shape most exported top-level
-/// declarations take. Misses a name exported separately (`function foo()
-/// {} export { foo };`), which is treated as module-private; see
-/// `PROFILE`'s doc.
-fn is_exported(node: Node<'_>) -> bool {
-    node.parent()
-        .is_some_and(|p| matches!(p.kind(), "export_statement" | "export_declaration"))
 }
 
 /// Whether `node` (a `method_definition`) is private: an explicit

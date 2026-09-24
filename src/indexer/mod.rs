@@ -176,6 +176,21 @@ impl Indexer {
         let mut stats = SyncStats::default();
         let mut touched = false;
         let mut indexed_files = Vec::new();
+        // Phase 1: deletions handled inline, but every file that needs
+        // (re)indexing only has its symbols extracted and its
+        // `visibility` settled here — edge resolution is deferred to
+        // phase 2 below, after every file in this batch has been marked.
+        // A cross-file guarded-fallback visibility check must never see a
+        // later-in-this-batch file's symbol as still unmarked (NULL,
+        // meaning "unrestricted") just because that file hasn't been
+        // synced yet — same reasoning as `reindex`'s two-pass split
+        // (issue #75 follow-up).
+        let mut pending: Vec<(
+            scan::ScannedFile,
+            ExtractedFile,
+            i64,
+            Vec<crate::model::Symbol>,
+        )> = Vec::new();
         for path in paths {
             let rel_path = match crate::util::normalize_rel_path(&self.repo_root, path) {
                 Ok(value) => value,
@@ -209,20 +224,30 @@ impl Indexer {
                 stats.skipped += 1;
                 continue;
             }
-            match self.index_scanned_file(&scanned) {
-                Ok((symbols, edges)) => {
-                    stats.indexed += 1;
-                    stats.symbols += symbols;
-                    stats.edges += edges;
-                    touched = true;
+            match self.index_scanned_file_symbols(&scanned) {
+                Ok(Some((extracted, file_id, symbols))) => {
                     indexed_files.push(scanned.clone());
+                    pending.push((scanned, extracted, file_id, symbols));
                 }
+                Ok(None) => {}
                 Err(err) => {
                     eprintln!("index error {}: {err}", scanned.rel_path);
                     stats.errors += 1;
                 }
             }
         }
+
+        // Phase 2: resolve edges for every file in this batch, now that
+        // every file's visibility is settled.
+        for (_scanned, extracted, file_id, symbols) in &pending {
+            let (symbol_count, edge_count) =
+                self.resolve_file_edges(*file_id, extracted, symbols)?;
+            stats.indexed += 1;
+            stats.symbols += symbol_count;
+            stats.edges += edge_count;
+            touched = true;
+        }
+
         if !indexed_files.is_empty() {
             let xref_edges = xref::link_cross_language_refs(
                 &mut self.db,
@@ -373,17 +398,22 @@ impl Indexer {
             self.db.update_files_symbols_batch(&batch)?;
         }
 
-        // Now process edges for all files
-        for (file, extracted, diff, file_id) in file_data {
-            // Mark this file's private/unexported symbols before resolving
-            // any edges (its own or another file's) against them — see
-            // `Db::set_private_symbols`.
+        // Mark every file's private/unexported symbols in its own pass,
+        // before any edge in this reindex is resolved. Must not be
+        // interleaved with the edge loop below: a cross-file candidate's
+        // `visibility` has to be settled repo-wide first, or a file
+        // processed early would see a later file's private symbols as
+        // still-NULL (unrestricted) and bind to them (issue #75 follow-up).
+        for (_file, extracted, _diff, file_id) in &file_data {
             self.db.set_private_symbols(
-                file_id,
+                *file_id,
                 self.graph_version,
                 &extracted.private_qualnames,
             )?;
+        }
 
+        // Now process edges for all files
+        for (file, extracted, diff, file_id) in file_data {
             // Delete existing edges
             self.db.delete_edges_for_file(file_id, self.graph_version)?;
 
@@ -542,7 +572,17 @@ impl Indexer {
         Ok(stats)
     }
 
-    fn index_scanned_file(&mut self, file: &scan::ScannedFile) -> Result<(usize, usize)> {
+    /// Phase 1 of syncing one file: extract, diff, write its symbols, and
+    /// settle its `visibility` marks. Deliberately stops short of edge
+    /// resolution (`resolve_file_edges`) — see `sync_abs_paths`'s doc for
+    /// why the two are split across a whole batch rather than done
+    /// per-file. `Ok(None)` means the file was skipped (too large), not
+    /// an error.
+    #[allow(clippy::type_complexity)]
+    fn index_scanned_file_symbols(
+        &mut self,
+        file: &scan::ScannedFile,
+    ) -> Result<Option<(ExtractedFile, i64, Vec<crate::model::Symbol>)>> {
         // Phase 6: Check file size before reading (skip very large files)
         const MAX_FILE_SIZE_MB: u64 = 10;
         let metadata = std::fs::metadata(&file.abs_path)?;
@@ -552,7 +592,7 @@ impl Indexer {
                 metadata.len() / (1024 * 1024),
                 file.rel_path
             );
-            return Ok((0, 0));
+            return Ok(None);
         }
 
         let source = crate::util::read_to_string(&file.abs_path)?;
@@ -585,10 +625,63 @@ impl Indexer {
             );
         }
 
-        // Phase 3: Use incremental updates for symbols
-        let (symbol_count, edge_count) = self.index_file(file, extracted, diff)?;
+        let file_id = self.db.upsert_file(
+            &file.rel_path,
+            &file.hash,
+            &file.language,
+            file.size,
+            file.modified,
+        )?;
 
-        Ok((symbol_count, edge_count))
+        // Phase 3: Use incremental updates for symbols
+        let symbols = self.db.update_file_symbols(
+            file_id,
+            &file.rel_path,
+            diff,
+            self.graph_version,
+            self.commit_sha.as_deref(),
+        )?;
+
+        // Mark this file's private/unexported symbols. Must happen for
+        // every file in the batch before any file's edges are resolved —
+        // see `sync_abs_paths`.
+        self.db
+            .set_private_symbols(file_id, self.graph_version, &extracted.private_qualnames)?;
+
+        Ok(Some((extracted, file_id, symbols)))
+    }
+
+    /// Phase 2 of syncing one file: resolve its edges and write its
+    /// metrics, against `symbols` (this file's own, from
+    /// `index_scanned_file_symbols`) — every other file's `visibility` in
+    /// this batch must already be settled by the time this runs.
+    fn resolve_file_edges(
+        &mut self,
+        file_id: i64,
+        extracted: &ExtractedFile,
+        symbols: &[crate::model::Symbol],
+    ) -> Result<(usize, usize)> {
+        // For edges, still use delete-all-insert for now (can optimize in future)
+        // Delete existing edges for this file
+        self.db.delete_edges_for_file(file_id, self.graph_version)?;
+        let mut symbol_map = HashMap::new();
+        for symbol in symbols {
+            symbol_map.insert(symbol.qualname.clone(), symbol.id);
+        }
+        let edges_count = self.db.insert_edges(
+            file_id,
+            &extracted.edges,
+            &symbol_map,
+            self.graph_version,
+            self.commit_sha.as_deref(),
+        )?;
+        if let Some(metrics) = extracted.file_metrics.as_ref() {
+            self.db.upsert_file_metrics(file_id, metrics)?;
+        }
+        self.db
+            .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbol_map)?;
+
+        Ok((symbols.len(), edges_count))
     }
 
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {
@@ -609,56 +702,5 @@ impl Indexer {
             &mut extracted.edges,
         );
         Ok(extracted)
-    }
-
-    fn index_file(
-        &mut self,
-        file: &scan::ScannedFile,
-        extracted: ExtractedFile,
-        diff: differ::SymbolDiff,
-    ) -> Result<(usize, usize)> {
-        let file_id = self.db.upsert_file(
-            &file.rel_path,
-            &file.hash,
-            &file.language,
-            file.size,
-            file.modified,
-        )?;
-
-        // Phase 3: Use incremental symbol updates instead of delete-all-insert
-        let symbols = self.db.update_file_symbols(
-            file_id,
-            &file.rel_path,
-            diff,
-            self.graph_version,
-            self.commit_sha.as_deref(),
-        )?;
-
-        // Mark this file's private/unexported symbols before resolving any
-        // edges against them — see `Db::set_private_symbols`.
-        self.db
-            .set_private_symbols(file_id, self.graph_version, &extracted.private_qualnames)?;
-
-        // For edges, still use delete-all-insert for now (can optimize in future)
-        // Delete existing edges for this file
-        self.db.delete_edges_for_file(file_id, self.graph_version)?;
-        let mut symbol_map = HashMap::new();
-        for symbol in &symbols {
-            symbol_map.insert(symbol.qualname.clone(), symbol.id);
-        }
-        let edges_count = self.db.insert_edges(
-            file_id,
-            &extracted.edges,
-            &symbol_map,
-            self.graph_version,
-            self.commit_sha.as_deref(),
-        )?;
-        if let Some(metrics) = extracted.file_metrics.as_ref() {
-            self.db.upsert_file_metrics(file_id, metrics)?;
-        }
-        self.db
-            .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbol_map)?;
-
-        Ok((symbols.len(), edges_count))
     }
 }
