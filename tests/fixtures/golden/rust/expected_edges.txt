@@ -6,7 +6,13 @@
 #
 # Baseline measured 2026-09-23: precision 1.0 (7/7), recall 1.0 (7/7),
 # 5 known-failing lines. After #74 (language resolution profiles):
-# precision 1.0 (30/30), recall 1.0 (30/30), 2 known-failing.
+# precision 1.0 (30/30), recall 1.0 (30/30), 2 known-failing. After #75
+# (stricter name fallback and visibility rules): precision 1.0 (34/34),
+# recall 1.0 (34/34), 2 known-failing. After the #75 follow-up review
+# (findings A/B/C/D/E/G): precision 1.0 (36/36), recall 1.0 (36/36), 2
+# known-failing -- new UNRESOLVED lines below exercise cases that resolved
+# *wrongly* before the fix (see the commit for what each one used to bind
+# to).
 #
 # The shadowing cases pin UNRESOLVED even where real Rust binds to
 # `b::helper` (f2, shadow_block_use, shadow_closure_use) or `a::helper`
@@ -151,3 +157,68 @@ crate::suffix_matching::run CALLS UNRESOLVED
 # A glob `use` inside the function takes precedence over the file-scope
 # `use` (rustc binds this to `b::helper`); the shadow rule suppresses it.
 crate::shadowing::shadow_glob_use CALLS UNRESOLVED
+
+# --- Issue #75: stricter name fallback and visibility rules ---
+
+# Plain call to a private item in its own module -- unaffected by the new
+# visibility guard (same file).
+crate::visibility_private_owner::call_locally CALLS crate::visibility_private_owner::secret_helper exact
+
+# Bare, unqualified call to `secret_helper`, whose only definition
+# (`visibility_private_owner::secret_helper`) is private and in a
+# different file. Before #75 this was the sole same-language candidate
+# the bare-name fallback found and bound to -- wrong, since a private
+# item is not visible outside its own file. #75's visibility guard must
+# refuse it.
+crate::visibility_private_prober::call_remotely CALLS UNRESOLVED
+
+# Bare, receiver-less call to `process`, whose only definition
+# (`Widget::process`) is a `method`. Before #75 the bare-name fallback
+# bound to it anyway (kind wasn't gated on receiver shape) -- wrong, since
+# a receiver-less call can never dispatch to an instance method. #75's
+# bare-call guard must refuse it.
+crate::bare_call_method::bare_caller CALLS UNRESOLVED
+
+# Bare, unimported call to `shared_probe`, declared identically (public
+# free function) in two other files. The guarded name fallback must see
+# two same-language, same-kind, visible candidates and refuse rather than
+# pick whichever SQLite returns first.
+crate::ambiguous_fallback_caller::calls_ambiguous_probe CALLS UNRESOLVED
+
+# --- Issue #75 follow-up (finding A): visibility marking must not be
+# interleaved with edge resolution. `a_prober.rs` sorts alphabetically
+# before `z_owner.rs` (Indexer::reindex processes files in rel_path
+# order), so before the fix `zsecret`'s `visibility` column was still NULL
+# ("unrestricted") when this call was resolved, and it wrongly bound to
+# the private `z_owner::zsecret` instead of refusing. ---
+
+# Plain call to a private item in its own module -- unaffected by the new
+# visibility guard (same file).
+crate::z_owner::call_locally CALLS crate::z_owner::zsecret exact
+
+# Bare, unqualified call to `zsecret`, whose only definition
+# (`z_owner::zsecret`) is private and in a file that sorts *after* this
+# one. Must stay UNRESOLVED regardless of file processing order.
+crate::a_prober::call_before_owner_is_marked CALLS UNRESOLVED
+
+# --- Issue #75 follow-up (finding B): a trait impl method or trait
+# default method has no `pub` to check (Rust doesn't attach one there),
+# but is exactly as visible as the trait itself. Before the fix, both were
+# wrongly recorded private, refusing these cross-file calls. ---
+
+# UFCS call to a trait-impl method (`impl Default for Conf`), from a
+# different file. Two-segment fallback: `Conf::default` is literal call
+# text, matching `Conf::default`'s trailing two qualname segments.
+crate::trait_impl_visibility_caller::make_conf CALLS crate::trait_impl_visibility_owner::Conf::default two_segment
+
+# UFCS call to a trait's own default method (`Announcer::zannounce`, not
+# overridden by `Quiet`), from a different file. Bare-name fallback:
+# `Quiet::zannounce`'s two segments don't match `Announcer::zannounce`, so
+# this falls through to matching the trailing name alone.
+crate::trait_default_visibility_caller::call_default_announce CALLS crate::trait_default_visibility_owner::Announcer::zannounce bare_name
+
+# --- Issue #75 follow-up (finding D): a private Rust item stays visible
+# to its own module's descendants, not just its own file. `child_visibility_child`
+# (a separate file) is a child module of `child_visibility_owner`. A
+# same-file-only check would wrongly refuse this. ---
+crate::child_visibility_owner::child_visibility_child::call_owner_secret CALLS crate::child_visibility_owner::owner_secret bare_name

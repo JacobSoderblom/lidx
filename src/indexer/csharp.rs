@@ -1,3 +1,4 @@
+use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
@@ -16,6 +17,17 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use tree_sitter::{Node, Parser};
+
+/// C#'s resolution profile: the shared default (dot-separated, no
+/// relative-import rewriting, import-tier miss refuses the name tiers,
+/// suffix matching on), plus a recorded-visibility rule — `handle_method`
+/// records `visibility = "private"` for an explicit `private` modifier
+/// (see `has_modifier`), which the guarded name-fallback tier then refuses
+/// to bind across files.
+pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    visibility: VisibilityRule::Recorded,
+    ..LanguageProfile::DEFAULT
+};
 
 #[derive(Clone)]
 struct Context {
@@ -617,6 +629,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     let qualname = build_qualname(ctx, &name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = method_signature(node, source);
+    if has_modifier(node, source, "private") {
+        output.private_qualnames.push(qualname.clone());
+    }
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -944,6 +959,21 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         import_candidates,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
+        // A bare identifier callee (`Foo()`) vs. anything qualified
+        // (`this.Foo()`, `obj.Foo()`, ...) — see `EdgeInput::bare_call`'s
+        // doc. Two exceptions where `Foo()`-shaped text still isn't
+        // "bare" for gating purposes:
+        // - `new Foo()`: a constructor call has no receiver concept at
+        //   all, and its target is a `method`-kind (`.ctor`) symbol.
+        // - Any unqualified call inside a class/struct/interface body
+        //   (`ctx.type_stack` non-empty): C# gives it an implicit `this`
+        //   (or, for a static caller, the enclosing type itself) —
+        //   unlike a free function call in Python/Go/Rust/TS, it always
+        //   has a receiver, just not a written one (issue #75 follow-up,
+        //   finding C).
+        bare_call: node.kind() != "object_creation_expression"
+            && target_node.kind() == "identifier"
+            && ctx.type_stack.is_empty(),
         ..Default::default()
     });
 }

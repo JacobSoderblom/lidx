@@ -1,3 +1,4 @@
+use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
@@ -13,6 +14,16 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
+
+/// Go's resolution profile: the shared default, plus capitalization-based
+/// visibility — no extractor recording needed (`VisibilityRule::
+/// GoCapitalization` derives it from a candidate's trailing name and
+/// compares package directories directly), so this extractor never touches
+/// `ExtractedFile::private_qualnames`.
+pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    visibility: VisibilityRule::GoCapitalization,
+    ..LanguageProfile::DEFAULT
+};
 
 /// A local variable declaration tagged with the byte range of the block that
 /// directly contains it, for scope-aware resolution.
@@ -600,6 +611,10 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_snippet: snippet,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
+        // A bare identifier callee (`foo()`) vs. a selector expression
+        // (`pkg.Func()`, `obj.Method()`) — see `EdgeInput::bare_call`'s
+        // doc.
+        bare_call: function_node.kind() == "identifier",
         ..Default::default()
     });
 }

@@ -470,6 +470,10 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_end_line: Some(end_line),
         receiver_type,
         import_candidates,
+        // A bare identifier callee (`foo()`) vs. an attribute access
+        // (`obj.foo()`, `self.foo()`, ...) — see `EdgeInput::bare_call`'s
+        // doc.
+        bare_call: function_node.kind() == "identifier",
         ..Default::default()
     });
 }

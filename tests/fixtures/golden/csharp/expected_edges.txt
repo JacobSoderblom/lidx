@@ -5,7 +5,11 @@
 # Only CALLS edges are scored.
 #
 # Baseline measured 2026-09-23: precision 1.0 (10/10), recall 1.0 (10/10),
-# 1 known-failing line.
+# 1 known-failing line. After #75 (stricter name fallback and visibility
+# rules): precision 1.0 (11/11), recall 1.0 (11/11), 1 known-failing. After
+# the #75 follow-up review (finding C; the earlier AC2 case for finding B's
+# review round turned out invalid for C# and was replaced -- see the note
+# below): still precision 1.0 (11/11), recall 1.0 (11/11), 1 known-failing.
 
 # Plain call to a same-class private static method. Golden.Other.Helper
 # has a same-named LocalUtil decoy.
@@ -43,3 +47,30 @@ Golden.Helpers.Helper.FormatGreeting CALLS Golden.Helpers.Helper.Decorate exact
 
 # Cross-file incoming call into Caller.Entry.
 Golden.Downstream.Downstream.UseEntry CALLS Golden.App.Caller.Entry receiver_type
+
+# --- Issue #75: stricter name fallback and visibility rules ---
+#
+# Neither AC1 (visibility) nor AC2 (bare-call-never-a-method) has a
+# reachable C# golden case:
+#
+# - AC1: `import_qualified_candidates` (pre-#75) always attaches an
+#   own-namespace candidate to any `Type.Method()` call, so a miss there
+#   already refuses the name-based tiers outright
+#   (`ImportMissPolicy::Refuse`) before the guarded fallback -- and hence
+#   the visibility check -- is ever reached. The `visibility` column and
+#   check are still implemented and exercised by the Rust and Go golden
+#   fixtures.
+# - AC2: an *unqualified* call in C# is only reachable from inside a
+#   class/struct/interface body, where it's never truly receiver-less --
+#   it's always an implicit `this.Foo()` (instance) or an implicit
+#   same-type static call (finding C, below). There's no ordinary,
+#   reachable C# call shape left that's genuinely bare the way a Python/
+#   Go/Rust/TS free-function call is; the bare-call guard is still
+#   implemented (`bare_call` is `false` inside a type body, see
+#   `handle_call`) and exercised there.
+
+# --- Issue #75 follow-up (finding C): an unqualified call inside a class
+# body has an implicit `this` receiver in C# -- it must not be treated as
+# a bare (receiver-less) call. Before the fix, the bare-call guard wrongly
+# refused this. ---
+Golden.ImplicitThis.Derived.Run CALLS Golden.ImplicitThis.Base.ImplicitHelper bare_name

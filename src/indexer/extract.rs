@@ -104,6 +104,18 @@ pub struct EdgeInput {
     /// `db::migrations` and the `ponytail:` doc on
     /// `resolve_null_target_edges`.
     pub import_candidates: Vec<String>,
+    /// True when a `CALLS` edge's call site was a genuinely bare
+    /// identifier call (`foo()`) rather than anything receiver-qualified
+    /// (`obj.foo()`, `self.foo()`, `Type::method()`). Each extractor's
+    /// `handle_call` sets this from the callee expression's own AST shape
+    /// (not from `target_qualname`, which is container-qualified either
+    /// way — see `db::resolver`'s module doc, issue #75). Defaults to
+    /// `false` ("not confirmed bare") for every edge kind that doesn't set
+    /// it, which is the conservative choice: the resolver's guarded
+    /// name-fallback tier only refuses to bind a `method`-kind candidate
+    /// when this is `true` *and* the edge kind is `CALLS`, so leaving it
+    /// `false` elsewhere never over-restricts.
+    pub bare_call: bool,
 }
 
 #[derive(Debug, Default)]
@@ -112,6 +124,15 @@ pub struct ExtractedFile {
     pub edges: Vec<EdgeInput>,
     pub file_metrics: Option<FileMetricsInput>,
     pub symbol_metrics: Vec<SymbolMetricsInput>,
+    /// Qualnames of symbols in `symbols` this extractor recorded as
+    /// private/module-private (Rust: no `pub`; C#/TS: an explicit
+    /// `private` modifier) — see `db::resolver::VisibilityRule::Recorded`.
+    /// Applied to the `symbols.visibility` column by `Db::set_private_symbols`
+    /// after the symbols themselves are inserted (kept separate from
+    /// `SymbolInput` so adding this doesn't touch its ~60 existing call
+    /// sites). Empty for languages with no recorded visibility rule
+    /// (Python) or a derived one that needs no storage (Go: capitalization).
+    pub private_qualnames: Vec<String>,
 }
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use anyhow::Result;

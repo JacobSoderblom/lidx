@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -368,6 +368,28 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             "DROP INDEX IF EXISTS idx_symbols_graph_version;
              DROP INDEX IF EXISTS idx_edges_graph_version;",
         )?;
+    }
+
+    if existing < 16 {
+        // Issue #75: guarded name-fallback visibility rules. `visibility`
+        // is written only by extractors that record an explicit modifier
+        // (Rust `pub`, C#/TS `private`) -- NULL means "not recorded",
+        // which the resolver treats as unrestricted, same as before this
+        // column existed. `bare_call` mirrors `EdgeInput::bare_call`: true
+        // for a genuinely bare identifier call (`foo()`), false for any
+        // receiver-qualified one (`obj.foo()`, `self.foo()`,
+        // `Type::method()`) or for an edge kind that doesn't set it —
+        // existing rows default to `0` (not confirmed bare) so nothing
+        // pre-migration is newly restricted until it's re-resolved.
+        if !has_column(conn, "symbols", "visibility")? {
+            conn.execute("ALTER TABLE symbols ADD COLUMN visibility TEXT", [])?;
+        }
+        if !has_column(conn, "edges", "bare_call")? {
+            conn.execute(
+                "ALTER TABLE edges ADD COLUMN bare_call INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
     }
 
     if existing < SCHEMA_VERSION {
