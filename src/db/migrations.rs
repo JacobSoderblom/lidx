@@ -448,6 +448,16 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
 /// the top of this file -- by the time this runs, every earlier
 /// version-gated block has already applied to this connection, whether the
 /// database is old or brand new (see this function's caller).
+///
+/// The `edges` copy's `src`/`tgt` joins also require `graph_version` to
+/// match the edge's own, not just the id: a pre-v17 database can carry a
+/// source/target id that exists in `symbols`, just under a different
+/// graph version (the same legacy drift `repair_dangling_symbol_ids` used
+/// to clean up at runtime, now dead code since nothing produces it going
+/// forward -- see issue #76's review). Matching on id alone would let that
+/// stale reference survive the migration as a live, wrong-but-non-NULL
+/// target instead of being nulled here, once and for all, for any
+/// database that still has one.
 fn migrate_symbol_id_sequence(conn: &Connection) -> Result<()> {
     // Foreign key enforcement can only be toggled outside of a transaction,
     // and must be off for the duration: with it on, SQLite refuses to drop
@@ -538,8 +548,8 @@ fn migrate_symbol_id_sequence(conn: &Connection) -> Result<()> {
                e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
                e.receiver_type, e.resolution_kind, e.import_candidates, e.bare_call
         FROM edges e
-        LEFT JOIN symbols src ON src.id = e.source_symbol_id
-        LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id;
+        LEFT JOIN symbols src ON src.id = e.source_symbol_id AND src.graph_version = e.graph_version
+        LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id AND tgt.graph_version = e.graph_version;
 
         DROP TABLE edges;
         ALTER TABLE edges_v17 RENAME TO edges;
@@ -726,8 +736,19 @@ mod tests {
             .unwrap();
         assert_eq!(violations, 0);
 
+        // A second edge, added post-migration, that targets symbol 5 --
+        // covers the `target_symbol_id` foreign key specifically, since
+        // edge 1's target (999) was already NULL before this delete (it
+        // never existed, so the migration's copy nulled it on the way in).
+        conn.execute(
+            "INSERT INTO edges (id, file_id, source_symbol_id, target_symbol_id, kind, graph_version) \
+             VALUES (2, 1, NULL, 5, 'CALLS', 1)",
+            [],
+        )
+        .unwrap();
+
         // The foreign key now really enforces on-delete-set-null: deleting
-        // the referenced symbol nulls the edge instead of leaving it
+        // the referenced symbol nulls both edges instead of leaving either
         // dangling.
         conn.execute("DELETE FROM symbols WHERE id = 5", [])
             .unwrap();
@@ -739,6 +760,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(source, None);
+        let target: Option<i64> = conn
+            .query_row(
+                "SELECT target_symbol_id FROM edges WHERE id = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(target, None);
 
         // A fresh insert never reuses the now-free id 5.
         conn.execute(

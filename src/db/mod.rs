@@ -1175,42 +1175,6 @@ impl Db {
         Ok(())
     }
 
-    /// Null out edge source/target symbol ids that reference a symbol row
-    /// outside the current graph version's symbols.
-    ///
-    /// `edges.source_symbol_id`/`target_symbol_id` carry an `ON DELETE SET
-    /// NULL` foreign key onto `symbols(id)` (issue #76), so an id that no
-    /// longer exists *anywhere* is already nulled automatically the moment
-    /// its symbol row is deleted -- this pass isn't what catches that
-    /// anymore. What it still catches: an id that exists in `symbols`, just
-    /// under a *different* graph version than this edge's (e.g. a version
-    /// transition that leaves a stale cross-version reference) -- the
-    /// foreign key is satisfied by the row's mere existence and doesn't
-    /// know about `graph_version` scoping, so it can't null that case.
-    ///
-    /// Setting dangling ids to NULL lets `resolve_null_target_edges` re-resolve them
-    /// by qualname in a subsequent pass.
-    ///
-    /// Returns the number of edges updated.
-    pub fn repair_dangling_symbol_ids(&self, graph_version: i64) -> Result<usize> {
-        let mut total = 0;
-        for column in ["source_symbol_id", "target_symbol_id"] {
-            total += self.conn().execute(
-                &format!(
-                    "UPDATE edges
-                     SET {column} = NULL
-                     WHERE {column} IS NOT NULL
-                       AND graph_version = ?
-                       AND {column} NOT IN (
-                           SELECT id FROM symbols WHERE graph_version = ?
-                       )"
-                ),
-                params![graph_version, graph_version],
-            )?;
-        }
-        Ok(total)
-    }
-
     pub fn upsert_file_metrics(&mut self, file_id: i64, metrics: &FileMetricsInput) -> Result<()> {
         self.conn().execute(
             "INSERT INTO file_metrics (file_id, loc, blank, comment, code)

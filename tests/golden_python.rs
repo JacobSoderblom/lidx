@@ -145,19 +145,14 @@ fn full_reindex_matches_expected_edges() {
 ///   resolve to `caller.entry` afterward, not go dangling or unresolved,
 ///   even though only `caller.py` was re-synced.
 ///
-/// What it does *not* exercise, despite being a plausible-sounding claim:
-/// dangling-symbol-id repair (`repair_dangling_symbol_ids`). A content-only
-/// edit like this one classifies `caller.py`'s symbols as "modified", which
-/// `Db::update_file_symbols` handles with an `UPDATE ... WHERE stable_id =
-/// ?` that keeps the existing row id -- so `caller.entry`'s id, and
-/// `downstream.use_entry`'s edge pointing at it, never actually change.
-/// Dangling ids only arise from a genuine rename (`diff.deleted` +
-/// `diff.added`), and even then `update_file_symbols` already NULLs other
-/// files' references to the deleted rowid inline, before
-/// `repair_dangling_symbol_ids` ever runs -- confirmed by this test's own
-/// output never logging `"nullified ... dangling symbol id(s)"`. Adding a
-/// caller file (per the review's second suggested fix) doesn't change
-/// that; it was verified empirically rather than assumed.
+/// What it does *not* exercise: any dangling-symbol-id path. A
+/// content-only edit like this one classifies `caller.py`'s symbols as
+/// "modified", which `Db::update_file_symbols` handles with an
+/// `UPDATE ... WHERE stable_id = ?` that keeps the existing row id -- so
+/// `caller.entry`'s id, and `downstream.use_entry`'s edge pointing at it,
+/// never actually change. Only a genuine rename (`diff.deleted` +
+/// `diff.added`) frees a row id; see
+/// `incremental_rename_leaves_no_dangling_or_wrong_targets` for that.
 ///
 /// It also does *not* exercise `create_graph_version`/`carry_forward_files`
 /// -- those only run in `reindex`, not `sync_abs_paths`.
@@ -179,64 +174,22 @@ fn incremental_sync_after_editing_caller_matches_expected_edges() {
     report.assert_floors("python", PRECISION_FLOOR, RECALL_FLOOR);
 }
 
-/// Incremental scenario (issue #76): rename a symbol that currently holds
-/// the table's highest row id, in the file that currently holds it, then
-/// sync just that path. `downstream.py`'s `use_bump_target` (set up below,
-/// then never resynced again) still calls the old name.
+/// Incremental scenario (issue #76): rename whichever `other_module.py`
+/// symbol currently holds the table's highest row id, then sync just that
+/// path. `downstream.py`'s `use_bump_target` (added below, then never
+/// resynced again) keeps calling the old name.
 ///
-/// Setup, all against this test's own temp-repo copy, never the checked-in
-/// fixture:
+/// The three-step setup below deliberately arranges for the renamed symbol
+/// to hold the table's current max row id right before the rename: only
+/// then does freeing it force the very next insert to compete for that
+/// exact id, exercising real SQLite rowid reuse rather than a merely
+/// dangling reference. Renaming a symbol whose id isn't already the max
+/// (e.g. `caller.py`'s `entry`) can't reach that.
 ///
-/// 1. Reindex the plain fixture plus one extra `downstream.py` function,
-///    `use_bump_target`, calling `other_module.local_util`.
-/// 2. Rename `other_module.local_util` to `other_module.local_util_bumped`
-///    and sync just `other_module.py`. This is the sync's *only* added
-///    symbol, so it deterministically lands on `(the table's current max
-///    id) + 1` -- making it the table's new max, on purpose (see the next
-///    step).
-/// 3. Retarget `use_bump_target` to call `local_util_bumped` instead, and
-///    sync `downstream.py`. Its qualname, signature and kind (what
-///    `compute_stable_symbol_id` hashes) don't change -- only its
-///    body/import does -- so `Db::update_file_symbols` classifies it
-///    "modified", not delete-then-add: no new symbol row is inserted, and
-///    critically `local_util_bumped` remains the table's max id.
-///
-/// The rename actually under test happens next: renaming
-/// `other_module.local_util_bumped` to `other_module.local_util_renamed`
-/// and syncing `other_module.py` again deletes the table's current max id
-/// and immediately inserts exactly one new row (the replacement). Without
-/// schema v17 (issue #76), SQLite's plain `max(rowid) + 1` allocation would
-/// hand that insert the just-freed id right back -- an *actual* reuse, not
-/// merely a vanished id -- since `downstream.use_bump_target`'s edge is
-/// never touched by this final sync, so it still carries `local_util_bumped`'s
-/// old row id in `target_symbol_id` going in. Schema v17's never-reused id
-/// sequence and its `ON DELETE SET NULL` foreign key are what keep that id
-/// from silently ending up valid-but-wrong afterward, rather than merely
-/// dangling -- checked directly below by asserting the replacement gets a
-/// genuinely fresh id, never the freed one.
-///
-/// This whole three-step setup exists because renaming `caller.py`'s
-/// `entry` directly (an earlier version of this test did that, with no
-/// setup) never exercises actual reuse: `entry`'s id sits well below the
-/// table's max (`downstream.use_entry`'s own id alone always outranks it,
-/// since `downstream.py` is scanned after `caller.py`), so freeing it only
-/// ever produces a dangling reference -- one `repair_dangling_symbol_ids`
-/// (kept for an unrelated cross-graph-version case; see its doc comment)
-/// cleans up regardless of whether the new foreign key exists at all,
-/// masking the exact regression this test exists to catch. Confirmed
-/// against two schema v17 ablations (foreign key removed; foreign key and
-/// `AUTOINCREMENT` both removed) during this issue's review, and this
-/// version's own bump step is deliberately its own separate sync, with
-/// nothing else touched in between, so it can't itself race against
-/// `other_module.py`'s other symbols the way a single shared sync with
-/// multiple newly-added rows would (`compute_symbol_diff` keys added
-/// symbols by a `HashMap`, whose iteration order isn't stable across
-/// process runs).
-///
-/// Checks the never-reused-id-and-foreign-key property two ways: directly
-/// against the raw ids (no edge dangles), and against the whole post-sync
-/// snapshot compared to the fixture's expected edges with the rename
-/// applied (no edge is wrong, none is missing).
+/// Checks two ways: the replacement symbol gets a genuinely fresh id,
+/// never the freed one, and the whole post-sync snapshot matches the
+/// fixture's expected edges with the rename applied (no edge is wrong,
+/// none is missing).
 #[test]
 fn incremental_rename_leaves_no_dangling_or_wrong_targets() {
     let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
@@ -250,6 +203,11 @@ fn incremental_rename_leaves_no_dangling_or_wrong_targets() {
     indexer.reindex().unwrap();
 
     // Step 2: bump `local_util` to a fresh id that's the table's new max.
+    // Its own, separate sync -- not combined with any other change -- so
+    // it's the sync's only added symbol: `compute_symbol_diff` keys added
+    // symbols by a `HashMap`, whose iteration order isn't stable across
+    // process runs, so a sync that added more than one row here couldn't
+    // deterministically guarantee which one lands on the max id.
     let other_module_path = repo_root.join("other_module.py");
     let contents = std::fs::read_to_string(&other_module_path).unwrap();
     let bumped = contents.replacen("def local_util(", "def local_util_bumped(", 1);
@@ -349,22 +307,18 @@ fn incremental_rename_leaves_no_dangling_or_wrong_targets() {
 
 /// Incremental scenario (issue #76): delete `caller.py` (which
 /// `downstream.py` imports and calls into), then sync the deletion.
-///
-/// `downstream.use_entry`'s edge is never touched by this sync either, so
-/// the same raw-id and full-snapshot checks as the rename test above apply:
-/// no edge may keep pointing at a symbol that no longer exists, and the
-/// whole post-sync snapshot must match the fixture's expected edges with
-/// every `caller.py`-sourced line removed and the incoming call from
+/// `downstream.use_entry`'s edge is never touched by this sync, so the same
+/// raw-id and full-snapshot checks as the rename test apply: no edge may
+/// keep pointing at a symbol that no longer exists, and the whole
+/// post-sync snapshot must match the fixture's expected edges with every
+/// `caller.py`-sourced line removed and the incoming call from
 /// `downstream.py` gone unresolved.
 ///
-/// Unlike the rename test, this one doesn't need the rowid-reuse setup:
-/// a pure deletion has no competing insert within the same sync to reuse
-/// the freed id (`repair_dangling_symbol_ids` already nulls a merely
-/// dangling reference regardless of the new foreign key, confirmed against
-/// this issue's schema v17 ablations -- see the rename test's doc comment),
-/// so there's no "valid but wrong" outcome reachable here for the foreign
-/// key to specifically guard against, only "dangling", which this test's
-/// raw-id check still verifies directly.
+/// Doesn't need the rename test's rowid-reuse setup: a pure deletion has no
+/// competing insert within the same sync to reuse the freed id, so there's
+/// no "valid but wrong" outcome reachable here for the foreign key to
+/// specifically guard against -- only "dangling", which the raw-id check
+/// still verifies directly.
 #[test]
 fn incremental_delete_file_leaves_no_dangling_or_wrong_targets() {
     let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");

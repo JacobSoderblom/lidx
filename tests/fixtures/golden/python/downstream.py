@@ -2,10 +2,11 @@ from caller import entry
 
 
 def use_entry() -> str:
-    """Calls into `caller.py`'s `entry`, giving the incremental golden test
-    an incoming edge to exercise: editing `caller.py` alone (content
-    changes, no call sites move) re-parses its symbols with new ids, which
-    would leave this edge dangling without `repair_dangling_symbol_ids` +
-    `resolve_null_target_edges` running after the sync -- see
-    tests/golden_python.rs's incremental test."""
+    """Calls into `caller.py`'s `entry`, giving the incremental golden
+    tests in tests/golden_python.rs a genuine cross-file incoming edge:
+    it must still resolve to `caller.entry` after an unrelated content
+    edit to `caller.py`, and go unresolved (not dangling, not silently
+    rebound to something else) after `caller.entry` is renamed or
+    `caller.py` is deleted -- even though `downstream.py` itself is never
+    resynced in any of those scenarios."""
     return entry()

@@ -258,16 +258,12 @@ impl Indexer {
             stats.edges += xref_edges;
         }
         if touched {
-            // Repair dangling symbol ids: edges in unchanged files may still point at
-            // old rowids for symbols that were renamed/re-signed in the files we just
-            // synced. NULL them out so the subsequent re-resolution pass can fix them.
-            let dangling = self.db.repair_dangling_symbol_ids(self.graph_version)?;
-            if dangling > 0 {
-                eprintln!(
-                    "lidx: nullified {dangling} dangling symbol id(s) after incremental sync"
-                );
-            }
-            // Re-run null-target resolution so newly-NULLed edges get re-linked by qualname.
+            // Re-run null-target resolution so any edge this batch left with a
+            // NULL target (e.g. a forward reference into a file synced earlier
+            // in this same batch) gets re-linked by qualname now that every
+            // file's symbols are written. A rowid a rename/delete frees is
+            // nulled automatically by `edges`' `ON DELETE SET NULL` foreign
+            // key (issue #76), not by anything here.
             let resolved = self.db.resolve_null_target_edges(self.graph_version)?;
             if resolved > 0 {
                 eprintln!("lidx: resolved {resolved} edge(s) after incremental sync");
@@ -473,12 +469,13 @@ impl Indexer {
             xref::link_cross_language_refs(&mut self.db, &scanned, true, self.graph_version)?;
         stats.edges += xref_edges;
 
-        // Repair pass: NULL out dangling symbol ids and re-resolve NULL edge targets by
-        // qualname, same as the incremental (sync_abs_paths) path already does. Runs after
-        // both the fresh-file edge loop and carry_forward_files (and after xref, so XREF/ROUTE
-        // edges get the same treatment) so every current-version symbol this reindex will
-        // produce already exists to resolve against; runs before prune_and_maybe_vacuum so
-        // nothing is wasted repairing rows about to be deleted.
+        // Repair pass: re-resolve NULL edge targets by qualname, same as the
+        // incremental (sync_abs_paths) path already does. Runs after both the
+        // fresh-file edge loop and carry_forward_files (and after xref, so
+        // XREF/ROUTE edges get the same treatment) so every current-version
+        // symbol this reindex will produce already exists to resolve against;
+        // runs before prune_and_maybe_vacuum so nothing is wasted repairing
+        // rows about to be deleted.
         //
         // Gate: always run when this reindex actually indexed or deleted a file (cheapest
         // check, and those runs already pay far more than the repair pass costs). On a
@@ -506,13 +503,6 @@ impl Indexer {
         // absent = 0, i.e. conservative on a never-repaired-under-this-binary db): only a
         // count *above* that floor — something that used to resolve and no longer does — is
         // new repair work.
-        //
-        // ponytail: the COUNT only mirrors resolve_null_target_edges' NULL-target predicate,
-        // not repair_dangling_symbol_ids' non-NULL dangling-id predicate — a target that's
-        // wrong-but-non-NULL (not producible by carry_forward_files itself, which always
-        // NULLs a miss) would slip past this fallback on a no-op run. Upgrade path: a one-off
-        // `lidx repair` command/RPC (resolve_null_target_edges is already exposed at
-        // src/rpc/handlers.rs:1916) for on-demand backfill outside of reindex entirely.
         let unresolved_edge_count = |db: &Db, graph_version: i64| -> Result<i64> {
             Ok(db.read_conn()?.query_row(
                 "SELECT COUNT(*) FROM edges
@@ -531,10 +521,6 @@ impl Indexer {
             unresolved > floor
         };
         if needs_repair {
-            let dangling = self.db.repair_dangling_symbol_ids(self.graph_version)?;
-            if dangling > 0 {
-                eprintln!("lidx: nullified {dangling} dangling symbol id(s) after reindex");
-            }
             let resolved = self.db.resolve_null_target_edges(self.graph_version)?;
             if resolved > 0 {
                 eprintln!("lidx: resolved {resolved} edge(s) after reindex");
