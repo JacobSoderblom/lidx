@@ -288,16 +288,22 @@ pub fn resolve_import_file_edges(
         if edge.kind != "IMPORTS" {
             continue;
         }
-        let target = match edge.target_qualname.as_deref() {
-            Some(value) => value.trim(),
-            None => continue,
-        };
-        if target.is_empty() {
+        let Some(raw_target) = edge.target_qualname.as_deref() else {
             continue;
-        }
-        let dst_rel = match resolve_import_path(repo_root, file_rel_path, target) {
-            Some(value) => value,
-            None => continue,
+        };
+        let Some((target, is_relative)) = classify_import_target(raw_target) else {
+            continue;
+        };
+        // Issue #77: a relative specifier always yields an IMPORTS_FILE
+        // edge, whether or not its target currently resolves to a real
+        // file — like CALLS emits an unresolved placeholder. A bare
+        // specifier (third-party, or an unmapped alias) still needs
+        // `resolve_tsconfig_alias`'s disk-backed lookup, since there's no
+        // repo-relative path to guess without it.
+        let Some((dst_rel, resolved_on_disk)) =
+            resolve_import_target(repo_root, file_rel_path, target, is_relative)
+        else {
+            continue;
         };
         let dst_module = module_name_from_rel_path(&dst_rel);
         resolved.push(EdgeInput {
@@ -308,7 +314,7 @@ pub fn resolve_import_file_edges(
                 json!({
                     "src_path": file_rel_path,
                     "dst_path": dst_rel,
-                    "confidence": 1.0,
+                    "confidence": if resolved_on_disk { 1.0 } else { 0.0 },
                 })
                 .to_string(),
             ),
@@ -321,23 +327,29 @@ pub fn resolve_import_file_edges(
     edges.extend(resolved);
 }
 
-fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> Option<String> {
+/// Splits off any `?query`/`#hash` suffix and classifies whether `target`
+/// is a relative specifier (`./`, `../`, or a repo-absolute `/`) — `None`
+/// for an empty specifier. Shared by `resolve_import_path`'s disk-backed
+/// resolution and `resolve_import_file_edges`'s disk-independent fallback
+/// for a relative specifier that doesn't currently resolve to a file
+/// (issue #77: an `IMPORTS_FILE` edge is still emitted then, just
+/// unresolved, rather than omitted).
+fn classify_import_target(target: &str) -> Option<(&str, bool)> {
     let target = target.split(['?', '#']).next().unwrap_or(target).trim();
     if target.is_empty() {
         return None;
     }
     let is_relative =
         target.starts_with("./") || target.starts_with("../") || target.starts_with('/');
-    if !is_relative {
-        // Not a relative specifier: it's either a genuine third-party import
-        // (e.g. `next/navigation`) or an alias remapped through the owning
-        // tsconfig.json's `compilerOptions.paths` (e.g. `@/lib/foo`). Only
-        // the latter ever resolves, and only when a concrete path-mapping
-        // entry backs it *and* the mapped location is a real file — no
-        // fuzzy fallback, so an unmapped bare specifier stays unresolved
-        // exactly as before.
-        return resolve_tsconfig_alias(repo_root, file_rel_path, target);
-    }
+    Some((target, is_relative))
+}
+
+/// The literal repo-relative path a relative specifier (already classified
+/// by `classify_import_target`) points at, lexically collapsing `..` so
+/// `components/../lib/utils` yields the same path as `lib/utils` — before
+/// any extension/index-file probing. `None` only for one that walks `..`
+/// past the repo root.
+fn relative_import_target(file_rel_path: &str, target: &str) -> Option<PathBuf> {
     let base_dir = Path::new(file_rel_path)
         .parent()
         .unwrap_or_else(|| Path::new(""));
@@ -346,8 +358,6 @@ fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> O
     } else {
         base_dir.join(target)
     };
-    // Collapse `..` lexically so `components/../lib/utils` yields the same
-    // repo path (and module qualname) as `lib/utils`.
     let mut rel = PathBuf::new();
     for comp in joined.components() {
         match comp {
@@ -360,7 +370,47 @@ fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> O
             _ => {}
         }
     }
-    probe_module_candidates(repo_root, &rel)
+    Some(rel)
+}
+
+fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> Option<String> {
+    let (target, is_relative) = classify_import_target(target)?;
+    let (path, on_disk) = resolve_import_target(repo_root, file_rel_path, target, is_relative)?;
+    on_disk.then_some(path)
+}
+
+/// Resolves an already-classified specifier (`classify_import_target`'s
+/// output) to a repo-relative path: `(path, true)` when it names a real
+/// file on disk, `(path, false)` only for a relative specifier that
+/// doesn't (there's still a repo-relative path worth guessing), `None`
+/// when nothing usable exists at all — an unmapped alias/third-party
+/// specifier, or a relative specifier that walks past the repo root.
+///
+/// Not a relative specifier: it's either a genuine third-party import
+/// (e.g. `next/navigation`) or an alias remapped through the owning
+/// tsconfig.json's `compilerOptions.paths` (e.g. `@/lib/foo`). Only the
+/// latter ever resolves, and only when a concrete path-mapping entry backs
+/// it *and* the mapped location is a real file — no fuzzy fallback.
+///
+/// Shared by `resolve_import_path` (collapses to `Option<String>`, for
+/// rewriting a call's import-candidate placeholder) and
+/// `resolve_import_file_edges` (keeps the on-disk flag, since a relative
+/// specifier still gets an unresolved `IMPORTS_FILE` edge rather than none
+/// at all — issue #77).
+fn resolve_import_target(
+    repo_root: &Path,
+    file_rel_path: &str,
+    target: &str,
+    is_relative: bool,
+) -> Option<(String, bool)> {
+    if !is_relative {
+        return resolve_tsconfig_alias(repo_root, file_rel_path, target).map(|path| (path, true));
+    }
+    let rel = relative_import_target(file_rel_path, target)?;
+    match probe_module_candidates(repo_root, &rel) {
+        Some(found) => Some((found, true)),
+        None => Some((util::normalize_path(&rel), false)),
+    }
 }
 
 /// Checks whether `rel` (extension-less or not, relative to `repo_root`)

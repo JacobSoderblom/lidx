@@ -1,3 +1,4 @@
+use crate::db::resolver;
 use crate::db::{Db, FileRecord};
 use crate::indexer::extract::ExtractedFile;
 use crate::metrics;
@@ -46,6 +47,17 @@ pub struct Indexer {
     graph_version: i64,
     commit_sha: Option<String>,
     extractors: HashMap<String, Box<dyn extract::LanguageExtractor>>,
+}
+
+/// `Indexer::index_scanned_file_symbols`'s result: one file's extracted
+/// content, its `files.id`, its post-diff symbol rows, and (issue #77)
+/// `diff.added`'s qualnames — `sync_abs_paths` uses the last field to
+/// re-check edges elsewhere that may have just become ambiguous.
+struct ScannedFileSymbols {
+    extracted: ExtractedFile,
+    file_id: i64,
+    symbols: Vec<crate::model::Symbol>,
+    added: Vec<String>,
 }
 
 impl Indexer {
@@ -191,28 +203,26 @@ impl Indexer {
             i64,
             Vec<crate::model::Symbol>,
         )> = Vec::new();
+        // Issue #77: qualnames of every symbol this batch adds —
+        // an edge anywhere, even in a file this batch never touches, that
+        // is already bound by one of these names must be re-checked after
+        // the sync, not left stale, since the addition may have made that
+        // name ambiguous. See `Db::unbind_edges_for_qualnames`.
+        let mut added_qualnames: HashSet<String> = HashSet::new();
         for path in paths {
             let rel_path = match crate::util::normalize_rel_path(&self.repo_root, path) {
                 Ok(value) => value,
                 Err(_) => continue,
             };
             if !path.exists() {
-                if let Some(existing) = self.db.get_file_by_path(&rel_path)? {
-                    self.db
-                        .delete_symbols_edges_for_file(existing.id, self.graph_version)?;
-                    self.db.mark_file_deleted(&rel_path, self.graph_version)?;
-                }
+                self.delete_file(&rel_path)?;
                 stats.deleted += 1;
                 touched = true;
                 continue;
             }
             let Some(scanned) = scan::scan_path(&self.repo_root, path)? else {
                 if !path.exists() {
-                    if let Some(existing) = self.db.get_file_by_path(&rel_path)? {
-                        self.db
-                            .delete_symbols_edges_for_file(existing.id, self.graph_version)?;
-                        self.db.mark_file_deleted(&rel_path, self.graph_version)?;
-                    }
+                    self.delete_file(&rel_path)?;
                     stats.deleted += 1;
                     touched = true;
                 }
@@ -225,7 +235,13 @@ impl Indexer {
                 continue;
             }
             match self.index_scanned_file_symbols(&scanned) {
-                Ok(Some((extracted, file_id, symbols))) => {
+                Ok(Some(ScannedFileSymbols {
+                    extracted,
+                    file_id,
+                    symbols,
+                    added,
+                })) => {
+                    added_qualnames.extend(added);
                     indexed_files.push(scanned.clone());
                     pending.push((scanned, extracted, file_id, symbols));
                 }
@@ -236,7 +252,6 @@ impl Indexer {
                 }
             }
         }
-
         // Phase 2: resolve edges for every file in this batch, now that
         // every file's visibility is settled.
         for (_scanned, extracted, file_id, symbols) in &pending {
@@ -258,6 +273,15 @@ impl Indexer {
             stats.edges += xref_edges;
         }
         if touched {
+            // Issue #77: an edge outside this batch already bound to a
+            // qualname this batch just gave a second (same or differently
+            // kinded) symbol must be re-checked, not left pointing at the
+            // old candidate — see `added_qualnames` above.
+            if !added_qualnames.is_empty() {
+                self.db
+                    .unbind_edges_for_qualnames(&added_qualnames, self.graph_version)?;
+            }
+
             // Re-run null-target resolution so any edge this batch left with a
             // NULL target (e.g. a forward reference into a file synced earlier
             // in this same batch) gets re-linked by qualname now that every
@@ -417,10 +441,7 @@ impl Indexer {
             let symbols = self
                 .db
                 .get_symbols_for_file(&file.rel_path, self.graph_version)?;
-            let mut symbol_map = HashMap::new();
-            for symbol in &symbols {
-                symbol_map.insert(symbol.qualname.clone(), symbol.id);
-            }
+            let symbol_map = resolver::build_exact_symbol_map(&symbols);
 
             // Insert edges
             let edges_count = self.db.insert_edges(
@@ -564,11 +585,10 @@ impl Indexer {
     /// why the two are split across a whole batch rather than done
     /// per-file. `Ok(None)` means the file was skipped (too large), not
     /// an error.
-    #[allow(clippy::type_complexity)]
     fn index_scanned_file_symbols(
         &mut self,
         file: &scan::ScannedFile,
-    ) -> Result<Option<(ExtractedFile, i64, Vec<crate::model::Symbol>)>> {
+    ) -> Result<Option<ScannedFileSymbols>> {
         // Phase 6: Check file size before reading (skip very large files)
         const MAX_FILE_SIZE_MB: u64 = 10;
         let metadata = std::fs::metadata(&file.abs_path)?;
@@ -619,6 +639,10 @@ impl Indexer {
             file.modified,
         )?;
 
+        // Issue #77: qualnames this sync is about to add, captured before
+        // `update_file_symbols` consumes `diff` — see `sync_abs_paths`.
+        let added_qualnames: Vec<String> = diff.added.iter().map(|s| s.qualname.clone()).collect();
+
         // Phase 3: Use incremental updates for symbols
         let symbols = self.db.update_file_symbols(
             file_id,
@@ -634,7 +658,25 @@ impl Indexer {
         self.db
             .set_private_symbols(file_id, self.graph_version, &extracted.private_qualnames)?;
 
-        Ok(Some((extracted, file_id, symbols)))
+        Ok(Some(ScannedFileSymbols {
+            extracted,
+            file_id,
+            symbols,
+            added: added_qualnames,
+        }))
+    }
+
+    /// Delete `rel_path`'s stored file (symbols, edges, metrics, and its
+    /// `deleted_version` mark) if it's currently indexed. A no-op when the
+    /// path isn't indexed at all.
+    fn delete_file(&mut self, rel_path: &str) -> Result<()> {
+        let Some(existing) = self.db.get_file_by_path(rel_path)? else {
+            return Ok(());
+        };
+        self.db
+            .delete_symbols_edges_for_file(existing.id, self.graph_version)?;
+        self.db.mark_file_deleted(rel_path, self.graph_version)?;
+        Ok(())
     }
 
     /// Phase 2 of syncing one file: resolve its edges and write its
@@ -650,10 +692,7 @@ impl Indexer {
         // For edges, still use delete-all-insert for now (can optimize in future)
         // Delete existing edges for this file
         self.db.delete_edges_for_file(file_id, self.graph_version)?;
-        let mut symbol_map = HashMap::new();
-        for symbol in symbols {
-            symbol_map.insert(symbol.qualname.clone(), symbol.id);
-        }
+        let symbol_map = resolver::build_exact_symbol_map(symbols);
         let edges_count = self.db.insert_edges(
             file_id,
             &extracted.edges,

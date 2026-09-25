@@ -6,11 +6,21 @@
 //!
 //! Covers, per issue #71: plain call, `from x import y` call, method call
 //! on self, receiver-typed call, inherited method call, ambiguous bare
-//! name, and a call into an external library -- plus an incremental
-//! (edit-caller-only + `sync_rel_paths`) scenario covering NULL-target
-//! re-resolution, and a cross-file incoming edge that must survive that
-//! sync intact (see the incremental test's own doc below for exactly what
-//! that scenario does and doesn't exercise).
+//! name, and a call into an external library -- plus incremental
+//! scenarios covering NULL-target re-resolution and a cross-file incoming
+//! edge that must survive a sync intact.
+//!
+//! Issue #77's four named incremental scenarios (edit callee, rename
+//! callee, delete file, add file defining a previously unresolved name)
+//! each get their own test below, against this fixture; every one also
+//! asserts its post-sync snapshot against `common::fresh_reindex_snapshot`
+//! -- a *fresh* copy of the fixture, brought to the same final-tree state
+//! in one shot and fully reindexed -- per that issue's acceptance
+//! criteria: an incremental result must be indistinguishable from a fresh
+//! full reindex of the same final tree, not merely satisfy the fixture's
+//! expected-edges file. The rest of issue #77's incremental/ambiguity
+//! regressions (deleted-and-restored files, ambiguity-rule edge cases,
+//! synthetic non-fixture trees) live in `tests/incremental_sync.rs`.
 
 mod common;
 
@@ -34,34 +44,58 @@ fn fixture_modules() -> std::collections::HashSet<String> {
     golden::fixture_source_modules("golden/python")
 }
 
-/// Every edge's `source_symbol_id`/`target_symbol_id` is either NULL or
-/// references a row that still exists in `symbols` -- the property schema
-/// v17's `edges` foreign key (`ON DELETE SET NULL` onto `symbols(id)`,
-/// issue #76) makes true by construction. Checked against the raw ids
-/// directly, not through `golden::snapshot_edges`'s qualname-joined view:
-/// that view's `LEFT JOIN` renders a dangling id exactly like a properly
-/// NULLed one (both come out `None`), so it can't tell "resolved to
-/// nothing" apart from "silently left pointing at a row that's gone".
-fn assert_no_dangling_edge_targets(db: &lidx::db::Db) {
-    let conn = db.read_conn().unwrap();
-    for column in ["source_symbol_id", "target_symbol_id"] {
-        let dangling: i64 = conn
-            .query_row(
-                &format!(
-                    "SELECT COUNT(*) FROM edges
-                     WHERE {column} IS NOT NULL
-                       AND {column} NOT IN (SELECT id FROM symbols)"
-                ),
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            dangling, 0,
-            "{dangling} edge(s) have a dangling {column} (references a symbol row \
-             that no longer exists in the symbols table)"
-        );
+/// The edit-callee incremental test's mutation (issue #77): change
+/// `caller.entry`'s signature, not just surrounding text. Unlike a
+/// same-signature edit (`Db::update_file_symbols` handles that with an
+/// in-place `UPDATE ... WHERE stable_id = ?`, never freeing the row), a
+/// signature change moves `entry`'s stable_id -- its old row is deleted and
+/// a new one inserted under a fresh id. `downstream.py`'s
+/// `downstream.use_entry CALLS caller.entry` edge (never itself resynced)
+/// must reattach to that new row by name, not go dangling or stay
+/// unresolved just because it kept the same qualname under a different id.
+fn add_entry_parameter(root: &std::path::Path) {
+    let caller_path = root.join("caller.py");
+    let contents = std::fs::read_to_string(&caller_path).unwrap();
+    let edited = contents.replacen(
+        "def entry() -> str:",
+        "def entry(loud: bool = False) -> str:",
+        1,
+    );
+    assert_ne!(
+        contents, edited,
+        "fixture must define caller.entry as `def entry() -> str:` for this test's edit to apply"
+    );
+    std::fs::write(&caller_path, edited).unwrap();
+}
+
+/// A new file this suite's add-file test (issue #77) introduces: a
+/// top-level (non-method) `process`, giving the guarded name-fallback
+/// tier a legal candidate for `bare_call_method.bare_caller`'s bare
+/// `process()` call -- see `bare_call_method.py`'s own docstring for why
+/// that call stays UNRESOLVED without it (the only other `process` in the
+/// fixture is a method, which the bare-call guard refuses).
+const WORKER_SOURCE: &str = "\
+def process() -> str:
+    # Top-level function, not a method: the name-fallback tier's first
+    # legal candidate for bare_call_method.bare_caller's bare call.
+    return \"worker\"
+";
+
+/// `expected_edges()`, with `bare_call_method.bare_caller`'s line
+/// (UNRESOLVED before `worker.py` exists) retargeted to `worker.process`
+/// via the `bare_name` tier.
+fn expected_edges_after_worker_added() -> Vec<ExpectedEdge> {
+    let mut edges = expected_edges();
+    for edge in &mut edges {
+        if edge.key.source_qualname == "bare_call_method.bare_caller"
+            && edge.key.kind == "CALLS"
+            && edge.key.target_qualname.is_none()
+        {
+            edge.key.target_qualname = Some("worker.process".to_string());
+            edge.key.resolution_kind = Some("bare_name".to_string());
+        }
     }
+    edges
 }
 
 /// The extra call this test (see below) gives `downstream.py`, purely in
@@ -128,50 +162,65 @@ fn full_reindex_matches_expected_edges() {
     report.assert_floors("python", PRECISION_FLOOR, RECALL_FLOOR);
 }
 
-/// Incremental scenario: edit the caller file only (its content hash
-/// changes; no call sites move) and sync just that path.
+/// Incremental scenario (issue #77): edit a callee's *signature*, not just
+/// surrounding text, and sync just its file.
 ///
-/// What this genuinely exercises (verified against `Indexer::sync_abs_paths`
-/// and `Db::update_file_symbols`/`resolve_null_target_edges`, per PR #82
-/// review):
-///
-/// - NULL-target re-resolution (`resolve_null_target_edges`) does real
-///   work here -- `caller.py`'s own edges are deleted and reinserted on
-///   every sync (`index_file`'s "still use delete-all-insert for now" for
-///   edges), and this pass re-links whatever `insert_edges` didn't bind
-///   inline.
-/// - `downstream.py` (see the fixture) gives the sync a genuine incoming
-///   edge -- `downstream.use_entry CALLS caller.entry` -- that must still
-///   resolve to `caller.entry` afterward, not go dangling or unresolved,
-///   even though only `caller.py` was re-synced.
-///
-/// What it does *not* exercise: any dangling-symbol-id path. A
-/// content-only edit like this one classifies `caller.py`'s symbols as
-/// "modified", which `Db::update_file_symbols` handles with an
-/// `UPDATE ... WHERE stable_id = ?` that keeps the existing row id -- so
-/// `caller.entry`'s id, and `downstream.use_entry`'s edge pointing at it,
-/// never actually change. Only a genuine rename (`diff.deleted` +
-/// `diff.added`) frees a row id; see
-/// `incremental_rename_leaves_no_dangling_or_wrong_targets` for that.
-///
-/// It also does *not* exercise `create_graph_version`/`carry_forward_files`
-/// -- those only run in `reindex`, not `sync_abs_paths`.
+/// Unlike a same-signature content edit (`Db::update_file_symbols` keeps
+/// the existing row id via `UPDATE ... WHERE stable_id = ?`), changing
+/// `entry`'s signature moves its stable_id: `caller.py`'s sync deletes the
+/// old `entry` row and inserts a new one under a fresh id. `downstream.py`
+/// (see the fixture) gives this a genuine incoming edge --
+/// `downstream.use_entry CALLS caller.entry` -- that must reattach to the
+/// new row, not go dangling or unresolved, even though `downstream.py`
+/// itself is never resynced.
 #[test]
-fn incremental_sync_after_editing_caller_matches_expected_edges() {
+fn incremental_sync_after_editing_callee_signature_reattaches_incoming_edge() {
     let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer.reindex().unwrap();
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let entry_id_before = indexer
+        .db()
+        .get_symbol_by_qualname("caller.entry", graph_version)
+        .unwrap()
+        .expect("caller.entry must exist before the edit")
+        .id;
 
-    let caller_path = repo_root.join("caller.py");
-    let mut contents = std::fs::read_to_string(&caller_path).unwrap();
-    contents.push_str("\n# a harmless trailing comment, to change caller's hash only\n");
-    std::fs::write(&caller_path, contents).unwrap();
+    add_entry_parameter(&repo_root);
     indexer.sync_rel_paths(&["caller.py".to_string()]).unwrap();
 
     let graph_version = indexer.db().current_graph_version().unwrap();
+    let entry_id_after = indexer
+        .db()
+        .get_symbol_by_qualname("caller.entry", graph_version)
+        .unwrap()
+        .expect("caller.entry must still exist after the edit")
+        .id;
+    assert_ne!(
+        entry_id_before, entry_id_after,
+        "precondition: changing entry's signature must free its old row and insert a new one -- \
+         otherwise this test isn't exercising a dangling-id path at all (see \
+         incremental_rename_leaves_no_dangling_or_wrong_targets for that shape)"
+    );
+    common::assert_no_dangling_edge_targets(indexer.db());
+
     let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let incoming_target = snapshot
+        .iter()
+        .find(|edge| edge.source_qualname == "downstream.use_entry" && edge.kind == "CALLS")
+        .and_then(|edge| edge.target_qualname.as_deref());
+    assert_eq!(
+        incoming_target,
+        Some("caller.entry"),
+        "downstream.use_entry's incoming edge must reattach to the new caller.entry row, not \
+         go dangling or unresolved, even though downstream.py itself was never resynced"
+    );
+
     let report = golden::compare(&snapshot, &expected_edges(), &fixture_modules());
     report.assert_floors("python", PRECISION_FLOOR, RECALL_FLOOR);
+
+    let fresh = common::fresh_reindex_snapshot("golden/python", add_entry_parameter);
+    common::assert_matches_fresh(&snapshot, &fresh);
 }
 
 /// Incremental scenario (issue #76): rename whichever `other_module.py`
@@ -293,7 +342,7 @@ fn incremental_rename_leaves_no_dangling_or_wrong_targets() {
          and nothing else was inserted in between."
     );
 
-    assert_no_dangling_edge_targets(indexer.db());
+    common::assert_no_dangling_edge_targets(indexer.db());
 
     let graph_version = indexer.db().current_graph_version().unwrap();
     let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
@@ -303,6 +352,25 @@ fn incremental_rename_leaves_no_dangling_or_wrong_targets() {
         &fixture_modules(),
     );
     report.assert_floors("python (post-rename)", PRECISION_FLOOR, RECALL_FLOOR);
+
+    // The final tree this scenario reaches: `other_module.local_util`
+    // renamed straight to `local_util_renamed` (the intermediate
+    // `local_util_bumped` step above only exists to force a genuine rowid
+    // reuse race, not to shape the final tree), `downstream.py` still
+    // calling the never-resynced `local_util_bumped`.
+    let fresh = common::fresh_reindex_snapshot("golden/python", |root| {
+        let downstream_path = root.join("downstream.py");
+        let mut downstream_src = std::fs::read_to_string(&downstream_path).unwrap();
+        downstream_src.push_str(DOWNSTREAM_EXTRA_CALL_SOURCE);
+        let downstream_src = downstream_src.replace("local_util", "local_util_bumped");
+        std::fs::write(&downstream_path, downstream_src).unwrap();
+
+        let other_module_path = root.join("other_module.py");
+        let contents = std::fs::read_to_string(&other_module_path).unwrap();
+        let renamed = contents.replacen("def local_util(", "def local_util_renamed(", 1);
+        std::fs::write(&other_module_path, renamed).unwrap();
+    });
+    common::assert_matches_fresh(&snapshot, &fresh);
 }
 
 /// Incremental scenario (issue #76): delete `caller.py` (which
@@ -329,7 +397,7 @@ fn incremental_delete_file_leaves_no_dangling_or_wrong_targets() {
     std::fs::remove_file(&caller_path).unwrap();
     indexer.sync_rel_paths(&["caller.py".to_string()]).unwrap();
 
-    assert_no_dangling_edge_targets(indexer.db());
+    common::assert_no_dangling_edge_targets(indexer.db());
 
     let graph_version = indexer.db().current_graph_version().unwrap();
     let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
@@ -339,4 +407,48 @@ fn incremental_delete_file_leaves_no_dangling_or_wrong_targets() {
         &fixture_modules(),
     );
     report.assert_floors("python (post-delete)", PRECISION_FLOOR, RECALL_FLOOR);
+
+    let fresh = common::fresh_reindex_snapshot("golden/python", |root| {
+        std::fs::remove_file(root.join("caller.py")).unwrap();
+    });
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// Incremental scenario (issue #77): add a new file (`worker.py`)
+/// defining a symbol that an existing call site could not previously
+/// resolve to anything -- `bare_call_method.bare_caller`'s bare
+/// `process()` call, UNRESOLVED in the base fixture because the only
+/// other `process` in the repo is a method (see `bare_call_method.py`'s
+/// docstring) -- then sync just that path.
+///
+/// Exercises the same NULL-target repair pass
+/// (`Db::resolve_null_target_edges`, run by `Indexer::sync_abs_paths`
+/// after every sync that touches a file) as the edit-callee test above,
+/// but from the opposite direction: instead of an existing target
+/// surviving a sync of its own file, a previously-unresolved *caller*
+/// (never resynced itself) picks up a brand new target once one exists.
+#[test]
+fn incremental_add_file_resolves_previously_unresolved_name() {
+    let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    std::fs::write(repo_root.join("worker.py"), WORKER_SOURCE).unwrap();
+    indexer.sync_rel_paths(&["worker.py".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let report = golden::compare(
+        &snapshot,
+        &expected_edges_after_worker_added(),
+        &fixture_modules(),
+    );
+    report.assert_floors("python (post-add)", PRECISION_FLOOR, RECALL_FLOOR);
+
+    let fresh = common::fresh_reindex_snapshot("golden/python", |root| {
+        std::fs::write(root.join("worker.py"), WORKER_SOURCE).unwrap();
+    });
+    common::assert_matches_fresh(&snapshot, &fresh);
 }

@@ -6,6 +6,15 @@
 //! retries the same tiers once more symbols exist. Every SQL candidate
 //! lookup lives in this module.
 //!
+//! Issue #77: a symbol keeps its id across a sync as long as its stable_id
+//! is unchanged (`differ::compute_symbol_diff` / `Db::update_file_symbols`),
+//! so an edge into it never needs relinking; a renamed, moved, deleted, or
+//! newly-added target is what falls to the tiers below. Every tier refuses
+//! (leaves the target NULL) rather than guessing on ambiguity — see
+//! `collapse_exact_candidates`, `build_exact_symbol_map`, and
+//! `Db::unbind_edges_for_qualnames` for exactly how each corner of that
+//! rule is applied.
+//!
 //! Tier order, first hit wins:
 //! 1. **exact** — `target_qualname` names a symbol verbatim.
 //! 2. **import** — one of the extractor's import-qualified candidates names
@@ -32,7 +41,7 @@
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
+use rusqlite::{Connection, Statement, ToSql, params};
 use std::collections::HashMap;
 
 /// An edge's target as the extractor saw it: what the resolver binds.
@@ -399,8 +408,10 @@ const HIERARCHY_SQL: &str = "SELECT target_symbol_id, target_qualname
        AND target_qualname IS NOT NULL
      ORDER BY id ASC";
 
-const EXACT_SQL: &str =
-    "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1";
+/// Every symbol sharing `target_qualname`, for `collapse_exact_candidates`
+/// to judge (issue #77's ambiguity rule) — deliberately no `LIMIT`, since
+/// that judgment needs to see every candidate, not just the first two.
+const EXACT_SQL: &str = "SELECT id, file_id, kind FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC";
 
 /// Suffix round of `resolve_import`: params are (trailing name,
 /// `.{candidate}`, graph_version). `substr(.., -n)` is an exact tail comparison,
@@ -416,14 +427,23 @@ const REPO_PYTHON_MODULE_SQL: &str = "SELECT 1 FROM symbols s JOIN files f ON s.
      WHERE s.name = ? AND s.kind = 'module' AND f.language = 'python'
      LIMIT 1";
 
-/// Which prepared candidate query `Resolver::unique` runs. `SameLang` has
-/// its own dedicated method (`same_lang_lookup`) instead — it needs
-/// per-row filtering that `unique`'s plain "at most one row" check
-/// doesn't do.
+/// One round of `resolve_import_file`: an exact qualname match restricted
+/// to `kind = 'module'`, so an `IMPORTS_FILE` candidate never binds to a
+/// same-named non-module symbol. `LIMIT 2` feeds `Resolver::unique`'s
+/// ambiguity guard.
+const MODULE_EXACT_SQL: &str =
+    "SELECT id FROM symbols WHERE qualname = ? AND kind = 'module' AND graph_version = ? LIMIT 2";
+
+/// Which prepared candidate query `Resolver::unique` runs. `Exact` has its
+/// own dedicated method (`Resolver::exact`) instead, since its ambiguity
+/// rule needs more than "at most one row" (see `collapse_exact_candidates`);
+/// `SameLang` likewise has `same_lang_lookup`, for its per-row visibility
+/// filtering.
 #[derive(Clone, Copy)]
 enum Lookup {
     AnyLang,
     ImportSuffix,
+    Module,
 }
 
 /// The guarded name-fallback tier's two guards (see the module doc and
@@ -469,6 +489,7 @@ pub(crate) struct Resolver<'c> {
     hierarchy: Statement<'c>,
     import_suffix: Statement<'c>,
     repo_python_module: Statement<'c>,
+    module_exact: Statement<'c>,
     /// Set when any tier of the current `resolve` saw 2+ candidates.
     saw_ambiguous: bool,
     /// Set when `same_lang_lookup` (the guarded name-fallback tier only)
@@ -488,6 +509,7 @@ impl<'c> Resolver<'c> {
             hierarchy: conn.prepare(HIERARCHY_SQL)?,
             import_suffix: conn.prepare(IMPORT_SUFFIX_SQL)?,
             repo_python_module: conn.prepare(REPO_PYTHON_MODULE_SQL)?,
+            module_exact: conn.prepare(MODULE_EXACT_SQL)?,
             saw_ambiguous: false,
             saw_private: false,
         })
@@ -503,6 +525,20 @@ impl<'c> Resolver<'c> {
     ) -> Result<Resolution> {
         self.saw_ambiguous = false;
         self.saw_private = false;
+
+        // `IMPORTS_FILE` with a populated candidate list (Python) always
+        // resolves through its own ordered, `module`-kind-restricted tier
+        // instead — see `resolve_import_file`'s doc. An `IMPORTS_FILE` edge
+        // whose extractor never populates candidates (JS/TS, Bicep) falls
+        // through unchanged, to the same exact tier every other edge kind
+        // uses below.
+        if r.edge_kind == "IMPORTS_FILE" && !r.import_candidates.is_empty() {
+            return Ok(match self.resolve_import_file(r.import_candidates)? {
+                Some(id) => resolved(id, ResolutionKind::Import),
+                None if self.saw_ambiguous => Resolution::Unresolved(UnresolvedReason::Ambiguous),
+                None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
+            });
+        }
 
         if let Some(qn) = r.target_qualname
             && let Some(id) = self.exact(qn, symbol_map)?
@@ -559,14 +595,22 @@ impl<'c> Resolver<'c> {
         })
     }
 
+    /// The exact-qualname tier. `collapse_exact_candidates` decides when
+    /// more than one symbol shares `qualname`: an overload set (same file,
+    /// same kind) collapses to the lowest id, anything else refuses rather
+    /// than guess — issue #77's ambiguity rule, so incremental and fresh
+    /// always agree on an ambiguous name.
     fn exact(&mut self, qualname: &str, symbol_map: &HashMap<String, i64>) -> Result<Option<i64>> {
         if let Some(&id) = symbol_map.get(qualname) {
             return Ok(Some(id));
         }
-        Ok(self
-            .exact
-            .query_row(params![qualname, self.graph_version], |row| row.get(0))
-            .optional()?)
+        let gv = self.graph_version;
+        let candidates = query_exact_candidates(&mut self.exact, qualname, gv)?;
+        let resolved = collapse_exact_candidates(&candidates);
+        if resolved.is_none() && candidates.len() > 1 {
+            self.saw_ambiguous = true;
+        }
+        Ok(resolved)
     }
 
     /// Ambiguity guard for every name-based lookup: bind only when exactly
@@ -583,6 +627,7 @@ impl<'c> Resolver<'c> {
         let stmt = match lookup {
             Lookup::AnyLang => &mut self.any_lang,
             Lookup::ImportSuffix => &mut self.import_suffix,
+            Lookup::Module => &mut self.module_exact,
         };
         let mut rows = stmt.query(query_params)?;
         let Some(row) = rows.next()? else {
@@ -970,6 +1015,33 @@ impl<'c> Resolver<'c> {
         Ok(None)
     }
 
+    /// Resolve an `IMPORTS_FILE` edge's ordered candidate list (see
+    /// `EdgeInput::import_candidates` / `python::resolve_import_file_edges`)
+    /// to the first candidate naming exactly one `module`-kind symbol.
+    /// Unlike `resolve_import` above (unique across *every* candidate),
+    /// this is first-hit: the extractor orders candidates from most to
+    /// least specific (a `from pkg import mod` import's `pkg.mod`
+    /// submodule guess before its `pkg` package fallback), so once the
+    /// more specific module exists it must win over an already-bound
+    /// fallback, not merely disambiguate an otherwise-tied name.
+    fn resolve_import_file(&mut self, candidates: &[String]) -> Result<Option<i64>> {
+        let gv = self.graph_version;
+        let was_ambiguous = std::mem::take(&mut self.saw_ambiguous);
+        for candidate in candidates {
+            if let Some(id) = self.unique(Lookup::Module, params![candidate, gv])? {
+                self.saw_ambiguous = was_ambiguous;
+                return Ok(Some(id));
+            }
+            // An ambiguous candidate stops the walk: falling through to a
+            // less specific one would be a guess.
+            if self.saw_ambiguous {
+                return Ok(None);
+            }
+        }
+        self.saw_ambiguous = was_ambiguous;
+        Ok(None)
+    }
+
     /// Whether a Python edge's unresolved import candidates point into this
     /// repo: a relative import (`.mod.x`, leading dot), or one whose root
     /// package has a Python `module` symbol here. When false, the import is
@@ -1007,9 +1079,10 @@ fn resolved(target_id: i64, kind: ResolutionKind) -> Resolution {
     Resolution::Resolved { target_id, kind }
 }
 
-/// One `resolve_null_target_edges` pass-3 row: everything `Resolver::
-/// resolve_by_name` needs for one unresolved edge. A named struct rather
-/// than a tuple, since it's wide enough to trip `clippy::type_complexity`.
+/// One `resolve_null_target_edges` pass-3 row: everything
+/// `Resolver::resolve_by_name` needs for one unresolved edge. A named
+/// struct rather than a tuple, since it's wide enough to trip
+/// `clippy::type_complexity`.
 struct UnresolvedNameRow {
     edge_id: i64,
     target_qualname: String,
@@ -1021,18 +1094,152 @@ struct UnresolvedNameRow {
     source_qualname: Option<String>,
 }
 
+/// The in-batch fast path `Resolver::exact` (and `resolve_import`, which
+/// calls it) consult before falling through to `EXACT_SQL` — every symbol
+/// just written for one file, keyed by qualname, collapsed through
+/// `collapse_exact_candidates`'s own rule (all same-file here by
+/// construction, so only its kind check does anything: issue #77's
+/// `@overload`/overload-signature case). A qualname whose same-file
+/// symbols differ in kind (e.g. `class g` + `def g`) is left out of the
+/// map entirely, so the SQL fallback re-judges it the same way.
+pub(crate) fn build_exact_symbol_map(symbols: &[crate::model::Symbol]) -> HashMap<String, i64> {
+    let mut by_qualname: HashMap<&str, Vec<(i64, &str)>> = HashMap::new();
+    for symbol in symbols {
+        // Every symbol here already comes from the one file this batch just
+        // wrote, so there's no file to compare (unlike
+        // `collapse_exact_candidates`'s cross-file rows) — `same_kind_min`
+        // alone is this fast path's whole rule.
+        by_qualname
+            .entry(symbol.qualname.as_str())
+            .or_default()
+            .push((symbol.id, symbol.kind.as_str()));
+    }
+    let mut map = HashMap::with_capacity(by_qualname.len());
+    for (qualname, candidates) in by_qualname {
+        if let Some(id) = same_kind_min(&candidates) {
+            map.insert(qualname.to_string(), id);
+        }
+    }
+    map
+}
+
+/// Collapses `candidates` to the lowest id when every one shares the same
+/// `kind` (an overload set) — `None` for an empty slice or a kind
+/// mismatch. Shared by `build_exact_symbol_map` (no file to compare) and
+/// `collapse_exact_candidates` (file check applied separately, first).
+fn same_kind_min(candidates: &[(i64, &str)]) -> Option<i64> {
+    let (_, first_kind) = candidates.first()?;
+    candidates
+        .iter()
+        .all(|(_, kind)| kind == first_kind)
+        // `candidates` is non-empty here (`first()?` above already
+        // returned for an empty slice), so `.min()` always has a row.
+        .then(|| candidates.iter().map(|(id, _)| *id).min().unwrap())
+}
+
+/// Issue #77's ambiguity rule for a qualname naming more than one symbol
+/// (`candidates` as `(id, file_id, kind)`, `EXACT_SQL`'s row shape):
+/// collapse to the lowest id when every candidate shares both a file and a
+/// kind (overloads) — the same symbol a base, non-ambiguous full reindex
+/// already binds to. Any other shape (different files, or different kinds,
+/// e.g. `class g` + `def g`) is genuinely ambiguous: `None`, never a guess.
+/// Shared by `Resolver::exact`'s SQL fallback and
+/// `resolve_null_target_edges`'s pass 1.
+fn collapse_exact_candidates(candidates: &[(i64, i64, String)]) -> Option<i64> {
+    let (_, first_file, _) = candidates.first()?;
+    if !candidates
+        .iter()
+        .all(|(_, file_id, _)| file_id == first_file)
+    {
+        return None;
+    }
+    let by_kind: Vec<(i64, &str)> = candidates
+        .iter()
+        .map(|(id, _, kind)| (*id, kind.as_str()))
+        .collect();
+    same_kind_min(&by_kind)
+}
+
+/// Runs `EXACT_SQL` (or an equivalent prepared statement) for `qualname`,
+/// collecting every `(id, file_id, kind)` candidate row for
+/// `collapse_exact_candidates` to judge.
+fn query_exact_candidates(
+    stmt: &mut Statement<'_>,
+    qualname: &str,
+    graph_version: i64,
+) -> Result<Vec<(i64, i64, String)>> {
+    let rows = stmt.query_map(params![qualname, graph_version], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 impl Db {
+    /// Issue #77: clears `target_symbol_id`/`resolution_kind` on every
+    /// cross-file edge bound to a symbol named by one of `qualnames` (the
+    /// qualnames a sync batch just added) — whether that's the edge's own
+    /// stored `target_qualname` text, or its already-resolved target's
+    /// qualname (a caller-module placeholder, e.g. an import-bound bare
+    /// call, never matches by text). Excludes a same-file edge: that
+    /// binding came from `build_exact_symbol_map`'s in-batch fast path,
+    /// which never sees other files, so a same-qualname symbol elsewhere
+    /// can't make it ambiguous. Call before `resolve_null_target_edges`,
+    /// which re-judges the cleared rows under its ambiguity rule.
+    pub(crate) fn unbind_edges_for_qualnames(
+        &self,
+        qualnames: &std::collections::HashSet<String>,
+        graph_version: i64,
+    ) -> Result<usize> {
+        if qualnames.is_empty() {
+            return Ok(0);
+        }
+        let placeholders = vec!["?"; qualnames.len()].join(",");
+        let sql = format!(
+            "UPDATE edges SET target_symbol_id = NULL, resolution_kind = NULL
+             WHERE graph_version = ? AND target_symbol_id IS NOT NULL
+               AND (
+                 target_qualname IN ({placeholders})
+                 OR (SELECT s.qualname FROM symbols s WHERE s.id = edges.target_symbol_id)
+                     IN ({placeholders})
+               )
+               AND file_id != (SELECT s.file_id FROM symbols s WHERE s.id = edges.target_symbol_id)"
+        );
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&sql)?;
+        let mut p: Vec<Box<dyn ToSql>> = vec![Box::new(graph_version)];
+        p.extend(
+            qualnames
+                .iter()
+                .map(|q| Box::new(q.clone()) as Box<dyn ToSql>),
+        );
+        p.extend(
+            qualnames
+                .iter()
+                .map(|q| Box::new(q.clone()) as Box<dyn ToSql>),
+        );
+        Ok(stmt.execute(rusqlite::params_from_iter(p.iter().map(|b| b.as_ref())))?)
+    }
+
     /// Repair pass: retry resolution for edges whose target is still NULL,
     /// now that more symbols may exist (e.g. after an incremental reindex
     /// carried unchanged files forward — fresh files' edges are inserted
     /// *before* that, see `Indexer::reindex`). Three passes, same tier
     /// order as `Resolver::resolve`:
-    /// 1. exact, as one bulk UPDATE;
+    /// 1. exact, as one bulk UPDATE applying `collapse_exact_candidates`'s
+    ///    rule in SQL — the same rule `Resolver::exact` uses;
     /// 2. the import tier, for rows with `import_candidates`;
     /// 3. the name-based tiers, for rows not refused as external
     ///    (`receiver_type = ''`).
     ///
-    /// Processing is done in batches of 1000 rows to avoid long lock holds.
+    /// Starts by clearing `resolution_kind` on every row issue #76's
+    /// `ON DELETE SET NULL` foreign key already nulled — that action sets
+    /// `target_symbol_id` but can't touch `resolution_kind` itself, and
+    /// this module is the only producer of that column (see the module
+    /// doc), so tidying it up here keeps that true rather than needing a
+    /// trigger.
+    ///
+    /// Passes 2 and 3 process in batches of 1000 rows to avoid long lock
+    /// holds.
     ///
     /// ponytail: pass 2 only retries edges whose `import_candidates` column
     /// is non-NULL, i.e. ones inserted after migration 14 added that
@@ -1042,43 +1249,58 @@ impl Db {
     pub fn resolve_null_target_edges(&self, graph_version: i64) -> Result<usize> {
         let mut total_resolved = 0;
 
-        // Pass 1: exact. The correlated subquery is evaluated against the
-        // pre-update row on both sides, so `resolution_kind` is tagged only
-        // for rows this pass actually binds.
-        total_resolved += self.conn().execute(
-            "UPDATE edges SET
-                target_symbol_id = (
-                    SELECT s.id FROM symbols s
-                    WHERE s.qualname = edges.target_qualname
-                    AND s.graph_version = edges.graph_version
-                    ORDER BY s.id ASC
-                    LIMIT 1
-                ),
-                resolution_kind = CASE WHEN (
-                    SELECT s.id FROM symbols s
-                    WHERE s.qualname = edges.target_qualname
-                    AND s.graph_version = edges.graph_version
-                    LIMIT 1
-                ) IS NOT NULL THEN ? ELSE resolution_kind END
-            WHERE target_symbol_id IS NULL
-            AND target_qualname IS NOT NULL
-            AND graph_version = ?",
-            params![ResolutionKind::Exact.as_str(), graph_version],
+        self.conn().execute(
+            "UPDATE edges SET resolution_kind = NULL
+             WHERE target_symbol_id IS NULL AND resolution_kind IS NOT NULL AND graph_version = ?",
+            params![graph_version],
         )?;
 
         const BATCH_SIZE: usize = 1000;
+
+        // Pass 1: exact, as one bulk `UPDATE ... FROM` — the derived table
+        // groups every symbol by qualname once (SQLite ≥ 3.33) instead of
+        // running the same aggregate as two separate correlated
+        // subqueries, and applies `collapse_exact_candidates`'s rule in
+        // SQL: `HAVING` yields a qualname's lowest id only when every
+        // symbol sharing it also shares a file and kind, else no row for
+        // that qualname at all. Excludes `IMPORTS_FILE` rows with a
+        // candidate list: those go through pass 2's `resolve_import_file`
+        // instead, which restricts to `module`-kind symbols — this bulk
+        // match doesn't, so it could otherwise bind one to a same-named
+        // non-module symbol before pass 2 ever sees it.
+        total_resolved += self.conn().execute(
+            "UPDATE edges SET
+                target_symbol_id = agg.min_id,
+                resolution_kind = ?
+            FROM (
+                SELECT qualname, MIN(id) AS min_id
+                FROM symbols
+                WHERE graph_version = ?
+                GROUP BY qualname
+                HAVING COUNT(DISTINCT file_id) = 1 AND COUNT(DISTINCT kind) = 1
+            ) AS agg
+            WHERE edges.target_qualname = agg.qualname
+            AND edges.target_symbol_id IS NULL
+            AND edges.graph_version = ?
+            AND NOT (edges.kind = 'IMPORTS_FILE' AND edges.import_candidates IS NOT NULL)",
+            params![ResolutionKind::Exact.as_str(), graph_version, graph_version],
+        )?;
+
         let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
-        // Pass 2: the import tier. `insert_edges` stored these as
-        // unresolved + `receiver_type = ''` when the import's target
-        // wasn't indexed yet, so pass 3 never touches them; this is the
-        // only retry they get.
+        // Pass 2: the import tier, for rows with `import_candidates` --
+        // `insert_edges` stored these as unresolved (plus, for `CALLS`/
+        // `RPC_CALL`, `receiver_type = ''`) when the import's target wasn't
+        // indexed yet, so pass 3 never touches them; this is the only retry
+        // they get. `IMPORTS_FILE` rows use `resolve_import_file` (first
+        // candidate that names a `module` symbol); every other kind uses
+        // `resolve_import` (unique across every candidate), same as pass 1.
         loop {
             let mut conn = self.conn();
             let tx = conn.transaction()?;
-            let batch: Vec<(i64, String, String)> = {
+            let batch: Vec<(i64, String, String, String)> = {
                 let mut stmt = tx.prepare(
-                    "SELECT e.id, e.import_candidates, COALESCE(f.language, 'unknown')
+                    "SELECT e.id, e.import_candidates, COALESCE(f.language, 'unknown'), e.kind
                      FROM edges e
                      JOIN files f ON e.file_id = f.id
                      WHERE e.target_symbol_id IS NULL
@@ -1091,6 +1313,7 @@ impl Db {
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
                     ))
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()?
@@ -1105,11 +1328,14 @@ impl Db {
                 let mut update_stmt = tx.prepare(
                     "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
                 )?;
-                for (edge_id, candidates_json, source_lang) in &batch {
+                for (edge_id, candidates_json, source_lang, edge_kind) in &batch {
                     let candidates = decode_import_candidates(candidates_json);
-                    if let Some(target_id) =
+                    let target_id = if edge_kind == "IMPORTS_FILE" {
+                        resolver.resolve_import_file(&candidates)?
+                    } else {
                         resolver.resolve_import(&candidates, &empty_symbol_map, source_lang)?
-                    {
+                    };
+                    if let Some(target_id) = target_id {
                         update_stmt.execute(params![
                             target_id,
                             ResolutionKind::Import.as_str(),
