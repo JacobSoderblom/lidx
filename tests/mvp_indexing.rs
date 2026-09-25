@@ -601,22 +601,19 @@ fn incremental_rename_repairs_dangling_target_symbol_id() {
         "No edge should have a target_symbol_id pointing at a non-existent symbol rowid"
     );
 
-    // The old greet rowid must not appear as a dangling pointer in edges from caller.py
-    // (which originally called greet). If rowid was reused for greet_v2, those edges
-    // should have been NULLed during repair (not silently re-pointed at greet_v2).
+    // No edge may still target the old greet rowid (ids are never reused,
+    // issue #76). Checked by id: caller.py's IMPORTS_FILE edge legitimately
+    // keeps `helper.greet` as target_qualname while bound to `helper`.
     let mispointed_greet_edges: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM edges
-             WHERE target_qualname IN ('helper.greet', 'caller.greet', 'greet')
-               AND target_symbol_id IS NOT NULL
-               AND graph_version = ?",
-            rusqlite::params![graph_version],
+            "SELECT COUNT(*) FROM edges WHERE target_symbol_id = ? AND graph_version = ?",
+            rusqlite::params![greet.id, graph_version],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(
         mispointed_greet_edges, 0,
-        "Edges targeting 'helper.greet' must have target_symbol_id = NULL after rename (greet no longer exists)"
+        "No edge may still target helper.greet's old rowid after rename (greet no longer exists)"
     );
 
     // The new symbol greet_v2 must exist; old greet must be gone

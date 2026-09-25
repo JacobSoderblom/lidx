@@ -182,46 +182,60 @@ pub fn resolve_import_file_edges(
             continue;
         }
         let (import_kind, base_module) = import_kind_and_base(edge.evidence_snippet.as_deref());
-        let mut candidates = Vec::new();
+        let mut raw_candidates = Vec::new();
         if !target.contains('*') {
-            candidates.push(target.to_string());
+            raw_candidates.push(target.to_string());
         }
         if import_kind == ImportKind::From
-            && let Some(base) = base_module
+            && let Some(base) = base_module.as_deref()
             && !base.contains('*')
         {
-            candidates.push(base);
+            raw_candidates.push(base.to_string());
         }
-        let mut resolved_edge = None;
-        for candidate in candidates {
-            let abs_module = match absolutize_module(&candidate, &base_package) {
-                Some(value) => value,
-                None => continue,
-            };
-            if let Some(dst_path) = resolve_module_to_file(repo_root, &abs_module) {
-                resolved_edge = Some(EdgeInput {
-                    kind: "IMPORTS_FILE".to_string(),
-                    source_qualname: edge.source_qualname.clone(),
-                    target_qualname: Some(abs_module),
-                    detail: Some(
-                        json!({
-                            "src_path": file_rel_path,
-                            "dst_path": dst_path,
-                            "confidence": 1.0,
-                        })
-                        .to_string(),
-                    ),
-                    evidence_snippet: edge.evidence_snippet.clone(),
-                    evidence_start_line: edge.evidence_start_line,
-                    evidence_end_line: edge.evidence_end_line,
-                    ..Default::default()
-                });
-                break;
-            }
-        }
-        if let Some(edge) = resolved_edge {
-            resolved.push(edge);
-        }
+        // Issue #77: absolutize every raw candidate up front, in the same
+        // most-to-least-specific order the raw list above is already in (a
+        // `from pkg import mod` import's `pkg.mod` submodule guess before
+        // its `pkg` package fallback) — never picking based on disk
+        // existence here, so an importer file that's never re-extracted
+        // still has a stable, reproducible candidate list for a later
+        // incremental sync to re-judge. `target_qualname` is always the
+        // first candidate, for display; which candidate the edge actually
+        // binds to is `db::resolver::Resolver::resolve_import_file`'s call
+        // — it tries these same candidates in this same order against the
+        // symbol graph, so a fresh reindex and an incremental repair pass
+        // agree once the right module file exists, instead of this
+        // extractor's disk check (now `detail.dst_path` only, below) baking
+        // in a guess a later sync has no way to redo for an importer file
+        // it never re-extracts.
+        let candidates: Vec<String> = raw_candidates
+            .iter()
+            .filter_map(|candidate| absolutize_module(candidate, &base_package))
+            .collect();
+        let Some(target_qualname) = candidates.first().cloned() else {
+            continue;
+        };
+        let dst_path = candidates
+            .iter()
+            .find_map(|candidate| resolve_module_to_file(repo_root, candidate));
+        let confidence = if dst_path.is_some() { 1.0 } else { 0.0 };
+        resolved.push(EdgeInput {
+            kind: "IMPORTS_FILE".to_string(),
+            source_qualname: edge.source_qualname.clone(),
+            target_qualname: Some(target_qualname),
+            detail: Some(
+                json!({
+                    "src_path": file_rel_path,
+                    "dst_path": dst_path,
+                    "confidence": confidence,
+                })
+                .to_string(),
+            ),
+            evidence_snippet: edge.evidence_snippet.clone(),
+            evidence_start_line: edge.evidence_start_line,
+            evidence_end_line: edge.evidence_end_line,
+            import_candidates: candidates,
+            ..Default::default()
+        });
     }
     edges.extend(resolved);
 }
