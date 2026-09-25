@@ -1068,6 +1068,15 @@ impl Db {
             let mut exact_lookup_stmt = tx.prepare(
                 "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
             )?;
+            // Issue #78: one row per `Unresolved` outcome, so
+            // `Db::retry_unresolved_references` can retry it later without
+            // rescanning every NULL-target edge.
+            let mut unresolved_insert_stmt = tx.prepare(
+                "INSERT INTO unresolved_references
+                 (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail,
+                  reason, import_candidates, graph_version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )?;
             let mut resolver = resolver::Resolver::new(&tx, graph_version)?;
             // Look up the source file's language and path — same-language
             // preference and the guarded name-fallback's visibility check
@@ -1123,7 +1132,28 @@ impl Db {
                     resolver::encode_import_candidates(&edge.import_candidates),
                     edge.bare_call,
                 ])?;
+                let edge_id = tx.last_insert_rowid();
                 count += 1;
+
+                if let Some(reason) = resolution.unresolved_reason()
+                    && let Some((reference_name, name_tail)) =
+                        resolver::store_reference_name_and_tail(
+                            edge.target_qualname.as_deref(),
+                            &edge.import_candidates,
+                        )
+                {
+                    unresolved_insert_stmt.execute(params![
+                        edge_id,
+                        source_id,
+                        file_id,
+                        &edge.kind,
+                        reference_name,
+                        name_tail,
+                        reason.as_str(),
+                        resolver::encode_import_candidates(&edge.import_candidates),
+                        graph_version,
+                    ])?;
+                }
             }
         }
         tx.commit()?;

@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -411,6 +411,51 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         migrate_symbol_id_sequence(conn)?;
     }
 
+    if existing < 18 {
+        // Issue #78: an unresolved reference becomes a first-class,
+        // retriable row instead of just a NULL `edges.target_symbol_id`.
+        // `Db::insert_edges` writes one row here for every
+        // `Resolver::resolve` call that returns `Unresolved` (skipped when
+        // there's no reference name or import candidate to key on at all
+        // -- a targetless edge has nothing for a retry to match against).
+        // `name_tail` is the reference's trailing name segment
+        // (`resolver::qualname_trailing_name`), what
+        // `Db::retry_unresolved_references` joins against newly inserted
+        // symbols to find references worth retrying, instead of
+        // rescanning every NULL-target edge. `edge_id` is `UNIQUE`: an
+        // edge has at most one current unresolved outcome.
+        //
+        // NULL-target edges are still written and still repaired by
+        // `resolve_null_target_edges` unchanged -- this table is
+        // additive, not yet the read path's source of truth (that
+        // contract change is a follow-up).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS unresolved_references (
+                id INTEGER PRIMARY KEY,
+                edge_id INTEGER NOT NULL UNIQUE,
+                source_symbol_id INTEGER,
+                file_id INTEGER NOT NULL,
+                edge_kind TEXT NOT NULL,
+                reference_name TEXT,
+                name_tail TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                import_candidates TEXT,
+                graph_version INTEGER NOT NULL,
+                FOREIGN KEY(edge_id) REFERENCES edges(id) ON DELETE CASCADE,
+                FOREIGN KEY(source_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_unresolved_references_name
+                ON unresolved_references(reference_name);
+            CREATE INDEX IF NOT EXISTS idx_unresolved_references_name_tail
+                ON unresolved_references(name_tail);
+            CREATE INDEX IF NOT EXISTS idx_unresolved_references_gv
+                ON unresolved_references(graph_version);
+            CREATE INDEX IF NOT EXISTS idx_unresolved_references_reason
+                ON unresolved_references(reason);",
+        )?;
+    }
+
     if existing < SCHEMA_VERSION {
         conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?)
@@ -808,5 +853,72 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migrate_creates_unresolved_references_table_with_cascading_fks() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        migrate(&conn).unwrap();
+
+        for column in [
+            "id",
+            "edge_id",
+            "source_symbol_id",
+            "file_id",
+            "edge_kind",
+            "reference_name",
+            "name_tail",
+            "reason",
+            "import_candidates",
+            "graph_version",
+        ] {
+            assert!(
+                has_column(&conn, "unresolved_references", column).unwrap(),
+                "unresolved_references missing column {column}"
+            );
+        }
+
+        conn.execute(
+            "INSERT INTO files (id, path, hash, language, size, modified) \
+             VALUES (1, 'a.py', 'h', 'python', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO symbols \
+                (id, file_id, kind, name, qualname, start_line, start_col, end_line, end_col, \
+                 start_byte, end_byte, graph_version) \
+             VALUES (1, 1, 'function', 'foo', 'a.foo', 1, 0, 1, 0, 0, 0, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO edges (id, file_id, source_symbol_id, kind, target_qualname, graph_version) \
+             VALUES (1, 1, 1, 'CALLS', 'bar', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unresolved_references \
+                (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail, reason, graph_version) \
+             VALUES (1, 1, 1, 'CALLS', 'bar', 'bar', 'no_candidates', 1)",
+            [],
+        )
+        .unwrap();
+
+        // Deleting the edge (a reindex deleting and re-inserting a file's
+        // edges, or a pruned graph version) must cascade -- otherwise a
+        // stale row accumulates forever, per issue #78's cleanup requirement.
+        conn.execute("DELETE FROM edges WHERE id = 1", []).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM unresolved_references", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            remaining, 0,
+            "deleting the edge must cascade to its unresolved_references row"
+        );
     }
 }

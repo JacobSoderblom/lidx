@@ -127,6 +127,18 @@ pub(crate) enum UnresolvedReason {
     Private,
 }
 
+impl UnresolvedReason {
+    /// The `unresolved_references.reason` column value (issue #78).
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::NoCandidates => "no_candidates",
+            Self::Ambiguous => "ambiguous",
+            Self::External => "external",
+            Self::Private => "private",
+        }
+    }
+}
+
 /// The outcome of resolving one [`Reference`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Resolution {
@@ -161,6 +173,15 @@ impl Resolution {
         match self {
             Self::Unresolved(UnresolvedReason::External) => Some(""),
             _ => extracted,
+        }
+    }
+
+    /// `Some(reason)` when this outcome is `Unresolved` -- issue #78's
+    /// `Db::insert_edges` hook into `unresolved_references`.
+    pub(crate) fn unresolved_reason(self) -> Option<UnresolvedReason> {
+        match self {
+            Self::Resolved { .. } => None,
+            Self::Unresolved(reason) => Some(reason),
         }
     }
 }
@@ -1421,8 +1442,188 @@ impl Db {
             }
         }
 
+        // Issue #78: this rescan (unlike `retry_unresolved_references`)
+        // resolves edges directly by SQL without consulting or clearing
+        // `unresolved_references`, so a row stored for one of the edges it
+        // just resolved would otherwise linger and over-report in
+        // `unresolved_reference_summary` -- delete anything the store still
+        // has an opinion on that no longer has a NULL target.
+        self.conn().execute(
+            "DELETE FROM unresolved_references
+             WHERE graph_version = ?
+               AND edge_id IN (
+                   SELECT id FROM edges WHERE graph_version = ? AND target_symbol_id IS NOT NULL
+               )",
+            params![graph_version, graph_version],
+        )?;
+
         Ok(total_resolved)
     }
+
+    /// Issue #78: retry only `unresolved_references` rows whose reference
+    /// name or trailing name segment (`name_tail`) matches a symbol
+    /// inserted since the last call, instead of `resolve_null_target_edges`'s
+    /// rescan of every NULL-target edge. The `unresolved_reference_watermark`
+    /// meta key tracks the highest `symbols.id` already considered, so a
+    /// call with nothing new inserted is one cheap `MAX(id)` check.
+    ///
+    /// Each candidate is re-run through the *full* `Resolver::resolve` tier
+    /// order (not just the tier that failed originally), using the
+    /// reference's original context -- receiver type, import candidates,
+    /// bare call, source language/file/caller qualname -- reconstructed
+    /// from the stored row and its edge/file/symbol joins, identical to how
+    /// `Db::insert_edges` resolved it the first time. A resolved reference
+    /// updates its edge (`target_symbol_id`/`resolution_kind`) and leaves
+    /// the store; a still-unresolved one is left in place for a later
+    /// pass, its original `reason` unchanged even if a different one would
+    /// now apply.
+    ///
+    /// The join is a heuristic proxy for "worth retrying", not the
+    /// resolver's own suffix-matching rule (`resolve_import`'s second
+    /// round) -- a reference only a suffix match could satisfy, with no
+    /// exact qualname or bare-name hit, can still be missed here.
+    /// `resolve_null_target_edges` remains the safety net for that, and for
+    /// every edge inserted before this table existed.
+    pub fn retry_unresolved_references(&self, graph_version: i64) -> Result<usize> {
+        let watermark = self
+            .get_meta_i64("unresolved_reference_watermark")?
+            .unwrap_or(0);
+        let max_symbol_id: i64 =
+            self.read_conn()?
+                .query_row("SELECT COALESCE(MAX(id), 0) FROM symbols", [], |row| {
+                    row.get(0)
+                })?;
+        if max_symbol_id <= watermark {
+            return Ok(0);
+        }
+
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut total_resolved = 0;
+
+        let candidates: Vec<StoreRetryRow> = {
+            let mut stmt = tx.prepare(
+                "SELECT DISTINCT ur.id, ur.edge_id, ur.edge_kind, ur.reference_name,
+                        ur.import_candidates, e.receiver_type, e.bare_call,
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname
+                 FROM unresolved_references ur
+                 JOIN edges e ON e.id = ur.edge_id
+                 JOIN files f ON f.id = ur.file_id
+                 LEFT JOIN symbols src ON src.id = ur.source_symbol_id
+                 JOIN symbols s ON (s.qualname = ur.reference_name OR s.name = ur.name_tail)
+                 WHERE ur.graph_version = ?1
+                   AND s.id > ?2
+                   AND s.graph_version = ?1",
+            )?;
+            let rows = stmt.query_map(params![graph_version, watermark], |row| {
+                Ok(StoreRetryRow {
+                    store_id: row.get(0)?,
+                    edge_id: row.get(1)?,
+                    edge_kind: row.get(2)?,
+                    reference_name: row.get(3)?,
+                    import_candidates: row.get(4)?,
+                    receiver_type: row.get(5)?,
+                    bare_call: row.get(6)?,
+                    source_lang: row.get(7)?,
+                    file_path: row.get(8)?,
+                    source_qualname: row.get(9)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        {
+            let mut resolver = Resolver::new(&tx, graph_version)?;
+            let mut update_edge = tx.prepare(
+                "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
+            )?;
+            let mut delete_store = tx.prepare("DELETE FROM unresolved_references WHERE id = ?")?;
+            let empty_symbol_map: HashMap<String, i64> = HashMap::new();
+
+            for row in &candidates {
+                let import_candidates = row
+                    .import_candidates
+                    .as_deref()
+                    .map(decode_import_candidates)
+                    .unwrap_or_default();
+                let resolution = resolver.resolve(
+                    &Reference {
+                        target_qualname: row.reference_name.as_deref(),
+                        edge_kind: &row.edge_kind,
+                        receiver_type: row.receiver_type.as_deref(),
+                        import_candidates: &import_candidates,
+                        source_lang: &row.source_lang,
+                        source_file_path: &row.file_path,
+                        source_qualname: row.source_qualname.as_deref(),
+                        bare_call: row.bare_call,
+                    },
+                    &empty_symbol_map,
+                )?;
+                if let Resolution::Resolved { target_id, kind } = resolution {
+                    update_edge.execute(params![target_id, kind.as_str(), row.edge_id])?;
+                    delete_store.execute(params![row.store_id])?;
+                    total_resolved += 1;
+                }
+            }
+        }
+
+        // Advance the watermark inside the same transaction, not via
+        // `Db::set_meta_i64` after `commit` -- that would call `self.conn()`
+        // again while `conn` (acquired above) is still holding the write
+        // mutex, deadlocking against itself.
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('unresolved_reference_watermark', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![max_symbol_id.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(total_resolved)
+    }
+
+    /// Unresolved reference counts by reason, grouped by language, for the
+    /// golden-corpus scoreboard (issue #78) -- how many `unresolved_references`
+    /// rows `graph_version` currently holds, per `(files.language, reason)`
+    /// pair. Test/reporting support, same spirit as `edges_snapshot`.
+    pub fn unresolved_reference_summary(
+        &self,
+        graph_version: i64,
+    ) -> Result<Vec<crate::model::UnresolvedReferenceSummary>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(f.language, 'unknown'), ur.reason, COUNT(*)
+             FROM unresolved_references ur
+             JOIN files f ON f.id = ur.file_id
+             WHERE ur.graph_version = ?
+             GROUP BY f.language, ur.reason
+             ORDER BY f.language, ur.reason",
+        )?;
+        let rows = stmt.query_map(params![graph_version], |row| {
+            Ok(crate::model::UnresolvedReferenceSummary {
+                language: row.get(0)?,
+                reason: row.get(1)?,
+                count: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+}
+
+/// One `retry_unresolved_references` candidate row: everything
+/// `Resolver::resolve` needs to retry a stored unresolved reference,
+/// reconstructed from `unresolved_references` and its edge/file/symbol
+/// joins. A named struct rather than a tuple for the same reason as
+/// `UnresolvedNameRow`: wide enough to trip `clippy::type_complexity`.
+struct StoreRetryRow {
+    store_id: i64,
+    edge_id: i64,
+    edge_kind: String,
+    reference_name: Option<String>,
+    import_candidates: Option<String>,
+    receiver_type: Option<String>,
+    bare_call: bool,
+    source_lang: String,
+    file_path: String,
+    source_qualname: Option<String>,
 }
 
 /// Encode `EdgeInput::import_candidates` for the `edges.import_candidates`
@@ -1440,6 +1641,23 @@ pub(crate) fn encode_import_candidates(candidates: &[String]) -> Option<String> 
 /// empty list rather than failing the whole repair pass.
 fn decode_import_candidates(raw: &str) -> Vec<String> {
     serde_json::from_str(raw).unwrap_or_default()
+}
+
+/// The `unresolved_references.reference_name`/`name_tail` pair to store for
+/// an `Unresolved` reference (issue #78): the edge's own `target_qualname`
+/// text when it has one, else its first import candidate (an
+/// `IMPORTS_FILE` edge has no literal call-site text, only import-qualified
+/// candidates). `None` when neither exists — nothing for a retry to key
+/// on — so `Db::insert_edges` writes no store row for it at all.
+pub(crate) fn store_reference_name_and_tail(
+    target_qualname: Option<&str>,
+    import_candidates: &[String],
+) -> Option<(Option<String>, String)> {
+    if let Some(qn) = target_qualname {
+        return Some((Some(qn.to_string()), qualname_trailing_name(qn).to_string()));
+    }
+    let first = import_candidates.first()?;
+    Some((None, qualname_trailing_name(first).to_string()))
 }
 
 /// The language value the same-language tiers compare against.

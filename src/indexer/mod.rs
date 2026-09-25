@@ -282,6 +282,16 @@ impl Indexer {
                     .unbind_edges_for_qualnames(&added_qualnames, self.graph_version)?;
             }
 
+            // Issue #78: retry only the stored unresolved references a
+            // newly inserted symbol might satisfy, before falling back to
+            // `resolve_null_target_edges`'s full rescan below.
+            let store_resolved = self.db.retry_unresolved_references(self.graph_version)?;
+            if store_resolved > 0 {
+                eprintln!(
+                    "lidx: resolved {store_resolved} stored unresolved reference(s) after incremental sync"
+                );
+            }
+
             // Re-run null-target resolution so any edge this batch left with a
             // NULL target (e.g. a forward reference into a file synced earlier
             // in this same batch) gets re-linked by qualname now that every
@@ -542,6 +552,14 @@ impl Indexer {
             unresolved > floor
         };
         if needs_repair {
+            // Issue #78: targeted, store-driven retry first (see the
+            // matching call in `sync_abs_paths`), then the full rescan.
+            let store_resolved = self.db.retry_unresolved_references(self.graph_version)?;
+            if store_resolved > 0 {
+                eprintln!(
+                    "lidx: resolved {store_resolved} stored unresolved reference(s) after reindex"
+                );
+            }
             let resolved = self.db.resolve_null_target_edges(self.graph_version)?;
             if resolved > 0 {
                 eprintln!("lidx: resolved {resolved} edge(s) after reindex");

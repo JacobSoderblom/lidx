@@ -160,6 +160,7 @@ fn full_reindex_matches_expected_edges() {
     let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
     let report = golden::compare(&snapshot, &expected_edges(), &fixture_modules());
     report.assert_floors("python", PRECISION_FLOOR, RECALL_FLOOR);
+    golden::print_unresolved_summary(indexer.db(), graph_version, "python");
 }
 
 /// Incremental scenario (issue #77): edit a callee's *signature*, not just
@@ -432,13 +433,31 @@ fn incremental_add_file_resolves_previously_unresolved_name() {
     let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer.reindex().unwrap();
+    let graph_version = indexer.db().current_graph_version().unwrap();
+
+    // Issue #78: `bare_call_method.bare_caller`'s bare `process()` call is
+    // recorded in the unresolved-reference store (reason `no_candidates`,
+    // name_tail `process`) once the base fixture is indexed, before
+    // `worker.py` exists to satisfy it.
+    let no_candidates_count = |db: &lidx::db::Db| -> i64 {
+        db.unresolved_reference_summary(graph_version)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.language == "python" && row.reason == "no_candidates")
+            .map(|row| row.count)
+            .unwrap_or(0)
+    };
+    let before_count = no_candidates_count(indexer.db());
+    assert!(
+        before_count > 0,
+        "expected bare_caller's unresolved call recorded in the store before worker.py exists"
+    );
 
     std::fs::write(repo_root.join("worker.py"), WORKER_SOURCE).unwrap();
     indexer.sync_rel_paths(&["worker.py".to_string()]).unwrap();
 
     common::assert_no_dangling_edge_targets(indexer.db());
 
-    let graph_version = indexer.db().current_graph_version().unwrap();
     let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
     let report = golden::compare(
         &snapshot,
@@ -446,6 +465,16 @@ fn incremental_add_file_resolves_previously_unresolved_name() {
         &fixture_modules(),
     );
     report.assert_floors("python (post-add)", PRECISION_FLOOR, RECALL_FLOOR);
+    golden::print_unresolved_summary(indexer.db(), graph_version, "python (post-add)");
+
+    // The targeted retry (`Db::retry_unresolved_references`) must have
+    // resolved bare_caller's call via `worker.process` and removed exactly
+    // its own row -- leaving the store, not just its edge.
+    assert_eq!(
+        no_candidates_count(indexer.db()),
+        before_count - 1,
+        "worker.process must satisfy exactly bare_caller's stored reference"
+    );
 
     let fresh = common::fresh_reindex_snapshot("golden/python", |root| {
         std::fs::write(root.join("worker.py"), WORKER_SOURCE).unwrap();
