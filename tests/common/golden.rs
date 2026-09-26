@@ -185,6 +185,27 @@ pub fn snapshot_edges(db: &Db, graph_version: i64) -> anyhow::Result<BTreeSet<Ed
         .collect())
 }
 
+/// Print `graph_version`'s unresolved-reference-store summary (issue #78),
+/// one line per `(language, reason)` bucket, via the public
+/// `Db::unresolved_reference_summary` accessor — the scoreboard's
+/// unresolved-count report, alongside `ScoreboardReport::assert_floors`'s
+/// wrong/missed edges. Reporting only: never asserts a floor, since the
+/// store's job here is visibility into *why* edges are unresolved, not a
+/// pass/fail gate.
+pub fn print_unresolved_summary(db: &Db, graph_version: i64, label: &str) {
+    let summary = db.unresolved_reference_summary(graph_version).unwrap();
+    if summary.is_empty() {
+        println!("unresolved references [{label}]: (none)");
+        return;
+    }
+    for row in summary {
+        println!(
+            "unresolved references [{label}]: {} {} = {}",
+            row.language, row.reason, row.count
+        );
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpectedEdge {
     pub key: EdgeKey,
