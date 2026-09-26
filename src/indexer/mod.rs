@@ -282,37 +282,31 @@ impl Indexer {
                     .unbind_edges_for_qualnames(&added_qualnames, self.graph_version)?;
             }
 
-            // Issue #78: retry only the stored unresolved references a
-            // newly inserted symbol might satisfy, before falling back to
-            // `resolve_null_target_edges`'s full rescan below.
-            let store_resolved = self.db.retry_unresolved_references(self.graph_version)?;
-            if store_resolved > 0 {
-                eprintln!(
-                    "lidx: resolved {store_resolved} stored unresolved reference(s) after incremental sync"
-                );
-            }
-
-            // Re-run null-target resolution so any edge this batch left with a
-            // NULL target (e.g. a forward reference into a file synced earlier
-            // in this same batch) gets re-linked by qualname now that every
-            // file's symbols are written. A rowid a rename/delete frees is
-            // nulled automatically by `edges`' `ON DELETE SET NULL` foreign
-            // key (issue #76), not by anything here.
-            let resolved = self.db.resolve_null_target_edges(self.graph_version)?;
-            if resolved > 0 {
-                eprintln!("lidx: resolved {resolved} edge(s) after incremental sync");
-            }
-
-            // Issue #78 follow-up: give a store row to any NULL-target edge
-            // the two passes above left behind with none -- here, most
-            // commonly one that went NULL only after it was first resolved
-            // (a deleted/renamed target, or `unbind_edges_for_qualnames`).
+            // Issue #78/#79: reconcile first, so any edge this batch just
+            // left with a NULL target and no store row (a forward reference
+            // into a file synced earlier in this same batch, or one
+            // `unbind_edges_for_qualnames` just cleared) gets an immediate
+            // shot at every symbol that exists so far -- not gated by the
+            // retry watermark -- before falling to a store row. Then retry
+            // stored rows a newly inserted symbol might satisfy.
             let reconciled = self
                 .db
                 .reconcile_unresolved_reference_store(self.graph_version)?;
             if reconciled > 0 {
                 eprintln!(
                     "lidx: reconciled {reconciled} unresolved reference(s) after incremental sync"
+                );
+            }
+
+            // A deletion (not just an insertion) can turn a stored
+            // `Ambiguous` row unique again, and no new `symbols.id` marks
+            // that for the watermark to notice -- widen the retry.
+            let store_resolved = self
+                .db
+                .retry_unresolved_references(self.graph_version, stats.deleted > 0)?;
+            if store_resolved > 0 {
+                eprintln!(
+                    "lidx: resolved {store_resolved} stored unresolved reference(s) after incremental sync"
                 );
             }
 
@@ -565,30 +559,31 @@ impl Indexer {
             unresolved > floor
         };
         if needs_repair {
-            // Issue #78: targeted, store-driven retry first (see the
-            // matching call in `sync_abs_paths`), then the full rescan.
-            let store_resolved = self.db.retry_unresolved_references(self.graph_version)?;
-            if store_resolved > 0 {
-                eprintln!(
-                    "lidx: resolved {store_resolved} stored unresolved reference(s) after reindex"
-                );
-            }
-            let resolved = self.db.resolve_null_target_edges(self.graph_version)?;
-            if resolved > 0 {
-                eprintln!("lidx: resolved {resolved} edge(s) after reindex");
-            }
-
-            // Issue #78 follow-up: give a store row to any NULL-target edge
-            // the two passes above left behind with none -- most commonly a
+            // Issue #78/#79: reconcile first -- most commonly a
             // `carry_forward_files` edge (it copies edges but not their
             // store rows), or one that went NULL only after it was first
             // resolved (a deleted/renamed target, or
-            // `unbind_edges_for_qualnames`).
+            // `unbind_edges_for_qualnames`) -- so it gets a shot at every
+            // symbol that exists so far before falling to a store row. Then
+            // targeted, store-driven retry (see the matching call in
+            // `sync_abs_paths`).
             let reconciled = self
                 .db
                 .reconcile_unresolved_reference_store(self.graph_version)?;
             if reconciled > 0 {
                 eprintln!("lidx: reconciled {reconciled} unresolved reference(s) after reindex");
+            }
+
+            // See the matching comment in `sync_abs_paths`: a deletion can
+            // unblock a stored `Ambiguous` row without any insertion for
+            // the watermark to key on.
+            let store_resolved = self
+                .db
+                .retry_unresolved_references(self.graph_version, stats.deleted > 0)?;
+            if store_resolved > 0 {
+                eprintln!(
+                    "lidx: resolved {store_resolved} stored unresolved reference(s) after reindex"
+                );
             }
 
             let remaining = unresolved_edge_count(&self.db, self.graph_version)?;

@@ -1,10 +1,13 @@
 //! Edge-target resolution: the one place that decides which symbol an
 //! edge points at, and the only producer of `edges.resolution_kind`.
 //!
-//! `Db::insert_edges` resolves each edge through [`Resolver::resolve`];
-//! the NULL-target repair pass (`Db::resolve_null_target_edges`, below)
-//! retries the same tiers once more symbols exist. Every SQL candidate
-//! lookup lives in this module.
+//! `Db::insert_edges` resolves each edge through [`Resolver::resolve`]. The
+//! automatic repair passes (`Db::retry_unresolved_references`,
+//! `Db::reconcile_unresolved_reference_store`) retry the same tiers once
+//! more symbols exist, targeted at the `unresolved_references` store rather
+//! than a full edge rescan (issue #78/#79); `Db::resolve_null_target_edges`
+//! is the older, untargeted rescan, kept only as an explicit opt-in (see its
+//! own doc). Every SQL candidate lookup lives in this module.
 //!
 //! Issue #77: a symbol keeps its id across a sync as long as its stable_id
 //! is unchanged (`differ::compute_symbol_diff` / `Db::update_file_symbols`),
@@ -1204,8 +1207,10 @@ impl Db {
     /// call, never matches by text). Excludes a same-file edge: that
     /// binding came from `build_exact_symbol_map`'s in-batch fast path,
     /// which never sees other files, so a same-qualname symbol elsewhere
-    /// can't make it ambiguous. Call before `resolve_null_target_edges`,
-    /// which re-judges the cleared rows under its ambiguity rule.
+    /// can't make it ambiguous. Call before
+    /// `reconcile_unresolved_reference_store`, which re-judges the cleared
+    /// rows (they have no store row of their own yet) under its ambiguity
+    /// rule.
     pub(crate) fn unbind_edges_for_qualnames(
         &self,
         qualnames: &std::collections::HashSet<String>,
@@ -1241,11 +1246,18 @@ impl Db {
         Ok(stmt.execute(rusqlite::params_from_iter(p.iter().map(|b| b.as_ref())))?)
     }
 
-    /// Repair pass: retry resolution for edges whose target is still NULL,
-    /// now that more symbols may exist (e.g. after an incremental reindex
-    /// carried unchanged files forward — fresh files' edges are inserted
-    /// *before* that, see `Indexer::reindex`). Three passes, same tier
-    /// order as `Resolver::resolve`:
+    /// Full rescan: retry resolution for *every* NULL-target edge, not just
+    /// ones a store row already flagged. Issue #78/#79 moved the automatic
+    /// incremental-sync and reindex repair passes off this and onto
+    /// `retry_unresolved_references` + `reconcile_unresolved_reference_store`
+    /// (targeted, bounded by the `unresolved_references` store's size
+    /// rather than the whole edge table); this function is no longer called
+    /// from either, but stays live as the explicit, opt-in deep rescan
+    /// behind `reindex`'s `resolve_edges` RPC param (`handle_reindex`) for
+    /// whenever an operator wants every NULL-target edge re-tried
+    /// regardless of the store's state -- and as a direct unit-test seam
+    /// for the tier logic below. Three passes, same tier order as
+    /// `Resolver::resolve`:
     /// 1. exact, as one bulk UPDATE applying `collapse_exact_candidates`'s
     ///    rule in SQL — the same rule `Resolver::exact` uses;
     /// 2. the import tier, for rows with `import_candidates`;
@@ -1460,11 +1472,9 @@ impl Db {
         Ok(total_resolved)
     }
 
-    /// Issue #78 follow-up: give a store row to every NULL-target edge that
-    /// went unrepaired above (`retry_unresolved_references` then
-    /// `resolve_null_target_edges`) but still has no
-    /// `unresolved_references` row -- because it never got one in the first
-    /// place. Two ways that happens:
+    /// Issue #78/#79: give a store row to every NULL-target edge that has
+    /// no `unresolved_references` row -- because it never got one in the
+    /// first place. Two ways that happens:
     ///
     /// - `Db::carry_forward_files` copies an unchanged file's edges into
     ///   the new graph version, but not their store rows, so a
@@ -1474,16 +1484,24 @@ impl Db {
     ///   (so no row was ever written) can still go NULL-target afterward --
     ///   the `edges` foreign key's `ON DELETE SET NULL` when its target is
     ///   deleted or renamed away, or `Db::unbind_edges_for_qualnames`
-    ///   clearing it for re-judgment.
+    ///   clearing it for re-judgment. Either way `target_symbol_id` goes
+    ///   NULL but `resolution_kind` is left stale (neither of those two
+    ///   writers touches it), so a still-`Unresolved` verdict here also
+    ///   clears it -- this module is the only producer of that column (see
+    ///   the module doc), and the old `resolve_null_target_edges` used to
+    ///   be the one tidying it up.
     ///
     /// For each such edge, rebuilds the same `Reference` context
     /// `retry_unresolved_references` reconstructs from a stored row --
     /// here read straight from the edge and its file/source-symbol joins
     /// instead -- and re-runs `Resolver::resolve`: a resolution the earlier
-    /// passes missed is applied to the edge, same as an `Unresolved`
-    /// outcome is recorded in the store, same as `Db::insert_edges` would
-    /// have done the first time. Call after `resolve_null_target_edges`, at
-    /// both repair sites.
+    /// pass missed is applied to the edge, same as an `Unresolved` outcome
+    /// is recorded in the store, same as `Db::insert_edges` would have done
+    /// the first time. Call before `retry_unresolved_references` at both
+    /// repair sites, so a newly-orphaned edge gets a shot at every symbol
+    /// that already exists before falling to a store row that retry's
+    /// watermark-gated join would otherwise leave stranded until some
+    /// unrelated symbol insertion came along.
     ///
     /// Returns the number of edges reconciled (resolved or newly stored).
     pub fn reconcile_unresolved_reference_store(&self, graph_version: i64) -> Result<usize> {
@@ -1534,6 +1552,8 @@ impl Db {
                   reason, import_candidates, graph_version)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
+            let mut clear_resolution_kind =
+                tx.prepare("UPDATE edges SET resolution_kind = NULL WHERE id = ?")?;
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &rows {
@@ -1561,6 +1581,10 @@ impl Db {
                         reconciled += 1;
                     }
                     Resolution::Unresolved(reason) => {
+                        // `target_symbol_id` is already NULL (this row's
+                        // selection criterion), but `resolution_kind` isn't
+                        // this module's to leave stale -- see the doc.
+                        clear_resolution_kind.execute(params![row.edge_id])?;
                         if let Some((reference_name, name_tail)) = store_reference_name_and_tail(
                             row.target_qualname.as_deref(),
                             &import_candidates,
@@ -1587,12 +1611,25 @@ impl Db {
         Ok(reconciled)
     }
 
-    /// Issue #78: retry only `unresolved_references` rows whose reference
-    /// name or trailing name segment (`name_tail`) matches a symbol
-    /// inserted since the last call, instead of `resolve_null_target_edges`'s
-    /// rescan of every NULL-target edge. The `unresolved_reference_watermark`
-    /// meta key tracks the highest `symbols.id` already considered, so a
-    /// call with nothing new inserted is one cheap `MAX(id)` check.
+    /// Issue #78/#79: retry only `unresolved_references` rows whose
+    /// reference name or trailing name segment (`name_tail`) matches a
+    /// symbol inserted since the last call, instead of a rescan of every
+    /// NULL-target edge. The `unresolved_reference_watermark` meta key
+    /// tracks the highest `symbols.id` already considered, so a call with
+    /// nothing new inserted is one cheap `MAX(id)` check.
+    ///
+    /// `deleted_this_batch` widens that join to *every* existing symbol
+    /// (not just ones past the watermark) and skips the cheap-check early
+    /// return: a symbol going away -- not just one arriving -- can turn a
+    /// stored `Ambiguous` row unique again (e.g. a competing same-qualname
+    /// module symbol's file is removed), and no new `symbols.id` is ever
+    /// inserted for the watermark to notice that by. Still only re-resolves
+    /// rows already in the store, so this stays bounded by the store's size
+    /// rather than every edge in the graph. Known residual gap: this only
+    /// fires for a whole file's deletion (`IndexStats::deleted`), not a
+    /// same-file edit that merely removes one competing symbol -- the
+    /// latter still waits for an unrelated future insertion to re-surface
+    /// it (or a full reindex, which re-resolves everything from scratch).
     ///
     /// Each candidate is re-run through the *full* `Resolver::resolve` tier
     /// order (not just the tier that failed originally), using the
@@ -1609,9 +1646,11 @@ impl Db {
     /// resolver's own suffix-matching rule (`resolve_import`'s second
     /// round) -- a reference only a suffix match could satisfy, with no
     /// exact qualname or bare-name hit, can still be missed here.
-    /// `resolve_null_target_edges` remains the safety net for that, and for
-    /// every edge inserted before this table existed.
-    pub fn retry_unresolved_references(&self, graph_version: i64) -> Result<usize> {
+    pub fn retry_unresolved_references(
+        &self,
+        graph_version: i64,
+        deleted_this_batch: bool,
+    ) -> Result<usize> {
         let watermark = self
             .get_meta_i64("unresolved_reference_watermark")?
             .unwrap_or(0);
@@ -1620,9 +1659,13 @@ impl Db {
                 .query_row("SELECT COALESCE(MAX(id), 0) FROM symbols", [], |row| {
                     row.get(0)
                 })?;
-        if max_symbol_id <= watermark {
+        if !deleted_this_batch && max_symbol_id <= watermark {
             return Ok(0);
         }
+        // Only widens which symbols count as "new enough to retry against"
+        // -- never persisted, so it doesn't affect the watermark this call
+        // still advances to `max_symbol_id` at the end.
+        let join_floor = if deleted_this_batch { 0 } else { watermark };
 
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -1642,7 +1685,7 @@ impl Db {
                    AND s.id > ?2
                    AND s.graph_version = ?1",
             )?;
-            let rows = stmt.query_map(params![graph_version, watermark], |row| {
+            let rows = stmt.query_map(params![graph_version, join_floor], |row| {
                 Ok(StoreRetryRow {
                     store_id: row.get(0)?,
                     edge_id: row.get(1)?,
