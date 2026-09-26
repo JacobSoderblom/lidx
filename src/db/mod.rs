@@ -104,6 +104,21 @@ pub const DEFAULT_GRAPH_VERSION_RETENTION: i64 = 3;
 /// shouldn't pay that cost every time.
 const VACUUM_RECLAIM_THRESHOLD_BYTES: i64 = 10 * 1024 * 1024;
 
+/// One `carry_forward_files` `unresolved_references` row awaiting remap to
+/// `to_version`'s edge/symbol ids -- a named struct rather than a tuple,
+/// since it's wide enough to trip `clippy::type_complexity` (same reasoning
+/// as `resolver::StoreRetryRow`/`NullTargetEdgeRow`).
+struct CarriedUnresolvedRow {
+    old_edge_id: i64,
+    old_source_symbol_id: Option<i64>,
+    file_id: i64,
+    edge_kind: String,
+    reference_name: Option<String>,
+    name_tail: String,
+    reason: String,
+    import_candidates: Option<String>,
+}
+
 impl Db {
     pub fn new(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
@@ -355,33 +370,61 @@ impl Db {
             )?
         };
 
+        // Issue #78/#79 (G2): whether any of these carried files have a
+        // stored unresolved reference to carry forward too -- the common
+        // carry-forward has none, so this stays the cheap, unchanged
+        // `execute` path below; only when it's true do we pay for the
+        // ordered `RETURNING`-based edge-id remap the copy needs (see the
+        // `unresolved_references` copy at the end of this function).
+        let has_unresolved: bool = {
+            let sql = format!(
+                "SELECT EXISTS(SELECT 1 FROM unresolved_references
+                 WHERE graph_version = ? AND file_id IN ({placeholders}))"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(from_version)];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            tx.query_row(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                |row| row.get(0),
+            )?
+        };
+
         // ponytail: an edge endpoint with no stable_id match in `to_version`
         // (deleted target, or a stable_id collision) is copied with that endpoint
         // NULL rather than dropped — the same best-effort contract the rest of the
         // edge-resolution code (insert_edges' fuzzy fallback, resolve_null_target_edges)
         // already has for unresolved targets.
-        let edges_copied = {
-            let sql = format!(
-                "INSERT INTO edges
-                    (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
-                     evidence_snippet, evidence_start_line, evidence_end_line, confidence,
-                     graph_version, commit_sha, trace_id, span_id, event_ts,
-                     receiver_type, resolution_kind, import_candidates, bare_call)
-                 SELECT
-                    e.file_id,
-                    (SELECT ns.id FROM symbols ns
-                        WHERE ns.stable_id = src.stable_id AND ns.graph_version = ? LIMIT 1),
-                    (SELECT nt.id FROM symbols nt
-                        WHERE nt.stable_id = tgt.stable_id AND nt.graph_version = ? LIMIT 1),
-                    e.kind, e.target_qualname, e.detail, e.evidence_snippet,
-                    e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    ?, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
-                    e.receiver_type, e.resolution_kind, e.import_candidates, e.bare_call
-                 FROM edges e
-                 LEFT JOIN symbols src ON src.id = e.source_symbol_id
-                 LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id
-                 WHERE e.graph_version = ? AND e.file_id IN ({placeholders})"
-            );
+        let edges_sql = format!(
+            "INSERT INTO edges
+                (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
+                 evidence_snippet, evidence_start_line, evidence_end_line, confidence,
+                 graph_version, commit_sha, trace_id, span_id, event_ts,
+                 receiver_type, resolution_kind, import_candidates, bare_call)
+             SELECT
+                e.file_id,
+                (SELECT ns.id FROM symbols ns
+                    WHERE ns.stable_id = src.stable_id AND ns.graph_version = ? LIMIT 1),
+                (SELECT nt.id FROM symbols nt
+                    WHERE nt.stable_id = tgt.stable_id AND nt.graph_version = ? LIMIT 1),
+                e.kind, e.target_qualname, e.detail, e.evidence_snippet,
+                e.evidence_start_line, e.evidence_end_line, e.confidence,
+                ?, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                e.receiver_type, e.resolution_kind, e.import_candidates, e.bare_call
+             FROM edges e
+             LEFT JOIN symbols src ON src.id = e.source_symbol_id
+             LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND e.file_id IN ({placeholders})"
+        );
+
+        // Old->new edge id map, populated only on the `has_unresolved` path
+        // below (an edge has no other cross-version identity to key a
+        // remap on, unlike a symbol's `stable_id`) -- empty otherwise.
+        let mut edge_id_map: HashMap<i64, i64> = HashMap::new();
+
+        let edges_copied = if !has_unresolved {
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
                 Box::new(to_version),
                 Box::new(to_version),
@@ -392,9 +435,62 @@ impl Db {
                 params.push(Box::new(*id));
             }
             tx.execute(
-                &sql,
+                &edges_sql,
                 rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
             )?
+        } else {
+            // This batch has store rows to carry (see `has_unresolved`
+            // above). `edges.id` is a plain autoincrement rowid with no
+            // stable, cross-version identity of its own (unlike a symbol's
+            // `stable_id`), so the only way to learn which new row a given
+            // old row became is to sort both queries identically
+            // (`ORDER BY e.id ASC`) and pair them up position-by-position:
+            // SQLite feeds an `INSERT ... SELECT`'s rows to the insert (and
+            // to `RETURNING`) in exactly the order the `SELECT` produces
+            // them, so the Nth id returned here is the copy of the Nth id
+            // in `old_edge_ids` below. Both queries run back to back in
+            // this same transaction with no intervening write to `edges`,
+            // so nothing can reorder or change the set between them.
+            let old_edge_ids: Vec<i64> = {
+                let sql = format!(
+                    "SELECT e.id FROM edges e
+                     WHERE e.graph_version = ? AND e.file_id IN ({placeholders})
+                     ORDER BY e.id ASC"
+                );
+                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(from_version)];
+                for id in file_ids {
+                    params.push(Box::new(*id));
+                }
+                let mut stmt = tx.prepare(&sql)?;
+                let rows = stmt.query_map(
+                    rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                    |row| row.get(0),
+                )?;
+                rows.collect::<rusqlite::Result<Vec<i64>>>()?
+            };
+
+            let new_edge_ids: Vec<i64> = {
+                let ordered_sql = format!("{edges_sql} ORDER BY e.id ASC RETURNING id");
+                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                    Box::new(to_version),
+                    Box::new(to_version),
+                    Box::new(to_version),
+                    Box::new(from_version),
+                ];
+                for id in file_ids {
+                    params.push(Box::new(*id));
+                }
+                let mut stmt = tx.prepare(&ordered_sql)?;
+                let rows = stmt.query_map(
+                    rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                    |row| row.get(0),
+                )?;
+                rows.collect::<rusqlite::Result<Vec<i64>>>()?
+            };
+
+            let edges_copied = new_edge_ids.len();
+            edge_id_map = old_edge_ids.into_iter().zip(new_edge_ids).collect();
+            edges_copied
         };
 
         // Copy `symbol_metrics` for the symbols just copied above, remapped from
@@ -436,6 +532,92 @@ impl Db {
                 &sql,
                 rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
             )?;
+        }
+
+        // Issue #78/#79 (G2): carry each carried file's stored unresolved
+        // reference forward too, remapped to the copy's new edge id
+        // (`edge_id_map`, built above) and new source-symbol id (by
+        // `stable_id`, same as every other cross-version remap in this
+        // function). Without this, a carried-forward edge that was already
+        // unresolved arrives in `to_version` with no store row at all, so
+        // `reconcile_unresolved_reference_store` treats it as never-seen and
+        // re-resolves it from scratch on every subsequent repair pass --
+        // for a large carried-forward set, that's exactly the untargeted
+        // rescan issue #78 removed from the repair sites in the first
+        // place, just relocated. Skips cleanly when `edge_id_map` is empty
+        // (`has_unresolved` was false above -- the common case).
+        if !edge_id_map.is_empty() {
+            let sql = format!(
+                "SELECT ur.edge_id, ur.source_symbol_id, ur.file_id, ur.edge_kind,
+                        ur.reference_name, ur.name_tail, ur.reason, ur.import_candidates
+                 FROM unresolved_references ur
+                 WHERE ur.graph_version = ? AND ur.file_id IN ({placeholders})"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(from_version)];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            let rows: Vec<CarriedUnresolvedRow> = {
+                let mut stmt = tx.prepare(&sql)?;
+                let mapped = stmt.query_map(
+                    rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                    |row| {
+                        Ok(CarriedUnresolvedRow {
+                            old_edge_id: row.get(0)?,
+                            old_source_symbol_id: row.get(1)?,
+                            file_id: row.get(2)?,
+                            edge_kind: row.get(3)?,
+                            reference_name: row.get(4)?,
+                            name_tail: row.get(5)?,
+                            reason: row.get(6)?,
+                            import_candidates: row.get(7)?,
+                        })
+                    },
+                )?;
+                mapped.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+
+            let mut remap_symbol_stmt = tx.prepare(
+                "SELECT ns.id FROM symbols os JOIN symbols ns ON ns.stable_id = os.stable_id
+                 WHERE os.id = ? AND ns.graph_version = ? LIMIT 1",
+            )?;
+            let mut insert_unresolved = tx.prepare(resolver::UNRESOLVED_REFERENCE_INSERT_SQL)?;
+
+            for row in rows {
+                let CarriedUnresolvedRow {
+                    old_edge_id,
+                    old_source_symbol_id,
+                    file_id,
+                    edge_kind,
+                    reference_name,
+                    name_tail,
+                    reason,
+                    import_candidates,
+                } = row;
+                // Not expected to miss (`old_edge_id` came straight from
+                // this same file set's edges), but skip rather than panic
+                // on a stale/foreign-key-orphaned store row.
+                let Some(&new_edge_id) = edge_id_map.get(&old_edge_id) else {
+                    continue;
+                };
+                let new_source_symbol_id: Option<i64> = match old_source_symbol_id {
+                    Some(old_id) => remap_symbol_stmt
+                        .query_row(params![old_id, to_version], |row| row.get(0))
+                        .optional()?,
+                    None => None,
+                };
+                insert_unresolved.execute(params![
+                    new_edge_id,
+                    new_source_symbol_id,
+                    file_id,
+                    edge_kind,
+                    reference_name,
+                    name_tail,
+                    reason,
+                    import_candidates,
+                    to_version,
+                ])?;
+            }
         }
 
         tx.commit()?;
@@ -1071,12 +1253,8 @@ impl Db {
             // Issue #78: one row per `Unresolved` outcome, so
             // `Db::retry_unresolved_references` can retry it later without
             // rescanning every NULL-target edge.
-            let mut unresolved_insert_stmt = tx.prepare(
-                "INSERT INTO unresolved_references
-                 (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail,
-                  reason, import_candidates, graph_version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )?;
+            let mut unresolved_insert_stmt =
+                tx.prepare(resolver::UNRESOLVED_REFERENCE_INSERT_SQL)?;
             let mut resolver = resolver::Resolver::new(&tx, graph_version)?;
             // Look up the source file's language and path — same-language
             // preference and the guarded name-fallback's visibility check

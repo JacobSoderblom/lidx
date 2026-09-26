@@ -1103,6 +1103,69 @@ fn resolved(target_id: i64, kind: ResolutionKind) -> Resolution {
     Resolution::Resolved { target_id, kind }
 }
 
+/// The shared `INSERT INTO unresolved_references` statement (issue #78):
+/// one row per `Resolver::resolve` `Unresolved` outcome, so
+/// `Db::retry_unresolved_references` can retry it later without rescanning
+/// every NULL-target edge. Column/param order: edge_id, source_symbol_id,
+/// file_id, edge_kind, reference_name, name_tail, reason, import_candidates,
+/// graph_version. Used by `Db::insert_edges` (an edge's first resolution
+/// attempt), `reconcile_unresolved_reference_store` (a NULL-target edge that
+/// never got a row), and `Db::carry_forward_files` (carrying an
+/// already-unresolved edge's row into the new graph version).
+pub(crate) const UNRESOLVED_REFERENCE_INSERT_SQL: &str = "INSERT INTO unresolved_references
+     (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail,
+      reason, import_candidates, graph_version)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+/// Everything `Resolver::resolve` needs to re-judge one reference, shared by
+/// `NullTargetEdgeRow` (read straight from an edge with no store row yet)
+/// and `StoreRetryRow` (read from a stored `unresolved_references` row
+/// instead) — the two repair-pass row shapes used to each carry their own
+/// copy of these same fields and rebuild an identical `Reference` from them.
+/// Each row type's own extra bookkeeping field stays outside this struct:
+/// `NullTargetEdgeRow`'s `source_symbol_id`/`file_id` (for a fresh store
+/// insert if still unresolved) and `StoreRetryRow`'s `store_id` (to delete
+/// on success).
+struct ReferenceContext {
+    edge_id: i64,
+    target_qualname: Option<String>,
+    edge_kind: String,
+    receiver_type: Option<String>,
+    import_candidates: Option<String>,
+    bare_call: bool,
+    source_lang: String,
+    file_path: String,
+    source_qualname: Option<String>,
+}
+
+impl ReferenceContext {
+    /// Rebuild this context's `Reference` and run it through `resolver`.
+    fn resolve(
+        &self,
+        resolver: &mut Resolver<'_>,
+        symbol_map: &HashMap<String, i64>,
+    ) -> Result<Resolution> {
+        let import_candidates = self
+            .import_candidates
+            .as_deref()
+            .map(decode_import_candidates)
+            .unwrap_or_default();
+        resolver.resolve(
+            &Reference {
+                target_qualname: self.target_qualname.as_deref(),
+                edge_kind: &self.edge_kind,
+                receiver_type: self.receiver_type.as_deref(),
+                import_candidates: &import_candidates,
+                source_lang: &self.source_lang,
+                source_file_path: &self.file_path,
+                source_qualname: self.source_qualname.as_deref(),
+                bare_call: self.bare_call,
+            },
+            symbol_map,
+        )
+    }
+}
+
 /// One `resolve_null_target_edges` pass-3 row: everything
 /// `Resolver::resolve_by_name` needs for one unresolved edge. A named
 /// struct rather than a tuple, since it's wide enough to trip
@@ -1525,17 +1588,19 @@ impl Db {
             )?;
             let out = stmt.query_map(params![graph_version], |row| {
                 Ok(NullTargetEdgeRow {
-                    edge_id: row.get(0)?,
                     source_symbol_id: row.get(1)?,
                     file_id: row.get(2)?,
-                    edge_kind: row.get(3)?,
-                    target_qualname: row.get(4)?,
-                    receiver_type: row.get(5)?,
-                    import_candidates: row.get(6)?,
-                    bare_call: row.get(7)?,
-                    source_lang: row.get(8)?,
-                    file_path: row.get(9)?,
-                    source_qualname: row.get(10)?,
+                    ctx: ReferenceContext {
+                        edge_id: row.get(0)?,
+                        edge_kind: row.get(3)?,
+                        target_qualname: row.get(4)?,
+                        receiver_type: row.get(5)?,
+                        import_candidates: row.get(6)?,
+                        bare_call: row.get(7)?,
+                        source_lang: row.get(8)?,
+                        file_path: row.get(9)?,
+                        source_qualname: row.get(10)?,
+                    },
                 })
             })?;
             out.collect::<rusqlite::Result<Vec<_>>>()?
@@ -1546,58 +1611,42 @@ impl Db {
             let mut update_edge = tx.prepare(
                 "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
             )?;
-            let mut insert_unresolved = tx.prepare(
-                "INSERT INTO unresolved_references
-                 (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail,
-                  reason, import_candidates, graph_version)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )?;
+            let mut insert_unresolved = tx.prepare(UNRESOLVED_REFERENCE_INSERT_SQL)?;
             let mut clear_resolution_kind =
                 tx.prepare("UPDATE edges SET resolution_kind = NULL WHERE id = ?")?;
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &rows {
-                let import_candidates = row
-                    .import_candidates
-                    .as_deref()
-                    .map(decode_import_candidates)
-                    .unwrap_or_default();
-                let resolution = resolver.resolve(
-                    &Reference {
-                        target_qualname: row.target_qualname.as_deref(),
-                        edge_kind: &row.edge_kind,
-                        receiver_type: row.receiver_type.as_deref(),
-                        import_candidates: &import_candidates,
-                        source_lang: &row.source_lang,
-                        source_file_path: &row.file_path,
-                        source_qualname: row.source_qualname.as_deref(),
-                        bare_call: row.bare_call,
-                    },
-                    &empty_symbol_map,
-                )?;
+                let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
                 match resolution {
                     Resolution::Resolved { target_id, kind } => {
-                        update_edge.execute(params![target_id, kind.as_str(), row.edge_id])?;
+                        update_edge.execute(params![target_id, kind.as_str(), row.ctx.edge_id])?;
                         reconciled += 1;
                     }
                     Resolution::Unresolved(reason) => {
                         // `target_symbol_id` is already NULL (this row's
                         // selection criterion), but `resolution_kind` isn't
                         // this module's to leave stale -- see the doc.
-                        clear_resolution_kind.execute(params![row.edge_id])?;
+                        clear_resolution_kind.execute(params![row.ctx.edge_id])?;
+                        let import_candidates = row
+                            .ctx
+                            .import_candidates
+                            .as_deref()
+                            .map(decode_import_candidates)
+                            .unwrap_or_default();
                         if let Some((reference_name, name_tail)) = store_reference_name_and_tail(
-                            row.target_qualname.as_deref(),
+                            row.ctx.target_qualname.as_deref(),
                             &import_candidates,
                         ) {
                             insert_unresolved.execute(params![
-                                row.edge_id,
+                                row.ctx.edge_id,
                                 row.source_symbol_id,
                                 row.file_id,
-                                &row.edge_kind,
+                                &row.ctx.edge_kind,
                                 reference_name,
                                 name_tail,
                                 reason.as_str(),
-                                row.import_candidates.as_deref(),
+                                row.ctx.import_candidates.as_deref(),
                                 graph_version,
                             ])?;
                             reconciled += 1;
@@ -1634,6 +1683,26 @@ impl Db {
     /// only re-resolves rows already in the store, so this stays bounded by
     /// the store's size rather than every edge in the graph.
     ///
+    /// Issue #78/#79 follow-up (finding G1): a reference resolvable only via
+    /// the receiver-type/inheritance tier (`Resolver::resolve_via_inheritance`)
+    /// can be unblocked by a brand-new EXTENDS/IMPLEMENTS/INHERITS edge on its
+    /// receiver's type, without any symbol being inserted at all that shares
+    /// the reference's own name/name_tail -- the ancestor that now makes it
+    /// resolvable (e.g. `Base.bar`) can have existed since before the
+    /// watermark; only the hierarchy edge is new. The
+    /// `unresolved_reference_inheritance_watermark` meta key tracks the
+    /// highest inheritance-kind `edges.id` already considered (same
+    /// `MAX(id)` cheap-check shape as the symbol watermark, scoped to this
+    /// `graph_version` so a same-version incremental sync only sees this
+    /// version's own newly-written hierarchy edges); when it advances, every
+    /// store row with a known receiver type (the only rows tier 4 could ever
+    /// have produced) is retried regardless of name/name_tail, via a second,
+    /// unjoined branch below. Still bounded by the store's size, not the
+    /// whole edge table. On a fresh reindex's own repair pass this is
+    /// necessarily true on the first check for that graph version (every
+    /// carried/re-parsed inheritance edge gets a fresh id there), same cost
+    /// class as `reconcile_unresolved_reference_store`'s own per-reindex pass.
+    ///
     /// Each candidate is re-run through the *full* `Resolver::resolve` tier
     /// order (not just the tier that failed originally), using the
     /// reference's original context -- receiver type, import candidates,
@@ -1662,7 +1731,17 @@ impl Db {
                 .query_row("SELECT COALESCE(MAX(id), 0) FROM symbols", [], |row| {
                     row.get(0)
                 })?;
-        if !symbols_deleted_this_batch && max_symbol_id <= watermark {
+        let inheritance_watermark = self
+            .get_meta_i64("unresolved_reference_inheritance_watermark")?
+            .unwrap_or(0);
+        let max_inheritance_edge_id: i64 = self.read_conn()?.query_row(
+            "SELECT COALESCE(MAX(id), 0) FROM edges
+             WHERE graph_version = ? AND kind IN ('EXTENDS', 'IMPLEMENTS', 'INHERITS')",
+            params![graph_version],
+            |row| row.get(0),
+        )?;
+        let inheritance_changed = max_inheritance_edge_id > inheritance_watermark;
+        if !symbols_deleted_this_batch && !inheritance_changed && max_symbol_id <= watermark {
             return Ok(0);
         }
 
@@ -1671,12 +1750,20 @@ impl Db {
         let mut total_resolved = 0;
 
         let candidates: Vec<StoreRetryRow> = {
-            // A row's join is satisfied either the normal way (some symbol
-            // past the watermark matches it), or -- only when this batch
-            // deleted a symbol, and only for an `Ambiguous` row -- by any
-            // matching symbol at all: the surviving candidate that makes it
-            // unique again isn't new, so it'd never clear `s.id > ?2` on
-            // its own.
+            // Two independent ways a row earns a retry, unioned together
+            // (each `SELECT DISTINCT` first, since either branch's join can
+            // match a single `ur` row more than once):
+            //
+            // 1. The normal way -- some symbol past the watermark matches
+            //    it by name, or (only when this batch deleted a symbol, and
+            //    only for an `Ambiguous` row) any matching symbol at all:
+            //    the surviving candidate that makes it unique again isn't
+            //    new, so it'd never clear `s.id > ?2` on its own.
+            // 2. Any row with a known receiver type, when this batch wrote
+            //    a new inheritance-kind edge (see the method doc's finding
+            //    G1) -- no symbol/name join at all, since the ancestor
+            //    method a new EXTENDS/IMPLEMENTS/INHERITS edge newly makes
+            //    reachable need not itself be new.
             let mut stmt = tx.prepare(
                 "SELECT DISTINCT ur.id, ur.edge_id, ur.edge_kind, ur.reference_name,
                         ur.import_candidates, e.receiver_type, e.bare_call,
@@ -1688,22 +1775,42 @@ impl Db {
                  JOIN symbols s ON (s.qualname = ur.reference_name OR s.name = ur.name_tail)
                  WHERE ur.graph_version = ?1
                    AND s.graph_version = ?1
-                   AND (s.id > ?2 OR (?3 AND ur.reason = 'ambiguous'))",
+                   AND (s.id > ?2 OR (?3 AND ur.reason = 'ambiguous'))
+
+                 UNION
+
+                 SELECT DISTINCT ur.id, ur.edge_id, ur.edge_kind, ur.reference_name,
+                        ur.import_candidates, e.receiver_type, e.bare_call,
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname
+                 FROM unresolved_references ur
+                 JOIN edges e ON e.id = ur.edge_id
+                 JOIN files f ON f.id = ur.file_id
+                 LEFT JOIN symbols src ON src.id = ur.source_symbol_id
+                 WHERE ur.graph_version = ?1
+                   AND ?4
+                   AND e.receiver_type IS NOT NULL AND e.receiver_type != ''",
             )?;
             let rows = stmt.query_map(
-                params![graph_version, watermark, symbols_deleted_this_batch],
+                params![
+                    graph_version,
+                    watermark,
+                    symbols_deleted_this_batch,
+                    inheritance_changed
+                ],
                 |row| {
                     Ok(StoreRetryRow {
                         store_id: row.get(0)?,
-                        edge_id: row.get(1)?,
-                        edge_kind: row.get(2)?,
-                        reference_name: row.get(3)?,
-                        import_candidates: row.get(4)?,
-                        receiver_type: row.get(5)?,
-                        bare_call: row.get(6)?,
-                        source_lang: row.get(7)?,
-                        file_path: row.get(8)?,
-                        source_qualname: row.get(9)?,
+                        ctx: ReferenceContext {
+                            edge_id: row.get(1)?,
+                            edge_kind: row.get(2)?,
+                            target_qualname: row.get(3)?,
+                            import_candidates: row.get(4)?,
+                            receiver_type: row.get(5)?,
+                            bare_call: row.get(6)?,
+                            source_lang: row.get(7)?,
+                            file_path: row.get(8)?,
+                            source_qualname: row.get(9)?,
+                        },
                     })
                 },
             )?;
@@ -1719,33 +1826,16 @@ impl Db {
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &candidates {
-                let import_candidates = row
-                    .import_candidates
-                    .as_deref()
-                    .map(decode_import_candidates)
-                    .unwrap_or_default();
-                let resolution = resolver.resolve(
-                    &Reference {
-                        target_qualname: row.reference_name.as_deref(),
-                        edge_kind: &row.edge_kind,
-                        receiver_type: row.receiver_type.as_deref(),
-                        import_candidates: &import_candidates,
-                        source_lang: &row.source_lang,
-                        source_file_path: &row.file_path,
-                        source_qualname: row.source_qualname.as_deref(),
-                        bare_call: row.bare_call,
-                    },
-                    &empty_symbol_map,
-                )?;
+                let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
                 if let Resolution::Resolved { target_id, kind } = resolution {
-                    update_edge.execute(params![target_id, kind.as_str(), row.edge_id])?;
+                    update_edge.execute(params![target_id, kind.as_str(), row.ctx.edge_id])?;
                     delete_store.execute(params![row.store_id])?;
                     total_resolved += 1;
                 }
             }
         }
 
-        // Advance the watermark inside the same transaction, not via
+        // Advance both watermarks inside the same transaction, not via
         // `Db::set_meta_i64` after `commit` -- that would call `self.conn()`
         // again while `conn` (acquired above) is still holding the write
         // mutex, deadlocking against itself.
@@ -1753,6 +1843,11 @@ impl Db {
             "INSERT INTO meta (key, value) VALUES ('unresolved_reference_watermark', ?)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![max_symbol_id.to_string()],
+        )?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('unresolved_reference_inheritance_watermark', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![max_inheritance_edge_id.to_string()],
         )?;
         tx.commit()?;
         Ok(total_resolved)
@@ -1784,43 +1879,59 @@ impl Db {
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+
+    /// The repair pass shared by `Indexer::sync_abs_paths`'s post-batch hook
+    /// and `Indexer::reindex`'s `needs_repair` branch (issue #78/#79): both
+    /// used to duplicate the same reconcile-then-retry-then-`eprintln!`
+    /// sequence inline. Reconciles first (see
+    /// `reconcile_unresolved_reference_store`'s doc for why), then runs the
+    /// targeted, store-driven retry (`retry_unresolved_references`),
+    /// printing a one-line summary for whichever step did anything.
+    /// `context` names the caller for that summary (e.g. "incremental sync",
+    /// "reindex"). Returns `(reconciled, store_resolved)`.
+    pub fn repair_unresolved(
+        &self,
+        graph_version: i64,
+        symbols_deleted_this_batch: bool,
+        context: &str,
+    ) -> Result<(usize, usize)> {
+        let reconciled = self.reconcile_unresolved_reference_store(graph_version)?;
+        if reconciled > 0 {
+            eprintln!("lidx: reconciled {reconciled} unresolved reference(s) after {context}");
+        }
+        let store_resolved =
+            self.retry_unresolved_references(graph_version, symbols_deleted_this_batch)?;
+        if store_resolved > 0 {
+            eprintln!(
+                "lidx: resolved {store_resolved} stored unresolved reference(s) after {context}"
+            );
+        }
+        Ok((reconciled, store_resolved))
+    }
 }
 
-/// One `retry_unresolved_references` candidate row: everything
-/// `Resolver::resolve` needs to retry a stored unresolved reference,
-/// reconstructed from `unresolved_references` and its edge/file/symbol
-/// joins. A named struct rather than a tuple for the same reason as
-/// `UnresolvedNameRow`: wide enough to trip `clippy::type_complexity`.
+/// One `retry_unresolved_references` candidate row: `store_id` (to delete
+/// the store row on a successful retry) plus everything `Resolver::resolve`
+/// needs to retry it, reconstructed from `unresolved_references` and its
+/// edge/file/symbol joins -- see `ReferenceContext`'s doc for why that part
+/// is shared with `NullTargetEdgeRow` rather than duplicated.
 struct StoreRetryRow {
     store_id: i64,
-    edge_id: i64,
-    edge_kind: String,
-    reference_name: Option<String>,
-    import_candidates: Option<String>,
-    receiver_type: Option<String>,
-    bare_call: bool,
-    source_lang: String,
-    file_path: String,
-    source_qualname: Option<String>,
+    ctx: ReferenceContext,
 }
 
-/// One `reconcile_unresolved_reference_store` candidate row: everything
-/// `Resolver::resolve` needs to re-judge a NULL-target edge that has no
-/// `unresolved_references` row yet, read straight from `edges` and its
-/// file/source-symbol joins -- there's no store row to join against here,
-/// unlike `StoreRetryRow`.
+/// One `reconcile_unresolved_reference_store` candidate row:
+/// `source_symbol_id`/`file_id` (for a fresh store insert if still
+/// unresolved) plus everything `Resolver::resolve` needs to re-judge a
+/// NULL-target edge that has no `unresolved_references` row yet, read
+/// straight from `edges` and its file/source-symbol joins -- there's no
+/// store row to join against here, unlike `StoreRetryRow`. See
+/// `ReferenceContext`'s doc for why the resolve-relevant fields are shared
+/// rather than duplicated.
 struct NullTargetEdgeRow {
-    edge_id: i64,
     source_symbol_id: Option<i64>,
     file_id: i64,
-    edge_kind: String,
-    target_qualname: Option<String>,
-    receiver_type: Option<String>,
-    import_candidates: Option<String>,
-    bare_call: bool,
-    source_lang: String,
-    file_path: String,
-    source_qualname: Option<String>,
+    ctx: ReferenceContext,
 }
 
 /// Encode `EdgeInput::import_candidates` for the `edges.import_candidates`

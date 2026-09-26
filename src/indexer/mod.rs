@@ -303,28 +303,14 @@ impl Indexer {
             // `unbind_edges_for_qualnames` just cleared) gets an immediate
             // shot at every symbol that exists so far -- not gated by the
             // retry watermark -- before falling to a store row. Then retry
-            // stored rows a newly inserted symbol might satisfy.
-            let reconciled = self
-                .db
-                .reconcile_unresolved_reference_store(self.graph_version)?;
-            if reconciled > 0 {
-                eprintln!(
-                    "lidx: reconciled {reconciled} unresolved reference(s) after incremental sync"
-                );
-            }
-
-            // A deletion (whole file or just one in-place-edited-away
-            // definition) can turn a stored `Ambiguous` row unique again,
-            // and no new `symbols.id` marks that for the watermark to
-            // notice -- see `any_symbols_deleted`'s doc.
-            let store_resolved = self
-                .db
-                .retry_unresolved_references(self.graph_version, any_symbols_deleted)?;
-            if store_resolved > 0 {
-                eprintln!(
-                    "lidx: resolved {store_resolved} stored unresolved reference(s) after incremental sync"
-                );
-            }
+            // stored rows a newly inserted symbol (or, per `any_symbols_deleted`
+            // below, a deletion that turned a stored `Ambiguous` row unique
+            // again) might satisfy. See `Db::repair_unresolved`.
+            self.db.repair_unresolved(
+                self.graph_version,
+                any_symbols_deleted,
+                "incremental sync",
+            )?;
 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -585,35 +571,22 @@ impl Indexer {
             unresolved > floor
         };
         if needs_repair {
-            // Issue #78/#79: reconcile first -- most commonly a
-            // `carry_forward_files` edge (it copies edges but not their
-            // store rows), or one that went NULL only after it was first
-            // resolved (a deleted/renamed target, or
-            // `unbind_edges_for_qualnames`) -- so it gets a shot at every
-            // symbol that exists so far before falling to a store row. Then
-            // targeted, store-driven retry (see the matching call in
-            // `sync_abs_paths`).
-            let reconciled = self
-                .db
-                .reconcile_unresolved_reference_store(self.graph_version)?;
-            if reconciled > 0 {
-                eprintln!("lidx: reconciled {reconciled} unresolved reference(s) after reindex");
-            }
-
-            // See the matching comment in `sync_abs_paths`: a deletion can
-            // unblock a stored `Ambiguous` row without any insertion for
-            // the watermark to key on -- `stats.deleted` (whole files) is
-            // now final, so fold it in alongside `any_symbols_deleted`
-            // (definitions a re-parsed file's diff dropped in place).
-            let store_resolved = self.db.retry_unresolved_references(
+            // Issue #78/#79: reconcile first -- catches an edge that went
+            // NULL only after it was first resolved (a deleted/renamed
+            // target, or `unbind_edges_for_qualnames`), or a
+            // `carry_forward_files` edge whose store row it couldn't carry
+            // forward (an endpoint with no `stable_id` match) -- so it gets
+            // a shot at every symbol that exists so far before falling to a
+            // store row. Then targeted, store-driven retry (see the
+            // matching call in `sync_abs_paths`). `stats.deleted` (whole
+            // files) is now final, so fold it in alongside
+            // `any_symbols_deleted` (definitions a re-parsed file's diff
+            // dropped in place) -- see `Db::repair_unresolved`.
+            self.db.repair_unresolved(
                 self.graph_version,
                 any_symbols_deleted || stats.deleted > 0,
+                "reindex",
             )?;
-            if store_resolved > 0 {
-                eprintln!(
-                    "lidx: resolved {store_resolved} stored unresolved reference(s) after reindex"
-                );
-            }
 
             let remaining = unresolved_edge_count(&self.db, self.graph_version)?;
             self.db.set_meta_i64("unresolved_edge_floor", remaining)?;

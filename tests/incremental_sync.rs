@@ -982,3 +982,103 @@ fn incremental_symbol_rename_resolves_bare_call_ambiguity_without_file_deletion(
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+/// Issue #78/#79 follow-up, finding G1: a call resolvable only through the
+/// receiver-type/inheritance tier (`Resolver::resolve_via_inheritance`) must
+/// still resolve after `sync_rel_paths` gives its receiver type a brand-new
+/// EXTENDS edge to an already-indexed ancestor. `Foo` itself isn't a new
+/// symbol here (it already existed as `class Foo: pass`) and no symbol named
+/// `bar`/`Foo.bar` is inserted by this sync -- `Base.bar`/`Decoy.bar` both
+/// already existed before the watermark -- so only the newly-written EXTENDS
+/// edge itself can unblock `sub.run`'s stored `x.bar()` reference.
+#[test]
+fn incremental_sync_resolves_call_via_inheritance_edge_added_this_batch() {
+    let base_py = "class Base:\n    def bar(self):\n        pass\n";
+    let decoy_py = "class Decoy:\n    def bar(self):\n        pass\n";
+    let sub_py = "from foo import Foo\n\ndef run(x: Foo):\n    return x.bar()\n";
+    let foo_py_before = "class Foo:\n    pass\n";
+    let foo_py_after = "from base import Base\n\nclass Foo(Base):\n    pass\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "inheritance-edge-added",
+        &[
+            ("base.py", base_py),
+            ("decoy.py", decoy_py),
+            ("sub.py", sub_py),
+            ("foo.py", foo_py_before),
+        ],
+    );
+
+    common::write_files(&repo_root, &[("foo.py", foo_py_after)]);
+    indexer.sync_rel_paths(&["foo.py".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+
+    let edge = snapshot
+        .iter()
+        .find(|e| e.source_qualname == "sub.run" && e.kind == "CALLS")
+        .unwrap_or_else(|| panic!("sub.run must have a CALLS edge: {snapshot:#?}"));
+    assert_eq!(
+        edge.target_qualname.as_deref(),
+        Some("base.Base.bar"),
+        "sub.run's call to x.bar() must resolve via Foo's newly-added EXTENDS Base edge, \
+         not stay stuck behind the stored reference from before Foo had any ancestor: {edge:?}"
+    );
+
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("base.py", base_py),
+        ("decoy.py", decoy_py),
+        ("sub.py", sub_py),
+        ("foo.py", foo_py_after),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// Same finding, but `Foo` doesn't exist at all until the sync that also
+/// gives it its EXTENDS edge -- `Foo` is a brand-new symbol, but the stored
+/// reference is keyed on `bar`/`x.bar`, not `Foo`, so the existing
+/// name-tail-match retry still can't pick it up on its own.
+#[test]
+fn incremental_sync_resolves_call_via_inheritance_on_newly_added_type() {
+    let base_py = "class Base:\n    def bar(self):\n        pass\n";
+    let decoy_py = "class Decoy:\n    def bar(self):\n        pass\n";
+    let sub_py = "from foo import Foo\n\ndef run(x: Foo):\n    return x.bar()\n";
+    let foo_py = "from base import Base\n\nclass Foo(Base):\n    pass\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "inheritance-new-type",
+        &[
+            ("base.py", base_py),
+            ("decoy.py", decoy_py),
+            ("sub.py", sub_py),
+        ],
+    );
+
+    common::write_files(&repo_root, &[("foo.py", foo_py)]);
+    indexer.sync_rel_paths(&["foo.py".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+
+    let edge = snapshot
+        .iter()
+        .find(|e| e.source_qualname == "sub.run" && e.kind == "CALLS")
+        .unwrap_or_else(|| panic!("sub.run must have a CALLS edge: {snapshot:#?}"));
+    assert_eq!(
+        edge.target_qualname.as_deref(),
+        Some("base.Base.bar"),
+        "sub.run's call to x.bar() must resolve once Foo (with its EXTENDS Base edge) is \
+         added, even though Foo itself doesn't share bar's name/tail: {edge:?}"
+    );
+
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("base.py", base_py),
+        ("decoy.py", decoy_py),
+        ("sub.py", sub_py),
+        ("foo.py", foo_py),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

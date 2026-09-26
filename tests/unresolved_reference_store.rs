@@ -182,6 +182,39 @@ fn carry_forward_files_preserves_unresolved_reference_row() {
     );
 }
 
+/// Bug G2(ii) (issue #78/#79 follow-up): a reindex that finds nothing
+/// changed on disk still creates a new graph version, carrying every file
+/// forward. When nothing was indexed or deleted, `reindex`'s `needs_repair`
+/// gate falls back to comparing the new version's NULL-target-edge count
+/// against the `unresolved_edge_floor` recorded by the previous reindex --
+/// and a permanently-unresolved call's carried-forward edge contributes the
+/// same count both times, so that gate stays false and the repair pass never
+/// runs at all. Without `carry_forward_files` copying the store row itself,
+/// the row silently disappears even though the edge it describes is exactly
+/// as unresolved as before.
+#[test]
+fn no_change_reindex_keeps_the_store_matching_a_fresh_reindex() {
+    let a_py = "def f():\n    nothing_defines_this()\n";
+    let b_py = "def g():\n    pass\n";
+    let (_tmp, _repo_root, mut indexer) = indexed_tree(&[("a.py", a_py), ("b.py", b_py)]);
+
+    // Second reindex, nothing changed on disk -- every file takes the
+    // carry-forward path.
+    indexer.reindex().unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let after = indexer
+        .db()
+        .unresolved_reference_summary(graph_version)
+        .unwrap();
+    assert_eq!(
+        after,
+        fresh_summary(&[("a.py", a_py), ("b.py", b_py)]),
+        "a no-op reindex must not drop the store's row for f's still-unresolved call: {after:?}"
+    );
+}
+
 /// Bug F2 (issue #78 follow-up): an edge that resolved cleanly at insert
 /// time -- so `Db::insert_edges` never wrote it a store row -- can still go
 /// NULL-target later, here via the `edges` foreign key's `ON DELETE SET
