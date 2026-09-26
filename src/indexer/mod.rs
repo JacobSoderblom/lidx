@@ -303,6 +303,19 @@ impl Indexer {
                 eprintln!("lidx: resolved {resolved} edge(s) after incremental sync");
             }
 
+            // Issue #78 follow-up: give a store row to any NULL-target edge
+            // the two passes above left behind with none -- here, most
+            // commonly one that went NULL only after it was first resolved
+            // (a deleted/renamed target, or `unbind_edges_for_qualnames`).
+            let reconciled = self
+                .db
+                .reconcile_unresolved_reference_store(self.graph_version)?;
+            if reconciled > 0 {
+                eprintln!(
+                    "lidx: reconciled {reconciled} unresolved reference(s) after incremental sync"
+                );
+            }
+
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -564,6 +577,20 @@ impl Indexer {
             if resolved > 0 {
                 eprintln!("lidx: resolved {resolved} edge(s) after reindex");
             }
+
+            // Issue #78 follow-up: give a store row to any NULL-target edge
+            // the two passes above left behind with none -- most commonly a
+            // `carry_forward_files` edge (it copies edges but not their
+            // store rows), or one that went NULL only after it was first
+            // resolved (a deleted/renamed target, or
+            // `unbind_edges_for_qualnames`).
+            let reconciled = self
+                .db
+                .reconcile_unresolved_reference_store(self.graph_version)?;
+            if reconciled > 0 {
+                eprintln!("lidx: reconciled {reconciled} unresolved reference(s) after reindex");
+            }
+
             let remaining = unresolved_edge_count(&self.db, self.graph_version)?;
             self.db.set_meta_i64("unresolved_edge_floor", remaining)?;
         }

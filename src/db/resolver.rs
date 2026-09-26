@@ -1460,6 +1460,133 @@ impl Db {
         Ok(total_resolved)
     }
 
+    /// Issue #78 follow-up: give a store row to every NULL-target edge that
+    /// went unrepaired above (`retry_unresolved_references` then
+    /// `resolve_null_target_edges`) but still has no
+    /// `unresolved_references` row -- because it never got one in the first
+    /// place. Two ways that happens:
+    ///
+    /// - `Db::carry_forward_files` copies an unchanged file's edges into
+    ///   the new graph version, but not their store rows, so a
+    ///   carried-forward edge that was already unresolved arrives with no
+    ///   row to match it.
+    /// - An edge that resolved cleanly when `Db::insert_edges` first ran it
+    ///   (so no row was ever written) can still go NULL-target afterward --
+    ///   the `edges` foreign key's `ON DELETE SET NULL` when its target is
+    ///   deleted or renamed away, or `Db::unbind_edges_for_qualnames`
+    ///   clearing it for re-judgment.
+    ///
+    /// For each such edge, rebuilds the same `Reference` context
+    /// `retry_unresolved_references` reconstructs from a stored row --
+    /// here read straight from the edge and its file/source-symbol joins
+    /// instead -- and re-runs `Resolver::resolve`: a resolution the earlier
+    /// passes missed is applied to the edge, same as an `Unresolved`
+    /// outcome is recorded in the store, same as `Db::insert_edges` would
+    /// have done the first time. Call after `resolve_null_target_edges`, at
+    /// both repair sites.
+    ///
+    /// Returns the number of edges reconciled (resolved or newly stored).
+    pub fn reconcile_unresolved_reference_store(&self, graph_version: i64) -> Result<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut reconciled = 0;
+
+        let rows: Vec<NullTargetEdgeRow> = {
+            let mut stmt = tx.prepare(
+                "SELECT e.id, e.source_symbol_id, e.file_id, e.kind, e.target_qualname,
+                        e.receiver_type, e.import_candidates, e.bare_call,
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname
+                 FROM edges e
+                 JOIN files f ON f.id = e.file_id
+                 LEFT JOIN symbols src ON src.id = e.source_symbol_id
+                 LEFT JOIN unresolved_references ur ON ur.edge_id = e.id
+                 WHERE e.graph_version = ?
+                   AND e.target_symbol_id IS NULL
+                   AND ur.id IS NULL
+                   AND (e.target_qualname IS NOT NULL OR e.import_candidates IS NOT NULL)",
+            )?;
+            let out = stmt.query_map(params![graph_version], |row| {
+                Ok(NullTargetEdgeRow {
+                    edge_id: row.get(0)?,
+                    source_symbol_id: row.get(1)?,
+                    file_id: row.get(2)?,
+                    edge_kind: row.get(3)?,
+                    target_qualname: row.get(4)?,
+                    receiver_type: row.get(5)?,
+                    import_candidates: row.get(6)?,
+                    bare_call: row.get(7)?,
+                    source_lang: row.get(8)?,
+                    file_path: row.get(9)?,
+                    source_qualname: row.get(10)?,
+                })
+            })?;
+            out.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        {
+            let mut resolver = Resolver::new(&tx, graph_version)?;
+            let mut update_edge = tx.prepare(
+                "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
+            )?;
+            let mut insert_unresolved = tx.prepare(
+                "INSERT INTO unresolved_references
+                 (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail,
+                  reason, import_candidates, graph_version)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )?;
+            let empty_symbol_map: HashMap<String, i64> = HashMap::new();
+
+            for row in &rows {
+                let import_candidates = row
+                    .import_candidates
+                    .as_deref()
+                    .map(decode_import_candidates)
+                    .unwrap_or_default();
+                let resolution = resolver.resolve(
+                    &Reference {
+                        target_qualname: row.target_qualname.as_deref(),
+                        edge_kind: &row.edge_kind,
+                        receiver_type: row.receiver_type.as_deref(),
+                        import_candidates: &import_candidates,
+                        source_lang: &row.source_lang,
+                        source_file_path: &row.file_path,
+                        source_qualname: row.source_qualname.as_deref(),
+                        bare_call: row.bare_call,
+                    },
+                    &empty_symbol_map,
+                )?;
+                match resolution {
+                    Resolution::Resolved { target_id, kind } => {
+                        update_edge.execute(params![target_id, kind.as_str(), row.edge_id])?;
+                        reconciled += 1;
+                    }
+                    Resolution::Unresolved(reason) => {
+                        if let Some((reference_name, name_tail)) = store_reference_name_and_tail(
+                            row.target_qualname.as_deref(),
+                            &import_candidates,
+                        ) {
+                            insert_unresolved.execute(params![
+                                row.edge_id,
+                                row.source_symbol_id,
+                                row.file_id,
+                                &row.edge_kind,
+                                reference_name,
+                                name_tail,
+                                reason.as_str(),
+                                row.import_candidates.as_deref(),
+                                graph_version,
+                            ])?;
+                            reconciled += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok(reconciled)
+    }
+
     /// Issue #78: retry only `unresolved_references` rows whose reference
     /// name or trailing name segment (`name_tail`) matches a symbol
     /// inserted since the last call, instead of `resolve_null_target_edges`'s
@@ -1620,6 +1747,25 @@ struct StoreRetryRow {
     reference_name: Option<String>,
     import_candidates: Option<String>,
     receiver_type: Option<String>,
+    bare_call: bool,
+    source_lang: String,
+    file_path: String,
+    source_qualname: Option<String>,
+}
+
+/// One `reconcile_unresolved_reference_store` candidate row: everything
+/// `Resolver::resolve` needs to re-judge a NULL-target edge that has no
+/// `unresolved_references` row yet, read straight from `edges` and its
+/// file/source-symbol joins -- there's no store row to join against here,
+/// unlike `StoreRetryRow`.
+struct NullTargetEdgeRow {
+    edge_id: i64,
+    source_symbol_id: Option<i64>,
+    file_id: i64,
+    edge_kind: String,
+    target_qualname: Option<String>,
+    receiver_type: Option<String>,
+    import_candidates: Option<String>,
     bare_call: bool,
     source_lang: String,
     file_path: String,

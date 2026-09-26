@@ -16,6 +16,7 @@ mod common;
 
 use common::golden;
 use lidx::indexer::Indexer;
+use lidx::model::UnresolvedReferenceSummary;
 use std::path::PathBuf;
 
 /// `count` calls to distinct names nothing ever defines, all in one
@@ -118,4 +119,151 @@ fn adding_a_file_resolves_a_previously_unresolved_bare_call() {
         ("helper.py", "def helper() -> None:\n    pass\n"),
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// `unresolved_reference_summary` for a fresh, one-shot `reindex()` of
+/// `files` in its own temp dir -- the fixed point every incremental
+/// scenario below must match (issue #78 follow-up: a repair pass must never
+/// leave the store *behind* the edges it repairs).
+fn fresh_summary(files: &[(&str, &str)]) -> Vec<UnresolvedReferenceSummary> {
+    let (_tmp, _repo_root, indexer) = indexed_tree(files);
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    indexer
+        .db()
+        .unresolved_reference_summary(graph_version)
+        .unwrap()
+}
+
+/// `Db::carry_forward_files` copies an unchanged file's edges into the new
+/// graph version wholesale, but not their `unresolved_references` rows --
+/// so a permanently-unresolved call carried forward this way used to vanish
+/// from the store even though the edge it describes is still exactly as
+/// unresolved as before. `a.py` (unchanged) carries its `nowhere()` call
+/// forward while `b.py` is edited (forcing a real reparse rather than a
+/// carry-forward) so the reindex takes the carry-forward path at all.
+#[test]
+fn carry_forward_files_preserves_unresolved_reference_row() {
+    let a_py = "def caller():\n    nowhere()\n";
+    let (_tmp, repo_root, mut indexer) =
+        indexed_tree(&[("a.py", a_py), ("b.py", "def x():\n    pass\n")]);
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let before = indexer
+        .db()
+        .unresolved_reference_summary(graph_version)
+        .unwrap();
+    assert_eq!(
+        before,
+        vec![UnresolvedReferenceSummary {
+            language: "python".to_string(),
+            reason: "no_candidates".to_string(),
+            count: 1,
+        }],
+        "the initial reindex must record caller's unresolved call to nowhere(): {before:?}"
+    );
+
+    // Only b.py changes -- a.py is unchanged and takes the carry-forward
+    // path on this reindex, dragging its still-unresolved edge along.
+    let b_py_after = "def x():\n    pass\n\n\ndef y():\n    pass\n";
+    common::write_files(&repo_root, &[("b.py", b_py_after)]);
+    indexer.reindex().unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let after = indexer
+        .db()
+        .unresolved_reference_summary(graph_version)
+        .unwrap();
+    assert_eq!(
+        after,
+        fresh_summary(&[("a.py", a_py), ("b.py", b_py_after)]),
+        "carrying a.py forward unchanged must not drop its unresolved nowhere() call from the \
+         store: {after:?}"
+    );
+}
+
+/// Bug F2 (issue #78 follow-up): an edge that resolved cleanly at insert
+/// time -- so `Db::insert_edges` never wrote it a store row -- can still go
+/// NULL-target later, here via the `edges` foreign key's `ON DELETE SET
+/// NULL` when its target symbol's file is deleted. Neither
+/// `retry_unresolved_references` nor `resolve_null_target_edges` gives that
+/// kind of miss a store row, so the reference silently drops out of the
+/// scoreboard even though the edge is exactly as unresolved as a fresh
+/// index of the same tree would show.
+#[test]
+fn deleting_target_file_records_unresolved_reference_for_orphaned_call() {
+    let a_py = "from b import g\n\ndef f():\n    g()\n";
+    let b_py = "def g():\n    pass\n";
+    let (_tmp, repo_root, mut indexer) = indexed_tree(&[("a.py", a_py), ("b.py", b_py)]);
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let before = indexer
+        .db()
+        .unresolved_reference_summary(graph_version)
+        .unwrap();
+    assert!(
+        before.is_empty(),
+        "g() must resolve cleanly before b.py is deleted: {before:?}"
+    );
+
+    std::fs::remove_file(repo_root.join("b.py")).unwrap();
+    indexer.sync_rel_paths(&["b.py".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let after = indexer
+        .db()
+        .unresolved_reference_summary(graph_version)
+        .unwrap();
+    assert!(
+        !after.is_empty(),
+        "deleting b.py must leave f's now-orphaned call to g() recorded in the store"
+    );
+    assert_eq!(
+        after,
+        fresh_summary(&[("a.py", a_py)]),
+        "the incrementally-synced store must match a fresh index of the same final tree: {after:?}"
+    );
+}
+
+/// Same bug as above, reached by renaming the target instead of deleting
+/// its file: `g`'s symbol row still goes away (the `ON DELETE SET NULL`
+/// foreign key nulls `a.py`'s edge the same way), and the newly-added `g2`
+/// symbol also runs `unbind_edges_for_qualnames` -- neither path gives the
+/// now-orphaned call a store row.
+#[test]
+fn renaming_target_symbol_records_unresolved_reference_for_orphaned_call() {
+    let a_py = "from b import g\n\ndef f():\n    g()\n";
+    let b_py_before = "def g():\n    pass\n";
+    let (_tmp, repo_root, mut indexer) = indexed_tree(&[("a.py", a_py), ("b.py", b_py_before)]);
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let before = indexer
+        .db()
+        .unresolved_reference_summary(graph_version)
+        .unwrap();
+    assert!(
+        before.is_empty(),
+        "g() must resolve cleanly before b.py's g is renamed: {before:?}"
+    );
+
+    let b_py_after = "def g2():\n    pass\n";
+    common::write_files(&repo_root, &[("b.py", b_py_after)]);
+    indexer.sync_rel_paths(&["b.py".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let after = indexer
+        .db()
+        .unresolved_reference_summary(graph_version)
+        .unwrap();
+    assert!(
+        !after.is_empty(),
+        "renaming g to g2 must leave f's now-orphaned call to g() recorded in the store"
+    );
+    assert_eq!(
+        after,
+        fresh_summary(&[("a.py", a_py), ("b.py", b_py_after)]),
+        "the incrementally-synced store must match a fresh index of the same final tree: {after:?}"
+    );
 }
