@@ -920,3 +920,65 @@ fn incremental_ambiguous_module_candidate_does_not_fall_back_to_package() {
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+/// Issue #79 follow-up: the test above unblocks a stored `Ambiguous`
+/// reference by deleting a whole competing file. This is the other way
+/// that can happen -- an in-place edit that renames a competing definition
+/// away without deleting its file at all. `a.py` and `b.py` each define a
+/// top-level `helper()`; `caller.py`'s bare `helper()` call can only bind
+/// by name (no import, no qualname prefix), so it matches both and stays
+/// unresolved. Renaming `b.py`'s `helper` (the file survives, edited in
+/// place) leaves exactly one `helper` behind and must resolve the call to
+/// it, not leave the stored reference stranded waiting for some unrelated
+/// symbol to be *inserted* -- `retry_unresolved_references`'s watermark
+/// only tracks insertions, so the widened, deletion-triggered join for
+/// `reason = 'ambiguous'` rows is what has to catch this.
+#[test]
+fn incremental_symbol_rename_resolves_bare_call_ambiguity_without_file_deletion() {
+    let a_py = "def helper():\n    pass\n";
+    let b_py = "def helper():\n    pass\n";
+    let caller_py = "def use():\n    helper()\n";
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "rename-unblocks-ambiguity",
+        &[("a.py", a_py), ("b.py", b_py), ("caller.py", caller_py)],
+    );
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot_before = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let before = snapshot_before
+        .iter()
+        .find(|edge| edge.source_qualname == "caller.use" && edge.kind == "CALLS")
+        .expect("caller.use must have a CALLS edge into helper() before the edit");
+    assert_eq!(
+        before.target_qualname, None,
+        "two same-named top-level functions must leave the bare call unresolved, not guess \
+         between them: {before:?}"
+    );
+
+    // In-place edit: b.py keeps existing -- only the competing `helper`
+    // definition inside it is renamed away, not the file itself.
+    let b_py_renamed = "def helper_renamed():\n    pass\n";
+    std::fs::write(repo_root.join("b.py"), b_py_renamed).unwrap();
+    indexer.sync_rel_paths(&["b.py".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let after = snapshot
+        .iter()
+        .find(|edge| edge.source_qualname == "caller.use" && edge.kind == "CALLS")
+        .expect("caller.use must still have a CALLS edge after the edit");
+    assert_eq!(
+        after.target_qualname.as_deref(),
+        Some("a.helper"),
+        "renaming away the competing definition (b.py's file is never deleted) must resolve \
+         the now-unique call to the remaining a.helper: {after:?}"
+    );
+
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("a.py", a_py),
+        ("b.py", b_py_renamed),
+        ("caller.py", caller_py),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

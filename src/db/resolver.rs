@@ -1618,18 +1618,21 @@ impl Db {
     /// tracks the highest `symbols.id` already considered, so a call with
     /// nothing new inserted is one cheap `MAX(id)` check.
     ///
-    /// `deleted_this_batch` widens that join to *every* existing symbol
-    /// (not just ones past the watermark) and skips the cheap-check early
-    /// return: a symbol going away -- not just one arriving -- can turn a
-    /// stored `Ambiguous` row unique again (e.g. a competing same-qualname
-    /// module symbol's file is removed), and no new `symbols.id` is ever
-    /// inserted for the watermark to notice that by. Still only re-resolves
-    /// rows already in the store, so this stays bounded by the store's size
-    /// rather than every edge in the graph. Known residual gap: this only
-    /// fires for a whole file's deletion (`IndexStats::deleted`), not a
-    /// same-file edit that merely removes one competing symbol -- the
-    /// latter still waits for an unrelated future insertion to re-surface
-    /// it (or a full reindex, which re-resolves everything from scratch).
+    /// `symbols_deleted_this_batch` -- true when this sync/reindex removed
+    /// any symbol, a whole file's or just one in-place-edited-away
+    /// definition (see the callers' own docs) -- widens the join for
+    /// `reason = 'ambiguous'` rows only, to match against *every* existing
+    /// symbol instead of just ones past the watermark, and skips the
+    /// cheap-check early return so that widened pass still runs even when
+    /// nothing new was inserted. Ambiguity is the only reason a deletion
+    /// (rather than an insertion) can unblock: it's the only outcome caused
+    /// by *too many* candidates, so removing one can turn it unique again,
+    /// and no new `symbols.id` is ever inserted for the watermark to notice
+    /// that by. Every other reason (`NoCandidates`, `External`, `Private`)
+    /// can only be fixed by something arriving, so those rows keep the
+    /// normal watermark-gated join even on a deletion-carrying batch. Still
+    /// only re-resolves rows already in the store, so this stays bounded by
+    /// the store's size rather than every edge in the graph.
     ///
     /// Each candidate is re-run through the *full* `Resolver::resolve` tier
     /// order (not just the tier that failed originally), using the
@@ -1649,7 +1652,7 @@ impl Db {
     pub fn retry_unresolved_references(
         &self,
         graph_version: i64,
-        deleted_this_batch: bool,
+        symbols_deleted_this_batch: bool,
     ) -> Result<usize> {
         let watermark = self
             .get_meta_i64("unresolved_reference_watermark")?
@@ -1659,19 +1662,21 @@ impl Db {
                 .query_row("SELECT COALESCE(MAX(id), 0) FROM symbols", [], |row| {
                     row.get(0)
                 })?;
-        if !deleted_this_batch && max_symbol_id <= watermark {
+        if !symbols_deleted_this_batch && max_symbol_id <= watermark {
             return Ok(0);
         }
-        // Only widens which symbols count as "new enough to retry against"
-        // -- never persisted, so it doesn't affect the watermark this call
-        // still advances to `max_symbol_id` at the end.
-        let join_floor = if deleted_this_batch { 0 } else { watermark };
 
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let mut total_resolved = 0;
 
         let candidates: Vec<StoreRetryRow> = {
+            // A row's join is satisfied either the normal way (some symbol
+            // past the watermark matches it), or -- only when this batch
+            // deleted a symbol, and only for an `Ambiguous` row -- by any
+            // matching symbol at all: the surviving candidate that makes it
+            // unique again isn't new, so it'd never clear `s.id > ?2` on
+            // its own.
             let mut stmt = tx.prepare(
                 "SELECT DISTINCT ur.id, ur.edge_id, ur.edge_kind, ur.reference_name,
                         ur.import_candidates, e.receiver_type, e.bare_call,
@@ -1682,23 +1687,26 @@ impl Db {
                  LEFT JOIN symbols src ON src.id = ur.source_symbol_id
                  JOIN symbols s ON (s.qualname = ur.reference_name OR s.name = ur.name_tail)
                  WHERE ur.graph_version = ?1
-                   AND s.id > ?2
-                   AND s.graph_version = ?1",
+                   AND s.graph_version = ?1
+                   AND (s.id > ?2 OR (?3 AND ur.reason = 'ambiguous'))",
             )?;
-            let rows = stmt.query_map(params![graph_version, join_floor], |row| {
-                Ok(StoreRetryRow {
-                    store_id: row.get(0)?,
-                    edge_id: row.get(1)?,
-                    edge_kind: row.get(2)?,
-                    reference_name: row.get(3)?,
-                    import_candidates: row.get(4)?,
-                    receiver_type: row.get(5)?,
-                    bare_call: row.get(6)?,
-                    source_lang: row.get(7)?,
-                    file_path: row.get(8)?,
-                    source_qualname: row.get(9)?,
-                })
-            })?;
+            let rows = stmt.query_map(
+                params![graph_version, watermark, symbols_deleted_this_batch],
+                |row| {
+                    Ok(StoreRetryRow {
+                        store_id: row.get(0)?,
+                        edge_id: row.get(1)?,
+                        edge_kind: row.get(2)?,
+                        reference_name: row.get(3)?,
+                        import_candidates: row.get(4)?,
+                        receiver_type: row.get(5)?,
+                        bare_call: row.get(6)?,
+                        source_lang: row.get(7)?,
+                        file_path: row.get(8)?,
+                        source_qualname: row.get(9)?,
+                    })
+                },
+            )?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
 

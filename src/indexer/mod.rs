@@ -50,14 +50,19 @@ pub struct Indexer {
 }
 
 /// `Indexer::index_scanned_file_symbols`'s result: one file's extracted
-/// content, its `files.id`, its post-diff symbol rows, and (issue #77)
-/// `diff.added`'s qualnames — `sync_abs_paths` uses the last field to
-/// re-check edges elsewhere that may have just become ambiguous.
+/// content, its `files.id`, its post-diff symbol rows, (issue #77)
+/// `diff.added`'s qualnames — `sync_abs_paths` uses that field to re-check
+/// edges elsewhere that may have just become ambiguous -- and (issue #79)
+/// whether `diff.deleted` was non-empty, so `sync_abs_paths` can tell
+/// `Db::retry_unresolved_references` a symbol went away even when no whole
+/// file did (an in-place edit that renames/removes a definition, not just
+/// `delete_file`, can unblock a stored `Ambiguous` reference).
 struct ScannedFileSymbols {
     extracted: ExtractedFile,
     file_id: i64,
     symbols: Vec<crate::model::Symbol>,
     added: Vec<String>,
+    any_deleted: bool,
 }
 
 impl Indexer {
@@ -209,6 +214,12 @@ impl Indexer {
         // the sync, not left stale, since the addition may have made that
         // name ambiguous. See `Db::unbind_edges_for_qualnames`.
         let mut added_qualnames: HashSet<String> = HashSet::new();
+        // Issue #79: whether this batch removed any symbol -- a whole file
+        // (`stats.deleted`, below) or just one definition an in-place edit
+        // renamed/removed. Either can turn a stored `Ambiguous` reference
+        // unique again, which `Db::retry_unresolved_references`'s
+        // insertion-only watermark would otherwise never notice.
+        let mut any_symbols_deleted = false;
         for path in paths {
             let rel_path = match crate::util::normalize_rel_path(&self.repo_root, path) {
                 Ok(value) => value,
@@ -217,6 +228,7 @@ impl Indexer {
             if !path.exists() {
                 self.delete_file(&rel_path)?;
                 stats.deleted += 1;
+                any_symbols_deleted = true;
                 touched = true;
                 continue;
             }
@@ -224,6 +236,7 @@ impl Indexer {
                 if !path.exists() {
                     self.delete_file(&rel_path)?;
                     stats.deleted += 1;
+                    any_symbols_deleted = true;
                     touched = true;
                 }
                 continue;
@@ -240,8 +253,10 @@ impl Indexer {
                     file_id,
                     symbols,
                     added,
+                    any_deleted,
                 })) => {
                     added_qualnames.extend(added);
+                    any_symbols_deleted |= any_deleted;
                     indexed_files.push(scanned.clone());
                     pending.push((scanned, extracted, file_id, symbols));
                 }
@@ -298,12 +313,13 @@ impl Indexer {
                 );
             }
 
-            // A deletion (not just an insertion) can turn a stored
-            // `Ambiguous` row unique again, and no new `symbols.id` marks
-            // that for the watermark to notice -- widen the retry.
+            // A deletion (whole file or just one in-place-edited-away
+            // definition) can turn a stored `Ambiguous` row unique again,
+            // and no new `symbols.id` marks that for the watermark to
+            // notice -- see `any_symbols_deleted`'s doc.
             let store_resolved = self
                 .db
-                .retry_unresolved_references(self.graph_version, stats.deleted > 0)?;
+                .retry_unresolved_references(self.graph_version, any_symbols_deleted)?;
             if store_resolved > 0 {
                 eprintln!(
                     "lidx: resolved {store_resolved} stored unresolved reference(s) after incremental sync"
@@ -449,8 +465,18 @@ impl Indexer {
             )?;
         }
 
+        // Issue #79: whether this reindex removed any symbol -- a whole
+        // file (`stats.deleted`, set below by the not-`seen` loop) or just
+        // one definition a re-parsed file's diff dropped. Either can turn a
+        // stored `Ambiguous` reference unique again, which
+        // `Db::retry_unresolved_references`'s insertion-only watermark
+        // would otherwise never notice -- see `sync_abs_paths`'s matching
+        // flag.
+        let mut any_symbols_deleted = false;
+
         // Now process edges for all files
         for (file, extracted, diff, file_id) in file_data {
+            any_symbols_deleted |= !diff.deleted.is_empty();
             // Delete existing edges
             self.db.delete_edges_for_file(file_id, self.graph_version)?;
 
@@ -576,10 +602,13 @@ impl Indexer {
 
             // See the matching comment in `sync_abs_paths`: a deletion can
             // unblock a stored `Ambiguous` row without any insertion for
-            // the watermark to key on.
-            let store_resolved = self
-                .db
-                .retry_unresolved_references(self.graph_version, stats.deleted > 0)?;
+            // the watermark to key on -- `stats.deleted` (whole files) is
+            // now final, so fold it in alongside `any_symbols_deleted`
+            // (definitions a re-parsed file's diff dropped in place).
+            let store_resolved = self.db.retry_unresolved_references(
+                self.graph_version,
+                any_symbols_deleted || stats.deleted > 0,
+            )?;
             if store_resolved > 0 {
                 eprintln!(
                     "lidx: resolved {store_resolved} stored unresolved reference(s) after reindex"
@@ -682,6 +711,9 @@ impl Indexer {
         // Issue #77: qualnames this sync is about to add, captured before
         // `update_file_symbols` consumes `diff` — see `sync_abs_paths`.
         let added_qualnames: Vec<String> = diff.added.iter().map(|s| s.qualname.clone()).collect();
+        // Issue #79: likewise captured before `diff` moves, for
+        // `retry_unresolved_references`'s deletion-driven ambiguity retry.
+        let any_deleted = !diff.deleted.is_empty();
 
         // Phase 3: Use incremental updates for symbols
         let symbols = self.db.update_file_symbols(
@@ -702,6 +734,7 @@ impl Indexer {
             extracted,
             file_id,
             symbols,
+            any_deleted,
             added: added_qualnames,
         }))
     }
