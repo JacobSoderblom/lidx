@@ -445,12 +445,12 @@ impl Db {
             // `stable_id`), so the only way to learn which new row a given
             // old row became is to sort both queries identically
             // (`ORDER BY e.id ASC`) and pair them up position-by-position:
-            // SQLite feeds an `INSERT ... SELECT`'s rows to the insert (and
-            // to `RETURNING`) in exactly the order the `SELECT` produces
-            // them, so the Nth id returned here is the copy of the Nth id
-            // in `old_edge_ids` below. Both queries run back to back in
-            // this same transaction with no intervening write to `edges`,
-            // so nothing can reorder or change the set between them.
+            // the ordered `INSERT ... SELECT` assigns new rowids in ascending
+            // select order, so the Nth smallest new id is the copy of the Nth
+            // id in `old_edge_ids` below. `RETURNING` itself emits rows in an
+            // arbitrary order (SQLite docs), hence the sort. Both queries run
+            // back to back in this same transaction with no intervening write
+            // to `edges`, so nothing can change the set between them.
             let old_edge_ids: Vec<i64> = {
                 let sql = format!(
                     "SELECT e.id FROM edges e
@@ -469,7 +469,7 @@ impl Db {
                 rows.collect::<rusqlite::Result<Vec<i64>>>()?
             };
 
-            let new_edge_ids: Vec<i64> = {
+            let mut new_edge_ids: Vec<i64> = {
                 let ordered_sql = format!("{edges_sql} ORDER BY e.id ASC RETURNING id");
                 let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
                     Box::new(to_version),
@@ -488,6 +488,7 @@ impl Db {
                 rows.collect::<rusqlite::Result<Vec<i64>>>()?
             };
 
+            new_edge_ids.sort_unstable();
             let edges_copied = new_edge_ids.len();
             edge_id_map = old_edge_ids.into_iter().zip(new_edge_ids).collect();
             edges_copied
