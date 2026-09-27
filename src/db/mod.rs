@@ -293,10 +293,16 @@ impl Db {
         Ok(())
     }
 
-    /// Delete edges for a file (helper for incremental updates)
+    /// Delete edges for a file (helper for incremental updates), plus the
+    /// file's unresolved-reference store rows: a pending row (`edge_id` NULL)
+    /// has no edge to cascade from, so it would otherwise outlive a re-sync.
     pub fn delete_edges_for_file(&self, file_id: i64, graph_version: i64) -> Result<()> {
         self.conn().execute(
             "DELETE FROM edges WHERE file_id = ? AND graph_version = ?",
+            params![file_id, graph_version],
+        )?;
+        self.conn().execute(
+            "DELETE FROM unresolved_references WHERE file_id = ? AND graph_version = ?",
             params![file_id, graph_version],
         )?;
         Ok(())
@@ -308,10 +314,7 @@ impl Db {
     /// - `update_file_symbols()` for symbols (Phase 3)
     /// - `delete_edges_for_file()` + `insert_edges()` for edges
     pub fn delete_symbols_edges_for_file(&self, file_id: i64, graph_version: i64) -> Result<()> {
-        self.conn().execute(
-            "DELETE FROM edges WHERE file_id = ? AND graph_version = ?",
-            params![file_id, graph_version],
-        )?;
+        self.delete_edges_for_file(file_id, graph_version)?;
         // Deleting these symbols nulls any other file's edge that still
         // references one of them via `edges`' `ON DELETE SET NULL` foreign
         // key (issue #76) -- no manual nulling needed here.

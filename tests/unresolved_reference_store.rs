@@ -300,3 +300,31 @@ fn renaming_target_symbol_records_unresolved_reference_for_orphaned_call() {
         "the incrementally-synced store must match a fresh index of the same final tree: {after:?}"
     );
 }
+
+/// A pending store row has no edge to cascade from, so re-syncing (or
+/// deleting) its file must remove it explicitly -- otherwise a removed
+/// reference lingers and a still-present one is stored twice.
+#[test]
+fn resyncing_or_deleting_a_file_drops_its_stale_pending_rows() {
+    let a_py = "import json\nimport os\n\ndef f():\n    nowhere_fn()\n";
+    let b_py = "def g():\n    missing_fn()\n";
+    let (_tmp, repo_root, mut indexer) = indexed_tree(&[("a.py", a_py), ("b.py", b_py)]);
+
+    let a_edited = "import os\n\ndef f():\n    pass\n";
+    std::fs::write(repo_root.join("a.py"), a_edited).unwrap();
+    std::fs::remove_file(repo_root.join("b.py")).unwrap();
+    indexer
+        .sync_rel_paths(&["a.py".to_string(), "b.py".to_string()])
+        .unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let after = indexer
+        .db()
+        .unresolved_reference_summary(graph_version)
+        .unwrap();
+    assert_eq!(
+        after,
+        fresh_summary(&[("a.py", a_edited)]),
+        "the re-synced store must match a fresh index of the same final tree: {after:?}"
+    );
+}
