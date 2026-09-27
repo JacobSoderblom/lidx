@@ -117,6 +117,17 @@ struct CarriedUnresolvedRow {
     name_tail: String,
     reason: String,
     import_candidates: Option<String>,
+    detail: Option<String>,
+    evidence_snippet: Option<String>,
+    evidence_start_line: Option<i64>,
+    evidence_end_line: Option<i64>,
+    confidence: Option<f64>,
+    commit_sha: Option<String>,
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    event_ts: Option<i64>,
+    receiver_type: Option<String>,
+    bare_call: bool,
 }
 
 impl Db {
@@ -370,16 +381,18 @@ impl Db {
             )?
         };
 
-        // Issue #78/#79 (G2): whether any of these carried files have a
-        // stored unresolved reference to carry forward too -- the common
-        // carry-forward has none, so this stays the cheap, unchanged
-        // `execute` path below; only when it's true do we pay for the
-        // ordered `RETURNING`-based edge-id remap the copy needs (see the
-        // `unresolved_references` copy at the end of this function).
-        let has_unresolved: bool = {
+        // Issue #79: whether any of these carried files have a *Bridge Edge
+        // kind* stored unresolved reference to carry forward -- the only
+        // shape left needing the edge-id remap below, since a pending
+        // (non-Bridge-Edge-kind) reference has no edge to remap at all (see
+        // the plain copy further down). The common carry-forward has none,
+        // so this stays the cheap, unchanged `execute` path below; only
+        // when it's true do we pay for the ordered `RETURNING`-based
+        // edge-id remap the copy needs.
+        let has_bridge_unresolved: bool = {
             let sql = format!(
                 "SELECT EXISTS(SELECT 1 FROM unresolved_references
-                 WHERE graph_version = ? AND file_id IN ({placeholders}))"
+                 WHERE graph_version = ? AND edge_id IS NOT NULL AND file_id IN ({placeholders}))"
             );
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(from_version)];
             for id in file_ids {
@@ -395,8 +408,8 @@ impl Db {
         // ponytail: an edge endpoint with no stable_id match in `to_version`
         // (deleted target, or a stable_id collision) is copied with that endpoint
         // NULL rather than dropped — the same best-effort contract the rest of the
-        // edge-resolution code (insert_edges' fuzzy fallback, resolve_null_target_edges)
-        // already has for unresolved targets.
+        // edge-resolution code (insert_edges' fuzzy fallback, the store-driven
+        // repair pass in db::resolver) already has for unresolved targets.
         let edges_sql = format!(
             "INSERT INTO edges
                 (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
@@ -424,7 +437,7 @@ impl Db {
         // remap on, unlike a symbol's `stable_id`) -- empty otherwise.
         let mut edge_id_map: HashMap<i64, i64> = HashMap::new();
 
-        let edges_copied = if !has_unresolved {
+        let edges_copied = if !has_bridge_unresolved {
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
                 Box::new(to_version),
                 Box::new(to_version),
@@ -439,8 +452,9 @@ impl Db {
                 rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
             )?
         } else {
-            // This batch has store rows to carry (see `has_unresolved`
-            // above). `edges.id` is a plain autoincrement rowid with no
+            // This batch has Bridge Edge kind store rows to carry (see
+            // `has_bridge_unresolved` above). `edges.id` is a plain
+            // autoincrement rowid with no
             // stable, cross-version identity of its own (unlike a symbol's
             // `stable_id`), so the only way to learn which new row a given
             // old row became is to sort both queries identically
@@ -535,24 +549,67 @@ impl Db {
             )?;
         }
 
-        // Issue #78/#79 (G2): carry each carried file's stored unresolved
-        // reference forward too, remapped to the copy's new edge id
-        // (`edge_id_map`, built above) and new source-symbol id (by
-        // `stable_id`, same as every other cross-version remap in this
-        // function). Without this, a carried-forward edge that was already
-        // unresolved arrives in `to_version` with no store row at all, so
-        // `reconcile_unresolved_reference_store` treats it as never-seen and
-        // re-resolves it from scratch on every subsequent repair pass --
-        // for a large carried-forward set, that's exactly the untargeted
-        // rescan issue #78 removed from the repair sites in the first
-        // place, just relocated. Skips cleanly when `edge_id_map` is empty
-        // (`has_unresolved` was false above -- the common case).
+        // Issue #79: carry each carried file's stored unresolved reference
+        // forward too, remapped to `to_version`. The store no longer keys
+        // on a live edge (self-contained now), so this splits into two
+        // independent shapes:
+        //
+        // - a pending (non-Bridge-Edge-kind) row has no edge at all -- a
+        //   plain row copy, remapped by `stable_id` exactly like
+        //   `symbol_metrics` above, no edge-id bookkeeping needed.
+        // - a Bridge Edge kind row's edge was just copied by the bulk
+        //   `INSERT` above -- it still needs `edge_id_map`'s remap to that
+        //   copy's *new* edge id.
+        //
+        // Without either, a carried-forward reference that was already
+        // unresolved would arrive in `to_version` with no store row at all,
+        // so `reconcile_unresolved_reference_store` would treat it as
+        // never-seen and re-resolve it from scratch on every subsequent
+        // repair pass -- for a large carried-forward set, that's exactly
+        // the untargeted rescan issue #78 removed from the repair sites in
+        // the first place, just relocated.
+        {
+            let sql = format!(
+                "INSERT INTO unresolved_references
+                    (source_symbol_id, file_id, edge_kind, reference_name, name_tail, reason,
+                     import_candidates, detail, evidence_snippet, evidence_start_line,
+                     evidence_end_line, confidence, commit_sha, trace_id, span_id, event_ts,
+                     receiver_type, bare_call, graph_version)
+                 SELECT
+                    (SELECT ns.id FROM symbols ns
+                        WHERE ns.stable_id = os.stable_id AND ns.graph_version = ? LIMIT 1),
+                    ur.file_id, ur.edge_kind, ur.reference_name, ur.name_tail, ur.reason,
+                    ur.import_candidates, ur.detail, ur.evidence_snippet, ur.evidence_start_line,
+                    ur.evidence_end_line, ur.confidence, ur.commit_sha, ur.trace_id, ur.span_id,
+                    ur.event_ts, ur.receiver_type, ur.bare_call, ?
+                 FROM unresolved_references ur
+                 LEFT JOIN symbols os ON os.id = ur.source_symbol_id
+                 WHERE ur.edge_id IS NULL AND ur.graph_version = ? AND ur.file_id IN ({placeholders})"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                Box::new(to_version),
+                Box::new(to_version),
+                Box::new(from_version),
+            ];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            tx.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            )?;
+        }
+
         if !edge_id_map.is_empty() {
             let sql = format!(
                 "SELECT ur.edge_id, ur.source_symbol_id, ur.file_id, ur.edge_kind,
-                        ur.reference_name, ur.name_tail, ur.reason, ur.import_candidates
+                        ur.reference_name, ur.name_tail, ur.reason, ur.import_candidates,
+                        ur.detail, ur.evidence_snippet, ur.evidence_start_line,
+                        ur.evidence_end_line, ur.confidence, ur.commit_sha, ur.trace_id,
+                        ur.span_id, ur.event_ts, ur.receiver_type, ur.bare_call
                  FROM unresolved_references ur
-                 WHERE ur.graph_version = ? AND ur.file_id IN ({placeholders})"
+                 WHERE ur.edge_id IS NOT NULL AND ur.graph_version = ?
+                   AND ur.file_id IN ({placeholders})"
             );
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(from_version)];
             for id in file_ids {
@@ -572,6 +629,17 @@ impl Db {
                             name_tail: row.get(5)?,
                             reason: row.get(6)?,
                             import_candidates: row.get(7)?,
+                            detail: row.get(8)?,
+                            evidence_snippet: row.get(9)?,
+                            evidence_start_line: row.get(10)?,
+                            evidence_end_line: row.get(11)?,
+                            confidence: row.get(12)?,
+                            commit_sha: row.get(13)?,
+                            trace_id: row.get(14)?,
+                            span_id: row.get(15)?,
+                            event_ts: row.get(16)?,
+                            receiver_type: row.get(17)?,
+                            bare_call: row.get(18)?,
                         })
                     },
                 )?;
@@ -594,6 +662,17 @@ impl Db {
                     name_tail,
                     reason,
                     import_candidates,
+                    detail,
+                    evidence_snippet,
+                    evidence_start_line,
+                    evidence_end_line,
+                    confidence,
+                    commit_sha,
+                    trace_id,
+                    span_id,
+                    event_ts,
+                    receiver_type,
+                    bare_call,
                 } = row;
                 // Not expected to miss (`old_edge_id` came straight from
                 // this same file set's edges), but skip rather than panic
@@ -616,6 +695,17 @@ impl Db {
                     name_tail,
                     reason,
                     import_candidates,
+                    detail,
+                    evidence_snippet,
+                    evidence_start_line,
+                    evidence_end_line,
+                    confidence,
+                    commit_sha,
+                    trace_id,
+                    span_id,
+                    event_ts,
+                    receiver_type,
+                    bare_call,
                     to_version,
                 ])?;
             }
@@ -1290,29 +1380,42 @@ impl Db {
                     symbol_map,
                 )?;
 
-                insert_stmt.execute(params![
-                    file_id,
-                    source_id,
-                    resolution.target_id(),
-                    &edge.kind,
-                    edge.target_qualname.as_deref(),
-                    edge.detail.as_deref(),
-                    edge.evidence_snippet.as_deref(),
-                    edge.evidence_start_line,
-                    edge.evidence_end_line,
-                    edge.confidence,
-                    graph_version,
-                    commit_sha,
-                    edge.trace_id.as_deref(),
-                    edge.span_id.as_deref(),
-                    edge.event_ts,
-                    resolution.stored_receiver_type(extracted_receiver_type),
-                    resolution.kind_column(),
-                    resolver::encode_import_candidates(&edge.import_candidates),
-                    edge.bare_call,
-                ])?;
-                let edge_id = tx.last_insert_rowid();
-                count += 1;
+                // Issue #79: a Bridge Edge kind is always written -- its
+                // target is a cross-language/cross-process join key
+                // (`target_qualname`), not necessarily a symbol in this
+                // graph, and `trace_flow`'s bridging (see `traversal.rs`)
+                // reads it straight off `edges` regardless of resolution.
+                // Every other kind is written only when resolved; an
+                // Unresolved outcome for one of those has no placeholder
+                // edge at all, only the `unresolved_references` row below.
+                let is_bridge = crate::indexer::channel::is_bridge_edge_kind(&edge.kind);
+                let edge_id = if resolution.target_id().is_some() || is_bridge {
+                    insert_stmt.execute(params![
+                        file_id,
+                        source_id,
+                        resolution.target_id(),
+                        &edge.kind,
+                        edge.target_qualname.as_deref(),
+                        edge.detail.as_deref(),
+                        edge.evidence_snippet.as_deref(),
+                        edge.evidence_start_line,
+                        edge.evidence_end_line,
+                        edge.confidence,
+                        graph_version,
+                        commit_sha,
+                        edge.trace_id.as_deref(),
+                        edge.span_id.as_deref(),
+                        edge.event_ts,
+                        resolution.stored_receiver_type(extracted_receiver_type),
+                        resolution.kind_column(),
+                        resolver::encode_import_candidates(&edge.import_candidates),
+                        edge.bare_call,
+                    ])?;
+                    count += 1;
+                    Some(tx.last_insert_rowid())
+                } else {
+                    None
+                };
 
                 if let Some(reason) = resolution.unresolved_reason()
                     && let Some((reference_name, name_tail)) =
@@ -1330,6 +1433,17 @@ impl Db {
                         name_tail,
                         reason.as_str(),
                         resolver::encode_import_candidates(&edge.import_candidates),
+                        edge.detail.as_deref(),
+                        edge.evidence_snippet.as_deref(),
+                        edge.evidence_start_line,
+                        edge.evidence_end_line,
+                        edge.confidence,
+                        commit_sha,
+                        edge.trace_id.as_deref(),
+                        edge.span_id.as_deref(),
+                        edge.event_ts,
+                        resolution.stored_receiver_type(extracted_receiver_type),
+                        edge.bare_call,
                         graph_version,
                     ])?;
                 }
@@ -3623,12 +3737,24 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        // Confirm the edge really is unresolved (the write path refused it).
+        // Confirm the edge really is unresolved (the write path refused it,
+        // and issue #79 means it never became an edge at all -- only a
+        // store row).
+        let edge_count: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(edge_count, 0);
         let unresolved_count: i64 = db
             .read_conn()
             .unwrap()
             .query_row(
-                "SELECT COUNT(*) FROM edges WHERE target_symbol_id IS NULL AND graph_version = 1",
+                "SELECT COUNT(*) FROM unresolved_references WHERE graph_version = 1",
                 [],
                 |row| row.get(0),
             )
@@ -3701,17 +3827,18 @@ mod tests {
         db.insert_edges(cs_file, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        // Confirm the edge is unresolved before exercising the read path.
-        let target_symbol_id: Option<i64> = db
+        // Confirm the edge is unresolved before exercising the read path:
+        // issue #79 means it has no edge row at all, only a store row.
+        let edge_count: i64 = db
             .read_conn()
             .unwrap()
             .query_row(
-                "SELECT target_symbol_id FROM edges WHERE target_qualname = 'value.Trim'",
+                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'value.Trim'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(target_symbol_id, None);
+        assert_eq!(edge_count, 0);
 
         let by_symbol = db.edges_for_symbols(&[py_trim_id], None, 1).unwrap();
         assert!(
@@ -4317,19 +4444,29 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 2, None)
             .unwrap();
 
+        // Issue #79: a CALLS edge that can't resolve (target_qualname matches
+        // only a graph_version=1 symbol, id {old id}; it must not bind to
+        // that stale row) is not written as an edge at all -- only a store
+        // row, with the unresolved qualname preserved for later
+        // re-resolution / display.
         let found = db.edges_for_symbol(caller_inserted[0].id, None, 2).unwrap();
-        assert_eq!(found.len(), 1);
         assert_eq!(
-            found[0].target_symbol_id, None,
-            "target_qualname matches only a graph_version=1 symbol (id {}); it must resolve \
-             to NULL rather than that stale row",
+            found.len(),
+            0,
+            "an unresolved CALLS edge must not be written at all (target_qualname matches \
+             only a stale graph_version=1 symbol, id {})",
             old_inserted[0].id
         );
-        // The unresolved qualname is preserved for later re-resolution / display.
-        assert_eq!(
-            found[0].target_qualname.as_deref(),
-            Some("crate::gather_context::resolve_seeds")
-        );
+        let reference_name: String = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT reference_name FROM unresolved_references WHERE graph_version = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(reference_name, "crate::gather_context::resolve_seeds");
     }
 
     // --- insert_edges fuzzy resolution with '::' qualnames ---
@@ -4375,134 +4512,6 @@ mod tests {
         let found = db.edges_for_symbol(caller_inserted[0].id, None, 1).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].target_symbol_id, Some(callee_inserted[0].id));
-    }
-
-    // --- resolve_null_target_edges with '::' qualnames ---
-
-    #[test]
-    fn test_resolve_null_target_edges_resolves_rust_colons_qualname() {
-        let (mut db, _temp) = create_test_db();
-        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
-
-        let caller_sym = vec![make_test_symbol(
-            "crate::caller::do_work",
-            Some("fn do_work()"),
-            "function",
-            1,
-        )];
-        let caller_inserted = db
-            .insert_symbols(file_id, "src/lib.rs", &caller_sym, 1, None)
-            .unwrap();
-
-        // Insert the edge before the callee symbol exists — so target_symbol_id stays NULL.
-        // This simulates out-of-order incremental indexing (caller file indexed before callee file).
-        let edges = vec![make_test_edge("CALLS", "crate::caller::do_work", "compute")];
-        let symbol_map: HashMap<String, i64> = caller_inserted
-            .iter()
-            .map(|s| (s.qualname.clone(), s.id))
-            .collect();
-        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
-            .unwrap();
-
-        // Now insert the callee symbol (the callee file is indexed later)
-        let callee_sym = vec![make_test_symbol(
-            "crate::util::helper::compute",
-            Some("fn compute()"),
-            "function",
-            10,
-        )];
-        let callee_inserted = db
-            .insert_symbols(file_id, "src/lib.rs", &callee_sym, 1, None)
-            .unwrap();
-
-        // Confirm edge is unresolved
-        let conn = db.read_conn().unwrap();
-        let unresolved_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM edges WHERE target_symbol_id IS NULL AND graph_version = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(unresolved_count, 1);
-        drop(conn);
-
-        // Now run resolve_null_target_edges — should resolve via '%::compute' pattern
-        let resolved = db.resolve_null_target_edges(1).unwrap();
-        assert!(resolved >= 1);
-
-        // Verify the edge now points to the callee
-        let found = db.edges_for_symbol(caller_inserted[0].id, None, 1).unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].target_symbol_id, Some(callee_inserted[0].id));
-    }
-
-    #[test]
-    fn test_resolve_null_target_edges_binds_fully_qualified_exact_match() {
-        // Regression for the "fully-qualified target doesn't bind" report
-        // (dpb's `Dpb.DataMgr.DataProduct.Domain.UniqueName.Create`): a caller
-        // file references the callee by its full qualname *before* the callee
-        // file has been indexed (out-of-order incremental indexing), exactly
-        // like `test_resolve_null_target_edges_resolves_rust_colons_qualname`
-        // above but with the target already fully qualified rather than bare.
-        let (mut db, _temp) = create_test_db();
-        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
-
-        let caller_sym = vec![make_test_symbol(
-            "crate::caller::do_work",
-            Some("fn do_work()"),
-            "function",
-            1,
-        )];
-        let caller_inserted = db
-            .insert_symbols(file_id, "src/lib.rs", &caller_sym, 1, None)
-            .unwrap();
-
-        // Edge target is the callee's full, exact qualname — not a bare name —
-        // but the callee symbol doesn't exist yet.
-        let edges = vec![make_test_edge(
-            "CALLS",
-            "crate::caller::do_work",
-            "crate::util::helper::compute",
-        )];
-        let symbol_map: HashMap<String, i64> = caller_inserted
-            .iter()
-            .map(|s| (s.qualname.clone(), s.id))
-            .collect();
-        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
-            .unwrap();
-
-        // Now the callee file is indexed.
-        let callee_sym = vec![make_test_symbol(
-            "crate::util::helper::compute",
-            Some("fn compute()"),
-            "function",
-            10,
-        )];
-        let callee_inserted = db
-            .insert_symbols(file_id, "src/lib.rs", &callee_sym, 1, None)
-            .unwrap();
-
-        let resolved = db.resolve_null_target_edges(1).unwrap();
-        assert_eq!(
-            resolved, 1,
-            "exact-match repair pass should bind the fully-qualified target"
-        );
-
-        let found = db.edges_for_symbol(caller_inserted[0].id, None, 1).unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].target_symbol_id, Some(callee_inserted[0].id));
-
-        let resolution_kind: Option<String> = db
-            .read_conn()
-            .unwrap()
-            .query_row(
-                "SELECT resolution_kind FROM edges WHERE id = ?",
-                params![found[0].id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(resolution_kind.as_deref(), Some("exact"));
     }
 
     #[test]
@@ -4574,10 +4583,14 @@ mod tests {
         (ids, file_ids)
     }
 
+    /// The one edge's resolved target for `source_id`, or `None` for both a
+    /// NULL-target edge and (issue #79) an unresolved, non-Bridge-Edge-kind
+    /// reference that was never written as an edge at all -- callers use
+    /// this to assert "this call didn't bind to anything" either way.
     fn only_target(db: &Db, source_id: i64) -> Option<i64> {
         let found = db.edges_for_symbol(source_id, None, 1).unwrap();
-        assert_eq!(found.len(), 1);
-        found[0].target_symbol_id
+        assert!(found.len() <= 1);
+        found.first().and_then(|e| e.target_symbol_id)
     }
 
     #[test]
@@ -4647,7 +4660,6 @@ mod tests {
         ];
         db.insert_edges(file_ids["app/page.tsx"], &edges, &ids, 1, None)
             .unwrap();
-        db.resolve_null_target_edges(1).unwrap();
         assert_eq!(only_target(&db, ids["app/page.A"]), None);
         assert_eq!(only_target(&db, ids["app/page.B"]), None);
     }
@@ -4695,7 +4707,6 @@ mod tests {
         ];
         db.insert_edges(file_ids["app/page.tsx"], &edges, &ids, 1, None)
             .unwrap();
-        db.resolve_null_target_edges(1).unwrap();
         assert_eq!(only_target(&db, ids["app/page.A"]), None);
         assert_eq!(only_target(&db, ids["app/page.B"]), None);
     }
@@ -4757,17 +4768,10 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
+        // Issue #79: the ambiguous "append" reference gets no edge at all,
+        // only a store row -- only the resolved "compute" edge is written.
         let found = db.edges_for_symbol(caller_id, None, 1).unwrap();
-        assert_eq!(found.len(), 2);
-
-        let append_edge = found
-            .iter()
-            .find(|e| e.target_qualname.as_deref() == Some("append"))
-            .unwrap();
-        assert_eq!(
-            append_edge.target_symbol_id, None,
-            "ambiguous bare-name call must not bind to either same-named candidate"
-        );
+        assert_eq!(found.len(), 1);
 
         let compute_edge = found
             .iter()
@@ -4777,6 +4781,22 @@ mod tests {
             compute_edge.target_symbol_id,
             Some(compute_id),
             "unambiguous bare-name call must still resolve"
+        );
+
+        let unresolved_count: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM unresolved_references \
+                 WHERE graph_version = 1 AND reference_name = 'append'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            unresolved_count, 1,
+            "ambiguous bare-name call must not bind to either same-named candidate, \
+             and must be tracked in the unresolved-reference store"
         );
     }
 
@@ -4955,30 +4975,33 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        let (target_symbol_id, receiver_type, resolution_kind): (
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-        ) = db
+        // Issue #79: a builtin/unresolved receiver type must never bind,
+        // even though EventStore.append is the sole candidate for the bare
+        // name "append" -- and, since CALLS isn't a Bridge Edge kind, it
+        // must not be written as an edge at all, only a store row.
+        let edge_count: i64 = db
             .conn()
             .query_row(
-                "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges WHERE target_qualname = 'cells.append'",
+                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'cells.append'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(
-            target_symbol_id, None,
-            "a builtin/unresolved receiver type must never bind, even though EventStore.append \
-             is the sole candidate for the bare name \"append\""
-        );
+        assert_eq!(edge_count, 0);
+        let receiver_type: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT receiver_type FROM unresolved_references WHERE reference_name = 'cells.append'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(
             receiver_type.as_deref(),
             Some(""),
             "the receiver_type column encodes tracked-but-unresolved as an empty string, \
              distinct from NULL (not tracked at all)"
         );
-        assert_eq!(resolution_kind, None);
     }
 
     // --- import tier: import-qualified candidates disambiguate a bare
@@ -5096,21 +5119,28 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+        // Issue #79: two import candidates that both name real (but
+        // different) symbols must not bind to either -- the ambiguity guard
+        // must still refuse, exactly as it did before import qualification
+        // -- and no edge is written at all, only a store row.
+        let edge_count: i64 = db
             .conn()
             .query_row(
-                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'Widget.Create'",
+                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'Widget.Create'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(
-            target_symbol_id, None,
-            "two import candidates that both name real (but different) \
-             symbols must not bind to either -- the ambiguity guard must \
-             still refuse, exactly as it did before import qualification"
-        );
-        assert_eq!(resolution_kind, None);
+        assert_eq!(edge_count, 0);
+        let unresolved_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM unresolved_references WHERE reference_name = 'Widget.Create'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unresolved_count, 1);
     }
 
     #[test]
@@ -5153,24 +5183,28 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        let (target_symbol_id, receiver_type, resolution_kind): (
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-        ) = db
+        // Issue #79: a receiver positively known (via this file's own
+        // imports) to come from an external module must never fall through
+        // to bare-name matching, even though FakeClock.now is the sole
+        // local symbol named "now" -- and it must not be written as an edge
+        // at all, only a store row.
+        let edge_count: i64 = db
             .conn()
             .query_row(
-                "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges WHERE target_qualname = 'datetime.now'",
+                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'datetime.now'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(
-            target_symbol_id, None,
-            "a receiver positively known (via this file's own imports) to come from an \
-             external module must never fall through to bare-name matching, even though \
-             FakeClock.now is the sole local symbol named \"now\""
-        );
+        assert_eq!(edge_count, 0);
+        let receiver_type: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT receiver_type FROM unresolved_references WHERE reference_name = 'datetime.now'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(
             receiver_type.as_deref(),
             Some(""),
@@ -5178,65 +5212,22 @@ mod tests {
              column value a receiver-type-tracked builtin uses, so a later repair pass also \
              refuses to fuzzy-resolve it"
         );
-        assert_eq!(resolution_kind, None);
-    }
-
-    #[test]
-    fn test_resolve_null_target_edges_respects_failed_import_candidate() {
-        let (mut db, _temp) = create_test_db();
-        let file_id = db
-            .upsert_file("src/conftest.py", "h1", "python", 100, 0)
-            .unwrap();
-
-        let syms = vec![make_test_symbol(
-            "pkg.tests.conftest.FakeClock.now",
-            Some("def now(cls)"),
-            "method",
-            1,
-        )];
-        db.insert_symbols(file_id, "src/conftest.py", &syms, 1, None)
-            .unwrap();
-
-        // Insert with an empty symbol_map, as during mid-incremental-reindex,
-        // so the edge lands with target_symbol_id NULL and only the
-        // *persisted* receiver_type is left to guide a later repair pass.
-        let edges = vec![make_test_edge_with_import_candidates(
-            "CALLS",
-            "pkg.caller.run",
-            "datetime.now",
-            vec!["datetime.now".to_string()],
-        )];
-        db.insert_edges(file_id, &edges, &HashMap::new(), 1, None)
-            .unwrap();
-
-        db.resolve_null_target_edges(1).unwrap();
-
-        let target_symbol_id: Option<i64> = db
-            .conn()
-            .query_row(
-                "SELECT target_symbol_id FROM edges WHERE target_qualname = 'datetime.now'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            target_symbol_id, None,
-            "the repair pass has no access to the transient import_candidates list, so it must \
-             rely on the persisted receiver_type='' this fix writes -- without it, the repair \
-             pass would resurrect the false bare-name match on its own next run"
-        );
     }
 
     /// Insert `syms` into one python file, then one CALLS edge carrying
-    /// `candidates`; return the stored (target_symbol_id, receiver_type,
-    /// resolution_kind) and the qualname -> id map.
+    /// `candidates`; return the stored edge row (`None` when issue #79's
+    /// write-path gate refused to write one at all -- an unresolved,
+    /// non-Bridge-Edge-kind reference lives only in the store now), that
+    /// store row's own `receiver_type` (populated whether or not an edge
+    /// exists), and the qualname -> id map.
     #[allow(clippy::type_complexity)]
     fn insert_python_import_call(
         syms: &[(&str, &str)],
         target: &str,
         candidates: &[&str],
     ) -> (
-        (Option<i64>, Option<String>, Option<String>),
+        Option<(Option<i64>, Option<String>, Option<String>)>,
+        Option<String>,
         HashMap<String, i64>,
     ) {
         let (mut db, _temp) = create_test_db();
@@ -5263,23 +5254,35 @@ mod tests {
         )];
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
-        let row = db
+        let row: Option<(Option<i64>, Option<String>, Option<String>)> = db
             .conn()
             .query_row(
                 "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges WHERE kind = 'CALLS'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
+            .optional()
             .unwrap();
-        (row, symbol_map)
+        let store_receiver_type: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT receiver_type FROM unresolved_references WHERE edge_kind = 'CALLS'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+            .flatten();
+        (row, store_receiver_type, symbol_map)
     }
 
     #[test]
     fn test_insert_edges_bare_external_import_shadows_unique_repo_method() {
         // `from urllib.parse import quote; quote(x)` in a repo whose only
         // `quote` is an unrelated method. The external import must shadow
-        // the name: no bare-name binding to `MssqlCodeWriter.quote`.
-        let ((target, receiver_type, _), _) = insert_python_import_call(
+        // the name: no bare-name binding to `MssqlCodeWriter.quote`, and
+        // (issue #79) no edge at all -- only a store row.
+        let (row, store_receiver_type, _) = insert_python_import_call(
             &[
                 ("py.pkg.src.pkg", "module"),
                 ("py.pkg.src.pkg.writer.MssqlCodeWriter.quote", "method"),
@@ -5287,15 +5290,18 @@ mod tests {
             "py.pkg.src.pkg.a.quote",
             &["urllib.parse.quote"],
         );
-        assert_eq!(target, None, "external import must not bind a repo symbol");
-        assert_eq!(receiver_type.as_deref(), Some(""));
+        assert_eq!(
+            row, None,
+            "external import must not bind a repo symbol, and must not be written as an edge"
+        );
+        assert_eq!(store_receiver_type.as_deref(), Some(""));
     }
 
     #[test]
     fn test_insert_edges_import_candidate_matches_src_layout_qualname_by_suffix() {
         // dpb shape: module qualnames carry the repo path prefix
         // (`py.pkg.src.`) the import statement does not.
-        let ((target, _, kind), map) = insert_python_import_call(
+        let (row, _, map) = insert_python_import_call(
             &[
                 ("py.pkg.src.pkg", "module"),
                 ("py.pkg.src.pkg.runtime.run", "function"),
@@ -5304,6 +5310,7 @@ mod tests {
             "py.pkg.src.pkg.a.run",
             &["pkg.runtime.run"],
         );
+        let (target, _, kind) = row.expect("a resolved reference must be written as an edge");
         assert_eq!(target, Some(map["py.pkg.src.pkg.runtime.run"]));
         assert_eq!(kind.as_deref(), Some("import"));
     }
@@ -5314,7 +5321,7 @@ mod tests {
         // `helper` from `pkg.core`: the candidate names nothing, but its
         // root is a repo package, so the pre-existing bare-name tier still
         // runs instead of the edge being refused as external.
-        let ((target, receiver_type, kind), map) = insert_python_import_call(
+        let (row, _, map) = insert_python_import_call(
             &[
                 ("py.pkg.src.pkg", "module"),
                 ("py.pkg.src.pkg.core.helper", "function"),
@@ -5322,6 +5329,8 @@ mod tests {
             "py.pkg.src.pkg.a.helper",
             &["pkg.helper"],
         );
+        let (target, receiver_type, kind) =
+            row.expect("a resolved reference must be written as an edge");
         assert_eq!(target, Some(map["py.pkg.src.pkg.core.helper"]));
         assert_eq!(kind.as_deref(), Some("bare_name"));
         assert_eq!(receiver_type, None);
@@ -5331,8 +5340,9 @@ mod tests {
     fn test_insert_edges_generated_pb2_import_under_repo_package_is_external() {
         // `from pkg.v1 import pkg_pb2 as pb; pb.ColumnDef(...)`: the pb2
         // module is protoc output, so the repo dataclass of the same name
-        // must not be picked up by the fuzzy tiers.
-        let ((target, _, _), _) = insert_python_import_call(
+        // must not be picked up by the fuzzy tiers, and (issue #79) no edge
+        // is written at all.
+        let (row, _, _) = insert_python_import_call(
             &[
                 ("py.pkg.src.pkg", "module"),
                 ("py.pkg.src.pkg.schema.ColumnDef", "class"),
@@ -5340,99 +5350,7 @@ mod tests {
             "pb.ColumnDef",
             &["pkg.v1.pkg_pb2.ColumnDef"],
         );
-        assert_eq!(target, None);
-    }
-
-    #[test]
-    fn test_resolve_null_target_edges_import_suffix_round_repairs_edge() {
-        // Incremental-reindex shape: the edge lands before its target's
-        // symbol exists, then the repair pass must find it via the suffix
-        // round (exact never matches a src-layout qualname).
-        let (mut db, _temp) = create_test_db();
-        let file_id = db
-            .upsert_file("py/pkg/src/pkg/a.py", "h1", "python", 100, 0)
-            .unwrap();
-        let edges = vec![make_test_edge_with_import_candidates(
-            "CALLS",
-            "py.pkg.src.pkg.a.caller",
-            "py.pkg.src.pkg.a.run",
-            vec!["pkg.runtime.run".to_string()],
-        )];
-        db.insert_edges(file_id, &edges, &HashMap::new(), 1, None)
-            .unwrap();
-        let other = db
-            .upsert_file("py/pkg/src/pkg/runtime.py", "h2", "python", 100, 0)
-            .unwrap();
-        let inserted = db
-            .insert_symbols(
-                other,
-                "py/pkg/src/pkg/runtime.py",
-                &[make_test_symbol(
-                    "py.pkg.src.pkg.runtime.run",
-                    None,
-                    "function",
-                    1,
-                )],
-                1,
-                None,
-            )
-            .unwrap();
-        db.resolve_null_target_edges(1).unwrap();
-        let (target, kind): (Option<i64>, Option<String>) = db
-            .conn()
-            .query_row(
-                "SELECT target_symbol_id, resolution_kind FROM edges WHERE kind = 'CALLS'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(target, Some(inserted[0].id));
-        assert_eq!(kind.as_deref(), Some("import"));
-    }
-
-    #[test]
-    fn test_resolve_null_target_edges_respects_persisted_receiver_type() {
-        let (mut db, _temp) = create_test_db();
-        let file_id = db
-            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
-            .unwrap();
-
-        let syms = vec![make_test_symbol(
-            "pkg.store.EventStore.append",
-            Some("def append(self, event)"),
-            "method",
-            1,
-        )];
-        db.insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
-            .unwrap();
-
-        // Insert with a symbol_map that deliberately can't resolve anything
-        // (simulating the edge landing with target_symbol_id NULL, as it
-        // would mid-incremental-reindex), then run the repair pass.
-        let edges = vec![make_test_edge_with_receiver_type(
-            "CALLS",
-            "pkg.caller.run",
-            "cells.append",
-            ReceiverType::Unresolved,
-        )];
-        db.insert_edges(file_id, &edges, &HashMap::new(), 1, None)
-            .unwrap();
-
-        db.resolve_null_target_edges(1).unwrap();
-
-        let target_symbol_id: Option<i64> = db
-            .conn()
-            .query_row(
-                "SELECT target_symbol_id FROM edges WHERE target_qualname = 'cells.append'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            target_symbol_id, None,
-            "a repair pass must respect the persisted receiver_type signal just like the \
-             original insert — it must not fuzzy-resolve an edge marked unresolved"
-        );
+        assert_eq!(row, None);
     }
 
     #[test]
@@ -5546,19 +5464,27 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+        // Issue #79: two unrelated ancestors declaring the same method is
+        // ambiguous and must not bind -- and, since CALLS isn't a Bridge
+        // Edge kind, no edge is written at all, only a store row.
+        let edge_count: i64 = db
             .conn()
             .query_row(
-                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'foo.method'",
+                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'foo.method'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(
-            target_symbol_id, None,
-            "two unrelated ancestors declaring the same method is ambiguous and must not bind"
-        );
-        assert_eq!(resolution_kind, None);
+        assert_eq!(edge_count, 0);
+        let unresolved_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM unresolved_references WHERE reference_name = 'foo.method'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unresolved_count, 1);
     }
 
     #[test]

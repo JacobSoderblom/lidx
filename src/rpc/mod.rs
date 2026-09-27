@@ -51,6 +51,8 @@ struct RpcError {
 struct ReindexParams {
     summary: Option<bool>,
     fields: Option<Vec<String>>,
+    /// Force another unresolved-reference repair pass after reindexing,
+    /// beyond the one reindex already runs when it detects work to do.
     resolve_edges: Option<bool>,
     mine_git: Option<bool>,
 }

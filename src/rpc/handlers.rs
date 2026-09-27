@@ -2058,14 +2058,28 @@ pub(super) fn handle_reindex(indexer: &mut Indexer, params: Value) -> Result<Val
     let params: ReindexParams = serde_json::from_value(params)?;
     let stats = indexer.reindex()?;
 
-    // Optionally resolve unresolved edges after reindexing
+    // Optionally force another repair pass after reindexing, beyond the one
+    // `reindex()` already runs when it detects work to do (see
+    // `Indexer::reindex`'s `needs_repair` gate) -- issue #79 retired the
+    // older, untargeted `resolve_null_target_edges` full-edge-table rescan
+    // this param used to run (nothing was left for it to find once
+    // `insert_edges` stopped writing a NULL-target edge for any kind but a
+    // Bridge Edge), so this now forces the same store-driven repair
+    // (`Db::repair_unresolved`) reindex's own gate would otherwise skip on
+    // a purely-carried-forward run.
     let mut json_stats = json!(stats);
     if params.resolve_edges.unwrap_or(false) {
         let graph_version = indexer.db().current_graph_version()?;
-        let resolved = indexer.db().resolve_null_target_edges(graph_version)?;
+        let (reconciled, store_resolved) =
+            indexer
+                .db()
+                .repair_unresolved(graph_version, true, "manual resolve_edges request")?;
         // Add resolved count to stats
         if let Some(obj) = json_stats.as_object_mut() {
-            obj.insert("edges_resolved".to_string(), json!(resolved));
+            obj.insert(
+                "edges_resolved".to_string(),
+                json!(reconciled + store_resolved),
+            );
         }
     }
 

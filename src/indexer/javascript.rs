@@ -3794,6 +3794,8 @@ mod import_resolution_tests {
 
     /// Resolved target qualname of the single CALLS edge from `caller`
     /// whose literal target ends in `.{name}`; `None` when it stays unbound.
+    /// Issue #79: an unresolved CALLS edge is no longer written at all, so
+    /// "stays unbound" now also means zero rows, not just a NULL target.
     fn callee(conn: &Connection, caller: &str, name: &str) -> Option<String> {
         let mut stmt = conn
             .prepare(
@@ -3809,8 +3811,11 @@ mod import_resolution_tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(rows.len(), 1, "expected one CALLS {caller} -> {name}");
-        rows.into_iter().next().unwrap()
+        assert!(
+            rows.len() <= 1,
+            "expected at most one CALLS {caller} -> {name}"
+        );
+        rows.into_iter().next().flatten()
     }
 
     const BUTTON: &str = r#"

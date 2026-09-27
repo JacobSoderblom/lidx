@@ -378,9 +378,9 @@ fn expected_edges_after_caller_restored() -> Vec<ExpectedEdge> {
 /// (`python::resolve_import_file_edges`) -- the same edge row survives
 /// `caller.py`'s deletion (its `target_symbol_id` nulled by the `edges`
 /// foreign key, see issue #76) and its restoration; `caller`'s module
-/// symbol reappearing is what gives `resolve_null_target_edges`'s exact
-/// tier something to rebind it to. No re-extraction of `downstream.py`
-/// itself is needed either way.
+/// symbol reappearing is what gives the repair pass's exact tier
+/// (`Db::reconcile_unresolved_reference_store`) something to rebind it to.
+/// No re-extraction of `downstream.py` itself is needed either way.
 #[test]
 fn incremental_delete_then_restore_reattaches_incoming_edges() {
     let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
@@ -428,11 +428,11 @@ fn incremental_delete_then_restore_reattaches_incoming_edges() {
 /// an unrelated file synced in between the delete and the restore --
 /// `downstream.py` must still end up resolved, not missed because it only
 /// gets "one deferred second chance". The redesign has no such
-/// second-chance bookkeeping at all: every later sync's
-/// `resolve_null_target_edges` call re-tries every still-NULL edge in the
-/// whole graph, not just ones from files that sync touched, so an
-/// intervening unrelated sync changes nothing about when `downstream.py`'s
-/// edges get retried.
+/// second-chance bookkeeping at all: every later sync's repair pass
+/// (`Db::repair_unresolved`) re-judges every edge/reference its reconcile
+/// and targeted-retry steps are scoped to, not just ones from files that
+/// sync touched, so an intervening unrelated sync changes nothing about
+/// when `downstream.py`'s edges get retried.
 #[test]
 fn incremental_delete_then_restore_across_intervening_sync_reattaches_incoming_edges() {
     let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");

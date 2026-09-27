@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -456,6 +456,26 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    if existing < 19 {
+        // Issue #79: the write path stops writing a NULL-target edge for
+        // every kind except a Bridge Edge (`indexer::channel::
+        // is_bridge_edge_kind` -- its target is a cross-language/
+        // cross-process join key, not necessarily a symbol in this graph,
+        // and `trace_flow`'s bridging reads it straight off `edges`
+        // regardless of resolution, so it keeps its placeholder edge
+        // exactly as before). Every other kind's unresolved reference now
+        // lives only in `unresolved_references`, so that table can no
+        // longer key on a live edge (`edge_id` becomes nullable) and must
+        // carry everything a retry needs to either update that edge
+        // (Bridge Edge kinds) or insert a brand new one from scratch
+        // (everything else) -- see `db::resolver`'s module doc.
+        eprintln!(
+            "lidx: migrating to schema v19 -- moving existing non-Bridge-Edge-kind \
+             NULL-target edges into the unresolved-reference store and deleting them"
+        );
+        migrate_unresolved_reference_store_v19(conn)?;
+    }
+
     if existing < SCHEMA_VERSION {
         conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?)
@@ -463,6 +483,290 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             [SCHEMA_VERSION.to_string()],
         )?;
     }
+
+    Ok(())
+}
+
+/// One pre-migration `unresolved_references` (v18) row, joined to its edge
+/// for the shadow columns v19 adds -- see `migrate_unresolved_reference_store_v19`.
+struct LegacyUnresolvedRow {
+    edge_id: i64,
+    source_symbol_id: Option<i64>,
+    file_id: i64,
+    edge_kind: String,
+    reference_name: Option<String>,
+    name_tail: String,
+    reason: String,
+    import_candidates: Option<String>,
+    detail: Option<String>,
+    evidence_snippet: Option<String>,
+    evidence_start_line: Option<i64>,
+    evidence_end_line: Option<i64>,
+    confidence: Option<f64>,
+    commit_sha: Option<String>,
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    event_ts: Option<i64>,
+    receiver_type: Option<String>,
+    bare_call: bool,
+    graph_version: i64,
+}
+
+/// One pre-migration NULL-target edge with no `unresolved_references` (v18)
+/// row at all yet -- the same gap `Db::reconcile_unresolved_reference_store`
+/// closes at runtime, just not yet reached by a repair pass on this
+/// database. See `migrate_unresolved_reference_store_v19`.
+struct GapEdgeRow {
+    edge_id: i64,
+    source_symbol_id: Option<i64>,
+    file_id: i64,
+    edge_kind: String,
+    target_qualname: Option<String>,
+    import_candidates: Option<String>,
+    detail: Option<String>,
+    evidence_snippet: Option<String>,
+    evidence_start_line: Option<i64>,
+    evidence_end_line: Option<i64>,
+    confidence: Option<f64>,
+    commit_sha: Option<String>,
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    event_ts: Option<i64>,
+    receiver_type: Option<String>,
+    bare_call: bool,
+    graph_version: i64,
+}
+
+/// Schema v19 (issue #79): rebuilds `unresolved_references` self-contained
+/// (nullable `edge_id`, plus the shadow columns a retry needs to rebuild an
+/// edge from scratch -- receiver_type, bare_call, evidence lines/snippet,
+/// detail, confidence, commit_sha, trace/span id, event_ts) and moves every
+/// existing non-Bridge-Edge-kind NULL-target edge into it, deleting the
+/// edge. A Bridge Edge kind's row keeps its `edge_id`, since that edge stays
+/// (unchanged from before this migration).
+///
+/// Two shapes of pre-existing row, mirroring
+/// `Db::reconcile_unresolved_reference_store`'s own two cases:
+/// - a v18 `unresolved_references` row already exists for the edge --
+///   promoted in place, its shadow columns copied from the edge it names.
+/// - no v18 row exists yet (the same gap a repair pass closes at runtime,
+///   just not yet reached on this database) -- created fresh, with a
+///   best-effort `reason` of `no_candidates`: this migration doesn't run the
+///   resolver, and the next repair pass re-derives the real reason the same
+///   way it always has. A row with neither a `target_qualname` nor an
+///   import candidate has nothing for a retry to key on and is left
+///   untouched, same as `reconcile_unresolved_reference_store` leaves it
+///   today.
+///
+/// SQLite can't relax a `NOT NULL`/`UNIQUE` column with `ALTER TABLE`, so
+/// this is the standard rebuild recipe (see `migrate_symbol_id_sequence`):
+/// build the new table, populate it, drop the old one, rename the new one
+/// in -- wrapped in one transaction since `conn` is a shared reference here
+/// (no `Connection::transaction()` available), same as that function.
+fn migrate_unresolved_reference_store_v19(conn: &Connection) -> Result<()> {
+    conn.execute("BEGIN;", [])?;
+
+    conn.execute_batch(
+        "CREATE TABLE unresolved_references_v19 (
+            id INTEGER PRIMARY KEY,
+            edge_id INTEGER UNIQUE,
+            source_symbol_id INTEGER,
+            file_id INTEGER NOT NULL,
+            edge_kind TEXT NOT NULL,
+            reference_name TEXT,
+            name_tail TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            import_candidates TEXT,
+            detail TEXT,
+            evidence_snippet TEXT,
+            evidence_start_line INTEGER,
+            evidence_end_line INTEGER,
+            confidence REAL,
+            commit_sha TEXT,
+            trace_id TEXT,
+            span_id TEXT,
+            event_ts INTEGER,
+            receiver_type TEXT,
+            bare_call INTEGER NOT NULL DEFAULT 0,
+            graph_version INTEGER NOT NULL,
+            FOREIGN KEY(edge_id) REFERENCES edges(id) ON DELETE CASCADE,
+            FOREIGN KEY(source_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL,
+            FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+        );",
+    )?;
+
+    // Read both row shapes in full before writing anything -- the deletes
+    // below must not shrink either result set out from under the other.
+    let promote_rows: Vec<LegacyUnresolvedRow> = {
+        let mut stmt = conn.prepare(
+            "SELECT ur.edge_id, ur.source_symbol_id, ur.file_id, ur.edge_kind,
+                    ur.reference_name, ur.name_tail, ur.reason, ur.import_candidates,
+                    e.detail, e.evidence_snippet, e.evidence_start_line, e.evidence_end_line,
+                    e.confidence, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.receiver_type, e.bare_call, ur.graph_version
+             FROM unresolved_references ur
+             JOIN edges e ON e.id = ur.edge_id",
+        )?;
+        stmt.query_map([], |row| {
+            Ok(LegacyUnresolvedRow {
+                edge_id: row.get(0)?,
+                source_symbol_id: row.get(1)?,
+                file_id: row.get(2)?,
+                edge_kind: row.get(3)?,
+                reference_name: row.get(4)?,
+                name_tail: row.get(5)?,
+                reason: row.get(6)?,
+                import_candidates: row.get(7)?,
+                detail: row.get(8)?,
+                evidence_snippet: row.get(9)?,
+                evidence_start_line: row.get(10)?,
+                evidence_end_line: row.get(11)?,
+                confidence: row.get(12)?,
+                commit_sha: row.get(13)?,
+                trace_id: row.get(14)?,
+                span_id: row.get(15)?,
+                event_ts: row.get(16)?,
+                receiver_type: row.get(17)?,
+                bare_call: row.get(18)?,
+                graph_version: row.get(19)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    let gap_rows: Vec<GapEdgeRow> = {
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.source_symbol_id, e.file_id, e.kind, e.target_qualname,
+                    e.import_candidates, e.detail, e.evidence_snippet, e.evidence_start_line,
+                    e.evidence_end_line, e.confidence, e.commit_sha, e.trace_id, e.span_id,
+                    e.event_ts, e.receiver_type, e.bare_call, e.graph_version
+             FROM edges e
+             LEFT JOIN unresolved_references ur ON ur.edge_id = e.id
+             WHERE e.target_symbol_id IS NULL
+               AND ur.id IS NULL
+               AND (e.target_qualname IS NOT NULL OR e.import_candidates IS NOT NULL)",
+        )?;
+        stmt.query_map([], |row| {
+            Ok(GapEdgeRow {
+                edge_id: row.get(0)?,
+                source_symbol_id: row.get(1)?,
+                file_id: row.get(2)?,
+                edge_kind: row.get(3)?,
+                target_qualname: row.get(4)?,
+                import_candidates: row.get(5)?,
+                detail: row.get(6)?,
+                evidence_snippet: row.get(7)?,
+                evidence_start_line: row.get(8)?,
+                evidence_end_line: row.get(9)?,
+                confidence: row.get(10)?,
+                commit_sha: row.get(11)?,
+                trace_id: row.get(12)?,
+                span_id: row.get(13)?,
+                event_ts: row.get(14)?,
+                receiver_type: row.get(15)?,
+                bare_call: row.get(16)?,
+                graph_version: row.get(17)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    {
+        let mut insert = conn.prepare(
+            "INSERT INTO unresolved_references_v19
+                (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail,
+                 reason, import_candidates, detail, evidence_snippet, evidence_start_line,
+                 evidence_end_line, confidence, commit_sha, trace_id, span_id, event_ts,
+                 receiver_type, bare_call, graph_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )?;
+        let mut delete_edge = conn.prepare("DELETE FROM edges WHERE id = ?")?;
+
+        for row in &promote_rows {
+            let is_bridge = crate::indexer::channel::is_bridge_edge_kind(&row.edge_kind);
+            let edge_id = is_bridge.then_some(row.edge_id);
+            insert.execute(params![
+                edge_id,
+                row.source_symbol_id,
+                row.file_id,
+                &row.edge_kind,
+                &row.reference_name,
+                &row.name_tail,
+                &row.reason,
+                &row.import_candidates,
+                &row.detail,
+                &row.evidence_snippet,
+                row.evidence_start_line,
+                row.evidence_end_line,
+                row.confidence,
+                &row.commit_sha,
+                &row.trace_id,
+                &row.span_id,
+                row.event_ts,
+                &row.receiver_type,
+                row.bare_call,
+                row.graph_version,
+            ])?;
+            if !is_bridge {
+                delete_edge.execute(params![row.edge_id])?;
+            }
+        }
+
+        for row in &gap_rows {
+            let import_candidates: Vec<String> = row
+                .import_candidates
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            let Some((reference_name, name_tail)) = super::resolver::store_reference_name_and_tail(
+                row.target_qualname.as_deref(),
+                &import_candidates,
+            ) else {
+                continue;
+            };
+            let is_bridge = crate::indexer::channel::is_bridge_edge_kind(&row.edge_kind);
+            let edge_id = is_bridge.then_some(row.edge_id);
+            insert.execute(params![
+                edge_id,
+                row.source_symbol_id,
+                row.file_id,
+                &row.edge_kind,
+                reference_name,
+                name_tail,
+                "no_candidates",
+                &row.import_candidates,
+                &row.detail,
+                &row.evidence_snippet,
+                row.evidence_start_line,
+                row.evidence_end_line,
+                row.confidence,
+                &row.commit_sha,
+                &row.trace_id,
+                &row.span_id,
+                row.event_ts,
+                &row.receiver_type,
+                row.bare_call,
+                row.graph_version,
+            ])?;
+            if !is_bridge {
+                delete_edge.execute(params![row.edge_id])?;
+            }
+        }
+    }
+
+    conn.execute_batch(
+        "DROP TABLE unresolved_references;
+         ALTER TABLE unresolved_references_v19 RENAME TO unresolved_references;
+         CREATE INDEX IF NOT EXISTS idx_unresolved_references_name
+             ON unresolved_references(reference_name);
+         CREATE INDEX IF NOT EXISTS idx_unresolved_references_name_tail
+             ON unresolved_references(name_tail);
+         CREATE INDEX IF NOT EXISTS idx_unresolved_references_gv
+             ON unresolved_references(graph_version);
+         CREATE INDEX IF NOT EXISTS idx_unresolved_references_reason
+             ON unresolved_references(reason);
+         COMMIT;",
+    )?;
 
     Ok(())
 }
@@ -920,5 +1224,247 @@ mod tests {
             remaining, 0,
             "deleting the edge must cascade to its unresolved_references row"
         );
+    }
+
+    /// Hand-builds the v18 schema shape (`unresolved_references.edge_id`
+    /// `NOT NULL UNIQUE`, no shadow columns) a real database created before
+    /// this migration existed would have, stamped at schema_version 18 --
+    /// the version `migrate` sees just before the v19 block below runs.
+    fn open_v18_db(conn: &Connection) {
+        conn.execute_batch(
+            "
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE files (
+                id INTEGER PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                hash TEXT NOT NULL,
+                language TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                modified INTEGER NOT NULL,
+                deleted_version INTEGER
+            );
+            CREATE TABLE symbols (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                qualname TEXT NOT NULL,
+                start_line INTEGER NOT NULL,
+                start_col INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                end_col INTEGER NOT NULL,
+                start_byte INTEGER NOT NULL,
+                end_byte INTEGER NOT NULL,
+                signature TEXT,
+                docstring TEXT,
+                graph_version INTEGER NOT NULL DEFAULT 1,
+                commit_sha TEXT,
+                stable_id TEXT,
+                visibility TEXT,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+            CREATE TABLE edges (
+                id INTEGER PRIMARY KEY,
+                file_id INTEGER NOT NULL,
+                source_symbol_id INTEGER,
+                target_symbol_id INTEGER,
+                kind TEXT NOT NULL,
+                target_qualname TEXT,
+                detail TEXT,
+                evidence_snippet TEXT,
+                evidence_start_line INTEGER,
+                evidence_end_line INTEGER,
+                confidence REAL,
+                graph_version INTEGER NOT NULL DEFAULT 1,
+                commit_sha TEXT,
+                trace_id TEXT,
+                span_id TEXT,
+                event_ts INTEGER,
+                receiver_type TEXT,
+                resolution_kind TEXT,
+                import_candidates TEXT,
+                bare_call INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE,
+                FOREIGN KEY(source_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL,
+                FOREIGN KEY(target_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL
+            );
+            CREATE TABLE unresolved_references (
+                id INTEGER PRIMARY KEY,
+                edge_id INTEGER NOT NULL UNIQUE,
+                source_symbol_id INTEGER,
+                file_id INTEGER NOT NULL,
+                edge_kind TEXT NOT NULL,
+                reference_name TEXT,
+                name_tail TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                import_candidates TEXT,
+                graph_version INTEGER NOT NULL,
+                FOREIGN KEY(edge_id) REFERENCES edges(id) ON DELETE CASCADE,
+                FOREIGN KEY(source_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+            INSERT INTO meta (key, value) VALUES ('schema_version', '18');
+            ",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn migrates_existing_v18_db_to_self_contained_unresolved_references() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        open_v18_db(&conn);
+
+        conn.execute(
+            "INSERT INTO files (id, path, hash, language, size, modified) \
+                VALUES (1, 'a.py', 'h', 'python', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO symbols \
+                (id, file_id, kind, name, qualname, start_line, start_col, end_line, end_col, \
+                 start_byte, end_byte, graph_version) \
+             VALUES (1, 1, 'function', 'caller', 'a.caller', 1, 0, 1, 0, 0, 0, 1)",
+            [],
+        )
+        .unwrap();
+
+        // A plain CALLS edge, already NULL-target, with a v18 store row --
+        // must be promoted (edge_id -> NULL) and its placeholder edge
+        // deleted.
+        conn.execute(
+            "INSERT INTO edges \
+                (id, file_id, source_symbol_id, kind, target_qualname, bare_call, graph_version) \
+             VALUES (1, 1, 1, 'CALLS', 'nowhere', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unresolved_references \
+                (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail, \
+                 reason, graph_version) \
+             VALUES (1, 1, 1, 'CALLS', 'nowhere', 'nowhere', 'no_candidates', 1)",
+            [],
+        )
+        .unwrap();
+
+        // A CONFIG_BIND edge (a Bridge Edge kind), also NULL-target with a
+        // v18 row -- must keep its placeholder edge (edge_id stays
+        // populated) since Bridge Edge kinds are written regardless of
+        // resolution.
+        conn.execute(
+            "INSERT INTO edges \
+                (id, file_id, source_symbol_id, kind, target_qualname, graph_version) \
+             VALUES (2, 1, 1, 'CONFIG_BIND', 'DatabaseOptions', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unresolved_references \
+                (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail, \
+                 reason, graph_version) \
+             VALUES (2, 1, 1, 'CONFIG_BIND', 'DatabaseOptions', 'DatabaseOptions', \
+                     'no_candidates', 1)",
+            [],
+        )
+        .unwrap();
+
+        // A gap edge: NULL-target, no v18 store row at all -- as if
+        // orphaned by an FK ON DELETE SET NULL after this database's last
+        // repair pass ran.
+        conn.execute(
+            "INSERT INTO edges \
+                (id, file_id, source_symbol_id, kind, target_qualname, graph_version) \
+             VALUES (3, 1, 1, 'CALLS', 'also_nowhere', 1)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+
+        // The plain CALLS edge is gone; its reference lives only in the
+        // store now.
+        let calls_edge_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM edges WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            calls_edge_count, 0,
+            "non-Bridge-Edge-kind NULL-target edge must be deleted"
+        );
+
+        let (calls_edge_id, calls_reason): (Option<i64>, String) = conn
+            .query_row(
+                "SELECT edge_id, reason FROM unresolved_references \
+                 WHERE edge_kind = 'CALLS' AND reference_name = 'nowhere'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            calls_edge_id, None,
+            "promoted non-Bridge-Edge-kind row must have no edge_id"
+        );
+        assert_eq!(calls_reason, "no_candidates");
+
+        // The CONFIG_BIND edge survives, still NULL-target, still linked.
+        let config_bind_target: Option<i64> = conn
+            .query_row(
+                "SELECT target_symbol_id FROM edges WHERE id = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(config_bind_target, None);
+        let config_bind_edge_id: Option<i64> = conn
+            .query_row(
+                "SELECT edge_id FROM unresolved_references WHERE edge_kind = 'CONFIG_BIND'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            config_bind_edge_id,
+            Some(2),
+            "Bridge Edge kind row must keep its placeholder edge"
+        );
+
+        // The gap edge (no v18 row) is promoted too, with a best-effort
+        // reason -- the next repair pass re-derives the real one.
+        let gap_edge_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM edges WHERE id = 3", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(gap_edge_count, 0);
+        let gap_store_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM unresolved_references WHERE reference_name = 'also_nowhere'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            gap_store_count, 1,
+            "gap edge with no v18 row must still be promoted"
+        );
+
+        let violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
     }
 }

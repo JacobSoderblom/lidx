@@ -117,21 +117,21 @@ fn rust_module_file_edges_capture_evidence_snippet() {
     let db = indexer.db();
     let graph_version = db.current_graph_version().unwrap();
 
-    let root = db
-        .get_symbol_by_qualname("crate", graph_version)
-        .unwrap()
+    // `mod missing;` names a file that doesn't exist, so it never resolves
+    // to a module symbol -- issue #79 means it has no edge at all (MODULE_FILE
+    // isn't a Bridge Edge kind), only an unresolved_references store row,
+    // which still carries the evidence snippet.
+    let conn = db.read_conn().unwrap();
+    let evidence_snippet: Option<String> = conn
+        .query_row(
+            "SELECT evidence_snippet FROM unresolved_references
+             WHERE edge_kind = 'MODULE_FILE' AND reference_name = 'crate::missing'
+               AND graph_version = ?",
+            rusqlite::params![graph_version],
+            |row| row.get(0),
+        )
         .unwrap();
-    let edges = db.edges_for_symbol(root.id, None, graph_version).unwrap();
-    let missing_edge = edges
-        .iter()
-        .find(|edge| {
-            edge.kind == "MODULE_FILE" && edge.target_qualname.as_deref() == Some("crate::missing")
-        })
-        .unwrap();
-    assert_eq!(
-        missing_edge.evidence_snippet.as_deref(),
-        Some("mod missing;")
-    );
+    assert_eq!(evidence_snippet.as_deref(), Some("mod missing;"));
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -376,17 +376,25 @@ fn rust_module_linking_and_subgraph_are_consistent() {
     assert_eq!(api_detail["dst_name"].as_str().unwrap(), "api");
     assert_eq!(api_detail["confidence"].as_f64().unwrap(), 1.0);
 
-    let missing_edge = edges
-        .iter()
-        .find(|edge| {
-            edge.kind == "MODULE_FILE" && edge.target_qualname.as_deref() == Some("crate::missing")
-        })
+    // `mod missing;` names a file that doesn't exist, so it never resolves
+    // to a module symbol -- issue #79 means it has no edge at all (MODULE_FILE
+    // isn't a Bridge Edge kind), only an unresolved_references store row,
+    // which still carries the same rich `detail` JSON an edge would have.
+    let conn = db.read_conn().unwrap();
+    let missing_detail_raw: String = conn
+        .query_row(
+            "SELECT detail FROM unresolved_references
+             WHERE edge_kind = 'MODULE_FILE' AND reference_name = 'crate::missing'
+               AND graph_version = ?",
+            rusqlite::params![graph_version],
+            |row| row.get(0),
+        )
         .unwrap();
-    let missing_detail: serde_json::Value =
-        serde_json::from_str(missing_edge.detail.as_ref().unwrap()).unwrap();
+    let missing_detail: serde_json::Value = serde_json::from_str(&missing_detail_raw).unwrap();
     assert!(missing_detail["dst_path"].is_null());
     assert_eq!(missing_detail["dst_name"].as_str().unwrap(), "missing");
     assert_eq!(missing_detail["confidence"].as_f64().unwrap(), 0.4);
+    drop(conn);
 
     let graph = subgraph::build_subgraph(db, &[root.id], 2, 10, None, graph_version).unwrap();
     let qualnames: Vec<_> = graph.nodes.iter().map(|s| s.qualname.as_str()).collect();

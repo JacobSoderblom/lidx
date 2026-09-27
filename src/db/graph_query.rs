@@ -437,7 +437,9 @@ impl Db {
         // `target_symbol_id IS NULL` now means "could not be attributed" —
         // the read path must not invent one. A target that *can* be bound
         // legitimately (e.g. an exact qualname match) belongs in the write
-        // path (`insert_edges` / `resolve_null_target_edges`), not here.
+        // path (`insert_edges`) or its repair passes (`db::resolver`'s
+        // `retry_unresolved_references`/`reconcile_unresolved_reference_store`),
+        // not here.
         Ok(result)
     }
 
@@ -503,14 +505,21 @@ impl Db {
     /// `(source qualname, kind, target qualname | None, resolution kind)`
     /// row, joining `source_symbol_id`/`target_symbol_id` to their symbols'
     /// *current* qualnames rather than the edge's raw stored
-    /// `target_qualname` text.
+    /// `target_qualname` text. Issue #79: a pending (non-Bridge-Edge-kind)
+    /// `unresolved_references` row -- one with no edge at all -- is unioned
+    /// in too, as `target qualname = None`/`resolution kind = None` (i.e.
+    /// `UNRESOLVED`, same as a Bridge Edge kind's still-NULL-target edge
+    /// already renders via the first half of this query), so the scoreboard
+    /// keeps seeing every unresolved reference regardless of which of the
+    /// two shapes holds it.
     ///
     /// Test support for the golden-corpus correctness scoreboard (see
     /// `tests/common/golden.rs`): the one seam a test needs to compare the
     /// graph against an expected-edges fixture without touching SQL or
-    /// resolver internals directly. Edges with no resolved source symbol
-    /// (file-level edges such as `IMPORTS`/`MODULE_FILE`) are omitted —
-    /// the scoreboard only covers edges attributable to a real symbol.
+    /// resolver internals directly. A reference with no resolved source
+    /// symbol (file-level edges such as `IMPORTS`/`MODULE_FILE`, or a
+    /// pending row whose own caller never resolved) is omitted — the
+    /// scoreboard only covers edges attributable to a real symbol.
     pub fn edges_snapshot(&self, graph_version: i64) -> Result<Vec<EdgeSnapshotRow>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
@@ -520,16 +529,29 @@ impl Db {
              JOIN symbols src ON e.source_symbol_id = src.id
              LEFT JOIN symbols tgt ON e.target_symbol_id = tgt.id
              WHERE e.graph_version = ?
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+
+             UNION ALL
+
+             SELECT src.qualname, ur.edge_kind, NULL, NULL
+             FROM unresolved_references ur
+             JOIN files f ON ur.file_id = f.id
+             JOIN symbols src ON ur.source_symbol_id = src.id
+             WHERE ur.edge_id IS NULL
+               AND ur.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         )?;
-        let rows = stmt.query_map(rusqlite::params![graph_version, graph_version], |row| {
-            Ok(EdgeSnapshotRow {
-                source_qualname: row.get(0)?,
-                kind: row.get(1)?,
-                target_qualname: row.get(2)?,
-                resolution_kind: row.get(3)?,
-            })
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params![graph_version, graph_version, graph_version, graph_version],
+            |row| {
+                Ok(EdgeSnapshotRow {
+                    source_qualname: row.get(0)?,
+                    kind: row.get(1)?,
+                    target_qualname: row.get(2)?,
+                    resolution_kind: row.get(3)?,
+                })
+            },
+        )?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);

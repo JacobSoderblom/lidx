@@ -57,12 +57,14 @@ fn setup_repo(fixture: &str) -> (PathBuf, PathBuf) {
 ///   forward via `carry_forward_files`, which — per `reindex`'s own ordering
 ///   comment — runs *after* the fresh-file edge loop. At the moment caller's
 ///   new CALLS edge is inserted, helper.greet does not yet have a row under
-///   the new graph version, so the edge is written with target_symbol_id
-///   NULL.
-/// - Without the repair pass wired into `reindex()`, that NULL is permanent:
-///   nothing else re-resolves it. With the repair pass, `resolve_null_target_edges`
-///   (run after carry-forward) finds helper.greet's now-present current-version
-///   row and re-links the edge.
+///   the new graph version, so the reference stays unresolved -- issue #79
+///   means no edge is written for it at all yet, only an
+///   unresolved_references store row.
+/// - Without the repair pass wired into `reindex()`, that store row would
+///   sit forever: nothing else re-resolves it. With the repair pass
+///   (`Db::repair_unresolved`, run after carry-forward) finds helper.greet's
+///   now-present current-version row, resolves the store row, and inserts
+///   the CALLS edge fresh (it never existed before).
 #[test]
 fn reindex_resolves_edge_into_carried_forward_file_after_repair() {
     let (repo_root, db_path) = setup_repo("py_rename");
@@ -165,12 +167,14 @@ fn reindex_resolves_edge_into_carried_forward_file_after_repair() {
 ///   second reindex carries it forward. At the moment caller's new CALLS
 ///   edge is inserted, helper.greet has no row yet under the new graph
 ///   version, so both the exact-qualname tier ("h.greet") and the import
-///   tier ("helper.greet") miss, and the edge is persisted with
-///   `target_symbol_id = NULL, receiver_type = ''` (see the guard in
+///   tier ("helper.greet") miss -- issue #79 means no edge is persisted for
+///   it at all, only an `unresolved_references` store row with
+///   `receiver_type = ''` and the candidate list (see the guard in
 ///   `Db::insert_edges`).
-/// - `resolve_null_target_edges` must retry the import tier after
-///   carry-forward gives helper.greet its new-version row, using the
-///   `import_candidates` this edge's row now carries.
+/// - The repair pass (`Db::repair_unresolved`'s `retry_unresolved_references`)
+///   must retry the import tier after carry-forward gives helper.greet its
+///   new-version row, using the `import_candidates` this store row carries,
+///   and insert the CALLS edge fresh on success (it never existed before).
 #[test]
 fn reindex_resolves_import_candidate_into_carried_forward_file_after_repair() {
     let (repo_root, db_path) = setup_repo("py_import_candidate_carry_forward");

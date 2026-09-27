@@ -530,16 +530,18 @@ impl Indexer {
         // Gate: always run when this reindex actually indexed or deleted a file (cheapest
         // check, and those runs already pay far more than the repair pass costs). On a
         // purely-carried-forward run (nothing indexed or deleted), fall back to a COUNT of
-        // this version's edges that `resolve_null_target_edges` would actually attempt to
-        // fix — the same predicate that query itself uses. That COUNT is what distinguishes
-        // a truly idle warm reindex (nothing to do, stay fast) from one carrying forward a
-        // hollow/degraded index: carry_forward_files re-links every edge by stable_id into
-        // the new version and leaves target_symbol_id NULL wherever that lookup misses (a
-        // deleted/renamed target, or a target manually NULLed out by outside SQL), so a
-        // degraded index's holes are visible in the *new* graph_version's edge rows even
-        // when zero files changed. Without this fallback those NULLs — and the stale
-        // target_qualname strings that ride along with them, e.g. after a callee moves
-        // modules — propagate forward untouched on every subsequent reindex, which is
+        // this version's NULL-target edges -- issue #79 means that's a Bridge Edge kind
+        // row exclusively (every other kind's unresolved reference lives only in the
+        // `unresolved_references` store, which carry-forward always copies as-is, so it
+        // can't develop this kind of hole; see `Db::carry_forward_files`). That COUNT is
+        // what distinguishes a truly idle warm reindex (nothing to do, stay fast) from one
+        // carrying forward a degraded Bridge Edge kind: carry_forward_files re-links every
+        // edge by stable_id into the new version and leaves target_symbol_id NULL wherever
+        // that lookup misses (a deleted/renamed target, or a target manually NULLed out by
+        // outside SQL), so a degraded index's holes are visible in the *new* graph_version's
+        // edge rows even when zero files changed. Without this fallback those NULLs — and
+        // the stale target_qualname strings that ride along with them, e.g. after a callee
+        // moves modules — propagate forward untouched on every subsequent reindex, which is
         // exactly the self-healing gap this exists to close.
         //
         // The COUNT alone isn't enough to gate on, though: real codebases always have edges
