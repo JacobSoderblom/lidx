@@ -46,8 +46,9 @@ caller/caller.CallInterface CALLS animals/animals.Speaker.Say  # xfail: interfac
 # qualified with ambiguous_a.
 caller/caller.CallAmbiguous CALLS ambiguous_a/run.Run  # xfail: pkg.Func calls are not bound through the import path
 
-# External call: fmt is never indexed.
-caller/caller.CallExternal CALLS UNRESOLVED
+# External call: fmt is never indexed, so this binds to the external stub
+# symbol (issue #80) instead of staying unresolved.
+caller/caller.CallExternal CALLS ext:fmt.Sprint external
 
 # Cross-package incoming call into caller.Entry. Lands on the right
 # target via the bare_name fallback, so no tier is pinned.

@@ -309,12 +309,16 @@ impl Db {
         paths: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<(String, i64)>> {
+        // Issue #80: excludes external stub symbols (`kind = 'external'`)
+        // -- they'd otherwise show up as their own noise bucket in the
+        // repo map's "Patterns" section.
         let mut sql = String::from(
             "SELECT s.kind, COUNT(*) as cnt
              FROM symbols s
              JOIN files f ON s.file_id = f.id
              WHERE s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+               AND s.kind != 'external'",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
 

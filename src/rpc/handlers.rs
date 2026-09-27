@@ -2302,19 +2302,25 @@ mod explain_symbol_cross_boundary_tests {
     fn callees_include_rpc_hop_after_calls_with_kind_and_protocol_context() {
         let (_dir, mut indexer) = grpc_repo();
         let v = explain(&mut indexer, "test_client.test_get_user");
+        // `users_pb2_grpc.UserServiceStub(channel)` is a call into a
+        // generated-protobuf import (issue #80: known-external, so it binds
+        // to that stub symbol instead of staying unresolved) between the
+        // plain CALLS callee and the RPC_CALL hop.
         assert_eq!(
             refs(&v, "callees"),
             vec![
                 ("test_client.helper", "CALLS"),
+                ("ext:users_pb2_grpc.UserServiceStub", "CALLS"),
                 ("server.UserService.GetUser", "RPC_CALL"),
             ],
             "{v:#}"
         );
-        assert_eq!(v["callees_total"], 2);
-        let ctx = &v["callees"][1]["protocol_context"];
+        assert_eq!(v["callees_total"], 3);
+        let ctx = &v["callees"][2]["protocol_context"];
         assert_eq!(ctx["service"], "UserService", "{v:#}");
         assert_eq!(ctx["rpc"], "GetUser", "{v:#}");
         assert!(v["callees"][0].get("protocol_context").is_none());
+        assert!(v["callees"][1].get("protocol_context").is_none());
     }
 
     #[test]

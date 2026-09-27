@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -474,6 +474,27 @@ pub fn migrate(conn: &Connection) -> Result<()> {
              NULL-target edges into the unresolved-reference store and deleting them"
         );
         migrate_unresolved_reference_store_v19(conn)?;
+    }
+
+    if existing < 20 {
+        // Issue #80: the resolver's known-external outcome (an import
+        // known to resolve outside the repo, or a language-specific
+        // known-external fallback -- see `db::resolver`'s module doc)
+        // binds to a stub symbol (`kind = 'external'`, qualname `ext:...`)
+        // instead of leaving the reference unresolved. One stub per
+        // `(graph_version, qualname)`, reused across every call site that
+        // shares it (`Resolver::resolve_external_stub`) and copied forward
+        // wholesale on every reindex (`Db::carry_forward_files`) so a
+        // carried-forward edge's stable_id-based remap always finds its
+        // target. This partial unique index is what makes both of those
+        // idempotent: an `INSERT ... ON CONFLICT DO NOTHING` against the
+        // same `(graph_version, qualname)` pair is a no-op instead of a
+        // duplicate stub.
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_external_stub
+             ON symbols(graph_version, qualname) WHERE kind = 'external'",
+            [],
+        )?;
     }
 
     if existing < SCHEMA_VERSION {

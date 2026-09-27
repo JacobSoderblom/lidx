@@ -254,12 +254,17 @@ impl Db {
     ) -> Result<Vec<ModuleSummaryEntry>> {
         let conn = self.read_conn()?;
 
-        // Query all files with their symbol counts
+        // Query all files with their symbol counts. Issue #80: excludes the
+        // single synthetic external pseudo-file every stub symbol belongs
+        // to (`f.language = 'external'`, see `Resolver::external_file_id`)
+        // -- it would otherwise show up as its own noise "module" in the
+        // repo map.
         let mut sql = String::from(
             "SELECT f.path, f.language, COUNT(s.id) as sym_count
              FROM files f
              LEFT JOIN symbols s ON s.file_id = f.id AND s.graph_version = ?
-             WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)",
+             WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)
+               AND f.language != 'external'",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
 
@@ -326,7 +331,10 @@ impl Db {
     ) -> Result<Vec<(String, String, usize, usize)>> {
         let conn = self.read_conn()?;
 
-        // Query all CALLS, IMPORTS, and XREF edges with source and target file paths
+        // Query all CALLS, IMPORTS, and XREF edges with source and target
+        // file paths. Issue #80: excludes an edge into an external stub
+        // symbol (`tgt_f.language = 'external'`) -- it would otherwise show
+        // up as a "module" dependency on the synthetic `<external>` file.
         let mut sql = String::from(
             "SELECT e.kind, src_f.path as src_path, tgt_f.path as tgt_path
              FROM edges e
@@ -337,7 +345,8 @@ impl Db {
              WHERE e.kind IN ('CALLS', 'IMPORTS', 'XREF')
                AND e.graph_version = ?
                AND (src_f.deleted_version IS NULL OR src_f.deleted_version > ?)
-               AND (tgt_f.deleted_version IS NULL OR tgt_f.deleted_version > ? OR tgt_f.id IS NULL)",
+               AND (tgt_f.deleted_version IS NULL OR tgt_f.deleted_version > ? OR tgt_f.id IS NULL)
+               AND (tgt_f.language IS NULL OR tgt_f.language != 'external')",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> =
             vec![&graph_version, &graph_version, &graph_version];

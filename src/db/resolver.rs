@@ -27,12 +27,22 @@
 //! 2. **import** — one of the extractor's import-qualified candidates names
 //!    exactly one symbol (`resolve_import`).
 //! 3. **known-external refusal** — the receiver is bound by an import that
-//!    didn't resolve here, or is a builtin/unresolved type: stop, no guess.
+//!    didn't resolve here, or is a builtin/unresolved type: stop, bind to
+//!    the external stub symbol for this reference instead of the name
+//!    tiers (`stub_resolution`, issue #80).
 //! 4. **receiver type / inheritance** — a known receiver type's own method,
 //!    else the closest ancestor declaring it (`resolve_via_inheritance`).
 //! 5. **guarded name fallback** — two trailing segments, then the bare
 //!    name. Same language only, and only when exactly one candidate
 //!    matches.
+//! 6. **known-external fallback** (issue #80) — only once every tier above
+//!    has found nothing at all (not ambiguous, not a private refusal): for
+//!    a language whose qualified-call syntax never populates
+//!    `import_candidates` in the first place (Rust's fully-qualified
+//!    `std::`/third-party-crate paths, Go's package-qualified calls), a
+//!    last, per-language check (`is_known_external_fallback`) for whether
+//!    the reference is unambiguously foreign. Every other language's
+//!    known-external signal is already caught by tier 3.
 //!
 //! Bridge Edge kinds (see `is_bridge_edge_kind`) may cross languages in
 //! tiers 4–5 when the same-language lookup misses.
@@ -40,15 +50,17 @@
 //! ponytail: this is today's order, kept as-is by the #73 refactor. It
 //! differs from the #70 spec order in two ways: there is no same
 //! scope/module tier yet, and known-external refusal runs before the name
-//! tiers rather than last. Language resolution profiles (`LanguageProfile`)
-//! now drive the separator and import-miss-fallback per-language checks
-//! this tier order used to hardcode; a same scope/module tier and stricter
-//! guards are still open (#75).
+//! tiers rather than last (tier 6 is the one exception -- it has to run
+//! last, since it only fires once the name tiers have already found
+//! nothing). Language resolution profiles (`LanguageProfile`) now drive
+//! the separator and import-miss-fallback per-language checks this tier
+//! order used to hardcode; a same scope/module tier and stricter guards
+//! are still open (#75).
 
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
 use anyhow::Result;
-use rusqlite::{Connection, Statement, ToSql, params};
+use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
 use std::collections::HashMap;
 
 /// An edge's target as the extractor saw it: what the resolver binds.
@@ -92,6 +104,13 @@ pub(crate) enum ResolutionKind {
     Inherited,
     TwoSegment,
     BareName,
+    /// Issue #80: the reference is known to resolve outside this repo
+    /// (an import known not to resolve here, or -- for a language whose
+    /// qualified-call syntax never routes through `import_candidates` at
+    /// all -- `Resolver::is_known_external_fallback`'s own per-language
+    /// check). The target is a stub symbol (`kind = 'external'`,
+    /// `resolve_external_stub`), not a real extracted symbol.
+    External,
 }
 
 impl ResolutionKind {
@@ -104,6 +123,7 @@ impl ResolutionKind {
             Self::Inherited => "inherited",
             Self::TwoSegment => "two_segment",
             Self::BareName => "bare_name",
+            Self::External => "external",
         }
     }
 }
@@ -116,16 +136,18 @@ impl ResolutionKind {
 /// `is_bridge_edge_kind`), so a cross-language miss there just falls
 /// through to `NoCandidates`/`Ambiguous` rather than needing its own
 /// reason.
+///
+/// Issue #80: there used to be an `External` variant here (the receiver
+/// bound by an import that doesn't resolve uniquely in this index, or a
+/// builtin/unresolved type). That outcome is `Resolved` now -- to a stub
+/// symbol, `ResolutionKind::External` -- so it never reaches this store at
+/// all; see `Resolver::stub_resolution`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnresolvedReason {
     /// No tier found any candidate.
     NoCandidates,
     /// Some tier found more than one candidate and refused to pick.
     Ambiguous,
-    /// The receiver is bound by an import that doesn't resolve uniquely in
-    /// this index (stdlib, third-party, or an ambiguous import), or is a
-    /// builtin/unresolved type. The name-based tiers are refused outright.
-    External,
     /// The guarded name fallback (tier 5) found a same-language, same-kind
     /// candidate by name, but every one of them was private/unexported and
     /// in a different file (or, for Go, a different package) than the
@@ -140,7 +162,6 @@ impl UnresolvedReason {
         match self {
             Self::NoCandidates => "no_candidates",
             Self::Ambiguous => "ambiguous",
-            Self::External => "external",
             Self::Private => "private",
         }
     }
@@ -174,11 +195,17 @@ impl Resolution {
     }
 
     /// The `edges.receiver_type` value to persist for a reference whose
-    /// extractor reported `extracted`. An `External` refusal is stored as
-    /// `""` so the repair pass never runs the name-based tiers on it either.
+    /// extractor reported `extracted`. A known-external resolution is
+    /// stored as `""` so that if this edge's stub target is ever cleared
+    /// (its FK's `ON DELETE SET NULL` -- see the stub-lifecycle doc on
+    /// `Db::prune_orphan_external_symbols`), a later repair pass re-judges
+    /// it the same way rather than running the name-based tiers on it.
     pub(crate) fn stored_receiver_type(self, extracted: Option<&str>) -> Option<&str> {
         match self {
-            Self::Unresolved(UnresolvedReason::External) => Some(""),
+            Self::Resolved {
+                kind: ResolutionKind::External,
+                ..
+            } => Some(""),
             _ => extracted,
         }
     }
@@ -531,6 +558,7 @@ struct CallerContext<'a> {
 /// Resolves references against one graph version. Prepared statements
 /// borrow `conn`, so build one per transaction.
 pub(crate) struct Resolver<'c> {
+    conn: &'c Connection,
     graph_version: i64,
     exact: Statement<'c>,
     same_lang: Statement<'c>,
@@ -545,12 +573,18 @@ pub(crate) struct Resolver<'c> {
     /// found same-language, same-kind candidate(s) by name but refused
     /// every one of them as not visible — see `VisibilityRule`.
     saw_private: bool,
+    /// Lazily resolved `files.id` of the single synthetic external
+    /// pseudo-file every stub symbol belongs to (issue #80) -- see
+    /// `external_file_id`. `None` until the first stub of this `Resolver`
+    /// instance's lifetime is created or looked up.
+    external_file_id: Option<i64>,
 }
 
 impl<'c> Resolver<'c> {
     /// Prepare every candidate query against `conn` for `graph_version`.
     pub(crate) fn new(conn: &'c Connection, graph_version: i64) -> Result<Self> {
         Ok(Self {
+            conn,
             graph_version,
             exact: conn.prepare(EXACT_SQL)?,
             same_lang: conn.prepare(SAME_LANG_SQL)?,
@@ -561,6 +595,7 @@ impl<'c> Resolver<'c> {
             module_exact: conn.prepare(MODULE_EXACT_SQL)?,
             saw_ambiguous: false,
             saw_private: false,
+            external_file_id: None,
         })
     }
 
@@ -635,13 +670,31 @@ impl<'c> Resolver<'c> {
             )?,
             None => None,
         };
-        Ok(match found {
-            Some((id, kind)) => resolved(id, kind),
-            None if receiver_type == Some("") => Resolution::Unresolved(UnresolvedReason::External),
-            None if self.saw_ambiguous => Resolution::Unresolved(UnresolvedReason::Ambiguous),
-            None if self.saw_private => Resolution::Unresolved(UnresolvedReason::Private),
-            None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
-        })
+        match found {
+            Some((id, kind)) => Ok(resolved(id, kind)),
+            None if receiver_type == Some("") => {
+                self.stub_resolution(r.target_qualname, r.import_candidates, r.bare_call)
+            }
+            None if self.saw_ambiguous => Ok(Resolution::Unresolved(UnresolvedReason::Ambiguous)),
+            None if self.saw_private => Ok(Resolution::Unresolved(UnresolvedReason::Private)),
+            // Tier 6 (issue #80): every tier above found nothing at all --
+            // for a language whose qualified-call syntax doesn't populate
+            // `import_candidates` (so `refuse_names` above never had a
+            // chance to fire), a last per-language check for whether this
+            // reference is unambiguously foreign. See the module doc and
+            // `is_known_external_fallback`.
+            None => {
+                let is_external = match r.target_qualname {
+                    Some(qn) => self.is_known_external_fallback(r.source_lang, qn)?,
+                    None => false,
+                };
+                if is_external {
+                    self.stub_resolution(r.target_qualname, r.import_candidates, r.bare_call)
+                } else {
+                    Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates))
+                }
+            }
+        }
     }
 
     /// The exact-qualname tier. `collapse_exact_candidates` decides when
@@ -1122,6 +1175,216 @@ impl<'c> Resolver<'c> {
         }
         Ok(false)
     }
+
+    /// Tier 6 (issue #80), the known-external fallback -- see the module
+    /// doc. Called only once every earlier tier has found nothing at all
+    /// for `target_qualname`. Rust and Go are the only languages that need
+    /// it: neither ever populates `import_candidates` for a qualified call
+    /// (`rust::import_qualified_candidates` explicitly skips any raw text
+    /// containing `::`; Go's extractor doesn't track imports at all), so
+    /// `refuse_names` in `resolve` never has anything to refuse on for
+    /// them -- every other language's known-external signal already comes
+    /// from tier 3. Not a `LanguageProfile` field: Go's check needs a
+    /// database lookup (`is_repo_go_package`), which a plain per-language
+    /// function pointer can't carry.
+    fn is_known_external_fallback(
+        &mut self,
+        source_lang: &str,
+        target_qualname: &str,
+    ) -> Result<bool> {
+        match resolution_language_family(source_lang) {
+            // Every repo qualname in this codebase is rooted at `crate::`
+            // (`rust::PROFILE`'s separator, and every rewrite in
+            // `rust::resolve_call_target` produces a `crate::`-rooted
+            // result) -- a `::`-qualified call target that isn't is
+            // unambiguously a fully-qualified path into `std`/`core` or a
+            // third-party crate the local tiers above already had their
+            // normal shot at (a bare or two-segment call is always
+            // module-qualified with a `crate::` prefix before reaching
+            // here, so this never second-guesses one of those).
+            "rust" => Ok(target_qualname.contains("::") && !target_qualname.starts_with("crate::")),
+            // A real Go qualname is always `<dir>/<file-stem>.<name>` (see
+            // `VisibilityRule::GoCapitalization`'s doc); a package-qualified
+            // call keeps its literal `pkg.Name` call-site text with no `/`
+            // at all (`go::resolve_call_target`). `is_repo_go_package`
+            // checks the package segment against real indexed directories
+            // rather than assuming "no `/`" alone means external, so a
+            // same-repo cross-package call the name tiers can't bind yet
+            // (a known, separate gap -- see the golden Go fixture's `#
+            // xfail: pkg.Func calls are not bound through the import path`
+            // lines) stays a plain miss instead of a wrong external label.
+            //
+            // ponytail: Go tracks no receiver-type signal at all, so a
+            // local-variable method call (`x.Method()`) is syntactically
+            // identical to a package call here. One that fails to bind for
+            // any reason (not just a genuine external call) and whose
+            // one-letter-ish receiver name never collides with a real
+            // directory can still be mislabeled external. Upgrade path:
+            // track Go imports and locals the way Python/C#/JS-TS do.
+            "go" => match target_qualname.split_once('.') {
+                Some((package, _)) => Ok(!self.is_repo_go_package(package)?),
+                None => Ok(false),
+            },
+            _ => Ok(false),
+        }
+    }
+
+    /// Whether `package` (a Go call target's leading segment) is a
+    /// directory or root-level file this graph_version actually indexes --
+    /// see `is_known_external_fallback`'s doc.
+    fn is_repo_go_package(&mut self, package: &str) -> Result<bool> {
+        let gv = self.graph_version;
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM files
+             WHERE language = 'go'
+               AND (deleted_version IS NULL OR deleted_version > ?1)
+               AND (path LIKE ?2 || '/%' OR path = ?2 || '.go' OR path LIKE '%/' || ?2 || '.go')
+             LIMIT 1",
+                params![gv, package],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Tier 3/6's shared "bind to the external stub" outcome (issue #80).
+    /// Builds the stub's qualname from the reference's own text and
+    /// get-or-creates its symbol row (`resolve_external_stub`) -- or, when
+    /// there's no text to build one from at all (e.g. a Python method call
+    /// through a receiver that's itself a call result, `ReceiverType::
+    /// Unresolved` with no import binding involved: neither `target_qualname`
+    /// nor `import_candidates` has anything), falls back to a plain
+    /// `NoCandidates` miss rather than creating a meaningless, shared
+    /// `ext:?` stub every such call site would collapse into. This matches
+    /// what happened here before #80 anyway: `store_reference_name_and_tail`
+    /// already refuses to store an unresolved reference with no name to key
+    /// on, so a text-less reference was already silently dropped, never an
+    /// edge or a store row.
+    fn stub_resolution(
+        &mut self,
+        target_qualname: Option<&str>,
+        import_candidates: &[String],
+        bare_call: bool,
+    ) -> Result<Resolution> {
+        match external_stub_qualname(target_qualname, import_candidates, bare_call) {
+            Some(qualname) => {
+                let stub_id = self.resolve_external_stub(&qualname)?;
+                Ok(resolved(stub_id, ResolutionKind::External))
+            }
+            None => Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates)),
+        }
+    }
+
+    /// Get-or-create the external stub symbol for `qualname` (already
+    /// `ext:`-prefixed) in this resolver's `graph_version` -- issue #80.
+    /// One stub per `(graph_version, qualname)`, enforced by the partial
+    /// unique index on `symbols(graph_version, qualname) WHERE kind =
+    /// 'external'` (schema v20) and reused across every call site sharing
+    /// it: the `SELECT` below is single-threaded-safe because indexing
+    /// never resolves references concurrently, but the `INSERT ... ON
+    /// CONFLICT DO NOTHING` plus a second `SELECT` is used anyway so this
+    /// stays correct even if that ever changes, without relying on
+    /// `last_insert_rowid` (which an ignored conflict wouldn't advance).
+    fn resolve_external_stub(&mut self, qualname: &str) -> Result<i64> {
+        let gv = self.graph_version;
+        if let Some(id) = self.external_stub_id(qualname)? {
+            return Ok(id);
+        }
+        let file_id = self.external_file_id()?;
+        let name = qualname_trailing_name(qualname);
+        let stable_id = format!("external:{qualname}");
+        self.conn.execute(
+            "INSERT INTO symbols
+                (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                 start_byte, end_byte, graph_version, stable_id)
+             VALUES (?1, 'external', ?2, ?3, 0, 0, 0, 0, 0, 0, ?4, ?5)
+             ON CONFLICT DO NOTHING",
+            params![file_id, name, qualname, gv, stable_id],
+        )?;
+        self.external_stub_id(qualname)?
+            .ok_or_else(|| anyhow::anyhow!("external stub symbol missing after insert: {qualname}"))
+    }
+
+    fn external_stub_id(&self, qualname: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM symbols WHERE graph_version = ?1 AND qualname = ?2 AND kind = 'external'",
+                params![self.graph_version, qualname],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// The `files.id` of the single synthetic pseudo-file every external
+    /// stub symbol belongs to (issue #80) -- `symbols.file_id` is `NOT
+    /// NULL`, and a stub has no real source file, so one shared row (path
+    /// `<external>`, language `external`) stands in for it, created lazily
+    /// on first use and reused for the life of the database (not
+    /// versioned like a real file -- stub *symbols* are versioned by their
+    /// own `graph_version` column the same as any other symbol; this file
+    /// row is just their common parent). `f.language = 'external'` is what
+    /// repo-internal listings (`module_summary`, `module_edges`,
+    /// `count_symbols_by_kind`) filter on to keep stubs out.
+    fn external_file_id(&mut self) -> Result<i64> {
+        if let Some(id) = self.external_file_id {
+            return Ok(id);
+        }
+        self.conn.execute(
+            "INSERT OR IGNORE INTO files (path, hash, language, size, modified)
+             VALUES (?1, '', 'external', 0, 0)",
+            params![EXTERNAL_FILE_PATH],
+        )?;
+        let id: i64 = self.conn.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            params![EXTERNAL_FILE_PATH],
+            |row| row.get(0),
+        )?;
+        self.external_file_id = Some(id);
+        Ok(id)
+    }
+}
+
+/// The single synthetic file every external stub symbol belongs to --
+/// see `Resolver::external_file_id`.
+pub(crate) const EXTERNAL_FILE_PATH: &str = "<external>";
+
+/// The stub qualname for a known-external outcome (issue #80): `ext:` plus
+/// the reference's own text.
+///
+/// For a *bare* call (`bare_call`, e.g. `entry()`) whose import tier missed,
+/// `target_qualname` is a same-module guess a bare call always gets qualified
+/// with regardless of where it's actually bound (e.g. Python's
+/// `resolve_call_target` turns `entry()` into `<this file's own module>.entry`
+/// even when it's really `from caller import entry`) -- actively misleading
+/// as this reference's identity once an import candidate names what it's
+/// bound to instead, so the first import candidate wins here. Every other
+/// shape (an attribute/qualified call, or tier 6's Rust/Go fallback, which
+/// never has import candidates to prefer) keeps `target_qualname`, its own
+/// literal, authoritative call-site text.
+///
+/// `None` when neither `target_qualname` nor `import_candidates` has any
+/// text at all -- reachable when `receiver_type` is a directly
+/// extractor-reported `Some("")` with no import involved (e.g. Python's
+/// `ReceiverType::Unresolved` for a method call through a receiver that's
+/// itself a call result, whose raw call-site text fails
+/// `is_simple_call_target` and whose dotted-method guard in
+/// `import_qualified_candidates` also refuses) -- see `stub_resolution`'s
+/// doc for why that case must not fall through to here regardless.
+fn external_stub_qualname(
+    target_qualname: Option<&str>,
+    import_candidates: &[String],
+    bare_call: bool,
+) -> Option<String> {
+    let first_candidate = || import_candidates.first().map(String::as_str);
+    let text = if bare_call {
+        first_candidate().or(target_qualname)
+    } else {
+        target_qualname.or_else(first_candidate)
+    }?;
+    Some(format!("ext:{text}"))
 }
 
 fn resolved(target_id: i64, kind: ResolutionKind) -> Resolution {
@@ -1756,6 +2019,105 @@ impl Db {
         Ok(total_resolved)
     }
 
+    /// Issue #80: an edge already bound to the external stub is still
+    /// eligible for re-resolution -- a known-external outcome isn't always
+    /// permanent. Unlike a genuinely external call (`requests.get`, never
+    /// becoming a repo symbol), a reference the resolver couldn't attribute
+    /// to a repo symbol only because that symbol didn't exist *yet* (a
+    /// deleted file's module coming back is the incremental scenario this
+    /// closes) must reattach once it does, the same as any other
+    /// incrementally-repaired edge.
+    ///
+    /// Unlike `retry_unresolved_references`, this has no store row to key a
+    /// targeted retry on (a stub-bound edge was never unresolved in the
+    /// first place), so it re-judges every edge currently bound to a stub
+    /// in `graph_version` -- same unconditional-rescan shape as
+    /// `reconcile_unresolved_reference_store`'s own pass over NULL-target
+    /// edges, bounded by how many known-external call sites exist, not by
+    /// the whole edge table. Every column `ReferenceContext` needs to
+    /// re-judge the reference is already on the edge row regardless of its
+    /// resolution (`target_qualname`, `receiver_type`, `import_candidates`,
+    /// `bare_call`), so no store round-trip is needed either way.
+    ///
+    /// Updates the edge in place only when it now resolves to a different
+    /// target than before -- staying bound to the same stub (the common
+    /// case: still genuinely external) is a no-op, not counted in the
+    /// returned total.
+    pub fn retry_external_stub_edges(&self, graph_version: i64) -> Result<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut total_resolved = 0;
+
+        struct StubEdgeRow {
+            edge_id: i64,
+            target_symbol_id: i64,
+            ctx: ReferenceContext,
+        }
+
+        let rows: Vec<StubEdgeRow> = {
+            let mut stmt = tx.prepare(
+                "SELECT e.id, e.target_symbol_id, e.kind, e.target_qualname,
+                        e.receiver_type, e.import_candidates, e.bare_call,
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname
+                 FROM edges e
+                 JOIN symbols stub ON stub.id = e.target_symbol_id
+                 JOIN files f ON f.id = e.file_id
+                 LEFT JOIN symbols src ON src.id = e.source_symbol_id
+                 WHERE e.graph_version = ?1
+                   AND stub.graph_version = ?1
+                   AND stub.kind = 'external'",
+            )?;
+            let out = stmt.query_map(params![graph_version], |row| {
+                Ok(StubEdgeRow {
+                    edge_id: row.get(0)?,
+                    target_symbol_id: row.get(1)?,
+                    ctx: ReferenceContext {
+                        edge_id: Some(row.get(0)?),
+                        edge_kind: row.get(2)?,
+                        target_qualname: row.get(3)?,
+                        receiver_type: row.get(4)?,
+                        import_candidates: row.get(5)?,
+                        bare_call: row.get(6)?,
+                        source_lang: row.get(7)?,
+                        file_path: row.get(8)?,
+                        source_qualname: row.get(9)?,
+                    },
+                })
+            })?;
+            out.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        {
+            let mut resolver = Resolver::new(&tx, graph_version)?;
+            let mut update_edge = tx.prepare(
+                "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
+            )?;
+            let empty_symbol_map: HashMap<String, i64> = HashMap::new();
+
+            for row in &rows {
+                let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
+                if let Resolution::Resolved { target_id, kind } = resolution
+                    && target_id != row.target_symbol_id
+                {
+                    update_edge.execute(params![target_id, kind.as_str(), row.edge_id])?;
+                    total_resolved += 1;
+                }
+                // `Unresolved` can't happen here: every tier that can
+                // refuse (ambiguous, private, no candidates) requires
+                // `receiver_type` to be `None`/a known type first, and this
+                // reference's own stored `receiver_type` is exactly the
+                // `Some("")` (or import-candidates-driven) shape that put
+                // it on the known-external tier the first time -- rerunning
+                // `resolve` on the same inputs takes the same tier again,
+                // which now always resolves (to the same stub, or a
+                // corrected real target).
+            }
+        }
+
+        tx.commit()?;
+        Ok(total_resolved)
+    }
+
     /// Unresolved reference counts by reason, grouped by language, for the
     /// golden-corpus scoreboard (issue #78) -- how many `unresolved_references`
     /// rows `graph_version` currently holds, per `(files.language, reason)`
@@ -1809,7 +2171,58 @@ impl Db {
                 "lidx: resolved {store_resolved} stored unresolved reference(s) after {context}"
             );
         }
+        let stub_edges_resolved = self.retry_external_stub_edges(graph_version)?;
+        if stub_edges_resolved > 0 {
+            eprintln!(
+                "lidx: reattached {stub_edges_resolved} edge(s) off the external stub after {context}"
+            );
+        }
+        // Runs after `retry_external_stub_edges`, so a stub an edge just
+        // moved off of in this same pass is pruned immediately if that was
+        // its last caller, not left one repair pass behind.
+        let pruned_stubs = self.prune_orphan_external_symbols(graph_version)?;
+        if pruned_stubs > 0 {
+            eprintln!(
+                "lidx: pruned {pruned_stubs} orphaned external stub symbol(s) after {context}"
+            );
+        }
         Ok((reconciled, store_resolved))
+    }
+
+    /// Issue #80: delete every external stub symbol (`kind = 'external'`)
+    /// in `graph_version` with no remaining incoming edge. A stub is
+    /// created lazily, on demand, the first time some reference resolves
+    /// to it (`Resolver::resolve_external_stub`) -- a fresh reindex would
+    /// never create one that nothing calls, so an existing stub whose last
+    /// caller just disappeared (an edited-away call, or that caller's
+    /// whole file deleted) must not linger either, or incremental sync
+    /// would permanently diverge from what a fresh reindex produces.
+    ///
+    /// Called from `repair_unresolved`, after the rest of the repair pass
+    /// -- both `Indexer::sync_abs_paths` (every touched batch) and
+    /// `Indexer::reindex` (whenever `needs_repair`, which already covers
+    /// every reindex that indexed or deleted a file) reach this. On a
+    /// warm, nothing-changed reindex neither runs, but nothing needs
+    /// pruning then either: yesterday's stubs already reflect yesterday's
+    /// callers.
+    ///
+    /// `Db::carry_forward_files` unconditionally copies every stub forward
+    /// into a new graph_version regardless of whether its callers were
+    /// among the carried-forward files (simplest way to guarantee a stub a
+    /// carried edge still targets exists there for its stable_id-based
+    /// remap to find) -- this is what cleans up the ones that copy
+    /// brought along but nothing actually calls anymore.
+    pub(crate) fn prune_orphan_external_symbols(&self, graph_version: i64) -> Result<usize> {
+        let conn = self.conn();
+        Ok(conn.execute(
+            "DELETE FROM symbols
+             WHERE graph_version = ?1 AND kind = 'external'
+               AND NOT EXISTS (
+                 SELECT 1 FROM edges e
+                 WHERE e.target_symbol_id = symbols.id AND e.graph_version = ?1
+               )",
+            params![graph_version],
+        )?)
     }
 }
 
@@ -2368,11 +2781,16 @@ mod tests {
         );
 
         // A non-bridge CALLS edge from Rust must not cross into the
-        // Python-only candidate.
+        // Python-only candidate. `crate::`-rooted (like every real Rust
+        // extractor guess for a bare/two-segment call -- see
+        // `rust::resolve_call_target`), so it doesn't also exercise
+        // `is_known_external_fallback`'s tier 6 (issue #80), which only
+        // ever fires on the shape a genuine external path keeps: `::`
+        // and not `crate::`-rooted (`std::`, a third-party crate, ...).
         let mut resolver = Resolver::new(&conn, 1).unwrap();
         let symbol_map = std::collections::HashMap::new();
         let non_bridge = reference(
-            "caller::shared_name",
+            "crate::caller::shared_name",
             "CALLS",
             "rust",
             "caller.rs",
@@ -2387,7 +2805,7 @@ mod tests {
         // The same shape, but a Bridge Edge kind, may cross into it.
         let mut resolver = Resolver::new(&conn, 1).unwrap();
         let bridge = reference(
-            "caller::shared_name",
+            "crate::caller::shared_name",
             "RPC_CALL",
             "rust",
             "caller.rs",

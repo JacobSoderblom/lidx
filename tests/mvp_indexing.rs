@@ -757,16 +757,23 @@ fn incremental_file_delete_does_not_repoint_edges_at_reused_rowids() {
     let graph_version = indexer.db().current_graph_version().unwrap();
     let conn = indexer.db().read_conn().unwrap();
 
-    // No edge that still names a helper symbol may carry a resolved id: helper's
-    // symbols are gone, so a non-NULL id either dangles or points at a reused
-    // rowid belonging to zebra.
+    // No edge that still names a helper symbol may carry a resolved id
+    // pointing at a real repo symbol: helper's symbols are gone, so a
+    // non-NULL id either dangles or points at a reused rowid belonging to
+    // zebra. Issue #80: `caller.greet`'s bare call, once `helper` no longer
+    // has a module symbol to attribute its import to, is the resolver's
+    // known-external tier -- it now binds to the external stub
+    // (`ext:helper.greet`, a brand-new id, never reused from anything) --
+    // so a stub target is excluded from this check, but a real (zebra's)
+    // symbol still isn't allowed here.
     let mispointed: Vec<(String, String)> = {
         let mut stmt = conn
             .prepare(
                 "SELECT e.target_qualname, s.qualname
                  FROM edges e JOIN symbols s ON e.target_symbol_id = s.id
                  WHERE e.target_qualname IN ('helper.greet', 'caller.greet', 'greet', 'helper')
-                   AND e.graph_version = ?",
+                   AND e.graph_version = ?
+                   AND s.kind != 'external'",
             )
             .unwrap();
         let rows = stmt
@@ -778,8 +785,9 @@ fn incremental_file_delete_does_not_repoint_edges_at_reused_rowids() {
     };
     assert!(
         mispointed.is_empty(),
-        "Edges naming deleted helper symbols must have NULL target_symbol_id, \
-         but some resolve to other symbols (target_qualname -> actual symbol): {mispointed:?}"
+        "Edges naming deleted helper symbols must have NULL target_symbol_id or bind to the \
+         external stub, but some resolve to a real repo symbol instead \
+         (target_qualname -> actual symbol): {mispointed:?}"
     );
 
     // And the general invariant: no dangling ids either.

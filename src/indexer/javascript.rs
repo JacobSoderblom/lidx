@@ -3937,7 +3937,13 @@ export function b() { return cn('y'); }
 
     #[test]
     fn external_package_import_never_binds_to_same_named_repo_symbol() {
+        // Issue #80: `useState` (imported from `react`) binds to the
+        // external stub instead of staying unresolved -- the load-bearing
+        // check is still that it's never the decoy `other/hooks.useState`.
         let (_dir, conn) = button_repo();
-        assert_eq!(callee(&conn, "components/button.Button", "useState"), None);
+        assert_eq!(
+            callee(&conn, "components/button.Button", "useState").as_deref(),
+            Some("ext:react:useState")
+        );
     }
 }
