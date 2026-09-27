@@ -232,6 +232,38 @@ fn incremental_rust_tier6_stub_rebinds_once_the_real_target_is_added() {
     common::assert_matches_fresh(&snapshot, &fresh);
 }
 
+/// When the added definitions make the call ambiguous, the stub edge must
+/// end up unresolved, as a fresh index leaves it, not stay on the stub.
+#[test]
+fn incremental_rust_tier6_stub_unbinds_when_the_call_becomes_ambiguous() {
+    let lib = "pub mod a;\npub mod b;\npub mod c;\n";
+    let (tmp, mut indexer) =
+        temp_indexer(&[("src/lib.rs", lib), ("src/a.rs", RUST_A_CALLING_WIDGET_NEW)]);
+    indexer.reindex().unwrap();
+    assert!(stub_exists(&indexer, "ext:Widget::new"));
+
+    common::write_files(
+        tmp.path(),
+        &[
+            ("src/b.rs", RUST_B_DEFINING_WIDGET),
+            ("src/c.rs", RUST_B_DEFINING_WIDGET),
+        ],
+    );
+    indexer
+        .sync_rel_paths(&["src/b.rs".to_string(), "src/c.rs".to_string()])
+        .unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("src/lib.rs", lib),
+        ("src/a.rs", RUST_A_CALLING_WIDGET_NEW),
+        ("src/b.rs", RUST_B_DEFINING_WIDGET),
+        ("src/c.rs", RUST_B_DEFINING_WIDGET),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
 const GO_MAIN_CALLING_UTIL_HELPER: &str = "package main\n\nimport (\n\t\"example.com/m/internal/util\"\n)\n\nfunc main() {\n\tutil.Helper()\n}\n";
 const GO_UTIL_HELPER: &str = "package util\n\nfunc Helper() {}\n";
 

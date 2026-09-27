@@ -2160,12 +2160,22 @@ impl Db {
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &rows {
-                let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
-                if let Resolution::Resolved { target_id, kind } = resolution
-                    && target_id != row.target_symbol_id
-                {
-                    update_edge.execute(params![target_id, kind.as_str(), row.edge_id])?;
-                    total_resolved += 1;
+                match row.ctx.resolve(&mut resolver, &empty_symbol_map)? {
+                    Resolution::Resolved { target_id, kind }
+                        if target_id != row.target_symbol_id =>
+                    {
+                        update_edge.execute(params![target_id, kind.as_str(), row.edge_id])?;
+                        total_resolved += 1;
+                    }
+                    // A fresh index would leave this reference unresolved,
+                    // so unbind it from the stub; the caller's follow-up
+                    // `reconcile_unresolved_reference_store` moves it into
+                    // the store with its reason.
+                    Resolution::Unresolved(_) => {
+                        update_edge.execute(params![None::<i64>, None::<String>, row.edge_id])?;
+                        total_resolved += 1;
+                    }
+                    _ => {}
                 }
                 // A tier-3 stub (stored `receiver_type == Some("")`, see
                 // `Resolution::stored_receiver_type`) can't come back
@@ -2183,10 +2193,8 @@ impl Db {
                 // stub, so this rerun actually exercises the name tiers
                 // again (the whole point -- see `ResolutionKind::External`'s
                 // doc). If that now finds more than one candidate or only a
-                // private one, `Resolution::Unresolved` falls through the
-                // `if let` below as a no-op: the edge stays bound to its
-                // current stub for this pass, same as if this function had
-                // not run at all.
+                // private one, the edge is unbound above so it ends up
+                // unresolved exactly as a fresh index would leave it.
             }
         }
 
@@ -2252,6 +2260,9 @@ impl Db {
             eprintln!(
                 "lidx: reattached {stub_edges_resolved} edge(s) off the external stub after {context}"
             );
+            // Edges unbound from a stub are now NULL-target; move them into
+            // the store like any other orphaned edge.
+            self.reconcile_unresolved_reference_store(graph_version)?;
         }
         // Runs after `retry_external_stub_edges`, so a stub an edge just
         // moved off of in this same pass is pruned immediately if that was
