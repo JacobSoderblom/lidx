@@ -3875,11 +3875,12 @@ mod tests {
         // receiver_type: Unresolved -- tracked but the receiver's type
         // (`value`, a local `string?`) could not be determined, so resolution
         // must not bind this edge to any real symbol (exact match also can't
-        // hit: no symbol is named exactly "value.Trim"). Issue #80: this is
-        // the resolver's known-external tier, so it now binds to that stub
-        // symbol instead of staying unresolved -- the load-bearing check
-        // below is still that it never resurrects as a caller of the
-        // unrelated Python `trim`.
+        // hit: no symbol is named exactly "value.Trim"). No import is
+        // involved, so issue #80's known-external stub tier doesn't apply
+        // either (that's scoped to imports known to resolve outside the
+        // repo) -- this stays unresolved, no edge at all, same as before
+        // #80. The load-bearing check below is still that it never
+        // resurrects as a caller of the unrelated Python `trim`.
         let edges = vec![make_test_edge_with_receiver_type(
             "CALLS",
             "Dpb.UniqueName.Create",
@@ -3893,8 +3894,9 @@ mod tests {
         db.insert_edges(cs_file, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        // The edge now exists, bound to the external stub (issue #80), not
-        // left NULL-target.
+        // CALLS isn't a Bridge Edge kind, so a builtin/unresolved receiver
+        // with no import involved leaves no edge at all, only an
+        // `unresolved_references` row.
         let edge_count: i64 = db
             .read_conn()
             .unwrap()
@@ -3904,7 +3906,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(edge_count, 1);
+        assert_eq!(edge_count, 0);
 
         let by_symbol = db.edges_for_symbols(&[py_trim_id], None, 1).unwrap();
         assert!(
@@ -5040,7 +5042,6 @@ mod tests {
         let inserted = db
             .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
             .unwrap();
-        let append_id = inserted[0].id;
 
         // Receiver type inferred as a builtin (`cells = []`) — tracked, but
         // must not bind at all, not even speculatively.
@@ -5059,47 +5060,41 @@ mod tests {
 
         // A builtin/unresolved receiver type must never bind to a real repo
         // symbol, even though EventStore.append is the sole candidate for
-        // the bare name "append" -- issue #80: this is the resolver's
-        // known-external tier, so it binds to that stub symbol instead
-        // (`ext:cells.append`, not `pkg.store.EventStore.append`), and the
-        // edge's own `receiver_type` column still records the
-        // tracked-but-unresolved marker (`""`, distinct from NULL/not
-        // tracked at all) that `stored_receiver_type` preserves for the
-        // known-external `ResolutionKind` too.
-        let (target_symbol_id, receiver_type, resolution_kind): (
-            Option<i64>,
-            Option<String>,
-            Option<String>,
-        ) = db
+        // the bare name "append". No import is involved, so issue #80's
+        // known-external stub tier doesn't apply either -- this stays
+        // unresolved exactly as before #80: CALLS isn't a Bridge Edge kind,
+        // so no edge at all, only an `unresolved_references` row, whose own
+        // `receiver_type` column still records the tracked-but-unresolved
+        // marker (`""`, distinct from NULL/not tracked at all).
+        let edge_count: i64 = db
             .conn()
             .query_row(
-                "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges
-                 WHERE target_qualname = 'cells.append'",
+                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'cells.append'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_ne!(
-            target_symbol_id,
-            Some(append_id),
-            "must never bind to EventStore.append just because it's the sole bare-name candidate"
-        );
-        let stub_qualname: String = db
-            .conn()
-            .query_row(
-                "SELECT qualname FROM symbols WHERE id = ?",
-                [target_symbol_id.expect("known-external binds to a stub, not NULL")],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(stub_qualname, "ext:cells.append");
+        assert_eq!(
+            edge_count, 0,
+            "must never bind to EventStore.append just because it's the sole bare-name candidate, \
+             and must not stub either since no import is involved"
+        );
+        let (receiver_type, reason): (Option<String>, String) = db
+            .conn()
+            .query_row(
+                "SELECT receiver_type, reason FROM unresolved_references
+                 WHERE reference_name = 'cells.append'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(
             receiver_type.as_deref(),
             Some(""),
             "the receiver_type column encodes tracked-but-unresolved as an empty string, \
              distinct from NULL (not tracked at all)"
         );
-        assert_eq!(resolution_kind.as_deref(), Some("external"));
+        assert_eq!(reason, "external");
     }
 
     // --- import tier: import-qualified candidates disambiguate a bare

@@ -110,7 +110,20 @@ pub(crate) enum ResolutionKind {
     /// all -- `Resolver::is_known_external_fallback`'s own per-language
     /// check). The target is a stub symbol (`kind = 'external'`,
     /// `resolve_external_stub`), not a real extracted symbol.
-    External,
+    ///
+    /// `via_language_fallback` is `true` only for the latter (tier 6) case:
+    /// the reference's own text gave no known-external signal at all (no
+    /// receiver-type refusal, no unresolved import) -- a per-language
+    /// heuristic called it foreign only after every name tier already
+    /// missed. `Resolution::stored_receiver_type` keys off this to decide
+    /// whether the edge's stored `receiver_type` should force the next
+    /// resolution straight back to this tier (tier 3, permanent) or keep
+    /// the originally extracted value so a later retry re-runs the name
+    /// tiers first (tier 6, since the target may since have been added --
+    /// see `Db::retry_external_stub_edges`'s doc).
+    External {
+        via_language_fallback: bool,
+    },
 }
 
 impl ResolutionKind {
@@ -123,7 +136,7 @@ impl ResolutionKind {
             Self::Inherited => "inherited",
             Self::TwoSegment => "two_segment",
             Self::BareName => "bare_name",
-            Self::External => "external",
+            Self::External { .. } => "external",
         }
     }
 }
@@ -137,11 +150,18 @@ impl ResolutionKind {
 /// through to `NoCandidates`/`Ambiguous` rather than needing its own
 /// reason.
 ///
-/// Issue #80: there used to be an `External` variant here (the receiver
-/// bound by an import that doesn't resolve uniquely in this index, or a
-/// builtin/unresolved type). That outcome is `Resolved` now -- to a stub
-/// symbol, `ResolutionKind::External` -- so it never reaches this store at
-/// all; see `Resolver::stub_resolution`.
+/// Issue #80 narrowed this variant's scope rather than removing it: a
+/// receiver *bound by an import that doesn't resolve uniquely in this
+/// index* now resolves (to a stub symbol, `ResolutionKind::External`) --
+/// that's issue #80's actual scope, "calls into imports known to resolve
+/// outside the repo". A call through a receiver of *builtin/unresolved
+/// type* with no import involved (`cells = []` then `cells.append(1)`) is
+/// not an import known to resolve elsewhere -- it's a local variable whose
+/// type just isn't known -- so it stays `Unresolved(External)` here, same
+/// as before #80: one stub per distinct callee name would otherwise be
+/// named after whatever local variable happened to call it first,
+/// defeating "who calls X?" for every builtin method name. See
+/// `Resolver::resolve`'s `refuse_names` branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnresolvedReason {
     /// No tier found any candidate.
@@ -154,6 +174,12 @@ pub(crate) enum UnresolvedReason {
     /// reference — see `VisibilityRule`. Only this tier checks visibility;
     /// an exact/import/receiver-type/inherited match never refuses on it.
     Private,
+    /// The receiver's type is a builtin or otherwise couldn't be inferred
+    /// (`ReceiverType::Unresolved`) and no import binding is involved --
+    /// see this type's doc. Distinct from `ResolutionKind::External`, which
+    /// is a `Resolved` outcome (issue #80's import-known-external case),
+    /// not an `Unresolved` reason.
+    External,
 }
 
 impl UnresolvedReason {
@@ -163,6 +189,7 @@ impl UnresolvedReason {
             Self::NoCandidates => "no_candidates",
             Self::Ambiguous => "ambiguous",
             Self::Private => "private",
+            Self::External => "external",
         }
     }
 }
@@ -195,15 +222,28 @@ impl Resolution {
     }
 
     /// The `edges.receiver_type` value to persist for a reference whose
-    /// extractor reported `extracted`. A known-external resolution is
-    /// stored as `""` so that if this edge's stub target is ever cleared
-    /// (its FK's `ON DELETE SET NULL` -- see the stub-lifecycle doc on
+    /// extractor reported `extracted`. A known-external resolution reached
+    /// via tier 3 (the receiver itself is the known-external signal -- a
+    /// refused import or an unresolved/builtin receiver type) is stored as
+    /// `""` so that if this edge's stub target is ever cleared (its FK's
+    /// `ON DELETE SET NULL` -- see the stub-lifecycle doc on
     /// `Db::prune_orphan_external_symbols`), a later repair pass re-judges
     /// it the same way rather than running the name-based tiers on it.
+    ///
+    /// A known-external resolution reached via tier 6 instead
+    /// (`via_language_fallback`, Rust/Go's per-language fallback -- see
+    /// `ResolutionKind::External`'s doc) keeps `extracted` as-is (`None`:
+    /// neither language tracks a receiver type at all), so
+    /// `Db::retry_external_stub_edges` re-runs the name tiers on it instead
+    /// of forcing tier 3's short-circuit -- only a receiver actually known
+    /// external should be stored as such.
     pub(crate) fn stored_receiver_type(self, extracted: Option<&str>) -> Option<&str> {
         match self {
             Self::Resolved {
-                kind: ResolutionKind::External,
+                kind:
+                    ResolutionKind::External {
+                        via_language_fallback: false,
+                    },
                 ..
             } => Some(""),
             _ => extracted,
@@ -672,8 +712,23 @@ impl<'c> Resolver<'c> {
         };
         match found {
             Some((id, kind)) => Ok(resolved(id, kind)),
+            // Tier 3, issue #80's actual scope: the receiver is bound by an
+            // import known not to resolve here -- "calls into imports known
+            // to resolve outside the repo (standard library, third-party
+            // packages)".
+            None if refuse_names => {
+                self.stub_resolution(r.target_qualname, r.import_candidates, r.bare_call, false)
+            }
+            // A builtin/unresolved receiver type with no import involved at
+            // all (a local variable, e.g. `cells = []` then
+            // `cells.append(1)`) is not an import known to resolve
+            // elsewhere -- stub it and every other such call site would
+            // collapse onto one stub named after whichever local variable's
+            // call happened to create it, defeating "who calls X?". Stay
+            // unresolved instead, as before #80 -- see
+            // `UnresolvedReason::External`'s doc.
             None if receiver_type == Some("") => {
-                self.stub_resolution(r.target_qualname, r.import_candidates, r.bare_call)
+                Ok(Resolution::Unresolved(UnresolvedReason::External))
             }
             None if self.saw_ambiguous => Ok(Resolution::Unresolved(UnresolvedReason::Ambiguous)),
             None if self.saw_private => Ok(Resolution::Unresolved(UnresolvedReason::Private)),
@@ -689,7 +744,7 @@ impl<'c> Resolver<'c> {
                     None => false,
                 };
                 if is_external {
-                    self.stub_resolution(r.target_qualname, r.import_candidates, r.bare_call)
+                    self.stub_resolution(r.target_qualname, r.import_candidates, r.bare_call, true)
                 } else {
                     Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates))
                 }
@@ -1262,16 +1317,26 @@ impl<'c> Resolver<'c> {
     /// already refuses to store an unresolved reference with no name to key
     /// on, so a text-less reference was already silently dropped, never an
     /// edge or a store row.
+    ///
+    /// `via_language_fallback` is threaded straight into
+    /// `ResolutionKind::External` -- see its doc and
+    /// `Resolution::stored_receiver_type`.
     fn stub_resolution(
         &mut self,
         target_qualname: Option<&str>,
         import_candidates: &[String],
         bare_call: bool,
+        via_language_fallback: bool,
     ) -> Result<Resolution> {
         match external_stub_qualname(target_qualname, import_candidates, bare_call) {
             Some(qualname) => {
                 let stub_id = self.resolve_external_stub(&qualname)?;
-                Ok(resolved(stub_id, ResolutionKind::External))
+                Ok(resolved(
+                    stub_id,
+                    ResolutionKind::External {
+                        via_language_fallback,
+                    },
+                ))
             }
             None => Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates)),
         }
@@ -2102,15 +2167,26 @@ impl Db {
                     update_edge.execute(params![target_id, kind.as_str(), row.edge_id])?;
                     total_resolved += 1;
                 }
-                // `Unresolved` can't happen here: every tier that can
-                // refuse (ambiguous, private, no candidates) requires
-                // `receiver_type` to be `None`/a known type first, and this
-                // reference's own stored `receiver_type` is exactly the
-                // `Some("")` (or import-candidates-driven) shape that put
-                // it on the known-external tier the first time -- rerunning
-                // `resolve` on the same inputs takes the same tier again,
-                // which now always resolves (to the same stub, or a
-                // corrected real target).
+                // A tier-3 stub (stored `receiver_type == Some("")`, see
+                // `Resolution::stored_receiver_type`) can't come back
+                // `Unresolved` here: every tier that can refuse (ambiguous,
+                // private, no candidates) requires `receiver_type` to be
+                // `None`/a known type first, so rerunning `resolve` on the
+                // same `Some("")` input takes the same tier again, which
+                // always resolves (to the same stub -- genuinely external
+                // stays that way).
+                //
+                // A tier-6 stub (`via_language_fallback`, stored
+                // `receiver_type` left as originally extracted -- `None` for
+                // Rust/Go) *can* come back `Unresolved` here: its stored
+                // `receiver_type` no longer short-circuits straight to the
+                // stub, so this rerun actually exercises the name tiers
+                // again (the whole point -- see `ResolutionKind::External`'s
+                // doc). If that now finds more than one candidate or only a
+                // private one, `Resolution::Unresolved` falls through the
+                // `if let` below as a no-op: the edge stays bound to its
+                // current stub for this pass, same as if this function had
+                // not run at all.
             }
         }
 

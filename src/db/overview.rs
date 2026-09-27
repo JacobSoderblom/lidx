@@ -49,6 +49,12 @@ impl Db {
         Ok(languages)
     }
 
+    /// Feeds `xref::SymbolRefIndex` (cross-language reference detection).
+    /// Issue #80: excludes external stub symbols (`s.kind = 'external'`) --
+    /// a stub's language is always the synthetic `'external'` file's, which
+    /// would make it look cross-language against every real source
+    /// language and let a same-named string literal (e.g. `"check_output"`)
+    /// bind an XREF edge to it.
     pub fn list_symbol_refs(&self, graph_version: i64) -> Result<Vec<SymbolRefRecord>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
@@ -56,7 +62,8 @@ impl Db {
              FROM symbols s
              JOIN files f ON s.file_id = f.id
              WHERE s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+               AND s.kind != 'external'",
         )?;
         let rows = stmt.query_map(params![graph_version, graph_version], |row| {
             Ok(SymbolRefRecord {
@@ -446,10 +453,14 @@ fn count_files_for_version(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<i64> {
+    // Issue #80: excludes the single synthetic external pseudo-file every
+    // stub symbol belongs to (`f.language = 'external'`, see
+    // `Resolver::external_file_id`) -- it's not a real repo file.
     let mut sql = String::from(
         "SELECT COUNT(*)
          FROM files f
-         WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)",
+         WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)
+           AND f.language != 'external'",
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
     if let Some(languages) = languages
@@ -476,12 +487,15 @@ fn count_symbols_for_version(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<i64> {
+    // Issue #80: excludes external stub symbols (`s.kind = 'external'`) --
+    // they're not real extracted symbols.
     let mut sql = String::from(
         "SELECT COUNT(*)
          FROM symbols s
          JOIN files f ON s.file_id = f.id
          WHERE s.graph_version = ?
-           AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+           AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+           AND s.kind != 'external'",
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
     if let Some(languages) = languages
@@ -701,6 +715,30 @@ mod tests {
         assert!(refs.iter().any(|r| r.qualname == "mod.bar"));
     }
 
+    /// Issue #80: an external stub symbol must never be handed to XREF
+    /// candidate matching -- its language ('external') would otherwise
+    /// look cross-language against every real source file.
+    #[test]
+    fn list_symbol_refs_excludes_external_stubs() {
+        let (mut db, _temp) = create_test_db();
+        let fid = db.upsert_file("a.py", "h1", "python", 10, 0).unwrap();
+        db.insert_symbols(fid, "a.py", &[make_symbol("mod.Foo", "class")], 1, None)
+            .unwrap();
+        let ext_fid = db.upsert_file("<external>", "", "external", 0, 0).unwrap();
+        db.insert_symbols(
+            ext_fid,
+            "<external>",
+            &[make_symbol("ext:json.JSONDecodeError", "external")],
+            1,
+            None,
+        )
+        .unwrap();
+
+        let refs = db.list_symbol_refs(1).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].qualname, "mod.Foo");
+    }
+
     #[test]
     fn list_symbol_refs_excludes_deleted_file() {
         let (mut db, _temp) = create_test_db();
@@ -802,6 +840,38 @@ mod tests {
         assert_eq!(ov.symbols, 1);
         assert_eq!(ov.edges, 1);
         assert_eq!(ov.commit_sha, Some("abc".to_string()));
+    }
+
+    /// Issue #80: the synthetic external pseudo-file and its stub symbols
+    /// must never inflate `repo_overview`'s counts -- they aren't a real
+    /// repo file or a real extracted symbol.
+    #[test]
+    fn repo_overview_counts_exclude_external_stubs() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(Some("abc")).unwrap();
+        let fid = db.upsert_file("src/a.py", "h1", "python", 10, 0).unwrap();
+        db.insert_symbols(
+            fid,
+            "src/a.py",
+            &[make_symbol("a.foo", "function")],
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let ext_fid = db.upsert_file("<external>", "", "external", 0, 0).unwrap();
+        db.insert_symbols(
+            ext_fid,
+            "<external>",
+            &[make_symbol("ext:requests.get", "external")],
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let ov = db.repo_overview("/repo".into(), None, gv).unwrap();
+        assert_eq!(ov.files, 1, "the external pseudo-file must not be counted");
+        assert_eq!(ov.symbols, 1, "the external stub must not be counted");
     }
 
     #[test]

@@ -195,6 +195,72 @@ fn incremental_stub_appears_and_disappears_matching_fresh() {
     common::assert_matches_fresh(&snapshot, &fresh);
 }
 
+const RUST_LIB_DECLARING_A_AND_B: &str = "pub mod a;\npub mod b;\n";
+const RUST_A_CALLING_WIDGET_NEW: &str = "pub fn run() {\n    let _w = Widget::new();\n}\n";
+const RUST_B_DEFINING_WIDGET: &str =
+    "pub struct Widget;\n\nimpl Widget {\n    pub fn new() -> Self {\n        Widget\n    }\n}\n";
+
+/// Issue #80 follow-up: a Rust tier-6 stub (`is_known_external_fallback`,
+/// the qualified-call syntax that never populates `import_candidates`) must
+/// rebind once its real target is added, the same as any other
+/// incrementally-repaired edge -- `retry_external_stub_edges` re-runs the
+/// name tiers on it, not just re-stubs it, because `stored_receiver_type`
+/// keeps this stub's originally extracted (`None`) receiver type instead of
+/// forcing `Some("")`.
+#[test]
+fn incremental_rust_tier6_stub_rebinds_once_the_real_target_is_added() {
+    let (tmp, mut indexer) = temp_indexer(&[
+        ("src/lib.rs", RUST_LIB_DECLARING_A_AND_B),
+        ("src/a.rs", RUST_A_CALLING_WIDGET_NEW),
+    ]);
+    indexer.reindex().unwrap();
+    assert!(
+        stub_exists(&indexer, "ext:Widget::new"),
+        "no repo symbol answers to Widget::new yet, so it must stub"
+    );
+
+    common::write_files(tmp.path(), &[("src/b.rs", RUST_B_DEFINING_WIDGET)]);
+    indexer.sync_rel_paths(&["src/b.rs".to_string()]).unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("src/lib.rs", RUST_LIB_DECLARING_A_AND_B),
+        ("src/a.rs", RUST_A_CALLING_WIDGET_NEW),
+        ("src/b.rs", RUST_B_DEFINING_WIDGET),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+const GO_MAIN_CALLING_UTIL_HELPER: &str = "package main\n\nimport (\n\t\"example.com/m/internal/util\"\n)\n\nfunc main() {\n\tutil.Helper()\n}\n";
+const GO_UTIL_HELPER: &str = "package util\n\nfunc Helper() {}\n";
+
+/// Issue #80 follow-up: same as the Rust case above, for Go's tier-6 stub
+/// (`is_known_external_fallback`'s package-directory check, since Go's
+/// extractor never tracks imports at all).
+#[test]
+fn incremental_go_tier6_stub_rebinds_once_the_real_package_is_added() {
+    let (tmp, mut indexer) = temp_indexer(&[("cmd/main.go", GO_MAIN_CALLING_UTIL_HELPER)]);
+    indexer.reindex().unwrap();
+    assert!(
+        stub_exists(&indexer, "ext:util.Helper"),
+        "no repo package answers to util yet, so it must stub"
+    );
+
+    common::write_files(tmp.path(), &[("internal/util/util.go", GO_UTIL_HELPER)]);
+    indexer
+        .sync_rel_paths(&["internal/util/util.go".to_string()])
+        .unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("cmd/main.go", GO_MAIN_CALLING_UTIL_HELPER),
+        ("internal/util/util.go", GO_UTIL_HELPER),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
 /// A stub is not owned by any scanned file, so `Indexer::reindex`'s
 /// carry-forward-unchanged-files path (`Db::carry_forward_files`) never
 /// sees it directly through `caller.py`'s own file id -- it must still
@@ -286,4 +352,42 @@ fn external_pseudo_file_is_never_reported_changed_or_marked_deleted() {
     )
     .unwrap();
     assert_eq!(result["callers"].as_array().unwrap().len(), 1, "{result:#}");
+}
+
+/// Issue #80: an external stub's language is always the synthetic
+/// `'external'` pseudo-file's, which would look cross-language against
+/// every real source language -- a same-named string literal elsewhere
+/// must not bind an XREF edge to it.
+#[test]
+fn xref_detection_never_targets_an_external_stub() {
+    let (_tmp, mut indexer) = temp_indexer(&[
+        (
+            "a.py",
+            "import json\n\n\ndef f():\n    json.JSONDecodeError(1)\n",
+        ),
+        ("c.ts", "export const t2 = \"JSONDecodeError\";\n"),
+    ]);
+    indexer.reindex().unwrap();
+    assert!(stub_exists(&indexer, "ext:json.JSONDecodeError"));
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let xref_to_stub: i64 = indexer
+        .db()
+        .read_conn()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*)
+             FROM edges e
+             JOIN symbols s ON s.id = e.target_symbol_id
+             WHERE e.graph_version = ?
+               AND e.kind = 'XREF'
+               AND s.kind = 'external'",
+            [graph_version],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        xref_to_stub, 0,
+        "no XREF edge may target an external stub symbol"
+    );
 }

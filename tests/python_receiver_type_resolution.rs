@@ -61,43 +61,45 @@ fn setup_repo(fixture: &str) -> (PathBuf, PathBuf) {
 }
 
 /// Shared assertion for the four "must not bind to EventStore.append"
-/// tests below (issue #80): a builtin/unresolved receiver type is the
-/// resolver's known-external tier, so it now binds to the external stub
-/// symbol instead of staying unresolved with no edge at all. Checks the
-/// edge exists, points at a stub (never a real repo symbol -- the actual
-/// point of every one of these tests), and still carries the
-/// tracked-but-unresolved `receiver_type` marker (`""`) a later repair
-/// pass relies on to never fuzzy-resolve it.
-fn assert_binds_to_external_stub(
-    conn: &rusqlite::Connection,
-    target_qualname: &str,
-    graph_version: i64,
-) {
-    let (target_symbol_id, receiver_type): (Option<i64>, Option<String>) = conn
+/// tests below. Issue #80 added an external-stub tier, but its scope is
+/// "calls into imports known to resolve outside the repo" -- a builtin or
+/// otherwise-unresolved receiver type with no import involved (a local
+/// variable) is not that, so it must stay unresolved exactly as before
+/// #80: no edge at all (CALLS isn't a Bridge Edge kind), only an
+/// `unresolved_references` store row, reason `external`, still carrying
+/// the tracked-but-unresolved `receiver_type` marker (`""`). Stubbing this
+/// case would name one shared stub after whichever local variable's call
+/// happened to create it first, defeating "who calls X?" for every builtin
+/// method name.
+fn assert_stays_unresolved(conn: &rusqlite::Connection, target_qualname: &str, graph_version: i64) {
+    let edge_count: i64 = conn
         .query_row(
-            "SELECT target_symbol_id, receiver_type FROM edges
+            "SELECT COUNT(*) FROM edges
              WHERE kind = 'CALLS' AND target_qualname = ? AND graph_version = ?",
+            params![target_qualname, graph_version],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        edge_count, 0,
+        "a builtin/unresolved receiver type must never bind to a repo symbol, \
+         and CALLS isn't a Bridge Edge kind, so no edge at all must exist"
+    );
+    let (receiver_type, reason): (Option<String>, String) = conn
+        .query_row(
+            "SELECT receiver_type, reason FROM unresolved_references
+             WHERE edge_kind = 'CALLS' AND reference_name = ? AND graph_version = ?",
             params![target_qualname, graph_version],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    let stub_qualname: String = conn
-        .query_row(
-            "SELECT qualname FROM symbols WHERE id = ?",
-            [target_symbol_id.expect("known-external must bind to the stub, not NULL")],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(
-        stub_qualname.starts_with("ext:"),
-        "must bind to the external stub, never a real repo symbol: {stub_qualname}"
-    );
     assert_eq!(
         receiver_type.as_deref(),
         Some(""),
         "a builtin/unresolved receiver type must still be recorded as tracked-but-unresolved \
          (empty string), not left as NULL (not-tracked)"
     );
+    assert_eq!(reason, "external");
 }
 
 /// A genuine `self.method()` call must still resolve to the enclosing
@@ -201,9 +203,9 @@ fn builtin_local_variable_call_does_not_bind() {
     let gv = indexer.db().current_graph_version().unwrap();
 
     // cells.append(1) must NOT bind to EventStore.append (or anything
-    // else) -- issue #80: it binds to the external stub instead.
+    // else), and must not stub either -- no import is involved.
     let conn = indexer.db().read_conn().unwrap();
-    assert_binds_to_external_stub(&conn, "cells.append", gv);
+    assert_stays_unresolved(&conn, "cells.append", gv);
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -223,12 +225,11 @@ fn lambda_parameter_call_does_not_bind() {
     let gv = indexer.db().current_graph_version().unwrap();
 
     // acc.append(n) inside the lambda body must NOT bind to
-    // EventStore.append -- issue #80: it binds to the external stub
-    // instead, which still requires the lambda's own parameter to be
-    // tracked (folded into the enclosing scope) rather than left NULL as
-    // if it were never a local at all.
+    // EventStore.append, and must not stub either -- this still requires
+    // the lambda's own parameter to be tracked (folded into the enclosing
+    // scope) rather than left NULL as if it were never a local at all.
     let conn = indexer.db().read_conn().unwrap();
-    assert_binds_to_external_stub(&conn, "acc.append", gv);
+    assert_stays_unresolved(&conn, "acc.append", gv);
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -247,10 +248,10 @@ fn chained_class_attribute_call_does_not_bind() {
     indexer.reindex().unwrap();
     let gv = indexer.db().current_graph_version().unwrap();
 
-    // Registry.instances.append(self) must NOT bind to EventStore.append
-    // -- issue #80: it binds to the external stub instead.
+    // Registry.instances.append(self) must NOT bind to EventStore.append,
+    // and must not stub either -- no import is involved.
     let conn = indexer.db().read_conn().unwrap();
-    assert_binds_to_external_stub(&conn, "Registry.instances.append", gv);
+    assert_stays_unresolved(&conn, "Registry.instances.append", gv);
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -266,9 +267,9 @@ fn chained_self_attribute_call_does_not_bind() {
     let gv = indexer.db().current_graph_version().unwrap();
 
     // self._events.append(event) must NOT bind (_events has no class-level
-    // type annotation) -- issue #80: it binds to the external stub instead.
+    // type annotation), and must not stub either -- no import is involved.
     let conn = indexer.db().read_conn().unwrap();
-    assert_binds_to_external_stub(&conn, "self._events.append", gv);
+    assert_stays_unresolved(&conn, "self._events.append", gv);
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
