@@ -377,6 +377,41 @@ fn dead_symbols_unknown_language_returns_error() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// Issue #79 follow-up: an external import that never resolves to an
+/// in-repo symbol (e.g. `import sys`) no longer gets a placeholder edge --
+/// it lives only in `unresolved_references`. `unused_imports` must still
+/// find it there when nothing calls it, and must not flag an equally
+/// unresolved *but used* import (`from fastapi import FastAPI` + the
+/// `FastAPI()` call) just because that usage is unresolved too.
+#[test]
+fn dead_symbols_unused_imports_covers_unresolved_external_imports() {
+    let (repo_root, db_path) = setup_repo("dead_symbols");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let result = rpc::handle_method(&mut indexer, "dead_symbols", serde_json::json!({})).unwrap();
+    let unused: Vec<String> = result["unused_imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|edge| edge["target_qualname"].as_str().map(|s| s.to_string()))
+        .collect();
+
+    assert!(
+        unused.iter().any(|q| q == "sys"),
+        "unresolved, never-called import 'sys' should appear in unused_imports, got: {:?}",
+        unused
+    );
+    assert!(
+        !unused.iter().any(|q| q == "FastAPI"),
+        "unresolved but called import 'FastAPI' (via FastAPI()) must NOT appear in \
+         unused_imports, got: {:?}",
+        unused
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 #[test]
 fn dead_symbols_negative_limit_returns_error() {
     let (repo_root, db_path) = setup_repo("dead_symbols");

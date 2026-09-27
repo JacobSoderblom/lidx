@@ -247,3 +247,82 @@ fn reindex_resolves_import_candidate_into_carried_forward_file_after_repair() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+/// `Db::carry_forward_files` copies a carried-forward file's edges by
+/// `stable_id`-matching each endpoint into the new graph version, leaving an
+/// endpoint NULL when its old target's `stable_id` has no match there (its
+/// own doc's "ponytail" note) -- the same shape a rename/deletion elsewhere
+/// in the repo produces for an edge whose *source* file is otherwise
+/// untouched. For a non-Bridge-Edge-kind edge, issue #79 means that NULL
+/// target must not survive reindex: `Indexer::reindex`'s repair pass
+/// (`reconcile_unresolved_reference_store`) has to catch it and demote it to
+/// a store row, same as it does for a freshly-inserted unresolved reference.
+///
+/// Scenario: caller.py calls `greet` in helper.py (first full reindex
+/// resolves it normally). helper.py is then edited to rename `greet` to
+/// `greet2` -- helper.py gets re-parsed (so `Indexer::reindex`'s
+/// `needs_repair` gate is unconditionally true), while caller.py is
+/// untouched and carried forward with its now-stale CALLS/IMPORTS edges
+/// still pointing at the old (now-gone) `greet` symbol.
+#[test]
+fn reindex_repairs_carry_forward_edges_whose_target_vanished_elsewhere() {
+    let (repo_root, db_path) = setup_repo("py_rename");
+
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Rename greet -> greet2 in helper.py; caller.py (the CALLS/IMPORTS
+    // edges' source file) is untouched and gets carried forward instead of
+    // re-parsed.
+    let helper_path = repo_root.join("helper.py");
+    std::fs::write(
+        &helper_path,
+        "def greet2(name: str) -> str:\n    return f\"Hello, {name}\"\n",
+    )
+    .unwrap();
+
+    indexer.reindex().unwrap();
+    let graph_version = indexer.db().current_graph_version().unwrap();
+
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT kind FROM edges
+             WHERE graph_version = ? AND target_symbol_id IS NULL AND target_qualname IS NOT NULL",
+        )
+        .unwrap();
+    let null_target_kinds: Vec<String> = stmt
+        .query_map(rusqlite::params![graph_version], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+
+    // The only kinds allowed to still have a NULL target at rest are the
+    // ones `indexer::channel::is_bridge_edge_kind` exempts -- see its doc
+    // for why each group needs to.
+    let string_targeted_kinds = [
+        "RPC_IMPL",
+        "RPC_CALL",
+        "RPC_ROUTE",
+        "HTTP_ROUTE",
+        "HTTP_CALL",
+        "CHANNEL_PUBLISH",
+        "CHANNEL_SUBSCRIBE",
+        "CONFIG_SOURCE",
+        "CONFIG_READ",
+        "CONFIG_BIND",
+        "XREF",
+    ];
+    let offenders: Vec<&String> = null_target_kinds
+        .iter()
+        .filter(|k| !string_targeted_kinds.contains(&k.as_str()))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a carry-forward-degraded edge of a non-string-targeted kind must be repaired into the \
+         unresolved_references store, not left as a NULL-target edge: {offenders:?} \
+         (all NULL-target rows this version: {null_target_kinds:?})"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}

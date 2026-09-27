@@ -1,8 +1,5 @@
-use lidx::db::Db;
-use lidx::indexer::extract::{EdgeInput, SymbolInput};
+use lidx::indexer::extract::EdgeInput;
 use lidx::indexer::rust::resolve_module_file_edges;
-use lidx::subgraph::build_subgraph;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 fn temp_repo_dir() -> PathBuf {
@@ -80,88 +77,4 @@ fn resolve_module_file_edges_sets_detail() {
     assert_eq!(detail["confidence"].as_f64().unwrap(), 0.4);
 
     let _ = std::fs::remove_dir_all(&repo_root);
-}
-
-// Ignored: :memory: databases are incompatible with connection pools.
-// Each pooled connection sees a separate in-memory database, so migrations
-// run on write_conn don't affect read_pool connections. This is an architectural
-// limitation. Production uses file-based databases where all connections access
-// the same file, so this test failure doesn't affect production behavior.
-#[test]
-#[ignore]
-fn subgraph_resolves_module_file_edge_targets() {
-    let mut db = Db::new(Path::new(":memory:")).unwrap();
-    let graph_version = db.current_graph_version().unwrap();
-    let file_id_root = db.upsert_file("src/lib.rs", "hash", "rust", 0, 0).unwrap();
-    let file_id_child = db.upsert_file("src/foo.rs", "hash", "rust", 0, 0).unwrap();
-
-    let root_symbols = db
-        .insert_symbols(
-            file_id_root,
-            "src/lib.rs",
-            &[SymbolInput {
-                kind: "module".to_string(),
-                name: "crate".to_string(),
-                qualname: "crate".to_string(),
-                start_line: 1,
-                start_col: 1,
-                end_line: 1,
-                end_col: 1,
-                start_byte: 0,
-                end_byte: 0,
-                signature: None,
-                docstring: None,
-            }],
-            graph_version,
-            None,
-        )
-        .unwrap();
-    let root_id = root_symbols[0].id;
-
-    let mut symbol_map = HashMap::new();
-    symbol_map.insert("crate".to_string(), root_id);
-    let edges = vec![EdgeInput {
-        kind: "MODULE_FILE".to_string(),
-        source_qualname: Some("crate".to_string()),
-        target_qualname: Some("crate::foo".to_string()),
-        detail: None,
-        evidence_snippet: None,
-        ..Default::default()
-    }];
-    db.insert_edges(file_id_root, &edges, &symbol_map, graph_version, None)
-        .unwrap();
-
-    let child_symbols = db
-        .insert_symbols(
-            file_id_child,
-            "src/foo.rs",
-            &[SymbolInput {
-                kind: "module".to_string(),
-                name: "foo".to_string(),
-                qualname: "crate::foo".to_string(),
-                start_line: 1,
-                start_col: 1,
-                end_line: 1,
-                end_col: 1,
-                start_byte: 0,
-                end_byte: 0,
-                signature: None,
-                docstring: None,
-            }],
-            graph_version,
-            None,
-        )
-        .unwrap();
-    let child_id = child_symbols[0].id;
-
-    let graph = build_subgraph(&db, &[root_id], 2, 10, None, graph_version).unwrap();
-    let qualnames: Vec<_> = graph.nodes.iter().map(|s| s.qualname.as_str()).collect();
-    assert!(qualnames.contains(&"crate"));
-    assert!(qualnames.contains(&"crate::foo"));
-    let module_edge = graph
-        .edges
-        .iter()
-        .find(|edge| edge.kind == "MODULE_FILE")
-        .unwrap();
-    assert_eq!(module_edge.target_symbol_id, Some(child_id));
 }

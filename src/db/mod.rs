@@ -721,10 +721,19 @@ impl Db {
     /// rows for pruned symbols are removed via `ON DELETE CASCADE` (foreign
     /// keys are enabled on every connection, see `Db::new`).
     ///
+    /// `unresolved_references` rows for those versions are deleted
+    /// explicitly rather than left to cascade: a Bridge Edge kind row's
+    /// `edge_id` cascades when its edge is deleted above, but a pending
+    /// (non-Bridge-Edge-kind) row has `edge_id = NULL` (issue #79's
+    /// self-contained store) and no edge to cascade from, and
+    /// `carry_forward_files` copies every pending row forward into each new
+    /// version -- without this, pruned versions' pending rows would never be
+    /// reclaimed and the store would grow unbounded across reindexes.
+    ///
     /// `graph_versions` (the id/created/commit_sha metadata rows), `files`,
     /// and `co_changes` are untouched: none of them are duplicated per
-    /// reindex the way `symbols`/`edges` are, so none contribute to the
-    /// unbounded growth this prunes.
+    /// reindex the way `symbols`/`edges`/`unresolved_references` are, so none
+    /// contribute to the unbounded growth this prunes.
     ///
     /// The retention boundary is found by position in `graph_versions`
     /// (Nth most recent id), not by arithmetic on the current version number,
@@ -759,6 +768,10 @@ impl Db {
         )?;
         let symbols_deleted = tx.execute(
             "DELETE FROM symbols WHERE graph_version < ?",
+            params![boundary],
+        )?;
+        tx.execute(
+            "DELETE FROM unresolved_references WHERE graph_version < ?",
             params![boundary],
         )?;
 
@@ -1380,14 +1393,16 @@ impl Db {
                     symbol_map,
                 )?;
 
-                // Issue #79: a Bridge Edge kind is always written -- its
-                // target is a cross-language/cross-process join key
-                // (`target_qualname`), not necessarily a symbol in this
-                // graph, and `trace_flow`'s bridging (see `traversal.rs`)
-                // reads it straight off `edges` regardless of resolution.
-                // Every other kind is written only when resolved; an
-                // Unresolved outcome for one of those has no placeholder
-                // edge at all, only the `unresolved_references` row below.
+                // Issue #79: `is_bridge_edge_kind`'s kind is always written,
+                // resolved or not -- see its doc for why that's not one
+                // uniform reason (the three actual Bridge Edge pairs need
+                // `target_qualname` for trace_flow's traversal bridging;
+                // CONFIG_SOURCE/CONFIG_READ/CONFIG_BIND for config-URI
+                // lookups; XREF for confidence-gated consumers that read the
+                // edge's text directly). Every other kind is written only
+                // when resolved; an Unresolved outcome for one of those has
+                // no placeholder edge at all, only the `unresolved_references`
+                // row below.
                 let is_bridge = crate::indexer::channel::is_bridge_edge_kind(&edge.kind);
                 let edge_id = if resolution.target_id().is_some() || is_bridge {
                     insert_stmt.execute(params![
