@@ -1,5 +1,6 @@
 use super::{Db, DbDigest, ModuleSummaryEntry, SymbolRefRecord, TableDigest, append_path_filters};
-use crate::model::RepoOverview;
+use crate::model::{RepoOverview, ScopeCounts};
+use crate::search::{SearchScope, scope_allows};
 use anyhow::Result;
 use blake3::Hasher;
 use rusqlite::{Connection, params};
@@ -21,6 +22,7 @@ impl Db {
         let files = count_files_for_version(&conn, languages, graph_version)?;
         let symbols = count_symbols_for_version(&conn, languages, graph_version)?;
         let edges = count_edges_for_version(&conn, languages, graph_version)?;
+        let scope_counts = scope_counts_for_version(&conn, languages, graph_version)?;
 
         Ok(RepoOverview {
             repo_root: repo_root.to_string_lossy().to_string(),
@@ -30,6 +32,7 @@ impl Db {
             last_indexed,
             graph_version: Some(graph_version),
             commit_sha,
+            scope_counts,
         })
     }
 
@@ -482,6 +485,74 @@ fn count_files_for_version(
     Ok(count)
 }
 
+/// Issue #63: per-scope file counts for `repo_overview`, reusing
+/// `search::scope_allows` -- the same query-time classifier the `search`
+/// method's `scope` param uses -- rather than introducing a stored scope
+/// column. Runs the classifier in-process over the same file set
+/// `count_files_for_version` counts (same exclusions: deleted, `external`
+/// pseudo-file, optional language filter).
+fn scope_counts_for_version(
+    conn: &Connection,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> Result<ScopeCounts> {
+    let paths = file_paths_for_version(conn, languages, graph_version)?;
+    let mut counts = ScopeCounts::default();
+    for path in &paths {
+        if scope_allows(path, Some(SearchScope::Code), false, None) {
+            counts.code += 1;
+        }
+        if scope_allows(path, Some(SearchScope::Tests), false, None) {
+            counts.tests += 1;
+        }
+        if scope_allows(path, Some(SearchScope::Docs), false, None) {
+            counts.docs += 1;
+        }
+        if scope_allows(path, Some(SearchScope::Examples), false, None) {
+            counts.examples += 1;
+        }
+    }
+    Ok(counts)
+}
+
+fn file_paths_for_version(
+    conn: &Connection,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> Result<Vec<String>> {
+    // Same filter as `count_files_for_version`: excludes deleted files and
+    // the synthetic `external` pseudo-file (issue #80).
+    let mut sql = String::from(
+        "SELECT f.path
+         FROM files f
+         WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)
+           AND f.language != 'external'",
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
+    if let Some(languages) = languages
+        && !languages.is_empty()
+    {
+        sql.push_str(" AND f.language IN (");
+        for (idx, _) in languages.iter().enumerate() {
+            if idx > 0 {
+                sql.push(',');
+            }
+            sql.push('?');
+        }
+        sql.push(')');
+        for language in languages {
+            params.push(language as &dyn rusqlite::ToSql);
+        }
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(&*params, |row| row.get::<_, String>(0))?;
+    let mut paths = Vec::new();
+    for row in rows {
+        paths.push(row?);
+    }
+    Ok(paths)
+}
+
 fn count_symbols_for_version(
     conn: &Connection,
     languages: Option<&[String]>,
@@ -898,6 +969,30 @@ mod tests {
         let ov = db.repo_overview("/repo".into(), Some(&langs), gv).unwrap();
         assert_eq!(ov.files, 1);
         assert_eq!(ov.symbols, 2);
+    }
+
+    /// Issue #63: `scope_counts` aggregates `search::scope_allows` (the
+    /// same query-time classifier `search`'s `scope` param uses) over the
+    /// indexed file set, with an explicit zero for a scope that has
+    /// nothing in it rather than the field being omitted.
+    #[test]
+    fn repo_overview_scope_counts_classifies_known_mix() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+        db.upsert_file("src/a.py", "h1", "python", 10, 0).unwrap();
+        db.upsert_file("tests/test_a.py", "h2", "python", 10, 0)
+            .unwrap();
+        db.upsert_file("docs/guide.py", "h3", "python", 10, 0)
+            .unwrap();
+
+        let ov = db.repo_overview("/repo".into(), None, gv).unwrap();
+        assert_eq!(ov.scope_counts.code, 1);
+        assert_eq!(ov.scope_counts.tests, 1);
+        assert_eq!(ov.scope_counts.docs, 1);
+        assert_eq!(
+            ov.scope_counts.examples, 0,
+            "no examples-scope file was indexed; must report an explicit zero"
+        );
     }
 
     // ---- digest ----
