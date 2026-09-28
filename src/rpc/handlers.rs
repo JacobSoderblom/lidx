@@ -527,7 +527,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     {
         warnings.push(
             "No test-scope files exist in this index, so the empty tests list doesn't mean \
-             this symbol is untested -- it means no tests were ever indexed."
+             this symbol is untested -- it means lidx found no files it classifies as \
+             tests (tests are detected by file path, so tests living inline in an \
+             otherwise-non-test file, e.g. Rust's #[cfg(test)] modules, won't count)."
                 .to_string(),
         );
     }
