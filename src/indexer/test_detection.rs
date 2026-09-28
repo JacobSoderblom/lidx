@@ -71,7 +71,9 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
             if sig_lower.contains("#[test]")
                 || sig_lower.contains("#[tokio::test]")
                 || sig_lower.contains("#[actix_rt::test]")
+                || sig_lower.contains("#[async_std::test]")
                 || sig_lower.contains("#[rstest]")
+                || sig_lower.contains("#[rstest::rstest]")
             {
                 return true;
             }
@@ -157,6 +159,12 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
     false
 }
 
+/// Extensions covered by the generic JS/TS `.test.`/`.spec.`/`_test`
+/// filename conventions below -- every extension the JS/TS ecosystem's test
+/// runners (Jest, Vitest, Deno, Node's ESM/CJS-flavored `.mjs`/`.cjs`/
+/// `.mts`/`.cts`) recognize.
+const JS_TS_TEST_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
+
 /// Detects if a file path appears to be a test file
 ///
 /// This is a more lenient check than `is_test_symbol` - used for filtering
@@ -180,18 +188,10 @@ pub fn is_test_file(path: &str) -> bool {
         .unwrap_or(path);
     let name_lower = file_name.to_lowercase();
 
-    name_lower.starts_with("test_")
+    if name_lower.starts_with("test_")
         || name_lower.ends_with("_test.rs")
         || name_lower.ends_with("_test.py")
         || name_lower.ends_with("_test.go")
-        || name_lower.ends_with(".test.ts")
-        || name_lower.ends_with(".test.tsx")
-        || name_lower.ends_with(".test.js")
-        || name_lower.ends_with(".test.jsx")
-        || name_lower.ends_with(".spec.ts")
-        || name_lower.ends_with(".spec.tsx")
-        || name_lower.ends_with(".spec.js")
-        || name_lower.ends_with(".spec.jsx")
         || name_lower.ends_with("_spec.rb")
         // Java's test convention is PascalCase ("FooTest.java" /
         // "FooTestCase.java") and needs the original casing here: matched
@@ -199,24 +199,31 @@ pub fn is_test_file(path: &str) -> bool {
         // ends in "test" ("Latest.java").
         || file_name.ends_with("Test.java")
         || file_name.ends_with("TestCase.java")
+    {
+        return true;
+    }
+
+    // JS/TS family, covered generically across every extension: Jest/Vitest's
+    // `.test.<ext>`/`.spec.<ext>`, and Deno's `_test.<ext>`.
+    JS_TS_TEST_EXTENSIONS.iter().any(|ext| {
+        name_lower.ends_with(&format!(".test.{ext}"))
+            || name_lower.ends_with(&format!(".spec.{ext}"))
+            || name_lower.ends_with(&format!("_test.{ext}"))
+    })
 }
 
 fn is_test_directory(path_lower: &str) -> bool {
-    path_lower.contains("/test/")
-        || path_lower.contains("/tests/")
-        || path_lower.contains("/_test/")
-        || path_lower.contains("/__tests__/")
-        || path_lower.contains("/spec/")
-        || path_lower.contains("/specs/")
-        // A repo-relative path has no leading slash, so a top-level test
-        // directory (`tests/foo.rs`, not `/tests/foo.rs`) needs its own
-        // check -- `contains("/tests/")` alone never matches it.
-        || path_lower.starts_with("test/")
-        || path_lower.starts_with("tests/")
-        || path_lower.starts_with("_test/")
-        || path_lower.starts_with("__tests__/")
-        || path_lower.starts_with("spec/")
-        || path_lower.starts_with("specs/")
+    let Some((dir, _file_name)) = path_lower.rsplit_once('/') else {
+        // No directory component at all (a bare file name) -- nothing to
+        // check here, only `is_test_file`'s filename rules apply.
+        return false;
+    };
+    dir.split('/').any(|segment| {
+        matches!(
+            segment,
+            "test" | "tests" | "_test" | "__tests__" | "spec" | "specs"
+        ) || segment.starts_with("test_")
+    })
 }
 
 /// Extract test name from a test symbol
@@ -430,6 +437,51 @@ mod tests {
         assert!(is_test_file("FooTest.java"));
         assert!(is_test_file("com/example/FooTestCase.java"));
         assert!(!is_test_file("com/example/Latest.java"));
+    }
+
+    /// Regression: after issue #67 finding 2 anchored the filename rules to
+    /// the file name component, the per-extension list in `is_test_file`
+    /// only ever covered `.ts`/`.tsx`/`.js`/`.jsx` (`.test.`/`.spec.`) plus
+    /// hardcoded `_test.rs`/`_test.py`/`_test.go` -- so it stopped
+    /// recognizing the `_test.<ext>` (Deno) convention for any JS/TS
+    /// extension, and never covered the `.mjs`/`.cjs`/`.mts`/`.cts`
+    /// extensions at all. And the directory rule never recognized a path
+    /// segment that merely starts with `test_` (`test_helpers/`,
+    /// `test_utils/`), only the exact segments `test`/`tests`/etc.
+    #[test]
+    fn test_is_test_file_js_ts_family_and_test_prefixed_dirs() {
+        // Deno's `_test.<ext>` convention, for every JS/TS extension.
+        assert!(is_test_file("src/foo_test.ts"));
+        assert!(is_test_file("src/foo_test.js"));
+        assert!(is_test_file("src/foo_test.tsx"));
+        assert!(is_test_file("src/foo_test.jsx"));
+        assert!(is_test_file("src/foo_test.mjs"));
+        assert!(is_test_file("src/foo_test.cjs"));
+        assert!(is_test_file("src/foo_test.mts"));
+        assert!(is_test_file("src/foo_test.cts"));
+
+        // `.test.`/`.spec.` across the .mjs/.cjs/.mts/.cts extensions.
+        assert!(is_test_file("src/foo.test.mjs"));
+        assert!(is_test_file("src/foo.spec.mjs"));
+        assert!(is_test_file("src/foo.test.cjs"));
+        assert!(is_test_file("src/foo.spec.cjs"));
+        assert!(is_test_file("src/foo.test.mts"));
+        assert!(is_test_file("src/foo.spec.mts"));
+        assert!(is_test_file("src/foo.test.cts"));
+        assert!(is_test_file("src/foo.spec.cts"));
+
+        // A directory segment starting with `test_` (not just the exact
+        // segment `test`/`tests`) is a test directory.
+        assert!(is_test_file("test_helpers/foo.py"));
+        assert!(is_test_file("pkg/test_utils/mod.rs"));
+
+        // Must still be classified as code, not swept in by the widened
+        // rules above.
+        assert!(!is_test_file("src/latest_version.py"));
+        assert!(!is_test_file("src/contest_rules.py"));
+        assert!(!is_test_file("src/Latest.java"));
+        assert!(!is_test_file("src/attestation.rs"));
+        assert!(!is_test_file("src/protest/mod.rs"));
     }
 
     #[test]
