@@ -143,6 +143,23 @@ pub struct RepoOverview {
     pub last_indexed: Option<i64>,
     pub graph_version: Option<i64>,
     pub commit_sha: Option<String>,
+    pub scope_counts: ScopeCounts,
+}
+
+/// Per-scope file counts (issue #63), aggregated from the same query-time
+/// classifier `search::scope_allows` uses for the `search` method's `scope`
+/// param -- not a stored column. A file can satisfy more than one scope
+/// (e.g. `docs/build.py` is both `docs` and, unlike `code`, not mutually
+/// exclusive with it), so these counts are not guaranteed to sum to
+/// `RepoOverview::files`. Every field is always present, including zero --
+/// this is what makes an empty `tests` list elsewhere in a response
+/// interpretable rather than ambiguous.
+#[derive(Debug, Serialize, Clone, Copy, Default)]
+pub struct ScopeCounts {
+    pub code: i64,
+    pub tests: i64,
+    pub docs: i64,
+    pub examples: i64,
 }
 
 #[derive(Debug, Serialize)]

@@ -153,9 +153,8 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
 /// Detects if a file path appears to be a test file
 ///
 /// This is a more lenient check than `is_test_symbol` - used for filtering
-/// files from direct impact analysis results.
-///
-/// Reuses existing logic from `src/impact/layers/direct.rs`
+/// files from direct impact analysis results, and by the search-scope
+/// classifier (issue #61) to decide the `tests` scope.
 pub fn is_test_file(path: &str) -> bool {
     let path_lower = path.to_lowercase();
     path_lower.contains("/test/")
@@ -163,6 +162,16 @@ pub fn is_test_file(path: &str) -> bool {
         || path_lower.contains("/_test/")
         || path_lower.contains("/__tests__/")
         || path_lower.contains("/spec/")
+        || path_lower.contains("/specs/")
+        // A repo-relative path has no leading slash, so a top-level test
+        // directory (`tests/foo.rs`, not `/tests/foo.rs`) needs its own
+        // check -- `contains("/tests/")` alone never matches it.
+        || path_lower.starts_with("test/")
+        || path_lower.starts_with("tests/")
+        || path_lower.starts_with("_test/")
+        || path_lower.starts_with("__tests__/")
+        || path_lower.starts_with("spec/")
+        || path_lower.starts_with("specs/")
         || path_lower.contains("test_")
         || path_lower.contains("_test.")
         || path_lower.contains(".test.")
@@ -350,6 +359,24 @@ mod tests {
         assert!(is_test_file("src/main_test.go"));
         assert!(!is_test_file("src/core.py"));
         assert!(!is_test_file("lib/utils.js"));
+    }
+
+    /// Issue #61: this predicate is now also the search-scope classifier's
+    /// rule (`search::classify_path` used to have its own directory-segment
+    /// match that didn't require a leading slash). A repo-relative path like
+    /// `tests/common.rs` -- no leading slash, no `test_`/`_test` filename
+    /// marker -- must still be recognized as a test file, or unifying onto
+    /// this predicate would have silently narrowed what `search`'s `tests`
+    /// scope matches.
+    #[test]
+    fn test_is_test_file_bare_directory_prefix() {
+        assert!(is_test_file("tests/common.rs"));
+        assert!(is_test_file("test/helpers.py"));
+        assert!(is_test_file("__tests__/setup.js"));
+        assert!(is_test_file("spec/support.rb"));
+        assert!(is_test_file("specs/support.rb"));
+        assert!(!is_test_file("testimony.py"));
+        assert!(!is_test_file("attestation.rs"));
     }
 
     #[test]

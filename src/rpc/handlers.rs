@@ -455,7 +455,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 && meets_min_resolution(&edge.resolution_kind)
                 && let Some(source_id) = edge.source_symbol_id
                 && let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id)
-                && looks_like_test(&test_sym)
+                && is_test_symbol(&test_sym)
             {
                 calls_test_ids.insert(test_sym.id);
                 test_total += 1;
@@ -484,7 +484,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         // Tests reaching the symbol over RPC/HTTP/a channel (e.g. a gRPC
         // client test against a service impl) count too.
         for r in &incoming_cross {
-            if !looks_like_test(&r.symbol)
+            if !is_test_symbol(&r.symbol)
                 || !meets_min_resolution(&r.resolution_kind)
                 || !calls_test_ids.insert(r.symbol.id)
             {
@@ -510,6 +510,25 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     } else {
         (None, 0)
     };
+
+    // 7.5. Issue #68: an empty tests list means two different things -- "no
+    // test-scope files were ever indexed" or "tests exist but none reach
+    // this symbol". Only the first is worth a warning; the second is a
+    // genuine "no" and would be noise. Reuses #63's scope-count query, so
+    // this only runs when the tests section was requested and came back
+    // empty.
+    if sections.contains(&"tests".to_string())
+        && tests_total == 0
+        && !indexer
+            .db()
+            .has_test_scope_files(ctx.languages.as_deref(), ctx.graph_version)?
+    {
+        warnings.push(
+            "No test-scope files exist in this index, so the empty tests list doesn't mean \
+             this symbol is untested -- it means no tests were ever indexed."
+                .to_string(),
+        );
+    }
 
     // 8. Find implements (EXTENDS/IMPLEMENTS/INHERITS edges) - FIX #2
     let implements = if sections.contains(&"implements".to_string()) {
@@ -707,13 +726,6 @@ fn strip_redundant_symbol_run_metadata(mut value: Value) -> Value {
         }
     }
     value
-}
-
-fn looks_like_test(sym: &Symbol) -> bool {
-    sym.file_path.contains("test")
-        || sym.file_path.contains("spec")
-        || sym.name.starts_with("test_")
-        || sym.name.starts_with("Test")
 }
 
 /// Client side of each bridge pair (see `bridge_complement`): the kinds an
