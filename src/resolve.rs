@@ -71,24 +71,39 @@ pub fn resolve_symbol_with_candidates(
         SymbolRef::Query(query) => query,
     };
 
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("no symbol found for query: {}", query);
-    }
-
-    let candidates = find_symbol_candidates(db, trimmed, languages, graph_version)?;
-    if let Some(tied) = tied_candidates(trimmed, &candidates) {
+    let (trimmed, candidates) = trimmed_query_candidates(db, &query, languages, graph_version)?;
+    if let Some(tied) = tied_candidates(&trimmed, &candidates) {
         return Ok(QueryResolution::Ambiguous(tied));
     }
     let sym = resolve_after_candidates(db, &query, candidates, graph_version)?;
     Ok(QueryResolution::Found(Box::new(sym)))
 }
 
+/// Trims `query`, bails with a consistent "no symbol found" error if that
+/// leaves nothing, and returns `find_symbol_candidates`' ranked matches --
+/// the guard + lookup pair `resolve_by_query` and
+/// `resolve_symbol_with_candidates` both need before they diverge on how they
+/// handle a tie.
+fn trimmed_query_candidates(
+    db: &Db,
+    query: &str,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> Result<(String, Vec<Symbol>)> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("no symbol found for query: {}", query);
+    }
+    let candidates = find_symbol_candidates(db, trimmed, languages, graph_version)?;
+    Ok((trimmed.to_string(), candidates))
+}
+
 /// `find_symbols` lookup shared by `resolve_by_query` and
-/// `resolve_symbol_with_candidates`: tries the language filter first, then
-/// retries without one -- so a caller that only wants ranked candidates
-/// doesn't have to duplicate that retry, and a later fallback stage doesn't
-/// have to re-run the query to get the same candidates.
+/// `resolve_symbol_with_candidates` (via `trimmed_query_candidates`): tries
+/// the language filter first, then retries without one -- so a caller that
+/// only wants ranked candidates doesn't have to duplicate that retry, and a
+/// later fallback stage doesn't have to re-run the query to get the same
+/// candidates.
 fn find_symbol_candidates(
     db: &Db,
     trimmed: &str,
@@ -176,11 +191,7 @@ fn resolve_by_query(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<Symbol> {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("no symbol found for query: {}", query);
-    }
-    let candidates = find_symbol_candidates(db, trimmed, languages, graph_version)?;
+    let (_, candidates) = trimmed_query_candidates(db, query, languages, graph_version)?;
     resolve_after_candidates(db, query, candidates, graph_version)
 }
 

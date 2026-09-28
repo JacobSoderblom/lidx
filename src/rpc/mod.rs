@@ -283,6 +283,15 @@ struct OutlineParams {
 
 /// Params for `read_symbol`: fetch a symbol's exact source from disk.
 /// Exactly one of `qualname`, `query`, `qualnames` must be given.
+///
+/// Response fields beyond the echoed header (qualname/kind/path/start_line/
+/// end_line/stale/source): for a `qualnames` read, `omitted` lists qualnames
+/// that resolved but didn't fit `max_bytes` (whole symbols, never cut
+/// mid-body), `not_found` lists ones that didn't resolve to a real symbol,
+/// and `errors` lists ones that resolved but failed to read (e.g. a missing
+/// file), each as `{"qualname", "error"}`. For a single `qualname`/`query`
+/// read, `omitted: true` plus `size_bytes` replace `source` when the result
+/// would exceed `max_bytes`.
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ReadSymbolParams {
     /// Exact qualname of the symbol to read (exactly one of qualname/query/qualnames required)
@@ -298,13 +307,14 @@ struct ReadSymbolParams {
     /// Lines of surrounding context to include around the symbol's span, clamped
     /// at file bounds (default: 0)
     context_lines: Option<usize>,
-    /// Response byte budget (default: 30000). For a `qualnames` (multi-symbol)
-    /// read, symbols are added in request order until the next one would
-    /// exceed this, then it and every symbol after it are omitted whole and
-    /// listed by qualname under `omitted`. For a single `qualname`/`query`
-    /// read, if the resolved symbol's response would exceed this, only its
-    /// header fields are returned with `omitted: true` -- a symbol is never
-    /// cut mid-body.
+    /// Response byte budget (default: 30000), a hard cap on the whole
+    /// response including `omitted`/`not_found`/`errors`. For a `qualnames`
+    /// (multi-symbol) read, symbols are added in request order until the next
+    /// one would exceed this, then it and every symbol after it are omitted
+    /// whole and listed by qualname under `omitted`. For a single
+    /// `qualname`/`query` read, if the resolved symbol's response would
+    /// exceed this, only its header fields are returned with `omitted: true`
+    /// -- a symbol is never cut mid-body.
     max_bytes: Option<usize>,
 }
 

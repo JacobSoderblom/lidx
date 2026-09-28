@@ -168,6 +168,18 @@ fn markdown_outline_entries(
     entries
 }
 
+/// A file's whole-file `module` root symbol has no incoming `CONTAINS` edge
+/// of its own within that file (every extractor emits exactly one; see
+/// `symbol_outline_entries`'s doc comment) -- the one rule both
+/// `symbol_outline_entries` (hiding it as an outline entry) and
+/// `container_children` (denying it visible children) key off of, each from
+/// its own already-loaded edge data (a batch-built parent map vs. one
+/// symbol's own touching edges), so it's factored out here rather than
+/// inlined twice.
+fn is_file_root_module(kind: &str, has_incoming_contains_edge: bool) -> bool {
+    kind == "module" && !has_incoming_contains_edge
+}
+
 /// Builds `outline` entries for a code file from its indexed symbols, using
 /// existing `CONTAINS` edges for nesting (the same edges every extractor
 /// already emits for parent/child structure) rather than re-deriving nesting
@@ -228,7 +240,7 @@ fn symbol_outline_entries(
 
     let root_ids: HashSet<i64> = symbols
         .iter()
-        .filter(|s| s.kind == "module" && !parent_of.contains_key(&s.id))
+        .filter(|s| is_file_root_module(&s.kind, parent_of.contains_key(&s.id)))
         .map(|s| s.id)
         .collect();
 
@@ -273,16 +285,7 @@ fn symbol_outline_entries(
             .and_then(|parent_id| by_id.get(&parent_id))
             .map(|p| p.qualname.clone());
         let doc = symbol.docstring.as_deref().and_then(first_doc_line);
-        entries.push(OutlineEntry {
-            kind: symbol.kind.clone(),
-            name: symbol.name.clone(),
-            qualname: symbol.qualname.clone(),
-            signature: symbol.signature.clone(),
-            start_line: symbol.start_line,
-            end_line: symbol.end_line,
-            parent,
-            doc,
-        });
+        entries.push(OutlineEntry::from_symbol(symbol, parent, doc));
     }
     Ok(entries)
 }
@@ -412,47 +415,6 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
     Ok(serde_json::to_value(result)?)
 }
 
-/// Resolution outcome for a `read_symbol` `qualname`/`query` selector.
-enum ReadTarget {
-    Found(Box<Symbol>),
-    /// Multiple candidates tied for best match -- returning one would be a guess.
-    Ambiguous(Vec<Symbol>),
-}
-
-/// Resolves a `read_symbol` selector (either `qualname` or `query` text) the same
-/// way `explain_symbol` does: an exact qualname hit short-circuits, otherwise
-/// falls back to the fuzzy query path -- but via
-/// `resolve::resolve_symbol_with_candidates` rather than `resolve::resolve_symbol`,
-/// so a tie at the exact-name-match tier (`find_symbols`'s own top ranking
-/// criterion) comes back as `ReadTarget::Ambiguous` instead of a silent pick.
-/// Unlike `explain_symbol`, which takes the best match, `read_symbol` returns
-/// one symbol's exact source, so guessing between two equally-ranked candidates
-/// is costly. When there is no tie, resolution is the same `resolve::resolve_symbol`
-/// would produce -- both share the same candidates lookup rather than each
-/// running `find_symbols` on its own, so a non-ambiguous `read_symbol` query
-/// always resolves to the same symbol `explain_symbol` would, at the cost of
-/// one shared query rather than two.
-fn resolve_read_target(
-    db: &crate::db::Db,
-    qualname: Option<&str>,
-    query: Option<&str>,
-    graph_version: i64,
-) -> Result<ReadTarget> {
-    let Some(text) = qualname.or(query) else {
-        anyhow::bail!("resolve_read_target requires a qualname or query");
-    };
-    let sym_ref = match qualname {
-        Some(qn) => crate::resolve::SymbolRef::Qualname(qn.to_string()),
-        None => crate::resolve::SymbolRef::Query(text.to_string()),
-    };
-    match crate::resolve::resolve_symbol_with_candidates(db, sym_ref, None, graph_version)? {
-        crate::resolve::QueryResolution::Found(symbol) => Ok(ReadTarget::Found(symbol)),
-        crate::resolve::QueryResolution::Ambiguous(candidates) => {
-            Ok(ReadTarget::Ambiguous(candidates))
-        }
-    }
-}
-
 /// Prefixes each line of `text` with its real file line number (1-based, starting
 /// at `start_line`), so a caller's follow-up edits/references use correct locations.
 fn number_source_lines(text: &str, start_line: i64) -> String {
@@ -474,6 +436,11 @@ fn number_source_lines(text: &str, start_line: i64) -> String {
 /// parentless entries instead of nested under it), so skeletonizing that root
 /// symbol itself currently returns no children here -- `build_symbol_entry`
 /// falls back to a normal read in that case.
+///
+/// Fetches each child by id one at a time (`get_symbol_by_id` in the loop
+/// below) rather than in a single batch: `Db` has no batch-by-ids lookup
+/// (only by file or by qualname), and adding one just for this N+1 wasn't
+/// judged worth it here.
 fn container_children(
     db: &crate::db::Db,
     container: &Symbol,
@@ -481,16 +448,13 @@ fn container_children(
 ) -> Result<Vec<OutlineEntry>> {
     let touching = db.edges_for_symbol(container.id, None, graph_version)?;
 
-    // The whole-file `module` root has no incoming `CONTAINS` edge of its own
-    // within its file -- `symbol_outline_entries` hides it as a container, so
-    // its direct children come back parentless instead of nested under it
-    // (see this function's doc comment). Mirror that here: skeletonizing the
-    // root itself has no visible children.
-    let is_root_module = container.kind == "module"
-        && !touching
-            .iter()
-            .any(|e| e.kind == "CONTAINS" && e.target_symbol_id == Some(container.id));
-    if is_root_module {
+    // Mirror `symbol_outline_entries`'s file-root-module rule (see
+    // `is_file_root_module`'s doc comment): skeletonizing the root itself has
+    // no visible children.
+    let has_incoming_contains = touching
+        .iter()
+        .any(|e| e.kind == "CONTAINS" && e.target_symbol_id == Some(container.id));
+    if is_file_root_module(&container.kind, has_incoming_contains) {
         return Ok(Vec::new());
     }
 
@@ -516,16 +480,11 @@ fn container_children(
             continue;
         }
         let doc = child.docstring.as_deref().and_then(first_doc_line);
-        entries.push(OutlineEntry {
-            kind: child.kind,
-            name: child.name,
-            qualname: child.qualname,
-            signature: child.signature,
-            start_line: child.start_line,
-            end_line: child.end_line,
-            parent: Some(container.qualname.clone()),
+        entries.push(OutlineEntry::from_symbol(
+            &child,
+            Some(container.qualname.clone()),
             doc,
-        });
+        ));
     }
     // `edges_for_symbol` orders by edge id, not source position -- sort by
     // start_line to match `symbol_outline_entries`' source-order output.
@@ -630,20 +589,7 @@ fn build_source_response(
 
     let source = number_source_lines(&source_text, numbering_start_line);
 
-    Ok(ReadSymbolEntry {
-        qualname: symbol.qualname.clone(),
-        kind: symbol.kind.clone(),
-        path: symbol.file_path.clone(),
-        start_line: symbol.start_line,
-        end_line: symbol.end_line,
-        stale,
-        source: Some(source),
-        skeleton: None,
-        children: None,
-        omitted: None,
-        size_bytes: None,
-        next_hops: Vec::new(),
-    })
+    Ok(ReadSymbolEntry::source(symbol, stale, source))
 }
 
 /// Builds one `read_symbol` result for an already-resolved, already-validated
@@ -658,7 +604,7 @@ fn build_symbol_entry(
     skeleton: bool,
     context_lines: usize,
     graph_version: i64,
-) -> Result<Value> {
+) -> Result<ReadSymbolEntry> {
     let repo_root = indexer.repo_root().clone();
     let full_path = repo_root.join(&symbol.file_path);
     if !full_path.is_file() {
@@ -695,20 +641,7 @@ fn build_symbol_entry(
                     "description": format!("read_symbol fetches the full source of '{}'", child.qualname),
                 }));
             }
-            ReadSymbolEntry {
-                qualname: symbol.qualname.clone(),
-                kind: symbol.kind.clone(),
-                path: symbol.file_path.clone(),
-                start_line: symbol.start_line,
-                end_line: symbol.end_line,
-                stale,
-                source: None,
-                skeleton: Some(true),
-                children: Some(children),
-                omitted: None,
-                size_bytes: None,
-                next_hops: Vec::new(),
-            }
+            ReadSymbolEntry::skeleton(symbol, stale, children)
         }
     } else {
         build_source_response(symbol, &content, context_lines, stale)?
@@ -725,7 +658,7 @@ fn build_symbol_entry(
         }));
     }
     entry.next_hops = next_hops;
-    Ok(serde_json::to_value(entry)?)
+    Ok(entry)
 }
 
 /// Assembles the `read_symbol` `qualnames` response object from its four
@@ -733,7 +666,7 @@ fn build_symbol_entry(
 /// greedy pass and the exact-trim pass below need to -- one place so they
 /// can't drift.
 fn build_multi_response(
-    symbols: &[Value],
+    symbols: &[ReadSymbolEntry],
     omitted: &[String],
     not_found: &[String],
     errors: &[Value],
@@ -777,7 +710,7 @@ fn handle_read_symbol_multi(
     max_bytes: usize,
     graph_version: i64,
 ) -> Result<Value> {
-    let mut symbols: Vec<Value> = Vec::new();
+    let mut symbols: Vec<ReadSymbolEntry> = Vec::new();
     let mut omitted: Vec<String> = Vec::new();
     let mut not_found: Vec<String> = Vec::new();
     let mut errors: Vec<Value> = Vec::new();
@@ -830,9 +763,7 @@ fn handle_read_symbol_multi(
             > max_bytes
     {
         let removed = symbols.pop().expect("just checked symbols is non-empty");
-        if let Some(qn) = removed.get("qualname").and_then(|v| v.as_str()) {
-            omitted.insert(0, qn.to_string());
-        }
+        omitted.insert(0, removed.qualname);
         response = build_multi_response(&symbols, &omitted, &not_found, &errors);
     }
 
@@ -882,15 +813,25 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         );
     }
 
-    let resolution = resolve_read_target(
-        indexer.db(),
-        params.qualname.as_deref(),
-        params.query.as_deref(),
-        graph_version,
-    )?;
+    // Resolves the same way `explain_symbol` does: an exact qualname hit
+    // short-circuits, otherwise falls back to the fuzzy query path -- but via
+    // `resolve_symbol_with_candidates` rather than `resolve_symbol`, so a tie
+    // at the exact-name-match tier (`find_symbols`'s own top ranking
+    // criterion) comes back as `Ambiguous` instead of a silent pick. Unlike
+    // `explain_symbol`, which takes the best match, `read_symbol` returns one
+    // symbol's exact source, so guessing between two equally-ranked
+    // candidates is costly. Exactly one of qualname/query is `Some` here --
+    // `qualnames` already returned above, and exactly one selector was
+    // validated at the top of this function.
+    let sym_ref = match &params.qualname {
+        Some(qn) => crate::resolve::SymbolRef::Qualname(qn.clone()),
+        None => crate::resolve::SymbolRef::Query(params.query.clone().unwrap_or_default()),
+    };
+    let resolution =
+        crate::resolve::resolve_symbol_with_candidates(indexer.db(), sym_ref, None, graph_version)?;
 
     let symbol = match resolution {
-        ReadTarget::Ambiguous(candidates) => {
+        crate::resolve::QueryResolution::Ambiguous(candidates) => {
             let query_text = params
                 .qualname
                 .as_deref()
@@ -906,7 +847,7 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
                 "candidates": candidates_json,
             }));
         }
-        ReadTarget::Found(symbol) => symbol,
+        crate::resolve::QueryResolution::Found(symbol) => symbol,
     };
 
     if symbol.is_external() {
@@ -930,26 +871,12 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         .min(200_000);
     let entry_size = serde_json::to_string(&entry).map(|s| s.len()).unwrap_or(0);
     if entry_size > max_bytes {
-        let stale = entry
-            .get("stale")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let stale = entry.stale;
         let header = ReadSymbolEntry {
-            qualname: symbol.qualname.clone(),
-            kind: symbol.kind.clone(),
-            path: symbol.file_path.clone(),
-            start_line: symbol.start_line,
-            end_line: symbol.end_line,
-            stale,
-            source: None,
-            skeleton: None,
-            children: None,
-            omitted: Some(true),
-            size_bytes: Some(entry_size),
             next_hops: vec![
                 json!({
                     "method": "read_symbol",
-                    "params": {"qualname": symbol.qualname, "skeleton": true},
+                    "params": {"qualname": symbol.qualname.clone(), "skeleton": true},
                     "description": format!(
                         "'{}' is too large to read in full ({} bytes > {} budget) -- read_symbol with skeleton:true returns just its children's signatures (containers only)",
                         symbol.qualname, entry_size, max_bytes
@@ -957,41 +884,56 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
                 }),
                 json!({
                     "method": "outline",
-                    "params": {"path": symbol.file_path},
+                    "params": {"path": symbol.file_path.clone()},
                     "description": "Outline the file to pick a narrower symbol to read",
                 }),
             ],
+            ..ReadSymbolEntry::omitted_header(&symbol, stale, entry_size)
         };
         return Ok(serde_json::to_value(header)?);
     }
 
-    Ok(entry)
+    Ok(serde_json::to_value(entry)?)
 }
 
 #[cfg(test)]
-mod resolve_read_target_tests {
+mod parse_markdown_headings_tests {
     use super::*;
-    use tempfile::TempDir;
 
-    /// `resolve_read_target` is only ever called (from `handle_read_symbol`)
-    /// after validating exactly one of qualname/query/qualnames was given, so
-    /// this invariant violation is unreachable through the public RPC seam --
-    /// this test calls the private function directly to exercise it, the way
-    /// a future refactor that drops that upstream guard would.
     #[test]
-    fn errors_instead_of_panicking_when_neither_qualname_nor_query_given() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("m.py"), "def foo():\n    return 1\n").unwrap();
-        let mut indexer =
-            Indexer::new(root.to_path_buf(), root.join(".lidx").join(".lidx.sqlite")).unwrap();
-        indexer.reindex().unwrap();
-        let graph_version = indexer.db().current_graph_version().unwrap();
+    fn hash_lines_inside_fenced_code_blocks_are_not_headings() {
+        let md = "# Title\n\n```\n# not a heading\n```\n\n## Real Heading\n";
+        let headings = parse_markdown_headings(md);
+        let texts: Vec<&str> = headings.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(texts, vec!["Title", "Real Heading"]);
+    }
 
-        let result = resolve_read_target(indexer.db(), None, None, graph_version);
-        assert!(
-            result.is_err(),
-            "resolve_read_target with neither qualname nor query must return an error, not panic"
-        );
+    #[test]
+    fn trailing_hash_not_preceded_by_space_is_kept_as_real_text() {
+        let headings = parse_markdown_headings("## F#\n");
+        assert_eq!(headings.len(), 1);
+        assert_eq!(headings[0].text, "F#");
+        assert_eq!(headings[0].level, 2);
+    }
+
+    #[test]
+    fn trailing_hash_run_preceded_by_space_is_stripped() {
+        let headings = parse_markdown_headings("## Closed Heading ##\n");
+        assert_eq!(headings.len(), 1);
+        assert_eq!(headings[0].text, "Closed Heading");
+    }
+
+    #[test]
+    fn skipped_heading_levels_are_recorded_verbatim() {
+        // parse_markdown_headings is flat (level/text/start_line only) --
+        // nesting a h1-straight-to-h3 skip under the nearest actual ancestor
+        // is markdown_outline_entries' job, not this function's; this just
+        // proves the skipped level itself is preserved, not coerced.
+        let headings = parse_markdown_headings("# One\n### Three\n");
+        assert_eq!(headings.len(), 2);
+        assert_eq!(headings[0].level, 1);
+        assert_eq!(headings[0].text, "One");
+        assert_eq!(headings[1].level, 3);
+        assert_eq!(headings[1].text, "Three");
     }
 }

@@ -93,6 +93,28 @@ pub struct OutlineEntry {
     pub doc: Option<String>,
 }
 
+impl OutlineEntry {
+    /// Builds an outline entry from an indexed `Symbol`'s own fields, under
+    /// `parent`'s qualname (`None` for a top-level entry) with a
+    /// caller-computed `doc` (each caller derives it from `docstring`
+    /// differently: a fresh borrow vs. an already-owned `Symbol`) -- the field
+    /// mapping shared by every symbol-derived outline/skeleton-children entry.
+    /// A Markdown heading entry has no backing `Symbol` and builds its own
+    /// literal instead.
+    pub fn from_symbol(symbol: &Symbol, parent: Option<String>, doc: Option<String>) -> Self {
+        OutlineEntry {
+            kind: symbol.kind.clone(),
+            name: symbol.name.clone(),
+            qualname: symbol.qualname.clone(),
+            signature: symbol.signature.clone(),
+            start_line: symbol.start_line,
+            end_line: symbol.end_line,
+            parent,
+            doc,
+        }
+    }
+}
+
 /// Response for `outline`: a compact, no-bodies skeleton of an indexed file.
 #[derive(Debug, Serialize, Clone)]
 pub struct OutlineResult {
@@ -131,6 +153,55 @@ pub struct ReadSymbolEntry {
     pub size_bytes: Option<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub next_hops: Vec<Value>,
+}
+
+impl ReadSymbolEntry {
+    /// Header fields shared by every `read_symbol` response shape, with every
+    /// payload field defaulted -- each of the three constructors below fills
+    /// in only the payload fields its shape uses.
+    fn header(symbol: &Symbol, stale: bool) -> Self {
+        ReadSymbolEntry {
+            qualname: symbol.qualname.clone(),
+            kind: symbol.kind.clone(),
+            path: symbol.file_path.clone(),
+            start_line: symbol.start_line,
+            end_line: symbol.end_line,
+            stale,
+            source: None,
+            skeleton: None,
+            children: None,
+            omitted: None,
+            size_bytes: None,
+            next_hops: Vec::new(),
+        }
+    }
+
+    /// A full source read: `source` filled in, no skeleton/omitted payload.
+    pub fn source(symbol: &Symbol, stale: bool, source: String) -> Self {
+        ReadSymbolEntry {
+            source: Some(source),
+            ..Self::header(symbol, stale)
+        }
+    }
+
+    /// A container's skeleton: `children`'s signatures/line ranges, no body.
+    pub fn skeleton(symbol: &Symbol, stale: bool, children: Vec<OutlineEntry>) -> Self {
+        ReadSymbolEntry {
+            skeleton: Some(true),
+            children: Some(children),
+            ..Self::header(symbol, stale)
+        }
+    }
+
+    /// An over-budget stub: header fields only, plus `omitted: true` and the
+    /// actual (over-budget) size -- never a partial/cut source.
+    pub fn omitted_header(symbol: &Symbol, stale: bool, size_bytes: usize) -> Self {
+        ReadSymbolEntry {
+            omitted: Some(true),
+            size_bytes: Some(size_bytes),
+            ..Self::header(symbol, stale)
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -280,8 +351,8 @@ pub struct RpcSuggestion {
     pub method: String,
     pub params: Value,
     // Named `description` (not `label`) to match every other handler's
-    // hand-rolled `next_hops` entries (see e.g. explain_symbol/outline/
-    // read_symbol in `src/rpc/handlers.rs`).
+    // hand-rolled `next_hops` entries (see e.g. explain_symbol in
+    // `src/rpc/handlers.rs`, outline/read_symbol in `src/rpc/reading.rs`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
