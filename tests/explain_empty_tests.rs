@@ -74,9 +74,7 @@ fn explain_symbol_explains_empty_tests_when_index_has_no_test_scope_files() {
 
     let warnings = warnings(&result);
     assert!(
-        warnings
-            .iter()
-            .any(|w| w.to_lowercase().contains("test")),
+        warnings.iter().any(|w| w.to_lowercase().contains("test")),
         "expected a warning explaining the empty tests list when the index holds no \
          test-scope files, got warnings: {warnings:?} (full response: {result})"
     );
