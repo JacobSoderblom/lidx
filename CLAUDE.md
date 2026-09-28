@@ -20,7 +20,7 @@ cargo test <test_name>
 cargo test --test <test_file_name>
 
 # Lint
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 
 # Format
 cargo fmt

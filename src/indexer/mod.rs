@@ -1,4 +1,5 @@
-use crate::db::Db;
+use crate::db::resolver;
+use crate::db::{Db, FileRecord};
 use crate::indexer::extract::ExtractedFile;
 use crate::metrics;
 use crate::model::{ChangedFilesResult, IndexStats};
@@ -46,6 +47,22 @@ pub struct Indexer {
     graph_version: i64,
     commit_sha: Option<String>,
     extractors: HashMap<String, Box<dyn extract::LanguageExtractor>>,
+}
+
+/// `Indexer::index_scanned_file_symbols`'s result: one file's extracted
+/// content, its `files.id`, its post-diff symbol rows, (issue #77)
+/// `diff.added`'s qualnames — `sync_abs_paths` uses that field to re-check
+/// edges elsewhere that may have just become ambiguous -- and (issue #79)
+/// whether `diff.deleted` was non-empty, so `sync_abs_paths` can tell
+/// `Db::retry_unresolved_references` a symbol went away even when no whole
+/// file did (an in-place edit that renames/removes a definition, not just
+/// `delete_file`, can unblock a stored `Ambiguous` reference).
+struct ScannedFileSymbols {
+    extracted: ExtractedFile,
+    file_id: i64,
+    symbols: Vec<crate::model::Symbol>,
+    added: Vec<String>,
+    any_deleted: bool,
 }
 
 impl Indexer {
@@ -176,29 +193,50 @@ impl Indexer {
         let mut stats = SyncStats::default();
         let mut touched = false;
         let mut indexed_files = Vec::new();
+        // Phase 1: deletions handled inline, but every file that needs
+        // (re)indexing only has its symbols extracted and its
+        // `visibility` settled here — edge resolution is deferred to
+        // phase 2 below, after every file in this batch has been marked.
+        // A cross-file guarded-fallback visibility check must never see a
+        // later-in-this-batch file's symbol as still unmarked (NULL,
+        // meaning "unrestricted") just because that file hasn't been
+        // synced yet — same reasoning as `reindex`'s two-pass split
+        // (issue #75 follow-up).
+        let mut pending: Vec<(
+            scan::ScannedFile,
+            ExtractedFile,
+            i64,
+            Vec<crate::model::Symbol>,
+        )> = Vec::new();
+        // Issue #77: qualnames of every symbol this batch adds —
+        // an edge anywhere, even in a file this batch never touches, that
+        // is already bound by one of these names must be re-checked after
+        // the sync, not left stale, since the addition may have made that
+        // name ambiguous. See `Db::unbind_edges_for_qualnames`.
+        let mut added_qualnames: HashSet<String> = HashSet::new();
+        // Issue #79: whether this batch removed any symbol -- a whole file
+        // (`stats.deleted`, below) or just one definition an in-place edit
+        // renamed/removed. Either can turn a stored `Ambiguous` reference
+        // unique again, which `Db::retry_unresolved_references`'s
+        // insertion-only watermark would otherwise never notice.
+        let mut any_symbols_deleted = false;
         for path in paths {
             let rel_path = match crate::util::normalize_rel_path(&self.repo_root, path) {
                 Ok(value) => value,
                 Err(_) => continue,
             };
             if !path.exists() {
-                if let Some(existing) = self.db.get_file_by_path(&rel_path)? {
-                    self.db
-                        .delete_symbols_edges_for_file(existing.id, self.graph_version)?;
-                    self.db.mark_file_deleted(&rel_path, self.graph_version)?;
-                }
+                self.delete_file(&rel_path)?;
                 stats.deleted += 1;
+                any_symbols_deleted = true;
                 touched = true;
                 continue;
             }
             let Some(scanned) = scan::scan_path(&self.repo_root, path)? else {
                 if !path.exists() {
-                    if let Some(existing) = self.db.get_file_by_path(&rel_path)? {
-                        self.db
-                            .delete_symbols_edges_for_file(existing.id, self.graph_version)?;
-                        self.db.mark_file_deleted(&rel_path, self.graph_version)?;
-                    }
+                    self.delete_file(&rel_path)?;
                     stats.deleted += 1;
+                    any_symbols_deleted = true;
                     touched = true;
                 }
                 continue;
@@ -209,20 +247,37 @@ impl Indexer {
                 stats.skipped += 1;
                 continue;
             }
-            match self.index_scanned_file(&scanned) {
-                Ok((symbols, edges)) => {
-                    stats.indexed += 1;
-                    stats.symbols += symbols;
-                    stats.edges += edges;
-                    touched = true;
+            match self.index_scanned_file_symbols(&scanned) {
+                Ok(Some(ScannedFileSymbols {
+                    extracted,
+                    file_id,
+                    symbols,
+                    added,
+                    any_deleted,
+                })) => {
+                    added_qualnames.extend(added);
+                    any_symbols_deleted |= any_deleted;
                     indexed_files.push(scanned.clone());
+                    pending.push((scanned, extracted, file_id, symbols));
                 }
+                Ok(None) => {}
                 Err(err) => {
                     eprintln!("index error {}: {err}", scanned.rel_path);
                     stats.errors += 1;
                 }
             }
         }
+        // Phase 2: resolve edges for every file in this batch, now that
+        // every file's visibility is settled.
+        for (_scanned, extracted, file_id, symbols) in &pending {
+            let (symbol_count, edge_count) =
+                self.resolve_file_edges(*file_id, extracted, symbols)?;
+            stats.indexed += 1;
+            stats.symbols += symbol_count;
+            stats.edges += edge_count;
+            touched = true;
+        }
+
         if !indexed_files.is_empty() {
             let xref_edges = xref::link_cross_language_refs(
                 &mut self.db,
@@ -233,20 +288,29 @@ impl Indexer {
             stats.edges += xref_edges;
         }
         if touched {
-            // Repair dangling symbol ids: edges in unchanged files may still point at
-            // old rowids for symbols that were renamed/re-signed in the files we just
-            // synced. NULL them out so the subsequent re-resolution pass can fix them.
-            let dangling = self.db.repair_dangling_symbol_ids(self.graph_version)?;
-            if dangling > 0 {
-                eprintln!(
-                    "lidx: nullified {dangling} dangling symbol id(s) after incremental sync"
-                );
+            // Issue #77: an edge outside this batch already bound to a
+            // qualname this batch just gave a second (same or differently
+            // kinded) symbol must be re-checked, not left pointing at the
+            // old candidate — see `added_qualnames` above.
+            if !added_qualnames.is_empty() {
+                self.db
+                    .unbind_edges_for_qualnames(&added_qualnames, self.graph_version)?;
             }
-            // Re-run null-target resolution so newly-NULLed edges get re-linked by qualname.
-            let resolved = self.db.resolve_null_target_edges(self.graph_version)?;
-            if resolved > 0 {
-                eprintln!("lidx: resolved {resolved} edge(s) after incremental sync");
-            }
+
+            // Issue #78/#79: reconcile first, so any edge this batch just
+            // left with a NULL target and no store row (a forward reference
+            // into a file synced earlier in this same batch, or one
+            // `unbind_edges_for_qualnames` just cleared) gets an immediate
+            // shot at every symbol that exists so far -- not gated by the
+            // retry watermark -- before falling to a store row. Then retry
+            // stored rows a newly inserted symbol (or, per `any_symbols_deleted`
+            // below, a deletion that turned a stored `Ambiguous` row unique
+            // again) might satisfy. See `Db::repair_unresolved`.
+            self.db.repair_unresolved(
+                self.graph_version,
+                any_symbols_deleted,
+                "incremental sync",
+            )?;
 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -265,9 +329,9 @@ impl Indexer {
         self.commit_sha = commit_sha;
         let scanned = scan::scan_repo_with_options(&self.repo_root, self.scan_options)?;
         let existing = self.db.list_files(previous_graph_version)?;
-        let mut existing_map: HashMap<String, String> = HashMap::new();
+        let mut existing_map: HashMap<String, FileRecord> = HashMap::new();
         for record in existing {
-            existing_map.insert(record.path, record.hash);
+            existing_map.insert(record.path.clone(), record);
         }
 
         let mut seen = HashSet::new();
@@ -286,9 +350,29 @@ impl Indexer {
         let mut batch_writer = batch::BatchWriter::with_defaults();
         let mut file_data: Vec<(scan::ScannedFile, ExtractedFile, differ::SymbolDiff, i64)> =
             Vec::new();
+        // Files whose content hash matches `previous_graph_version`: carried forward
+        // (symbols + edges copied via SQL) below instead of being re-parsed.
+        let mut carry_forward_ids: Vec<i64> = Vec::new();
 
         for file in &scanned {
             seen.insert(file.rel_path.clone());
+
+            if let Some(existing_record) = existing_map.get(&file.rel_path)
+                && existing_record.hash == file.hash
+            {
+                // Unchanged: skip the parse (tree-sitter + symbol extraction is the
+                // expensive part) and carry the file's rows forward further down.
+                self.db.upsert_file(
+                    &file.rel_path,
+                    &file.hash,
+                    &file.language,
+                    file.size,
+                    file.modified,
+                )?;
+                carry_forward_ids.push(existing_record.id);
+                stats.skipped += 1;
+                continue;
+            }
 
             // Extract symbols
             let source = match crate::util::read_to_string(&file.abs_path) {
@@ -353,8 +437,32 @@ impl Indexer {
             self.db.update_files_symbols_batch(&batch)?;
         }
 
+        // Mark every file's private/unexported symbols in its own pass,
+        // before any edge in this reindex is resolved. Must not be
+        // interleaved with the edge loop below: a cross-file candidate's
+        // `visibility` has to be settled repo-wide first, or a file
+        // processed early would see a later file's private symbols as
+        // still-NULL (unrestricted) and bind to them (issue #75 follow-up).
+        for (_file, extracted, _diff, file_id) in &file_data {
+            self.db.set_private_symbols(
+                *file_id,
+                self.graph_version,
+                &extracted.private_qualnames,
+            )?;
+        }
+
+        // Issue #79: whether this reindex removed any symbol -- a whole
+        // file (`stats.deleted`, set below by the not-`seen` loop) or just
+        // one definition a re-parsed file's diff dropped. Either can turn a
+        // stored `Ambiguous` reference unique again, which
+        // `Db::retry_unresolved_references`'s insertion-only watermark
+        // would otherwise never notice -- see `sync_abs_paths`'s matching
+        // flag.
+        let mut any_symbols_deleted = false;
+
         // Now process edges for all files
         for (file, extracted, diff, file_id) in file_data {
+            any_symbols_deleted |= !diff.deleted.is_empty();
             // Delete existing edges
             self.db.delete_edges_for_file(file_id, self.graph_version)?;
 
@@ -362,10 +470,7 @@ impl Indexer {
             let symbols = self
                 .db
                 .get_symbols_for_file(&file.rel_path, self.graph_version)?;
-            let mut symbol_map = HashMap::new();
-            for symbol in &symbols {
-                symbol_map.insert(symbol.qualname.clone(), symbol.id);
-            }
+            let symbol_map = resolver::build_exact_symbol_map(&symbols);
 
             // Insert edges
             let edges_count = self.db.insert_edges(
@@ -388,6 +493,21 @@ impl Indexer {
             stats.edges += edges_count;
         }
 
+        // Carry forward unchanged files' symbols/edges into the new graph version.
+        // Must run after the fresh-file edge loop above, so cross-file edge targets
+        // that land in a re-parsed file already have their new-version symbol row.
+        if !carry_forward_ids.is_empty() {
+            let (carried_symbols, carried_edges) = self.db.carry_forward_files(
+                &carry_forward_ids,
+                previous_graph_version,
+                self.graph_version,
+            )?;
+            eprintln!(
+                "lidx: carried forward {} unchanged file(s): {carried_symbols} symbol(s), {carried_edges} edge(s)",
+                carry_forward_ids.len()
+            );
+        }
+
         for path in existing_map.keys() {
             if !seen.contains(path) {
                 self.db.mark_file_deleted(path, self.graph_version)?;
@@ -399,16 +519,120 @@ impl Indexer {
             xref::link_cross_language_refs(&mut self.db, &scanned, true, self.graph_version)?;
         stats.edges += xref_edges;
 
+        // Repair pass: re-resolve NULL edge targets by qualname, same as the
+        // incremental (sync_abs_paths) path already does. Runs after both the
+        // fresh-file edge loop and carry_forward_files (and after xref, so
+        // XREF/ROUTE edges get the same treatment) so every current-version
+        // symbol this reindex will produce already exists to resolve against;
+        // runs before prune_and_maybe_vacuum so nothing is wasted repairing
+        // rows about to be deleted.
+        //
+        // Gate: always run when this reindex actually indexed or deleted a file (cheapest
+        // check, and those runs already pay far more than the repair pass costs). On a
+        // purely-carried-forward run (nothing indexed or deleted), fall back to a COUNT of
+        // this version's NULL-target edges -- issue #79 means that's a Bridge Edge kind
+        // row exclusively (every other kind's unresolved reference lives only in the
+        // `unresolved_references` store, which carry-forward always copies as-is, so it
+        // can't develop this kind of hole; see `Db::carry_forward_files`). That COUNT is
+        // what distinguishes a truly idle warm reindex (nothing to do, stay fast) from one
+        // carrying forward a degraded Bridge Edge kind: carry_forward_files re-links every
+        // edge by stable_id into the new version and leaves target_symbol_id NULL wherever
+        // that lookup misses (a deleted/renamed target, or a target manually NULLed out by
+        // outside SQL), so a degraded index's holes are visible in the *new* graph_version's
+        // edge rows even when zero files changed. Without this fallback those NULLs — and
+        // the stale target_qualname strings that ride along with them, e.g. after a callee
+        // moves modules — propagate forward untouched on every subsequent reindex, which is
+        // exactly the self-healing gap this exists to close.
+        //
+        // The COUNT alone isn't enough to gate on, though: real codebases always have edges
+        // into external/stdlib symbols (`std::fs::remove_dir_all`, `serde_json::from_str`, a
+        // JS `console.log`) that have a target_qualname but no matching local symbol, so they
+        // are — correctly — never resolved and never will be. Those sit in the COUNT on every
+        // single run, so a bare "count > 0" would make repair run on every warm reindex of any
+        // real repo, not just a degraded one (measured: +~1.2s on this repo, every time —
+        // exactly the regression this function must not cause). Instead compare against the
+        // floor recorded the last time repair actually ran (`unresolved_edge_floor` meta,
+        // absent = 0, i.e. conservative on a never-repaired-under-this-binary db): only a
+        // count *above* that floor — something that used to resolve and no longer does — is
+        // new repair work.
+        let unresolved_edge_count = |db: &Db, graph_version: i64| -> Result<i64> {
+            Ok(db.read_conn()?.query_row(
+                "SELECT COUNT(*) FROM edges
+                 WHERE graph_version = ?
+                   AND target_symbol_id IS NULL
+                   AND target_qualname IS NOT NULL",
+                rusqlite::params![graph_version],
+                |row| row.get(0),
+            )?)
+        };
+        let needs_repair = if stats.indexed > 0 || stats.deleted > 0 {
+            true
+        } else {
+            let unresolved = unresolved_edge_count(&self.db, self.graph_version)?;
+            let floor = self.db.get_meta_i64("unresolved_edge_floor")?.unwrap_or(0);
+            unresolved > floor
+        };
+        if needs_repair {
+            // Issue #78/#79: reconcile first -- catches an edge that went
+            // NULL only after it was first resolved (a deleted/renamed
+            // target, or `unbind_edges_for_qualnames`), or a
+            // `carry_forward_files` edge whose store row it couldn't carry
+            // forward (an endpoint with no `stable_id` match) -- so it gets
+            // a shot at every symbol that exists so far before falling to a
+            // store row. Then targeted, store-driven retry (see the
+            // matching call in `sync_abs_paths`). `stats.deleted` (whole
+            // files) is now final, so fold it in alongside
+            // `any_symbols_deleted` (definitions a re-parsed file's diff
+            // dropped in place) -- see `Db::repair_unresolved`.
+            self.db.repair_unresolved(
+                self.graph_version,
+                any_symbols_deleted || stats.deleted > 0,
+                "reindex",
+            )?;
+
+            let remaining = unresolved_edge_count(&self.db, self.graph_version)?;
+            self.db.set_meta_i64("unresolved_edge_floor", remaining)?;
+        }
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
         self.db.set_meta_i64("last_indexed", now)?;
+
+        // Reclaim rows from graph versions this reindex just aged out. Safe to
+        // run now: this reindex's own carry-forward already read everything it
+        // needed from `previous_graph_version` above.
+        match self.db.prune_and_maybe_vacuum() {
+            Ok((symbols_pruned, edges_pruned, versions_pruned, vacuumed)) => {
+                if versions_pruned > 0 {
+                    eprintln!(
+                        "lidx: pruned {versions_pruned} old graph version(s): {symbols_pruned} symbol row(s), {edges_pruned} edge row(s){}",
+                        if vacuumed {
+                            ", reclaimed space via VACUUM"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+            Err(err) => eprintln!("Warning: graph version prune failed: {err}"),
+        }
+
         stats.duration_ms = started.elapsed().as_millis() as u64;
         Ok(stats)
     }
 
-    fn index_scanned_file(&mut self, file: &scan::ScannedFile) -> Result<(usize, usize)> {
+    /// Phase 1 of syncing one file: extract, diff, write its symbols, and
+    /// settle its `visibility` marks. Deliberately stops short of edge
+    /// resolution (`resolve_file_edges`) — see `sync_abs_paths`'s doc for
+    /// why the two are split across a whole batch rather than done
+    /// per-file. `Ok(None)` means the file was skipped (too large), not
+    /// an error.
+    fn index_scanned_file_symbols(
+        &mut self,
+        file: &scan::ScannedFile,
+    ) -> Result<Option<ScannedFileSymbols>> {
         // Phase 6: Check file size before reading (skip very large files)
         const MAX_FILE_SIZE_MB: u64 = 10;
         let metadata = std::fs::metadata(&file.abs_path)?;
@@ -418,7 +642,7 @@ impl Indexer {
                 metadata.len() / (1024 * 1024),
                 file.rel_path
             );
-            return Ok((0, 0));
+            return Ok(None);
         }
 
         let source = crate::util::read_to_string(&file.abs_path)?;
@@ -451,10 +675,86 @@ impl Indexer {
             );
         }
 
-        // Phase 3: Use incremental updates for symbols
-        let (symbol_count, edge_count) = self.index_file(file, extracted, diff)?;
+        let file_id = self.db.upsert_file(
+            &file.rel_path,
+            &file.hash,
+            &file.language,
+            file.size,
+            file.modified,
+        )?;
 
-        Ok((symbol_count, edge_count))
+        // Issue #77: qualnames this sync is about to add, captured before
+        // `update_file_symbols` consumes `diff` — see `sync_abs_paths`.
+        let added_qualnames: Vec<String> = diff.added.iter().map(|s| s.qualname.clone()).collect();
+        // Issue #79: likewise captured before `diff` moves, for
+        // `retry_unresolved_references`'s deletion-driven ambiguity retry.
+        let any_deleted = !diff.deleted.is_empty();
+
+        // Phase 3: Use incremental updates for symbols
+        let symbols = self.db.update_file_symbols(
+            file_id,
+            &file.rel_path,
+            diff,
+            self.graph_version,
+            self.commit_sha.as_deref(),
+        )?;
+
+        // Mark this file's private/unexported symbols. Must happen for
+        // every file in the batch before any file's edges are resolved —
+        // see `sync_abs_paths`.
+        self.db
+            .set_private_symbols(file_id, self.graph_version, &extracted.private_qualnames)?;
+
+        Ok(Some(ScannedFileSymbols {
+            extracted,
+            file_id,
+            symbols,
+            any_deleted,
+            added: added_qualnames,
+        }))
+    }
+
+    /// Delete `rel_path`'s stored file (symbols, edges, metrics, and its
+    /// `deleted_version` mark) if it's currently indexed. A no-op when the
+    /// path isn't indexed at all.
+    fn delete_file(&mut self, rel_path: &str) -> Result<()> {
+        let Some(existing) = self.db.get_file_by_path(rel_path)? else {
+            return Ok(());
+        };
+        self.db
+            .delete_symbols_edges_for_file(existing.id, self.graph_version)?;
+        self.db.mark_file_deleted(rel_path, self.graph_version)?;
+        Ok(())
+    }
+
+    /// Phase 2 of syncing one file: resolve its edges and write its
+    /// metrics, against `symbols` (this file's own, from
+    /// `index_scanned_file_symbols`) — every other file's `visibility` in
+    /// this batch must already be settled by the time this runs.
+    fn resolve_file_edges(
+        &mut self,
+        file_id: i64,
+        extracted: &ExtractedFile,
+        symbols: &[crate::model::Symbol],
+    ) -> Result<(usize, usize)> {
+        // For edges, still use delete-all-insert for now (can optimize in future)
+        // Delete existing edges for this file
+        self.db.delete_edges_for_file(file_id, self.graph_version)?;
+        let symbol_map = resolver::build_exact_symbol_map(symbols);
+        let edges_count = self.db.insert_edges(
+            file_id,
+            &extracted.edges,
+            &symbol_map,
+            self.graph_version,
+            self.commit_sha.as_deref(),
+        )?;
+        if let Some(metrics) = extracted.file_metrics.as_ref() {
+            self.db.upsert_file_metrics(file_id, metrics)?;
+        }
+        self.db
+            .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbol_map)?;
+
+        Ok((symbols.len(), edges_count))
     }
 
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {
@@ -475,51 +775,5 @@ impl Indexer {
             &mut extracted.edges,
         );
         Ok(extracted)
-    }
-
-    fn index_file(
-        &mut self,
-        file: &scan::ScannedFile,
-        extracted: ExtractedFile,
-        diff: differ::SymbolDiff,
-    ) -> Result<(usize, usize)> {
-        let file_id = self.db.upsert_file(
-            &file.rel_path,
-            &file.hash,
-            &file.language,
-            file.size,
-            file.modified,
-        )?;
-
-        // Phase 3: Use incremental symbol updates instead of delete-all-insert
-        let symbols = self.db.update_file_symbols(
-            file_id,
-            &file.rel_path,
-            diff,
-            self.graph_version,
-            self.commit_sha.as_deref(),
-        )?;
-
-        // For edges, still use delete-all-insert for now (can optimize in future)
-        // Delete existing edges for this file
-        self.db.delete_edges_for_file(file_id, self.graph_version)?;
-        let mut symbol_map = HashMap::new();
-        for symbol in &symbols {
-            symbol_map.insert(symbol.qualname.clone(), symbol.id);
-        }
-        let edges_count = self.db.insert_edges(
-            file_id,
-            &extracted.edges,
-            &symbol_map,
-            self.graph_version,
-            self.commit_sha.as_deref(),
-        )?;
-        if let Some(metrics) = extracted.file_metrics.as_ref() {
-            self.db.upsert_file_metrics(file_id, metrics)?;
-        }
-        self.db
-            .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbol_map)?;
-
-        Ok((symbols.len(), edges_count))
     }
 }

@@ -1,5 +1,5 @@
 use crate::db::Db;
-use crate::indexer::channel::{boundary_type_for_kind, bridge_complement, is_bridge_edge_kind};
+use crate::indexer::channel::{boundary_type_for_kind, bridge_complement};
 use crate::indexer::scan::language_for_path;
 use crate::model::{Edge, Symbol, TraceHop};
 use anyhow::Result;
@@ -22,6 +22,13 @@ pub struct TraceConfig {
     pub allowed_kinds: Vec<String>,
     pub trace_offset: usize,
     pub compact: bool,
+    /// Resolution kinds to refuse to traverse (issue #81), e.g.
+    /// `["bare_name", "two_segment"]` to exclude the guarded name-fallback
+    /// tier's heuristic edges. An edge with no resolution kind at all (a
+    /// Bridge Edge kind, governed separately by `bridge_complement`) is
+    /// always traversable regardless of this list. Empty by default:
+    /// unchanged behaviour.
+    pub exclude_resolution_kinds: Vec<String>,
 }
 
 impl Default for TraceConfig {
@@ -31,10 +38,15 @@ impl Default for TraceConfig {
             max_bytes: 30_000,
             direction: TraceDirection::Downstream,
             include_snippets: true,
+            // XREF is listed, but only its qualified grade is ever crossed --
+            // see `xref_is_traversable`. RPC_ROUTE must be listed or a trace
+            // from a .proto rpc is filtered out before bridge_complement is
+            // consulted, silently yielding paths_found: 0.
             allowed_kinds: vec![
                 "CALLS".into(),
                 "RPC_IMPL".into(),
                 "RPC_CALL".into(),
+                "RPC_ROUTE".into(),
                 "XREF".into(),
                 "CHANNEL_PUBLISH".into(),
                 "CHANNEL_SUBSCRIBE".into(),
@@ -46,6 +58,7 @@ impl Default for TraceConfig {
             ],
             trace_offset: 0,
             compact: false,
+            exclude_resolution_kinds: Vec::new(),
         }
     }
 }
@@ -61,6 +74,14 @@ pub struct TraceResult {
     pub truncated: bool,
     pub budget_bytes: usize,
     pub used_bytes: usize,
+    /// Count of `unresolved_references` rows touching the traversed symbols
+    /// (issue #81) -- see `Db::unresolved_reference_count_for_symbols`'s doc.
+    pub unresolved_reference_count: i64,
+    /// Issue #81 (R5): whether at least one edge that produced a hop has a
+    /// heuristic (`bare_name`/`two_segment`) resolution kind -- gates the
+    /// "retry excluding heuristics" next_hops suggestion in
+    /// `handle_trace_flow`.
+    pub traversed_heuristic_kind: bool,
 }
 
 /// BFS traversal of the symbol graph from `seeds`, following edges in the
@@ -94,6 +115,10 @@ pub fn trace_flow(
     let mut truncated = false;
     let mut reached_target = false;
     let is_upstream = matches!(config.direction, TraceDirection::Upstream);
+    // Issue #81 (R5): every edge that actually produced a hop -- checked
+    // once, after the BFS, against `HEURISTIC_RESOLUTION_KINDS` to decide
+    // whether suggesting the exclude-heuristics retry is useful at all.
+    let mut traversed_edge_ids: Vec<i64> = Vec::new();
 
     while let Some((current_id, dist, prev_file)) = queue.pop_front() {
         if dist > config.max_hops {
@@ -105,26 +130,23 @@ pub fn trace_flow(
             break;
         }
 
-        let mut edges = db.edges_for_symbol(current_id, languages, graph_version)?;
-
-        if is_upstream && let Ok(Some(current_sym)) = db.get_symbol_by_id(current_id) {
-            for kind in &config.allowed_kinds {
-                let mut unresolved = db
-                    .incoming_edges_by_qualname_pattern(
-                        &current_sym.name,
-                        kind,
-                        languages,
-                        graph_version,
-                    )
-                    .unwrap_or_default();
-                edges.append(&mut unresolved);
-            }
-        }
+        let edges = db.edges_for_symbol(current_id, languages, graph_version)?;
 
         let mut bridge_targets: Vec<(String, String)> = Vec::new();
 
         for edge in &edges {
-            if !config.allowed_kinds.contains(&edge.kind) {
+            if !config.allowed_kinds.contains(&edge.kind)
+                || !crate::model::xref_is_traversable(edge)
+            {
+                continue;
+            }
+            // An edge with no resolution kind (a Bridge Edge kind) is always
+            // traversable here -- bridging is governed separately below via
+            // `bridge_targets`/`bridge_complement`.
+            if crate::model::is_resolution_excluded(
+                edge.resolution_kind.as_deref(),
+                &config.exclude_resolution_kinds,
+            ) {
                 continue;
             }
 
@@ -147,33 +169,18 @@ pub fn trace_flow(
                 bridge_targets.push((tq.clone(), edge.kind.clone()));
             }
 
-            let next_id = match next_id {
-                Some(id) => id,
-                None => {
-                    if let Some(ref qn) = edge.target_qualname {
-                        let prev_lang = detect_language(&prev_file);
-                        let same_lang = vec![prev_lang];
-                        let resolved = db
-                            .lookup_symbol_id_fuzzy(qn, Some(&same_lang), graph_version)
-                            .ok()
-                            .flatten()
-                            .or_else(|| {
-                                if is_bridge_edge_kind(&edge.kind) {
-                                    db.lookup_symbol_id_fuzzy(qn, languages, graph_version)
-                                        .ok()
-                                        .flatten()
-                                } else {
-                                    None
-                                }
-                            });
-                        match resolved {
-                            Some(id) => id,
-                            None => continue,
-                        }
-                    } else {
-                        continue;
-                    }
-                }
+            // `next_id` is None when the write path left this edge's
+            // target_symbol_id (or, for upstream, source_symbol_id) NULL --
+            // it could not attribute the edge. The read path must not
+            // invent an attribution via fuzzy qualname lookup here (that's
+            // how a C# `value.Trim()` call used to surface a Python `trim`
+            // function as its callee/caller); see the equivalent fix in
+            // subgraph.rs / rpc/handlers.rs. Bridge-kind edges (message
+            // bus, RPC, HTTP) still cross language boundaries below via
+            // `bridge_targets`, which binds by an exact target_qualname
+            // match, not a fuzzy one.
+            let Some(next_id) = next_id else {
+                continue;
             };
 
             if !visited.insert(next_id) {
@@ -192,6 +199,7 @@ pub fn trace_flow(
                 let hop_size = estimate_hop_size(&hop, config.compact);
                 let hop_idx = trace.len();
                 trace.push(hop);
+                traversed_edge_ids.push(edge.id);
                 if hop_idx >= config.trace_offset {
                     used_bytes += hop_size;
                     if used_bytes >= config.max_bytes {
@@ -247,10 +255,12 @@ pub fn trace_flow(
                                 boundary_type: Some(b_type.to_string()),
                                 boundary_detail: Some(b_detail),
                                 protocol_context: p_context,
+                                resolution_kind: bridged_edge.resolution_kind.clone(),
                             };
                             let hop_size = estimate_hop_size(&hop, config.compact);
                             let hop_idx = trace.len();
                             trace.push(hop);
+                            traversed_edge_ids.push(bridged_edge.id);
                             if hop_idx >= config.trace_offset {
                                 used_bytes += hop_size;
                                 if used_bytes >= config.max_bytes {
@@ -295,6 +305,26 @@ pub fn trace_flow(
         trace.iter().filter(|h| h.distance == max_dist).count()
     };
 
+    // Issue #81: lower-bound signal over every symbol this traversal
+    // actually visited (seeds included), regardless of direction -- see
+    // `Db::unresolved_reference_count_for_symbols`'s doc for the exact
+    // per-direction semantics.
+    let visited_ids: Vec<i64> = visited.into_iter().collect();
+    let unresolved_reference_count =
+        db.unresolved_reference_count_for_symbols(&visited_ids, graph_version)?;
+
+    // Issue #81 (R5): one batched query over every edge that produced a hop,
+    // rather than per-node -- paid only once, and only when there was
+    // anything to check at all.
+    let traversed_heuristic_kind = if traversed_edge_ids.is_empty() {
+        false
+    } else {
+        let resolution_kinds = db.edge_resolution_kinds(&traversed_edge_ids)?;
+        resolution_kinds
+            .values()
+            .any(|rk| crate::db::resolver::HEURISTIC_RESOLUTION_KINDS.contains(&rk.as_str()))
+    };
+
     Ok(TraceResult {
         start: start_sym,
         end: end_sym,
@@ -304,6 +334,8 @@ pub fn trace_flow(
         truncated,
         budget_bytes: config.max_bytes,
         used_bytes,
+        unresolved_reference_count,
+        traversed_heuristic_kind,
     })
 }
 
@@ -343,6 +375,7 @@ fn build_hop(
         boundary_type,
         boundary_detail,
         protocol_context,
+        resolution_kind: edge.resolution_kind.clone(),
     }
 }
 
@@ -495,6 +528,77 @@ mod tests {
     use crate::model::Edge;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn sample_edge(kind: &str) -> Edge {
+        Edge {
+            id: 1,
+            file_path: "Service.cs".to_string(),
+            kind: kind.to_string(),
+            source_symbol_id: Some(100),
+            target_symbol_id: Some(200),
+            target_qualname: None,
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: None,
+            resolution_kind: None,
+            graph_version: 1,
+            commit_sha: None,
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+        }
+    }
+
+    /// RPC_ROUTE must be in the default kind set, or a trace from a .proto rpc
+    /// is filtered out before bridge_complement is ever consulted and the
+    /// proto->impl linkage silently returns paths_found: 0.
+    #[test]
+    fn default_allowed_kinds_include_both_sides_of_the_rpc_bridge() {
+        let kinds = TraceConfig::default().allowed_kinds;
+        assert!(
+            kinds.contains(&"RPC_ROUTE".to_string()),
+            "RPC_ROUTE must be traversable by default so proto rpcs reach their impls: {kinds:?}"
+        );
+        assert!(kinds.contains(&"RPC_IMPL".to_string()));
+        assert!(kinds.contains(&"CALLS".to_string()));
+    }
+
+    /// XREF is listed in the defaults, but the *grade* gates it: a bare
+    /// `name_exact` match (one shared word, confidence 0.7) is never crossed,
+    /// while a qualified `qualname_exact` match (a SQL literal naming that
+    /// exact table) is. Without this, `trace_flow` upstream from one C# method
+    /// fabricated an 18-step trace of which 16 steps were phantom.
+    #[test]
+    fn only_qualified_xref_is_traversable() {
+        let bare = r#"{"confidence":0.7,"match":"name_exact","source":"string_literal","token":"Deserialize"}"#;
+        let qualified = r#"{"confidence":1.0,"match":"qualname_exact","source":"string_literal","token":"dpb.pipeline_run"}"#;
+
+        let mut edge = sample_edge("XREF");
+        edge.detail = Some(bare.to_string());
+        assert!(
+            !crate::model::xref_is_traversable(&edge),
+            "a bare name_exact XREF must never be crossed"
+        );
+
+        edge.detail = Some(qualified.to_string());
+        assert!(
+            crate::model::xref_is_traversable(&edge),
+            "a qualified XREF is real evidence and must be crossed"
+        );
+
+        // An XREF with no detail at all cannot prove its grade, so it is refused.
+        edge.detail = None;
+        assert!(!crate::model::xref_is_traversable(&edge));
+
+        // Non-XREF kinds are unaffected, detail or not.
+        let mut calls = sample_edge("CALLS");
+        calls.detail = None;
+        assert!(crate::model::xref_is_traversable(&calls));
+        calls.detail = Some(bare.to_string());
+        assert!(crate::model::xref_is_traversable(&calls));
+    }
 
     static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -675,6 +779,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -702,6 +807,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -730,6 +836,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -759,6 +866,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -788,6 +896,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -815,6 +924,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -839,6 +949,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -1285,6 +1396,7 @@ mod tests {
             boundary_type: None,
             boundary_detail: None,
             protocol_context: None,
+            resolution_kind: None,
         };
 
         let full_size = estimate_hop_size(&hop, false);
@@ -1341,6 +1453,7 @@ mod tsx_normalization_tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -1385,5 +1498,186 @@ mod tsx_normalization_tests {
                 "{label} -> .py should have boundary type"
             );
         }
+    }
+}
+
+// Regression tests for the read path no longer re-attributing edges the
+// write path refused to resolve. Since issue #79, a genuinely unresolved
+// non-Bridge-Edge-kind reference has no edge at all (only a store row) --
+// these build a minimal DB directly (not through a fixture repo) so the
+// ambiguity guard in `insert_edges` deterministically leaves a reference
+// unresolved.
+#[cfg(test)]
+mod null_target_regression_tests {
+    use super::*;
+    use crate::db::Db;
+    use crate::indexer::extract::{EdgeInput, ReceiverType, SymbolInput};
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn test_db() -> (Db, TempDir) {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("test.db");
+        let db = Db::new(&db_path).unwrap();
+        (db, temp)
+    }
+
+    fn symbol(qualname: &str, kind: &str, start_line: i64) -> SymbolInput {
+        SymbolInput {
+            kind: kind.to_string(),
+            name: qualname.rsplit('.').next().unwrap_or(qualname).to_string(),
+            qualname: qualname.to_string(),
+            start_line,
+            start_col: 0,
+            end_line: start_line + 5,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 100,
+            signature: None,
+            docstring: None,
+        }
+    }
+
+    fn calls_edge(source_qualname: &str, target_qualname: &str) -> EdgeInput {
+        EdgeInput {
+            kind: "CALLS".to_string(),
+            source_qualname: Some(source_qualname.to_string()),
+            target_qualname: Some(target_qualname.to_string()),
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: Some(1.0),
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+            receiver_type: ReceiverType::NotTracked,
+            import_candidates: Vec::new(),
+            bare_call: false,
+        }
+    }
+
+    /// A bare-name call with two same-language candidates is genuinely
+    /// ambiguous, so `insert_edges`' ambiguity guard leaves it unresolved --
+    /// no edge is written at all (issue #79), only a store row. `trace_flow`
+    /// must not traverse it via a fuzzy qualname guess -- neither candidate
+    /// should appear as a downstream hop from the caller.
+    #[test]
+    fn downstream_does_not_traverse_null_target_edge() {
+        let (mut db, _temp) = test_db();
+        let file_id = db
+            .upsert_file("pkg/store.py", "h1", "python", 100, 0)
+            .unwrap();
+        let symbols = vec![
+            symbol("builtins.list.append", "method", 1),
+            symbol("pkg.store.EventStore.append", "method", 10),
+            symbol("pkg.store.caller", "function", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "pkg/store.py", &symbols, 1, None)
+            .unwrap();
+        let caller_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.store.caller")
+            .unwrap()
+            .id;
+
+        let edges = vec![calls_edge("pkg.store.caller", "append")];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Issue #79: an ambiguous CALLS edge is no longer written at all --
+        // confirm the write path really did refuse to attribute it by
+        // checking the unresolved-reference store instead of a NULL-target
+        // edge row.
+        let edge_count: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            edge_count, 0,
+            "an ambiguous, unresolved CALLS edge must not be written at all"
+        );
+        let unresolved: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM unresolved_references WHERE graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            unresolved, 1,
+            "edge should be unresolved (ambiguous bare name)"
+        );
+
+        let config = TraceConfig {
+            direction: TraceDirection::Downstream,
+            allowed_kinds: vec!["CALLS".into()],
+            ..Default::default()
+        };
+        let result = trace_flow(&db, vec![caller_id], None, None, 1, &config).unwrap();
+        assert!(
+            result.hops.is_empty(),
+            "an unresolved reference must not be traversed downstream, got {:?}",
+            result.hops
+        );
+    }
+
+    /// Sanity check that the fix didn't throw out the happy path: an edge
+    /// the write path genuinely resolved (exact qualname match, no
+    /// ambiguity) must still be traversed.
+    #[test]
+    fn downstream_still_traverses_genuinely_resolved_edge() {
+        let (mut db, _temp) = test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            symbol("mod.Caller", "function", 1),
+            symbol("mod.Callee", "function", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+        let caller_id = inserted
+            .iter()
+            .find(|s| s.qualname == "mod.Caller")
+            .unwrap()
+            .id;
+        let callee_id = inserted
+            .iter()
+            .find(|s| s.qualname == "mod.Callee")
+            .unwrap()
+            .id;
+
+        let edges = vec![calls_edge("mod.Caller", "mod.Callee")];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let config = TraceConfig {
+            direction: TraceDirection::Downstream,
+            allowed_kinds: vec!["CALLS".into()],
+            ..Default::default()
+        };
+        let result = trace_flow(&db, vec![caller_id], None, None, 1, &config).unwrap();
+        assert_eq!(
+            result.hops.len(),
+            1,
+            "resolved edge should still produce a hop"
+        );
+        assert_eq!(result.hops[0].symbol.id, callee_id);
     }
 }

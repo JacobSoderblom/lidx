@@ -1,5 +1,5 @@
-use super::{Db, edge_from_row, fuzzy_qualname_patterns, symbol_from_row};
-use crate::model::{Edge, Symbol};
+use super::{Db, edge_from_row, symbol_from_row};
+use crate::model::{Edge, EdgeSnapshotRow, Symbol};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
@@ -189,81 +189,6 @@ impl Db {
             .map_err(Into::into)
     }
 
-    /// Fuzzy lookup for symbol IDs, handling short qualnames like
-    /// "_svc.DeployAsync" or "helper::process"
-    ///
-    /// Strategy:
-    /// 1. Try exact match first (fast path)
-    /// 2. Extract method/function name from short qualname (part after the last `.` or `::`)
-    /// 3. Search for symbols whose qualname ends with '.{name}' or '::{name}'
-    /// 4. Prefer shortest qualname match (less nesting = more specific)
-    pub fn lookup_symbol_id_fuzzy(
-        &self,
-        target_qualname: &str,
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Option<i64>> {
-        // Fast path: try exact match first
-        if let Some(id) =
-            self.lookup_symbol_id_filtered(target_qualname, languages, graph_version)?
-        {
-            return Ok(Some(id));
-        }
-
-        // Extract the trailing name and build suffix patterns for both '.' and '::'
-        let (name, dot_pattern, colons_pattern) = fuzzy_qualname_patterns(target_qualname);
-
-        let mut sql = String::from(
-            "SELECT s.id, s.qualname, LENGTH(s.qualname) as qn_len
-             FROM symbols s
-             JOIN files f ON s.file_id = f.id
-             WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
-               AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
-               AND s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![
-            &name,
-            &dot_pattern,
-            &colons_pattern,
-            &graph_version,
-            &graph_version,
-        ];
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        sql.push_str(" ORDER BY qn_len ASC LIMIT 10");
-
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt.query(&*params)?;
-
-        let mut candidates: Vec<(i64, String)> = Vec::new();
-        while let Some(row) = rows.next()? {
-            let id: i64 = row.get(0)?;
-            let qualname: String = row.get(1)?;
-            candidates.push((id, qualname));
-        }
-
-        // Prefer the shortest qualname (already ordered by qn_len ASC)
-        Ok(candidates.first().map(|(id, _)| *id))
-    }
-
     pub fn edges_for_symbol(
         &self,
         id: i64,
@@ -274,7 +199,8 @@ impl Db {
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_kind
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE (e.source_symbol_id = ? OR e.target_symbol_id = ?)
@@ -298,64 +224,6 @@ impl Db {
             }
         }
         sql.push_str(" ORDER BY e.id");
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(&*params, edge_from_row)?;
-        let mut edges = Vec::new();
-        for row in rows {
-            edges.push(row?);
-        }
-        Ok(edges)
-    }
-
-    /// Find incoming edges by target_qualname pattern
-    /// Used for finding callers when target_symbol_id is null but target_qualname is set
-    pub fn incoming_edges_by_qualname_pattern(
-        &self,
-        symbol_name: &str,
-        kind: &str,
-        languages: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<Edge>> {
-        // Search for edges where target_qualname ends with '.<symbol_name>' or equals it exactly
-        let pattern = format!("%.{}", symbol_name);
-        let exact = symbol_name.to_string();
-
-        let mut sql = String::from(
-            "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
-                    e.target_qualname, e.detail, e.evidence_snippet,
-                    e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
-             FROM edges e
-             JOIN files f ON e.file_id = f.id
-             WHERE (e.target_qualname LIKE ? OR e.target_qualname = ?)
-               AND e.kind = ?
-               AND e.source_symbol_id IS NOT NULL
-               AND e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
-        );
-
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&pattern, &exact, &kind, &graph_version, &graph_version];
-
-        if let Some(languages) = languages
-            && !languages.is_empty()
-        {
-            sql.push_str(" AND f.language IN (");
-            for (idx, _) in languages.iter().enumerate() {
-                if idx > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
-            }
-            sql.push(')');
-            for language in languages {
-                params.push(language as &dyn rusqlite::ToSql);
-            }
-        }
-
-        sql.push_str(" ORDER BY e.id LIMIT 100");
-
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(&*params, edge_from_row)?;
@@ -390,19 +258,34 @@ impl Db {
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_kind
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE e.target_qualname = ?
                AND e.kind IN ({kind_placeholders})
                AND e.source_symbol_id IS NOT NULL
                AND e.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)"
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+               AND (e.kind NOT IN ('RPC_CALL', 'RPC_IMPL')
+                    OR EXISTS (SELECT 1 FROM edges r
+                               WHERE r.target_qualname = e.target_qualname
+                                 AND r.kind = 'RPC_ROUTE' AND r.graph_version = ?)
+                    OR NOT EXISTS (SELECT 1 FROM edges r
+                                   WHERE r.kind = 'RPC_ROUTE' AND r.graph_version = ?))"
         );
+        // ponytail: RPC_CALL and RPC_IMPL both fan out one edge per
+        // *guessed* proto package (bare `using`s), so two wrong guesses can
+        // share a path and bridge unrelated services. Only bridge on a path
+        // a real `.proto` RPC_ROUTE backs; repos with no RPC_ROUTE at all
+        // (protos live elsewhere) keep the unguarded behaviour. Ceiling: a
+        // route whose .proto isn't indexed is still exposed to that noise.
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&target_qualname as &dyn rusqlite::ToSql];
         for kind in kinds {
             params.push(kind as &dyn rusqlite::ToSql);
         }
+        params.push(&graph_version);
+        params.push(&graph_version);
         params.push(&graph_version);
         params.push(&graph_version);
         if let Some(languages) = languages
@@ -482,7 +365,8 @@ impl Db {
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_kind
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE (e.source_symbol_id IN ({}) OR e.target_symbol_id IN ({}))
@@ -529,10 +413,8 @@ impl Db {
             result.insert(*id, Vec::new());
         }
 
-        let mut seen_edge_ids = HashSet::new();
         for row in rows {
             let edge = row?;
-            seen_edge_ids.insert(edge.id);
             // Add edge to both source and target symbol lists
             if let Some(source_id) = edge.source_symbol_id
                 && ids.contains(&source_id)
@@ -546,96 +428,21 @@ impl Db {
             }
         }
 
-        // Second query: unresolved edges where target_qualname matches symbol names
-        // This catches cross-file CALLS edges with short qualnames like "_svc.DeployAsync"
-        let symbols_sql = format!(
-            "SELECT id, name FROM symbols WHERE id IN ({}) AND graph_version = ?",
-            placeholders
-        );
-        let mut symbols_params: Vec<&dyn rusqlite::ToSql> =
-            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        symbols_params.push(&graph_version);
-
-        let mut stmt = conn.prepare(&symbols_sql)?;
-        let mut symbol_rows = stmt.query(&*symbols_params)?;
-        let mut symbol_names: HashMap<String, i64> = HashMap::new();
-        while let Some(row) = symbol_rows.next()? {
-            let id: i64 = row.get(0)?;
-            let name: String = row.get(1)?;
-            symbol_names.insert(name, id);
-        }
-
-        // Build patterns for LIKE queries: %.MethodName
-        let mut patterns: Vec<String> = Vec::new();
-        for name in symbol_names.keys() {
-            patterns.push(format!("%.{}", name));
-        }
-
-        if !patterns.is_empty() {
-            let mut unresolved_sql = String::from(
-                "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
-                        e.target_qualname, e.detail, e.evidence_snippet,
-                        e.evidence_start_line, e.evidence_end_line, e.confidence,
-                        e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
-                 FROM edges e
-                 JOIN files f ON e.file_id = f.id
-                 WHERE e.target_symbol_id IS NULL
-                   AND e.graph_version = ?
-                   AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                   AND (",
-            );
-
-            let mut unresolved_params: Vec<&dyn rusqlite::ToSql> =
-                vec![&graph_version, &graph_version];
-
-            for (idx, pattern) in patterns.iter().enumerate() {
-                if idx > 0 {
-                    unresolved_sql.push_str(" OR ");
-                }
-                unresolved_sql.push_str("e.target_qualname LIKE ?");
-                unresolved_params.push(pattern as &dyn rusqlite::ToSql);
-            }
-            unresolved_sql.push(')');
-
-            if let Some(languages) = languages
-                && !languages.is_empty()
-            {
-                unresolved_sql.push_str(" AND f.language IN (");
-                for (idx, _) in languages.iter().enumerate() {
-                    if idx > 0 {
-                        unresolved_sql.push(',');
-                    }
-                    unresolved_sql.push('?');
-                }
-                unresolved_sql.push(')');
-                for language in languages {
-                    unresolved_params.push(language as &dyn rusqlite::ToSql);
-                }
-            }
-            unresolved_sql.push_str(" ORDER BY e.id");
-
-            let mut stmt = conn.prepare(&unresolved_sql)?;
-            let rows = stmt.query_map(&*unresolved_params, edge_from_row)?;
-
-            for row in rows {
-                let edge = row?;
-                // Skip if we already saw this edge in the first query
-                if seen_edge_ids.contains(&edge.id) {
-                    continue;
-                }
-
-                // Match target_qualname to symbol name and add to that symbol's edge list
-                if let Some(target_qn) = &edge.target_qualname {
-                    for (name, symbol_id) in &symbol_names {
-                        if target_qn.ends_with(&format!(".{}", name)) {
-                            result.entry(*symbol_id).or_default().push(edge.clone());
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
+        // A second query used to widen this result set by matching
+        // `target_symbol_id IS NULL` edges against symbol *names* (via a
+        // `LIKE '%.Name'` suffix pattern) — i.e. it re-attributed edges the
+        // write path had deliberately left unresolved. That's exactly the
+        // guess the write path already refused to make: SQLite's LIKE is
+        // case-insensitive for ASCII (`'value.Trim' LIKE '%.trim'` is true)
+        // and the pattern carried no language scoping, so it matched same-
+        // named methods across unrelated classes and even unrelated
+        // languages (see the C#-`Trim`-to-Python-`trim` false callee).
+        // `target_symbol_id IS NULL` now means "could not be attributed" —
+        // the read path must not invent one. A target that *can* be bound
+        // legitimately (e.g. an exact qualname match) belongs in the write
+        // path (`insert_edges`) or its repair passes (`db::resolver`'s
+        // `retry_unresolved_references`/`reconcile_unresolved_reference_store`),
+        // not here.
         Ok(result)
     }
 
@@ -695,5 +502,111 @@ impl Db {
             results.push(row?);
         }
         Ok(results)
+    }
+
+    /// Read every edge in `graph_version` as a normalized
+    /// `(source qualname, kind, target qualname | None, resolution kind)`
+    /// row, joining `source_symbol_id`/`target_symbol_id` to their symbols'
+    /// *current* qualnames rather than the edge's raw stored
+    /// `target_qualname` text. Issue #79: a pending (non-Bridge-Edge-kind)
+    /// `unresolved_references` row -- one with no edge at all -- is unioned
+    /// in too, as `target qualname = None`/`resolution kind = None` (i.e.
+    /// `UNRESOLVED`, same as a Bridge Edge kind's still-NULL-target edge
+    /// already renders via the first half of this query), so the scoreboard
+    /// keeps seeing every unresolved reference regardless of which of the
+    /// two shapes holds it.
+    ///
+    /// Test support for the golden-corpus correctness scoreboard (see
+    /// `tests/common/golden.rs`): the one seam a test needs to compare the
+    /// graph against an expected-edges fixture without touching SQL or
+    /// resolver internals directly. A reference with no resolved source
+    /// symbol (file-level edges such as `IMPORTS`/`MODULE_FILE`, or a
+    /// pending row whose own caller never resolved) is omitted — the
+    /// scoreboard only covers edges attributable to a real symbol.
+    pub fn edges_snapshot(&self, graph_version: i64) -> Result<Vec<EdgeSnapshotRow>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT src.qualname, e.kind, tgt.qualname, e.resolution_kind
+             FROM edges e
+             JOIN files f ON e.file_id = f.id
+             JOIN symbols src ON e.source_symbol_id = src.id
+             LEFT JOIN symbols tgt ON e.target_symbol_id = tgt.id
+             WHERE e.graph_version = ?
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+
+             UNION ALL
+
+             SELECT src.qualname, ur.edge_kind, NULL, NULL
+             FROM unresolved_references ur
+             JOIN files f ON ur.file_id = f.id
+             JOIN symbols src ON ur.source_symbol_id = src.id
+             WHERE ur.edge_id IS NULL
+               AND ur.graph_version = ?
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![graph_version, graph_version, graph_version, graph_version],
+            |row| {
+                Ok(EdgeSnapshotRow {
+                    source_qualname: row.get(0)?,
+                    kind: row.get(1)?,
+                    target_qualname: row.get(2)?,
+                    resolution_kind: row.get(3)?,
+                })
+            },
+        )?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        results.sort();
+        Ok(results)
+    }
+
+    /// `edges.resolution_kind` for a batch of edge ids, keyed by edge id.
+    /// Since issue #62, `Edge::resolution_kind` (via `edge_from_row`) also
+    /// carries this column for any caller that already has full `Edge`
+    /// values in hand -- prefer reading `edge.resolution_kind` directly in
+    /// that case, as `trace_flow`'s BFS (`traversal.rs`) and
+    /// `analyze_direct_impact`'s BFS (`impact/layers/direct.rs`) now do for
+    /// their per-node `exclude_resolution_kinds` filter (issue #81). This
+    /// batch, id-keyed form stays for the one remaining case where a caller
+    /// only has bare edge ids: those same two BFS functions' post-traversal
+    /// `traversed_heuristic_kind` summary, which checks every edge that
+    /// actually produced a hop/neighbor in one query rather than loading a
+    /// full `Edge` per id just to read one field. An edge id absent from the
+    /// returned map has no resolution kind at all -- a Bridge Edge kind
+    /// (its target is a cross-process join key, resolved separately from
+    /// the name tiers) or any edge kind the resolver never labels.
+    pub fn edge_resolution_kinds(&self, edge_ids: &[i64]) -> Result<HashMap<i64, String>> {
+        if edge_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut placeholders = String::new();
+        for (idx, _) in edge_ids.iter().enumerate() {
+            if idx > 0 {
+                placeholders.push(',');
+            }
+            placeholders.push('?');
+        }
+        let sql = format!(
+            "SELECT id, resolution_kind FROM edges \
+             WHERE id IN ({placeholders}) AND resolution_kind IS NOT NULL"
+        );
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = edge_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        let rows = stmt.query_map(&*params, |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (id, kind) = row?;
+            map.insert(id, kind);
+        }
+        Ok(map)
     }
 }

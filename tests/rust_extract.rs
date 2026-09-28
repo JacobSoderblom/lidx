@@ -344,12 +344,16 @@ fn main() {
 }
 
 #[test]
-fn dotted_method_call_is_recovered_by_qualname_pattern() {
-    // End-to-end: a dotted Rust call (`db.insert(...)`) now ships a CALLS edge whose
-    // target_qualname is the bare method name "insert". The bare-method-name recovery
-    // path (incoming_edges_by_qualname_pattern) must then find the caller — restoring
-    // upstream/impact reach for Rust method calls.
+fn dotted_method_call_resolves_to_method_symbol() {
+    // End-to-end: a dotted Rust call (`db.insert(...)`) ships a CALLS edge
+    // whose target_qualname is the bare method name "insert"; the resolver
+    // must bind it to the method symbol so upstream/impact analysis reaches
+    // the caller.
     let source = r#"
+pub struct Database;
+impl Database {
+    pub fn insert(&self, _k: &str, _v: &str) {}
+}
 pub fn save(db: &Database) {
     db.insert("key", "value");
 }
@@ -359,32 +363,48 @@ pub fn save(db: &Database) {
     let db = indexer.db();
     let graph_version = db.current_graph_version().unwrap();
 
-    let recovered = db
-        .incoming_edges_by_qualname_pattern("insert", "CALLS", None, graph_version)
-        .unwrap();
-
+    let insert_id = db
+        .lookup_symbol_id("crate::Database::insert", graph_version)
+        .unwrap()
+        .expect("insert method symbol");
+    let save_id = db
+        .lookup_symbol_id("crate::save", graph_version)
+        .unwrap()
+        .expect("save symbol");
+    let edges = db.edges_for_symbol(insert_id, None, graph_version).unwrap();
     assert!(
-        recovered
-            .iter()
-            .any(|edge| edge.target_qualname.as_deref() == Some("insert")),
-        "incoming_edges_by_qualname_pattern(\"insert\") should recover the CALLS edge, got: {:?}",
-        recovered
-            .iter()
-            .map(|e| e.target_qualname.as_deref())
-            .collect::<Vec<_>>()
+        edges.iter().any(|e| e.kind == "CALLS"
+            && e.target_symbol_id == Some(insert_id)
+            && e.source_symbol_id == Some(save_id)),
+        "expected save -> Database::insert CALLS edge, got: {edges:?}"
     );
 
-    // The recovered edge must carry a resolved source symbol (the caller `save`),
-    // otherwise upstream traversal cannot reach it.
-    let edge = recovered
-        .iter()
-        .find(|edge| edge.target_qualname.as_deref() == Some("insert"))
-        .unwrap();
-    let caller = db
-        .get_symbol_by_id(edge.source_symbol_id.unwrap())
-        .unwrap()
-        .expect("recovered edge should resolve to the caller symbol");
-    assert_eq!(caller.qualname, "crate::save");
-
     let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn multiline_path_call_resolves_like_single_line() {
+    // A call path split across lines (formatting style, not semantics)
+    // must resolve to the same qualname as the single-line form. Rust
+    // only treats `::`-paths as resolvable call targets (a `.`-joined
+    // path is left `None`, unchanged by this test), so the chain break
+    // sits at the `::` separator here.
+    let source = "
+struct Foo;
+impl Foo {
+    fn make() -> Foo { Foo }
+}
+fn caller() {
+    Foo
+        ::make();
+}
+";
+    let mut extractor = RustExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "crate::pkg::mod").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.detail.is_none())
+        .expect("Foo::make() call edge");
+    assert_eq!(call.target_qualname.as_deref(), Some("Foo::make"));
 }

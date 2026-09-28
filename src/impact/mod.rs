@@ -15,7 +15,7 @@ pub mod orchestrator;
 pub mod types;
 
 // Re-export key types
-pub use layers::direct::{TraversalDirection, analyze_direct_impact, is_test_file};
+pub use layers::direct::{TraversalDirection, analyze_direct_impact};
 pub use types::{
     FileImpact, ImpactConfig, ImpactEntry, ImpactPath, ImpactResult, ImpactSummary, PathStep,
 };
@@ -127,6 +127,8 @@ pub fn analyze_impact(
         max_depth,
         direction,
         kinds,
+        // v1 API predates issue #81's resolution-kind filter; always unfiltered.
+        &[],
         include_tests,
         limit,
         languages,

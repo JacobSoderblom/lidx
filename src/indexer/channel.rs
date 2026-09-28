@@ -164,12 +164,21 @@ pub fn build_subscribe_detail(channel: &str, raw: &str, framework: &str) -> Stri
 }
 
 /// Bridge pair: given an edge kind, return the complementary kind(s) for traversal bridging.
+///
+/// `RPC_IMPL` bridges to *two* things: `RPC_CALL` (a cross-service caller
+/// invoking this RPC) and `RPC_ROUTE` (the `.proto` definition this method
+/// implements) -- unlike `HTTP_ROUTE`/`HTTP_CALL`, gRPC has a third edge
+/// kind (the route/definition side) distinct from the call side, so it
+/// needs both. `RPC_ROUTE` only bridges back to `RPC_IMPL`: tracing
+/// downstream from a `.proto` rpc has nothing to reach via `RPC_CALL`
+/// (nothing *calls* a route definition).
 pub fn bridge_complement(kind: &str) -> Option<&'static [&'static str]> {
     match kind {
         "CHANNEL_PUBLISH" => Some(&["CHANNEL_SUBSCRIBE"]),
         "CHANNEL_SUBSCRIBE" => Some(&["CHANNEL_PUBLISH"]),
         "RPC_CALL" => Some(&["RPC_IMPL"]),
-        "RPC_IMPL" => Some(&["RPC_CALL"]),
+        "RPC_IMPL" => Some(&["RPC_CALL", "RPC_ROUTE"]),
+        "RPC_ROUTE" => Some(&["RPC_IMPL"]),
         "HTTP_CALL" => Some(&["HTTP_ROUTE"]),
         "HTTP_ROUTE" => Some(&["HTTP_CALL"]),
         "CONFIG_SOURCE" => Some(&["CONFIG_READ"]),
@@ -178,8 +187,34 @@ pub fn bridge_complement(kind: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-/// Returns true if the edge kind represents a cross-service/cross-language bridge
-/// (RPC, HTTP, message bus, config, XREF) where cross-language resolution is expected.
+/// Returns true for an edge kind that `Db::insert_edges` always keeps a live
+/// edge for, even when unresolved -- issue #79's exemption from "every other
+/// kind's unresolved reference lives only in `unresolved_references`". Not
+/// one uniform reason: two different groups of consumers need the edge's
+/// `target_qualname` (or `detail`) text to still be there at rest, not just
+/// a resolved `target_symbol_id`:
+///
+/// - The three actual **Bridge Edge** pairs/triple (CONTEXT.md glossary):
+///   `RPC_CALL`↔`RPC_IMPL` (plus `RPC_ROUTE`, the `.proto` definition side --
+///   `channel::bridge_complement`'s doc), `CHANNEL_PUBLISH`↔`CHANNEL_SUBSCRIBE`,
+///   `HTTP_CALL`↔`HTTP_ROUTE`. Their target is a cross-process join key, not
+///   necessarily a symbol in this graph; `trace_flow`'s traversal bridging
+///   (`traversal.rs`, `bridge_complement`) looks up the complementary side by
+///   `target_qualname` text regardless of resolution.
+/// - `CONFIG_SOURCE`/`CONFIG_READ`/`CONFIG_BIND`: not a Bridge Edge pair (no
+///   `bridge_complement` entry for `CONFIG_BIND`, and traversal never crosses
+///   these three to each other), but their target is a config key/secret URI
+///   (`secret://...`, `env://...`), not a symbol either.
+///   `graph_query::source_symbols_for_config_uri` looks these up by that URI
+///   text so a config-URI-rooted `trace_flow`/`analyze_impact` can find
+///   their source symbols before any symbol-based resolution applies.
+/// - `XREF`: unlike the above, its target usually *is* a real, already-known
+///   symbol qualname (`indexer::xref::collect_xref_edges` reads it from a
+///   same-graph-version symbol index) -- but confidence-gated, evidence-based
+///   consumers (`model::xref_is_traversable`, `context.rs`'s cross-ref
+///   listing) read its `target_qualname`/`detail` text directly off the edge
+///   itself regardless of whether `target_symbol_id` bound, so the edge (and
+///   that text) must survive even an Unresolved/Ambiguous outcome.
 pub fn is_bridge_edge_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -295,7 +330,11 @@ mod tests {
         );
         assert_eq!(
             bridge_complement("RPC_IMPL"),
-            Some(&["RPC_CALL"] as &[&str])
+            Some(&["RPC_CALL", "RPC_ROUTE"] as &[&str])
+        );
+        assert_eq!(
+            bridge_complement("RPC_ROUTE"),
+            Some(&["RPC_IMPL"] as &[&str])
         );
         assert_eq!(
             bridge_complement("HTTP_CALL"),

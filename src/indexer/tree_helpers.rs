@@ -23,6 +23,34 @@ pub fn node_text(node: Node<'_>, source: &str) -> String {
     source.get(start..end).unwrap_or("").trim().to_string()
 }
 
+/// Collapses interior whitespace from a call-target's raw text.
+///
+/// A call written as a multi-line chain (`UniqueName` on one line,
+/// `.Create(...)` indented on the next) reaches here with the newline and
+/// indentation baked into the node's byte span — `node_text` only trims the
+/// *outer* edges. Every extractor's `is_simple_call_target` then rejects the
+/// embedded whitespace and the call never resolves, even though the
+/// single-line form (`UniqueName.Create(...)`) would.
+///
+/// This strips every whitespace character, not just the ones touching a
+/// `.`/`::` separator. That's safe precisely because each extractor's
+/// `is_simple_call_target` charset already excludes everything that would
+/// make a target *not* a bare dotted/colon path — parens, brackets, `?`,
+/// arithmetic operators. A target like `foo(bar).Baz` or `x?.Method` still
+/// carries one of those characters after whitespace is removed, so the
+/// charset check still rejects it exactly as before; only a target that was
+/// already a simple path, merely split across lines by formatting, changes
+/// shape. No valid simple-path AST node ever has two identifiers separated
+/// by whitespace alone (with no `.`/`::`/keyword between them), so blind
+/// removal can't glue unrelated tokens together.
+pub fn collapse_call_target_whitespace(raw: &str) -> String {
+    if raw.chars().any(char::is_whitespace) {
+        raw.chars().filter(|ch| !ch.is_whitespace()).collect()
+    } else {
+        raw.to_string()
+    }
+}
+
 /// Counts lines in source, minimum 1.
 pub fn line_count(source: &str) -> i64 {
     let count = source.lines().count();
@@ -137,6 +165,44 @@ mod tests {
         assert_eq!(empty.start_line, 1);
         assert_eq!(empty.end_line, 1);
         assert_eq!(empty.end_byte, 0);
+    }
+
+    #[test]
+    fn test_collapse_call_target_whitespace_collapses_multiline_chain() {
+        assert_eq!(
+            collapse_call_target_whitespace("UniqueName\n        .Create"),
+            "UniqueName.Create"
+        );
+        assert_eq!(
+            collapse_call_target_whitespace("crate::db\n    ::Db::new"),
+            "crate::db::Db::new"
+        );
+        assert_eq!(collapse_call_target_whitespace("foo\n\t.bar"), "foo.bar");
+    }
+
+    #[test]
+    fn test_collapse_call_target_whitespace_is_noop_without_whitespace() {
+        assert_eq!(collapse_call_target_whitespace("Foo.Bar"), "Foo.Bar");
+        assert_eq!(collapse_call_target_whitespace(""), "");
+    }
+
+    #[test]
+    fn test_collapse_call_target_whitespace_preserves_disqualifying_chars() {
+        // Whitespace is removed, but the characters that make these targets
+        // *not* a simple dotted path survive — is_simple_call_target's
+        // per-language charset check still rejects them afterward.
+        assert_eq!(
+            collapse_call_target_whitespace("foo(bar)\n    .Baz"),
+            "foo(bar).Baz"
+        );
+        assert_eq!(
+            collapse_call_target_whitespace("x?.\n    Method"),
+            "x?.Method"
+        );
+        assert_eq!(
+            collapse_call_target_whitespace("arr[0]\n    .Method"),
+            "arr[0].Method"
+        );
     }
 
     #[test]

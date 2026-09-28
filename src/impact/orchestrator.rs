@@ -106,6 +106,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
                     config.direct.max_depth,
                     crate::impact::TraversalDirection::from(config.direct.direction.as_str()),
                     &kinds,
+                    &config.direct.exclude_resolution_kinds,
                     config.direct.include_tests,
                     config.limit,
                     languages,
@@ -150,6 +151,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
         if self.config.test.enabled {
             let db_path = self.db.db_path().to_path_buf();
             let seed_ids = seed_ids.to_vec();
+            let exclude_resolution_kinds = self.config.direct.exclude_resolution_kinds.clone();
             let metadata = Arc::clone(&layer_metadata);
             let results = Arc::clone(&layer_results);
 
@@ -174,7 +176,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
                 };
 
                 let test_layer = TestImpactLayer::new(&db);
-                match test_layer.analyze(&seed_ids, graph_version) {
+                match test_layer.analyze(&seed_ids, &exclude_resolution_kinds, graph_version) {
                     Ok(result) => {
                         let mut meta = metadata.lock().unwrap();
                         meta.test = Some(LayerStats {
@@ -294,6 +296,19 @@ impl<'a> MultiLayerOrchestrator<'a> {
             .map(|mutex| mutex.into_inner().unwrap())
             .unwrap_or_else(|arc| arc.lock().unwrap().clone());
 
+        // Issue #81: see `analyze_sequential`'s identical extraction for why
+        // this is captured before `fuse_results` consumes `layer_results`.
+        let direct_traversed_ids: Vec<i64> = layer_results
+            .iter()
+            .find(|r| r.layer_name == "direct")
+            .map(|r| r.impacts.iter().map(|(id, _)| *id).collect())
+            .unwrap_or_default();
+        // Issue #81 (R5): see `analyze_sequential`'s identical extraction.
+        let traversed_heuristic_kind = layer_results
+            .iter()
+            .find(|r| r.layer_name == "direct")
+            .is_some_and(|r| r.traversed_heuristic_kind);
+
         // Fuse results from all layers
         let num_layers = layer_results.len();
         let (affected, summary, truncated) =
@@ -316,6 +331,9 @@ impl<'a> MultiLayerOrchestrator<'a> {
             summary
         };
 
+        let lower_bound =
+            self.compute_lower_bound(seed_ids, &direct_traversed_ids, graph_version)?;
+
         eprintln!(
             "Multi-layer analysis (parallel) complete in {}ms: {} layers executed, {} symbols affected",
             start.elapsed().as_millis(),
@@ -330,6 +348,8 @@ impl<'a> MultiLayerOrchestrator<'a> {
             truncated,
             config: self.build_config_summary(),
             layers: layer_metadata,
+            lower_bound,
+            traversed_heuristic_kind,
         })
     }
 
@@ -457,6 +477,24 @@ impl<'a> MultiLayerOrchestrator<'a> {
             });
         }
 
+        // Issue #81: the direct layer's own traversed set (seeds + everything
+        // it visited), captured before `fuse_results` consumes `layer_results`
+        // -- the lower-bound signal is specific to graph-edge resolution, so
+        // only the direct layer (not test/historical) feeds it.
+        let direct_traversed_ids: Vec<i64> = layer_results
+            .iter()
+            .find(|r| r.layer_name == "direct")
+            .map(|r| r.impacts.iter().map(|(id, _)| *id).collect())
+            .unwrap_or_default();
+        // Issue #81 (R5): whether the direct layer's own traversal crossed
+        // at least one heuristic-kind edge -- gates the "retry excluding
+        // heuristics" next_hops suggestion, unlike `lower_bound` (unresolved
+        // references), which is a different signal entirely.
+        let traversed_heuristic_kind = layer_results
+            .iter()
+            .find(|r| r.layer_name == "direct")
+            .is_some_and(|r| r.traversed_heuristic_kind);
+
         // Fuse results from all layers
         let num_layers = layer_results.len();
         let (affected, summary, truncated) =
@@ -479,6 +517,9 @@ impl<'a> MultiLayerOrchestrator<'a> {
             summary
         };
 
+        let lower_bound =
+            self.compute_lower_bound(seed_ids, &direct_traversed_ids, graph_version)?;
+
         eprintln!(
             "Multi-layer analysis complete in {}ms: {} layers executed, {} symbols affected",
             start.elapsed().as_millis(),
@@ -493,6 +534,38 @@ impl<'a> MultiLayerOrchestrator<'a> {
             truncated,
             config: self.build_config_summary(),
             layers: layer_metadata,
+            traversed_heuristic_kind,
+            lower_bound,
+        })
+    }
+
+    /// Issue #81's lower-bound indicator: pending `unresolved_references`
+    /// rows whose source symbol is a seed or one of the direct layer's own
+    /// impacted symbols. `false`/`0` when the direct layer is disabled --
+    /// test/historical layers don't traverse resolvable graph edges, so
+    /// they have nothing meaningful to report here.
+    fn compute_lower_bound(
+        &self,
+        seed_ids: &[i64],
+        direct_traversed_ids: &[i64],
+        graph_version: i64,
+    ) -> Result<crate::model::LowerBound> {
+        if !self.config.direct.enabled {
+            return Ok(crate::model::LowerBound {
+                is_lower_bound: false,
+                unresolved_count: 0,
+            });
+        }
+        let mut ids = seed_ids.to_vec();
+        ids.extend_from_slice(direct_traversed_ids);
+        ids.sort_unstable();
+        ids.dedup();
+        let count = self
+            .db
+            .unresolved_reference_count_for_symbols(&ids, graph_version)?;
+        Ok(crate::model::LowerBound {
+            is_lower_bound: count > 0,
+            unresolved_count: count,
         })
     }
 
@@ -507,6 +580,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
             self.config.direct.max_depth,
             crate::impact::TraversalDirection::from(self.config.direct.direction.as_str()),
             &kinds,
+            &self.config.direct.exclude_resolution_kinds,
             self.config.direct.include_tests,
             self.config.limit,
             languages,
@@ -517,7 +591,11 @@ impl<'a> MultiLayerOrchestrator<'a> {
     /// Run Layer 2: Test impact
     fn run_test_layer(&self, seed_ids: &[i64], graph_version: i64) -> Result<LayerResult> {
         let test_layer = TestImpactLayer::new(self.db);
-        test_layer.analyze(seed_ids, graph_version)
+        test_layer.analyze(
+            seed_ids,
+            &self.config.direct.exclude_resolution_kinds,
+            graph_version,
+        )
     }
 
     /// Run Layer 3: Historical impact (co-change patterns)
@@ -543,7 +621,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
         let mut any_truncated = false;
 
         // Merge parent maps from all layers (direct layer is primary)
-        let mut merged_parents: HashMap<i64, (i64, String)> = HashMap::new();
+        let mut merged_parents: HashMap<i64, (i64, String, Option<String>)> = HashMap::new();
         for layer_result in &layer_results {
             any_truncated = any_truncated || layer_result.truncated;
 
@@ -563,8 +641,12 @@ impl<'a> MultiLayerOrchestrator<'a> {
             }
         }
 
-        // Load all impacted symbols
-        let symbol_ids: Vec<i64> = symbol_evidence.keys().copied().collect();
+        // Load all impacted symbols, plus the seeds themselves -- a path
+        // step's parent can be a seed (e.g. the distance-1 step off the
+        // start symbol), and `reconstruct_path_steps` needs a qualname for
+        // it too, not just for non-seed impacted symbols.
+        let mut symbol_ids: Vec<i64> = symbol_evidence.keys().copied().collect();
+        symbol_ids.extend(seed_ids.iter().copied());
         let symbols = self.db.symbols_by_ids(&symbol_ids, None, graph_version)?;
         let symbol_map: HashMap<i64, Symbol> = symbols.into_iter().map(|s| (s.id, s)).collect();
 
@@ -673,7 +755,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
 fn reconstruct_path_steps(
     symbol_id: i64,
     seed_set: &HashSet<i64>,
-    parent_map: &HashMap<i64, (i64, String)>,
+    parent_map: &HashMap<i64, (i64, String, Option<String>)>,
     symbol_map: &HashMap<i64, Symbol>,
 ) -> Vec<PathStep> {
     let mut steps = Vec::new();
@@ -683,7 +765,7 @@ fn reconstruct_path_steps(
         if seed_set.contains(&current) {
             break;
         }
-        let Some((parent_id, edge_kind)) = parent_map.get(&current) else {
+        let Some((parent_id, edge_kind, resolution_kind)) = parent_map.get(&current) else {
             break;
         };
         let from_qn = symbol_map
@@ -698,6 +780,7 @@ fn reconstruct_path_steps(
             edge_kind: edge_kind.clone(),
             from_symbol: from_qn,
             to_symbol: to_qn,
+            resolution_kind: resolution_kind.clone(),
         });
         current = *parent_id;
     }

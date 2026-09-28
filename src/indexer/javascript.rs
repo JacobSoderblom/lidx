@@ -1,17 +1,35 @@
+use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
+use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::tree_helpers::{
-    module_symbol_fallback, module_symbol_with_span, node_text, span,
+    collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
+    span,
 };
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use tree_sitter::{Node, Parser};
+
+/// JavaScript/TypeScript's resolution profile: the shared default, plus a
+/// recorded-visibility rule — `handle_method` records `visibility =
+/// "private"` for an explicit `private` accessibility modifier or a
+/// `#`-prefixed class field (see `is_private_member`). Top-level
+/// functions are never recorded private: not being directly wrapped in an
+/// `export` statement doesn't mean unreachable from another file
+/// (CommonJS `module.exports`, a separate `export { name }`, re-exports —
+/// issue #75 follow-up, finding E). Registered for "javascript",
+/// "typescript" and "tsx" alike (`db::resolver::profile_for`) since they
+/// share one resolution family.
+pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    visibility: VisibilityRule::Recorded,
+    ..LanguageProfile::DEFAULT
+};
 
 const JS_TS_EXTENSIONS: &[&str] = &["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "d.ts"];
 const HTTP_METHOD_NAMES: &[&str] = &[
@@ -49,6 +67,60 @@ struct Context {
     route_prefix: Option<String>,
     router_aliases: Vec<String>,
     grpc_clients: HashMap<String, GrpcService>,
+    /// Types of locally-bound names (parameters + `const`/`let`/`var`
+    /// declarations) within the *current* function body only — see
+    /// `infer_local_types`. Reset fresh on every function/method entry;
+    /// never merged across functions. See `python::infer_receiver_type` for
+    /// the mechanism this mirrors.
+    local_types: Rc<HashMap<String, LocalType>>,
+    /// Type-annotated fields and constructor parameter properties of the
+    /// *directly* enclosing class, read once when entering the class body —
+    /// see `collect_class_level_attr_types`. Used only to resolve a
+    /// single-hop `this.field.method()` receiver.
+    class_attr_types: Rc<HashMap<String, LocalType>>,
+    /// Qualname of the module-level `const`/`let`/`var` symbol whose
+    /// initializer is currently being walked. The first function-like node
+    /// (arrow, `function`/`function*` expression, object-literal method)
+    /// met inside that initializer becomes a scope owned by this symbol —
+    /// see `owned_function_scope`. Calls in the initializer *outside* any
+    /// function (`const x = f()`, the `dynamic(...)` in `const X =
+    /// dynamic(() => ...)`) still attribute to the module.
+    fn_owner: Option<String>,
+    /// This file's top-level `import` bindings — see `collect_import_bindings`.
+    import_bindings: Rc<ImportBindings>,
+}
+
+/// Local name bound by a top-level `import` → (module specifier, imported
+/// export name). The export name is `None` for a namespace import (`* as
+/// ns`); for a default import it is the local name itself.
+///
+/// ponytail: a default import is assumed to name the export it binds
+/// (`import formatName from './fmt'` ↔ `export default function
+/// formatName`). A default export declared under a different name, or an
+/// anonymous one, misses — and a missed import candidate refuses fuzzy
+/// resolution, so it stays unbound rather than guessed.
+type ImportBindings = HashMap<String, (String, Option<String>)>;
+
+/// Separates specifier from imported member in the placeholder candidates
+/// `handle_call` records; `resolve_import_file_edges` rewrites each into a
+/// real qualname once the specifier can be resolved against the repo.
+const IMPORT_PLACEHOLDER_SEP: char = '\0';
+
+/// Locally-inferred type of a name bound within a single function body (or
+/// module top level). Deliberately coarse — see
+/// `python::LocalType` for the shape this mirrors; everything that isn't a
+/// confident, non-builtin type name collapses to `Other`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalType {
+    /// Inferred (via type annotation or `new T()` construction) to be this
+    /// non-builtin type name.
+    Known(String),
+    /// Builtin type, untyped parameter, destructured binding, loop/catch
+    /// target, or anything else not explicitly recognized. A name landing
+    /// here (rather than simply absent from the map) still gates
+    /// resolution: it means "we looked, and it's not a usable type" as
+    /// opposed to "we never looked".
+    Other,
 }
 
 pub struct JavascriptExtractor {
@@ -184,21 +256,54 @@ pub fn resolve_import_file_edges(
     _file_module: &str,
     edges: &mut Vec<EdgeInput>,
 ) {
+    // Rewrite `handle_call`'s placeholder import candidates into the
+    // imported symbol's qualname in the resolved file. A specifier that
+    // doesn't resolve to a repo file (`react`, `next/navigation`, a missing
+    // relative file) keeps a `{specifier}:{member}` candidate that can never
+    // match a symbol: its only job is to keep the list non-empty so
+    // `Db::insert_edges` refuses fuzzy resolution for a call known to go
+    // through an import.
+    //
+    // ponytail: re-exports are not chased — `import { x } from '@/lib'`
+    // where `lib/index.ts` does `export * from './x'` yields candidate
+    // `lib.x`, misses, and stays unbound. Upgrade path: follow `export
+    // ... from` edges of the resolved file.
+    let mut resolved_specs: HashMap<String, Option<String>> = HashMap::new();
+    for edge in edges.iter_mut() {
+        for candidate in edge.import_candidates.iter_mut() {
+            let Some((spec, member)) = candidate.split_once(IMPORT_PLACEHOLDER_SEP) else {
+                continue;
+            };
+            let dst = resolved_specs
+                .entry(spec.to_string())
+                .or_insert_with(|| resolve_import_path(repo_root, file_rel_path, spec));
+            *candidate = match dst {
+                Some(dst) => format!("{}.{member}", module_name_from_rel_path(dst)),
+                None => format!("{spec}:{member}"),
+            };
+        }
+    }
     let mut resolved = Vec::new();
     for edge in edges.iter() {
         if edge.kind != "IMPORTS" {
             continue;
         }
-        let target = match edge.target_qualname.as_deref() {
-            Some(value) => value.trim(),
-            None => continue,
-        };
-        if target.is_empty() {
+        let Some(raw_target) = edge.target_qualname.as_deref() else {
             continue;
-        }
-        let dst_rel = match resolve_import_path(repo_root, file_rel_path, target) {
-            Some(value) => value,
-            None => continue,
+        };
+        let Some((target, is_relative)) = classify_import_target(raw_target) else {
+            continue;
+        };
+        // Issue #77: a relative specifier always yields an IMPORTS_FILE
+        // edge, whether or not its target currently resolves to a real
+        // file — like CALLS emits an unresolved placeholder. A bare
+        // specifier (third-party, or an unmapped alias) still needs
+        // `resolve_tsconfig_alias`'s disk-backed lookup, since there's no
+        // repo-relative path to guess without it.
+        let Some((dst_rel, resolved_on_disk)) =
+            resolve_import_target(repo_root, file_rel_path, target, is_relative)
+        else {
+            continue;
         };
         let dst_module = module_name_from_rel_path(&dst_rel);
         resolved.push(EdgeInput {
@@ -209,7 +314,7 @@ pub fn resolve_import_file_edges(
                 json!({
                     "src_path": file_rel_path,
                     "dst_path": dst_rel,
-                    "confidence": 1.0,
+                    "confidence": if resolved_on_disk { 1.0 } else { 0.0 },
                 })
                 .to_string(),
             ),
@@ -222,31 +327,117 @@ pub fn resolve_import_file_edges(
     edges.extend(resolved);
 }
 
-fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> Option<String> {
+/// Splits off any `?query`/`#hash` suffix and classifies whether `target`
+/// is a relative specifier (`./`, `../`, or a repo-absolute `/`) — `None`
+/// for an empty specifier. Shared by `resolve_import_path`'s disk-backed
+/// resolution and `resolve_import_file_edges`'s disk-independent fallback
+/// for a relative specifier that doesn't currently resolve to a file
+/// (issue #77: an `IMPORTS_FILE` edge is still emitted then, just
+/// unresolved, rather than omitted).
+fn classify_import_target(target: &str) -> Option<(&str, bool)> {
     let target = target.split(['?', '#']).next().unwrap_or(target).trim();
     if target.is_empty() {
         return None;
     }
     let is_relative =
         target.starts_with("./") || target.starts_with("../") || target.starts_with('/');
-    if !is_relative {
-        return None;
-    }
+    Some((target, is_relative))
+}
+
+/// The literal repo-relative path a relative specifier (already classified
+/// by `classify_import_target`) points at, lexically collapsing `..` so
+/// `components/../lib/utils` yields the same path as `lib/utils` — before
+/// any extension/index-file probing. `None` only for one that walks `..`
+/// past the repo root.
+fn relative_import_target(file_rel_path: &str, target: &str) -> Option<PathBuf> {
     let base_dir = Path::new(file_rel_path)
         .parent()
         .unwrap_or_else(|| Path::new(""));
-    let rel = if target.starts_with('/') {
+    let joined = if target.starts_with('/') {
         PathBuf::from(target.trim_start_matches('/'))
     } else {
-        let mut rel = PathBuf::from(base_dir);
-        rel.push(target);
-        rel
+        base_dir.join(target)
     };
-    if rel.extension().is_some() {
-        if repo_root.join(&rel).is_file() {
-            return Some(util::normalize_path(&rel));
+    let mut rel = PathBuf::new();
+    for comp in joined.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                if !rel.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::Normal(part) => rel.push(part),
+            _ => {}
         }
-        return None;
+    }
+    Some(rel)
+}
+
+fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> Option<String> {
+    let (target, is_relative) = classify_import_target(target)?;
+    let (path, on_disk) = resolve_import_target(repo_root, file_rel_path, target, is_relative)?;
+    on_disk.then_some(path)
+}
+
+/// Resolves an already-classified specifier (`classify_import_target`'s
+/// output) to a repo-relative path: `(path, true)` when it names a real
+/// file on disk, `(path, false)` only for a relative specifier that
+/// doesn't (there's still a repo-relative path worth guessing), `None`
+/// when nothing usable exists at all — an unmapped alias/third-party
+/// specifier, or a relative specifier that walks past the repo root.
+///
+/// Not a relative specifier: it's either a genuine third-party import
+/// (e.g. `next/navigation`) or an alias remapped through the owning
+/// tsconfig.json's `compilerOptions.paths` (e.g. `@/lib/foo`). Only the
+/// latter ever resolves, and only when a concrete path-mapping entry backs
+/// it *and* the mapped location is a real file — no fuzzy fallback.
+///
+/// Shared by `resolve_import_path` (collapses to `Option<String>`, for
+/// rewriting a call's import-candidate placeholder) and
+/// `resolve_import_file_edges` (keeps the on-disk flag, since a relative
+/// specifier still gets an unresolved `IMPORTS_FILE` edge rather than none
+/// at all — issue #77).
+fn resolve_import_target(
+    repo_root: &Path,
+    file_rel_path: &str,
+    target: &str,
+    is_relative: bool,
+) -> Option<(String, bool)> {
+    if !is_relative {
+        return resolve_tsconfig_alias(repo_root, file_rel_path, target).map(|path| (path, true));
+    }
+    let rel = relative_import_target(file_rel_path, target)?;
+    match probe_module_candidates(repo_root, &rel) {
+        Some(found) => Some((found, true)),
+        None => Some((util::normalize_path(&rel), false)),
+    }
+}
+
+/// Checks whether `rel` (extension-less or not, relative to `repo_root`)
+/// names a real source file, trying it as given, each JS/TS extension, and
+/// each extension under an `index` file in that directory — the same three
+/// tiers Node/TypeScript module resolution tries for a relative specifier.
+/// Shared by plain relative imports and by tsconfig alias resolution so
+/// both go through identical, filesystem-verified matching.
+fn probe_module_candidates(repo_root: &Path, rel: &Path) -> Option<String> {
+    if rel.extension().is_some() {
+        if repo_root.join(rel).is_file() {
+            return Some(util::normalize_path(rel));
+        }
+        // NodeNext/ESM TypeScript imports the emitted name: `./x.js` is
+        // `x.ts` on disk (likewise .jsx→.tsx, .mjs→.mts, .cjs→.cts).
+        let ts_ext = match rel.extension().and_then(|e| e.to_str()) {
+            Some("js") => &["ts", "tsx"][..],
+            Some("jsx") => &["tsx"][..],
+            Some("mjs") => &["mts"][..],
+            Some("cjs") => &["cts"][..],
+            _ => &[][..],
+        };
+        return ts_ext
+            .iter()
+            .map(|ext| rel.with_extension(ext))
+            .find(|candidate| repo_root.join(candidate).is_file())
+            .map(|candidate| util::normalize_path(&candidate));
     }
     for ext in JS_TS_EXTENSIONS {
         let candidate = rel.with_extension(ext);
@@ -261,6 +452,258 @@ fn resolve_import_path(repo_root: &Path, file_rel_path: &str, target: &str) -> O
         }
     }
     None
+}
+
+/// Resolves a non-relative import specifier (`@/lib/foo`) through the
+/// nearest ancestor `tsconfig.json`'s `compilerOptions.paths`, scoped to
+/// that config's own directory (and its `baseUrl`) so two sibling projects
+/// with their own tsconfigs — e.g. `node/datacatalog-ui` and
+/// `node/dpb-app`, each mapping `@/*` to a different root — never bleed
+/// into each other.
+///
+/// Returns `None` (never a guess) unless a `paths` entry syntactically
+/// matches the specifier *and* the mapped location, run back through the
+/// same extension/index probing relative imports use, is a real file.
+fn resolve_tsconfig_alias(repo_root: &Path, file_rel_path: &str, target: &str) -> Option<String> {
+    let config_dir = find_owning_tsconfig_dir(repo_root, file_rel_path)?;
+    let aliases = load_tsconfig_aliases(repo_root, &config_dir)?;
+    for (pattern, targets) in &aliases.entries {
+        let Some(capture) = match_alias_pattern(pattern, target) else {
+            continue;
+        };
+        let pattern_has_star = pattern.contains('*');
+        for target_template in targets {
+            let Some(mapped_tail) =
+                substitute_alias_target(target_template, &capture, pattern_has_star)
+            else {
+                continue;
+            };
+            let mut rel = aliases.base_dir.clone();
+            rel.push(mapped_tail);
+            if let Some(resolved) = probe_module_candidates(repo_root, &rel) {
+                return Some(resolved);
+            }
+        }
+    }
+    None
+}
+
+/// Walks from `file_rel_path`'s directory up toward `repo_root`, returning
+/// the directory (relative to `repo_root`) of the nearest ancestor
+/// `tsconfig.json`, if any. This is what makes alias resolution per-project
+/// rather than global: a file under `node/dpb-app/` finds
+/// `node/dpb-app/tsconfig.json` before it ever sees
+/// `node/datacatalog-ui/tsconfig.json`, even though both define `@/*`.
+fn find_owning_tsconfig_dir(repo_root: &Path, file_rel_path: &str) -> Option<PathBuf> {
+    let start_dir = Path::new(file_rel_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    for dir in start_dir.ancestors() {
+        if repo_root.join(dir).join("tsconfig.json").is_file() {
+            return Some(dir.to_path_buf());
+        }
+    }
+    None
+}
+
+/// A tsconfig's `compilerOptions.paths`, parsed once per lookup: the
+/// directory `paths` targets are resolved against (`baseUrl`, itself
+/// resolved against the config's own directory — defaulting to that
+/// directory when `baseUrl` is absent, per tsconfig semantics), and the
+/// pattern/target entries in TypeScript's own longest-prefix-first order.
+struct TsconfigAliases {
+    base_dir: PathBuf,
+    entries: Vec<(String, Vec<String>)>,
+}
+
+// ponytail: a tsconfig that `extends` another one (relative path or, like
+// `@docusaurus/tsconfig`, a package) is read for its own `compilerOptions`
+// only — an extended `paths`/`baseUrl` isn't inherited. Ceiling: an alias
+// defined solely in a base config the project extends resolves nothing
+// here. Neither `node/datacatalog-ui/tsconfig.json` nor
+// `node/dpb-app/tsconfig.json` (the two configs this fix targets) extend
+// anything, so this doesn't affect either. Follow the (relative-path-only)
+// `extends` chain here if a project that needs it is reported.
+fn load_tsconfig_aliases(repo_root: &Path, config_dir: &Path) -> Option<TsconfigAliases> {
+    let raw = util::read_to_string(&repo_root.join(config_dir).join("tsconfig.json")).ok()?;
+    let cleaned = strip_jsonc(&raw);
+    let value: serde_json::Value = serde_json::from_str(&cleaned).ok()?;
+    let compiler_options = value.get("compilerOptions")?;
+    let paths = compiler_options.get("paths")?.as_object()?;
+    if paths.is_empty() {
+        return None;
+    }
+    let base_url = compiler_options
+        .get("baseUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or(".");
+    let base_dir = config_dir.join(base_url);
+
+    let mut entries: Vec<(String, Vec<String>)> = Vec::new();
+    for (pattern, targets_value) in paths {
+        let Some(targets_array) = targets_value.as_array() else {
+            continue;
+        };
+        let targets: Vec<String> = targets_array
+            .iter()
+            .filter_map(|t| t.as_str().map(|s| s.to_string()))
+            .collect();
+        if targets.is_empty() {
+            continue;
+        }
+        entries.push((pattern.clone(), targets));
+    }
+    if entries.is_empty() {
+        return None;
+    }
+    // TypeScript tries the pattern with the longest non-wildcard prefix
+    // first when more than one pattern could match the same specifier.
+    entries.sort_by(|(a, _), (b, _)| {
+        let a_len = a.split('*').next().unwrap_or(a).len();
+        let b_len = b.split('*').next().unwrap_or(b).len();
+        b_len.cmp(&a_len)
+    });
+    Some(TsconfigAliases { base_dir, entries })
+}
+
+/// Matches a specifier against one `paths` pattern key (`"@/*"`, or an
+/// exact key with no wildcard at all). A pattern with more than one `*` is
+/// not a shape tsconfig itself allows — treated as malformed and refused
+/// rather than guessed at. Returns the text the `*` captured (empty string
+/// for an exact, wildcard-free match).
+fn match_alias_pattern(pattern: &str, specifier: &str) -> Option<String> {
+    match pattern.find('*') {
+        Some(idx) => {
+            let prefix = &pattern[..idx];
+            let suffix = &pattern[idx + 1..];
+            if suffix.contains('*') {
+                return None;
+            }
+            if specifier.starts_with(prefix)
+                && specifier.ends_with(suffix)
+                && specifier.len() >= prefix.len() + suffix.len()
+            {
+                Some(specifier[prefix.len()..specifier.len() - suffix.len()].to_string())
+            } else {
+                None
+            }
+        }
+        None => {
+            if specifier == pattern {
+                Some(String::new())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Substitutes a pattern's captured wildcard text into one of its `paths`
+/// targets (`"./*"`, `"./src/*"`, or an exact target). Refuses rather than
+/// guesses when the target's wildcard shape doesn't match the pattern's
+/// (tsconfig requires them to agree): a wildcard pattern needs a target
+/// with exactly one `*` to substitute into, and an exact pattern needs an
+/// exact (wildcard-free) target, since a literal target can't disambiguate
+/// which file a wildcard capture meant.
+fn substitute_alias_target(target: &str, capture: &str, pattern_has_star: bool) -> Option<String> {
+    match target.find('*') {
+        Some(idx) => {
+            if !pattern_has_star || target[idx + 1..].contains('*') {
+                return None;
+            }
+            let mut out = String::with_capacity(target.len() + capture.len());
+            out.push_str(&target[..idx]);
+            out.push_str(capture);
+            out.push_str(&target[idx + 1..]);
+            Some(out)
+        }
+        None => {
+            if pattern_has_star {
+                None
+            } else {
+                Some(target.to_string())
+            }
+        }
+    }
+}
+
+/// Strips `//` and `/* */` comments from JSONC text (tsconfig.json's actual
+/// format) so it parses as plain JSON, without disturbing comment-like text
+/// inside string literals. Trailing commas before a closing `}`/`]` — the
+/// other JSONC-ism tsconfig files sometimes carry — are dropped in the same
+/// pass.
+fn strip_jsonc(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                out.push(ch);
+                while let Some(sch) = chars.next() {
+                    out.push(sch);
+                    if sch == '\\' {
+                        if let Some(escaped) = chars.next() {
+                            out.push(escaped);
+                        }
+                    } else if sch == '"' {
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                chars.next();
+                for sch in chars.by_ref() {
+                    if sch == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = '\0';
+                for sch in chars.by_ref() {
+                    if prev == '*' && sch == '/' {
+                        break;
+                    }
+                    prev = sch;
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    strip_trailing_commas(&out)
+}
+
+/// Removes a comma that (ignoring whitespace) is immediately followed by a
+/// closing `}` or `]`, without touching commas inside string literals.
+fn strip_trailing_commas(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '"' {
+            out.push(ch);
+            while let Some(sch) = chars.next() {
+                out.push(sch);
+                if sch == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        out.push(escaped);
+                    }
+                } else if sch == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == ',' {
+            let next_significant = chars.clone().find(|c| !c.is_whitespace());
+            if matches!(next_significant, Some('}') | Some(']')) {
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn extract_with_parser(
@@ -299,6 +742,10 @@ fn extract_with_parser(
         route_prefix: None,
         router_aliases: Vec::new(),
         grpc_clients,
+        local_types: Rc::new(infer_module_level_types(root, source)),
+        class_attr_types: Rc::new(HashMap::new()),
+        fn_owner: None,
+        import_bindings: Rc::new(collect_import_bindings(root, source)),
     };
     walk_node(root, &ctx, source, &mut output);
     Ok(output)
@@ -372,13 +819,55 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         output.edges.push(edge);
     }
     if node.kind() == "call_expression" || node.kind() == "new_expression" {
-        handle_call(node, ctx, source, output);
+        // `handle_call` returns `true` when it has already fully walked a
+        // callback argument itself with adjusted context (currently just
+        // `fastify_register_walk`, which re-walks a `.register(cb, {
+        // prefix })` callback with the accumulated route prefix folded
+        // in). Recursing into this node's children generically afterwards
+        // — now that an arrow-function argument is no longer a walk
+        // boundary (see `is_lambda_node`) — would walk that same callback
+        // body a second time with the *un*-prefixed `ctx`, duplicating its
+        // edges under the wrong prefix. Returning here skips only the
+        // generic recursion for *this* node; sibling calls are unaffected.
+        if handle_call(node, ctx, source, output) {
+            return;
+        }
     }
     // const { DB_URL } = process.env (destructuring)
     if node.kind() == "variable_declarator" {
         for edge in process_env_destructuring_edges(node, ctx, source) {
             output.edges.push(edge);
         }
+        // `export const X = (...) => {...}` and friends: a module-level
+        // declarator `handle_variable_declaration` emitted a symbol for.
+        // Walk its initializer with that symbol pending as the owner of
+        // any function found inside (see `Context::fn_owner`). Only at
+        // module scope: a handler const inside a component/function body
+        // stays attributed to that component, like it does for a
+        // `function` declaration. Destructuring (`const {a} = f()`) has no
+        // single owner, so it's left alone.
+        if ctx.current_scope == ctx.module
+            && ctx.class_stack.is_empty()
+            && let Some(name_node) = node.child_by_field_name("name")
+            && name_node.kind() == "identifier"
+            && let Some(value) = node.child_by_field_name("value")
+        {
+            let mut next_ctx = ctx.clone();
+            next_ctx.fn_owner = Some(build_qualname(
+                &ctx.module,
+                &ctx.class_stack,
+                &node_text(name_node, source),
+            ));
+            walk_node(value, &next_ctx, source, output);
+            return;
+        }
+    }
+    if let Some(next_ctx) = owned_function_scope(node, ctx, source) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk_node(child, &next_ctx, source, output);
+        }
+        return;
     }
     // process.env.KEY (member_expression) or process.env["KEY"] (subscript_expression)
     if (node.kind() == "member_expression" || node.kind() == "optional_member_expression")
@@ -391,9 +880,16 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     {
         output.edges.push(edge);
     }
-    if is_nested_function_node(node.kind()) {
+    if is_dynamic_this_function_node(node.kind()) {
         return;
     }
+    // An arrow function body is a nested *scope*, not a new symbol — fall
+    // through into the generic recursion below with the same `ctx` so
+    // calls inside it attribute to the enclosing named symbol instead of
+    // being silently dropped (see `is_lambda_node`'s doc comment for why
+    // this is safe only for arrow functions, not plain `function`
+    // expressions). None of the match arms below fire for "arrow_function"
+    // itself, so no special case is needed here beyond not returning early.
     match node.kind() {
         "class_declaration" | "abstract_class_declaration" => {
             handle_class(node, ctx, source, output);
@@ -483,6 +979,7 @@ fn handle_class(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         next_ctx.route_prefix = Some(prefix);
     }
     if let Some(body) = node.child_by_field_name("body") {
+        next_ctx.class_attr_types = Rc::new(collect_class_level_attr_types(body, source));
         walk_class_body(body, &next_ctx, source, output);
     }
 }
@@ -622,8 +1119,13 @@ fn walk_class_body(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     }
 }
 
-fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    fastify_register_walk(node, ctx, source, output);
+/// Returns `true` when `fastify_register_walk` already fully walked a
+/// `.register(...)` callback argument itself (with the accumulated route
+/// prefix folded into its context) — see that function's doc comment and
+/// this function's call site in `walk_node` for why the caller must then
+/// skip its own generic recursion into this node's children.
+fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) -> bool {
+    let register_handled = fastify_register_walk(node, ctx, source, output);
     for edge in http_route_edges(node, ctx, source) {
         output.edges.push(edge);
     }
@@ -640,13 +1142,15 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         output.edges.push(edge);
     }
     let Some(target_node) = call_target_node(node) else {
-        return;
+        return register_handled;
     };
     let raw = node_text(target_node, source);
     if raw.is_empty() {
-        return;
+        return register_handled;
     }
+    let receiver_type = infer_receiver_type(target_node, source, ctx);
     let target = resolve_call_target(&raw, ctx);
+    let import_candidates = import_placeholder(&raw, ctx).into_iter().collect();
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
@@ -656,10 +1160,100 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         target_qualname: target,
         detail,
         evidence_snippet: snippet,
+        receiver_type,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
+        import_candidates,
+        // A bare identifier callee (`foo()`) vs. anything qualified
+        // (`this.foo()`, `obj.foo()`, ...) — see `EdgeInput::bare_call`'s
+        // doc.
+        bare_call: target_node.kind() == "identifier",
         ..Default::default()
     });
+    register_handled
+}
+
+/// Collect `import` bindings declared at the top level of `root`.
+fn collect_import_bindings(root: Node<'_>, source: &str) -> ImportBindings {
+    let mut bindings = ImportBindings::new();
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        if stmt.kind() != "import_statement" {
+            continue;
+        }
+        let Some(spec) = stmt
+            .child_by_field_name("source")
+            .and_then(|n| unquote_string_literal(&node_text(n, source)))
+        else {
+            continue;
+        };
+        let mut stmt_cursor = stmt.walk();
+        for clause in stmt.named_children(&mut stmt_cursor) {
+            if clause.kind() != "import_clause" {
+                continue;
+            }
+            let mut clause_cursor = clause.walk();
+            for part in clause.named_children(&mut clause_cursor) {
+                match part.kind() {
+                    "identifier" => {
+                        let local = node_text(part, source);
+                        bindings.insert(local.clone(), (spec.clone(), Some(local)));
+                    }
+                    "namespace_import" => {
+                        let mut ns_cursor = part.walk();
+                        let local = part
+                            .named_children(&mut ns_cursor)
+                            .find(|n| n.kind() == "identifier");
+                        if let Some(local) = local {
+                            bindings.insert(node_text(local, source), (spec.clone(), None));
+                        }
+                    }
+                    "named_imports" => {
+                        let mut named_cursor = part.walk();
+                        for item in part.named_children(&mut named_cursor) {
+                            let Some(name) = item.child_by_field_name("name") else {
+                                continue;
+                            };
+                            let name = node_text(name, source);
+                            let name = unquote_string_literal(&name).unwrap_or(name);
+                            let local = item
+                                .child_by_field_name("alias")
+                                .map(|n| node_text(n, source))
+                                .unwrap_or_else(|| name.clone());
+                            bindings.insert(local, (spec.clone(), Some(name)));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    bindings
+}
+
+/// Placeholder import candidate (`{specifier}\0{member}`) for a call whose
+/// root identifier is an import binding not shadowed by a local: `cn()` →
+/// `cn`, `api.get()` (namespace) → `get`, `Foo.bar()` (named) → `Foo.bar`.
+fn import_placeholder(raw: &str, ctx: &Context) -> Option<String> {
+    let raw = collapse_call_target_whitespace(raw);
+    if !is_simple_call_target(&raw) {
+        return None;
+    }
+    let (root, rest) = match raw.split_once('.') {
+        Some((root, rest)) => (root, Some(rest)),
+        None => (raw.as_str(), None),
+    };
+    if ctx.local_types.contains_key(root) {
+        return None;
+    }
+    let (spec, imported) = ctx.import_bindings.get(root)?;
+    let member = match (imported, rest) {
+        (Some(name), Some(rest)) => format!("{name}.{rest}"),
+        (Some(name), None) => name.clone(),
+        (None, Some(rest)) => rest.to_string(),
+        (None, None) => return None,
+    };
+    Some(format!("{spec}{IMPORT_PLACEHOLDER_SEP}{member}"))
 }
 
 /// Detect process.env.KEY → CONFIG_READ
@@ -1074,7 +1668,8 @@ fn grpc_service_from_raw_path(raw_path: &str) -> Option<(GrpcService, String)> {
 }
 
 fn grpc_service_from_path(raw: &str) -> Option<GrpcService> {
-    let trimmed = raw.trim();
+    let trimmed = collapse_call_target_whitespace(raw);
+    let trimmed = trimmed.as_str();
     if trimmed.is_empty() || !is_simple_call_target(trimmed) {
         return None;
     }
@@ -1976,7 +2571,8 @@ fn call_target_node(node: Node<'_>) -> Option<Node<'_>> {
 }
 
 fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
-    let raw = raw.trim();
+    let raw = collapse_call_target_whitespace(raw);
+    let raw = raw.as_str();
     if raw.is_empty() || !is_simple_call_target(raw) {
         return None;
     }
@@ -2004,11 +2600,95 @@ fn is_simple_call_target(raw: &str) -> bool {
         .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == '$' || ch == '#')
 }
 
-fn is_nested_function_node(kind: &str) -> bool {
+/// A plain (non-arrow) JS/TS function expression or generator expression —
+/// `function() {...}` / `function*() {...}`, named or anonymous, most often
+/// seen as a callback. Unlike an arrow function, one of these dynamically
+/// rebinds `this` (and `arguments`) to whatever the caller supplies at call
+/// time, instead of inheriting the enclosing lexical `this`. Walking its
+/// body with the *enclosing* scope's unchanged `Context` — same
+/// `current_scope`, same `this`-relative resolution in `infer_receiver_type`
+/// — would misattribute a `this.method()` call inside it to the wrong
+/// class method, which is worse than not indexing the call at all. So
+/// `walk_node` and `is_local_scope_boundary` both still treat this as a
+/// hard boundary; see `is_lambda_node` below for the one kind that's safe
+/// to fall through instead. (`"function"` is the bare `function` keyword
+/// token itself — unnamed, so `named_children()` never yields it and this
+/// arm is unreachable in practice — kept only for parity with the
+/// pre-existing list this replaces.)
+fn is_dynamic_this_function_node(kind: &str) -> bool {
     matches!(
         kind,
-        "function" | "function_expression" | "arrow_function" | "generator_function"
+        "function" | "function_expression" | "generator_function"
     )
+}
+
+/// A JS/TS arrow function (`x => ...`, `(x, y) => ...`, `async (x) => ...`).
+/// Always lexically captures the enclosing `this`/`arguments` — never
+/// rebinds them like a plain `function` expression does (see
+/// `is_dynamic_this_function_node`) — so it's safe for `walk_node` and
+/// `collect_statement_bindings` to recurse straight through one with the
+/// *same* `Context`/bindings map: it's a nested scope, not a new symbol.
+/// Calls inside it (e.g. `.map(x => this.transform(x))`, `useEffect(() =>
+/// fetchData(), [])`) attribute to the enclosing named symbol via
+/// `ctx.current_scope`, and the arrow's own parameters are folded into the
+/// enclosing `local_types` map — see `collect_statement_bindings`'s call
+/// site — so a reference to one of them isn't mistaken for an outer name.
+fn is_lambda_node(kind: &str) -> bool {
+    kind == "arrow_function"
+}
+
+/// When `node` is the first function-like node inside a module-level
+/// declarator's initializer (`ctx.fn_owner` set — see
+/// `Context::fn_owner`), the context its body should be walked with: that
+/// declarator's symbol as `current_scope`, mirroring what
+/// `handle_function` does for a `function` declaration. An arrow keeps the
+/// module's `local_types` (module-level inference already folds arrow
+/// params/locals in — see `is_lambda_node`); a `function`/`function*`
+/// expression or object-literal method gets its own, like
+/// `handle_function`. Walking a plain `function` expression here is safe
+/// despite `is_dynamic_this_function_node`: at module scope there is no
+/// enclosing class for a `this.x()` to be misresolved against
+/// (`class_attr_types` is empty). `fn_depth` is deliberately not bumped,
+/// so a named `function` declared inside still gets its own symbol and
+/// its calls, exactly as before.
+// ponytail: object-literal properties get no symbols of their own, so
+// `apiClient = { get: () => f() }` attributes `f` to `apiClient`, not
+// `apiClient.get`.
+fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<Context> {
+    let owner = ctx.fn_owner.as_ref()?;
+    let kind = node.kind();
+    if !(is_lambda_node(kind) || is_dynamic_this_function_node(kind) || kind == "method_definition")
+    {
+        return None;
+    }
+    let mut next_ctx = ctx.clone();
+    next_ctx.current_scope = owner.clone();
+    next_ctx.fn_owner = None;
+    if !is_lambda_node(kind) {
+        next_ctx.local_types = Rc::new(infer_local_types(node, source));
+    }
+    Some(next_ctx)
+}
+
+/// Parameter names (+ inferred types, where explicitly annotated) bound by
+/// an arrow function's `parameter` (single bare identifier, `x => ...`) or
+/// `parameters` (parenthesized list, `(x, y) => ...`) field. Folded into
+/// the *enclosing* function's `local_types` map by
+/// `collect_statement_bindings` rather than given a scope of their own —
+/// see `is_lambda_node`'s doc comment.
+fn collect_lambda_parameter_bindings(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    if let Some(params) = node.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        for param in params.named_children(&mut cursor) {
+            collect_param_bindings(param, source, bindings);
+        }
+    } else if let Some(param) = node.child_by_field_name("parameter") {
+        collect_param_bindings(param, source, bindings);
+    }
 }
 
 fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -2022,6 +2702,14 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = extract_signature(node, source);
+    // No export-based visibility mark here (issue #75 follow-up, finding
+    // E): "not directly `export`ed" isn't the same as "unreachable from
+    // another file" — CommonJS (`module.exports = { helperOne }`), a
+    // separate named export (`export { helperOne }`), and re-exports all
+    // make a plain top-level function reachable without it ever being
+    // wrapped in an `export` statement itself. Only an explicit
+    // TypeScript/JS access modifier is trustworthy enough to record (see
+    // `is_private_member`, used by `handle_method` below).
     output.symbols.push(SymbolInput {
         kind: "function".to_string(),
         name: name.clone(),
@@ -2047,8 +2735,23 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
+        next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
+}
+
+/// Whether `node` (a `method_definition`) is private: an explicit
+/// `private` accessibility modifier (TypeScript), or a `#`-prefixed name
+/// (a JS/TS private class field/method).
+fn is_private_member(node: Node<'_>, source: &str) -> bool {
+    let mut cursor = node.walk();
+    let has_modifier = node
+        .named_children(&mut cursor)
+        .any(|c| c.kind() == "accessibility_modifier" && node_text(c, source) == "private");
+    has_modifier
+        || node
+            .child_by_field_name("name")
+            .is_some_and(|n| node_text(n, source).starts_with('#'))
 }
 
 fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -2062,6 +2765,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = extract_signature(node, source);
+    if is_private_member(node, source) {
+        output.private_qualnames.push(qualname.clone());
+    }
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -2091,6 +2797,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
+        next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -2290,9 +2997,500 @@ fn container_qualname(module: &str, class_stack: &[String]) -> String {
     }
 }
 
+const JS_TS_BUILTIN_TYPES: &[&str] = &[
+    "string",
+    "number",
+    "boolean",
+    "any",
+    "unknown",
+    "never",
+    "void",
+    "object",
+    "symbol",
+    "bigint",
+    "null",
+    "undefined",
+    "this",
+    "Array",
+    "Object",
+    "String",
+    "Number",
+    "Boolean",
+    "Function",
+    "Date",
+    "RegExp",
+    "Promise",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "Error",
+    "TypeError",
+    "RangeError",
+    "Symbol",
+    "BigInt",
+    "Record",
+    "Partial",
+    "Required",
+    "Readonly",
+    "ReadonlyArray",
+    "Pick",
+    "Omit",
+    "Exclude",
+    "Extract",
+    "NonNullable",
+    "JSON",
+    "Math",
+    "Buffer",
+];
+
+/// Infer the receiver type of a call's callee expression (`function_node`),
+/// mirroring `python::infer_receiver_type` with `this` standing in for
+/// `self`/`cls`. Only gates resolution; never changes `target_qualname`
+/// (see `resolve_call_target`, which stays text-based and keeps the
+/// receiver's literal text for evidence).
+///
+/// Rules, in order:
+/// - Not a member access at all (`helper()`) → `NotTracked` (bare call,
+///   nothing to gate).
+/// - `super.method()` (any depth) → `NotTracked`: `resolve_call_target`
+///   already maps `super.x` onto the enclosing class exactly like `this.x`;
+///   left exactly as-is, not asked for by this task.
+/// - `this.method()` (zero hops) → `NotTracked`, already resolved exactly
+///   via `resolve_call_target`'s container-qualname path.
+/// - `this.field.method()` (exactly one hop off `this`) → resolved via a
+///   type-annotated class field or constructor parameter property, if any;
+///   otherwise `Unresolved`.
+/// - `X.method()` where `X` is a bare identifier: `Known`/`Unresolved` from
+///   this function's local types if `X` is tracked, else `NotTracked` (a
+///   class/module/namespace reference, e.g. `Console.log()`).
+/// - Anything deeper, or a chain rooted in something other than a bare
+///   identifier/`this` (a call result, a parenthesized/cast expression,
+///   ...), → `Unresolved` if the root is `this` or a tracked local,
+///   `NotTracked` otherwise.
+fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
+    if function_node.kind() != "member_expression"
+        && function_node.kind() != "optional_member_expression"
+    {
+        return ReceiverType::NotTracked;
+    }
+    let Some(object) = function_node.child_by_field_name("object") else {
+        return ReceiverType::NotTracked;
+    };
+    let (root, hops) = member_chain_root(object);
+
+    if root.kind() == "super" {
+        return ReceiverType::NotTracked;
+    }
+
+    if root.kind() == "this" {
+        if hops == 0 {
+            return ReceiverType::NotTracked;
+        }
+        if hops == 1 {
+            let attr_name = object
+                .child_by_field_name("property")
+                .map(|n| node_text(n, source));
+            return match attr_name.and_then(|name| ctx.class_attr_types.get(&name).cloned()) {
+                Some(LocalType::Known(ty)) => ReceiverType::Known(ty),
+                _ => ReceiverType::Unresolved,
+            };
+        }
+        // ponytail: deeper chains (`this.a.b.method()`) would need real
+        // attribute-type inference across assignments — out of scope, same
+        // ceiling as `python::infer_receiver_type`.
+        return ReceiverType::Unresolved;
+    }
+
+    if root.kind() != "identifier" {
+        // Chain rooted in a call result, parenthesized/cast expression,
+        // subscript, etc. — not inferable.
+        return ReceiverType::Unresolved;
+    }
+    let root_name = node_text(root, source);
+    if hops == 0 {
+        return match ctx.local_types.get(&root_name) {
+            Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
+            Some(LocalType::Other) => ReceiverType::Unresolved,
+            None => ReceiverType::NotTracked,
+        };
+    }
+    if ctx.local_types.contains_key(&root_name) {
+        ReceiverType::Unresolved
+    } else {
+        ReceiverType::NotTracked
+    }
+}
+
+/// Walk a (possibly nested) member-access chain down to its root node,
+/// returning the root plus how many hops separate it from `node` (0 =
+/// `node` itself is the root).
+fn member_chain_root(node: Node<'_>) -> (Node<'_>, usize) {
+    let mut current = node;
+    let mut hops = 0;
+    while current.kind() == "member_expression" || current.kind() == "optional_member_expression" {
+        match current.child_by_field_name("object") {
+            Some(obj) => {
+                current = obj;
+                hops += 1;
+            }
+            None => break,
+        }
+    }
+    (current, hops)
+}
+
+/// Classify a type-annotation (or bare constructor-name) expression's text
+/// into a `LocalType`. Generic/union/array/object-literal type shapes are
+/// never unwrapped — they collapse to `Other` just like a builtin would,
+/// mirroring `python::classify_annotation`'s identical ponytail simplification.
+fn classify_annotation(text: &str) -> LocalType {
+    let text = text.trim();
+    if text.is_empty() {
+        return LocalType::Other;
+    }
+    if text.contains(['<', '[', '|', '&', '(', ')', '{']) {
+        return LocalType::Other;
+    }
+    let bare = text.rsplit('.').next().unwrap_or(text).trim();
+    classify_type_name(bare)
+}
+
+fn classify_type_name(name: &str) -> LocalType {
+    if name.is_empty() || JS_TS_BUILTIN_TYPES.contains(&name) {
+        LocalType::Other
+    } else {
+        LocalType::Known(name.to_string())
+    }
+}
+
+/// Extract a type annotation's text from its wrapping `type_annotation`
+/// node (the `: Type` suffix), unwrapped to just `Type`.
+fn annotation_text(type_annotation: Node<'_>, source: &str) -> String {
+    match type_annotation.named_child(0) {
+        Some(inner) => node_text(inner, source),
+        None => node_text(type_annotation, source),
+    }
+}
+
+/// Classify a variable/field initializer's shape into a `LocalType` when no
+/// explicit type annotation is present. The only `Known` case is direct
+/// construction (`new EventStore()`); everything else (array/object/string
+/// literals, another call's return value, ...) is `Other` — mirrors
+/// `python::classify_assignment_value`'s identical ceiling.
+fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
+    if value.kind() == "new_expression"
+        && let Some(ctor) = value.child_by_field_name("constructor")
+    {
+        return classify_annotation(&node_text(ctor, source));
+    }
+    LocalType::Other
+}
+
+/// Infer types for names bound within a single function body: parameters
+/// and `const`/`let`/`var` declarations. Scope is strictly this function —
+/// never a caller, a callee, or another method of the same class (see
+/// `Context::local_types`'s doc comment). No CALLS edges are ever extracted
+/// from inside a nested plain `function`/`function*` expression (see
+/// `is_dynamic_this_function_node`, which stops `walk_node` there
+/// entirely), so this deliberately doesn't recurse into one either. An
+/// arrow function is different — see `is_lambda_node` — so
+/// `collect_statement_bindings` (which this calls into) does recurse into
+/// one of those, folding its parameters into this same map.
+fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {
+    let mut bindings: Vec<(String, LocalType)> = Vec::new();
+    if let Some(params) = function_node.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        for param in params.named_children(&mut cursor) {
+            collect_param_bindings(param, source, &mut bindings);
+        }
+    }
+    if let Some(body) = function_node.child_by_field_name("body") {
+        collect_statement_bindings(body, source, &mut bindings);
+    }
+    bindings_to_local_types(bindings)
+}
+
+/// Infer types for names bound directly at module top level — its own
+/// single scope, exactly like a function body is; see
+/// `python::infer_module_level_types`.
+fn infer_module_level_types(root: Node<'_>, source: &str) -> HashMap<String, LocalType> {
+    let mut bindings: Vec<(String, LocalType)> = Vec::new();
+    collect_statement_bindings(root, source, &mut bindings);
+    bindings_to_local_types(bindings)
+}
+
+/// Fold a scope's raw (name, inferred-type) bindings into a lookup map,
+/// with a name bound more than once anywhere in the scope collapsing to
+/// `Other` — mirrors `python::bindings_to_local_types`.
+fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String, LocalType> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (name, _) in &bindings {
+        *counts.entry(name.clone()).or_default() += 1;
+    }
+    let mut result = HashMap::new();
+    for (name, ty) in bindings {
+        let reassigned = counts.get(&name).copied().unwrap_or(0) > 1;
+        result.insert(name, if reassigned { LocalType::Other } else { ty });
+    }
+    result
+}
+
+fn collect_param_bindings(param: Node<'_>, source: &str, bindings: &mut Vec<(String, LocalType)>) {
+    match param.kind() {
+        "identifier" => bindings.push((node_text(param, source), LocalType::Other)),
+        "required_parameter" | "optional_parameter" => {
+            let Some(pattern) = param.child_by_field_name("pattern") else {
+                return;
+            };
+            if pattern.kind() == "identifier" {
+                let name = node_text(pattern, source);
+                let ty = param
+                    .child_by_field_name("type")
+                    .map(|t| classify_annotation(&annotation_text(t, source)))
+                    .unwrap_or(LocalType::Other);
+                bindings.push((name, ty));
+            } else {
+                collect_pattern_identifiers(pattern, source, bindings);
+            }
+        }
+        "assignment_pattern" => {
+            if let Some(left) = param.child_by_field_name("left") {
+                collect_pattern_identifiers(left, source, bindings);
+            }
+        }
+        "rest_pattern" => {
+            if let Some(inner) = param.named_child(0) {
+                collect_pattern_identifiers(inner, source, bindings);
+            }
+        }
+        "object_pattern" | "array_pattern" => {
+            collect_pattern_identifiers(param, source, bindings);
+        }
+        _ => {}
+    }
+}
+
+/// Collect every identifier bound by a (possibly nested) destructuring
+/// pattern — array/object patterns, renamed/default/rest sub-patterns —
+/// each pushed as `LocalType::Other`. Used for both destructured parameters
+/// and destructured `const`/`let`/`var`/`for`/`catch` targets; see
+/// `python::collect_pattern_identifiers` for why these must be tracked at
+/// all (as opposed to left absent from the map).
+fn collect_pattern_identifiers(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    match node.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => {
+            bindings.push((node_text(node, source), LocalType::Other));
+        }
+        "array_pattern" | "object_pattern" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_pattern_identifiers(child, source, bindings);
+            }
+        }
+        "pair_pattern" => {
+            if let Some(value) = node.child_by_field_name("value") {
+                collect_pattern_identifiers(value, source, bindings);
+            }
+        }
+        "assignment_pattern" | "object_assignment_pattern" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                collect_pattern_identifiers(left, source, bindings);
+            }
+        }
+        "rest_pattern" => {
+            if let Some(inner) = node.named_child(0) {
+                collect_pattern_identifiers(inner, source, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Node kinds that introduce a fresh local-type scope of their own — a
+/// separate function/method/class body, never inherited from the outer
+/// scope being walked. Mirrors `is_dynamic_this_function_node` plus the
+/// declaration/class-body kinds that function doesn't need to cover (its
+/// callers already stop at those separately). `arrow_function` is
+/// deliberately *not* included — see `is_lambda_node`'s doc comment and
+/// this function's call site below.
+fn is_local_scope_boundary(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_declaration"
+            | "generator_function_declaration"
+            | "function_expression"
+            | "generator_function"
+            | "method_definition"
+            | "class_declaration"
+            | "abstract_class_declaration"
+            | "class"
+    )
+}
+
+/// Recursively collect local-variable bindings from statements within a
+/// single function body (or module top level), stopping at nested
+/// function/class boundaries (their own locals are a different scope
+/// entirely — see `Context::local_types`'s doc comment). An arrow function
+/// is *not* a boundary here — see `is_lambda_node`'s doc comment — so a
+/// call inside one is walked with the *enclosing* function's
+/// `local_types`, and the arrow's own parameters are folded into that same
+/// map below (mirrors `python::collect_statement_bindings`'s `"lambda"`
+/// arm) so a reference to one of them isn't mistaken for an outer name.
+fn collect_statement_bindings(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    if is_local_scope_boundary(node.kind()) {
+        return;
+    }
+    if is_lambda_node(node.kind()) {
+        collect_lambda_parameter_bindings(node, source, bindings);
+        // No `return`: still recurse into children below (the body may
+        // declare further locals, or contain a nested arrow function whose
+        // own parameters also need folding in).
+    }
+    match node.kind() {
+        "lexical_declaration" | "variable_declaration" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "variable_declarator" {
+                    collect_variable_declarator_binding(child, source, bindings);
+                }
+            }
+        }
+        "for_in_statement" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                collect_pattern_identifiers(left, source, bindings);
+            }
+        }
+        "catch_clause" => {
+            if let Some(param) = node.child_by_field_name("parameter") {
+                collect_pattern_identifiers(param, source, bindings);
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_statement_bindings(child, source, bindings);
+    }
+}
+
+/// A `let y; y = new Foo();` delayed reassignment is deliberately not
+/// tracked — only a `variable_declarator`'s own type/initializer counts, so
+/// a name declared without either always collapses to `Other`.
+fn collect_variable_declarator_binding(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    if name_node.kind() != "identifier" {
+        collect_pattern_identifiers(name_node, source, bindings);
+        return;
+    }
+    let name = node_text(name_node, source);
+    let ty = if let Some(type_node) = node.child_by_field_name("type") {
+        classify_annotation(&annotation_text(type_node, source))
+    } else if let Some(value_node) = node.child_by_field_name("value") {
+        classify_value_expr(value_node, source)
+    } else {
+        LocalType::Other
+    };
+    bindings.push((name, ty));
+}
+
+/// Type-annotated fields (`public_field_definition` / `field_definition`)
+/// and typed constructor parameter properties
+/// (`constructor(private store: EventStore)`) declared directly in a class
+/// body — not inside any other method. Used only to resolve a single-hop
+/// `this.field.method()` receiver; see `infer_receiver_type`.
+fn collect_class_level_attr_types(
+    class_body: Node<'_>,
+    source: &str,
+) -> HashMap<String, LocalType> {
+    let mut result = HashMap::new();
+    let mut cursor = class_body.walk();
+    for member in class_body.named_children(&mut cursor) {
+        match member.kind() {
+            "public_field_definition" | "field_definition" => {
+                let Some(name_node) = member.child_by_field_name("name") else {
+                    continue;
+                };
+                let Some(type_node) = member.child_by_field_name("type") else {
+                    continue;
+                };
+                let name = node_text(name_node, source);
+                if name.is_empty() {
+                    continue;
+                }
+                result.insert(
+                    name,
+                    classify_annotation(&annotation_text(type_node, source)),
+                );
+            }
+            "method_definition" => {
+                let is_ctor = member
+                    .child_by_field_name("name")
+                    .map(|n| node_text(n, source) == "constructor")
+                    .unwrap_or(false);
+                if !is_ctor {
+                    continue;
+                }
+                let Some(params) = member.child_by_field_name("parameters") else {
+                    continue;
+                };
+                let mut pcursor = params.walk();
+                for param in params.named_children(&mut pcursor) {
+                    if !matches!(param.kind(), "required_parameter" | "optional_parameter") {
+                        continue;
+                    }
+                    // ponytail: a parameter property is only recognized via
+                    // an explicit accessibility modifier (public/private/
+                    // protected); a bare `readonly` alone is structurally
+                    // indistinguishable from a plain parameter in this
+                    // tree-sitter-typescript version, so it isn't tracked.
+                    let mut mcursor = param.walk();
+                    let has_modifier = param
+                        .named_children(&mut mcursor)
+                        .any(|c| c.kind() == "accessibility_modifier");
+                    if !has_modifier {
+                        continue;
+                    }
+                    let Some(pattern) = param.child_by_field_name("pattern") else {
+                        continue;
+                    };
+                    if pattern.kind() != "identifier" {
+                        continue;
+                    }
+                    let name = node_text(pattern, source);
+                    let ty = param
+                        .child_by_field_name("type")
+                        .map(|t| classify_annotation(&annotation_text(t, source)))
+                        .unwrap_or(LocalType::Other);
+                    result.insert(name, ty);
+                }
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
-    use super::JavascriptExtractor;
+    use super::{
+        JavascriptExtractor, grpc_service_from_path, match_alias_pattern, strip_jsonc,
+        substitute_alias_target,
+    };
     use crate::indexer::extract::LanguageExtractor;
     use crate::indexer::http;
     use crate::indexer::proto;
@@ -2358,5 +3556,394 @@ client.sayHello({ name: "world" }, () => {});
         assert!(calls.iter().any(|edge| {
             edge.target_qualname.as_deref() == Some("/helloworld.greeter/sayhello")
         }));
+    }
+
+    #[test]
+    fn grpc_service_from_path_collapses_interior_whitespace() {
+        // Direct unit-level proof for the `144d675`-style fix: a gRPC
+        // client's constructor path split across lines (formatting, same
+        // semantics) must resolve identically to the single-line form.
+        let single_line =
+            grpc_service_from_path("proto.helloworld.Greeter").expect("single-line path");
+        let multi_line = grpc_service_from_path("proto.helloworld\n    .Greeter")
+            .expect("multi-line path must resolve just like the single-line form");
+        assert_eq!(
+            multi_line.package.as_deref(),
+            single_line.package.as_deref()
+        );
+        assert_eq!(multi_line.service, single_line.service);
+        assert_eq!(multi_line.package.as_deref(), Some("helloworld"));
+        assert_eq!(multi_line.service, "Greeter");
+    }
+
+    #[test]
+    fn grpc_client_multiline_receiver_resolves_like_single_line() {
+        // End-to-end companion to the unit test above: a `new` expression
+        // whose constructor path is split across lines must still register
+        // in `collect_grpc_clients` and produce a resolved GRPC_CALL edge,
+        // exactly like `extracts_grpc_js_impl_and_call`'s single-line form.
+        let source = r#"
+const grpc = require("@grpc/grpc-js");
+const proto = { helloworld: { Greeter: { service: {} } } };
+function sayHello(call, callback) {}
+const server = new grpc.Server();
+server.addService(proto.helloworld.Greeter.service, { sayHello });
+const client = new proto.helloworld
+    .Greeter("localhost:50051", grpc.credentials.createInsecure());
+client.sayHello({ name: "world" }, () => {});
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "index").unwrap();
+        let calls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_CALL_KIND)
+            .collect::<Vec<_>>();
+        assert!(
+            calls.iter().any(|edge| {
+                edge.target_qualname.as_deref() == Some("/helloworld.greeter/sayhello")
+            }),
+            "multi-line gRPC client receiver must still resolve to a GRPC_CALL edge, got {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn match_alias_pattern_extracts_wildcard_capture() {
+        assert_eq!(
+            match_alias_pattern("@/*", "@/lib/foo").as_deref(),
+            Some("lib/foo")
+        );
+        assert_eq!(match_alias_pattern("@/*", "next/navigation"), None);
+        assert_eq!(match_alias_pattern("@utils", "@utils").as_deref(), Some(""));
+        assert_eq!(match_alias_pattern("@utils", "@utils/extra"), None);
+        // More than one '*' isn't a shape tsconfig itself allows in a
+        // pattern; refused rather than guessed at.
+        assert_eq!(match_alias_pattern("@/*/*", "@/a/b"), None);
+    }
+
+    #[test]
+    fn substitute_alias_target_requires_matching_wildcard_shape() {
+        assert_eq!(
+            substitute_alias_target("./*", "lib/foo", true).as_deref(),
+            Some("./lib/foo")
+        );
+        assert_eq!(
+            substitute_alias_target("./src/*", "lib/foo", true).as_deref(),
+            Some("./src/lib/foo")
+        );
+        // A literal target can't disambiguate a wildcard capture: refused.
+        assert_eq!(substitute_alias_target("./fixed", "lib/foo", true), None);
+        // An exact (wildcard-free) pattern needs an exact target.
+        assert_eq!(
+            substitute_alias_target("./utils/index.ts", "", false).as_deref(),
+            Some("./utils/index.ts")
+        );
+        assert_eq!(substitute_alias_target("./*", "", false), None);
+    }
+
+    #[test]
+    fn strip_jsonc_removes_comments_and_trailing_commas_outside_strings() {
+        let input = r#"{
+  // leading comment
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./*"], // trailing line comment
+    },
+    /* block
+       comment */
+    "baseUrl": ".",
+  },
+  "note": "a // not a comment and /* not a comment either",
+}"#;
+        let cleaned = strip_jsonc(input);
+        let value: serde_json::Value =
+            serde_json::from_str(&cleaned).expect("cleaned text must parse as plain JSON");
+        assert_eq!(
+            value["compilerOptions"]["paths"]["@/*"][0]
+                .as_str()
+                .unwrap(),
+            "./*"
+        );
+        assert_eq!(value["compilerOptions"]["baseUrl"].as_str().unwrap(), ".");
+        assert_eq!(
+            value["note"].as_str().unwrap(),
+            "a // not a comment and /* not a comment either"
+        );
+    }
+
+    /// Source qualname of the single CALLS edge whose (module-qualified)
+    /// target ends in `.target`.
+    fn call_source(file: &crate::indexer::extract::ExtractedFile, target: &str) -> String {
+        let suffix = format!(".{target}");
+        let hits: Vec<_> = file
+            .edges
+            .iter()
+            .filter(|e| {
+                e.kind == "CALLS"
+                    && e.target_qualname
+                        .as_deref()
+                        .is_some_and(|t| t.ends_with(&suffix))
+            })
+            .collect();
+        assert_eq!(hits.len(), 1, "expected one CALLS -> {target}");
+        hits[0].source_qualname.clone().unwrap()
+    }
+
+    #[test]
+    fn const_arrow_calls_attribute_to_const_tsx() {
+        let source = r#"
+import { useState } from 'react';
+const Lazy = dynamic(() => loadGraph(), { ssr: false });
+export const ProductTabs: FC<Props> = ({ item }) => {
+  const [tab, setTab] = useState('a');
+  const onClick = () => track(tab);
+  function inner() { return deep(); }
+  return <Tabs value={tab}>{renderRows(item)}</Tabs>;
+};
+const { a } = pick();
+setup();
+"#;
+        let mut extractor = super::TsxExtractor::new().unwrap();
+        let file = extractor.extract(source, "components.tabs").unwrap();
+        assert_eq!(
+            call_source(&file, "useState"),
+            "components.tabs.ProductTabs"
+        );
+        assert_eq!(
+            call_source(&file, "renderRows"),
+            "components.tabs.ProductTabs"
+        );
+        // A handler const nested inside the component stays the component's.
+        assert_eq!(call_source(&file, "track"), "components.tabs.ProductTabs");
+        // Nested named function: innermost wins.
+        assert_eq!(call_source(&file, "deep"), "components.tabs.inner");
+        // The HOC-style wrapper call itself is a module-level call ...
+        assert_eq!(call_source(&file, "dynamic"), "components.tabs");
+        // ... but the callback passed to it belongs to the const.
+        assert_eq!(call_source(&file, "loadGraph"), "components.tabs.Lazy");
+        // Destructuring and bare module-level calls stay on the module.
+        assert_eq!(call_source(&file, "pick"), "components.tabs");
+        assert_eq!(call_source(&file, "setup"), "components.tabs");
+    }
+
+    #[test]
+    fn const_arrow_and_object_property_calls_attribute_to_const_ts() {
+        let source = r#"
+export const load = async (id: string): Promise<Item> => fetchItem(id);
+export const apiClient = {
+  get: <T>(endpoint: string) => apiClientFetch<T>(endpoint, { method: 'GET' }),
+  post(endpoint: string, data?: unknown) { return apiPost(endpoint, data); },
+};
+const cfg = buildConfig();
+"#;
+        let mut extractor = super::TypescriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "lib.api").unwrap();
+        assert_eq!(call_source(&file, "fetchItem"), "lib.api.load");
+        assert_eq!(call_source(&file, "apiClientFetch"), "lib.api.apiClient");
+        assert_eq!(call_source(&file, "apiPost"), "lib.api.apiClient");
+        assert_eq!(call_source(&file, "buildConfig"), "lib.api");
+    }
+
+    #[test]
+    fn const_function_expression_calls_attribute_to_const_js() {
+        let source = r#"
+const handler = function (req) { return process(req); };
+var gen = function* () { yield step(); };
+let arrow = x => transform(x);
+module.exports = { handler };
+init();
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "srv").unwrap();
+        assert_eq!(call_source(&file, "process"), "srv.handler");
+        assert_eq!(call_source(&file, "step"), "srv.gen");
+        assert_eq!(call_source(&file, "transform"), "srv.arrow");
+        assert_eq!(call_source(&file, "init"), "srv");
+    }
+}
+
+#[cfg(test)]
+mod import_resolution_tests {
+    use crate::indexer::Indexer;
+    use rusqlite::Connection;
+
+    /// Index `files` (repo-relative path, source) as a fresh repo with a
+    /// `@/*` tsconfig path alias and open the resulting DB.
+    fn index_repo(files: &[(&str, &str)]) -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{ "compilerOptions": { "paths": { "@/*": ["./*"] } } }"#,
+        )
+        .unwrap();
+        for (rel, source) in files {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, source).unwrap();
+        }
+        let db_path = root.join(".lidx").join("db.sqlite");
+        Indexer::new(root.to_path_buf(), db_path.clone())
+            .unwrap()
+            .reindex()
+            .unwrap();
+        let conn = Connection::open(db_path).unwrap();
+        (dir, conn)
+    }
+
+    /// Resolved target qualname of the single CALLS edge from `caller`
+    /// whose literal target ends in `.{name}`; `None` when it stays unbound.
+    /// Issue #79: an unresolved CALLS edge is no longer written at all, so
+    /// "stays unbound" now also means zero rows, not just a NULL target.
+    fn callee(conn: &Connection, caller: &str, name: &str) -> Option<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.qualname FROM edges e
+                 JOIN symbols s ON e.source_symbol_id = s.id
+                 LEFT JOIN symbols t ON e.target_symbol_id = t.id
+                 WHERE e.kind = 'CALLS' AND s.qualname = ?1
+                   AND e.target_qualname LIKE '%.' || ?2",
+            )
+            .unwrap();
+        let rows: Vec<Option<String>> = stmt
+            .query_map([caller, name], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            rows.len() <= 1,
+            "expected at most one CALLS {caller} -> {name}"
+        );
+        rows.into_iter().next().flatten()
+    }
+
+    const BUTTON: &str = r#"
+import { cn } from '@/lib/utils';
+import { cn as classNames } from '../lib/utils';
+import * as api from '../lib/api';
+import formatName from '@/lib/fmt';
+import { useState } from 'react';
+export function Button() {
+  cn('a');
+  classNames('b');
+  api.get('x');
+  formatName('y');
+  useState(0);
+  return null;
+}
+"#;
+
+    fn button_repo() -> (tempfile::TempDir, Connection) {
+        index_repo(&[
+            (
+                "lib/utils.ts",
+                "export function cn(...a: string[]) { return a.join(' '); }\n",
+            ),
+            (
+                "lib/api.ts",
+                "export function get(p: string) { return p; }\n",
+            ),
+            (
+                "lib/fmt.ts",
+                "export default function formatName(n: string) { return n; }\n",
+            ),
+            // Decoy: the only repo symbol named `useState`, in the caller's
+            // language family. The caller imports `useState` from `react`,
+            // so it must never bind here.
+            (
+                "other/hooks.ts",
+                "export function useState(x: number) { return x; }\n",
+            ),
+            ("components/button.tsx", BUTTON),
+        ])
+    }
+
+    #[test]
+    fn tsx_named_import_via_alias_binds_to_ts_export() {
+        let (_dir, conn) = button_repo();
+        assert_eq!(
+            callee(&conn, "components/button.Button", "cn").as_deref(),
+            Some("lib/utils.cn")
+        );
+    }
+
+    #[test]
+    fn tsx_renamed_relative_import_binds_to_ts_export() {
+        let (_dir, conn) = button_repo();
+        assert_eq!(
+            callee(&conn, "components/button.Button", "classNames").as_deref(),
+            Some("lib/utils.cn")
+        );
+    }
+
+    #[test]
+    fn esm_js_suffixed_import_binds_to_ts_source() {
+        let (_dir, conn) = index_repo(&[
+            (
+                "src/schemas.ts",
+                "export function compileSchema(s: string) { return s; }\n",
+            ),
+            (
+                "src/main.ts",
+                "import { compileSchema } from './schemas.js';\nexport function boot() { return compileSchema('x'); }\n",
+            ),
+        ]);
+        assert_eq!(
+            callee(&conn, "src/main.boot", "compileSchema").as_deref(),
+            Some("src/schemas.compileSchema")
+        );
+    }
+
+    #[test]
+    fn tsx_namespace_import_member_call_binds_to_ts_export() {
+        let (_dir, conn) = button_repo();
+        assert_eq!(
+            callee(&conn, "components/button.Button", "get").as_deref(),
+            Some("lib/api.get")
+        );
+    }
+
+    #[test]
+    fn tsx_default_import_binds_to_ts_default_export() {
+        let (_dir, conn) = button_repo();
+        assert_eq!(
+            callee(&conn, "components/button.Button", "formatName").as_deref(),
+            Some("lib/fmt.formatName")
+        );
+    }
+
+    #[test]
+    fn local_binding_shadowing_an_import_gets_no_import_candidate() {
+        use crate::indexer::extract::LanguageExtractor;
+        let source = r#"
+import { cn } from '@/lib/utils';
+export function a(cn: (x: string) => string) { return cn('x'); }
+export function b() { return cn('y'); }
+"#;
+        let mut extractor = super::TypescriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "m").unwrap();
+        let candidates = |src: &str| {
+            file.edges
+                .iter()
+                .find(|e| e.kind == "CALLS" && e.source_qualname.as_deref() == Some(src))
+                .unwrap()
+                .import_candidates
+                .clone()
+        };
+        assert!(candidates("m.a").is_empty());
+        assert_eq!(candidates("m.b").len(), 1);
+    }
+
+    #[test]
+    fn external_package_import_never_binds_to_same_named_repo_symbol() {
+        // Issue #80: `useState` (imported from `react`) binds to the
+        // external stub instead of staying unresolved -- the load-bearing
+        // check is still that it's never the decoy `other/hooks.useState`.
+        let (_dir, conn) = button_repo();
+        assert_eq!(
+            callee(&conn, "components/button.Button", "useState").as_deref(),
+            Some("ext:react:useState")
+        );
     }
 }

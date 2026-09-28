@@ -1,16 +1,33 @@
+use crate::db::resolver::{ImportMissPolicy, LanguageProfile};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
+use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::tree_helpers::{
-    module_symbol_fallback, module_symbol_with_span, node_text, span,
+    collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
+    span,
 };
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 use tree_sitter::{Node, Parser};
+
+/// Python's resolution profile, registered here alongside this extractor
+/// and looked up by `db::resolver::profile_for("python")`. Otherwise the
+/// shared default: dot-separated, no relative-import rewriting (Python's
+/// `from . import x` relative imports are already resolved to an absolute
+/// dotted candidate by this extractor's own import parsing), suffix
+/// matching on. `PythonRepoHeuristic`'s DB lookup
+/// (`Resolver::is_repo_python_import`) stays in `db::resolver` — it's a
+/// resolver-only heuristic, not data this extractor supplies.
+pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    import_miss: ImportMissPolicy::PythonRepoHeuristic,
+    ..LanguageProfile::DEFAULT
+};
 
 #[derive(Clone)]
 struct Context {
@@ -19,6 +36,38 @@ struct Context {
     fn_depth: usize,
     current_scope: String,
     grpc_service: Option<String>,
+    /// Types of locally-bound names (parameters + simple assignment
+    /// targets) within the *current* function body only — see
+    /// `infer_local_types`. Reset fresh on every function/method entry;
+    /// never merged across functions.
+    local_types: Rc<HashMap<String, LocalType>>,
+    /// Class-level (PEP 526) annotated attributes of the *directly*
+    /// enclosing class, read once when entering the class body — see
+    /// `collect_class_level_annotations`. Used only to resolve a single-hop
+    /// `self.attr.method()` receiver.
+    class_attr_types: Rc<HashMap<String, LocalType>>,
+    /// This file's import bindings — bound name -> fully-qualified
+    /// target(s) it stands for, from `from x import Y [as Z]` / `import
+    /// x.y as z` — collected once in `extract()` before the main walk (see
+    /// `collect_import_bindings`). Set once and inherited unchanged through
+    /// every `ctx.clone()`, mirroring C#'s `Context::imports`.
+    imports: Rc<HashMap<String, Vec<String>>>,
+}
+
+/// Locally-inferred type of a name bound within a single function body.
+/// Deliberately coarse: everything that isn't a confident, non-builtin type
+/// collapses to `Other` (see `infer_local_types` / `classify_annotation`
+/// for exactly which shapes qualify).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalType {
+    /// Inferred (or annotated) to be this non-builtin type name.
+    Known(String),
+    /// Builtin type, reassigned, unannotated parameter, comprehension
+    /// result, function return value, loop/with/except target, or anything
+    /// else not explicitly recognized. A name landing here (rather than
+    /// simply absent from the map) still gates resolution: it means "we
+    /// looked, and it's not a usable type" as opposed to "we never looked".
+    Other,
 }
 
 pub struct PythonExtractor {
@@ -69,6 +118,9 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             fn_depth: 0,
             current_scope: module_name.to_string(),
             grpc_service: None,
+            local_types: Rc::new(infer_module_level_types(root, source)),
+            class_attr_types: Rc::new(HashMap::new()),
+            imports: Rc::new(collect_import_bindings(root, source)),
         };
         walk_node(root, &ctx, source, &mut output);
         Ok(output)
@@ -130,46 +182,60 @@ pub fn resolve_import_file_edges(
             continue;
         }
         let (import_kind, base_module) = import_kind_and_base(edge.evidence_snippet.as_deref());
-        let mut candidates = Vec::new();
+        let mut raw_candidates = Vec::new();
         if !target.contains('*') {
-            candidates.push(target.to_string());
+            raw_candidates.push(target.to_string());
         }
         if import_kind == ImportKind::From
-            && let Some(base) = base_module
+            && let Some(base) = base_module.as_deref()
             && !base.contains('*')
         {
-            candidates.push(base);
+            raw_candidates.push(base.to_string());
         }
-        let mut resolved_edge = None;
-        for candidate in candidates {
-            let abs_module = match absolutize_module(&candidate, &base_package) {
-                Some(value) => value,
-                None => continue,
-            };
-            if let Some(dst_path) = resolve_module_to_file(repo_root, &abs_module) {
-                resolved_edge = Some(EdgeInput {
-                    kind: "IMPORTS_FILE".to_string(),
-                    source_qualname: edge.source_qualname.clone(),
-                    target_qualname: Some(abs_module),
-                    detail: Some(
-                        json!({
-                            "src_path": file_rel_path,
-                            "dst_path": dst_path,
-                            "confidence": 1.0,
-                        })
-                        .to_string(),
-                    ),
-                    evidence_snippet: edge.evidence_snippet.clone(),
-                    evidence_start_line: edge.evidence_start_line,
-                    evidence_end_line: edge.evidence_end_line,
-                    ..Default::default()
-                });
-                break;
-            }
-        }
-        if let Some(edge) = resolved_edge {
-            resolved.push(edge);
-        }
+        // Issue #77: absolutize every raw candidate up front, in the same
+        // most-to-least-specific order the raw list above is already in (a
+        // `from pkg import mod` import's `pkg.mod` submodule guess before
+        // its `pkg` package fallback) — never picking based on disk
+        // existence here, so an importer file that's never re-extracted
+        // still has a stable, reproducible candidate list for a later
+        // incremental sync to re-judge. `target_qualname` is always the
+        // first candidate, for display; which candidate the edge actually
+        // binds to is `db::resolver::Resolver::resolve_import_file`'s call
+        // — it tries these same candidates in this same order against the
+        // symbol graph, so a fresh reindex and an incremental repair pass
+        // agree once the right module file exists, instead of this
+        // extractor's disk check (now `detail.dst_path` only, below) baking
+        // in a guess a later sync has no way to redo for an importer file
+        // it never re-extracts.
+        let candidates: Vec<String> = raw_candidates
+            .iter()
+            .filter_map(|candidate| absolutize_module(candidate, &base_package))
+            .collect();
+        let Some(target_qualname) = candidates.first().cloned() else {
+            continue;
+        };
+        let dst_path = candidates
+            .iter()
+            .find_map(|candidate| resolve_module_to_file(repo_root, candidate));
+        let confidence = if dst_path.is_some() { 1.0 } else { 0.0 };
+        resolved.push(EdgeInput {
+            kind: "IMPORTS_FILE".to_string(),
+            source_qualname: edge.source_qualname.clone(),
+            target_qualname: Some(target_qualname),
+            detail: Some(
+                json!({
+                    "src_path": file_rel_path,
+                    "dst_path": dst_path,
+                    "confidence": confidence,
+                })
+                .to_string(),
+            ),
+            evidence_snippet: edge.evidence_snippet.clone(),
+            evidence_start_line: edge.evidence_start_line,
+            evidence_end_line: edge.evidence_end_line,
+            import_candidates: candidates,
+            ..Default::default()
+        });
     }
     edges.extend(resolved);
 }
@@ -266,6 +332,8 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 next_ctx.current_scope = qualname.clone();
                 next_ctx.grpc_service = grpc_service;
                 if let Some(body) = node.child_by_field_name("body") {
+                    next_ctx.class_attr_types =
+                        Rc::new(collect_class_level_annotations(body, source));
                     if is_settings_class {
                         emit_settings_field_config_reads(body, &qualname, source, output);
                     }
@@ -322,6 +390,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 let mut next_ctx = ctx.clone();
                 next_ctx.fn_depth += 1;
                 next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
+                next_ctx.local_types = Rc::new(infer_local_types(node, source));
                 if let Some(body) = node.child_by_field_name("body") {
                     walk_block(body, &next_ctx, source, output);
                 }
@@ -389,6 +458,18 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return;
     }
+    let receiver_type = infer_receiver_type(function_node, source, ctx);
+    // Import-aware qualification only makes sense when the receiver isn't
+    // already gated by receiver-type inference — see
+    // `import_qualified_candidates`'s doc.
+    // `raw` is collapsed here too (same as `resolve_call_target` does
+    // internally) so a multi-line chain feeds this tier the same shape the
+    // single-line form would.
+    let import_candidates = if receiver_type == ReceiverType::NotTracked {
+        import_qualified_candidates(&collapse_call_target_whitespace(&raw), ctx)
+    } else {
+        Vec::new()
+    };
     let target = resolve_call_target(&raw, ctx);
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
@@ -401,8 +482,539 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_snippet: snippet,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
+        receiver_type,
+        import_candidates,
+        // A bare identifier callee (`foo()`) vs. an attribute access
+        // (`obj.foo()`, `self.foo()`, ...) — see `EdgeInput::bare_call`'s
+        // doc.
+        bare_call: function_node.kind() == "identifier",
         ..Default::default()
     });
+}
+
+/// Infer the receiver type of a method call (`function_node` is the call's
+/// `function` field — the callee expression, e.g. `store.append` in
+/// `store.append(x)`). Only gates resolution; never used to change
+/// `target_qualname` itself (see `resolve_call_target`, which stays
+/// text-based and keeps the receiver's literal text for evidence).
+///
+/// Rules, in order:
+/// - Bare `helper()` where `helper` is bound in the current scope
+///   (`local_types`: a parameter, an assignment, or a nested `def`) →
+///   `Unresolved` (the call targets that local, not an indexed symbol).
+/// - Not an attribute access at all (`helper()`) → `NotTracked` (bare call,
+///   nothing to gate).
+/// - `X.method()` where `X` is a bare identifier:
+///   - `X` is a name this function bound (parameter or local assignment) →
+///     `Known(ty)` if we pinned a non-builtin type, else `Unresolved`.
+///   - `X` is not a name this function bound (presumably a class/module
+///     reference, e.g. `ClassName.static_method()`) → `NotTracked`, so the
+///     pre-existing pipeline still runs unchanged.
+/// - `self.attr.method()` / `cls.attr.method()` (exactly one hop off
+///   `self`/`cls`) → resolved via a class-level annotation on `attr`, if
+///   any; otherwise `Unresolved`.
+/// - Anything else with two or more hops (`self.a.b.method()`,
+///   `store.a.method()`, `ClassName.attr.method()`), or a chain rooted in
+///   something other than a bare identifier (a call result, a subscript,
+///   ...) → always `Unresolved`. The true receiver here is the *last* hop
+///   (`a.b`, `attr`, `ClassName.attr`), not the root identifier, and we
+///   have no attribute-type inference beyond the single-hop self/cls case
+///   above — so even a capitalized, class-looking root (`ClassName.attr`)
+///   does not get the bare-identifier "presumably a class/module
+///   reference" pass; only a *direct* `ClassName.static_method()` (hops ==
+///   0, see above) gets that.
+fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
+    if function_node.kind() == "identifier"
+        && ctx
+            .local_types
+            .contains_key(&node_text(function_node, source))
+    {
+        // Bare `name()` where `name` is bound in this scope: Python calls
+        // that local, which is never an indexed symbol. `Unresolved` stops
+        // it binding by name-uniqueness to an unrelated same-named symbol.
+        return ReceiverType::Unresolved;
+    }
+    if function_node.kind() != "attribute" {
+        return ReceiverType::NotTracked;
+    }
+    let Some(object) = function_node.child_by_field_name("object") else {
+        return ReceiverType::NotTracked;
+    };
+    let (root, hops) = attribute_chain_root(object);
+    if root.kind() != "identifier" {
+        // Chain rooted in a call result, subscript, etc. — not inferable.
+        return ReceiverType::Unresolved;
+    }
+    let root_name = node_text(root, source);
+    let is_self = root_name == "self" || root_name == "cls";
+
+    if hops == 0 {
+        if is_self {
+            // `self.method()` / `cls.method()` — already resolved exactly
+            // by `resolve_call_target`'s container-qualname path; nothing
+            // extra to gate.
+            return ReceiverType::NotTracked;
+        }
+        return match ctx.local_types.get(&root_name) {
+            Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
+            Some(LocalType::Other) => ReceiverType::Unresolved,
+            None => ReceiverType::NotTracked,
+        };
+    }
+
+    if hops == 1 && is_self {
+        // ponytail: single-hop `self.attr.method()` only, resolved from a
+        // class-level annotation on `attr`. Deeper chains, or attributes of
+        // non-self objects, would need real attribute-type inference
+        // (tracking `self.x: Type = ...` assignments across methods) —
+        // that's cross-function analysis, out of scope here.
+        let attr_name = object
+            .child_by_field_name("attribute")
+            .map(|n| node_text(n, source));
+        return match attr_name.and_then(|name| ctx.class_attr_types.get(&name).cloned()) {
+            Some(LocalType::Known(ty)) => ReceiverType::Known(ty),
+            _ => ReceiverType::Unresolved,
+        };
+    }
+
+    // Two or more hops off any root, or a single hop off something other
+    // than self/cls: the receiver is the last hop (`a.b`, `ClassName.attr`),
+    // which we never have type information for. Unlike the hops == 0 case,
+    // there's no "presumably a class/module reference" carve-out here --
+    // `ClassName.attr.method()` binding by bare name is exactly the
+    // chained-attribute leak this gate exists to close (an untyped
+    // class-level list/dict attribute colliding with an unrelated
+    // same-named method elsewhere in the index).
+    ReceiverType::Unresolved
+}
+
+/// Walk a (possibly nested) `attribute` chain down to its root node,
+/// returning the root plus how many `.segment` hops separate it from
+/// `node` (0 = `node` itself is the root — not an attribute chain, or a
+/// one-token base).
+fn attribute_chain_root(node: Node<'_>) -> (Node<'_>, usize) {
+    let mut current = node;
+    let mut hops = 0;
+    while current.kind() == "attribute" {
+        match current.child_by_field_name("object") {
+            Some(obj) => {
+                current = obj;
+                hops += 1;
+            }
+            None => break,
+        }
+    }
+    (current, hops)
+}
+
+const BUILTIN_ANNOTATIONS: &[&str] = &[
+    "str",
+    "int",
+    "float",
+    "bool",
+    "bytes",
+    "bytearray",
+    "complex",
+    "list",
+    "dict",
+    "set",
+    "tuple",
+    "frozenset",
+    "None",
+    "NoneType",
+    "Any",
+    "object",
+    "type",
+    "List",
+    "Dict",
+    "Set",
+    "Tuple",
+    "FrozenSet",
+    "Optional",
+    "Union",
+    "Sequence",
+    "Iterable",
+    "Iterator",
+    "Mapping",
+    "MutableMapping",
+    "Callable",
+    "ClassVar",
+    "Type",
+];
+
+/// Classify a type-annotation expression's text into a `LocalType`.
+///
+/// ponytail: generic/subscripted annotations (`List[Event]`,
+/// `Optional[Foo]`, `Dict[str, int]`, ...) are never unwrapped to their
+/// inner type — `Optional[Foo]` and `Dict[str, int]` collapse to `Other`
+/// just like `list` would, since picking "the" real type out of an
+/// arbitrary generic (especially `Union`) isn't a bounded rule. Upgrade
+/// path: special-case `Optional[X]`/`Union[X, None]` to unwrap to `X`.
+fn classify_annotation(ann: &str) -> LocalType {
+    let ann = ann.trim();
+    if ann.contains('[') {
+        return LocalType::Other;
+    }
+    let bare = ann.rsplit('.').next().unwrap_or(ann).trim();
+    if bare.is_empty() || BUILTIN_ANNOTATIONS.contains(&bare) {
+        return LocalType::Other;
+    }
+    LocalType::Known(bare.to_string())
+}
+
+/// Extract a type annotation's text from its wrapping `type` node, handling
+/// string-literal forward references (`a: "InMemoryEventStore"`) by
+/// unquoting them.
+fn annotation_text(type_node: Node<'_>, source: &str) -> String {
+    if let Some(inner) = type_node.named_child(0)
+        && matches!(inner.kind(), "string" | "string_literal")
+    {
+        let raw = node_text(inner, source);
+        return unquote_string_literal(&raw).unwrap_or(raw);
+    }
+    node_text(type_node, source)
+}
+
+/// Infer types for names bound within a single function body: parameters
+/// and simple (`identifier = ...`) assignment targets. Scope is strictly
+/// this function — never a caller, a callee, or another method of the same
+/// class (see module-level doc on `Context::local_types`).
+///
+/// A name reassigned anywhere in the body (including a parameter later
+/// reassigned) collapses to `LocalType::Other`, matching the "reassignment
+/// → unknown" rule literally, not just "unknown when the types disagree".
+fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {
+    let mut bindings: Vec<(String, LocalType)> = Vec::new();
+
+    if let Some(params) = function_node.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        for param in params.named_children(&mut cursor) {
+            match param.kind() {
+                "identifier" => {
+                    let name = node_text(param, source);
+                    if name != "self" && name != "cls" {
+                        bindings.push((name, LocalType::Other));
+                    }
+                }
+                "typed_parameter" => {
+                    if let Some(name_node) = param.named_child(0) {
+                        let name = node_text(name_node, source);
+                        let ty = param
+                            .child_by_field_name("type")
+                            .map(|t| classify_annotation(&annotation_text(t, source)))
+                            .unwrap_or(LocalType::Other);
+                        bindings.push((name, ty));
+                    }
+                }
+                "default_parameter" => {
+                    if let Some(name_node) = param.child_by_field_name("name") {
+                        bindings.push((node_text(name_node, source), LocalType::Other));
+                    }
+                }
+                "typed_default_parameter" => {
+                    if let Some(name_node) = param.child_by_field_name("name") {
+                        let name = node_text(name_node, source);
+                        let ty = param
+                            .child_by_field_name("type")
+                            .map(|t| classify_annotation(&annotation_text(t, source)))
+                            .unwrap_or(LocalType::Other);
+                        bindings.push((name, ty));
+                    }
+                }
+                "list_splat_pattern" | "dictionary_splat_pattern" => {
+                    if let Some(name_node) = param.named_child(0) {
+                        bindings.push((node_text(name_node, source), LocalType::Other));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(body) = function_node.child_by_field_name("body") {
+        collect_statement_bindings(body, source, &mut bindings);
+        collect_nested_def_names(body, source, &mut bindings);
+    }
+
+    bindings_to_local_types(bindings)
+}
+
+/// Names bound by `def` statements nested in a function body (without
+/// descending into those defs or into nested classes). Nested defs are
+/// never indexed (`walk_node` skips them at `fn_depth > 0`), so tracking the
+/// name as a local is what stops a bare call to one binding to an unrelated
+/// same-named symbol. Kept out of `collect_statement_bindings` because that
+/// also serves module scope, where top-level defs *are* indexed.
+fn collect_nested_def_names(node: Node<'_>, source: &str, bindings: &mut Vec<(String, LocalType)>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "function_definition" | "async_function_definition" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    bindings.push((node_text(name, source), LocalType::Other));
+                }
+            }
+            "class_definition" | "lambda" => {}
+            _ => collect_nested_def_names(child, source, bindings),
+        }
+    }
+}
+
+/// Infer types for names bound directly at module top level (not inside any
+/// function/class) — e.g. `__path__ = pkgutil.extend_path(...)` followed by
+/// `__path__.append(...)`, both at module scope. This is its own single
+/// scope, exactly like a function body is; it does not extend into nested
+/// function or class bodies (each of those gets its own fresh scope — see
+/// `infer_local_types`), and a name bound only at module level is not
+/// looked up again once a function scope replaces `local_types` on entry.
+fn infer_module_level_types(root: Node<'_>, source: &str) -> HashMap<String, LocalType> {
+    let mut bindings: Vec<(String, LocalType)> = Vec::new();
+    collect_statement_bindings(root, source, &mut bindings);
+    bindings_to_local_types(bindings)
+}
+
+/// Fold a scope's raw (name, inferred-type) bindings into a lookup map, with
+/// a name bound more than once anywhere in the scope collapsing to `Other`
+/// (see `infer_local_types`'s doc comment on "reassignment → unknown").
+fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String, LocalType> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (name, _) in &bindings {
+        *counts.entry(name.clone()).or_default() += 1;
+    }
+
+    let mut result = HashMap::new();
+    for (name, ty) in bindings {
+        let reassigned = counts.get(&name).copied().unwrap_or(0) > 1;
+        result.insert(name, if reassigned { LocalType::Other } else { ty });
+    }
+    result
+}
+
+/// Recursively collect local-variable bindings from statements within a
+/// single function body, stopping at nested function/class boundaries
+/// (their own locals are a different scope entirely — see
+/// `Context::local_types`'s doc comment). A `lambda` is *not* a boundary
+/// here: unlike `def`, a lambda never gets its own `Context`/`local_types`
+/// in `walk_node` (there's no case for it), so a call inside a lambda body
+/// is walked with the *enclosing* function's `local_types`. If the
+/// lambda's own parameters (e.g. `acc` in `lambda n, acc=funcs:
+/// acc.append(n)`) weren't folded into that same map, a reference to one
+/// inside the lambda body would look like an untracked name and fall
+/// through to the "presumably a class/module reference" bare-name
+/// fallback — exactly the leak this closes. Lambda parameters can't carry
+/// annotations, so they're always bound `Other`.
+fn collect_statement_bindings(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    match node.kind() {
+        "function_definition" | "async_function_definition" | "class_definition" => {
+            return;
+        }
+        "lambda" => {
+            if let Some(params) = node.child_by_field_name("parameters") {
+                collect_lambda_parameter_bindings(params, source, bindings);
+            }
+            // No `return`: still recurse into children below (the default
+            // expression of a parameter, and the lambda's body, may
+            // contain a nested lambda whose own parameters also need
+            // folding in).
+        }
+        "assignment" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                if left.kind() == "identifier" {
+                    let name = node_text(left, source);
+                    let ty = if let Some(type_node) = node.child_by_field_name("type") {
+                        classify_annotation(&annotation_text(type_node, source))
+                    } else if let Some(right) = node.child_by_field_name("right") {
+                        classify_assignment_value(right, source)
+                    } else {
+                        LocalType::Other
+                    };
+                    bindings.push((name, ty));
+                } else {
+                    // Tuple/list unpacking (`a, b = f()`, `(a, b) = f()`,
+                    // `[a, b] = f()`, `a, *rest = f()`) — every name
+                    // introduced this way is `Other`: we don't attempt to
+                    // attribute individual element types from the RHS.
+                    // Still must be *tracked* (not left absent from the
+                    // map), or a call through one of these names would
+                    // wrongly fall through to the legacy pipeline as if it
+                    // were never a local at all (see issue #45 follow-up:
+                    // `base_var, body = _base_capture(params)` then
+                    // `body.append(...)` previously slipped past this gate
+                    // for exactly this reason).
+                    collect_pattern_identifiers(left, source, bindings);
+                }
+            }
+        }
+        "for_statement" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                if left.kind() == "identifier" {
+                    bindings.push((node_text(left, source), LocalType::Other));
+                } else {
+                    collect_pattern_identifiers(left, source, bindings);
+                }
+            }
+        }
+        "with_item" | "except_clause" => {
+            if let Some(value) = node.child_by_field_name("value")
+                && value.kind() == "as_pattern"
+                && let Some(alias) = value.child_by_field_name("alias")
+                && let Some(target) = alias.named_child(0)
+                && target.kind() == "identifier"
+            {
+                bindings.push((node_text(target, source), LocalType::Other));
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_statement_bindings(child, source, bindings);
+    }
+}
+
+/// Collect every identifier bound by an unpacking-assignment target
+/// (`pattern_list` for `a, b = ...`, `tuple_pattern` for `(a, b) = ...`,
+/// `list_pattern` for `[a, b] = ...`, and `list_splat_pattern` for the
+/// `*rest` part of any of those), recursing into nested patterns
+/// (`a, (b, c) = ...`). Each is pushed as `LocalType::Other` — see the
+/// `assignment` case in `collect_statement_bindings` for why they must be
+/// tracked at all, not just given a specific type.
+fn collect_pattern_identifiers(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    match node.kind() {
+        "identifier" => bindings.push((node_text(node, source), LocalType::Other)),
+        "pattern_list" | "tuple_pattern" | "list_pattern" | "list_splat_pattern" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_pattern_identifiers(child, source, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect a `lambda`'s own parameter names as `Other` bindings (lambda
+/// parameters can't carry type annotations, so there's no `Known` case —
+/// see `collect_statement_bindings`'s `"lambda"` arm for why these are
+/// folded into the *enclosing* scope's bindings rather than a scope of
+/// their own).
+fn collect_lambda_parameter_bindings(
+    params: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        match param.kind() {
+            "identifier" => {
+                let name = node_text(param, source);
+                if name != "self" && name != "cls" {
+                    bindings.push((name, LocalType::Other));
+                }
+            }
+            "default_parameter" => {
+                if let Some(name_node) = param.child_by_field_name("name") {
+                    bindings.push((node_text(name_node, source), LocalType::Other));
+                }
+            }
+            "list_splat_pattern" | "dictionary_splat_pattern" => {
+                if let Some(name_node) = param.named_child(0) {
+                    bindings.push((node_text(name_node, source), LocalType::Other));
+                }
+            }
+            "tuple_pattern" => collect_pattern_identifiers(param, source, bindings),
+            _ => {}
+        }
+    }
+}
+
+/// Classify a simple assignment's RHS shape into a `LocalType`.
+///
+/// ponytail: the only "Known" case is a bare, capitalized callable
+/// (`store = InMemoryEventStore()`) — a constructor-call heuristic, not
+/// real type inference. A lowercase callable (`z = helper()`) is treated as
+/// unknown, since its actual return type would need cross-function
+/// analysis to determine. Everything else (attribute access, subscripts,
+/// comprehensions, binary/boolean/conditional expressions, awaits, ...)
+/// is `Other`.
+fn classify_assignment_value(right: Node<'_>, source: &str) -> LocalType {
+    match right.kind() {
+        "list"
+        | "dictionary"
+        | "set"
+        | "tuple"
+        | "string"
+        | "concatenated_string"
+        | "integer"
+        | "float"
+        | "true"
+        | "false"
+        | "none"
+        | "list_comprehension"
+        | "dictionary_comprehension"
+        | "set_comprehension"
+        | "generator_expression" => LocalType::Other,
+        "call" => {
+            let Some(func) = right.child_by_field_name("function") else {
+                return LocalType::Other;
+            };
+            if func.kind() != "identifier" {
+                return LocalType::Other;
+            }
+            let name = node_text(func, source);
+            if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                LocalType::Known(name)
+            } else {
+                LocalType::Other
+            }
+        }
+        _ => LocalType::Other,
+    }
+}
+
+/// Class-level (PEP 526) annotated attributes declared directly in a class
+/// body (`name: Type` / `name: Type = value`) — not inside any method.
+/// Used only to resolve a single-hop `self.attr.method()` receiver; see
+/// `infer_receiver_type`.
+fn collect_class_level_annotations(
+    class_body: Node<'_>,
+    source: &str,
+) -> HashMap<String, LocalType> {
+    let mut result = HashMap::new();
+    let mut cursor = class_body.walk();
+    for stmt in class_body.named_children(&mut cursor) {
+        let assignment = if stmt.kind() == "expression_statement" {
+            stmt.named_child(0)
+        } else {
+            Some(stmt)
+        };
+        let Some(assignment) = assignment else {
+            continue;
+        };
+        if assignment.kind() != "assignment" {
+            continue;
+        }
+        let Some(left) = assignment.child_by_field_name("left") else {
+            continue;
+        };
+        if left.kind() != "identifier" {
+            continue;
+        }
+        let Some(type_node) = assignment.child_by_field_name("type") else {
+            continue;
+        };
+        let name = node_text(left, source);
+        let ty = classify_annotation(&annotation_text(type_node, source));
+        result.insert(name, ty);
+    }
+    result
 }
 
 /// Detect os.getenv("KEY"), os.environ.get("KEY") → CONFIG_READ
@@ -598,9 +1210,19 @@ fn route_edges_from_decorators(
 ) -> Vec<EdgeInput> {
     let mut edges = Vec::new();
     for decorator in decorators {
-        let Some((name, args)) = decorator_call_info(*decorator, source) else {
+        let Some((name, args, has_receiver)) = decorator_call_info(*decorator, source) else {
             continue;
         };
+        // Real FastAPI/Flask route registrations are always a method call
+        // on an app/router instance (`@app.get(...)`, `@router.route(...)`,
+        // `@router.api_route(...)`) — never a bare call. Without this, a
+        // bare decorator whose name happens to collide with an HTTP verb —
+        // `unittest.mock.patch` imported as `from unittest.mock import
+        // patch` and used as `@patch(...)` is the case that bit dpb — was
+        // indexed as a phantom FastAPI PATCH route.
+        if !has_receiver {
+            continue;
+        }
         let name = name.to_ascii_lowercase();
         if let Some(method) = http::normalize_method(&name) {
             let raw_path = args
@@ -684,13 +1306,21 @@ fn build_route_edge(
     })
 }
 
-fn decorator_call_info<'a>(node: Node<'a>, source: &str) -> Option<(String, CallArgs<'a>)> {
+/// Returns the decorator call's method/function name, its arguments, and
+/// whether the call has an attribute receiver (`@app.get(...)` -> `true`)
+/// versus a bare call (`@patch(...)` -> `false`). The receiver flag lets
+/// `route_edges_from_decorators` require the former shape — see its use
+/// there for why.
+fn decorator_call_info<'a>(node: Node<'a>, source: &str) -> Option<(String, CallArgs<'a>, bool)> {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() == "call" {
             let name = call_target_name(child, source)?;
             let args = parse_call_arguments(child, source);
-            return Some((name, args));
+            let has_receiver = child
+                .child_by_field_name("function")
+                .is_some_and(|f| f.kind() == "attribute");
+            return Some((name, args, has_receiver));
         }
     }
     None
@@ -927,7 +1557,12 @@ fn channel_edges_from_decorators(
 ) -> Vec<EdgeInput> {
     let mut edges = Vec::new();
     for decorator in decorators {
-        let Some((name, args)) = decorator_call_info(*decorator, source) else {
+        // Channel decorators are matched purely on name suffix
+        // ("...subscribe"/"...publish"), which doesn't collide with
+        // unrelated stdlib/third-party names the way bare HTTP-verb names
+        // do — so unlike `route_edges_from_decorators`, no receiver
+        // requirement is needed here.
+        let Some((name, args, _has_receiver)) = decorator_call_info(*decorator, source) else {
             continue;
         };
         let name_lower = name.to_ascii_lowercase();
@@ -1163,21 +1798,29 @@ fn http_client_label(base: &str) -> Option<&'static str> {
 }
 
 fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
-    let raw = raw.trim();
+    let raw = collapse_call_target_whitespace(raw);
+    let raw = raw.as_str();
     if raw.is_empty() || !is_simple_call_target(raw) {
         return None;
     }
-    let mut parts: Vec<&str> = raw.split('.').collect();
+    let parts: Vec<&str> = raw.split('.').collect();
     if parts.is_empty() {
         return None;
     }
-    if parts[0] == "self" || parts[0] == "cls" {
-        parts.remove(0);
-        if parts.is_empty() {
-            return None;
-        }
+    // `self.method()` / `cls.method()` (exactly one hop): this already
+    // *is* the target's real full qualname (the enclosing class is known
+    // exactly), so it's built directly rather than left as literal text —
+    // deliberately unlike every other multi-segment shape below, which
+    // keeps the call site's raw text for evidence and lets receiver-type
+    // inference (`infer_receiver_type`) do the gating instead. A deeper
+    // chain (`self.attr.method()`) is NOT special-cased here: guessing a
+    // qualname by gluing the chain onto the container would produce a
+    // plausible-looking but almost always wrong string (see issue #45's
+    // `self._buffer.append` example) — it falls through to the generic
+    // "keep the raw text" case below instead.
+    if (parts[0] == "self" || parts[0] == "cls") && parts.len() == 2 {
         let container = container_qualname(&ctx.module, &ctx.class_stack);
-        return Some(format!("{container}.{}", parts.join(".")));
+        return Some(format!("{container}.{}", parts[1]));
     }
     if parts.len() == 1 {
         let container = container_qualname(&ctx.module, &ctx.class_stack);
@@ -1263,6 +1906,158 @@ fn unquote_string_literal(raw: &str) -> Option<String> {
         return Some(rest[1..rest.len() - 1].to_string());
     }
     None
+}
+
+/// Compute fully-qualified candidate qualnames for a bare `Name.method()`
+/// call whose receiver isn't a tracked local (i.e. `infer_receiver_type`
+/// returned `NotTracked` for this call), using the file's import bindings
+/// (`collect_import_bindings` / `Context::imports`). A bare `name()` call
+/// whose name was imported (`from urllib.parse import quote; quote(...)`)
+/// gets the import target itself, so the DB layer can bind it, or, for an
+/// import from outside the repo, refuse to let it fall through to a
+/// same-named repo symbol (see the guard in `db::insert_edges`).
+///
+/// Unlike C#'s `using NS;` (a namespace-level import that leaves *which*
+/// type in it ambiguous until checked against the DB), Python's `from x
+/// import Y` already binds a specific name to a specific target, so there
+/// is normally at most one candidate here. A second only shows up if the
+/// *same* name was bound by two different import statements in the same
+/// file — rare, but handled the same ambiguous way as C#'s twin-`using`
+/// case: not collapsed to one, left for the DB layer
+/// (`db::resolver::Resolver::resolve_import`) to try both and refuse unless exactly
+/// one resolves to a real symbol.
+fn import_qualified_candidates(raw: &str, ctx: &Context) -> Vec<String> {
+    let Some((receiver, method)) = raw.split_once('.') else {
+        return ctx.imports.get(raw).cloned().unwrap_or_default();
+    };
+    if receiver.is_empty() || method.is_empty() || method.contains('.') {
+        return Vec::new();
+    }
+    if receiver == "self" || receiver == "cls" {
+        return Vec::new();
+    }
+    let Some(targets) = ctx.imports.get(receiver) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = Vec::new();
+    for target in targets {
+        let candidate = format!("{target}.{method}");
+        if seen.insert(candidate.clone()) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
+/// Walk the whole file once, before the main walk, collecting every
+/// `import_statement`/`import_from_statement` node into a bound-name ->
+/// candidate-target(s) map — see `Context::imports`. A flat scan rather
+/// than something threaded through `walk_node`'s per-scope `Context`, same
+/// simplification as C#'s `collect_import_context`: import bindings don't
+/// meaningfully change per-scope for this extractor's purposes (a
+/// function-local `import` is rare, and treating it as file-wide is
+/// harmless — worst case, a candidate is tried and doesn't match).
+fn collect_import_bindings(root: Node<'_>, source: &str) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    collect_import_bindings_rec(root, source, &mut out);
+    out
+}
+
+fn collect_import_bindings_rec(
+    node: Node<'_>,
+    source: &str,
+    out: &mut HashMap<String, Vec<String>>,
+) {
+    if matches!(node.kind(), "import_statement" | "import_from_statement") {
+        let text = node_text(node, source);
+        for (bound, target) in parse_import_bindings(&text) {
+            let entry = out.entry(bound).or_default();
+            if !entry.contains(&target) {
+                entry.push(target);
+            }
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_import_bindings_rec(child, source, out);
+    }
+}
+
+/// Parse a `from x import Y [as Z], A [as B]` or `import x.y [as z], a.b`
+/// statement's text into `(bound_name, fully_qualified_target)` pairs — the
+/// name this statement introduces into the file's scope, and what it
+/// stands for. Mirrors `parse_imports`'s crude-but-cheap text-based
+/// parsing (same shape support: single-line, unparenthesized, no
+/// wildcards) but additionally resolves `as` aliases, which `parse_imports`
+/// intentionally discards (it only needs the raw IMPORTS-edge target text,
+/// not the name bound into scope).
+///
+/// ponytail: parenthesized multi-line `from x import (A, B as C)` and
+/// wildcard `from x import *` are not tracked as candidate bindings — same
+/// ceiling `parse_imports` already has for the IMPORTS edge itself (it
+/// emits `"{base}.*"`, not a usable target). Upgrade path: a real
+/// per-name AST walk (the grammar's `aliased_import`/`dotted_name` nodes)
+/// if this gap ever bites.
+fn parse_import_bindings(text: &str) -> Vec<(String, String)> {
+    let cleaned = text.replace('\n', " ");
+    let cleaned = cleaned.trim().trim_end_matches(';');
+    let mut out = Vec::new();
+    if let Some(rest) = cleaned.strip_prefix("import ") {
+        for part in rest.split(',') {
+            let mut tokens = part.split_whitespace();
+            let Some(module) = tokens.next() else {
+                continue;
+            };
+            if module.is_empty() {
+                continue;
+            }
+            let bound = match (tokens.next(), tokens.next()) {
+                (Some("as"), Some(alias)) => alias.to_string(),
+                _ => module.split('.').next().unwrap_or(module).to_string(),
+            };
+            if bound.is_empty() {
+                continue;
+            }
+            out.push((bound, module.to_string()));
+        }
+        return out;
+    }
+    if let Some(rest) = cleaned.strip_prefix("from ")
+        && let Some((module, names)) = rest.split_once(" import ")
+    {
+        let base = module.trim();
+        let trimmed_names = names.trim();
+        if base.contains('(') || trimmed_names.contains('(') || trimmed_names == "*" {
+            return out;
+        }
+        for part in names.split(',') {
+            let mut tokens = part.split_whitespace();
+            let Some(item) = tokens.next() else {
+                continue;
+            };
+            if item == "*" {
+                continue;
+            }
+            let bound = match (tokens.next(), tokens.next()) {
+                (Some("as"), Some(alias)) => alias.to_string(),
+                _ => item.to_string(),
+            };
+            if bound.is_empty() {
+                continue;
+            }
+            let target = if base.is_empty() {
+                item.to_string()
+            } else if base == "." || base.ends_with('.') {
+                format!("{base}{item}")
+            } else {
+                format!("{base}.{item}")
+            };
+            out.push((bound, target));
+        }
+    }
+    out
 }
 
 fn parse_imports(text: &str) -> Vec<String> {
@@ -1411,7 +2206,7 @@ fn package_prefixes_have_init(repo_root: &Path, parts: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::PythonExtractor;
-    use crate::indexer::extract::LanguageExtractor;
+    use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor, ReceiverType};
     use crate::indexer::http;
     use crate::indexer::proto;
 
@@ -1453,6 +2248,49 @@ requests.post("/api/users/123")
     }
 
     #[test]
+    fn bare_decorator_sharing_an_http_verb_name_is_not_a_route() {
+        // `unittest.mock.patch` imported bare (`from unittest.mock import
+        // patch`) and used as `@patch(...)` on a test method collides with
+        // the "patch" HTTP-verb heuristic `route_edges_from_decorators`
+        // uses for genuine `@app.patch(...)` registrations. Real FastAPI/
+        // Flask route decorators are always called on an app/router
+        // instance; a bare call sharing the verb's name is not one.
+        let source = r#"
+from unittest.mock import patch
+
+class TestThing:
+    @patch("databricks.sdk.WorkspaceClient", autospec=True)
+    def test_something(self, mock_cls):
+        pass
+
+    @app.patch("/api/widgets/{id}")
+    def update_widget(self, request):
+        pass
+"#;
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let routes = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == http::HTTP_ROUTE_KIND)
+            .collect::<Vec<_>>();
+        assert!(
+            routes
+                .iter()
+                .all(|edge| edge.source_qualname.as_deref()
+                    != Some("module.TestThing.test_something")),
+            "a bare @patch(...) decorator (unittest.mock.patch) must not be indexed as an \
+             HTTP_ROUTE, got: {routes:?}"
+        );
+        assert!(
+            routes.iter().any(|edge| edge.source_qualname.as_deref()
+                == Some("module.TestThing.update_widget")
+                && edge.target_qualname.as_deref() == Some("/api/widgets/{}")),
+            "a genuine @app.patch(...) route (attribute-call form) must still be indexed, got: {routes:?}"
+        );
+    }
+
+    #[test]
     fn extracts_grpc_impl_and_call() {
         let source = r#"
 import foo_pb2_grpc
@@ -1486,5 +2324,59 @@ def main(channel):
                 .iter()
                 .any(|edge| edge.target_qualname.as_deref() == Some("/userservice/getuser"))
         );
+    }
+
+    fn calls_at_line(file: &ExtractedFile, line: i64) -> Vec<&EdgeInput> {
+        file.edges
+            .iter()
+            .filter(|e| e.kind == "CALLS" && e.evidence_start_line == Some(line))
+            .collect()
+    }
+
+    #[test]
+    fn bare_call_to_imported_name_carries_import_target_as_candidate() {
+        // dpb `_helpers/identifiers.py`: without a candidate, `quote(...)`
+        // fell through to the bare-name tier and bound
+        // `MssqlCodeWriter.quote`.
+        let source =
+            "from urllib.parse import quote\n\ndef file_component(name):\n    return quote(name)\n";
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let calls = calls_at_line(&file, 4);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].receiver_type, ReceiverType::NotTracked);
+        assert_eq!(
+            calls[0].import_candidates,
+            vec!["urllib.parse.quote".to_string()]
+        );
+    }
+
+    #[test]
+    fn bare_call_to_nested_def_is_unresolved_not_bare_name() {
+        // dpb `dpbuilder_testing/mssql.py`: a nested `def quote` inside a
+        // method; its calls bound to an unrelated `MssqlCodeWriter.quote`.
+        let source = r#"
+class Backend:
+    def conn_str(self, db):
+        def quote(value):
+            return "{" + str(value) + "}"
+        return quote(db)
+
+def top():
+    return helper()
+
+def helper():
+    return 1
+"#;
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let nested = calls_at_line(&file, 6);
+        assert_eq!(nested.len(), 1, "{nested:?}");
+        assert_eq!(nested[0].receiver_type, ReceiverType::Unresolved);
+        assert!(nested[0].import_candidates.is_empty());
+        // A call to a real top-level function is untouched.
+        let top = calls_at_line(&file, 9);
+        assert_eq!(top.len(), 1, "{top:?}");
+        assert_eq!(top[0].receiver_type, ReceiverType::NotTracked);
     }
 }

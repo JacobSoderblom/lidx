@@ -308,10 +308,7 @@ fn gather_context_rejects_too_many_seeds() {
     indexer.reindex().unwrap();
 
     // Create 101 seeds (exceeds limit of 100)
-    let mut seeds = Vec::new();
-    for _ in 0..101 {
-        seeds.push(r#"{"type":"symbol","qualname":"pkg.core.Greeter"}"#);
-    }
+    let seeds = vec![r#"{"type":"symbol","qualname":"pkg.core.Greeter"}"#; 101];
     let seeds_json = format!(r#"{{"seeds":[{}]}}"#, seeds.join(","));
 
     let response = rpc::call(

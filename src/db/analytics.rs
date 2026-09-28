@@ -309,12 +309,16 @@ impl Db {
         paths: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<(String, i64)>> {
+        // Issue #80: excludes external stub symbols (`kind = 'external'`)
+        // -- they'd otherwise show up as their own noise bucket in the
+        // repo map's "Patterns" section.
         let mut sql = String::from(
             "SELECT s.kind, COUNT(*) as cnt
              FROM symbols s
              JOIN files f ON s.file_id = f.id
              WHERE s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+               AND s.kind != 'external'",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
 
@@ -542,6 +546,17 @@ impl Db {
         Ok(results)
     }
 
+    /// Issue #79: an IMPORTS reference the write path never resolved (an
+    /// external package, e.g. `import json`) no longer gets a placeholder
+    /// edge at all -- it lives only in `unresolved_references` (`edge_id IS
+    /// NULL`). Unioned in here as a second branch so it's still reported as
+    /// unused when nothing calls it, with its `id` negated (`-ur.id`) to
+    /// keep it visibly distinct from a real `edges.id` -- a pending row has
+    /// no edge of its own to report the id of. The "is it used" check is
+    /// unioned the same way on the CALLS side: a call the write path also
+    /// left unresolved (`from fastapi import FastAPI` + `FastAPI()`, both
+    /// external) is just as real a use as a resolved one, and before issue
+    /// #79 both shared one `edges` row's worth of visibility here.
     pub fn unused_imports(
         &self,
         limit: usize,
@@ -549,27 +564,40 @@ impl Db {
         paths: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<Edge>> {
-        let sql = "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
-                          e.target_qualname, e.detail, e.evidence_snippet,
-                          e.evidence_start_line, e.evidence_end_line, e.confidence,
-                          e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
-                   FROM edges e
-                   JOIN files f ON e.file_id = f.id
-                   WHERE e.kind = 'IMPORTS'
-                     AND e.graph_version = ?
-                     AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                     AND e.target_qualname IS NOT NULL
-                     AND NOT EXISTS (
-                       SELECT 1 FROM edges e2
-                       WHERE e2.kind = 'CALLS'
-                         AND e2.file_id = e.file_id
-                         AND e2.target_qualname = e.target_qualname
-                         AND e2.graph_version = ?
-                     )";
-
-        let mut full_sql = String::from(sql);
-        let mut params: Vec<&dyn rusqlite::ToSql> =
-            vec![&graph_version, &graph_version, &graph_version];
+        let mut full_sql = String::from(
+            "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
+                    e.target_qualname, e.detail, e.evidence_snippet,
+                    e.evidence_start_line, e.evidence_end_line, e.confidence,
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_kind
+             FROM edges e
+             JOIN files f ON e.file_id = f.id
+             WHERE e.kind = 'IMPORTS'
+               AND e.graph_version = ?
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+               AND e.target_qualname IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM edges e2
+                 WHERE e2.kind = 'CALLS'
+                   AND e2.file_id = e.file_id
+                   AND e2.target_qualname = e.target_qualname
+                   AND e2.graph_version = ?
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM unresolved_references ur2
+                 WHERE ur2.edge_kind = 'CALLS'
+                   AND ur2.edge_id IS NULL
+                   AND ur2.file_id = e.file_id
+                   AND ur2.reference_name = e.target_qualname
+                   AND ur2.graph_version = ?
+               )",
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![
+            &graph_version,
+            &graph_version,
+            &graph_version,
+            &graph_version,
+        ];
 
         if let Some(languages) = languages
             && !languages.is_empty()
@@ -587,10 +615,78 @@ impl Db {
             }
         }
 
-        let mut path_params = Vec::new();
-        append_path_filters(&mut full_sql, &mut params, &mut path_params, paths, "f");
+        let mut path_params_edges = Vec::new();
+        append_path_filters(
+            &mut full_sql,
+            &mut params,
+            &mut path_params_edges,
+            paths,
+            "f",
+        );
 
-        full_sql.push_str(" ORDER BY f.path, e.evidence_start_line LIMIT ?");
+        full_sql.push_str(
+            " UNION ALL
+             SELECT -ur.id, f.path, ur.edge_kind, ur.source_symbol_id, NULL,
+                    ur.reference_name, ur.detail, ur.evidence_snippet,
+                    ur.evidence_start_line, ur.evidence_end_line, ur.confidence,
+                    ur.graph_version, ur.commit_sha, ur.trace_id, ur.span_id, ur.event_ts,
+                    NULL
+             FROM unresolved_references ur
+             JOIN files f ON ur.file_id = f.id
+             WHERE ur.edge_kind = 'IMPORTS'
+               AND ur.edge_id IS NULL
+               AND ur.graph_version = ?
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+               AND ur.reference_name IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM edges e2
+                 WHERE e2.kind = 'CALLS'
+                   AND e2.file_id = ur.file_id
+                   AND e2.target_qualname = ur.reference_name
+                   AND e2.graph_version = ?
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM unresolved_references ur2
+                 WHERE ur2.edge_kind = 'CALLS'
+                   AND ur2.edge_id IS NULL
+                   AND ur2.file_id = ur.file_id
+                   AND ur2.reference_name = ur.reference_name
+                   AND ur2.graph_version = ?
+               )",
+        );
+        params.push(&graph_version);
+        params.push(&graph_version);
+        params.push(&graph_version);
+        params.push(&graph_version);
+
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            full_sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    full_sql.push(',');
+                }
+                full_sql.push('?');
+            }
+            full_sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
+            }
+        }
+
+        let mut path_params_store = Vec::new();
+        append_path_filters(
+            &mut full_sql,
+            &mut params,
+            &mut path_params_store,
+            paths,
+            "f",
+        );
+
+        // Column 2 = file_path, column 9 = evidence_start_line -- an ORDER BY
+        // after a UNION ALL can't qualify columns by table alias anymore.
+        full_sql.push_str(" ORDER BY 2, 9 LIMIT ?");
         let limit = limit as i64;
         params.push(&limit);
 

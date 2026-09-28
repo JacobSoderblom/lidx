@@ -3,7 +3,7 @@
 //! This module contains all the data structures used in the impact analysis system,
 //! including both the v1 (legacy) types and new v2 (multi-layer) types.
 
-use crate::model::SymbolCompact;
+use crate::model::{LowerBound, SymbolCompact};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -17,6 +17,12 @@ pub struct PathStep {
     pub edge_kind: String,
     pub from_symbol: String,
     pub to_symbol: String,
+    /// Resolution tier of the traversed edge (issue #62's AC: every
+    /// response carrying edges exposes the resolution tier). Absent when
+    /// the edge has no resolution kind at all -- a String-Targeted Edge Kind
+    /// (Bridge Edge or CONFIG_*) or any edge kind the resolver never labels.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
 }
 
 /// Path from seed symbol to impacted symbol
@@ -88,7 +94,15 @@ pub type ConfidenceScore = f32;
 #[serde(tag = "type")]
 pub enum ImpactSource {
     /// Direct graph edge (CALL, IMPORT, etc.)
-    DirectEdge { edge_kind: String, distance: usize },
+    DirectEdge {
+        edge_kind: String,
+        distance: usize,
+        /// Resolution tier of the traversed edge (issue #62's AC). Absent
+        /// when the edge has no resolution kind at all -- a Bridge Edge
+        /// kind or any edge kind the resolver never labels.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resolution_kind: Option<String>,
+    },
     /// Test relationship
     TestLink {
         strategy: String,  // "import", "call", "naming", "proximity"
@@ -115,8 +129,15 @@ pub struct LayerResult {
     pub duration_ms: u64,
     /// Whether this layer was truncated
     pub truncated: bool,
-    /// Parent tracking for path reconstruction: child_id -> (parent_id, edge_kind)
-    pub parent_map: HashMap<i64, (i64, String)>,
+    /// Parent tracking for path reconstruction: child_id -> (parent_id,
+    /// edge_kind, resolution_kind of the traversed edge)
+    pub parent_map: HashMap<i64, (i64, String, Option<String>)>,
+    /// Issue #81 (R5): whether this layer traversed at least one edge with a
+    /// heuristic (`bare_name`/`two_segment`) resolution kind. Only the direct
+    /// layer (`analyze_direct_impact`) computes this meaningfully; every
+    /// other layer reports `false` since they don't walk resolved graph
+    /// edges the same way.
+    pub traversed_heuristic_kind: bool,
 }
 
 /// Configuration for multi-layer impact analysis
@@ -151,6 +172,9 @@ pub struct DirectConfig {
     pub max_depth: usize,
     pub direction: String,  // "upstream", "downstream", "both"
     pub kinds: Vec<String>, // Edge kinds to follow (empty = all)
+    /// Resolution kinds to refuse to traverse (issue #81), e.g.
+    /// `["bare_name", "two_segment"]`. Empty by default: unchanged behaviour.
+    pub exclude_resolution_kinds: Vec<String>,
     pub include_tests: bool,
     pub languages: Option<Vec<String>>,
 }
@@ -162,6 +186,7 @@ impl Default for DirectConfig {
             max_depth: 3,
             direction: "both".to_string(),
             kinds: Vec::new(),
+            exclude_resolution_kinds: Vec::new(),
             include_tests: true,
             languages: None,
         }
@@ -224,6 +249,19 @@ pub struct UnifiedImpactResult {
     pub config: ImpactConfig,
     /// Layer-specific metadata
     pub layers: LayerMetadata,
+    /// Lower-bound indicator (issue #81) -- set when pending
+    /// `unresolved_references` rows touch the direct layer's traversed
+    /// symbols. Always `{ is_lower_bound: false, unresolved_count: 0 }`
+    /// when the direct layer is disabled, since only that layer traverses
+    /// resolvable graph edges.
+    pub lower_bound: LowerBound,
+    /// Issue #81 (R5): whether the direct layer's own traversal crossed at
+    /// least one heuristic (`bare_name`/`two_segment`) edge -- gates the
+    /// "retry excluding heuristics" next_hops suggestion in
+    /// `handle_analyze_impact`. Internal signal, not part of the response
+    /// payload.
+    #[serde(skip)]
+    pub traversed_heuristic_kind: bool,
 }
 
 /// A single entry in a batch impact result
@@ -235,6 +273,10 @@ pub struct BatchImpactEntry {
     pub summary: ImpactSummary,
     pub truncated: bool,
     pub layers: LayerMetadata,
+    pub lower_bound: LowerBound,
+    /// Present only when seed resolution failed; contains next_hops and a message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<serde_json::Value>,
 }
 
 /// Result of batch impact analysis (multiple seeds in one call)

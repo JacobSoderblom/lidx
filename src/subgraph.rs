@@ -47,8 +47,6 @@ pub fn build_subgraph_filtered(
 
     let mut edge_ids: HashSet<i64> = HashSet::new();
     let mut edges: Vec<Edge> = Vec::new();
-    let mut module_target_cache: HashMap<String, Option<i64>> = HashMap::new();
-    let mut calls_target_cache: HashMap<String, Option<i64>> = HashMap::new();
     let mut symbol_cache: HashMap<i64, String> = HashMap::new();
     let mut symbol_checked: HashSet<i64> = HashSet::new();
 
@@ -76,41 +74,10 @@ pub fn build_subgraph_filtered(
             continue;
         }
         let mut neighbors = db.edges_for_symbol(id, languages, graph_version)?;
-        for edge in neighbors.iter_mut() {
-            if (edge.kind == "MODULE_FILE" || edge.kind == "IMPORTS_FILE")
-                && edge.target_symbol_id.is_none()
-                && let Some(target_qualname) = edge.target_qualname.as_deref()
-            {
-                let resolved = if let Some(cached) = module_target_cache.get(target_qualname) {
-                    *cached
-                } else {
-                    let id =
-                        db.lookup_symbol_id_filtered(target_qualname, languages, graph_version)?;
-                    module_target_cache.insert(target_qualname.to_string(), id);
-                    id
-                };
-                if let Some(resolved_id) = resolved {
-                    edge.target_symbol_id = Some(resolved_id);
-                }
-            }
-            // Resolve CALLS edges with NULL target_symbol_id
-            if edge.kind == "CALLS"
-                && edge.target_symbol_id.is_none()
-                && let Some(target_qualname) = edge.target_qualname.as_deref()
-            {
-                let resolved = if let Some(cached) = calls_target_cache.get(target_qualname) {
-                    *cached
-                } else {
-                    let id =
-                        db.lookup_symbol_id_fuzzy(target_qualname, languages, graph_version)?;
-                    calls_target_cache.insert(target_qualname.to_string(), id);
-                    id
-                };
-                if let Some(resolved_id) = resolved {
-                    edge.target_symbol_id = Some(resolved_id);
-                }
-            }
-        }
+        // Every edge kind's target is either resolved at write time or, if
+        // unresolved, has no live edge to fall back on at all (issue #79) —
+        // the read path must not guess one via fuzzy qualname lookup. Edge
+        // resolution belongs to `db::resolver`.
         if let Some(filter) = filter {
             if filter.exclude_all {
                 neighbors.clear();

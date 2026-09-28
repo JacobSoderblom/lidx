@@ -25,6 +25,15 @@ pub struct Symbol {
     pub stable_id: Option<String>,
 }
 
+impl Symbol {
+    /// True for an external stub: a symbol attributed to a synthetic `ext:`
+    /// location rather than a real repo file (e.g. a known third-party
+    /// import target), which every repo-internal listing excludes.
+    pub fn is_external(&self) -> bool {
+        self.kind == "external" || self.qualname.starts_with("ext:")
+    }
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct SymbolCompact {
     pub id: i64,
@@ -65,6 +74,136 @@ impl From<&Symbol> for SymbolCompact {
     }
 }
 
+/// One entry in an `outline` response: a symbol (or, for Markdown, a heading)
+/// in source order, with no body. `parent` is the qualname of the nearest
+/// containing entry within the same file (omitted for top-level entries).
+#[derive(Debug, Serialize, Clone)]
+pub struct OutlineEntry {
+    pub kind: String,
+    pub name: String,
+    pub qualname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    pub start_line: i64,
+    pub end_line: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// First line of the symbol's docstring, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+}
+
+impl OutlineEntry {
+    /// Builds an outline entry from an indexed `Symbol`'s own fields, under
+    /// `parent`'s qualname (`None` for a top-level entry) with a
+    /// caller-computed `doc` (each caller derives it from `docstring`
+    /// differently: a fresh borrow vs. an already-owned `Symbol`) -- the field
+    /// mapping shared by every symbol-derived outline/skeleton-children entry.
+    /// A Markdown heading entry has no backing `Symbol` and builds its own
+    /// literal instead.
+    pub fn from_symbol(symbol: &Symbol, parent: Option<String>, doc: Option<String>) -> Self {
+        OutlineEntry {
+            kind: symbol.kind.clone(),
+            name: symbol.name.clone(),
+            qualname: symbol.qualname.clone(),
+            signature: symbol.signature.clone(),
+            start_line: symbol.start_line,
+            end_line: symbol.end_line,
+            parent,
+            doc,
+        }
+    }
+}
+
+/// Response for `outline`: a compact, no-bodies skeleton of an indexed file.
+#[derive(Debug, Serialize, Clone)]
+pub struct OutlineResult {
+    pub path: String,
+    pub language: String,
+    pub total_lines: i64,
+    pub entries: Vec<OutlineEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub next_hops: Vec<Value>,
+}
+
+/// Header and payload shared by `read_symbol`'s three response shapes: a full
+/// source read, a container's `skeleton` (children only, no bodies), and an
+/// over-budget stub (`omitted: true`). Every shape shares the header fields
+/// (`qualname`/`kind`/`path`/`start_line`/`end_line`/`stale`); each fills in
+/// only the payload fields it uses, and the rest are skipped from the JSON
+/// (`skip_serializing_if`) rather than emitted as `null`, so the field set
+/// for a given shape matches what it always has.
+#[derive(Debug, Serialize, Clone)]
+pub struct ReadSymbolEntry {
+    pub qualname: String,
+    pub kind: String,
+    pub path: String,
+    pub start_line: i64,
+    pub end_line: i64,
+    pub stale: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skeleton: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<OutlineEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub omitted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub next_hops: Vec<Value>,
+}
+
+impl ReadSymbolEntry {
+    /// Header fields shared by every `read_symbol` response shape, with every
+    /// payload field defaulted -- each of the three constructors below fills
+    /// in only the payload fields its shape uses.
+    fn header(symbol: &Symbol, stale: bool) -> Self {
+        ReadSymbolEntry {
+            qualname: symbol.qualname.clone(),
+            kind: symbol.kind.clone(),
+            path: symbol.file_path.clone(),
+            start_line: symbol.start_line,
+            end_line: symbol.end_line,
+            stale,
+            source: None,
+            skeleton: None,
+            children: None,
+            omitted: None,
+            size_bytes: None,
+            next_hops: Vec::new(),
+        }
+    }
+
+    /// A full source read: `source` filled in, no skeleton/omitted payload.
+    pub fn source(symbol: &Symbol, stale: bool, source: String) -> Self {
+        ReadSymbolEntry {
+            source: Some(source),
+            ..Self::header(symbol, stale)
+        }
+    }
+
+    /// A container's skeleton: `children`'s signatures/line ranges, no body.
+    pub fn skeleton(symbol: &Symbol, stale: bool, children: Vec<OutlineEntry>) -> Self {
+        ReadSymbolEntry {
+            skeleton: Some(true),
+            children: Some(children),
+            ..Self::header(symbol, stale)
+        }
+    }
+
+    /// An over-budget stub: header fields only, plus `omitted: true` and the
+    /// actual (over-budget) size -- never a partial/cut source.
+    pub fn omitted_header(symbol: &Symbol, stale: bool, size_bytes: usize) -> Self {
+        ReadSymbolEntry {
+            omitted: Some(true),
+            size_bytes: Some(size_bytes),
+            ..Self::header(symbol, stale)
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct Edge {
     pub id: i64,
@@ -86,6 +225,19 @@ pub struct Edge {
     pub evidence_end_line: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
+    /// The tier that bound `target_symbol_id` (`exact`, `import`,
+    /// `receiver_type`, `inherited`, `two_segment`, `bare_name`, or
+    /// `external` -- see `db::resolver::ResolutionKind::as_str`), or
+    /// absent when the target was never bound at all: a still-pending
+    /// String-Targeted Edge Kind (a Bridge Edge kind's cross-process join
+    /// key, or a CONFIG_SOURCE/CONFIG_READ/CONFIG_BIND kind's config
+    /// key/secret URI), a structural edge kind the resolver doesn't
+    /// label, or a graph indexed before this field existed. Distinct from
+    /// `confidence` (extraction certainty) and, on `analyze_impact`, from
+    /// `min_confidence` (a query-time impact heuristic) -- neither of
+    /// those describes how the target was found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
     pub graph_version: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_sha: Option<String>,
@@ -94,6 +246,33 @@ pub struct Edge {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<String>,
     pub event_ts: Option<i64>,
+}
+
+/// One edge, normalized for the golden-corpus correctness scoreboard
+/// (`Db::edges_snapshot`): the source and (if resolved) target's actual
+/// qualnames, rather than the edge's raw stored `target_qualname` text
+/// (which is the call site's literal, pre-resolution guess — see
+/// `resolve_call_target` — and often differs from the resolved symbol's
+/// real qualname).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EdgeSnapshotRow {
+    pub source_qualname: String,
+    pub kind: String,
+    /// `None` when `target_symbol_id` is NULL (unresolved).
+    pub target_qualname: Option<String>,
+    pub resolution_kind: Option<String>,
+}
+
+/// One `(language, reason, count)` bucket of `Db::unresolved_reference_summary`
+/// (issue #78): how many rows the `unresolved_references` store currently
+/// holds for that language and `UnresolvedReason`, at the queried graph
+/// version. Test/reporting support for the golden-corpus scoreboard, same
+/// spirit as `EdgeSnapshotRow`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UnresolvedReferenceSummary {
+    pub language: String,
+    pub reason: String,
+    pub count: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,6 +284,23 @@ pub struct RepoOverview {
     pub last_indexed: Option<i64>,
     pub graph_version: Option<i64>,
     pub commit_sha: Option<String>,
+    pub scope_counts: ScopeCounts,
+}
+
+/// Per-scope file counts (issue #63), aggregated from the same query-time
+/// classifier `search::scope_allows` uses for the `search` method's `scope`
+/// param -- not a stored column. A file can satisfy more than one scope
+/// (e.g. `docs/build.py` is both `docs` and, unlike `code`, not mutually
+/// exclusive with it), so these counts are not guaranteed to sum to
+/// `RepoOverview::files`. Every field is always present, including zero --
+/// this is what makes an empty `tests` list elsewhere in a response
+/// interpretable rather than ambiguous.
+#[derive(Debug, Serialize, Clone, Copy, Default)]
+pub struct ScopeCounts {
+    pub code: i64,
+    pub tests: i64,
+    pub docs: i64,
+    pub examples: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -184,8 +380,11 @@ pub struct ContextLine {
 pub struct RpcSuggestion {
     pub method: String,
     pub params: Value,
+    // Named `description` (not `label`) to match every other handler's
+    // hand-rolled `next_hops` entries (see e.g. explain_symbol in
+    // `src/rpc/handlers.rs`, outline/read_symbol in `src/rpc/reading.rs`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -269,6 +468,51 @@ pub struct GraphVersion {
     pub id: i64,
     pub created: i64,
     pub commit_sha: Option<String>,
+}
+
+/// Is this XREF edge trustworthy enough to traverse?
+///
+/// XREF is name matching over string literals, and it comes in two grades that
+/// the extractor already distinguishes:
+///
+/// - `qualname_exact` (confidence 1.0) -- a *qualified* token matched, e.g. the
+///   literal `"dpb.catalog_publication"` inside a SQL query naming that exact
+///   table. Across dpb all 61 of these land on real schema or proto objects.
+/// - `name_exact` (confidence 0.7-0.8) -- a single bare word matched, e.g. the
+///   token `Deserialize` matching a Rust `use serde::Deserialize`, a Python
+///   docstring and an unrelated C# method. All 550 of these are noise, and they
+///   fabricated a 16-step multi-language blast radius for one C# method.
+///
+/// Only the qualified grade may drive an answer. The bare grade stays in the
+/// database for anyone querying it directly, but no traversal crosses it.
+// ponytail: keyed off the `match` field the extractor already writes, rather
+// than a confidence threshold -- confidences get retuned, the grade names do
+// not. If a third grade appears, this becomes a match on an enum.
+pub fn xref_is_traversable(edge: &Edge) -> bool {
+    if edge.kind != "XREF" {
+        return true;
+    }
+    edge.detail
+        .as_deref()
+        .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+        .and_then(|v| {
+            v.get("match")
+                .and_then(|m| m.as_str())
+                .map(|m| m == "qualname_exact")
+        })
+        .unwrap_or(false)
+}
+
+/// Whether an edge's own resolution kind is one of `exclude` -- the shared
+/// `exclude_resolution_kinds` predicate (issue #81) behind `trace_flow`
+/// (`traversal.rs`), the direct impact layer (`impact/layers/direct.rs`),
+/// and the test impact layer (`impact/layers/test.rs`). `resolution_kind`
+/// is `Edge::resolution_kind` (`edge.resolution_kind.as_deref()`); `None`
+/// means the edge has no resolution kind at all -- a String-Targeted Edge
+/// Kind (Bridge Edge or CONFIG_*) or any edge kind the resolver never
+/// labels -- and is never excluded by this check.
+pub fn is_resolution_excluded(resolution_kind: Option<&str>, exclude: &[String]) -> bool {
+    resolution_kind.is_some_and(|rk| exclude.iter().any(|k| k == rk))
 }
 
 #[derive(Debug, Serialize)]
@@ -566,12 +810,33 @@ pub struct ExplainSymbolResult {
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callers: Option<Vec<ExplainRef>>,
+    /// True count of matching callers found, before `max_refs`/byte-budget
+    /// capping. Present whenever `callers` is present, so a caller can always
+    /// tell `callers.len() < callers_total` apart from "there just aren't more".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callers_total: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callees: Option<Vec<ExplainRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub callees_total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tests: Option<Vec<ExplainRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub tests_total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub implements: Option<Vec<Symbol>>,
+    /// True count of matching supertypes/interfaces found, before
+    /// `max_refs`/byte-budget capping. Present whenever `implements` is
+    /// present, so a caller can always tell `implements.len() <
+    /// implements_total` apart from "there just aren't more".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub implements_total: Option<usize>,
+    /// `commit_sha`/`graph_version` are properties of the indexing run, not
+    /// of any one symbol, so they're stamped here once for the whole
+    /// response rather than on `symbol` and every `ExplainRef` (issue #66).
+    pub graph_version: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
     pub budget: BudgetInfo,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub next_hops: Vec<serde_json::Value>,
@@ -579,14 +844,22 @@ pub struct ExplainSymbolResult {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ExplainRef {
     pub symbol: Symbol,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
     pub edge_kind: String,
+    /// Service/rpc, route, channel or config key for a cross-boundary
+    /// (RPC_CALL, HTTP_CALL, CHANNEL_PUBLISH, CONFIG_READ, ...) ref.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_context: Option<serde_json::Value>,
+    /// The tier that bound this ref's edge -- see `Edge::resolution_kind`.
+    /// Absent when the edge itself never carries one (a still-pending
+    /// String-Targeted Edge Kind -- Bridge Edge or CONFIG_* -- or an edge
+    /// kind the resolver doesn't label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -594,6 +867,12 @@ pub struct BudgetInfo {
     pub budget_bytes: usize,
     pub used_bytes: usize,
     pub truncated: bool,
+    /// The `max_bytes` the caller actually requested, when it differs from
+    /// `budget_bytes` because the request was silently clamped to a hard cap.
+    /// `None` when no clamping happened (including when the caller didn't
+    /// pass `max_bytes` at all).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_bytes: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -682,6 +961,13 @@ pub struct DiffImpactEntry {
     pub relationship: String, // "calls", "imports", "extends"
     pub distance: usize,
     pub confidence: f64,
+    /// The tier that bound the edge connecting this entry to the previous
+    /// BFS level -- see `Edge::resolution_kind`. Absent when that edge
+    /// never carries one (a still-pending String-Targeted Edge Kind --
+    /// Bridge Edge or CONFIG_* -- or an edge kind the resolver doesn't
+    /// label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -714,6 +1000,18 @@ pub struct RiskFactor {
     pub severity: String, // "low", "medium", "high"
 }
 
+/// Lower-bound indicator (issue #81): attached to `trace_flow`/
+/// `analyze_impact` results when pending `unresolved_references` rows
+/// touch the traversed symbols, so an agent doesn't mistake a partial
+/// answer for a complete one. See
+/// `Db::unresolved_reference_count_for_symbols`'s doc for exactly what
+/// counts as "touching" a traversed symbol, per direction.
+#[derive(Debug, Serialize, Clone, Copy)]
+pub struct LowerBound {
+    pub is_lower_bound: bool,
+    pub unresolved_count: i64,
+}
+
 // trace_flow types
 
 #[derive(Debug, Serialize)]
@@ -726,6 +1024,7 @@ pub struct TraceFlowResult {
     pub reached_target: bool,
     pub truncated: bool,
     pub budget: BudgetInfo,
+    pub lower_bound: LowerBound,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub next_hops: Vec<serde_json::Value>,
 }
@@ -745,4 +1044,10 @@ pub struct TraceHop {
     pub boundary_detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol_context: Option<serde_json::Value>,
+    /// The tier that bound the edge this hop traversed -- see
+    /// `Edge::resolution_kind`. Absent when the edge itself never carries
+    /// one (a still-pending String-Targeted Edge Kind -- Bridge Edge or
+    /// CONFIG_* -- or an edge kind the resolver doesn't label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
 }

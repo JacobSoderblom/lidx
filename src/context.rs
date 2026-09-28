@@ -3,6 +3,7 @@
 //! Operates on `Db` directly (not `Indexer`) for fast startup (~30ms).
 
 use crate::db::Db;
+use crate::indexer::test_detection::is_test_file;
 use crate::model::{Edge, Symbol};
 use anyhow::Result;
 use serde::Serialize;
@@ -13,7 +14,6 @@ use std::path::Path;
 const MAX_CALLERS: usize = 15;
 const MAX_CALLEES: usize = 15;
 const MAX_XREFS: usize = 15;
-const MAX_INCOMING_LOOKUPS: usize = 20;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CrossRef {
@@ -162,62 +162,17 @@ pub fn build_file_context(
         }
     }
 
-    // 4. For incoming callers (the 90% unresolved case), use incoming_edges_by_qualname_pattern
-    // Collect unique symbol names from our file, capped
-    let mut looked_up_names: HashSet<String> = HashSet::new();
-    for sym in &symbols {
-        if looked_up_names.len() >= MAX_INCOMING_LOOKUPS {
-            break;
-        }
-        // Skip module-level symbols — too generic
-        if sym.kind == "module" {
-            continue;
-        }
-        looked_up_names.insert(sym.name.clone());
-    }
-
-    for name in &looked_up_names {
-        if callers.len() >= MAX_CALLERS {
-            break;
-        }
-        let incoming = db.incoming_edges_by_qualname_pattern(name, "CALLS", None, graph_version)?;
-        for edge in incoming {
-            if edge.file_path == file_path {
-                continue; // Same file
-            }
-            if callers.len() >= MAX_CALLERS {
-                break;
-            }
-            let caller_name = edge.target_qualname.as_deref().unwrap_or("?").to_string();
-            let key = (caller_name.clone(), edge.file_path.clone());
-            if caller_seen.insert(key) {
-                // Try to resolve source symbol name
-                let src_name = if let Some(src_id) = edge.source_symbol_id {
-                    db.get_symbol_by_id(src_id)?
-                        .map(|s| short_name(&s.qualname))
-                        .unwrap_or_else(|| format!("id:{}", src_id))
-                } else {
-                    edge.file_path.clone()
-                };
-                callers.push(CrossRef {
-                    symbol_name: src_name,
-                    file_path: edge.file_path.clone(),
-                });
-            }
-        }
-    }
-
-    // 5. Detect test files from callers
+    // 4. Detect test files from callers
     let mut test_files: Vec<String> = Vec::new();
     let mut test_file_set: HashSet<String> = HashSet::new();
     for cr in &callers {
-        if is_test_path(&cr.file_path) && test_file_set.insert(cr.file_path.clone()) {
+        if is_test_file(&cr.file_path) && test_file_set.insert(cr.file_path.clone()) {
             test_files.push(cr.file_path.clone());
         }
     }
 
     // Remove test callers from callers list (they're in test_files)
-    callers.retain(|cr| !is_test_path(&cr.file_path));
+    callers.retain(|cr| !is_test_file(&cr.file_path));
 
     Ok(FileContext {
         path: file_path.to_string(),
@@ -322,19 +277,4 @@ fn short_name(qualname: &str) -> String {
     } else {
         parts[parts.len() - 2..].join(".")
     }
-}
-
-fn is_test_path(path: &str) -> bool {
-    let lower = path.to_lowercase();
-    lower.contains("/test")
-        || lower.contains("/tests/")
-        || lower.contains("\\test")
-        || lower.starts_with("test_")
-        || lower.starts_with("tests/")
-        || lower.ends_with("_test.py")
-        || lower.ends_with("_test.go")
-        || lower.ends_with(".test.ts")
-        || lower.ends_with(".test.js")
-        || lower.ends_with(".spec.ts")
-        || lower.ends_with(".spec.js")
 }

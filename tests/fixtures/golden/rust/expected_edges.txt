@@ -1,0 +1,225 @@
+# Golden expected-edges fixture: tests/fixtures/golden/rust
+#
+# Format, xfail marker, resolution-kind column and scope: see
+# tests/fixtures/golden/python/expected_edges.txt and tests/common/golden.rs.
+# Only CALLS edges are scored.
+#
+# Baseline measured 2026-09-23: precision 1.0 (7/7), recall 1.0 (7/7),
+# 5 known-failing lines. After #74 (language resolution profiles):
+# precision 1.0 (30/30), recall 1.0 (30/30), 2 known-failing. After #75
+# (stricter name fallback and visibility rules): precision 1.0 (34/34),
+# recall 1.0 (34/34), 2 known-failing. After the #75 follow-up review
+# (findings A/B/C/D/E/G): precision 1.0 (36/36), recall 1.0 (36/36), 2
+# known-failing -- new UNRESOLVED lines below exercise cases that resolved
+# *wrongly* before the fix (see the commit for what each one used to bind
+# to).
+#
+# The shadowing cases pin UNRESOLVED even where real Rust binds to
+# `b::helper` (f2, shadow_block_use, shadow_closure_use) or `a::helper`
+# (uses_helper_as_value): the shadow rule deliberately over-suppresses, and
+# the pin makes any bind to the wrong `a::helper` fail loudly.
+
+# Plain call to a private same-module fn. other_module::local_util is a
+# same-named decoy.
+crate::caller::entry CALLS crate::caller::local_util exact
+
+# `use crate::helper::format_greeting` then a bare call: bound only by the
+# use path, so this is specifically an import-tier match.
+crate::caller::call_imported_helper CALLS crate::helper::format_greeting import
+
+# Fully qualified `crate::` path.
+crate::caller::call_crate_path CALLS crate::helper::format_greeting exact
+
+# `super::` path (the crate root here), rewritten relative to the calling
+# module before resolution — lands on the real qualname, so this is an
+# exact match.
+crate::caller::call_super_path CALLS crate::helper::format_greeting exact
+
+# `self::` path, rewritten relative to the calling module (`caller`) before
+# resolution — lands on the real qualname, so this is an exact match.
+crate::caller::call_self_path CALLS crate::caller::local_util exact
+
+# Method call on self. LoudGreeter::format is a same-named decoy.
+crate::greeter::Greeter::greet CALLS crate::greeter::Greeter::format exact
+
+# Receiver-typed call: `g: &Greeter`. LoudGreeter::greet is a decoy.
+crate::caller::call_receiver_typed CALLS crate::greeter::Greeter::greet  # xfail: Rust params carry no receiver type for method calls
+
+# Trait default method: Dog implements Speak without overriding speak.
+# Cat::speak is a same-named decoy.
+crate::caller::call_inherited CALLS crate::animals::Speak::speak  # xfail: no receiver type, and impl Trait for Type is not walked for default methods
+
+# Ambiguous name: run exists in ambiguous_a and ambiguous_b; the use
+# statement picks ambiguous_a, so this is an import-tier match (a bare-name
+# fallback here would be ambiguous between the two decoys and refuse).
+crate::caller::call_ambiguous CALLS crate::ambiguous_a::run import
+
+# External path: std is never indexed, so this binds to the external stub
+# symbol (issue #80) instead of staying unresolved.
+crate::caller::call_external CALLS ext:std::process::id external
+
+# pub item calling a private item in its own module. other_module::decorate
+# is a same-named private decoy.
+crate::helper::format_greeting CALLS crate::helper::decorate exact
+
+# Cross-module incoming call, through a use-import — an import-tier match.
+crate::downstream::use_entry CALLS crate::caller::entry import
+
+# `use super::helper` written inside a *nested* module (`inner`), not at
+# file scope. The `super::` rewrite must use `inner`'s own enclosing module
+# (this file's root), not the impl-relative or file-root special cases.
+crate::nested_use::inner::calls_helper CALLS crate::nested_use::helper import
+
+# `pub(crate) use crate::visibility_use::inner::shout` — a `pub(...)`-
+# visibility `use`, not just plain `use`/`pub use`, must still parse as an
+# import binding.
+crate::visibility_use::calls_shout CALLS crate::visibility_use::inner::shout import
+
+# `use prelude::announce` where `prelude` only re-exports
+# `real::announce` via its own `pub use` — no symbol's qualname is exactly
+# `prelude::announce`, so the import tier misses. Rust's import-miss policy
+# falls through to the name tiers (unlike Refuse's default), landing here
+# via bare_name.
+crate::reexport_use::calls_announce CALLS crate::reexport_use::real::announce bare_name
+
+# `use glob_source::*` at file scope binds no specific name (a glob binds
+# no single resolvable name), so `run`'s bare call to `build` must stay
+# unresolved — not fall through to `fixture_source::build` by way of the
+# unrelated `tests` module's own (differently scoped) `use`.
+crate::scoped_glob::run CALLS UNRESOLVED
+
+# `tests`' own `use crate::scoped_glob::fixture_source::build`, scoped to
+# `tests` only — an import-tier match, isolated from `run`'s glob above.
+crate::scoped_glob::tests::uses_fixture_build CALLS crate::scoped_glob::fixture_source::build import
+
+# File-scope `use crate::shadowing::a::helper`, unshadowed — an
+# import-tier match.
+crate::shadowing::f1 CALLS crate::shadowing::a::helper import
+
+# `use crate::shadowing::b::helper` written inside `f2`'s own body: its
+# path text mentions `helper` in a non-callee position, so the shadow rule
+# suppresses the import candidate outright (round 3: no longer re-pinned to
+# `b::helper` — see the round-3 header note above).
+crate::shadowing::f2 CALLS UNRESOLVED
+
+# A local `let helper = || "local";` shadows the file-scope `use` entirely:
+# no import-tier candidate, and `a`/`b`'s two `helper`s make the bare-name
+# fallback ambiguous too, so this stays unresolved.
+crate::shadowing::f3 CALLS UNRESOLVED
+
+# Control: no occurrence of `helper` besides the call itself, so the
+# file-scope `use` still applies normally.
+crate::shadowing::ok CALLS crate::shadowing::a::helper import
+
+# Struct-shorthand destructuring (`let H { helper } = x;`) binds `helper`
+# through a `shorthand_field_identifier`, a different node kind than a
+# `let`/closure/`for` pattern's plain `identifier` — the shadow rule
+# catches it anyway (any non-callee occurrence disqualifies), so this stays
+# unresolved rather than wrongly binding to `a::helper`.
+crate::shadowing::shadow_struct_shorthand CALLS UNRESOLVED
+
+# An untyped closure parameter (`|helper| ...`) is a bare `identifier`
+# directly inside `closure_parameters`, not wrapped in a `parameter` node —
+# still caught, stays unresolved.
+crate::shadowing::shadow_closure_param CALLS UNRESOLVED
+
+# `match` pattern binding — stays unresolved.
+crate::shadowing::shadow_match_pattern CALLS UNRESOLVED
+
+# `if let` pattern binding — stays unresolved.
+crate::shadowing::shadow_if_let CALLS UNRESOLVED
+
+# `while let` pattern binding — stays unresolved.
+crate::shadowing::shadow_while_let CALLS UNRESOLVED
+
+# `for` loop pattern binding — stays unresolved.
+crate::shadowing::shadow_for_loop CALLS UNRESOLVED
+
+# A `use` nested in a plain block (not the function's top level) — same
+# suppression as `f2` above, one level deeper.
+crate::shadowing::shadow_block_use CALLS UNRESOLVED
+
+# A `use` nested inside a closure body — same suppression as `f2`/
+# `shadow_block_use` above.
+crate::shadowing::shadow_closure_use CALLS UNRESOLVED
+
+# A plain value reference (`let _ = helper;`, not a call or any pattern) is
+# a non-callee occurrence too, so the later call is suppressed as well —
+# documents the accepted over-suppression trade-off.
+crate::shadowing::uses_helper_as_value CALLS UNRESOLVED
+
+# `use log::info` names an external crate, not this file's own
+# `util::log` submodule. The import tier must miss outright rather than
+# suffix-match `util::log::info`; the name-based tiers it falls through to
+# are also ambiguous (`util::log::info` vs `other::info`), so this stays
+# unresolved.
+crate::suffix_matching::run CALLS UNRESOLVED
+
+# A glob `use` inside the function takes precedence over the file-scope
+# `use` (rustc binds this to `b::helper`); the shadow rule suppresses it.
+crate::shadowing::shadow_glob_use CALLS UNRESOLVED
+
+# --- Issue #75: stricter name fallback and visibility rules ---
+
+# Plain call to a private item in its own module -- unaffected by the new
+# visibility guard (same file).
+crate::visibility_private_owner::call_locally CALLS crate::visibility_private_owner::secret_helper exact
+
+# Bare, unqualified call to `secret_helper`, whose only definition
+# (`visibility_private_owner::secret_helper`) is private and in a
+# different file. Before #75 this was the sole same-language candidate
+# the bare-name fallback found and bound to -- wrong, since a private
+# item is not visible outside its own file. #75's visibility guard must
+# refuse it.
+crate::visibility_private_prober::call_remotely CALLS UNRESOLVED
+
+# Bare, receiver-less call to `process`, whose only definition
+# (`Widget::process`) is a `method`. Before #75 the bare-name fallback
+# bound to it anyway (kind wasn't gated on receiver shape) -- wrong, since
+# a receiver-less call can never dispatch to an instance method. #75's
+# bare-call guard must refuse it.
+crate::bare_call_method::bare_caller CALLS UNRESOLVED
+
+# Bare, unimported call to `shared_probe`, declared identically (public
+# free function) in two other files. The guarded name fallback must see
+# two same-language, same-kind, visible candidates and refuse rather than
+# pick whichever SQLite returns first.
+crate::ambiguous_fallback_caller::calls_ambiguous_probe CALLS UNRESOLVED
+
+# --- Issue #75 follow-up (finding A): visibility marking must not be
+# interleaved with edge resolution. `a_prober.rs` sorts alphabetically
+# before `z_owner.rs` (Indexer::reindex processes files in rel_path
+# order), so before the fix `zsecret`'s `visibility` column was still NULL
+# ("unrestricted") when this call was resolved, and it wrongly bound to
+# the private `z_owner::zsecret` instead of refusing. ---
+
+# Plain call to a private item in its own module -- unaffected by the new
+# visibility guard (same file).
+crate::z_owner::call_locally CALLS crate::z_owner::zsecret exact
+
+# Bare, unqualified call to `zsecret`, whose only definition
+# (`z_owner::zsecret`) is private and in a file that sorts *after* this
+# one. Must stay UNRESOLVED regardless of file processing order.
+crate::a_prober::call_before_owner_is_marked CALLS UNRESOLVED
+
+# --- Issue #75 follow-up (finding B): a trait impl method or trait
+# default method has no `pub` to check (Rust doesn't attach one there),
+# but is exactly as visible as the trait itself. Before the fix, both were
+# wrongly recorded private, refusing these cross-file calls. ---
+
+# UFCS call to a trait-impl method (`impl Default for Conf`), from a
+# different file. Two-segment fallback: `Conf::default` is literal call
+# text, matching `Conf::default`'s trailing two qualname segments.
+crate::trait_impl_visibility_caller::make_conf CALLS crate::trait_impl_visibility_owner::Conf::default two_segment
+
+# UFCS call to a trait's own default method (`Announcer::zannounce`, not
+# overridden by `Quiet`), from a different file. Bare-name fallback:
+# `Quiet::zannounce`'s two segments don't match `Announcer::zannounce`, so
+# this falls through to matching the trailing name alone.
+crate::trait_default_visibility_caller::call_default_announce CALLS crate::trait_default_visibility_owner::Announcer::zannounce bare_name
+
+# --- Issue #75 follow-up (finding D): a private Rust item stays visible
+# to its own module's descendants, not just its own file. `child_visibility_child`
+# (a separate file) is a child module of `child_visibility_owner`. A
+# same-file-only check would wrongly refuse this. ---
+crate::child_visibility_owner::child_visibility_child::call_owner_secret CALLS crate::child_visibility_owner::owner_secret bare_name

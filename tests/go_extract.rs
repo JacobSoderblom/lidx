@@ -144,3 +144,30 @@ func main() {
         "expected CONFIG_READ for env://API_KEY"
     );
 }
+
+#[test]
+fn multiline_chained_call_resolves_like_single_line() {
+    // Go's automatic semicolon insertion terminates a statement after a
+    // bare identifier at end-of-line, so (unlike C#/JS) the line break has
+    // to fall *after* the dot for this to stay one expression.
+    let source = "
+package main
+
+func caller() {
+    pkg.
+        Helper()
+}
+";
+    let mut extractor = GoExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "pkg/models/user").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.detail.is_none())
+        .expect("pkg.Helper() call edge");
+    assert_eq!(
+        call.target_qualname.as_deref(),
+        Some("pkg.Helper"),
+        "multi-line chain must resolve to the same qualname as the single-line form"
+    );
+}

@@ -380,11 +380,12 @@ fn analyze_impact_deterministic_output() {
 
 #[test]
 fn analyze_impact_symbol_not_found() {
+    // Since #44: unresolvable qualname returns a structured recovery payload (with
+    // next_hops) rather than a flat {error: ...} so the caller has a path forward.
     let temp = TempRepo::new("py_mvp");
     let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
     indexer.reindex().unwrap();
 
-    // Try non-existent symbol
     let response = rpc::call(
         temp.repo_root.clone(),
         temp.db_path.clone(),
@@ -396,10 +397,23 @@ fn analyze_impact_symbol_not_found() {
 
     let value: serde_json::Value = serde_json::from_str(&response).unwrap();
 
-    // Should return error
+    // Must be a successful response (not a flat error), with a structured recovery payload
     assert!(
-        value.get("error").is_some(),
-        "Should return error for nonexistent symbol"
+        value.get("error").is_none(),
+        "unresolvable qualname must return structured recovery, not flat error: {:?}",
+        value
+    );
+    let result = &value["result"];
+    assert!(
+        result.get("next_hops").is_some(),
+        "recovery payload must have next_hops: {:?}",
+        result
+    );
+    assert_eq!(
+        result["resolved"],
+        serde_json::json!(false),
+        "recovery payload must have resolved:false: {:?}",
+        result
     );
 }
 
@@ -557,7 +571,7 @@ fn analyze_impact_v2_direct_layer_only() {
     );
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(direct_layer["enabled"].as_bool().unwrap(), true);
+    assert!(direct_layer["enabled"].as_bool().unwrap());
     // Duration may be 0ms for fast operations, just verify it exists
     assert!(
         direct_layer.contains_key("duration_ms"),
@@ -688,9 +702,8 @@ fn analyze_impact_v2_test_layer_basic() {
     );
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         test_layer["enabled"].as_bool().unwrap(),
-        true,
         "Test layer should be enabled"
     );
     // Verify duration_ms exists and is a valid u64
@@ -723,9 +736,8 @@ fn analyze_impact_v2_test_layer_disabled_by_default() {
     let layers = value["result"]["layers"].as_object().unwrap();
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         test_layer["enabled"].as_bool().unwrap(),
-        true,
         "Test layer should be enabled by default"
     );
 }
@@ -753,11 +765,11 @@ fn analyze_impact_v2_test_layer_with_direct() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(direct_layer["enabled"].as_bool().unwrap(), true);
+    assert!(direct_layer["enabled"].as_bool().unwrap());
     assert!(direct_layer["result_count"].as_u64().unwrap() > 0);
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(test_layer["enabled"].as_bool().unwrap(), true);
+    assert!(test_layer["enabled"].as_bool().unwrap());
 
     // Should have affected symbols (from direct layer at minimum)
     let affected = result["affected"].as_array().unwrap();
@@ -787,10 +799,10 @@ fn analyze_impact_v2_test_layer_only() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(direct_layer["enabled"].as_bool().unwrap(), false);
+    assert!(!direct_layer["enabled"].as_bool().unwrap());
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(test_layer["enabled"].as_bool().unwrap(), true);
+    assert!(test_layer["enabled"].as_bool().unwrap());
 
     // Results may be empty if no tests found via test layer strategies
     // (which is fine - the fixture may not have test edges)
@@ -826,9 +838,8 @@ fn analyze_impact_v2_historical_layer_basic() {
     );
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         historical_layer["enabled"].as_bool().unwrap(),
-        true,
         "Historical layer should be enabled"
     );
     // Verify duration_ms exists and is a valid u64
@@ -862,9 +873,8 @@ fn analyze_impact_v2_historical_layer_disabled_by_default() {
     let layers = value["result"]["layers"].as_object().unwrap();
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         historical_layer["enabled"].as_bool().unwrap(),
-        true,
         "Historical layer should be enabled by default"
     );
 }
@@ -892,10 +902,10 @@ fn analyze_impact_v2_historical_layer_with_direct() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(direct_layer["enabled"].as_bool().unwrap(), true);
+    assert!(direct_layer["enabled"].as_bool().unwrap());
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(historical_layer["enabled"].as_bool().unwrap(), true);
+    assert!(historical_layer["enabled"].as_bool().unwrap());
 
     // Should have affected symbols (from direct layer at minimum)
     let affected = result["affected"].as_array().unwrap();
@@ -928,23 +938,20 @@ fn analyze_impact_v2_all_three_layers() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         direct_layer["enabled"].as_bool().unwrap(),
-        true,
         "Direct layer should be enabled"
     );
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         test_layer["enabled"].as_bool().unwrap(),
-        true,
         "Test layer should be enabled"
     );
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         historical_layer["enabled"].as_bool().unwrap(),
-        true,
         "Historical layer should be enabled"
     );
 
@@ -981,9 +988,8 @@ fn analyze_impact_v2_semantic_layer_disabled_by_default() {
     // Semantic layer should be disabled by default
     let layers = result["layers"].as_object().unwrap();
     let semantic_layer = layers["semantic"].as_object().unwrap();
-    assert_eq!(
-        semantic_layer["enabled"].as_bool().unwrap(),
-        false,
+    assert!(
+        !semantic_layer["enabled"].as_bool().unwrap(),
         "Semantic layer should be disabled by default"
     );
 }
@@ -1011,22 +1017,18 @@ fn analyze_impact_v2_semantic_layer_graceful_degradation() {
     // Semantic layer should be enabled and gracefully degrade to lexical search
     let layers = result["layers"].as_object().unwrap();
     let semantic_layer = layers["semantic"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         semantic_layer["enabled"].as_bool().unwrap(),
-        true,
         "Semantic layer should be enabled"
     );
     // Lexical fallback may find results even without embeddings — no error should be reported
-    let has_error = semantic_layer.get("error").map_or(false, |v| !v.is_null());
+    let has_error = semantic_layer.get("error").is_some_and(|v| !v.is_null());
     assert!(!has_error, "Semantic layer should not error");
 
     // Should not fail the entire analysis
     let _affected = result["affected"].as_array().unwrap();
-    // May be empty or have results from other layers
-    assert!(
-        true,
-        "Analysis should complete successfully even when semantic layer returns empty"
-    );
+    // May be empty or have results from other layers.
+    // Analysis should complete successfully even when semantic layer returns empty.
 }
 
 #[test]
@@ -1053,30 +1055,26 @@ fn analyze_impact_v2_all_four_layers() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         direct_layer["enabled"].as_bool().unwrap(),
-        true,
         "Direct layer should be enabled"
     );
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         test_layer["enabled"].as_bool().unwrap(),
-        true,
         "Test layer should be enabled"
     );
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         historical_layer["enabled"].as_bool().unwrap(),
-        true,
         "Historical layer should be enabled"
     );
 
     let semantic_layer = layers["semantic"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         semantic_layer["enabled"].as_bool().unwrap(),
-        true,
         "Semantic layer should be enabled"
     );
 
@@ -1215,5 +1213,93 @@ fn analyze_impact_batch_empty_qualnames_errors() {
     assert!(
         value.get("error").is_some(),
         "Empty qualnames should return error"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// max_bytes -- analyze_impact has no params field of its own for this, so it
+// only works at all via extract_max_response_bytes treating it as an alias
+// for max_response_bytes (see src/rpc/format.rs). Also covers the
+// self-contradiction fix: once the outer response-size truncation slices the
+// `affected` array, the handler's own (now-stale) `truncated: false` must be
+// corrected rather than left sitting next to a gutted array.
+// ---------------------------------------------------------------------------
+
+fn add_many_callers(repo_root: &Path, count: usize) {
+    for i in 0..count {
+        std::fs::write(
+            repo_root.join(format!("caller_{i}.py")),
+            format!("from pkg import utils\n\n\ndef wrapper_{i}():\n    return utils.add(1, 2)\n"),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn analyze_impact_accepts_max_bytes_as_response_budget_alias() {
+    let temp = TempRepo::new("py_mvp");
+    // Enough distinct callers of pkg.utils.add that the upstream `affected`
+    // list is large enough to blow a tiny byte budget.
+    add_many_callers(&temp.repo_root, 40);
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    // Sanity baseline: with no budget params at all, the response fits under
+    // the default cap and comes back unwrapped.
+    let baseline = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "analyze_impact".to_string(),
+        r#"{"qualname":"pkg.utils.add","direction":"upstream"}"#,
+        "1",
+    )
+    .unwrap();
+    let baseline_value: serde_json::Value = serde_json::from_str(&baseline).unwrap();
+    assert!(
+        baseline_value["result"].get("data").is_none(),
+        "sanity check: unbudgeted response should not already be wrapped: {:?}",
+        baseline_value
+    );
+
+    // Before the fix, `max_bytes` was silently ignored for analyze_impact
+    // (it has no params field for it, and the outer wrapper only recognized
+    // max_response_bytes/max_tokens) -- the request below would have come
+    // back unwrapped and un-truncated despite asking for a 300-byte budget.
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "analyze_impact".to_string(),
+        r#"{"qualname":"pkg.utils.add","direction":"upstream","max_bytes":300}"#,
+        "1",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let result = &value["result"];
+    assert_eq!(
+        result.get("max_response_bytes"),
+        Some(&serde_json::json!(300)),
+        "max_bytes should be honored as the response byte budget: {:?}",
+        result
+    );
+    assert_eq!(
+        result.get("truncated"),
+        Some(&serde_json::json!(true)),
+        "outer envelope should report truncation: {:?}",
+        result
+    );
+
+    // The self-contradiction fix: analyze_impact's own result object also
+    // carries a `truncated` field (computed by src/impact/ for its own
+    // depth/limit reasons). Once the outer wrapper additionally slices the
+    // `affected` array to fit the byte budget, that inner field must be
+    // corrected to true too -- not left as a stale `false` sitting right
+    // next to an array that was just cut out from under it.
+    let inner = &result["data"];
+    assert_eq!(
+        inner.get("truncated"),
+        Some(&serde_json::json!(true)),
+        "inner result.truncated must not contradict the outer truncation: {:?}",
+        result
     );
 }

@@ -158,8 +158,10 @@ fn handle_message(message: Value, state: &mut State) -> Option<Value> {
     }
 }
 
-/// Methods called out by name in the "START HERE" instructions line.
-/// Everything else in METHOD_LIST surfaces in the "Other methods" line.
+/// Methods called out by name in the "START HERE" and "Read code with ..."
+/// instructions lines. Everything else in METHOD_LIST surfaces in the
+/// "Other methods" line -- outline/read_symbol are listed here too so they
+/// aren't named a second time by `other_methods_list()`.
 const FEATURED_METHODS: &[&str] = &[
     "explain_symbol",
     "analyze_diff",
@@ -167,6 +169,8 @@ const FEATURED_METHODS: &[&str] = &[
     "orient",
     "search",
     "gather_context",
+    "outline",
+    "read_symbol",
 ];
 
 fn other_methods_list() -> String {
@@ -199,6 +203,8 @@ fn initialize_result(message: &Value) -> Value {
     analyze_diff for change impact. trace_flow for call chains. \
     orient for architecture overview. search for regex. \
     gather_context for LLM-ready context.\n\
+    \n\
+    Read code with outline (file skeleton) and read_symbol (exact source) instead of whole-file reads.\n\
     \n\
     Other methods: {other_methods}.\n\
     \n\
@@ -257,7 +263,7 @@ fn tool_spec() -> Value {
                 },
                 "include_structured": {
                     "type": "boolean",
-                    "description": "If false, omit structuredContent from tool responses."
+                    "description": "If true, also include structuredContent in tool responses. Omitted by default -- the text content already carries the full response."
                 }
             },
             "required": ["method"]
@@ -439,7 +445,7 @@ fn include_structured_from_args(arguments: &Value) -> bool {
     arguments
         .get("include_structured")
         .and_then(|value| value.as_bool())
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -468,6 +474,23 @@ mod tests {
                 rpc::METHOD_LIST.contains(method),
                 "FEATURED_METHODS contains '{method}' which is not in METHOD_LIST; \
                  the START HERE instructions line has drifted from dispatch"
+            );
+        }
+    }
+
+    #[test]
+    fn instructions_do_not_mention_outline_or_read_symbol_twice() {
+        // outline/read_symbol are already called out by name in the
+        // "Read code with outline ... and read_symbol ..." line; if they're
+        // also missing from FEATURED_METHODS they get listed a second time
+        // in the "Other methods: ..." line.
+        let init = initialize_result(&json!({}));
+        let instructions = init["instructions"].as_str().unwrap();
+        for method in ["outline", "read_symbol"] {
+            let count = instructions.matches(method).count();
+            assert_eq!(
+                count, 1,
+                "'{method}' should be mentioned exactly once in the instructions, got {count}: {instructions}"
             );
         }
     }
@@ -547,7 +570,11 @@ mod tests {
 
     #[test]
     fn include_structured_parsing() {
-        assert!(include_structured_from_args(&json!({})));
+        // Issue #66: structuredContent is now opt-in, not opt-out -- a
+        // client that doesn't pass `include_structured` no longer gets it,
+        // halving the payload for callers who never asked for the duplicate
+        // structured serialization.
+        assert!(!include_structured_from_args(&json!({})));
         assert!(!include_structured_from_args(
             &json!({ "include_structured": false })
         ));
@@ -573,6 +600,29 @@ mod tests {
 
         let no_struct = call_result_ok(result, TextMode::Compact, false);
         assert!(no_struct.get("structuredContent").is_none());
+    }
+
+    #[test]
+    fn call_result_ok_omits_structured_content_by_default() {
+        // Issue #66: a tool call that never sets `include_structured` --
+        // the common case -- must not carry structuredContent at all, while
+        // text-mode output (the caller's actual signal) is untouched.
+        let result = json!({ "a": 1 });
+        let include_structured = include_structured_from_args(&json!({}));
+
+        let default_pretty = call_result_ok(result.clone(), TextMode::Pretty, include_structured);
+        assert!(default_pretty.get("structuredContent").is_none());
+        assert_eq!(
+            default_pretty["content"][0]["text"].as_str().unwrap(),
+            serde_json::to_string_pretty(&result).unwrap()
+        );
+
+        let default_compact = call_result_ok(result.clone(), TextMode::Compact, include_structured);
+        assert!(default_compact.get("structuredContent").is_none());
+        assert_eq!(
+            default_compact["content"][0]["text"].as_str().unwrap(),
+            serde_json::to_string(&result).unwrap()
+        );
     }
 
     #[test]

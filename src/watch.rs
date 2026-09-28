@@ -729,8 +729,10 @@ mod tests {
     #[test]
     fn test_compute_debounce_small_batch_with_urgent() {
         let mut queue = PrioritizedFileQueue::new(Duration::from_secs(60));
-        let mut config = WatchConfig::default();
-        config.batch_threshold = 10;
+        let config = WatchConfig {
+            batch_threshold: 10,
+            ..Default::default()
+        };
 
         // Create 3 urgent files
         for i in 0..3 {
@@ -748,8 +750,10 @@ mod tests {
     #[test]
     fn test_compute_debounce_large_batch() {
         let mut queue = PrioritizedFileQueue::new(Duration::from_secs(60));
-        let mut config = WatchConfig::default();
-        config.batch_threshold = 10;
+        let config = WatchConfig {
+            batch_threshold: 10,
+            ..Default::default()
+        };
 
         // Add 15 files (exceeds threshold)
         for i in 0..15 {

@@ -1,0 +1,77 @@
+# Golden expected-edges fixture: tests/fixtures/golden/csharp
+#
+# Format, xfail marker, resolution-kind column and scope: see
+# tests/fixtures/golden/python/expected_edges.txt and tests/common/golden.rs.
+# Only CALLS edges are scored.
+#
+# Baseline measured 2026-09-23: precision 1.0 (10/10), recall 1.0 (10/10),
+# 1 known-failing line. After #75 (stricter name fallback and visibility
+# rules): precision 1.0 (11/11), recall 1.0 (11/11), 1 known-failing. After
+# the #75 follow-up review (finding C; the earlier AC2 case for finding B's
+# review round turned out invalid for C# and was replaced -- see the note
+# below): still precision 1.0 (11/11), recall 1.0 (11/11), 1 known-failing.
+
+# Plain call to a same-class private static method. Golden.Other.Helper
+# has a same-named LocalUtil decoy.
+Golden.App.Caller.Entry CALLS Golden.App.Caller.LocalUtil exact
+
+# `using Golden.Helpers` then Helper.FormatGreeting. Golden.Other.Helper
+# is a same-named class decoy.
+Golden.App.Caller.CallImportedHelper CALLS Golden.Helpers.Helper.FormatGreeting import
+
+# Fully qualified namespace path.
+Golden.App.Caller.CallNamespacePath CALLS Golden.Helpers.Helper.FormatGreeting exact
+
+# Method call on this. LoudGreeter.Format is a same-named decoy.
+Golden.Greeting.Greeter.Greet CALLS Golden.Greeting.Greeter.Format exact
+
+# Receiver-typed call. LoudGreeter.Greet is a same-named decoy.
+Golden.App.Caller.CallReceiverTyped CALLS Golden.Greeting.Greeter.Greet receiver_type
+
+# Inherited method call: Dog : Animal, no Speak override. Cat.Speak is a
+# same-named decoy.
+Golden.App.Caller.CallInherited CALLS Golden.Animals.Animal.Speak inherited
+
+# Interface call through ISpeaker. Cat.Say is a same-named decoy.
+Golden.App.Caller.CallInterface CALLS Golden.Animals.ISpeaker.Say receiver_type
+
+# Ambiguous class name: Runner exists in Golden.Ambiguous.A and .B; the
+# using picks A.
+Golden.App.Caller.CallAmbiguous CALLS Golden.Ambiguous.A.Runner.Run  # xfail: receiver type Runner is ambiguous and usings are not used to disambiguate it
+
+# External call: System.Console is never indexed, so this binds to the
+# external stub symbol (issue #80) instead of staying unresolved.
+Golden.App.Caller.CallExternal CALLS ext:Console.WriteLine external
+
+# Private static helper in the same class.
+Golden.Helpers.Helper.FormatGreeting CALLS Golden.Helpers.Helper.Decorate exact
+
+# Cross-file incoming call into Caller.Entry.
+Golden.Downstream.Downstream.UseEntry CALLS Golden.App.Caller.Entry receiver_type
+
+# --- Issue #75: stricter name fallback and visibility rules ---
+#
+# Neither AC1 (visibility) nor AC2 (bare-call-never-a-method) has a
+# reachable C# golden case:
+#
+# - AC1: `import_qualified_candidates` (pre-#75) always attaches an
+#   own-namespace candidate to any `Type.Method()` call, so a miss there
+#   already refuses the name-based tiers outright
+#   (`ImportMissPolicy::Refuse`) before the guarded fallback -- and hence
+#   the visibility check -- is ever reached. The `visibility` column and
+#   check are still implemented and exercised by the Rust and Go golden
+#   fixtures.
+# - AC2: an *unqualified* call in C# is only reachable from inside a
+#   class/struct/interface body, where it's never truly receiver-less --
+#   it's always an implicit `this.Foo()` (instance) or an implicit
+#   same-type static call (finding C, below). There's no ordinary,
+#   reachable C# call shape left that's genuinely bare the way a Python/
+#   Go/Rust/TS free-function call is; the bare-call guard is still
+#   implemented (`bare_call` is `false` inside a type body, see
+#   `handle_call`) and exercised there.
+
+# --- Issue #75 follow-up (finding C): an unqualified call inside a class
+# body has an implicit `this` receiver in C# -- it must not be treated as
+# a bare (receiver-less) call. Before the fix, the bare-call guard wrongly
+# refused this. ---
+Golden.ImplicitThis.Derived.Run CALLS Golden.ImplicitThis.Base.ImplicitHelper bare_name

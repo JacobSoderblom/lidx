@@ -203,11 +203,25 @@ $$ LANGUAGE plpgsql;
             .map(|e| (e.kind.as_str(), e.target_qualname.as_deref()))
             .collect::<Vec<_>>()
     );
+    // `validate_order` is never defined in this file, so the CALLS reference
+    // stays unresolved -- issue #79 means it has no edge at all (CALLS isn't
+    // a Bridge Edge kind), only an unresolved_references store row. (The
+    // PERFORM line matches both `scan_plpgsql_body`'s PERFORM-specific and
+    // general-function-call branches, so it's tracked as more than one row
+    // -- a pre-existing extractor quirk, not this test's concern.)
+    let conn = indexer.db().read_conn().unwrap();
+    let unresolved_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM unresolved_references
+             WHERE edge_kind = 'CALLS' AND reference_name = 'validate_order'
+               AND graph_version = ?",
+            rusqlite::params![gv],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert!(
-        edges.iter().any(|e| {
-            e.kind == "CALLS" && e.target_qualname.as_deref() == Some("validate_order")
-        }),
-        "Expected a CALLS edge to validate_order from schema.sql"
+        unresolved_count >= 1,
+        "Expected an unresolved CALLS reference to validate_order from schema.sql"
     );
 
     let _ = std::fs::remove_dir_all(&repo_root);

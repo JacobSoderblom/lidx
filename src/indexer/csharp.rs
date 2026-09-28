@@ -1,17 +1,33 @@
+use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
+use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::scan;
 use crate::indexer::tree_helpers::{
-    module_symbol_fallback, module_symbol_with_span, node_text, span,
+    collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
+    span,
 };
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 use tree_sitter::{Node, Parser};
+
+/// C#'s resolution profile: the shared default (dot-separated, no
+/// relative-import rewriting, import-tier miss refuses the name tiers,
+/// suffix matching on), plus a recorded-visibility rule — `handle_method`
+/// records `visibility = "private"` for an explicit `private` modifier
+/// (see `has_modifier`), which the guarded name-fallback tier then refuses
+/// to bind across files.
+pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    visibility: VisibilityRule::Recorded,
+    ..LanguageProfile::DEFAULT
+};
 
 #[derive(Clone)]
 struct Context {
@@ -23,11 +39,176 @@ struct Context {
     route_prefix: Option<String>,
     route_groups: HashMap<String, String>,
     grpc_service: Option<String>,
-    grpc_clients: HashMap<String, String>,
+    /// Locally-bound gRPC client variable names -> `(service, prefix)`,
+    /// where `prefix` is whatever qualifying namespace/alias text preceded
+    /// the `{Service}.{Service}Client` type in its construction (e.g.
+    /// `DsDeploy` in `new DsDeploy.DeployerService.DeployerServiceClient(channel)`)
+    /// — mirrors `grpc_service_from_bases`'s `(service, prefix)` shape on
+    /// the impl side. `None` when the client type carries no further
+    /// qualification beyond the mandatory `{Service}.{Service}Client`
+    /// self-reference. Also carries class-level fields/properties of the
+    /// *directly enclosing* type (see `collect_class_level_grpc_client_fields`,
+    /// merged in `handle_type`), so a bare `Client.Method()` or
+    /// `this.Client.Method()` call from within that same type resolves too.
+    /// See `collect_grpc_clients_inner` / `grpc_client_from_object_creation`
+    /// / `split_client_service_and_prefix`.
+    grpc_clients: HashMap<String, (String, Option<String>)>,
+    /// Candidate protobuf package names for `grpc_service`, derived from the
+    /// impl class's base-list entry (e.g. `DsDeploy.DeployerService.Base`)
+    /// plus this file's `using` directives — see
+    /// `grpc_package_candidates_from_prefix`. Deliberately *not* derived
+    /// from `namespace_stack`: the impl class's own CLR namespace is chosen
+    /// for the implementation's code organization and has no reliable
+    /// relationship to the proto package it implements (that mismatch was
+    /// the bug this field exists to fix). Set alongside `grpc_service` in
+    /// `handle_type` and consumed only by `grpc_impl_edge`.
+    grpc_package_candidates: Vec<String>,
+    /// Types of locally-bound names (parameters + typed/`var` local
+    /// declarations) within the *current* method/constructor body only —
+    /// see `infer_local_types`. Reset fresh on every method/constructor
+    /// entry; never merged across methods. See
+    /// `python::infer_receiver_type` for the mechanism this mirrors.
+    local_types: Rc<HashMap<String, LocalType>>,
+    /// Type-annotated fields and properties of the *directly* enclosing
+    /// type, read once when entering its body — see
+    /// `collect_class_level_attr_types`. Used only to resolve a single-hop
+    /// `this.field.Method()` receiver.
+    class_attr_types: Rc<HashMap<String, LocalType>>,
+    /// The directly enclosing type's own base class, if its `base_list`
+    /// names one and it's resolvable (see `handle_type`) — used only to
+    /// resolve a `base.Method()` receiver. `Other` when the type has no
+    /// base class, only implements interfaces, or the first base-list
+    /// entry isn't cheaply classifiable.
+    base_type: LocalType,
+    /// This file's `using` directives, collected once in `extract()` before
+    /// the main walk — see `ImportContext` / `collect_import_context`. Set
+    /// once and inherited unchanged through every `ctx.clone()` (unlike
+    /// `local_types`/`class_attr_types`, this never changes per-scope).
+    imports: Rc<ImportContext>,
+    /// Every extension method (`public static X Foo(this T x, ...)`) seen
+    /// so far in *any* file processed by this `CSharpExtractor` instance
+    /// during the current reindex — see `ExtensionRegistry` and
+    /// `record_extension_method`. Shared (same underlying map, not a
+    /// per-file copy) via `Rc<RefCell<_>>` so a declaration recorded while
+    /// walking one file is visible to call sites in a later file — the only
+    /// way a single-file extractor can name a cross-file extension method's
+    /// real declaring class (see `extension_method_candidates`'s doc for why
+    /// that's unavoidable). Grows monotonically; never pruned or reset
+    /// between files, so a full cold reindex ends with every extension
+    /// method the repo declares, in file-processing order. A call site
+    /// whose extension method hasn't been visited *yet* this run simply
+    /// gets no candidate from this source — see the ponytail note on
+    /// `extension_method_candidates`.
+    extension_registry: ExtensionRegistry,
+}
+
+/// One extension method declaration, as recorded by `record_extension_method`
+/// into `Context::extension_registry` — see that field's doc for why this
+/// state is accumulated across files instead of derived per-call.
+#[derive(Debug, Clone)]
+struct ExtensionMethodEntry {
+    /// The method's own fully-qualified qualname (declaring namespace +
+    /// class + method name) — exactly the string `SymbolInput::qualname`
+    /// carries for this same declaration, so it's an exact match for
+    /// whatever `Db::insert_edges`'s exact-qualname lookup sees once this
+    /// file has been indexed.
+    qualname: String,
+    /// The declaring class's enclosing namespace (`ctx.namespace_stack`
+    /// joined), i.e. what a calling file's `using` directive must name for
+    /// this extension method to be in scope there — see
+    /// `namespace_in_scope`.
+    namespace: String,
+    /// The extended (`this`) parameter's type name, when it classifies as a
+    /// concrete non-builtin type (see `classify_annotation`) — `None` for a
+    /// generic type parameter, builtin, or otherwise unclassifiable shape,
+    /// meaning "can't rule this entry out by type" rather than "matches
+    /// anything for certain".
+    receiver_type: Option<String>,
+}
+
+/// Keyed by bare method name (e.g. "ToDomain") -> every extension method
+/// declaration seen under that name so far this run.
+type ExtensionRegistry = Rc<RefCell<HashMap<String, Vec<ExtensionMethodEntry>>>>;
+
+/// Keyed by bare field/property name (e.g. "Client") -> every
+/// `(service, prefix)` a gRPC-client-typed field or property declared under
+/// that name exists anywhere in the repo — see
+/// `collect_class_level_grpc_client_fields`, `prescan_grpc_client_fields`.
+///
+/// Deliberately *not* built incrementally as `extract()` processes each
+/// file (an earlier version of this did exactly that, mirroring
+/// `ExtensionRegistry`'s design, and was wrong: whether a call site
+/// resolves ended up depending on directory sort order — dpb's own
+/// `Dpb.DataMgr.Tests/DataProduct` sorts before `.../Fixtures`, so
+/// `TeamServiceTests.cs` was extracted while the registry was still empty
+/// and silently lost every edge, while `SourcingIntegrationTests.cs` two
+/// directories over, whose `Fixtures` happens to sort first, resolved
+/// fine — same source shape, opposite outcome, decided purely by scan
+/// order). A generated gRPC client is very often exposed through a
+/// same-named field on a small, repeated test-fixture shape (dpb's own
+/// corpus: eight distinct generated clients, all exposed as a field
+/// literally named `Client`, in a different file than every one of their
+/// call sites), so silently depending on scan order isn't an acceptable
+/// trade-off here the way it is for `ExtensionRegistry` (a real cross-file
+/// symbol table doesn't exist for this single-file extractor otherwise, so
+/// that one's ponytail-documented order dependence is accepted as a
+/// narrower, rarer miss — this one was the single most common real-world
+/// shape).
+///
+/// Instead this is fully populated by a one-time, whole-repo prescan
+/// (`prescan_grpc_client_fields`) before any call site's cross-file
+/// resolution is attempted — see `CSharpExtractor::grpc_prescan_done` and
+/// `resolve_imports`. `extract()` itself never reads or writes this
+/// directly any more; a call site that can't resolve locally
+/// (`grpc_service_from_client_binding`, same-file only) instead emits a
+/// `PENDING_GRPC_CLIENT_CALL_KIND` placeholder edge
+/// (`pending_grpc_client_call_edge`) that `resolve_pending_grpc_calls`
+/// replaces with the real `RPC_CALL` edge(s) once this registry is known
+/// to be complete, regardless of which file was extracted first.
+///
+/// A lookup still fans out over every candidate rather than picking one —
+/// the receiver's own declaring type is invisible from here, so there's no
+/// way to disambiguate — exactly the same "a wrong candidate simply never
+/// matches a real route downstream" tolerance `grpc_impl_edge`/
+/// `grpc_call_edge` already rely on for candidate *packages*. Every entry
+/// here already passed `split_client_service_and_prefix`'s mandatory
+/// self-reference check before being admitted, so this can only ever fan
+/// out over genuine generated-code candidates, never arbitrary
+/// `...Client`-suffixed types.
+type GrpcClientFieldRegistry = Rc<RefCell<HashMap<String, Vec<(String, Option<String>)>>>>;
+
+/// Locally-inferred type of a name bound within a single method/constructor
+/// body (or a class-level field/property/parameter-property). Deliberately
+/// coarse — see `python::LocalType` for the shape this mirrors; everything
+/// that isn't a confident, non-builtin type name collapses to `Other`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalType {
+    /// Inferred (via declared type or `new T()` construction) to be this
+    /// non-builtin type name.
+    Known(String),
+    /// Builtin type, `var` without a `new T()` initializer, loop/catch
+    /// target of unresolvable type, or anything else not explicitly
+    /// recognized. A name landing here (rather than simply absent from the
+    /// map) still gates resolution: it means "we looked, and it's not a
+    /// usable type" as opposed to "we never looked".
+    Other,
 }
 
 pub struct CSharpExtractor {
     parser: Parser,
+    /// Accumulates across every file this extractor instance processes —
+    /// see `Context::extension_registry`'s doc.
+    extension_registry: ExtensionRegistry,
+    /// Populated exactly once, by `prescan_grpc_client_fields` — see
+    /// `GrpcClientFieldRegistry`'s doc.
+    grpc_client_fields: GrpcClientFieldRegistry,
+    /// Guards `prescan_grpc_client_fields`, which re-parses every `.cs`
+    /// file in the repo and so is relatively expensive: `false` until the
+    /// first `resolve_imports` call runs it, `true` from then on so every
+    /// later call just reuses the now-complete `grpc_client_fields`. A
+    /// `Cell` rather than storing the result directly because
+    /// `resolve_imports` only gets `&self`.
+    grpc_prescan_done: std::cell::Cell<bool>,
 }
 
 impl CSharpExtractor {
@@ -35,7 +216,12 @@ impl CSharpExtractor {
         let mut parser = Parser::new();
         let language = tree_sitter_c_sharp::LANGUAGE;
         parser.set_language(&language.into())?;
-        Ok(Self { parser })
+        Ok(Self {
+            parser,
+            extension_registry: Rc::new(RefCell::new(HashMap::new())),
+            grpc_client_fields: Rc::new(RefCell::new(HashMap::new())),
+            grpc_prescan_done: std::cell::Cell::new(false),
+        })
     }
 }
 
@@ -70,6 +256,16 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             route_groups: HashMap::new(),
             grpc_service: None,
             grpc_clients: HashMap::new(),
+            grpc_package_candidates: Vec::new(),
+            // ponytail: unlike Python/TypeScript, there's no meaningful
+            // module-top-level scope in C# (locals only ever live inside a
+            // method/constructor body), so this starts and stays empty
+            // outside of `handle_method`/`handle_constructor`.
+            local_types: Rc::new(HashMap::new()),
+            class_attr_types: Rc::new(HashMap::new()),
+            base_type: LocalType::Other,
+            imports: Rc::new(collect_import_context(root, source)),
+            extension_registry: Rc::clone(&self.extension_registry),
         };
         if root.kind() == "compilation_unit" {
             walk_compilation_unit(root, &ctx, source, &mut output);
@@ -77,6 +273,27 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             walk_node(root, &ctx, source, &mut output);
         }
         Ok(output)
+    }
+
+    /// Finishes every `PENDING_GRPC_CLIENT_CALL_KIND` placeholder `extract()`
+    /// left in `edges` (see that constant's doc) into real `RPC_CALL` edges
+    /// — the only `LanguageExtractor` hook that receives `repo_root`, so
+    /// the only place `prescan_grpc_client_fields` can run from. Runs the
+    /// prescan itself at most once per `CSharpExtractor` instance (i.e.
+    /// once per reindex), on whichever C# file's `resolve_imports` call
+    /// happens to come first — see `grpc_prescan_done`.
+    fn resolve_imports(
+        &self,
+        repo_root: &Path,
+        _file_rel_path: &str,
+        _module_name: &str,
+        edges: &mut Vec<EdgeInput>,
+    ) {
+        if !self.grpc_prescan_done.get() {
+            prescan_grpc_client_fields(repo_root, &self.grpc_client_fields);
+            self.grpc_prescan_done.set(true);
+        }
+        resolve_pending_grpc_calls(edges, &self.grpc_client_fields);
     }
 }
 
@@ -171,9 +388,16 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     {
         output.edges.push(edge);
     }
-    if is_nested_function_node(node.kind()) {
+    if is_local_function_node(node.kind()) {
         return;
     }
+    // A lambda/anonymous-method body is a nested *scope*, not a new symbol
+    // — fall through into the generic recursion below with the same `ctx`
+    // so calls inside it (e.g. `_connection.EnsureOpenAsync()` inside a
+    // Polly pipeline callback) attribute to the enclosing named symbol via
+    // `ctx.current_scope`, instead of being silently dropped. None of the
+    // match arms below fire for a lambda-body node kind, so no special case
+    // is needed here beyond not returning early.
     match node.kind() {
         "namespace_declaration" => {
             handle_namespace(node, ctx, source, output);
@@ -327,7 +551,17 @@ fn handle_type(
         handle_base_list(node, &qualname, source, output, type_kind);
     }
 
-    let grpc_service = grpc_service_from_bases(node, source);
+    let grpc_service_info = grpc_service_from_bases(node, source);
+    let grpc_package_candidates = grpc_service_info
+        .as_ref()
+        .map(|(_, prefix)| {
+            grpc_package_candidates_from_prefix(
+                prefix.as_deref(),
+                &ctx.imports.aliases,
+                &ctx.imports.namespaces,
+            )
+        })
+        .unwrap_or_default();
     let class_prefix = route_prefix_from_attributes(node, source);
     let combined_prefix =
         combine_route_prefix(ctx.route_prefix.as_deref(), class_prefix.as_deref());
@@ -335,10 +569,53 @@ fn handle_type(
     next_ctx.type_stack.push(name);
     next_ctx.current_scope = qualname;
     next_ctx.route_prefix = combined_prefix;
-    next_ctx.grpc_service = grpc_service;
+    next_ctx.grpc_service = grpc_service_info.map(|(service, _)| service);
+    next_ctx.grpc_package_candidates = grpc_package_candidates;
+    next_ctx.base_type = resolvable_base_type(node, source, type_kind);
     if let Some(body) = node.child_by_field_name("body") {
+        next_ctx.class_attr_types = Rc::new(collect_class_level_attr_types(body, source));
+        // In-class access only (`Client.Method()`/`this.Client.Method()`
+        // from within this same type) — same-file, so this is fine to
+        // resolve directly here, unlike the cross-file case
+        // `GrpcClientFieldRegistry`/`prescan_grpc_client_fields` exists
+        // for (see that type's doc for why this one *can't* be resolved
+        // here: the registry may still be incomplete at this point,
+        // depending on scan order).
+        let grpc_fields = collect_class_level_grpc_client_fields(body, source);
+        if !grpc_fields.is_empty() {
+            let mut clients = next_ctx.grpc_clients.clone();
+            for (field_name, service_and_prefix) in grpc_fields {
+                clients.entry(field_name).or_insert(service_and_prefix);
+            }
+            next_ctx.grpc_clients = clients;
+        }
         walk_declaration_list(body, &next_ctx, source, output);
     }
+}
+
+/// The directly enclosing type's own base *class* (not an interface), if
+/// resolvable — used to gate a `base.Method()` receiver. Reuses the same
+/// first-base-entry-is-the-class convention `handle_base_list` already
+/// applies when choosing EXTENDS vs. IMPLEMENTS.
+fn resolvable_base_type(node: Node<'_>, source: &str, type_kind: TypeKind) -> LocalType {
+    if !matches!(type_kind, TypeKind::Class | TypeKind::Record) {
+        return LocalType::Other;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() != "base_list" {
+            continue;
+        }
+        let bases = base_list_types(child, source);
+        let Some(first) = bases.first() else {
+            return LocalType::Other;
+        };
+        if is_likely_interface_name(first) {
+            return LocalType::Other;
+        }
+        return classify_annotation(first);
+    }
+    LocalType::Other
 }
 
 fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -352,6 +629,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     let qualname = build_qualname(ctx, &name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = method_signature(node, source);
+    if has_modifier(node, source, "private") {
+        output.private_qualnames.push(qualname.clone());
+    }
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -373,12 +653,13 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         evidence_snippet: None,
         ..Default::default()
     });
-    if let Some(edge) = grpc_impl_edge(node, ctx, source, &name) {
+    for edge in grpc_impl_edge(node, ctx, source, &name) {
         output.edges.push(edge);
     }
     for edge in route_edges_from_method_attributes(node, ctx, source, &qualname) {
         output.edges.push(edge);
     }
+    record_extension_method(node, ctx, source, &name, &qualname);
     if let Some(body) = node.child_by_field_name("body") {
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
@@ -387,6 +668,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         let mut grpc_clients = ctx.grpc_clients.clone();
         grpc_clients.extend(collect_grpc_clients(body, source));
         next_ctx.grpc_clients = grpc_clients;
+        next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -443,6 +725,7 @@ fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = qualname;
+        next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -585,7 +868,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = http_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
-    if let Some(edge) = grpc_call_edge(node, ctx, source) {
+    for edge in grpc_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
     if let Some(edge) = channel_publish_edge(node, ctx, source) {
@@ -603,9 +886,64 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let Some(target_node) = call_target_node(node) else {
         return;
     };
-    let raw = node_text(target_node, source);
+    // ponytail: `new List<T>()` keeps its type args (and so stays
+    // unresolved): stripped to `List`, a BCL generic type falls to the
+    // bare-name tier and binds a same-named repo *method* (51 edges to a
+    // gRPC `List` rpc on dpb, for 3 genuine repo generic classes gained).
+    // Upgrade path: a constructor-only kind filter (class/struct/record)
+    // in the fuzzy tiers, then strip here too.
+    let raw = if node.kind() == "object_creation_expression" {
+        node_text(target_node, source)
+    } else {
+        call_target_text(target_node, source)
+    };
     if raw.is_empty() {
         return;
+    }
+    let receiver_type = infer_receiver_type(target_node, source, ctx);
+    // Import-aware qualification only makes sense for a call whose receiver
+    // isn't already gated by receiver-type inference (a tracked local/field
+    // is never a type name) — see `import_qualified_candidates`'s doc.
+    // `raw` is collapsed here too (same as `resolve_call_target` does
+    // internally) so a multi-line `UniqueName\n    .Create()` chain feeds
+    // this tier the same shape the single-line form would.
+    let type_call_candidates = if receiver_type == ReceiverType::NotTracked {
+        let collapsed = collapse_call_target_whitespace(&raw);
+        type_prefixed_receiver_and_suffix(&collapsed)
+            .map(|(receiver, suffix)| import_qualified_candidates(receiver, suffix, ctx))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    // Extension-method candidates are attempted for *any* receiver shape —
+    // unlike the static-call tier above, an extension call's receiver is
+    // routinely a tracked local/field (`_connection.EnsureOpenAsync()`) or
+    // an unresolved one (`row.ToDomain()`), never a type name, so gating on
+    // `NotTracked` would miss the common case. Only a genuine
+    // `receiver.Method()` shape qualifies — a bare `Helper()` call has no
+    // receiver to extend and always resolves through the ordinary
+    // exact/container tier first regardless. See
+    // `extension_method_candidates`'s doc for why this needs its own
+    // (cross-file, accumulated) evidence source rather than reusing
+    // `import_qualified_candidates`.
+    let extension_candidates = call_target_parts(target_node, source)
+        .filter(|parts| parts.receiver.is_some())
+        .map(|parts| {
+            // `call_target_parts` keeps `<T>` for the CONFIG_BIND/HTTP
+            // detectors; an extension method's symbol name never has it.
+            let name = parts.name.split('<').next().unwrap_or(&parts.name);
+            extension_method_candidates(name, &receiver_type, ctx)
+        })
+        .unwrap_or_default();
+    // Union rather than replace: on the rare chance both tiers produce a
+    // (necessarily different) candidate, let `Resolver::resolve_import`'s
+    // own ambiguity guard see both and refuse rather than silently
+    // preferring one.
+    let mut import_candidates = type_call_candidates;
+    for candidate in extension_candidates {
+        if !import_candidates.contains(&candidate) {
+            import_candidates.push(candidate);
+        }
     }
     let target = resolve_call_target(&raw, ctx);
     let detail = if target.is_some() { None } else { Some(raw) };
@@ -617,8 +955,25 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         target_qualname: target,
         detail,
         evidence_snippet: snippet,
+        receiver_type,
+        import_candidates,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
+        // A bare identifier callee (`Foo()`) vs. anything qualified
+        // (`this.Foo()`, `obj.Foo()`, ...) — see `EdgeInput::bare_call`'s
+        // doc. Two exceptions where `Foo()`-shaped text still isn't
+        // "bare" for gating purposes:
+        // - `new Foo()`: a constructor call has no receiver concept at
+        //   all, and its target is a `method`-kind (`.ctor`) symbol.
+        // - Any unqualified call inside a class/struct/interface body
+        //   (`ctx.type_stack` non-empty): C# gives it an implicit `this`
+        //   (or, for a static caller, the enclosing type itself) —
+        //   unlike a free function call in Python/Go/Rust/TS, it always
+        //   has a receiver, just not a written one (issue #75 follow-up,
+        //   finding C).
+        bare_call: node.kind() != "object_creation_expression"
+            && target_node.kind() == "identifier"
+            && ctx.type_stack.is_empty(),
         ..Default::default()
     });
 }
@@ -1113,7 +1468,10 @@ fn collect_route_groups(node: Node<'_>, source: &str) -> HashMap<String, String>
     groups
 }
 
-fn collect_global_grpc_clients(node: Node<'_>, source: &str) -> HashMap<String, String> {
+fn collect_global_grpc_clients(
+    node: Node<'_>,
+    source: &str,
+) -> HashMap<String, (String, Option<String>)> {
     let mut clients = HashMap::new();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -1125,7 +1483,7 @@ fn collect_global_grpc_clients(node: Node<'_>, source: &str) -> HashMap<String, 
     clients
 }
 
-fn collect_grpc_clients(node: Node<'_>, source: &str) -> HashMap<String, String> {
+fn collect_grpc_clients(node: Node<'_>, source: &str) -> HashMap<String, (String, Option<String>)> {
     let mut clients = HashMap::new();
     collect_grpc_clients_inner(node, source, &mut clients);
     clients
@@ -1155,7 +1513,11 @@ fn collect_route_groups_inner(node: Node<'_>, source: &str, groups: &mut HashMap
     }
 }
 
-fn collect_grpc_clients_inner(node: Node<'_>, source: &str, clients: &mut HashMap<String, String>) {
+fn collect_grpc_clients_inner(
+    node: Node<'_>,
+    source: &str,
+    clients: &mut HashMap<String, (String, Option<String>)>,
+) {
     match node.kind() {
         "method_declaration"
         | "local_function_statement"
@@ -1166,16 +1528,78 @@ fn collect_grpc_clients_inner(node: Node<'_>, source: &str, clients: &mut HashMa
         | "enum_declaration" => {
             return;
         }
+        // Intercept one level above `variable_declarator` so the
+        // declaration's own explicit type (a sibling of the declarator, not
+        // a field of it) is in reach — see
+        // `collect_grpc_clients_from_declaration`'s doc for why that's
+        // needed. Every `variable_declarator` is a child of exactly one
+        // `variable_declaration` (local var or field; `foreach`/`catch`/
+        // deconstruction bindings use different node shapes entirely — see
+        // `collect_statement_bindings`'s identical assumption), so handling
+        // it here and stopping is equivalent in coverage to the old
+        // bottom-up match on `variable_declarator` directly, just able to
+        // see the declared type too.
+        "variable_declaration" => {
+            collect_grpc_clients_from_declaration(node, source, clients);
+            return;
+        }
         _ => {}
-    }
-    if node.kind() == "variable_declarator"
-        && let Some((name, service)) = grpc_client_from_declarator(node, source)
-    {
-        clients.insert(name, service);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         collect_grpc_clients_inner(child, source, clients);
+    }
+}
+
+/// Registers every `variable_declarator` in a single `variable_declaration`
+/// (a local variable statement, or — via `collect_class_level_grpc_client_fields`'s
+/// reuse of this same function for a field's inner `variable_declaration` —
+/// a field) as a gRPC client binding, preferring whatever the initializer
+/// itself names (an explicitly typed `new Greeter.GreeterClient(...)`,
+/// however deeply nested — e.g. inside a ternary — since that's at least as
+/// specific as the declaration's own type, and it's the only signal
+/// available at all for a `var` declaration) and falling back to the
+/// declaration's own explicit type otherwise.
+///
+/// That fallback is what makes a C# 9 target-typed `new(channel)`
+/// resolvable at all: `implicit_object_creation_expression` has no `type`
+/// child of its own (see `grpc_client_from_object_creation`'s doc), so
+/// `grpc_client_from_initializer` never finds anything there — the target
+/// type only ever exists on the declaration wrapped around it
+/// (`TeamService.TeamServiceClient client = new(channel);`). The same
+/// fallback also covers a field whose own initializer isn't a construction
+/// at all (`public readonly TeamService.TeamServiceClient Client = default!;`,
+/// dpb's actual shape — the client is really constructed elsewhere and
+/// assigned in via a constructor parameter), since the declared type alone
+/// is sufficient evidence once it's passed `split_client_service_and_prefix`.
+fn collect_grpc_clients_from_declaration(
+    node: Node<'_>,
+    source: &str,
+    clients: &mut HashMap<String, (String, Option<String>)>,
+) {
+    let declared = node
+        .child_by_field_name("type")
+        .filter(|t| t.kind() != "implicit_type")
+        .and_then(|t| split_client_service_and_prefix(&node_text(t, source)));
+    let mut cursor = node.walk();
+    for declarator in node.named_children(&mut cursor) {
+        if declarator.kind() != "variable_declarator" {
+            continue;
+        }
+        let Some(name_node) = declarator.child_by_field_name("name") else {
+            continue;
+        };
+        let name = node_text(name_node, source);
+        if name.is_empty() {
+            continue;
+        }
+        let from_initializer = declarator
+            .child_by_field_name("initializer")
+            .and_then(|initializer| grpc_client_from_initializer(initializer, source))
+            .or_else(|| grpc_client_from_initializer(declarator, source));
+        if let Some(service_and_prefix) = from_initializer.or_else(|| declared.clone()) {
+            clients.insert(name, service_and_prefix);
+        }
     }
 }
 
@@ -1207,52 +1631,110 @@ fn map_group_prefix_in_node(node: Node<'_>, source: &str) -> Option<String> {
     None
 }
 
-fn grpc_client_from_declarator(node: Node<'_>, source: &str) -> Option<(String, String)> {
-    let name_node = node.child_by_field_name("name")?;
-    let name = node_text(name_node, source);
-    if name.is_empty() {
-        return None;
-    }
-    let service = node
-        .child_by_field_name("initializer")
-        .and_then(|initializer| grpc_client_from_initializer(initializer, source))
-        .or_else(|| grpc_client_from_initializer(node, source))?;
-    Some((name, service))
-}
-
-fn grpc_client_from_initializer(node: Node<'_>, source: &str) -> Option<String> {
+fn grpc_client_from_initializer(node: Node<'_>, source: &str) -> Option<(String, Option<String>)> {
     if node.kind() == "object_creation_expression"
-        && let Some(service) = grpc_client_from_object_creation(node, source)
+        && let Some(result) = grpc_client_from_object_creation(node, source)
     {
-        return Some(service);
+        return Some(result);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        if let Some(service) = grpc_client_from_initializer(child, source) {
-            return Some(service);
+        if let Some(result) = grpc_client_from_initializer(child, source) {
+            return Some(result);
         }
     }
     None
 }
 
-fn grpc_client_from_object_creation(node: Node<'_>, source: &str) -> Option<String> {
+/// `new {prefix.}{Service}Client(...)` -> `(service, prefix)` — same
+/// `(service, prefix)` shape `grpc_service_from_base` returns on the impl
+/// side, so `grpc_call_edge` can feed both through the same
+/// `grpc_package_candidates_from_prefix`. Mirrors the impl side's
+/// `X.XBase` self-reference requirement exactly (see
+/// `split_client_service_and_prefix`) — this is also, deliberately, the
+/// *only* way this ever returns `Some` for a bare, unqualified
+/// `new WhateverClient(...)`, which is what an Azure SDK client
+/// (`BlobServiceClient`, `SecretClient`, `ServiceBusClient`, ...) or the
+/// Microsoft Graph SDK's `GraphServiceClient` always looks like in real
+/// code (confirmed against dpb: every non-gRPC `...Client` construction in
+/// that repo is either bare or, when fully qualified, doesn't carry the
+/// `{Service}.{Service}Client` stutter) — see that function's doc for why
+/// requiring it is the corroborating signal.
+fn grpc_client_from_object_creation(
+    node: Node<'_>,
+    source: &str,
+) -> Option<(String, Option<String>)> {
     if node.kind() != "object_creation_expression" {
         return None;
     }
     let type_node = node.child_by_field_name("type")?;
     let type_name = node_text(type_node, source);
-    let type_name = type_name.trim();
-    if type_name.is_empty() {
+    split_client_service_and_prefix(type_name.trim())
+}
+
+/// Strip a trailing `Client` suffix (generated gRPC client type convention)
+/// from a dot-qualified type/receiver text, returning `(service, prefix)`
+/// where `prefix` is whatever dotted segments preceded the
+/// `{Service}.{Service}Client` pair, *excluding* that pair itself.
+///
+/// The `{Service}.` segment immediately before `{Service}Client` is
+/// mandatory, not optional — grpc-csharp always nests the generated client
+/// class inside a `{Service}` wrapper class of the exact same name
+/// (`Greeter.GreeterClient`), so requiring that literal self-reference
+/// stutter, exactly as `grpc_service_from_base` already requires it for
+/// `{Service}.{Service}Base` on the impl side, is what tells a real
+/// generated gRPC client apart from an unrelated `...Client`-suffixed SDK
+/// type. This used to be optional here ("any qualifying prefix is taken at
+/// face value"), which is exactly what let every Azure SDK / Graph SDK
+/// client in dpb (`BlobServiceClient`, `SecretClient`, `ServiceBusClient`,
+/// `GraphServiceClient`, ...) masquerade as a gRPC client and fan out one
+/// bogus RPC_CALL candidate per bare `using` in its file — see
+/// `grpc_call_edge`'s doc. A bare, unqualified type (no `.` at all — how
+/// every one of those SDK types is actually constructed in dpb) can never
+/// carry the stutter, so it's rejected up front the same way
+/// `grpc_service_from_base` rejects a bare `XBase`.
+///
+/// `None` when the stutter isn't present. Shared by both client-detection
+/// paths: a `new {prefix.}{Service}.{Service}Client(...)` construction, a
+/// declared field/local type of that same shape (`collect_class_level_grpc_client_fields`
+/// / `collect_grpc_clients_from_declaration`), and a call-site receiver
+/// that is itself an inline construction (`grpc_service_from_client_receiver`).
+fn split_client_service_and_prefix(text: &str) -> Option<(String, Option<String>)> {
+    let text = text.trim();
+    if text.is_empty() || !text.contains('.') {
         return None;
     }
-    let last = type_name.rsplit('.').next().unwrap_or(type_name).trim();
+    let mut parts: Vec<&str> = text.split('.').map(str::trim).collect();
+    let last = parts.pop()?;
     let last = last.split('<').next().unwrap_or(last).trim();
-    if let Some(service) = last.strip_suffix("Client")
-        && !service.is_empty()
-    {
-        return Some(service.to_string());
+    let service = if let Some(service) = last.strip_suffix("Client") {
+        service
+    } else {
+        let lower = last.to_ascii_lowercase();
+        if lower.ends_with("client") && last.len() > "client".len() {
+            &last[..last.len() - "client".len()]
+        } else {
+            return None;
+        }
+    };
+    if service.is_empty() {
+        return None;
     }
-    None
+    // Mandatory self-reference stutter — see the doc comment above.
+    let prev = parts.pop()?;
+    if prev != service {
+        return None;
+    }
+    let prefix = parts
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>();
+    let prefix = if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix.join("."))
+    };
+    Some((service.to_string(), prefix))
 }
 
 fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
@@ -1287,69 +1769,423 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     })
 }
 
-fn grpc_impl_edge(
-    node: Node<'_>,
-    ctx: &Context,
-    source: &str,
-    rpc_name: &str,
-) -> Option<EdgeInput> {
-    let service = ctx.grpc_service.as_deref()?;
-    let package = grpc_package_from_namespace(ctx);
-    let (raw_path, normalized) = proto::normalize_rpc_path(package.as_deref(), service, rpc_name)?;
+/// Builds an `RPC_IMPL` edge per candidate protobuf package in
+/// `ctx.grpc_package_candidates` (see `grpc_package_candidates_from_prefix`),
+/// not just one: a bare `using`-brought proto namespace can't be
+/// disambiguated from other bare `using`s in the same file without a
+/// whole-repo symbol table this single-file extractor doesn't have (see
+/// `import_qualified_candidates` for the same trade-off on the CALLS side).
+/// This is safe here in a way it isn't for CALLS resolution: an `RPC_IMPL`
+/// edge only ever links up with a real `RPC_ROUTE` edge when its
+/// `target_qualname` exactly matches one built from an actual `.proto`
+/// package+service+rpc (see `proto::normalize_rpc_path`), so a wrong
+/// candidate simply never matches anything downstream — it can't bind to
+/// the wrong real route the way an over-eager CALLS edge could.
+/// Deduplicates identical targets (e.g. two candidate packages that
+/// normalize the same way).
+fn grpc_impl_edge(node: Node<'_>, ctx: &Context, source: &str, rpc_name: &str) -> Vec<EdgeInput> {
+    let Some(service) = ctx.grpc_service.as_deref() else {
+        return Vec::new();
+    };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+    let source_qualname = build_qualname(ctx, rpc_name);
+    // ponytail: when no candidate package could be derived at all (no
+    // base-list prefix and no bare `using` in the file), fall back to a
+    // single package-less candidate rather than emitting nothing — covers
+    // a proto file with no `package` statement, and top-level impl classes.
+    // Upgrade path: none needed unless a real cross-file symbol table (like
+    // `db::resolver::Resolver::resolve_import`'s) becomes available to this
+    // single-file extractor.
+    let packages: Vec<Option<&str>> = if ctx.grpc_package_candidates.is_empty() {
+        vec![None]
+    } else {
+        ctx.grpc_package_candidates
+            .iter()
+            .map(|p| Some(p.as_str()))
+            .collect()
+    };
+    let mut seen_targets = std::collections::HashSet::new();
+    let mut edges = Vec::new();
+    for package in packages {
+        let Some((raw_path, normalized)) = proto::normalize_rpc_path(package, service, rpc_name)
+        else {
+            continue;
+        };
+        if !seen_targets.insert(normalized.clone()) {
+            continue;
+        }
+        let detail = json!({
+            "framework": "grpc-csharp",
+            "role": "server",
+            "service": service,
+            "rpc": rpc_name,
+            "package": package,
+            "raw": raw_path,
+        })
+        .to_string();
+        edges.push(EdgeInput {
+            kind: proto::RPC_IMPL_KIND.to_string(),
+            source_qualname: Some(source_qualname.clone()),
+            target_qualname: Some(normalized),
+            detail: Some(detail),
+            evidence_snippet: snippet.clone(),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            ..Default::default()
+        });
+    }
+    edges
+}
+
+/// Sentinel `EdgeInput::kind` for a not-yet-resolved gRPC client call —
+/// never a real edge kind, never reaches the DB. `grpc_call_edge` emits
+/// this instead of an `RPC_CALL` edge when a call site's receiver doesn't
+/// resolve to a gRPC client *locally* (same file): the receiver might
+/// still be a gRPC-client-typed field/property declared in a *different*
+/// file (dpb's actual shape — see `GrpcClientFieldRegistry`'s doc), which
+/// can't be known for certain until every file's fields have been seen,
+/// regardless of which file happens to get `extract()`-ed first.
+/// `resolve_pending_grpc_calls` (called from `resolve_imports`, once the
+/// whole-repo prescan is guaranteed complete) turns every one of these
+/// into zero or more real `RPC_CALL` edges and removes the placeholder —
+/// `extract_file` in `indexer/mod.rs` always calls `resolve_imports` right
+/// after `extract()` for the same file, so no placeholder can survive past
+/// that pairing.
+const PENDING_GRPC_CLIENT_CALL_KIND: &str = "__pending_grpc_client_call__";
+
+/// Builds an `RPC_CALL` edge (or a `PENDING_GRPC_CLIENT_CALL_KIND`
+/// placeholder for later — see that constant's doc) mirroring
+/// `grpc_impl_edge`'s treatment of `RPC_IMPL` (see that function's doc) —
+/// the client side had the identical CLR-namespace bug `1c83726` fixed for
+/// the impl side: the generated `{Service}.{Service}Client` type's own
+/// qualifying prefix (from `new {prefix.}{Service}.{Service}Client(...)`,
+/// captured by `grpc_client_from_object_creation` and carried in
+/// `ctx.grpc_clients`), not `ctx.namespace_stack` (the *calling* code's own
+/// CLR namespace, which has no reliable relationship to the proto package a
+/// client it happens to construct belongs to), is what determines the
+/// package.
+fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
+    if node.kind() != "invocation_expression" {
+        return Vec::new();
+    }
+    let Some(target_node) = node.child_by_field_name("function") else {
+        return Vec::new();
+    };
+    let Some(target) = call_target_parts(target_node, source) else {
+        return Vec::new();
+    };
+    let Some(rpc_name) = normalize_grpc_method_name(&target.name) else {
+        return Vec::new();
+    };
+    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+    let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+    let source_qualname = ctx.current_scope.clone();
+
+    // Local (this-file) resolution first — a receiver that's itself an
+    // inline construction, or a locally-bound variable/field/property this
+    // *same* file's `ctx.grpc_clients` already knows about (see
+    // `handle_type`'s merge for the field/property case). Both are
+    // order-independent (nothing outside this file is consulted), so
+    // resolving them here, immediately, is safe.
+    if let Some(service_and_prefix) = grpc_service_from_client_receiver(target.receiver.as_deref())
+        .or_else(|| grpc_service_from_client_binding(target.receiver.as_deref(), ctx))
+    {
+        return build_grpc_call_edges(
+            &[service_and_prefix],
+            &rpc_name,
+            &source_qualname,
+            &snippet,
+            start_line,
+            end_line,
+            &ctx.imports,
+        );
+    }
+
+    // Local resolution found nothing. Rather than guess using a registry
+    // that's only reliable once every file has been seen (see
+    // `PENDING_GRPC_CLIENT_CALL_KIND`'s doc), defer. Cheap prefilter: only
+    // bother when the receiver's trailing segment itself looks like a
+    // generated client accessor (ends in "Client", the same suffix every
+    // real gRPC client field in dpb's corpus uses, e.g. `scope.Client`) —
+    // this is *not* the corroboration gate (that's still entirely
+    // `split_client_service_and_prefix`'s mandatory self-reference check,
+    // applied in `resolve_pending_grpc_calls` via the now-complete
+    // registry), just a volume control so a placeholder isn't allocated
+    // for every unrelated method call in the file (`logger.LogInformation(...)`,
+    // `list.Add(...)`, ...). A real client field named something that
+    // doesn't end in "Client" would still be missed here — same trade-off
+    // `grpc_client_field_candidate`'s doc explains.
+    let Some(field_name) = grpc_client_field_candidate(target.receiver.as_deref()) else {
+        return Vec::new();
+    };
+    vec![pending_grpc_client_call_edge(
+        &field_name,
+        &rpc_name,
+        &source_qualname,
+        &snippet,
+        start_line,
+        end_line,
+        ctx,
+    )]
+}
+
+/// Builds an `RPC_CALL` edge per candidate `(service, protobuf package)`
+/// pair — one `(service, prefix)` when resolved locally
+/// (`grpc_call_edge`'s own immediate path), or several when resolved from
+/// the cross-file registry (`resolve_pending_grpc_calls`, where the
+/// receiver's own declaring type is invisible so every candidate the
+/// registry has under that field name is tried): crossed with candidate
+/// packages, a wrong `(service, package)` pair just never matches a real
+/// `RPC_IMPL`/`RPC_ROUTE` target downstream, so fanning out rather than
+/// picking a winner is safe either way. Reuses
+/// `grpc_package_candidates_from_prefix` rather than duplicating its
+/// alias-resolution/bare-`using`-fallback logic.
+fn build_grpc_call_edges(
+    services: &[(String, Option<String>)],
+    rpc_name: &str,
+    source_qualname: &str,
+    snippet: &Option<String>,
+    start_line: i64,
+    end_line: i64,
+    imports: &ImportContext,
+) -> Vec<EdgeInput> {
+    let mut seen_targets = std::collections::HashSet::new();
+    let mut edges = Vec::new();
+    for (service, prefix) in services {
+        // Same ponytail fallback as `grpc_impl_edge`: no derivable prefix
+        // and no bare `using` in the file still emits one package-less
+        // candidate rather than nothing, covering a proto file with no
+        // `package` statement.
+        let packages: Vec<Option<String>> = match grpc_package_candidates_from_prefix(
+            prefix.as_deref(),
+            &imports.aliases,
+            &imports.namespaces,
+        ) {
+            candidates if candidates.is_empty() => vec![None],
+            candidates => candidates.into_iter().map(Some).collect(),
+        };
+        for package in packages {
+            let Some((raw_path, normalized)) =
+                proto::normalize_rpc_path(package.as_deref(), service, rpc_name)
+            else {
+                continue;
+            };
+            if !seen_targets.insert(normalized.clone()) {
+                continue;
+            }
+            let detail = json!({
+                "framework": "grpc-csharp",
+                "role": "client",
+                "service": service,
+                "rpc": rpc_name,
+                "package": package,
+                "raw": raw_path,
+            })
+            .to_string();
+            edges.push(EdgeInput {
+                kind: proto::RPC_CALL_KIND.to_string(),
+                source_qualname: Some(source_qualname.to_string()),
+                target_qualname: Some(normalized),
+                detail: Some(detail),
+                evidence_snippet: snippet.clone(),
+                evidence_start_line: Some(start_line),
+                evidence_end_line: Some(end_line),
+                ..Default::default()
+            });
+        }
+    }
+    edges
+}
+
+/// The trailing dotted segment of a receiver, when it looks like a
+/// generated-client accessor (ends in `"Client"`) — see
+/// `grpc_call_edge`'s doc for why this prefilter exists and what it
+/// trades away. `None` when there's no receiver at all (a bare, unqualified
+/// call — nothing to defer) or its trailing segment doesn't end in
+/// `"Client"`.
+fn grpc_client_field_candidate(receiver: Option<&str>) -> Option<String> {
+    let receiver = receiver.map(str::trim).filter(|r| !r.is_empty())?;
+    let last = receiver.rsplit('.').next().unwrap_or(receiver);
+    if last.is_empty() || !last.ends_with("Client") {
+        return None;
+    }
+    Some(last.to_string())
+}
+
+/// Builds a `PENDING_GRPC_CLIENT_CALL_KIND` placeholder carrying everything
+/// `resolve_pending_grpc_calls` needs to finish resolving this call site
+/// once the whole-repo field registry is complete: the candidate field
+/// name to look up, the rpc name, and this *calling* file's own import
+/// context (`ctx.imports`, captured as plain data since the `Context`/AST
+/// this came from won't exist any more by the time `resolve_imports` runs
+/// for this file).
+fn pending_grpc_client_call_edge(
+    field_name: &str,
+    rpc_name: &str,
+    source_qualname: &str,
+    snippet: &Option<String>,
+    start_line: i64,
+    end_line: i64,
+    ctx: &Context,
+) -> EdgeInput {
     let detail = json!({
-        "framework": "grpc-csharp",
-        "role": "server",
-        "service": service,
-        "rpc": rpc_name,
-        "package": package.as_deref(),
-        "raw": raw_path,
+        "pending_field": field_name,
+        "pending_rpc": rpc_name,
+        "pending_namespaces": ctx.imports.namespaces,
+        "pending_aliases": ctx.imports.aliases,
     })
     .to_string();
-    Some(EdgeInput {
-        kind: proto::RPC_IMPL_KIND.to_string(),
-        source_qualname: Some(build_qualname(ctx, rpc_name)),
-        target_qualname: Some(normalized),
+    EdgeInput {
+        kind: PENDING_GRPC_CLIENT_CALL_KIND.to_string(),
+        source_qualname: Some(source_qualname.to_string()),
+        target_qualname: None,
         detail: Some(detail),
-        evidence_snippet: snippet,
+        evidence_snippet: snippet.clone(),
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
         ..Default::default()
-    })
+    }
 }
 
-fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    if node.kind() != "invocation_expression" {
-        return None;
+/// Turns every `PENDING_GRPC_CLIENT_CALL_KIND` placeholder in `edges` into
+/// zero or more real `RPC_CALL` edges (via `build_grpc_call_edges`) using
+/// `registry`, then removes the placeholders — called from
+/// `resolve_imports` once `registry` (a whole-repo field-declaration
+/// prescan) is guaranteed complete, so unlike the placeholder's own
+/// creation in `grpc_call_edge`, this never depends on file processing
+/// order. A field name with no registry entry (the overwhelming majority —
+/// see `grpc_client_field_candidate`'s prefilter, which lets plenty of
+/// non-client `...Client`-suffixed placeholders through, e.g. a local
+/// `blobService.GetBlobContainerClient(...)`-style receiver — corroboration
+/// happens here, not there) simply produces no edge for that placeholder.
+fn resolve_pending_grpc_calls(edges: &mut Vec<EdgeInput>, registry: &GrpcClientFieldRegistry) {
+    let mut pending = Vec::new();
+    edges.retain(|edge| {
+        if edge.kind == PENDING_GRPC_CLIENT_CALL_KIND {
+            pending.push(edge.clone());
+            false
+        } else {
+            true
+        }
+    });
+    if pending.is_empty() {
+        return;
     }
-    let target_node = node.child_by_field_name("function")?;
-    let target = call_target_parts(target_node, source)?;
-    let rpc_name = normalize_grpc_method_name(&target.name)?;
-    let service = grpc_service_from_client_receiver(target.receiver.as_deref())
-        .or_else(|| grpc_service_from_client_binding(target.receiver.as_deref(), ctx))?;
-    let package = grpc_package_from_namespace(ctx);
-    let (raw_path, normalized) =
-        proto::normalize_rpc_path(package.as_deref(), &service, &rpc_name)?;
-    let detail = json!({
-        "framework": "grpc-csharp",
-        "role": "client",
-        "service": service,
-        "rpc": rpc_name,
-        "package": package.as_deref(),
-        "raw": raw_path,
-    })
-    .to_string();
-    Some(EdgeInput {
-        kind: proto::RPC_CALL_KIND.to_string(),
-        source_qualname: Some(ctx.current_scope.clone()),
-        target_qualname: Some(normalized),
-        detail: Some(detail),
-        evidence_snippet: None,
-        evidence_start_line: Some(span(node).0),
-        evidence_end_line: Some(span(node).2),
-        ..Default::default()
-    })
+    let registry = registry.borrow();
+    for edge in pending {
+        let Some(detail) = edge.detail.as_deref() else {
+            continue;
+        };
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(detail) else {
+            continue;
+        };
+        let Some(field_name) = payload.get("pending_field").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(rpc_name) = payload.get("pending_rpc").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(candidates) = registry.get(field_name) else {
+            continue;
+        };
+        let namespaces: Vec<String> = payload
+            .get("pending_namespaces")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        let aliases: HashMap<String, String> = payload
+            .get("pending_aliases")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        let imports = ImportContext {
+            namespaces,
+            aliases,
+        };
+        let source_qualname = edge.source_qualname.clone().unwrap_or_default();
+        edges.extend(build_grpc_call_edges(
+            candidates,
+            rpc_name,
+            &source_qualname,
+            &edge.evidence_snippet,
+            edge.evidence_start_line.unwrap_or_default(),
+            edge.evidence_end_line.unwrap_or_default(),
+            &imports,
+        ));
+    }
+}
+
+/// One-time, whole-repo scan for every gRPC-client-typed field/property
+/// declaration in every `.cs` file under `repo_root` — independent of
+/// `extract()`'s own per-file, streaming processing order. See
+/// `GrpcClientFieldRegistry`'s doc for why this needs to happen up front:
+/// dpb's real call sites (`scope.Client.Method()`) are routinely processed
+/// *before* the file that declares `Client`, and an incrementally-built
+/// registry has nothing to offer at that point no matter what order the
+/// repo happens to sort into. Called from `resolve_imports`, guarded by
+/// `CSharpExtractor::grpc_prescan_done` so it only ever runs once per
+/// reindex.
+///
+/// Reuses `scan::scan_repo` (the same file discovery `Indexer` itself
+/// uses) for gitignore-aware traversal rather than reimplementing it, at
+/// the cost of walking the repo a second time — this only ever happens
+/// once per reindex, not once per file. Deliberately lightweight beyond
+/// that: parses every C# file with a throwaway `Parser` and walks only for
+/// `class_declaration`/`struct_declaration`/`record_declaration` bodies,
+/// feeding each straight into `collect_class_level_grpc_client_fields` —
+/// none of `extract()`'s other work (symbols, CALLS, HTTP/config/channel
+/// detection, ...) runs here. An unreadable file, a parse failure, or a
+/// failed repo scan leaves `registry` however much it already collected —
+/// not fatal, matching `extract()`'s own per-file failure handling.
+fn prescan_grpc_client_fields(repo_root: &Path, registry: &GrpcClientFieldRegistry) {
+    let Ok(files) = scan::scan_repo(repo_root) else {
+        return;
+    };
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&tree_sitter_c_sharp::LANGUAGE.into())
+        .is_err()
+    {
+        return;
+    }
+    for file in files {
+        if file.language != "csharp" {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(&file.abs_path) else {
+            continue;
+        };
+        let Some(tree) = parser.parse(&source, None) else {
+            continue;
+        };
+        collect_grpc_client_fields_from_tree(tree.root_node(), &source, registry);
+    }
+}
+
+fn collect_grpc_client_fields_from_tree(
+    node: Node<'_>,
+    source: &str,
+    registry: &GrpcClientFieldRegistry,
+) {
+    if matches!(
+        node.kind(),
+        "class_declaration" | "struct_declaration" | "record_declaration"
+    ) && let Some(body) = node.child_by_field_name("body")
+    {
+        let fields = collect_class_level_grpc_client_fields(body, source);
+        if !fields.is_empty() {
+            let mut reg = registry.borrow_mut();
+            for (name, service_and_prefix) in fields {
+                let entries = reg.entry(name).or_default();
+                if !entries.contains(&service_and_prefix) {
+                    entries.push(service_and_prefix);
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_grpc_client_fields_from_tree(child, source, registry);
+    }
 }
 
 fn channel_publish_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
@@ -1423,7 +2259,12 @@ fn normalize_grpc_method_name(name: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-fn grpc_service_from_bases(node: Node<'_>, source: &str) -> Option<String> {
+/// Finds the class's gRPC service base (e.g. `DeployerService.DeployerServiceBase`
+/// or `DsDeploy.DeployerService.DeployerServiceBase`), returning
+/// `(service_name, prefix)` where `prefix` is whatever base-list text comes
+/// before the `<Service>.<Service>Base` pair — `None` for a bare base, or
+/// the raw dotted/aliased text otherwise. See `grpc_service_from_base`.
+fn grpc_service_from_bases(node: Node<'_>, source: &str) -> Option<(String, Option<String>)> {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() != "base_list" {
@@ -1431,22 +2272,21 @@ fn grpc_service_from_bases(node: Node<'_>, source: &str) -> Option<String> {
         }
         let bases = base_list_types(child, source);
         for base in bases {
-            if let Some(service) = grpc_service_from_base(&base) {
-                return Some(service);
+            if let Some(result) = grpc_service_from_base(&base) {
+                return Some(result);
             }
         }
     }
     None
 }
 
-fn grpc_service_from_base(base: &str) -> Option<String> {
+fn grpc_service_from_base(base: &str) -> Option<(String, Option<String>)> {
     let trimmed = base.trim();
     if trimmed.is_empty() || !trimmed.contains('.') {
         return None;
     }
-    let mut parts = trimmed.rsplit('.');
-    let last = parts.next()?.trim();
-    let prev = parts.next()?.trim();
+    let mut parts: Vec<&str> = trimmed.split('.').map(str::trim).collect();
+    let last = parts.pop()?;
     let last = last.split('<').next().unwrap_or(last).trim();
     if !last.ends_with("Base") {
         return None;
@@ -1455,20 +2295,64 @@ fn grpc_service_from_base(base: &str) -> Option<String> {
     if service.is_empty() {
         return None;
     }
+    let prev = parts.pop()?;
     if prev != service {
         return None;
     }
-    Some(service.to_string())
+    let prefix = if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("."))
+    };
+    Some((service.to_string(), prefix))
 }
 
-fn grpc_package_from_namespace(ctx: &Context) -> Option<String> {
-    if ctx.namespace_stack.is_empty() {
-        return None;
+/// Candidate protobuf package names for a gRPC service impl class, derived
+/// from its base-list entry's namespace `prefix` (see
+/// `grpc_service_from_base`) plus this file's `using` directives —
+/// deliberately *not* from `ctx.namespace_stack` (the impl class's own CLR
+/// namespace), which is the wrong signal this replaces: it's chosen for the
+/// implementation's code organization, not the proto package it implements.
+///
+/// `Some(prefix)`: an alias (`using DsDeploy = Datasource.Deployer.V1;`)
+/// resolves to its target and is the sole candidate (an alias can only ever
+/// mean one thing). A non-alias prefix — already a dotted namespace written
+/// directly in the base list — is used verbatim as the sole candidate.
+///
+/// `None` (bare `ServiceName.ServiceNameBase`, namespace brought in scope by
+/// a bare `using ns;`): every bare `using` in the file is a candidate. This
+/// never picks a winner among them — see `grpc_impl_edge`'s doc comment for
+/// why an RPC_IMPL/RPC_ROUTE mismatch is harmless, unlike the CALLS-edge
+/// ambiguity `import_qualified_candidates` guards against.
+///
+/// Takes `aliases`/`namespaces` directly (a calling file's own
+/// `ImportContext`, unpacked) rather than a `&Context`, so
+/// `resolve_pending_grpc_calls` can call this with values deserialized out
+/// of a `PENDING_GRPC_CLIENT_CALL_KIND` placeholder's `detail` — by the
+/// time that runs, the original `Context`/AST for the calling file is long
+/// gone; only the plain data captured in the placeholder survives.
+fn grpc_package_candidates_from_prefix(
+    prefix: Option<&str>,
+    aliases: &HashMap<String, String>,
+    namespaces: &[String],
+) -> Vec<String> {
+    if let Some(prefix) = prefix {
+        if let Some(fqn) = aliases.get(prefix) {
+            return vec![fqn.clone()];
+        }
+        return vec![prefix.to_string()];
     }
-    Some(ctx.namespace_stack.join("."))
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = Vec::new();
+    for ns in namespaces {
+        if !ns.is_empty() && seen.insert(ns.clone()) {
+            candidates.push(ns.clone());
+        }
+    }
+    candidates
 }
 
-fn grpc_service_from_client_receiver(receiver: Option<&str>) -> Option<String> {
+fn grpc_service_from_client_receiver(receiver: Option<&str>) -> Option<(String, Option<String>)> {
     let mut value = receiver?.trim().to_string();
     if value.is_empty() {
         return None;
@@ -1477,39 +2361,28 @@ fn grpc_service_from_client_receiver(receiver: Option<&str>) -> Option<String> {
         value.truncate(idx);
     }
     value = value.trim_start_matches("new ").trim().to_string();
-    let last = value.rsplit('.').next().unwrap_or(value.as_str()).trim();
-    if last.is_empty() {
-        return None;
-    }
-    if let Some(service) = last.strip_suffix("Client")
-        && !service.is_empty()
-    {
-        return Some(service.to_string());
-    }
-    let lower = last.to_ascii_lowercase();
-    if lower.ends_with("client") {
-        let service = &last[..last.len() - 6];
-        if !service.is_empty() {
-            return Some(service.to_string());
-        }
-    }
-    None
+    split_client_service_and_prefix(&value)
 }
 
-fn grpc_service_from_client_binding(receiver: Option<&str>, ctx: &Context) -> Option<String> {
-    let receiver = receiver?.trim();
-    if receiver.is_empty() {
-        return None;
+/// Resolves a call-site receiver to a `(service, prefix)` using only
+/// *this file's* own `ctx.grpc_clients` — an exact match (locally-bound
+/// variable, or a field/property of the directly enclosing type), then the
+/// receiver's trailing segment against the same map (`obj.client.Method()`
+/// -style single-hop field access within this file). Both are
+/// order-independent (nothing outside this file is consulted), unlike the
+/// cross-file case: see `grpc_client_field_candidate` /
+/// `PENDING_GRPC_CLIENT_CALL_KIND` for how a receiver naming a
+/// different file's field/property is handled instead.
+fn grpc_service_from_client_binding(
+    receiver: Option<&str>,
+    ctx: &Context,
+) -> Option<(String, Option<String>)> {
+    let receiver = receiver.map(str::trim).filter(|r| !r.is_empty())?;
+    if let Some(service_and_prefix) = ctx.grpc_clients.get(receiver) {
+        return Some(service_and_prefix.clone());
     }
-    if let Some(service) = ctx.grpc_clients.get(receiver) {
-        return Some(service.clone());
-    }
-    if let Some(last) = receiver.rsplit('.').next()
-        && let Some(service) = ctx.grpc_clients.get(last)
-    {
-        return Some(service.clone());
-    }
-    None
+    let last = receiver.rsplit('.').next().unwrap_or(receiver);
+    ctx.grpc_clients.get(last).cloned()
 }
 
 fn http_request_message_parts(node: Node<'_>, source: &str) -> Option<(String, String)> {
@@ -1561,6 +2434,36 @@ fn argument_expr(node: Node<'_>) -> Option<Node<'_>> {
         expr = Some(child);
     }
     expr
+}
+
+/// A callee's text with the method's explicit generic type-argument list
+/// dropped: `_sql.QueryAsync<long?>` -> `_sql.QueryAsync`, `Helper<int>` ->
+/// `Helper`. tree-sitter-c-sharp parses that list as part of a
+/// `generic_name` (the whole callee, or a `member_access_expression`'s
+/// `name`); left in, `is_simple_call_target` rejects the `<`/`>` and the
+/// CALLS edge's `target_qualname` ends up empty. Type arguments on the
+/// *receiver* (`Foo<int>.Bar()`) are left alone.
+fn call_target_text(node: Node<'_>, source: &str) -> String {
+    let generic = match node.kind() {
+        "generic_name" => Some(node),
+        "member_access_expression" => node
+            .child_by_field_name("name")
+            .filter(|name| name.kind() == "generic_name"),
+        _ => None,
+    };
+    let type_args = generic.and_then(|g| {
+        let mut cursor = g.walk();
+        g.named_children(&mut cursor)
+            .find(|child| child.kind() == "type_argument_list")
+    });
+    match type_args {
+        Some(args) => source
+            .get(node.start_byte()..args.start_byte())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        None => node_text(node, source),
+    }
 }
 
 fn call_target_parts(node: Node<'_>, source: &str) -> Option<CallTarget> {
@@ -1811,7 +2714,8 @@ fn call_target_node(node: Node<'_>) -> Option<Node<'_>> {
 }
 
 fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
-    let raw = raw.trim();
+    let raw = collapse_call_target_whitespace(raw);
+    let raw = raw.as_str();
     if raw.is_empty() || !is_simple_call_target(raw) {
         return None;
     }
@@ -1844,15 +2748,76 @@ fn is_simple_call_target(raw: &str) -> bool {
         .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == '$' || ch == '@')
 }
 
-fn is_nested_function_node(kind: &str) -> bool {
+/// A C# local function (`void Helper() { ... }` declared inside a method
+/// body). Unlike a lambda, this is a genuinely separate named scope — it
+/// could reasonably become its own symbol one day — so `walk_node` and
+/// `collect_statement_bindings` both still treat it as a hard boundary and
+/// its calls remain unindexed. Narrower than fixing `is_lambda_node` below,
+/// and not what dpb's `_connection.EnsureOpenAsync` gap needs.
+fn is_local_function_node(kind: &str) -> bool {
+    kind == "local_function_statement"
+}
+
+/// A C# anonymous function: `lambda_expression` covers both `x => ...` and
+/// `(x, y) => ...` in the pinned tree-sitter-c-sharp grammar (0.23, which
+/// unified what older grammars split into `simple_lambda_expression` /
+/// `parenthesized_lambda_expression` — kept here too in case that ever
+/// changes back); `anonymous_method_expression` is the legacy `delegate
+/// (...) { ... }` form. Both lexically capture the enclosing `this` and
+/// locals exactly like a nested block would — C# has no JS-style dynamic
+/// `this` rebinding for any of these — so unlike `is_local_function_node`,
+/// `walk_node` and `collect_statement_bindings` both recurse straight
+/// through a node of this kind with the *same* `Context`/bindings map: it's
+/// a nested scope, not a new symbol. See `collect_statement_bindings`'s
+/// call site for how the lambda's own parameters get folded in so a
+/// reference to one isn't mistaken for an outer name.
+fn is_lambda_node(kind: &str) -> bool {
     matches!(
         kind,
-        "local_function_statement"
-            | "anonymous_method_expression"
+        "anonymous_method_expression"
             | "lambda_expression"
             | "parenthesized_lambda_expression"
             | "simple_lambda_expression"
     )
+}
+
+/// Parameter names (+ inferred types, where explicitly annotated) bound by
+/// a lambda/anonymous-method `parameters` field — either a `parameter_list`
+/// (`(x, y) => ...`, shared shape with a method's own parameter list) or a
+/// single unparenthesized `implicit_parameter` (`x => ...`, always
+/// untyped). Folded into the *enclosing* method's `local_types` map by
+/// `collect_statement_bindings` rather than given a scope of their own —
+/// see `is_lambda_node`'s doc comment.
+fn collect_lambda_parameter_bindings(
+    params: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    if params.kind() == "implicit_parameter" {
+        let name = node_text(params, source);
+        if !name.is_empty() {
+            bindings.push((name, LocalType::Other));
+        }
+        return;
+    }
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        if param.kind() != "parameter" {
+            continue;
+        }
+        let Some(name_node) = param.child_by_field_name("name") else {
+            continue;
+        };
+        let name = node_text(name_node, source);
+        if name.is_empty() {
+            continue;
+        }
+        let ty = param
+            .child_by_field_name("type")
+            .map(|t| classify_annotation(&node_text(t, source)))
+            .unwrap_or(LocalType::Other);
+        bindings.push((name, ty));
+    }
 }
 
 fn walk_declaration_list(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -2060,6 +3025,880 @@ fn container_qualname(ctx: &Context) -> String {
     }
 }
 
+const CS_BUILTIN_TYPES: &[&str] = &[
+    "bool",
+    "byte",
+    "sbyte",
+    "char",
+    "decimal",
+    "double",
+    "float",
+    "int",
+    "uint",
+    "long",
+    "ulong",
+    "short",
+    "ushort",
+    "object",
+    "string",
+    "void",
+    "dynamic",
+    "var",
+    "Task",
+    "ValueTask",
+    "Array",
+    "String",
+    "Object",
+    "Exception",
+    "List",
+    "Dictionary",
+    "IEnumerable",
+    "IList",
+    "ICollection",
+    "IReadOnlyList",
+    "IReadOnlyCollection",
+    "IReadOnlyDictionary",
+    "HashSet",
+    "Queue",
+    "Stack",
+    "DateTime",
+    "DateTimeOffset",
+    "TimeSpan",
+    "Guid",
+    "Uri",
+    "StringBuilder",
+    "Nullable",
+    "Tuple",
+    "ValueTuple",
+    "Action",
+    "Func",
+    "EventHandler",
+    "CancellationToken",
+    "Type",
+    "Random",
+];
+
+/// Infer the receiver type of a call's callee expression (`function_node`),
+/// mirroring `python::infer_receiver_type` with `this`/`base` standing in
+/// for `self`/`cls`. Only gates resolution; never changes `target_qualname`
+/// (see `resolve_call_target`, which stays text-based and keeps the
+/// receiver's literal text for evidence).
+///
+/// Rules, in order:
+/// - Not a member access at all (`Helper()`) → `NotTracked` (bare call,
+///   nothing to gate).
+/// - `base.Method()` (zero hops) → `Known`/`Unresolved` from the enclosing
+///   type's own resolvable base class (`Context::base_type`); unlike
+///   `this`, `resolve_call_target`'s exact-looking `{currentClass}.Method`
+///   guess is frequently wrong for `base.` calls (the whole point of
+///   calling `base.` is usually that the current class does *not* define
+///   its own override), so this is gated even at zero hops.
+/// - `base.field.Method()` (any deeper hop) → `Unresolved`: the base
+///   type's own field types aren't available to a single-file extractor.
+/// - `this.Method()` (zero hops) → `NotTracked`, already resolved exactly
+///   via `resolve_call_target`'s container-qualname path.
+/// - `this.Field.Method()` / `this.Property.Method()` (exactly one hop off
+///   `this`) → resolved via a type-annotated field or property, if any;
+///   otherwise `Unresolved`.
+/// - `X.Method()` where `X` is a bare identifier: `Known`/`Unresolved` from
+///   this method's local types if `X` is tracked, else `NotTracked` (a
+///   static/class reference, e.g. `Console.WriteLine()`).
+/// - Anything deeper, or a chain rooted in something other than a bare
+///   identifier/`this`/`base` (a call result, a cast, ...), → `Unresolved`
+///   if the root is `this` or a tracked local, `NotTracked` otherwise.
+fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
+    if function_node.kind() != "member_access_expression" {
+        return ReceiverType::NotTracked;
+    }
+    let Some(object) = function_node.child_by_field_name("expression") else {
+        return ReceiverType::NotTracked;
+    };
+    let (root, hops) = member_access_root(object);
+
+    if root.kind() == "base" {
+        if hops == 0 {
+            return match &ctx.base_type {
+                LocalType::Known(ty) => ReceiverType::Known(ty.clone()),
+                LocalType::Other => ReceiverType::Unresolved,
+            };
+        }
+        // ponytail: `base.Field.Method()` would need the base type's own
+        // field types, which may live in another file entirely — out of
+        // reach for single-file, single-pass extraction.
+        return ReceiverType::Unresolved;
+    }
+
+    if root.kind() == "this" {
+        if hops == 0 {
+            return ReceiverType::NotTracked;
+        }
+        if hops == 1 {
+            let attr_name = object
+                .child_by_field_name("name")
+                .map(|n| node_text(n, source));
+            return match attr_name.and_then(|name| ctx.class_attr_types.get(&name).cloned()) {
+                Some(LocalType::Known(ty)) => ReceiverType::Known(ty),
+                _ => ReceiverType::Unresolved,
+            };
+        }
+        // ponytail: deeper chains (`this.a.b.Method()`) would need real
+        // attribute-type inference across assignments — out of scope, same
+        // ceiling as `python::infer_receiver_type`.
+        return ReceiverType::Unresolved;
+    }
+
+    if root.kind() != "identifier" {
+        // Chain rooted in a call result, cast expression, subscript, etc.
+        // — not inferable.
+        return ReceiverType::Unresolved;
+    }
+    let root_name = node_text(root, source);
+    // C#, unlike TypeScript/Python, lets a method body reference an
+    // instance *or static* field of its own class by its bare name, with
+    // no `this.` prefix at all — and a `static` field can *only* ever be
+    // reached that way (`this.` on a static member doesn't compile). So a
+    // bare identifier is checked against `local_types` first (a local
+    // shadows a same-named field, standard C# scoping), falling back to
+    // `class_attr_types` — reusing the exact same field/property map
+    // `this.field.Method()` already consults, just from an additional call
+    // site.
+    if let Some(local) = ctx.local_types.get(&root_name) {
+        if hops == 0 {
+            return match local {
+                LocalType::Known(ty) => ReceiverType::Known(ty.clone()),
+                LocalType::Other => ReceiverType::Unresolved,
+            };
+        }
+        return ReceiverType::Unresolved;
+    }
+    if let Some(attr) = ctx.class_attr_types.get(&root_name) {
+        if hops == 0 {
+            return match attr {
+                LocalType::Known(ty) => ReceiverType::Known(ty.clone()),
+                LocalType::Other => ReceiverType::Unresolved,
+            };
+        }
+        return ReceiverType::Unresolved;
+    }
+    ReceiverType::NotTracked
+}
+
+/// Walk a (possibly nested) member-access chain down to its root node,
+/// returning the root plus how many hops separate it from `node` (0 =
+/// `node` itself is the root).
+fn member_access_root(node: Node<'_>) -> (Node<'_>, usize) {
+    let mut current = node;
+    let mut hops = 0;
+    while current.kind() == "member_access_expression" {
+        match current.child_by_field_name("expression") {
+            Some(obj) => {
+                current = obj;
+                hops += 1;
+            }
+            None => break,
+        }
+    }
+    (current, hops)
+}
+
+/// A file's `using` directives, collected once (see `collect_import_context`)
+/// and consulted only to qualify a bare `Type.Method()` call's receiver into
+/// candidate fully-qualified qualnames — see `import_qualified_candidates`.
+/// Deliberately coarse: this is not a real name-resolution pass (it has no
+/// notion of which types actually live in an imported namespace, since
+/// that requires the whole-repo symbol table this single-file extractor
+/// doesn't have access to). It only narrows *what to try*; the DB layer
+/// (`Db::insert_edges` / `db::resolver::Resolver::resolve_import`) is what actually
+/// decides, against real symbols, whether a candidate is unambiguous.
+#[derive(Debug, Default, Clone)]
+struct ImportContext {
+    /// Namespaces brought into scope via a bare `using NS;` directive, in
+    /// order of appearance (duplicates harmless — deduped when building
+    /// candidates). A receiver `X` is tried as `{ns}.X` for each of these.
+    namespaces: Vec<String>,
+    /// Alias -> fully-qualified target, from `using Alias = NS.Type;`. A
+    /// receiver exactly matching a key here is qualified directly and is
+    /// the *sole* candidate (an alias can only ever mean one thing, so it
+    /// short-circuits the namespace-guessing path entirely).
+    aliases: HashMap<String, String>,
+}
+
+/// Walk the whole file once, before the main symbol/edge walk, collecting
+/// every `using_directive` node into an `ImportContext`. Import directives
+/// don't nest meaningfully in real C# (block-scoped `using`s inside a
+/// namespace are rare and, even then, apply to the whole file in every
+/// codebase this extractor has been measured against) so this is a flat
+/// scan rather than something threaded through `walk_node`'s per-scope
+/// `Context` — see `Context::imports`, set once in `extract()` and never
+/// mutated afterward.
+fn collect_import_context(root: Node<'_>, source: &str) -> ImportContext {
+    let mut ctx = ImportContext::default();
+    collect_import_context_rec(root, source, &mut ctx);
+    ctx
+}
+
+fn collect_import_context_rec(node: Node<'_>, source: &str, out: &mut ImportContext) {
+    if node.kind() == "using_directive" {
+        record_using_directive(node, source, out);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_import_context_rec(child, source, out);
+    }
+}
+
+fn record_using_directive(node: Node<'_>, source: &str, out: &mut ImportContext) {
+    // `using static Type;` brings a *type's* members into scope directly
+    // (so a bare `Method()` — not `Type.Method()` — could resolve through
+    // it), which is a different shape than everything else this module
+    // handles and isn't covered by the issue this exists to fix.
+    // ponytail: not handled — see module doc. Upgrade path: track the
+    // named type as an implicit extra receiver-free candidate, separate
+    // from `namespaces`/`aliases` (both of which qualify a *receiver*).
+    let text = node_text(node, source);
+    let after_using = text
+        .trim()
+        .strip_prefix("global")
+        .map(str::trim)
+        .unwrap_or_else(|| text.trim())
+        .strip_prefix("using")
+        .map(str::trim)
+        .unwrap_or("");
+    if after_using.starts_with("static") {
+        return;
+    }
+
+    // Alias form: `using Alias = Some.Qualified.Type;` — grammar gives the
+    // alias its own `name` field; the RHS (whatever concrete shape —
+    // `qualified_name`, `identifier`, `generic_name`, ...) is simply the
+    // other named child, not wrapped in any distinguishing node kind (the
+    // grammar's `type` rule is a supertype that never itself materializes
+    // in the tree — confirmed via `tree.root_node().to_sexp()` on a real
+    // alias directive, so this doesn't rely on `handle_using`'s `"type"`
+    // check, which — for this same reason — never actually matches here
+    // either; `handle_using` only works for this shape via its own
+    // fallback loop).
+    if let Some(alias_node) = node.child_by_field_name("name") {
+        let alias = node_text(alias_node, source);
+        if alias.is_empty() {
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.id() == alias_node.id() {
+                continue;
+            }
+            let target = node_text(child, source);
+            if !target.is_empty() {
+                out.aliases.insert(alias, target);
+            }
+            return;
+        }
+        return;
+    }
+
+    // Plain form: `using Some.Namespace;` — the target is a direct named
+    // child (qualified_name/identifier/generic_name/alias_qualified_name),
+    // same shape `handle_using`'s fallback loop already matches.
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if matches!(
+            child.kind(),
+            "qualified_name" | "identifier" | "generic_name" | "alias_qualified_name"
+        ) {
+            let name = node_text(child, source);
+            if !name.is_empty() {
+                out.namespaces.push(name);
+            }
+            return;
+        }
+    }
+}
+
+/// Split a call's raw target text into `(receiver, suffix)` when its first
+/// (`.`-delimited) segment looks like a C# type name (starts with an
+/// uppercase letter) and is itself a plain identifier — not `this`/`base`,
+/// not a generic/indexer/call expression. `suffix` is everything after
+/// that first segment's dot and may itself be dotted (`CheckDuration.Record`
+/// for `HealthMeters.CheckDuration.Record`) — a static member access can be
+/// chained arbitrarily deep (`Type.Field.Method()`, `Type.Nested.Method()`),
+/// and every one of those shapes is exactly as much "this call is rooted at
+/// a type name" evidence as the plain two-segment case. Anything else
+/// returns `None` (no import qualification attempted) — see
+/// `import_qualified_candidates`'s caller.
+///
+/// The uppercase check matters: without it, an ordinary instance call like
+/// `row.ToDomain()` also matches this shape (`row` is just as dot-free as
+/// `UniqueName`), and `import_qualified_candidates` would then build
+/// candidates like `{ns}.row.ToDomain` — guaranteed to miss (`row` isn't a
+/// class), which previously did active harm: a non-empty but unresolvable
+/// `import_candidates` list makes `Db::insert_edges` persist
+/// `receiver_type = ""` (see `1d6a5a7`'s guard), permanently blocking the
+/// bare-name fallback tier that would otherwise have had a real shot at
+/// resolving the call correctly (or, for extension-method receivers,
+/// blocking `extension_method_candidates` from being the sole source of
+/// truth). C# identifier convention (locals/fields lowerCamelCase or
+/// `_prefixed`, types PascalCase) makes this a cheap, reliable filter — this
+/// tier exists specifically for static-access shapes rooted at a type name
+/// (`UniqueName.Create()`, `HealthMeters.CheckDuration.Record()`), and every
+/// real type name in C# starts uppercase.
+///
+/// Allowing a dotted suffix is itself a fix, not just a generalization: a
+/// call like `HealthMeters.CheckDuration.Record(...)` (a static field's
+/// value, `Record` called on the `Histogram<double>` it holds — see
+/// `1d6a5a7`'s "positive evidence of an external receiver" reasoning) used
+/// to produce *no* candidate at all here (the old two-segment-only version
+/// rejected any dotted suffix outright), so the `1d6a5a7` guard never saw
+/// evidence to act on and the call fell through unguarded to the bare-name
+/// tier — which then wrongly bound it to any unrelated same-named `Record`
+/// method elsewhere in the repo. The candidate this produces
+/// (`{ns}.HealthMeters.CheckDuration.Record`) is essentially guaranteed to
+/// find no real symbol either (nothing is nested under a field), which is
+/// exactly the point: a non-empty, unresolvable candidate list is what
+/// lets the existing guard correctly refuse to bind, instead of an empty
+/// list that left the call looking like it had no receiver-type signal at
+/// all.
+fn type_prefixed_receiver_and_suffix(raw: &str) -> Option<(&str, &str)> {
+    let (receiver, suffix) = raw.split_once('.')?;
+    if receiver.is_empty() || suffix.is_empty() {
+        return None;
+    }
+    if receiver == "this" || receiver == "base" {
+        return None;
+    }
+    let mut chars = receiver.chars();
+    let first = chars.next()?;
+    if !first.is_uppercase() {
+        return None;
+    }
+    if !receiver.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
+        return None;
+    }
+    Some((receiver, suffix))
+}
+
+/// Compute fully-qualified candidate qualnames for a bare `Type.Method()`
+/// (or deeper, `Type.Field.Method()`-shaped) call whose receiver `type_name`
+/// is not a tracked local/field (i.e. `infer_receiver_type` returned
+/// `NotTracked` for this call), using the file's import context plus its
+/// current enclosing namespace. `suffix` is appended verbatim, dots and
+/// all, so a two-segment call passes a bare method name and a deeper chain
+/// passes its own dotted remainder unchanged — see
+/// `type_prefixed_receiver_and_suffix`'s doc for why a candidate that's
+/// bound to fail (a deeper chain very rarely names a real symbol) is still
+/// exactly the useful output here.
+///
+/// An alias match is authoritative and the sole candidate returned (an
+/// alias can only ever mean one thing). Otherwise, one candidate per
+/// distinct namespace source that could plausibly supply `type_name`: the
+/// call site's own enclosing namespace (a sibling type in the same
+/// namespace needs no `using` at all), plus `{ns}.{type_name}.{suffix}`
+/// for every bare `using ns;` directive in the file.
+///
+/// This never picks a winner among multiple namespace candidates — that's
+/// the DB layer's job (`db::resolver::Resolver::resolve_import`), which tries every
+/// candidate against the real symbol table and binds only if exactly one
+/// resolves; 0 or 2+ hits fall through unchanged to the pre-existing
+/// two-segment/bare-name tiers. So an ambiguous `using` situation here
+/// still ends up refused downstream, never guessed.
+fn import_qualified_candidates(type_name: &str, suffix: &str, ctx: &Context) -> Vec<String> {
+    if let Some(fqn) = ctx.imports.aliases.get(type_name) {
+        return vec![format!("{fqn}.{suffix}")];
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = Vec::new();
+    let mut push = |ns: &str| {
+        if ns.is_empty() {
+            return;
+        }
+        let candidate = format!("{ns}.{type_name}.{suffix}");
+        if seen.insert(candidate.clone()) {
+            candidates.push(candidate);
+        }
+    };
+    if !ctx.namespace_stack.is_empty() {
+        push(&ctx.namespace_stack.join("."));
+    }
+    for ns in &ctx.imports.namespaces {
+        push(ns);
+    }
+    candidates
+}
+
+/// If `node` (a `method_declaration` already known to have a non-empty
+/// name/qualname) is a C# extension method — `static`, with a first
+/// parameter carrying the `this` modifier — record it into
+/// `ctx.extension_registry` under its bare method name. Every other method
+/// is a no-op. See `Context::extension_registry` for why this exists and
+/// `extension_method_candidates` for how it's consumed.
+fn record_extension_method(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    name: &str,
+    qualname: &str,
+) {
+    if !has_modifier(node, source, "static") {
+        return;
+    }
+    let Some(params) = node.child_by_field_name("parameters") else {
+        return;
+    };
+    let mut cursor = params.walk();
+    let Some(first_param) = params
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "parameter")
+    else {
+        return;
+    };
+    if !has_modifier(first_param, source, "this") {
+        return;
+    }
+    let receiver_type = first_param
+        .child_by_field_name("type")
+        .map(|t| classify_annotation(&node_text(t, source)))
+        .and_then(|ty| match ty {
+            LocalType::Known(name) => Some(name),
+            LocalType::Other => None,
+        });
+    let namespace = ctx.namespace_stack.join(".");
+    ctx.extension_registry
+        .borrow_mut()
+        .entry(name.to_string())
+        .or_default()
+        .push(ExtensionMethodEntry {
+            qualname: qualname.to_string(),
+            namespace,
+            receiver_type,
+        });
+}
+
+/// Whether `node` has a direct `modifier` child whose text is exactly
+/// `keyword` — e.g. `has_modifier(method_node, source, "static")` or
+/// `has_modifier(parameter_node, source, "this")`. Every C# modifier
+/// (`public`, `static`, `this`, `readonly`, ...) parses to the same
+/// `modifier` node kind wrapping a single keyword token, regardless of
+/// which declaration it appears on — confirmed via a parse-tree dump of a
+/// real extension method (`public static T Foo(this U u)`), same technique
+/// `record_using_directive`'s doc references.
+fn has_modifier(node: Node<'_>, source: &str, keyword: &str) -> bool {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .any(|c| c.kind() == "modifier" && node_text(c, source).trim() == keyword)
+}
+
+/// Whether `namespace` (an extension method's declaring namespace — see
+/// `ExtensionMethodEntry::namespace`) is in scope for the *current* call
+/// site: either the call site's own enclosing namespace (no `using`
+/// needed — real C# lets sibling types in the same namespace see each
+/// other), a namespace named by one of this file's bare `using ns;`
+/// directives, or the target of a `using Alias = ns;` directive. Mirrors
+/// the same namespace sources `import_qualified_candidates` already
+/// consults, just checking membership instead of building guesses.
+fn namespace_in_scope(namespace: &str, ctx: &Context) -> bool {
+    if namespace.is_empty() {
+        return false;
+    }
+    if !ctx.namespace_stack.is_empty() && ctx.namespace_stack.join(".") == namespace {
+        return true;
+    }
+    if ctx.imports.namespaces.iter().any(|ns| ns == namespace) {
+        return true;
+    }
+    ctx.imports.aliases.values().any(|fqn| fqn == namespace)
+}
+
+/// Candidate fully-qualified qualnames for a call that may be invoking an
+/// *extension* method — `receiver.Method(...)`, where `Method` isn't
+/// declared on the receiver's own type (or the receiver's type is unknown
+/// entirely) but on some `static` class whose namespace this file has
+/// imported. This is the mechanism the "extension methods are invisible to
+/// CALLS resolution" defect needs fixed: unlike `import_qualified_candidates`
+/// (which qualifies a *type-looking*
+/// receiver into `{ns}.{receiver}.{method}`), an extension call's receiver
+/// is an *instance* — its text is never the declaring class's name, so no
+/// amount of namespace-guessing from the call site alone can construct the
+/// declaring class's qualname. The only place that name is ever available
+/// is the declaration itself, so this looks it up in
+/// `ctx.extension_registry` (built by `record_extension_method` as this
+/// extractor processes every file this run — see that field's doc).
+///
+/// Returns candidates only when there's positive, already-observed
+/// evidence: every registry entry under `method_name` is filtered to those
+/// (a) whose declaring namespace is in scope here (`namespace_in_scope`)
+/// and (b) not positively *incompatible* with `receiver_type` (an entry
+/// with a known, different receiver type is excluded; an entry with an
+/// unclassifiable/generic receiver type, or a call whose own receiver type
+/// isn't confidently known, is never excluded on this basis — see
+/// `ExtensionMethodEntry::receiver_type`'s doc). An empty result here means
+/// "no evidence either way", not "not an extension method" — the caller
+/// must leave `import_candidates` empty in that case rather than pass
+/// along a list that would (via the `1d6a5a7` guard) wrongly foreclose
+/// every other resolution tier for what might just be an ordinary call.
+///
+/// ponytail: order-dependent within a single reindex — a call site in a
+/// file processed *before* its extension method's declaring file gets no
+/// candidate here (the registry entry doesn't exist yet). A full cold
+/// reindex still ends up with the complete registry, so only the specific
+/// pairing of (this call site's file, that method's declaring file)
+/// processed in the "wrong" relative order is affected, not the run as a
+/// whole. Upgrade path: persist a lightweight extension-method index
+/// keyed by name (declaring qualname + namespace + receiver type) so a
+/// later file's call sites can look up an earlier *or* later declaration —
+/// that's DB-layer work (`src/db/`), out of this extractor's reach.
+fn extension_method_candidates(
+    method_name: &str,
+    receiver_type: &ReceiverType,
+    ctx: &Context,
+) -> Vec<String> {
+    let registry = ctx.extension_registry.borrow();
+    let Some(entries) = registry.get(method_name) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut candidates = Vec::new();
+    for entry in entries {
+        if !namespace_in_scope(&entry.namespace, ctx) {
+            continue;
+        }
+        if let (ReceiverType::Known(call_ty), Some(entry_ty)) =
+            (receiver_type, &entry.receiver_type)
+            && call_ty != entry_ty
+        {
+            continue;
+        }
+        if seen.insert(entry.qualname.clone()) {
+            candidates.push(entry.qualname.clone());
+        }
+    }
+    candidates
+}
+
+/// Classify a declared-type (or bare constructed-type) expression's text
+/// into a `LocalType`. Generic/array/tuple type shapes are never unwrapped
+/// — they collapse to `Other` just like a builtin would, mirroring
+/// `python::classify_annotation`'s identical ponytail simplification. A
+/// trailing `?` (nullable value *or* reference type) is stripped first, so
+/// `EventStore?` still resolves to `EventStore` while `int?` still
+/// collapses to `Other` via the builtin check.
+fn classify_annotation(text: &str) -> LocalType {
+    let text = text.trim();
+    let text = text.strip_suffix('?').unwrap_or(text).trim();
+    if text.is_empty() {
+        return LocalType::Other;
+    }
+    if text.contains(['<', '[', '(', ')', '{', '*']) {
+        return LocalType::Other;
+    }
+    let bare = text.rsplit('.').next().unwrap_or(text).trim();
+    classify_type_name(bare)
+}
+
+fn classify_type_name(name: &str) -> LocalType {
+    if name.is_empty() || CS_BUILTIN_TYPES.contains(&name) {
+        LocalType::Other
+    } else {
+        LocalType::Known(name.to_string())
+    }
+}
+
+/// Classify a `var` local's initializer shape into a `LocalType`. The only
+/// `Known` case is direct construction (`new EventStore()`); everything
+/// else (a method call's return value, a collection initializer, ...) is
+/// `Other` — mirrors `python::classify_assignment_value`'s identical
+/// ceiling, and matches this task's "`var` only when the initializer is a
+/// direct `new T()`" scope.
+fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
+    if value.kind() == "object_creation_expression"
+        && let Some(type_node) = value.child_by_field_name("type")
+    {
+        return classify_annotation(&node_text(type_node, source));
+    }
+    LocalType::Other
+}
+
+/// The initializer expression of a `variable_declarator`, if any — its
+/// second named child (the first is always `name`); C# doesn't label this
+/// with a field name of its own.
+fn variable_declarator_value(node: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = node.walk();
+    let mut children = node.named_children(&mut cursor);
+    children.next();
+    children.next()
+}
+
+/// Infer types for names bound within a single method/constructor body:
+/// parameters and typed/`var` local declarations. Scope is strictly this
+/// method — never a caller, a callee, or another method of the same type
+/// (see `Context::local_types`'s doc comment).
+fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {
+    let mut bindings: Vec<(String, LocalType)> = Vec::new();
+    if let Some(params) = function_node.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        for param in params.named_children(&mut cursor) {
+            if param.kind() != "parameter" {
+                continue;
+            }
+            let Some(name_node) = param.child_by_field_name("name") else {
+                continue;
+            };
+            let name = node_text(name_node, source);
+            if name.is_empty() {
+                continue;
+            }
+            let ty = param
+                .child_by_field_name("type")
+                .map(|t| classify_annotation(&node_text(t, source)))
+                .unwrap_or(LocalType::Other);
+            bindings.push((name, ty));
+        }
+    }
+    if let Some(body) = function_node.child_by_field_name("body") {
+        collect_statement_bindings(body, source, &mut bindings);
+    }
+    bindings_to_local_types(bindings)
+}
+
+/// Fold a scope's raw (name, inferred-type) bindings into a lookup map,
+/// with a name bound more than once anywhere in the scope collapsing to
+/// `Other` — mirrors `python::bindings_to_local_types`.
+fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String, LocalType> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (name, _) in &bindings {
+        *counts.entry(name.clone()).or_default() += 1;
+    }
+    let mut result = HashMap::new();
+    for (name, ty) in bindings {
+        let reassigned = counts.get(&name).copied().unwrap_or(0) > 1;
+        result.insert(name, if reassigned { LocalType::Other } else { ty });
+    }
+    result
+}
+
+/// Recursively collect local-variable bindings from statements within a
+/// single method/constructor body, stopping at a nested local-function
+/// boundary (its own locals are a different scope entirely — see
+/// `Context::local_types`'s doc comment; reuses `is_local_function_node`,
+/// the same boundary `walk_node` itself stops at). A lambda/anonymous
+/// method is *not* a boundary here — see `is_lambda_node`'s doc comment —
+/// so a call inside one is walked with the *enclosing* method's
+/// `local_types`, and the lambda's own parameters are folded into that same
+/// map below (mirrors `python::collect_statement_bindings`'s `"lambda"`
+/// arm) so a reference to one of them isn't mistaken for an outer name and
+/// misattributed to whatever the enclosing scope happens to bind that name
+/// to.
+///
+/// ponytail: tuple-deconstruction targets (`var (a, b) = GetPair();`,
+/// `foreach (var (k, v) in map)`) aren't tracked — the declarator/loop
+/// variable's `name` field isn't a plain identifier in that shape, so it's
+/// skipped rather than bound. This is no worse than before this change
+/// (such names were never gated), just not improved by it.
+fn collect_statement_bindings(
+    node: Node<'_>,
+    source: &str,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    if is_local_function_node(node.kind()) {
+        return;
+    }
+    if is_lambda_node(node.kind())
+        && let Some(params) = node.child_by_field_name("parameters")
+    {
+        collect_lambda_parameter_bindings(params, source, bindings);
+        // No `return`: still recurse into children below (the body may
+        // declare further locals, or contain a nested lambda whose own
+        // parameters also need folding in).
+    }
+    match node.kind() {
+        "variable_declaration" => {
+            let type_node = node.child_by_field_name("type");
+            let is_var = type_node
+                .map(|t| t.kind() == "implicit_type")
+                .unwrap_or(true);
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() != "variable_declarator" {
+                    continue;
+                }
+                let Some(name_node) = child.child_by_field_name("name") else {
+                    continue;
+                };
+                if name_node.kind() != "identifier" {
+                    continue;
+                }
+                let name = node_text(name_node, source);
+                if name.is_empty() {
+                    continue;
+                }
+                let ty = if is_var {
+                    variable_declarator_value(child)
+                        .map(|v| classify_value_expr(v, source))
+                        .unwrap_or(LocalType::Other)
+                } else {
+                    classify_annotation(&node_text(type_node.expect("checked above"), source))
+                };
+                bindings.push((name, ty));
+            }
+        }
+        "catch_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = node_text(name_node, source);
+                if !name.is_empty() {
+                    let ty = node
+                        .child_by_field_name("type")
+                        .map(|t| classify_annotation(&node_text(t, source)))
+                        .unwrap_or(LocalType::Other);
+                    bindings.push((name, ty));
+                }
+            }
+        }
+        "foreach_statement" => {
+            if let Some(left) = node.child_by_field_name("left")
+                && left.kind() == "identifier"
+            {
+                let name = node_text(left, source);
+                if !name.is_empty() {
+                    let ty = node
+                        .child_by_field_name("type")
+                        .filter(|t| t.kind() != "implicit_type")
+                        .map(|t| classify_annotation(&node_text(t, source)))
+                        .unwrap_or(LocalType::Other);
+                    bindings.push((name, ty));
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_statement_bindings(child, source, bindings);
+    }
+}
+
+/// Type-annotated fields (`field_declaration`) and properties
+/// (`property_declaration`) declared directly in a type's body — not
+/// inside any method. Used only to resolve a single-hop
+/// `this.field.Method()` receiver; see `infer_receiver_type`.
+fn collect_class_level_attr_types(
+    class_body: Node<'_>,
+    source: &str,
+) -> HashMap<String, LocalType> {
+    let mut result = HashMap::new();
+    let mut cursor = class_body.walk();
+    for member in class_body.named_children(&mut cursor) {
+        match member.kind() {
+            "field_declaration" => {
+                let mut inner = member.walk();
+                for decl in member.named_children(&mut inner) {
+                    if decl.kind() != "variable_declaration" {
+                        continue;
+                    }
+                    let Some(type_node) = decl.child_by_field_name("type") else {
+                        continue;
+                    };
+                    // Fields can't be `var` in real C#; defensive skip.
+                    if type_node.kind() == "implicit_type" {
+                        continue;
+                    }
+                    let ty = classify_annotation(&node_text(type_node, source));
+                    let mut dcursor = decl.walk();
+                    for declarator in decl.named_children(&mut dcursor) {
+                        if declarator.kind() != "variable_declarator" {
+                            continue;
+                        }
+                        let Some(name_node) = declarator.child_by_field_name("name") else {
+                            continue;
+                        };
+                        if name_node.kind() != "identifier" {
+                            continue;
+                        }
+                        let name = node_text(name_node, source);
+                        if name.is_empty() {
+                            continue;
+                        }
+                        result.insert(name, ty.clone());
+                    }
+                }
+            }
+            "property_declaration" => {
+                let Some(name_node) = member.child_by_field_name("name") else {
+                    continue;
+                };
+                let Some(type_node) = member.child_by_field_name("type") else {
+                    continue;
+                };
+                let name = node_text(name_node, source);
+                if name.is_empty() {
+                    continue;
+                }
+                result.insert(name, classify_annotation(&node_text(type_node, source)));
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
+/// Type-annotated fields (`field_declaration`) and properties
+/// (`property_declaration`) declared directly in a type's body whose
+/// declared type itself is a corroborated gRPC client type (see
+/// `split_client_service_and_prefix`) — regardless of what, if anything,
+/// initializes them. A field's own initializer is very often `default!`,
+/// with the client set for real in a constructor parameter instead (dpb's
+/// actual shape, e.g. `public readonly TeamService.TeamServiceClient
+/// Client = default!;`); the *declared type* is the only signal this needs.
+/// Reuses `collect_grpc_clients_from_declaration` for the field case (same
+/// `field_declaration -> variable_declaration -> variable_declarator` shape
+/// a local variable statement has) rather than duplicating its
+/// declared-type-first logic. Feeds `Context::grpc_clients` (in-class
+/// access — `handle_type` merges this in) and `Context::grpc_client_fields`
+/// (cross-file access — see that type's doc for why a field is the more
+/// important half of this defect: dpb's real call sites are all
+/// `scope.Client.Method()`, never same-class).
+fn collect_class_level_grpc_client_fields(
+    class_body: Node<'_>,
+    source: &str,
+) -> HashMap<String, (String, Option<String>)> {
+    let mut result = HashMap::new();
+    let mut cursor = class_body.walk();
+    for member in class_body.named_children(&mut cursor) {
+        match member.kind() {
+            "field_declaration" => {
+                let mut inner = member.walk();
+                for decl in member.named_children(&mut inner) {
+                    if decl.kind() != "variable_declaration" {
+                        continue;
+                    }
+                    collect_grpc_clients_from_declaration(decl, source, &mut result);
+                }
+            }
+            "property_declaration" => {
+                let Some(name_node) = member.child_by_field_name("name") else {
+                    continue;
+                };
+                let Some(type_node) = member.child_by_field_name("type") else {
+                    continue;
+                };
+                if type_node.kind() == "implicit_type" {
+                    continue;
+                }
+                let name = node_text(name_node, source);
+                if name.is_empty() {
+                    continue;
+                }
+                if let Some(service_and_prefix) =
+                    split_client_service_and_prefix(&node_text(type_node, source))
+                {
+                    result.insert(name, service_and_prefix);
+                }
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2128,10 +3967,20 @@ app.MapGroup("/admin").MapPost("/users", HandlePost);
 
     #[test]
     fn extracts_grpc_impl_and_call() {
+        // The impl class's own CLR namespace (`MyApp.Grpc`) deliberately
+        // differs from the proto package (`Example.V1`, brought in scope by
+        // a bare `using`) -- this is the shape every real gRPC impl in the
+        // wild has, and the whole point of the regression this guards: the
+        // route key must come from the `using`, never from
+        // `namespace_stack`, on *both* the impl and the call side (the call
+        // site here sits at file scope, outside any namespace, so a
+        // namespace-derived key would previously have been empty/wrong
+        // there too -- see the client-side assertions below).
         let source = r#"
+using Example.V1;
 using Grpc.Core;
 
-namespace Example.V1 {
+namespace MyApp.Grpc {
   public class GreeterService : Greeter.GreeterBase {
     public override Task<HelloReply> SayHello(HelloRequest request, ServerCallContext context) {
       return Task.FromResult(new HelloReply());
@@ -2158,10 +4007,315 @@ client.SayHelloAsync(new HelloRequest());
             .iter()
             .any(|edge| edge.target_qualname.as_deref() == Some("/example.v1.greeter/sayhello")));
         assert!(
+            !impls.iter().any(|edge| edge.target_qualname.as_deref()
+                == Some("/myapp.grpc.greeter/sayhello")),
+            "must not key the route off the impl class's own CLR namespace"
+        );
+        // Client-side key must land on the exact same route key the impl
+        // side does -- this is the RPC_IMPL/RPC_ROUTE overlap Defect 2
+        // exists to fix. `Greeter.GreeterClient`'s `Greeter.` prefix is the
+        // generated-code self-reference (mirrors `Greeter.GreeterBase` on
+        // the impl side), not a namespace, so it's consumed rather than
+        // treated as a candidate; the two bare `using`s are what actually
+        // supply the package, same as the impl side.
+        assert!(
             calls
                 .iter()
-                .any(|edge| edge.target_qualname.as_deref() == Some("/greeter/sayhello"))
+                .any(|edge| edge.target_qualname.as_deref() == Some("/example.v1.greeter/sayhello")),
+            "call-side key must match the impl/route key, got {:?}",
+            calls.iter().map(|e| &e.target_qualname).collect::<Vec<_>>()
         );
+        assert!(
+            !calls
+                .iter()
+                .any(|edge| edge.target_qualname.as_deref() == Some("/greeter/sayhello")),
+            "must not key the call off the impl class's own CLR namespace (here, no namespace \
+             at all, since the call site is at file scope)"
+        );
+    }
+
+    #[test]
+    fn grpc_impl_route_follows_using_alias_to_proto_package() {
+        // Concrete regression case: dpb's Datasource.Grpc.DeployerServiceImpl
+        // inherits `DsDeploy.DeployerService.DeployerServiceBase`, where
+        // `DsDeploy` is a using-alias for the generated proto namespace. The
+        // impl class itself lives in an unrelated CLR namespace.
+        let source = r#"
+using DsDeploy = Datasource.Deployer.V1;
+using Grpc.Core;
+
+namespace Dpb.DataMgr.Datasource.Grpc {
+  internal class DeployerServiceImpl : DsDeploy.DeployerService.DeployerServiceBase {
+    public override Task<DsDeploy.DeploymentResponse> Deploy(
+        IAsyncStreamReader<DsDeploy.DeploymentChunk> requestStream,
+        ServerCallContext context) {
+      return null;
+    }
+  }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let impls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_IMPL_KIND)
+            .collect::<Vec<_>>();
+        // An alias can only ever mean one thing, so it's the sole candidate
+        // -- no ambiguity, exactly one edge.
+        assert_eq!(impls.len(), 1);
+        assert_eq!(
+            impls[0].target_qualname.as_deref(),
+            Some("/datasource.deployer.v1.deployerservice/deploy")
+        );
+    }
+
+    #[test]
+    fn grpc_impl_bare_base_tries_every_bare_using_as_a_package_candidate() {
+        // No prefix in the base-list text at all (the common case: proto
+        // namespace brought in scope by a bare `using`, not an alias).
+        // Every bare `using` in the file becomes a candidate; a wrong one
+        // just never matches a real RPC_ROUTE downstream, so this is safe
+        // even when ambiguous.
+        let source = r#"
+using DataProduct.Team.V1;
+using Inventory.V1;
+using Grpc.Core;
+
+namespace Dpb.DataMgr.Catalog.Grpc {
+  internal class InventoryServiceImpl : InventoryService.InventoryServiceBase {
+    public override Task<GetInventoryResponse> GetInventory(
+        GetInventoryRequest request, ServerCallContext context) {
+      return null;
+    }
+  }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let impls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_IMPL_KIND)
+            .collect::<Vec<_>>();
+        // Three bare usings -> three distinct candidate targets.
+        assert_eq!(impls.len(), 3);
+        assert!(impls.iter().any(|edge| edge.target_qualname.as_deref()
+            == Some("/inventory.v1.inventoryservice/getinventory")));
+        assert!(
+            !impls.iter().any(|edge| edge.target_qualname.as_deref()
+                == Some("/dpb.datamgr.catalog.grpc.inventoryservice/getinventory")),
+            "must not key the route off the impl class's own CLR namespace"
+        );
+    }
+
+    #[test]
+    fn grpc_call_resolves_target_typed_new_from_declared_type() {
+        // C# 9 target-typed `new(...)` -- `implicit_object_creation_expression`
+        // -- has no `type` node of its own (see
+        // `grpc_client_from_object_creation`'s doc), so the type has to come
+        // from the declaration wrapped around it instead. This is dpb's own
+        // shape (e.g. `dotnet/tests/Dpb.DataMgr.Tests/Fixtures/TeamServiceScope.cs`:
+        // `TeamService.TeamServiceClient client = new(channel);`). Mirrors
+        // `extracts_grpc_impl_and_call`'s call-side assertions exactly, just
+        // with the client constructed the way dpb's fixtures actually write
+        // it, to prove the route key lands on the same target either way.
+        let source = r#"
+using Example.V1;
+
+Greeter.GreeterClient client = new(channel);
+client.SayHelloAsync(new HelloRequest());
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let calls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_CALL_KIND)
+            .collect::<Vec<_>>();
+        assert!(
+            calls
+                .iter()
+                .any(|edge| edge.target_qualname.as_deref() == Some("/example.v1.greeter/sayhello")),
+            "a target-typed new(...) construction must resolve to the same route key an \
+             explicitly-typed construction would, got {:?}",
+            calls.iter().map(|e| &e.target_qualname).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn grpc_call_resolves_client_field_regardless_of_scan_order() {
+        // Regression test for the exact defect measured on dpb: a test
+        // fixture ("Scope") class exposes its gRPC client through a field
+        // (`Client`, itself constructed elsewhere -- often via target-typed
+        // `new(...)` inside the class's own static factory method, and
+        // merely assigned here through a constructor parameter, never
+        // reconstructed), and every real call site is in a *different*
+        // file (`scope.Client.SomeRpcAsync(...)` in a `*Tests.cs` file, the
+        // field declared in a `*ServiceScope.cs` fixture file). An earlier
+        // version of this fix resolved that cross-file link incrementally,
+        // during `extract()`, mirroring `ExtensionRegistry` -- which made
+        // the result depend on directory sort order: dpb's
+        // `Dpb.DataMgr.Tests/DataProduct` sorts before `.../Fixtures`, so
+        // `TeamServiceTests.cs` (processed first) lost every edge, while
+        // `SourcingIntegrationTests.cs` two directories over (whose
+        // `Fixtures` happens to sort first) resolved fine -- identical
+        // source shape, opposite outcome, purely from scan order. See
+        // `GrpcClientFieldRegistry`'s doc.
+        //
+        // The fix moves cross-file resolution out of `extract()` entirely
+        // into a one-time, whole-repo prescan
+        // (`prescan_grpc_client_fields`, triggered from `resolve_imports`)
+        // that reads every `.cs` file from disk directly rather than
+        // relying on `extract()`'s own call order -- so this test
+        // deliberately calls `extract()` on the *calling* file first, then
+        // the *declaring* file, to prove the result no longer depends on
+        // that order the way the incremental-registry version did.
+        let dir = tempfile::tempdir().unwrap();
+        let fixtures_dir = dir.path().join("Fixtures");
+        let tests_dir = dir.path().join("Tests");
+        std::fs::create_dir_all(&fixtures_dir).unwrap();
+        std::fs::create_dir_all(&tests_dir).unwrap();
+
+        let fixture_source = r#"
+using Example.V1;
+using Grpc.Net.Client;
+
+public class GreeterScope
+{
+    public readonly Greeter.GreeterClient Client = default!;
+
+    private GreeterScope(Greeter.GreeterClient client) => Client = client;
+
+    public static GreeterScope Create(GrpcChannel channel)
+    {
+        Greeter.GreeterClient client = new(channel);
+        return new(client);
+    }
+}
+"#;
+        let test_source = r#"
+using Example.V1;
+
+var scope = GreeterScope.Create(channel);
+scope.Client.SayHelloAsync(new HelloRequest());
+"#;
+        std::fs::write(fixtures_dir.join("GreeterScope.cs"), fixture_source).unwrap();
+        std::fs::write(tests_dir.join("GreeterTests.cs"), test_source).unwrap();
+
+        let mut extractor = CSharpExtractor::new().unwrap();
+
+        // Calling file FIRST.
+        let mut test_file = extractor
+            .extract(test_source, "tests/greeter_tests")
+            .unwrap();
+        assert!(
+            !test_file
+                .edges
+                .iter()
+                .any(|edge| edge.kind == proto::RPC_CALL_KIND),
+            "must not resolve to a real RPC_CALL during extract() itself -- that immediate, \
+             incrementally-built-registry resolution is exactly the order-dependent path this \
+             test guards against, got {:?}",
+            test_file.edges.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
+
+        // Declaring file SECOND -- shouldn't matter either way, since
+        // `resolve_imports`'s prescan reads it from disk, not from this
+        // call.
+        extractor
+            .extract(fixture_source, "fixtures/greeter_scope")
+            .unwrap();
+
+        extractor.resolve_imports(
+            dir.path(),
+            "Tests/GreeterTests.cs",
+            "tests/greeter_tests",
+            &mut test_file.edges,
+        );
+        let calls = test_file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_CALL_KIND)
+            .collect::<Vec<_>>();
+        assert!(
+            calls
+                .iter()
+                .any(|edge| edge.target_qualname.as_deref() == Some("/example.v1.greeter/sayhello")),
+            "a gRPC client field declared in a different file must resolve after \
+             resolve_imports, regardless of extract() call order, got {:?}",
+            calls.iter().map(|e| &e.target_qualname).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn azure_style_client_type_is_not_mistaken_for_a_grpc_client() {
+        // Concrete regression case: dpb's own false-positive source. Azure
+        // SDK (`BlobServiceClient`, `SecretClient`, `ServiceBusClient`) and
+        // Microsoft Graph SDK (`GraphServiceClient`) types are all
+        // `...Client`-suffixed but never carry the mandatory
+        // `{Service}.{Service}Client` self-reference stutter a real
+        // generated gRPC client always has -- confirmed against dpb, every
+        // one of these is constructed either fully unqualified or (rarely)
+        // fully qualified without the stutter (`new
+        // Azure.Storage.Blobs.BlobServiceClient(...)`), never as
+        // `BlobService.BlobServiceClient`. Neither shape should register as
+        // a gRPC client at all, so no RPC_CALL should ever come from using
+        // one, however it's later called.
+        let source = r#"
+using Azure.Storage.Blobs;
+
+var blobService = new BlobServiceClient(connectionString);
+var containerClient = blobService.GetBlobContainerClient(containerId);
+containerClient.CreateIfNotExistsAsync();
+
+var fullyQualified = new Azure.Storage.Blobs.BlobServiceClient(connectionString);
+fullyQualified.GetBlobContainerClient(containerId);
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let calls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_CALL_KIND)
+            .collect::<Vec<_>>();
+        assert!(
+            calls.is_empty(),
+            "an Azure SDK ...Client type (no gRPC self-reference stutter) must never produce an \
+             RPC_CALL, got {:?}",
+            calls.iter().map(|e| &e.target_qualname).collect::<Vec<_>>()
+        );
+    }
+
+    /// Neuters `split_client_service_and_prefix`'s mandatory self-reference
+    /// stutter requirement (see that function's doc) directly, to prove
+    /// `azure_style_client_type_is_not_mistaken_for_a_grpc_client` is
+    /// non-vacuous: with the corroboration check disabled, the exact same
+    /// Azure SDK construction from that test *does* register (as a bogus
+    /// "BlobService" client), showing the test would fail to catch a
+    /// regression that reintroduced the old, unguarded behavior.
+    #[test]
+    fn split_client_service_and_prefix_without_stutter_check_would_match_azure_types() {
+        fn split_without_stutter_requirement(text: &str) -> Option<(String, Option<String>)> {
+            let text = text.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let mut parts: Vec<&str> = text.split('.').map(str::trim).collect();
+            let last = parts.pop()?;
+            let last = last.split('<').next().unwrap_or(last).trim();
+            let service = last.strip_suffix("Client")?;
+            if service.is_empty() {
+                return None;
+            }
+            Some((service.to_string(), None))
+        }
+        assert_eq!(
+            split_without_stutter_requirement("BlobServiceClient"),
+            Some(("BlobService".to_string(), None))
+        );
+        // The real (fixed) function must reject the same input.
+        assert_eq!(split_client_service_and_prefix("BlobServiceClient"), None);
     }
 
     #[test]
@@ -2285,5 +4439,88 @@ public class MyService : BaseService, IMyService {
         assert_eq!(result[0].1, "IOptions");
         assert_eq!(result[1].0, "CacheOptions");
         assert_eq!(result[1].1, "IOptionsMonitor");
+    }
+
+    /// Explicit generic type arguments (`_sql.QueryAsync<long>(...)`) used
+    /// to leave `target_qualname` empty because the raw callee text carried
+    /// the `<...>` list, which `is_simple_call_target` rejects. Each generic
+    /// form must now match its non-generic twin exactly (target, receiver
+    /// typing, extension candidates).
+    #[test]
+    fn generic_method_calls_get_same_target_as_non_generic() {
+        let source = r#"
+namespace Acme.Strategies;
+public static class SqlHelperExt {
+    public static Task<T> ProbeAsync<T>(this IngestSqlHelper h) => default;
+}
+public class IngestSqlHelper {
+    public Task<T> QueryAsync<T>(SqlConnection c, string sql) => default;
+}
+public class ProductDeltaStrategy {
+    private readonly IngestSqlHelper _sql;
+    public async Task RunAsync(SqlConnection destConn, CancellationToken ct) {
+        var (bid, err) = await _sql.QueryAsync<long?>(destConn, "select 1");
+        var plain = await _sql.QueryAsync(destConn, "select 2");
+        await _sql.ProbeAsync<int>();
+        await _sql.ProbeAsync();
+        var s = Factory.Create<Widget>();
+        var b = Helper<int>(1);
+        var t = this.Helper<int>(2);
+        var m = await Mapper.Map<Dictionary<string, List<int>>>(plain);
+        var l = new List<int>();
+    }
+    private int Helper<T>(T x) => 0;
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let call = |needle: &str| {
+            file.edges
+                .iter()
+                .find(|e| {
+                    e.kind == "CALLS"
+                        && e.evidence_snippet
+                            .as_deref()
+                            .is_some_and(|s| s.starts_with(needle))
+                })
+                .unwrap_or_else(|| panic!("no CALLS edge for {needle}"))
+        };
+        let generic = call("_sql.QueryAsync<long?>");
+        let plain = call("_sql.QueryAsync(destConn");
+        // A generic *constructor* keeps its type args, so it can't be
+        // bare-name bound to an unrelated `List` method.
+        let ctor = call("new List<int>")
+            .target_qualname
+            .clone()
+            .unwrap_or_default();
+        assert!(!ctor.ends_with(".List") && ctor != "List", "{ctor}");
+        assert_eq!(generic.target_qualname.as_deref(), Some("_sql.QueryAsync"));
+        assert_eq!(generic.target_qualname, plain.target_qualname);
+        assert_eq!(
+            generic.receiver_type,
+            ReceiverType::Known("IngestSqlHelper".to_string())
+        );
+        assert_eq!(generic.receiver_type, plain.receiver_type);
+        let ext_generic = call("_sql.ProbeAsync<int>");
+        let ext_plain = call("_sql.ProbeAsync()");
+        assert!(!ext_plain.import_candidates.is_empty());
+        assert_eq!(ext_generic.import_candidates, ext_plain.import_candidates);
+        assert_eq!(ext_generic.target_qualname, ext_plain.target_qualname);
+        assert_eq!(
+            call("Factory.Create<Widget>").target_qualname.as_deref(),
+            Some("Factory.Create")
+        );
+        assert_eq!(
+            call("Helper<int>(1)").target_qualname.as_deref(),
+            Some("Acme.Strategies.ProductDeltaStrategy.Helper")
+        );
+        assert_eq!(
+            call("this.Helper<int>(2)").target_qualname.as_deref(),
+            Some("Acme.Strategies.ProductDeltaStrategy.Helper")
+        );
+        assert_eq!(
+            call("Mapper.Map<").target_qualname.as_deref(),
+            Some("Mapper.Map")
+        );
     }
 }

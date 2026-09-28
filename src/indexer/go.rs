@@ -1,10 +1,12 @@
+use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::tree_helpers::{
-    module_symbol_fallback, module_symbol_with_span, node_text, span,
+    collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
+    span,
 };
 use crate::util;
 use anyhow::Result;
@@ -12,6 +14,16 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
+
+/// Go's resolution profile: the shared default, plus capitalization-based
+/// visibility — no extractor recording needed (`VisibilityRule::
+/// GoCapitalization` derives it from a candidate's trailing name and
+/// compares package directories directly), so this extractor never touches
+/// `ExtractedFile::private_qualnames`.
+pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    visibility: VisibilityRule::GoCapitalization,
+    ..LanguageProfile::DEFAULT
+};
 
 /// A local variable declaration tagged with the byte range of the block that
 /// directly contains it, for scope-aware resolution.
@@ -599,6 +611,10 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         evidence_snippet: snippet,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
+        // A bare identifier callee (`foo()`) vs. a selector expression
+        // (`pkg.Func()`, `obj.Method()`) — see `EdgeInput::bare_call`'s
+        // doc.
+        bare_call: function_node.kind() == "identifier",
         ..Default::default()
     });
 }
@@ -1367,7 +1383,8 @@ fn detect_framework(receiver: &str) -> &'static str {
 }
 
 fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
-    let raw = raw.trim();
+    let raw = collapse_call_target_whitespace(raw);
+    let raw = raw.as_str();
     if raw.is_empty() || !is_simple_call_target(raw) {
         return None;
     }

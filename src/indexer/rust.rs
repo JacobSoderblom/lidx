@@ -1,17 +1,62 @@
+use crate::db::resolver::{ImportMissPolicy, LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::tree_helpers::{
-    module_symbol_fallback, module_symbol_with_span, node_text, span,
+    collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
+    span,
 };
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::rc::Rc;
 use tree_sitter::{Node, Parser};
+
+/// Rust's resolution profile. `use` targets are absolute after
+/// `normalize_import_target`, so suffix matching is off.
+pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    separators: &["::"],
+    normalize_import_target: Some(normalize_import_target),
+    import_miss: ImportMissPolicy::FallThrough,
+    import_suffix_matching: false,
+    visibility: VisibilityRule::RustModule,
+};
+
+/// `LanguageProfile::normalize_import_target` for Rust: rewrite
+/// `self::`/`super::` (including repeated `super::super::...`) relative to
+/// `module`, the qualname of the module the path was written in. `crate::`
+/// and anything else pass through unchanged (`None`: no rewrite needed).
+///
+/// Shared by every place this extractor turns a relative path into an
+/// absolute qualname: `resolve_call_target` (call-site paths) and
+/// `collect_use_bindings`/`handle_use` (`use self::x` / `use super::x`
+/// targets), so a call site and a `use` statement rewrite the same way.
+fn normalize_import_target(raw: &str, module: &str) -> Option<String> {
+    if let Some(rest) = raw.strip_prefix("self::") {
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(format!("{module}::{rest}"));
+    }
+    if raw.starts_with("super::") {
+        let mut current = module;
+        let mut rest = raw;
+        while let Some(tail) = rest.strip_prefix("super::") {
+            let (parent, _) = current.rsplit_once("::")?; // super:: past the crate root — no guess
+            current = parent;
+            rest = tail;
+        }
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(format!("{current}::{rest}"));
+    }
+    None
+}
 
 #[derive(Clone)]
 struct Context {
@@ -20,6 +65,25 @@ struct Context {
     current_scope: String,
     grpc_service: Option<GrpcService>,
     grpc_clients: HashMap<String, GrpcService>,
+    /// This *scope's own* `use` bindings: bound name -> fully-qualified
+    /// target(s), consulted for the CALLS import tier when a bare call
+    /// isn't a same-scope item. Recomputed fresh at the file root and at
+    /// every nested `mod` (see `collect_use_bindings`) — never inherited
+    /// from an enclosing module, matching Rust's own namespacing (a nested
+    /// `mod` doesn't see its parent's `use`s, only `super::`/`crate::`
+    /// qualified access).
+    imports: Rc<HashMap<String, Vec<String>>>,
+    /// Names the current function must not get an import candidate for
+    /// (`collect_shadowed_names`); empty outside a function body.
+    shadowed_names: Rc<HashSet<String>>,
+    /// Set on entry to a trait declaration's own body (default methods)
+    /// or a `impl Trait for Type` block's body (trait method
+    /// implementations) — either way, the method's real visibility is the
+    /// trait's own, not whatever `pub`/no-`pub` appears on the item
+    /// itself, which Rust doesn't require or even always allow there. See
+    /// `handle_function`'s use of it: it never records such a method as
+    /// private (issue #75 follow-up, finding B).
+    in_trait_scope: bool,
 }
 
 pub struct RustExtractor {
@@ -66,6 +130,9 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             current_scope: module_name.to_string(),
             grpc_service: None,
             grpc_clients: HashMap::new(),
+            imports: Rc::new(collect_use_bindings(root, source, module_name)),
+            shadowed_names: Rc::new(HashSet::new()),
+            in_trait_scope: false,
         };
         walk_node(root, &ctx, source, &mut output);
         Ok(output)
@@ -156,7 +223,13 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             return;
         }
         "function_item" => {
-            handle_function(node, ctx, source, output);
+            // Reached directly (not via `walk_declaration_list`'s
+            // attribute-tracking loop), so no preceding `attribute_item`s
+            // are associated with it -- this only happens for a
+            // `function_item` nested somewhere other than a
+            // `source_file`/`declaration_list` (e.g. a fn nested inside a
+            // block), where `#[test]` wouldn't apply anyway.
+            handle_function(node, ctx, source, output, &[]);
             return;
         }
         "function_signature_item" => {
@@ -267,6 +340,10 @@ fn handle_trait(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
 
     let mut next_ctx = ctx.clone();
     next_ctx.container_stack.push(qualname);
+    // A default method declared directly in the trait is exactly as
+    // visible as the trait itself, regardless of its own (often absent)
+    // `pub` — see `Context::in_trait_scope`.
+    next_ctx.in_trait_scope = true;
     if let Some(body) = body_node(node) {
         walk_node(body, &next_ctx, source, output);
     }
@@ -319,6 +396,12 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     let mut next_ctx = ctx.clone();
     next_ctx.module = module_name;
     next_ctx.current_scope = next_ctx.module.clone();
+    // Fresh, not merged with `ctx.imports`: this module doesn't inherit its
+    // parent's `use` bindings (see `Context::imports`).
+    next_ctx.imports = Rc::new(collect_use_bindings(body, source, &next_ctx.module));
+    // A module is its own namespace, not a function body: no shadowed
+    // names carry in, even for a `mod` declared inside a function.
+    next_ctx.shadowed_names = Rc::new(HashSet::new());
     walk_node(body, &next_ctx, source, output);
 }
 
@@ -406,7 +489,13 @@ fn module_dir_for_source(
     Some(dir)
 }
 
-fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn handle_function(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+    attributes: &[Node<'_>],
+) {
     let Some(name) = extract_name(node, source) else {
         return;
     };
@@ -419,7 +508,13 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
         ),
     };
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
-    let signature = extract_signature(node, source);
+    let signature = extract_signature(node, source, attributes);
+    // A trait default method or trait-impl method has no `pub` to check —
+    // it's exactly as visible as the trait itself (see
+    // `Context::in_trait_scope`, issue #75 follow-up, finding B).
+    if !ctx.in_trait_scope && !has_pub_visibility(node) {
+        output.private_qualnames.push(qualname.clone());
+    }
     output.symbols.push(SymbolInput {
         kind: kind.to_string(),
         name: name.clone(),
@@ -450,6 +545,12 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
         let mut grpc_clients = ctx.grpc_clients.clone();
         grpc_clients.extend(collect_grpc_clients(body, source));
         next_ctx.grpc_clients = grpc_clients;
+
+        // Recomputed per function, never inherited.
+        let mut shadowed = HashSet::new();
+        collect_shadowed_names(node, source, &mut shadowed);
+        next_ctx.shadowed_names = Rc::new(shadowed);
+
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -471,7 +572,7 @@ fn handle_function_with_attributes(
     for edge in route_edges_from_attribute_items(attributes, ctx, source, &qualname) {
         output.edges.push(edge);
     }
-    handle_function(node, ctx, source, output);
+    handle_function(node, ctx, source, output, attributes);
 }
 
 fn handle_function_signature(
@@ -488,7 +589,7 @@ fn handle_function_signature(
     };
     let qualname = format!("{container}::{name}");
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
-    let signature = extract_signature(node, source);
+    let signature = extract_signature(node, source, &[]);
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -521,6 +622,7 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         return;
     }
     let type_qualname = qualify_type_name(&ctx.module, &type_name);
+    let is_trait_impl = node.child_by_field_name("trait").is_some();
 
     let mut grpc_service = None;
     if let Some(trait_node) = node.child_by_field_name("trait") {
@@ -546,12 +648,18 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let mut next_ctx = ctx.clone();
     next_ctx.container_stack.push(type_qualname);
     next_ctx.grpc_service = grpc_service;
+    // A trait impl's methods are exactly as visible as the trait itself —
+    // Rust doesn't attach (and often doesn't allow) `pub` to them
+    // directly — but an inherent impl's methods keep their own `pub`/
+    // private status as normal. See `Context::in_trait_scope`.
+    next_ctx.in_trait_scope = is_trait_impl;
     walk_node(body, &next_ctx, source, output);
 }
 
 fn handle_use(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     let text = node_text(node, source);
-    for target in parse_use_declaration(&text) {
+    for (_, raw_target) in parse_use_bindings(&text) {
+        let target = normalized_import_target(raw_target, &ctx.module);
         output.edges.push(EdgeInput {
             kind: "IMPORTS".to_string(),
             source_qualname: Some(ctx.module.clone()),
@@ -586,12 +694,15 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return;
     }
-    // When full resolution fails for a dotted/scoped call (e.g. `db.insert(...)`),
-    // emit the bare method name as target_qualname rather than dropping the target.
-    // The bare-method-name recovery machinery (incoming_edges_by_qualname_pattern)
-    // then surfaces the caller for upstream/impact analysis, giving Rust the same
-    // reach as Python, C#, and Go. Fully-resolved targets are left untouched.
-    let target = resolve_call_target(&raw, ctx).or_else(|| {
+    // Collapsed once here so a multi-line chain feeds both tiers below the
+    // same shape the single-line form would.
+    let collapsed = collapse_call_target_whitespace(&raw);
+    let import_candidates = import_qualified_candidates(&collapsed, ctx);
+    // When full resolution fails for a dotted call (e.g. `db.insert(...)`),
+    // emit the bare method name as target_qualname rather than dropping the
+    // target, giving Rust the same reach as Python, C#, and Go. Fully-resolved
+    // targets are left untouched.
+    let target = resolve_call_target(&collapsed, ctx).or_else(|| {
         call_target_parts(function_node, source)
             .filter(|parts| parts.receiver.is_some())
             .map(|parts| parts.name)
@@ -604,10 +715,15 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         kind: "CALLS".to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
         target_qualname: target,
+        import_candidates,
         detail,
         evidence_snippet: snippet,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
+        // A bare identifier callee (`foo()`) vs. anything else
+        // (`self.foo()`, `Type::method()`, `obj.foo()`) — see
+        // `EdgeInput::bare_call`'s doc.
+        bare_call: function_node.kind() == "identifier",
         ..Default::default()
     });
 }
@@ -1094,7 +1210,8 @@ fn handler_name_from_expr(node: Node<'_>, ctx: &Context, source: &str) -> Option
     if raw.is_empty() {
         return None;
     }
-    resolve_call_target(&raw, ctx).or(Some(raw))
+    let collapsed = collapse_call_target_whitespace(&raw);
+    resolve_call_target(&collapsed, ctx).or(Some(raw))
 }
 
 fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
@@ -1548,8 +1665,64 @@ fn http_client_label(receiver: Option<&str>, full: &str) -> Option<&'static str>
     None
 }
 
+/// Import-tier candidates for a bare call `raw`: the targets this scope's
+/// `use` bound it to, unless the current function shadows it
+/// (`collect_shadowed_names`).
+fn import_qualified_candidates(raw: &str, ctx: &Context) -> Vec<String> {
+    if raw.is_empty() || raw.contains("::") || raw.contains('.') {
+        return Vec::new();
+    }
+    if ctx.shadowed_names.contains(raw) || ctx.shadowed_names.contains("*") {
+        return Vec::new();
+    }
+    ctx.imports.get(raw).cloned().unwrap_or_default()
+}
+
+/// Names a bare call in this function must not get an import candidate for:
+/// any name that occurs in the body (excluding nested `fn` items) other than
+/// as a call's callee — a pattern binding, value use or in-function `use`.
+/// A glob `use` inside the body adds `*`, which suppresses every name.
+/// Over-suppression only falls back to the name tiers; it never mis-binds.
+fn collect_shadowed_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "function_item" {
+            continue; // its own, independent analysis
+        }
+        if child.kind() == "use_wildcard" {
+            out.insert("*".to_string());
+        } else if matches!(child.kind(), "identifier" | "shorthand_field_identifier")
+            && !is_call_callee(child)
+        {
+            out.insert(node_text(child, source));
+        }
+        collect_shadowed_names(child, source, out);
+    }
+}
+
+/// Whether `node` is exactly the `function` field of its parent
+/// `call_expression` — a bare `helper` in `helper()`, but not in
+/// `helper(x)`'s arguments, `let helper = ...`, `Some(helper)`, etc.
+fn is_call_callee(node: Node<'_>) -> bool {
+    node.parent().is_some_and(|parent| {
+        parent.kind() == "call_expression" && parent.child_by_field_name("function") == Some(node)
+    })
+}
+
+/// Apply `PROFILE.normalize_import_target` to a raw import/call target,
+/// keeping it unchanged when it needed no rewrite (already absolute, e.g.
+/// `crate::...`, or a plain name).
+fn normalized_import_target(raw: String, module: &str) -> String {
+    PROFILE
+        .normalize_import_target
+        .and_then(|rewrite| rewrite(&raw, module))
+        .unwrap_or(raw)
+}
+
+/// Resolve a call's target text (already whitespace-collapsed — see
+/// `collapse_call_target_whitespace`) to an absolute qualname, or `None`
+/// when it isn't a shape this extractor can qualify.
 fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
-    let raw = raw.trim();
     if raw.is_empty() || !is_simple_call_target(raw) {
         return None;
     }
@@ -1569,6 +1742,17 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
             }
             return Some(format!("{container}::{rest}"));
         }
+    }
+    // Module-relative path prefixes, independent of any enclosing
+    // impl/trait: an impl introduces no module scope of its own, so
+    // `super::` (and top-level `self::`, i.e. outside the container branch
+    // above, which already claimed `self::`/`Self::` as impl-relative) are
+    // always relative to `ctx.module`, the *lexical* module the call site
+    // sits in.
+    if let Some(rewrite) = PROFILE.normalize_import_target
+        && let Some(target) = rewrite(raw, &ctx.module)
+    {
+        return Some(target);
     }
     if raw.contains("::") {
         return Some(raw.to_string());
@@ -1664,35 +1848,144 @@ fn qualify_type_name(module: &str, type_name: &str) -> String {
     format!("{module}::{type_name}")
 }
 
-fn extract_signature(node: Node<'_>, source: &str) -> Option<String> {
+/// Whether `node` (a `function_item`) carries a leading `pub`/`pub(...)`
+/// visibility modifier — tree-sitter-rust exposes it as a direct
+/// `visibility_modifier` child regardless of which `pub(...)` form is
+/// used. Absence means module-private: only callers in the same file can
+/// see it (see `db::resolver::VisibilityRule::Recorded`, issue #75).
+/// `pub(crate)`/`pub(super)`/etc. are all treated as public here — lidx
+/// doesn't model crate boundaries, so the distinction between them doesn't
+/// change which calls should be allowed to bind.
+fn has_pub_visibility(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .any(|c| c.kind() == "visibility_modifier")
+}
+
+/// Attribute short names (the identifier after the last `::`, e.g. `test`
+/// for both `#[test]` and `#[tokio::test]`) that mark a function as a test.
+/// `signature` is the only place a Rust attribute reaches
+/// `test_detection::is_test_symbol` -- see `test_attribute_prefix` and
+/// issue #67 finding 1.
+const TEST_ATTRIBUTE_NAMES: &[&str] = &["test", "rstest"];
+
+/// Renders any test-marking attribute in `attributes` (see
+/// `TEST_ATTRIBUTE_NAMES`) back out as `#[full_name]\n...` so
+/// `extract_signature` can prefix it onto the signature, giving
+/// `test_detection::is_test_symbol`'s signature check something to see.
+/// Attribute arguments (e.g. `#[rstest(case(1, 2))]`) are dropped -- only
+/// presence matters here.
+fn test_attribute_prefix(attributes: &[Node<'_>], source: &str) -> Option<String> {
+    let mut prefix = String::new();
+    for info in attribute_infos(attributes, source) {
+        if TEST_ATTRIBUTE_NAMES.contains(&info.short_name.as_str()) {
+            prefix.push_str(&format!("#[{}]\n", info.full_name));
+        }
+    }
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix)
+    }
+}
+
+fn extract_signature(node: Node<'_>, source: &str, attributes: &[Node<'_>]) -> Option<String> {
     let params = node
         .child_by_field_name("parameters")
         .map(|n| node_text(n, source));
     let return_type = node
         .child_by_field_name("return_type")
         .map(|n| node_text(n, source));
-    match (params, return_type) {
+    let base = match (params, return_type) {
         (Some(p), Some(r)) => Some(format!("{p} -> {r}")),
         (Some(p), None) => Some(p),
         _ => None,
+    };
+    match (test_attribute_prefix(attributes, source), base) {
+        (Some(prefix), Some(base)) => Some(format!("{prefix}{base}")),
+        (Some(prefix), None) => Some(prefix),
+        (None, base) => base,
     }
 }
 
-fn parse_use_declaration(text: &str) -> Vec<String> {
+/// This scope's *own* `use`/`pub use` bindings, keyed by the name each
+/// introduces — direct children of `scope` (a `source_file` or a `mod`'s
+/// `declaration_list`) only, not recursing into a nested `mod`/`impl`/
+/// `trait`/function body: each of those is a separate scope with its own
+/// bindings (a Rust module doesn't inherit its parent's `use`s), collected
+/// separately when that scope is entered (see `extract`, `handle_mod`).
+/// `self::`/`super::` targets are normalized against `module` (this
+/// scope's own qualname) via `PROFILE.normalize_import_target`, shared
+/// with `resolve_call_target`'s call-path rewrite.
+fn collect_use_bindings(
+    scope: Node<'_>,
+    source: &str,
+    module: &str,
+) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    let mut cursor = scope.walk();
+    for child in scope.named_children(&mut cursor) {
+        if !matches!(child.kind(), "use_declaration" | "use_item") {
+            continue;
+        }
+        let text = node_text(child, source);
+        for (bound, raw_target) in parse_use_bindings(&text) {
+            let target = normalized_import_target(raw_target, module);
+            let entry = out.entry(bound).or_default();
+            if !entry.contains(&target) {
+                entry.push(target);
+            }
+        }
+    }
+    out
+}
+
+/// Strip a `use` declaration's leading visibility (`pub`, `pub(crate)`,
+/// `pub(super)`, `pub(self)`, `pub(in some::path)`) and the `use` keyword
+/// itself. `None` when `text` (already newline-collapsed and
+/// semicolon-trimmed) isn't a `use` declaration at all.
+fn strip_use_prefix(text: &str) -> Option<&str> {
+    let rest = text.trim_start();
+    let rest = match rest.strip_prefix("pub") {
+        Some(after_pub) => {
+            let after_pub = after_pub.trim_start();
+            match after_pub.strip_prefix('(') {
+                Some(paren_rest) => {
+                    let close = paren_rest.find(')')?;
+                    paren_rest[close + 1..].trim_start()
+                }
+                None => after_pub,
+            }
+        }
+        None => rest,
+    };
+    rest.strip_prefix("use ")
+}
+
+/// Parse a `use` declaration's text into `(bound_name, raw_target)` pairs —
+/// the name it introduces into scope, and the target as written (still
+/// `self::`/`super::`-relative when it is; callers normalize that via
+/// `normalized_import_target`). The one `use`-tree parser, shared by
+/// `handle_use` (IMPORTS edges) and `collect_use_bindings` (the CALLS
+/// import tier's candidates).
+fn parse_use_bindings(text: &str) -> Vec<(String, String)> {
     let cleaned = text.replace('\n', " ");
     let cleaned = cleaned.trim().trim_end_matches(';');
-    let rest = cleaned
-        .strip_prefix("pub use ")
-        .or_else(|| cleaned.strip_prefix("use "))
-        .unwrap_or(cleaned)
-        .trim();
+    let Some(rest) = strip_use_prefix(cleaned) else {
+        return Vec::new();
+    };
+    let rest = rest.trim();
     if rest.is_empty() {
         return Vec::new();
     }
-    expand_use_tree(rest)
+    expand_use_bindings(rest)
 }
 
-fn expand_use_tree(input: &str) -> Vec<String> {
+/// Expands a `use` tree fragment (post visibility/`use ` prefix stripping)
+/// into `(bound_name, raw_target)` pairs. A glob (`foo::*`) binds no single
+/// name — its bound name comes back as `"*"`, which can never collide with
+/// a real Rust identifier, so it's harmless as a map key nobody looks up.
+fn expand_use_bindings(input: &str) -> Vec<(String, String)> {
     let input = input.trim();
     if input.is_empty() {
         return Vec::new();
@@ -1711,22 +2004,24 @@ fn expand_use_tree(input: &str) -> Vec<String> {
             } else {
                 format!("{base}::{item}")
             };
-            results.extend(expand_use_tree(&combined));
+            results.extend(expand_use_bindings(&combined));
         }
         return results;
     }
 
-    let main = if let Some((left, _)) = input.split_once(" as ") {
-        left.trim()
-    } else {
-        input
+    let (main, alias) = match input.split_once(" as ") {
+        Some((left, right)) => (left.trim(), Some(right.trim())),
+        None => (input, None),
     };
     let main = main.trim_end_matches("::self");
     if main.is_empty() {
-        Vec::new()
-    } else {
-        vec![main.to_string()]
+        return Vec::new();
     }
+    let bound = match alias {
+        Some(alias) if !alias.is_empty() => alias.to_string(),
+        _ => main.rsplit("::").next().unwrap_or(main).to_string(),
+    };
+    vec![(bound, main.to_string())]
 }
 
 fn split_outer_braces(input: &str) -> Option<(String, String)> {

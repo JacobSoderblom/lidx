@@ -1,0 +1,74 @@
+# Golden expected-edges fixture: tests/fixtures/golden/go
+#
+# Format, xfail marker, resolution-kind column and scope: see
+# tests/fixtures/golden/python/expected_edges.txt and tests/common/golden.rs.
+# Only CALLS edges are scored.
+#
+# Qualnames are <dir>/<file stem>.<name>: lidx models a Go file, not a
+# package, as the module.
+#
+# Baseline measured 2026-09-23: precision 1.0 (5/5), recall 1.0 (5/5),
+# 6 known-failing lines. After #75 (stricter name fallback and visibility
+# rules): precision 1.0 (8/8), recall 1.0 (8/8), 6 known-failing -- the two
+# new UNRESOLVED lines below exercise cases that resolved *wrongly* before
+# #75 (see that commit's PR description for what each one used to bind to).
+
+# Plain call to an unexported same-file function. other.localUtil is a
+# same-named decoy.
+caller/caller.Entry CALLS caller/caller.localUtil exact
+
+# Unexported function in another file of the same package. Lands on the
+# right target via the bare_name fallback, so no tier is pinned.
+caller/caller.CallSamePackageOtherFile CALLS caller/sibling.siblingUtil
+
+# Package-qualified call to an exported function across packages.
+# other.FormatGreeting is a same-named decoy.
+caller/caller.CallImportedHelper CALLS helper/helper.FormatGreeting  # xfail: pkg.Func calls are not bound through the import path
+
+# Exported function calling an unexported one in its own package.
+# other.decorate is a same-named decoy.
+helper/helper.FormatGreeting CALLS helper/helper.decorate exact
+
+# Method call on the receiver. LoudGreeter.format is a same-named decoy.
+greeter/greeter.Greeter.Greet CALLS greeter/greeter.Greeter.format  # xfail: receiver-variable method calls are not bound to the receiver type
+
+# Receiver-typed call. LoudGreeter.Greet is a same-named decoy.
+caller/caller.CallReceiverTyped CALLS greeter/greeter.Greeter.Greet  # xfail: parameter types are not used as receiver types
+
+# Promoted method through embedding: Dog embeds Animal. Cat.Speak is a
+# same-named decoy.
+caller/caller.CallInherited CALLS animals/animals.Animal.Speak  # xfail: struct embedding is not treated as inheritance
+
+# Interface call through Speaker. Cat.Say is a same-named decoy.
+caller/caller.CallInterface CALLS animals/animals.Speaker.Say  # xfail: interface methods are not extracted; bare_name guesses Cat.Say
+
+# Ambiguous name: Run exists in ambiguous_a and ambiguous_b; the call is
+# qualified with ambiguous_a.
+caller/caller.CallAmbiguous CALLS ambiguous_a/run.Run  # xfail: pkg.Func calls are not bound through the import path
+
+# External call: fmt is never indexed, so this binds to the external stub
+# symbol (issue #80) instead of staying unresolved.
+caller/caller.CallExternal CALLS ext:fmt.Sprint external
+
+# Cross-package incoming call into caller.Entry. Lands on the right
+# target via the bare_name fallback, so no tier is pinned.
+downstream/downstream.UseEntry CALLS caller/caller.Entry
+
+# --- Issue #75: stricter name fallback and visibility rules ---
+
+# Plain call to an unexported function in its own package -- unaffected
+# by the new visibility guard (same package).
+secretpkg/secret.CallLocally CALLS secretpkg/secret.secretUtil exact
+
+# Bare, unqualified call to secretUtil, whose only definition
+# (secretpkg.secretUtil) is unexported and in a different package. Before
+# #75 this was the sole same-language candidate the bare-name fallback
+# found and bound to -- wrong, since an unexported name is not visible
+# outside its own package. #75's visibility guard must refuse it.
+prober/prober.CallRemotely CALLS UNRESOLVED
+
+# Bare, receiver-less call to Process, whose only definition
+# (Widget.Process) is a method. Before #75 the bare-name fallback bound to
+# it anyway -- wrong, since a receiver-less call can never dispatch to an
+# instance method. #75's bare-call guard must refuse it.
+bare_call_pkg/bare_call.BareCaller CALLS UNRESOLVED

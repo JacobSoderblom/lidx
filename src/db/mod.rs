@@ -1,6 +1,7 @@
 use crate::config::Config;
-use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::differ::SymbolDiff;
+#[cfg(test)]
+use crate::indexer::extract::ReceiverType;
 use crate::indexer::extract::{EdgeInput, SymbolInput};
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use crate::model::{Edge, GraphVersion, Symbol};
@@ -18,6 +19,7 @@ mod co_change;
 mod graph_query;
 mod migrations;
 mod overview;
+pub(crate) mod resolver;
 
 #[derive(Debug, Clone)]
 pub struct ModuleSummaryEntry {
@@ -84,6 +86,50 @@ pub struct Db {
     read_pool: Pool<SqliteConnectionManager>,
 }
 
+/// Number of most-recent graph versions whose `symbols`/`edges` rows survive
+/// `prune_old_graph_versions`. `carry_forward_files` (reindex's unchanged-file
+/// fast path) is the only code that ever reads a `graph_version` other than
+/// "current" for symbol/edge rows, and it only ever reads one version back
+/// (`previous_graph_version`); the historical-impact, co-change and git-mining
+/// features (src/impact/layers/historical.rs, src/db/co_change.rs,
+/// src/git_mining.rs) read the version-independent `co_changes` table or git
+/// itself, never old `symbols`/`edges` rows. 3 keeps that one required version
+/// plus a spare for an in-flight reader that captured "current" just before a
+/// reindex advanced it.
+pub const DEFAULT_GRAPH_VERSION_RETENTION: i64 = 3;
+
+/// Only run `VACUUM` when pruning actually freed at least this many bytes.
+/// `VACUUM` rewrites the whole file, which is expensive on a large database;
+/// a reindex that pruned nothing (or one old, mostly-carried-forward version)
+/// shouldn't pay that cost every time.
+const VACUUM_RECLAIM_THRESHOLD_BYTES: i64 = 10 * 1024 * 1024;
+
+/// One `carry_forward_files` `unresolved_references` row awaiting remap to
+/// `to_version`'s edge/symbol ids -- a named struct rather than a tuple,
+/// since it's wide enough to trip `clippy::type_complexity` (same reasoning
+/// as `resolver::StoreRetryRow`/`NullTargetEdgeRow`).
+struct CarriedUnresolvedRow {
+    old_edge_id: i64,
+    old_source_symbol_id: Option<i64>,
+    file_id: i64,
+    edge_kind: String,
+    reference_name: Option<String>,
+    name_tail: String,
+    reason: String,
+    import_candidates: Option<String>,
+    detail: Option<String>,
+    evidence_snippet: Option<String>,
+    evidence_start_line: Option<i64>,
+    evidence_end_line: Option<i64>,
+    confidence: Option<f64>,
+    commit_sha: Option<String>,
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    event_ts: Option<i64>,
+    receiver_type: Option<String>,
+    bare_call: bool,
+}
+
 impl Db {
     pub fn new(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
@@ -148,12 +194,25 @@ impl Db {
         self.write_conn.lock().unwrap()
     }
 
+    /// Every real, currently-live file -- both of this method's callers
+    /// (`Indexer::changed_files`, `Indexer::reindex`) compare it against a
+    /// filesystem scan to decide what's added/modified/deleted, so issue
+    /// #80's single synthetic external pseudo-file (`Resolver::
+    /// external_file_id`, `files.language = 'external'`) is excluded here:
+    /// it never appears in a filesystem scan (it isn't a real file), so
+    /// either caller would otherwise treat it as permanently "deleted" on
+    /// every single reindex -- and `Db::mark_file_deleted` stamping its
+    /// `deleted_version` with the *current* graph_version would make every
+    /// stub symbol on it invisible to any query that also checks its own
+    /// file's `deleted_version` (`Resolver::same_lang_lookup`'s candidate
+    /// query, `dead_symbols`, ...) starting in that very version.
     pub fn list_files(&self, graph_version: i64) -> Result<Vec<FileRecord>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, path, hash, language, deleted_version
              FROM files
-             WHERE deleted_version IS NULL OR deleted_version > ?
+             WHERE (deleted_version IS NULL OR deleted_version > ?)
+               AND language != 'external'
              ORDER BY path",
         )?;
         let rows = stmt.query_map(params![graph_version], |row| {
@@ -247,10 +306,16 @@ impl Db {
         Ok(())
     }
 
-    /// Delete edges for a file (helper for incremental updates)
+    /// Delete edges for a file (helper for incremental updates), plus the
+    /// file's unresolved-reference store rows: a pending row (`edge_id` NULL)
+    /// has no edge to cascade from, so it would otherwise outlive a re-sync.
     pub fn delete_edges_for_file(&self, file_id: i64, graph_version: i64) -> Result<()> {
         self.conn().execute(
             "DELETE FROM edges WHERE file_id = ? AND graph_version = ?",
+            params![file_id, graph_version],
+        )?;
+        self.conn().execute(
+            "DELETE FROM unresolved_references WHERE file_id = ? AND graph_version = ?",
             params![file_id, graph_version],
         )?;
         Ok(())
@@ -262,26 +327,10 @@ impl Db {
     /// - `update_file_symbols()` for symbols (Phase 3)
     /// - `delete_edges_for_file()` + `insert_edges()` for edges
     pub fn delete_symbols_edges_for_file(&self, file_id: i64, graph_version: i64) -> Result<()> {
-        self.conn().execute(
-            "DELETE FROM edges WHERE file_id = ? AND graph_version = ?",
-            params![file_id, graph_version],
-        )?;
-        // NULL out edges in other files that reference this file's symbols BEFORE
-        // deleting them. SQLite reuses freed rowids (INTEGER PRIMARY KEY without
-        // AUTOINCREMENT), so a reference that survives the deletion could silently
-        // re-point at an unrelated symbol indexed later in the same sync.
-        for column in ["source_symbol_id", "target_symbol_id"] {
-            self.conn().execute(
-                &format!(
-                    "UPDATE edges SET {column} = NULL
-                     WHERE {column} IN (
-                         SELECT id FROM symbols WHERE file_id = ?1 AND graph_version = ?2
-                     )
-                     AND graph_version = ?2 AND file_id != ?1"
-                ),
-                params![file_id, graph_version],
-            )?;
-        }
+        self.delete_edges_for_file(file_id, graph_version)?;
+        // Deleting these symbols nulls any other file's edge that still
+        // references one of them via `edges`' `ON DELETE SET NULL` foreign
+        // key (issue #76) -- no manual nulling needed here.
         self.conn().execute(
             "DELETE FROM symbols WHERE file_id = ? AND graph_version = ?",
             params![file_id, graph_version],
@@ -291,6 +340,535 @@ impl Db {
             params![file_id],
         )?;
         Ok(())
+    }
+
+    /// Carry forward symbols, edges, and symbol_metrics for files whose content
+    /// hash is unchanged between `from_version` and `to_version`, instead of
+    /// re-parsing them.
+    ///
+    /// `symbols.id` is `INTEGER PRIMARY KEY`, so a plain `INSERT ... SELECT` gives
+    /// the copied rows fresh ids; `stable_id` is preserved on the copy, which is
+    /// what lets the edge and symbol_metrics copies below re-target the new rows
+    /// instead of the old (now stale) ones. Edge endpoints and symbol_metrics'
+    /// `symbol_id` are remapped the same way: joining each old row's symbol to
+    /// whichever `to_version` row shares its `stable_id`. `file_metrics` needs no
+    /// such copy — it's keyed by `file_id` alone (no `graph_version` column), and
+    /// `files.id` doesn't change across versions, so an unchanged file's existing
+    /// row is already correctly attached.
+    ///
+    /// Callers must run this only after every `to_version` symbol write for this
+    /// reindex has happened, including freshly re-parsed files — a carried edge
+    /// whose target lives in a re-parsed file won't resolve until that file's new
+    /// symbol row exists.
+    ///
+    /// Returns `(symbols_copied, edges_copied)`.
+    pub fn carry_forward_files(
+        &self,
+        file_ids: &[i64],
+        from_version: i64,
+        to_version: i64,
+    ) -> Result<(usize, usize)> {
+        if file_ids.is_empty() {
+            return Ok((0, 0));
+        }
+
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let placeholders = vec!["?"; file_ids.len()].join(",");
+
+        let symbols_copied = {
+            let sql = format!(
+                "INSERT INTO symbols
+                    (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                     start_byte, end_byte, signature, docstring, graph_version, commit_sha, stable_id, visibility)
+                 SELECT file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                        start_byte, end_byte, signature, docstring, ?, commit_sha, stable_id, visibility
+                 FROM symbols
+                 WHERE graph_version = ? AND file_id IN ({placeholders})"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+                vec![Box::new(to_version), Box::new(from_version)];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            tx.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            )?
+        };
+
+        // Issue #80: external stub symbols (`kind = 'external'`) aren't
+        // owned by any of `file_ids` -- they all live on the one synthetic
+        // external pseudo-file (`Resolver::external_file_id`), never a
+        // scanned repo file -- so the per-file copy above never carries
+        // them forward. But an edge from one of these carried files into a
+        // stub, copied by `edges_sql` below, still needs that stub to
+        // already exist in `to_version` for its stable_id-based remap to
+        // find. Carry every stub in `from_version` forward unconditionally
+        // (not just ones these particular files call): cheap (stubs are
+        // few), and simpler than computing which ones this batch's carried
+        // edges actually still reference. `ON CONFLICT DO NOTHING` against
+        // the `(graph_version, qualname)` partial unique index (schema
+        // v20) makes this a no-op wherever `Indexer::reindex`'s fresh-file
+        // edge loop -- which runs before this function -- already created
+        // the same qualname's stub in `to_version`. A stub with no
+        // surviving caller after this reindex is swept by
+        // `Db::prune_orphan_external_symbols` in the repair pass, same as
+        // a fresh reindex would simply never have created it.
+        let stubs_copied = tx.execute(
+            "INSERT INTO symbols
+                (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                 start_byte, end_byte, signature, docstring, graph_version, commit_sha, stable_id, visibility)
+             SELECT file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                    start_byte, end_byte, signature, docstring, ?, commit_sha, stable_id, visibility
+             FROM symbols
+             WHERE graph_version = ? AND kind = 'external'
+             ON CONFLICT DO NOTHING",
+            params![to_version, from_version],
+        )?;
+        let symbols_copied = symbols_copied + stubs_copied;
+
+        // Issue #79: whether any of these carried files have a *Bridge Edge
+        // kind* stored unresolved reference to carry forward -- the only
+        // shape left needing the edge-id remap below, since a pending
+        // (non-Bridge-Edge-kind) reference has no edge to remap at all (see
+        // the plain copy further down). The common carry-forward has none,
+        // so this stays the cheap, unchanged `execute` path below; only
+        // when it's true do we pay for the ordered `RETURNING`-based
+        // edge-id remap the copy needs.
+        let has_bridge_unresolved: bool = {
+            let sql = format!(
+                "SELECT EXISTS(SELECT 1 FROM unresolved_references
+                 WHERE graph_version = ? AND edge_id IS NOT NULL AND file_id IN ({placeholders}))"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(from_version)];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            tx.query_row(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                |row| row.get(0),
+            )?
+        };
+
+        // ponytail: an edge endpoint with no stable_id match in `to_version`
+        // (deleted target, or a stable_id collision) is copied with that endpoint
+        // NULL rather than dropped — the same best-effort contract the rest of the
+        // edge-resolution code (insert_edges' fuzzy fallback, the store-driven
+        // repair pass in db::resolver) already has for unresolved targets.
+        let edges_sql = format!(
+            "INSERT INTO edges
+                (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
+                 evidence_snippet, evidence_start_line, evidence_end_line, confidence,
+                 graph_version, commit_sha, trace_id, span_id, event_ts,
+                 receiver_type, resolution_kind, import_candidates, bare_call)
+             SELECT
+                e.file_id,
+                (SELECT ns.id FROM symbols ns
+                    WHERE ns.stable_id = src.stable_id AND ns.graph_version = ? LIMIT 1),
+                (SELECT nt.id FROM symbols nt
+                    WHERE nt.stable_id = tgt.stable_id AND nt.graph_version = ? LIMIT 1),
+                e.kind, e.target_qualname, e.detail, e.evidence_snippet,
+                e.evidence_start_line, e.evidence_end_line, e.confidence,
+                ?, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                e.receiver_type, e.resolution_kind, e.import_candidates, e.bare_call
+             FROM edges e
+             LEFT JOIN symbols src ON src.id = e.source_symbol_id
+             LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND e.file_id IN ({placeholders})"
+        );
+
+        // Old->new edge id map, populated only on the `has_unresolved` path
+        // below (an edge has no other cross-version identity to key a
+        // remap on, unlike a symbol's `stable_id`) -- empty otherwise.
+        let mut edge_id_map: HashMap<i64, i64> = HashMap::new();
+
+        let edges_copied = if !has_bridge_unresolved {
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                Box::new(to_version),
+                Box::new(to_version),
+                Box::new(to_version),
+                Box::new(from_version),
+            ];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            tx.execute(
+                &edges_sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            )?
+        } else {
+            // This batch has Bridge Edge kind store rows to carry (see
+            // `has_bridge_unresolved` above). `edges.id` is a plain
+            // autoincrement rowid with no
+            // stable, cross-version identity of its own (unlike a symbol's
+            // `stable_id`), so the only way to learn which new row a given
+            // old row became is to sort both queries identically
+            // (`ORDER BY e.id ASC`) and pair them up position-by-position:
+            // the ordered `INSERT ... SELECT` assigns new rowids in ascending
+            // select order, so the Nth smallest new id is the copy of the Nth
+            // id in `old_edge_ids` below. `RETURNING` itself emits rows in an
+            // arbitrary order (SQLite docs), hence the sort. Both queries run
+            // back to back in this same transaction with no intervening write
+            // to `edges`, so nothing can change the set between them.
+            let old_edge_ids: Vec<i64> = {
+                let sql = format!(
+                    "SELECT e.id FROM edges e
+                     WHERE e.graph_version = ? AND e.file_id IN ({placeholders})
+                     ORDER BY e.id ASC"
+                );
+                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(from_version)];
+                for id in file_ids {
+                    params.push(Box::new(*id));
+                }
+                let mut stmt = tx.prepare(&sql)?;
+                let rows = stmt.query_map(
+                    rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                    |row| row.get(0),
+                )?;
+                rows.collect::<rusqlite::Result<Vec<i64>>>()?
+            };
+
+            let mut new_edge_ids: Vec<i64> = {
+                let ordered_sql = format!("{edges_sql} ORDER BY e.id ASC RETURNING id");
+                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                    Box::new(to_version),
+                    Box::new(to_version),
+                    Box::new(to_version),
+                    Box::new(from_version),
+                ];
+                for id in file_ids {
+                    params.push(Box::new(*id));
+                }
+                let mut stmt = tx.prepare(&ordered_sql)?;
+                let rows = stmt.query_map(
+                    rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                    |row| row.get(0),
+                )?;
+                rows.collect::<rusqlite::Result<Vec<i64>>>()?
+            };
+
+            new_edge_ids.sort_unstable();
+            let edges_copied = new_edge_ids.len();
+            edge_id_map = old_edge_ids.into_iter().zip(new_edge_ids).collect();
+            edges_copied
+        };
+
+        // Copy `symbol_metrics` for the symbols just copied above, remapped from
+        // each old symbol id to its `to_version` counterpart by `stable_id` (the
+        // same key the edge copy above uses). Without this, an unchanged file's
+        // metrics stay attached to the old, soon-to-be-pruned version's symbol
+        // ids and metrics-backed queries (top_complexity, dead_symbols, ...) see
+        // none for the current version.
+        //
+        // ponytail: unlike edges' nullable endpoints, `symbol_metrics.symbol_id`
+        // is `NOT NULL UNIQUE`, so a row whose old symbol has no `stable_id`
+        // match in `to_version` (NULL `stable_id`, or a collision the edge copy's
+        // `LIMIT 1` didn't happen to pick) is dropped rather than inserted with a
+        // NULL/dangling id. Ceiling: that symbol's metrics are lost for this
+        // version instead of merely stale; the same rare conditions already make
+        // its edges best-effort-NULL above.
+        {
+            let sql = format!(
+                "INSERT INTO symbol_metrics (symbol_id, file_id, loc, complexity, duplication_hash)
+                 SELECT
+                    (SELECT ns.id FROM symbols ns
+                        WHERE ns.stable_id = os.stable_id AND ns.graph_version = ? LIMIT 1),
+                    sm.file_id, sm.loc, sm.complexity, sm.duplication_hash
+                 FROM symbol_metrics sm
+                 JOIN symbols os ON os.id = sm.symbol_id
+                 WHERE os.graph_version = ? AND os.file_id IN ({placeholders})
+                   AND (SELECT ns.id FROM symbols ns
+                        WHERE ns.stable_id = os.stable_id AND ns.graph_version = ? LIMIT 1) IS NOT NULL"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+                vec![Box::new(to_version), Box::new(from_version)];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            // The trailing `IS NOT NULL` guard's `?` binds after the `IN (...)`
+            // placeholders above it in the SQL text.
+            params.push(Box::new(to_version));
+            tx.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            )?;
+        }
+
+        // Issue #79: carry each carried file's stored unresolved reference
+        // forward too, remapped to `to_version`. The store no longer keys
+        // on a live edge (self-contained now), so this splits into two
+        // independent shapes:
+        //
+        // - a pending (non-Bridge-Edge-kind) row has no edge at all -- a
+        //   plain row copy, remapped by `stable_id` exactly like
+        //   `symbol_metrics` above, no edge-id bookkeeping needed.
+        // - a Bridge Edge kind row's edge was just copied by the bulk
+        //   `INSERT` above -- it still needs `edge_id_map`'s remap to that
+        //   copy's *new* edge id.
+        //
+        // Without either, a carried-forward reference that was already
+        // unresolved would arrive in `to_version` with no store row at all,
+        // so `reconcile_unresolved_reference_store` would treat it as
+        // never-seen and re-resolve it from scratch on every subsequent
+        // repair pass -- for a large carried-forward set, that's exactly
+        // the untargeted rescan issue #78 removed from the repair sites in
+        // the first place, just relocated.
+        {
+            let sql = format!(
+                "INSERT INTO unresolved_references
+                    (source_symbol_id, file_id, edge_kind, reference_name, name_tail, reason,
+                     import_candidates, detail, evidence_snippet, evidence_start_line,
+                     evidence_end_line, confidence, commit_sha, trace_id, span_id, event_ts,
+                     receiver_type, bare_call, graph_version)
+                 SELECT
+                    (SELECT ns.id FROM symbols ns
+                        WHERE ns.stable_id = os.stable_id AND ns.graph_version = ? LIMIT 1),
+                    ur.file_id, ur.edge_kind, ur.reference_name, ur.name_tail, ur.reason,
+                    ur.import_candidates, ur.detail, ur.evidence_snippet, ur.evidence_start_line,
+                    ur.evidence_end_line, ur.confidence, ur.commit_sha, ur.trace_id, ur.span_id,
+                    ur.event_ts, ur.receiver_type, ur.bare_call, ?
+                 FROM unresolved_references ur
+                 LEFT JOIN symbols os ON os.id = ur.source_symbol_id
+                 WHERE ur.edge_id IS NULL AND ur.graph_version = ? AND ur.file_id IN ({placeholders})"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                Box::new(to_version),
+                Box::new(to_version),
+                Box::new(from_version),
+            ];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            tx.execute(
+                &sql,
+                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            )?;
+        }
+
+        if !edge_id_map.is_empty() {
+            let sql = format!(
+                "SELECT ur.edge_id, ur.source_symbol_id, ur.file_id, ur.edge_kind,
+                        ur.reference_name, ur.name_tail, ur.reason, ur.import_candidates,
+                        ur.detail, ur.evidence_snippet, ur.evidence_start_line,
+                        ur.evidence_end_line, ur.confidence, ur.commit_sha, ur.trace_id,
+                        ur.span_id, ur.event_ts, ur.receiver_type, ur.bare_call
+                 FROM unresolved_references ur
+                 WHERE ur.edge_id IS NOT NULL AND ur.graph_version = ?
+                   AND ur.file_id IN ({placeholders})"
+            );
+            let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(from_version)];
+            for id in file_ids {
+                params.push(Box::new(*id));
+            }
+            let rows: Vec<CarriedUnresolvedRow> = {
+                let mut stmt = tx.prepare(&sql)?;
+                let mapped = stmt.query_map(
+                    rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                    |row| {
+                        Ok(CarriedUnresolvedRow {
+                            old_edge_id: row.get(0)?,
+                            old_source_symbol_id: row.get(1)?,
+                            file_id: row.get(2)?,
+                            edge_kind: row.get(3)?,
+                            reference_name: row.get(4)?,
+                            name_tail: row.get(5)?,
+                            reason: row.get(6)?,
+                            import_candidates: row.get(7)?,
+                            detail: row.get(8)?,
+                            evidence_snippet: row.get(9)?,
+                            evidence_start_line: row.get(10)?,
+                            evidence_end_line: row.get(11)?,
+                            confidence: row.get(12)?,
+                            commit_sha: row.get(13)?,
+                            trace_id: row.get(14)?,
+                            span_id: row.get(15)?,
+                            event_ts: row.get(16)?,
+                            receiver_type: row.get(17)?,
+                            bare_call: row.get(18)?,
+                        })
+                    },
+                )?;
+                mapped.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+
+            let mut remap_symbol_stmt = tx.prepare(
+                "SELECT ns.id FROM symbols os JOIN symbols ns ON ns.stable_id = os.stable_id
+                 WHERE os.id = ? AND ns.graph_version = ? LIMIT 1",
+            )?;
+            let mut insert_unresolved = tx.prepare(resolver::UNRESOLVED_REFERENCE_INSERT_SQL)?;
+
+            for row in rows {
+                let CarriedUnresolvedRow {
+                    old_edge_id,
+                    old_source_symbol_id,
+                    file_id,
+                    edge_kind,
+                    reference_name,
+                    name_tail,
+                    reason,
+                    import_candidates,
+                    detail,
+                    evidence_snippet,
+                    evidence_start_line,
+                    evidence_end_line,
+                    confidence,
+                    commit_sha,
+                    trace_id,
+                    span_id,
+                    event_ts,
+                    receiver_type,
+                    bare_call,
+                } = row;
+                // Not expected to miss (`old_edge_id` came straight from
+                // this same file set's edges), but skip rather than panic
+                // on a stale/foreign-key-orphaned store row.
+                let Some(&new_edge_id) = edge_id_map.get(&old_edge_id) else {
+                    continue;
+                };
+                let new_source_symbol_id: Option<i64> = match old_source_symbol_id {
+                    Some(old_id) => remap_symbol_stmt
+                        .query_row(params![old_id, to_version], |row| row.get(0))
+                        .optional()?,
+                    None => None,
+                };
+                insert_unresolved.execute(params![
+                    new_edge_id,
+                    new_source_symbol_id,
+                    file_id,
+                    edge_kind,
+                    reference_name,
+                    name_tail,
+                    reason,
+                    import_candidates,
+                    detail,
+                    evidence_snippet,
+                    evidence_start_line,
+                    evidence_end_line,
+                    confidence,
+                    commit_sha,
+                    trace_id,
+                    span_id,
+                    event_ts,
+                    receiver_type,
+                    bare_call,
+                    to_version,
+                ])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok((symbols_copied, edges_copied))
+    }
+
+    /// Delete `symbols`/`edges` rows for every graph version older than the
+    /// `keep` most recent ones (see `DEFAULT_GRAPH_VERSION_RETENTION` for why
+    /// `keep` is safe to set below the total version count). `symbol_metrics`
+    /// rows for pruned symbols are removed via `ON DELETE CASCADE` (foreign
+    /// keys are enabled on every connection, see `Db::new`).
+    ///
+    /// `unresolved_references` rows for those versions are deleted
+    /// explicitly rather than left to cascade: a Bridge Edge kind row's
+    /// `edge_id` cascades when its edge is deleted above, but a pending
+    /// (non-Bridge-Edge-kind) row has `edge_id = NULL` (issue #79's
+    /// self-contained store) and no edge to cascade from, and
+    /// `carry_forward_files` copies every pending row forward into each new
+    /// version -- without this, pruned versions' pending rows would never be
+    /// reclaimed and the store would grow unbounded across reindexes.
+    ///
+    /// `graph_versions` (the id/created/commit_sha metadata rows), `files`,
+    /// and `co_changes` are untouched: none of them are duplicated per
+    /// reindex the way `symbols`/`edges`/`unresolved_references` are, so none
+    /// contribute to the unbounded growth this prunes.
+    ///
+    /// The retention boundary is found by position in `graph_versions`
+    /// (Nth most recent id), not by arithmetic on the current version number,
+    /// so it stays correct even if version ids are ever non-contiguous.
+    ///
+    /// Returns `(symbols_deleted, edges_deleted, versions_pruned)`.
+    pub fn prune_old_graph_versions(&self, keep: i64) -> Result<(usize, usize, usize)> {
+        let keep = keep.max(1);
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+
+        let boundary: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM graph_versions ORDER BY id DESC LIMIT 1 OFFSET ?",
+                params![keep - 1],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(boundary) = boundary else {
+            // Fewer than `keep` versions exist yet; nothing to prune.
+            return Ok((0, 0, 0));
+        };
+
+        let versions_pruned: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM graph_versions WHERE id < ?",
+            params![boundary],
+            |row| row.get(0),
+        )?;
+        let edges_deleted = tx.execute(
+            "DELETE FROM edges WHERE graph_version < ?",
+            params![boundary],
+        )?;
+        let symbols_deleted = tx.execute(
+            "DELETE FROM symbols WHERE graph_version < ?",
+            params![boundary],
+        )?;
+        tx.execute(
+            "DELETE FROM unresolved_references WHERE graph_version < ?",
+            params![boundary],
+        )?;
+
+        tx.commit()?;
+        Ok((symbols_deleted, edges_deleted, versions_pruned as usize))
+    }
+
+    /// Bytes SQLite could reclaim from the database file via `VACUUM` right now.
+    pub fn freelist_bytes(&self) -> Result<i64> {
+        let conn = self.conn();
+        let freelist: i64 = conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+        let page_size: i64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+        Ok(freelist * page_size)
+    }
+
+    /// Rebuild the database file to reclaim space freed by deletes. Works in
+    /// WAL mode (supported since SQLite 3.15): as part of `VACUUM`'s commit,
+    /// SQLite truncates the WAL file too, so no separate checkpoint is needed.
+    pub fn vacuum(&self) -> Result<()> {
+        self.conn().execute_batch("VACUUM;")?;
+        Ok(())
+    }
+
+    /// Prune graph versions beyond `DEFAULT_GRAPH_VERSION_RETENTION` and, if
+    /// that freed a meaningful amount of space, reclaim it with `VACUUM`.
+    /// Intended to run automatically at the end of every `reindex()`.
+    ///
+    /// // ponytail: only reachable by running a reindex (see `Indexer::reindex`)
+    /// // — there's no standalone "just prune" CLI/RPC command. Ceiling: a
+    /// // database that's too large/stale for `reindex` to complete (e.g. the
+    /// // scan or carry-forward step itself times out or errors first) has no
+    /// // way to reclaim space without fixing that first. Upgrade path: add a
+    /// // thin `lidx prune --db <path>` subcommand (and/or RPC method) that
+    /// // calls this directly, once that scenario actually comes up.
+    ///
+    /// Returns `(symbols_deleted, edges_deleted, versions_pruned, vacuumed)`.
+    pub fn prune_and_maybe_vacuum(&self) -> Result<(usize, usize, usize, bool)> {
+        let (symbols_deleted, edges_deleted, versions_pruned) =
+            self.prune_old_graph_versions(DEFAULT_GRAPH_VERSION_RETENTION)?;
+
+        let mut vacuumed = false;
+        if versions_pruned > 0 {
+            let reclaimable = self.freelist_bytes().unwrap_or(0);
+            if reclaimable >= VACUUM_RECLAIM_THRESHOLD_BYTES {
+                self.vacuum()?;
+                vacuumed = true;
+            }
+        }
+
+        Ok((symbols_deleted, edges_deleted, versions_pruned, vacuumed))
     }
 
     pub fn insert_symbols(
@@ -403,58 +981,13 @@ impl Db {
         let mut all_symbols =
             Vec::with_capacity(diff.added.len() + diff.modified.len() + diff.unchanged.len());
 
-        // PHASE 1: DELETE removed symbols (by stable_id)
-        // Before deleting, NULL out any edges in other files that reference these
-        // symbols by rowid. If we delete first, SQLite may immediately reuse the
-        // freed rowid for a new symbol (INTEGER PRIMARY KEY without AUTOINCREMENT),
-        // which would make the edges appear valid after the fact.
+        // PHASE 1: DELETE removed symbols (by stable_id). Any edge --
+        // in this file or another -- that still references one of these
+        // rowids gets nulled automatically by `edges`' `ON DELETE SET
+        // NULL` foreign key (issue #76); no manual nulling needed here.
         if !diff.deleted.is_empty() {
             let placeholders = vec!["?"; diff.deleted.len()].join(",");
 
-            // Step 1a: Collect rowids of the symbols about to be deleted
-            let rowid_sql = format!(
-                "SELECT id FROM symbols WHERE stable_id IN ({}) AND graph_version = ?",
-                placeholders
-            );
-            let deleted_rowids: Vec<i64> = {
-                let mut stmt = tx.prepare(&rowid_sql)?;
-                let rows = stmt.query_map(
-                    rusqlite::params_from_iter(
-                        diff.deleted
-                            .iter()
-                            .map(|stable_id| stable_id as &dyn rusqlite::ToSql)
-                            .chain([&graph_version as &dyn rusqlite::ToSql]),
-                    ),
-                    |row| row.get::<_, i64>(0),
-                )?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            };
-
-            // Step 1b: NULL out edges in other files that reference these rowids,
-            // so no dangling reference survives the symbol deletion.
-            if !deleted_rowids.is_empty() {
-                let edge_placeholders = vec!["?"; deleted_rowids.len()].join(",");
-                for column in ["source_symbol_id", "target_symbol_id"] {
-                    tx.execute(
-                        &format!(
-                            "UPDATE edges SET {column} = NULL
-                             WHERE {column} IN ({edge_placeholders})
-                             AND graph_version = ? AND file_id != ?"
-                        ),
-                        rusqlite::params_from_iter(
-                            deleted_rowids
-                                .iter()
-                                .map(|id| id as &dyn rusqlite::ToSql)
-                                .chain([
-                                    &graph_version as &dyn rusqlite::ToSql,
-                                    &file_id as &dyn rusqlite::ToSql,
-                                ]),
-                        ),
-                    )?;
-                }
-            }
-
-            // Step 1c: Delete the symbols
             let delete_sql = format!(
                 "DELETE FROM symbols WHERE stable_id IN ({}) AND graph_version = ?",
                 placeholders
@@ -861,301 +1394,170 @@ impl Db {
             let mut insert_stmt = tx.prepare(
                 "INSERT INTO edges
                  (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail, evidence_snippet,
-                  evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts,
+                  receiver_type, resolution_kind, import_candidates, bare_call)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
-            let mut exact_lookup_stmt =
-                tx.prepare("SELECT id FROM symbols WHERE qualname = ? LIMIT 1")?;
-            // Same-language fuzzy lookup: prefer symbols from files matching source language
-            let mut fuzzy_same_lang_stmt = tx.prepare(
-                "SELECT s.id
-                 FROM symbols s
-                 JOIN files f ON s.file_id = f.id
-                 WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
-                   AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
-                   AND s.graph_version = ?
-                   AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                   AND f.language = ?
-                 ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
-                 LIMIT 1"
+            let mut exact_lookup_stmt = tx.prepare(
+                "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
             )?;
-            // Cross-language fuzzy lookup: fallback for bridge edges only
-            let mut fuzzy_any_lang_stmt = tx.prepare(
-                "SELECT s.id
-                 FROM symbols s
-                 JOIN files f ON s.file_id = f.id
-                 WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
-                   AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
-                   AND s.graph_version = ?
-                   AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                 ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
-                 LIMIT 1"
-            )?;
-            // Look up the source file's language for same-language preference
-            let source_lang: String = tx
+            // Issue #78: one row per `Unresolved` outcome, so
+            // `Db::retry_unresolved_references` can retry it later without
+            // rescanning every NULL-target edge.
+            let mut unresolved_insert_stmt =
+                tx.prepare(resolver::UNRESOLVED_REFERENCE_INSERT_SQL)?;
+            let mut resolver = resolver::Resolver::new(&tx, graph_version)?;
+            // Look up the source file's language and path — same-language
+            // preference and the guarded name-fallback's visibility check
+            // (`resolver::Reference::source_file_path`) respectively.
+            let (source_lang, source_file_path): (String, String) = tx
                 .query_row(
-                    "SELECT language FROM files WHERE id = ?",
+                    "SELECT language, path FROM files WHERE id = ?",
                     params![file_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .unwrap_or_else(|_| "unknown".to_string());
+                .unwrap_or_else(|_| ("unknown".to_string(), String::new()));
 
             for edge in edges {
-                let source_id =
-                    resolve_symbol_id(&edge.source_qualname, symbol_map, &mut exact_lookup_stmt)?;
-                let target_id =
-                    resolve_symbol_id(&edge.target_qualname, symbol_map, &mut exact_lookup_stmt)?
-                        .or_else(|| {
-                            // Fuzzy fallback: try same-language first, then cross-language for bridge edges only
-                            edge.target_qualname.as_ref().and_then(|qn| {
-                                let (method_name, dot_pattern, colons_pattern) =
-                                    fuzzy_qualname_patterns(qn);
-                                // Try same-language first
-                                let same_lang = fuzzy_same_lang_stmt
-                                    .query_row(
-                                        params![
-                                            method_name,
-                                            &dot_pattern,
-                                            &colons_pattern,
-                                            graph_version,
-                                            graph_version,
-                                            &source_lang,
-                                            method_name
-                                        ],
-                                        |row| row.get(0),
-                                    )
-                                    .optional()
-                                    .ok()
-                                    .flatten();
-                                if same_lang.is_some() {
-                                    return same_lang;
-                                }
-                                // Cross-language fallback only for bridge edge kinds
-                                if is_bridge_edge_kind(&edge.kind) {
-                                    fuzzy_any_lang_stmt
-                                        .query_row(
-                                            params![
-                                                method_name,
-                                                &dot_pattern,
-                                                &colons_pattern,
-                                                graph_version,
-                                                graph_version,
-                                                method_name
-                                            ],
-                                            |row| row.get(0),
-                                        )
-                                        .optional()
-                                        .ok()
-                                        .flatten()
-                                } else {
-                                    None
-                                }
-                            })
-                        });
-
-                insert_stmt.execute(params![
-                    file_id,
-                    source_id,
-                    target_id,
-                    &edge.kind,
-                    edge.target_qualname.as_deref(),
-                    edge.detail.as_deref(),
-                    edge.evidence_snippet.as_deref(),
-                    edge.evidence_start_line,
-                    edge.evidence_end_line,
-                    edge.confidence,
+                let source_id = resolve_symbol_id(
+                    &edge.source_qualname,
+                    symbol_map,
+                    &mut exact_lookup_stmt,
                     graph_version,
-                    commit_sha,
-                    edge.trace_id.as_deref(),
-                    edge.span_id.as_deref(),
-                    edge.event_ts,
-                ])?;
-                count += 1;
+                )?;
+                let extracted_receiver_type = edge.receiver_type.as_column();
+                let resolution = resolver.resolve(
+                    &resolver::Reference {
+                        target_qualname: edge.target_qualname.as_deref(),
+                        edge_kind: &edge.kind,
+                        receiver_type: extracted_receiver_type,
+                        import_candidates: &edge.import_candidates,
+                        source_lang: &source_lang,
+                        source_file_path: &source_file_path,
+                        source_qualname: edge.source_qualname.as_deref(),
+                        bare_call: edge.bare_call,
+                    },
+                    symbol_map,
+                )?;
+
+                // Issue #79: `is_bridge_edge_kind`'s kind is always written,
+                // resolved or not -- see its doc for why that's not one
+                // uniform reason (the three actual Bridge Edge pairs need
+                // `target_qualname` for trace_flow's traversal bridging;
+                // CONFIG_SOURCE/CONFIG_READ/CONFIG_BIND for config-URI
+                // lookups; XREF for confidence-gated consumers that read the
+                // edge's text directly). Every other kind is written only
+                // when resolved; an Unresolved outcome for one of those has
+                // no placeholder edge at all, only the `unresolved_references`
+                // row below.
+                let is_bridge = crate::indexer::channel::is_bridge_edge_kind(&edge.kind);
+                let edge_id = if resolution.target_id().is_some() || is_bridge {
+                    insert_stmt.execute(params![
+                        file_id,
+                        source_id,
+                        resolution.target_id(),
+                        &edge.kind,
+                        edge.target_qualname.as_deref(),
+                        edge.detail.as_deref(),
+                        edge.evidence_snippet.as_deref(),
+                        edge.evidence_start_line,
+                        edge.evidence_end_line,
+                        edge.confidence,
+                        graph_version,
+                        commit_sha,
+                        edge.trace_id.as_deref(),
+                        edge.span_id.as_deref(),
+                        edge.event_ts,
+                        resolution.stored_receiver_type(extracted_receiver_type),
+                        resolution.kind_column(),
+                        resolver::encode_import_candidates(&edge.import_candidates),
+                        edge.bare_call,
+                    ])?;
+                    count += 1;
+                    Some(tx.last_insert_rowid())
+                } else {
+                    None
+                };
+
+                if let Some(reason) = resolution.unresolved_reason()
+                    && let Some((reference_name, name_tail)) =
+                        resolver::store_reference_name_and_tail(
+                            edge.target_qualname.as_deref(),
+                            &edge.import_candidates,
+                        )
+                {
+                    unresolved_insert_stmt.execute(params![
+                        edge_id,
+                        source_id,
+                        file_id,
+                        &edge.kind,
+                        reference_name,
+                        name_tail,
+                        reason.as_str(),
+                        resolver::encode_import_candidates(&edge.import_candidates),
+                        edge.detail.as_deref(),
+                        edge.evidence_snippet.as_deref(),
+                        edge.evidence_start_line,
+                        edge.evidence_end_line,
+                        edge.confidence,
+                        commit_sha,
+                        edge.trace_id.as_deref(),
+                        edge.span_id.as_deref(),
+                        edge.event_ts,
+                        resolution.stored_receiver_type(extracted_receiver_type),
+                        edge.bare_call,
+                        graph_version,
+                    ])?;
+                }
             }
         }
         tx.commit()?;
         Ok(count)
     }
 
-    /// Batch re-resolution of existing edges with NULL target_symbol_id
+    /// Set `symbols.visibility` for `file_id`'s symbols in `graph_version`
+    /// from `private_qualnames` (see `ExtractedFile::private_qualnames`):
+    /// `'private'` for a qualname in the list, `NULL` (unrestricted) for
+    /// every other symbol in the file. Always resets the whole file's
+    /// symbols in one statement — not just the ones currently in the
+    /// list — so an incremental re-index that removes a `pub`/`private`
+    /// modifier clears the stale mark rather than leaving it from the
+    /// previous extraction.
     ///
-    /// This method attempts to resolve unresolved edges in two passes:
-    /// 1. Exact match on target_qualname
-    /// 2. Fuzzy suffix matching for remaining NULLs
-    ///
-    /// Processing is done in batches of 1000 rows to avoid long lock holds.
-    pub fn resolve_null_target_edges(&self, graph_version: i64) -> Result<usize> {
-        let mut total_resolved = 0;
-
-        // First pass: exact match
-        let exact_resolved = self.conn().execute(
-            "UPDATE edges SET target_symbol_id = (
-                SELECT s.id FROM symbols s
-                WHERE s.qualname = edges.target_qualname
-                AND s.graph_version = edges.graph_version
-                LIMIT 1
-            )
-            WHERE target_symbol_id IS NULL
-            AND target_qualname IS NOT NULL
-            AND graph_version = ?",
-            params![graph_version],
-        )?;
-        total_resolved += exact_resolved;
-
-        // Second pass: fuzzy suffix matching in batches
-        const BATCH_SIZE: usize = 1000;
-        loop {
-            let mut conn = self.conn();
-            let tx = conn.transaction()?;
-
-            // Find batch of unresolved edges (include source file language and edge kind)
-            let unresolved: Vec<(i64, String, String, String)> = {
-                let mut stmt = tx.prepare(
-                    "SELECT e.id, e.target_qualname, COALESCE(f.language, 'unknown'), e.kind
-                     FROM edges e
-                     JOIN files f ON e.file_id = f.id
-                     WHERE e.target_symbol_id IS NULL
-                     AND e.target_qualname IS NOT NULL
-                     AND e.graph_version = ?
-                     LIMIT ?",
-                )?;
-                let rows = stmt.query_map(params![graph_version, BATCH_SIZE], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                })?;
-                rows.collect::<Result<Vec<_>, _>>()?
-            };
-
-            if unresolved.is_empty() {
-                break;
-            }
-
-            let mut count = 0;
-            {
-                // Same-language fuzzy lookup
-                let mut fuzzy_same_lang_stmt = tx.prepare(
-                    "SELECT s.id
-                     FROM symbols s
-                     JOIN files f ON s.file_id = f.id
-                     WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
-                       AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
-                       AND s.graph_version = ?
-                       AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                       AND f.language = ?
-                     ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
-                     LIMIT 1"
-                )?;
-                // Cross-language fuzzy lookup (for bridge edges only)
-                let mut fuzzy_any_lang_stmt = tx.prepare(
-                    "SELECT s.id
-                     FROM symbols s
-                     JOIN files f ON s.file_id = f.id
-                     WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
-                       AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
-                       AND s.graph_version = ?
-                       AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                     ORDER BY CASE WHEN s.qualname = ? THEN 0 ELSE 1 END, LENGTH(s.qualname) ASC
-                     LIMIT 1"
-                )?;
-
-                let mut update_stmt =
-                    tx.prepare("UPDATE edges SET target_symbol_id = ? WHERE id = ?")?;
-
-                for (edge_id, target_qualname, source_lang, edge_kind) in &unresolved {
-                    let (method_name, dot_pattern, colons_pattern) =
-                        fuzzy_qualname_patterns(target_qualname);
-
-                    // Try same-language first
-                    let resolved = fuzzy_same_lang_stmt
-                        .query_row(
-                            params![
-                                method_name,
-                                &dot_pattern,
-                                &colons_pattern,
-                                graph_version,
-                                graph_version,
-                                source_lang,
-                                method_name
-                            ],
-                            |row| row.get::<_, i64>(0),
-                        )
-                        .optional()?
-                        .or_else(|| {
-                            // Cross-language fallback only for bridge edges
-                            if is_bridge_edge_kind(edge_kind) {
-                                fuzzy_any_lang_stmt
-                                    .query_row(
-                                        params![
-                                            method_name,
-                                            &dot_pattern,
-                                            &colons_pattern,
-                                            graph_version,
-                                            graph_version,
-                                            method_name
-                                        ],
-                                        |row| row.get::<_, i64>(0),
-                                    )
-                                    .optional()
-                                    .ok()
-                                    .flatten()
-                            } else {
-                                None
-                            }
-                        });
-
-                    if let Some(symbol_id) = resolved {
-                        update_stmt.execute(params![symbol_id, edge_id])?;
-                        count += 1;
-                    }
-                }
-            } // stmts dropped here
-
-            tx.commit()?;
-            total_resolved += count;
-
-            if count == 0 {
-                break;
-            }
-        }
-
-        Ok(total_resolved)
-    }
-
-    /// Null out edge source/target symbol ids that reference rowids absent from the
-    /// current graph version's symbols table.
-    ///
-    /// This is necessary after an incremental sync because:
-    /// - Renaming a symbol deletes its old row and inserts a new one with a fresh rowid.
-    /// - Edges in **unchanged** files still carry the old rowid in source_symbol_id /
-    ///   target_symbol_id (no FK enforcement, so they silently dangle).
-    /// - SQLite reuses freed rowids (INTEGER PRIMARY KEY without AUTOINCREMENT), so the
-    ///   dangling id can silently point at a new unrelated symbol.
-    ///
-    /// Setting dangling ids to NULL lets `resolve_null_target_edges` re-resolve them
-    /// by qualname in a subsequent pass.
-    ///
-    /// Returns the number of edges updated.
-    pub fn repair_dangling_symbol_ids(&self, graph_version: i64) -> Result<usize> {
-        let mut total = 0;
-        for column in ["source_symbol_id", "target_symbol_id"] {
-            total += self.conn().execute(
-                &format!(
-                    "UPDATE edges
-                     SET {column} = NULL
-                     WHERE {column} IS NOT NULL
-                       AND graph_version = ?
-                       AND {column} NOT IN (
-                           SELECT id FROM symbols WHERE graph_version = ?
-                       )"
-                ),
-                params![graph_version, graph_version],
+    /// Called once per file, after that file's symbols are inserted/
+    /// updated and before its edges are resolved (visibility is a
+    /// cross-file resolver input — see `db::resolver::VisibilityRule`).
+    pub fn set_private_symbols(
+        &mut self,
+        file_id: i64,
+        graph_version: i64,
+        private_qualnames: &[String],
+    ) -> Result<()> {
+        if private_qualnames.is_empty() {
+            self.conn().execute(
+                "UPDATE symbols SET visibility = NULL
+                 WHERE file_id = ? AND graph_version = ? AND visibility IS NOT NULL",
+                params![file_id, graph_version],
             )?;
+            return Ok(());
         }
-        Ok(total)
+        let placeholders = vec!["?"; private_qualnames.len()].join(",");
+        let sql = format!(
+            "UPDATE symbols
+                SET visibility = CASE WHEN qualname IN ({placeholders}) THEN 'private' ELSE NULL END
+             WHERE file_id = ? AND graph_version = ?"
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = private_qualnames
+            .iter()
+            .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
+            .collect();
+        params.push(Box::new(file_id));
+        params.push(Box::new(graph_version));
+        self.conn().execute(
+            &sql,
+            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+        )?;
+        Ok(())
     }
 
     pub fn upsert_file_metrics(&mut self, file_id: i64, metrics: &FileMetricsInput) -> Result<()> {
@@ -1370,7 +1772,8 @@ impl Db {
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_kind
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE e.graph_version = ?
@@ -1693,45 +2096,15 @@ fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
         trace_id: row.get(13)?,
         span_id: row.get(14)?,
         event_ts: row.get(15)?,
+        resolution_kind: row.get(16)?,
     })
-}
-
-/// Extract the trailing name segment from a qualname, handling both `.` and `::` separators.
-///
-/// Examples:
-/// - `"a.b.process"` → `"process"`
-/// - `"crate::util::helper::process"` → `"process"`
-/// - `"_svc.DeployAsync"` → `"DeployAsync"`
-/// - `"process"` → `"process"` (no separator)
-pub(crate) fn qualname_trailing_name(qn: &str) -> &str {
-    // Find the last occurrence of either '.' or "::"
-    let dot_pos = qn.rfind('.').map(|p| p + 1);
-    let colons_pos = qn.rfind("::").map(|p| p + 2);
-    match (dot_pos, colons_pos) {
-        (Some(d), Some(c)) => &qn[d.max(c)..],
-        (Some(d), None) => &qn[d..],
-        (None, Some(c)) => &qn[c..],
-        (None, None) => qn,
-    }
-}
-
-/// Build the fuzzy suffix-match inputs for a target qualname: the trailing
-/// name (for exact matching) plus LIKE patterns for both `.`- and
-/// `::`-separated qualnames.
-///
-/// Shared by all fuzzy edge-resolution sites (`insert_edges`,
-/// `resolve_null_target_edges`, `lookup_symbol_id_fuzzy`) so the matching
-/// logic cannot drift between them. Deliberately no bare `%name` pattern:
-/// that would let `process` match `reprocess`.
-pub(crate) fn fuzzy_qualname_patterns(qn: &str) -> (&str, String, String) {
-    let name = qualname_trailing_name(qn);
-    (name, format!("%.{name}"), format!("%::{name}"))
 }
 
 fn resolve_symbol_id(
     qualname: &Option<String>,
     symbol_map: &HashMap<String, i64>,
     stmt: &mut rusqlite::Statement<'_>,
+    graph_version: i64,
 ) -> Result<Option<i64>> {
     let name = match qualname.as_ref() {
         Some(name) => name,
@@ -1740,7 +2113,9 @@ fn resolve_symbol_id(
     if let Some(id) = symbol_map.get(name) {
         return Ok(Some(*id));
     }
-    let id = stmt.query_row(params![name], |row| row.get(0)).optional()?;
+    let id = stmt
+        .query_row(params![name, graph_version], |row| row.get(0))
+        .optional()?;
     Ok(id)
 }
 
@@ -1765,7 +2140,11 @@ mod tests {
     ) -> SymbolInput {
         SymbolInput {
             kind: kind.to_string(),
-            name: qualname.split('.').last().unwrap_or(qualname).to_string(),
+            name: qualname
+                .split('.')
+                .next_back()
+                .unwrap_or(qualname)
+                .to_string(),
             qualname: qualname.to_string(),
             start_line,
             start_col: 0,
@@ -1783,6 +2162,20 @@ mod tests {
         source_qualname: &str,
         target_qualname: &str,
     ) -> crate::indexer::extract::EdgeInput {
+        make_test_edge_with_receiver_type(
+            kind,
+            source_qualname,
+            target_qualname,
+            ReceiverType::NotTracked,
+        )
+    }
+
+    fn make_test_edge_with_receiver_type(
+        kind: &str,
+        source_qualname: &str,
+        target_qualname: &str,
+        receiver_type: ReceiverType,
+    ) -> crate::indexer::extract::EdgeInput {
         crate::indexer::extract::EdgeInput {
             kind: kind.to_string(),
             source_qualname: Some(source_qualname.to_string()),
@@ -1795,6 +2188,26 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            receiver_type,
+            import_candidates: Vec::new(),
+            bare_call: false,
+        }
+    }
+
+    fn make_test_edge_with_import_candidates(
+        kind: &str,
+        source_qualname: &str,
+        target_qualname: &str,
+        import_candidates: Vec<String>,
+    ) -> crate::indexer::extract::EdgeInput {
+        crate::indexer::extract::EdgeInput {
+            import_candidates,
+            ..make_test_edge_with_receiver_type(
+                kind,
+                source_qualname,
+                target_qualname,
+                ReceiverType::NotTracked,
+            )
         }
     }
 
@@ -1994,6 +2407,269 @@ mod tests {
             columns.contains(&"stable_id".to_string()),
             "symbols table should have stable_id column after migration"
         );
+    }
+
+    #[test]
+    fn test_database_migration_adds_receiver_type_and_resolution_kind_columns() {
+        let (db, _temp) = create_test_db();
+
+        let conn = db.read_conn().unwrap();
+        let mut stmt = conn.prepare("PRAGMA table_info(edges)").unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(
+            columns.contains(&"receiver_type".to_string()),
+            "edges table should have receiver_type column after migration"
+        );
+        assert!(
+            columns.contains(&"resolution_kind".to_string()),
+            "edges table should have resolution_kind column after migration"
+        );
+        // confidence must be untouched by this migration — it keeps its
+        // pre-existing meaning (Rust CALLS extraction certainty).
+        assert!(columns.contains(&"confidence".to_string()));
+    }
+
+    /// Column names for `table`, read straight from the live schema via
+    /// `PRAGMA table_info`, in table-definition order (which matches
+    /// `SELECT *`'s column order — used below to locate each column's value
+    /// positionally).
+    fn table_columns(db: &Db, table: &str) -> Vec<String> {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    /// Regression guard for the whole *class* of bug behind the
+    /// `receiver_type`/`resolution_kind` data-loss fix above (and, before
+    /// that, `symbol_metrics` being dropped wholesale): `carry_forward_files`
+    /// names its copied columns explicitly in Rust-side SQL, so a column
+    /// added to `symbols`/`edges`/`symbol_metrics` after the fact is silently
+    /// NOT copied unless someone remembers to also update this unrelated
+    /// function.
+    ///
+    /// Rather than hardcoding a second column list here (which could drift
+    /// out of sync with the schema exactly the way the SQL itself did), this
+    /// stamps a unique sentinel into every column `PRAGMA table_info` reports
+    /// for each table — except a small, explicit, commented allowlist — runs
+    /// a real carry-forward, and asserts every one of those columns' values
+    /// survived onto the new graph version. A newly added column that
+    /// `carry_forward_files` doesn't copy comes back NULL and fails loudly,
+    /// naming exactly the table and column at fault.
+    #[test]
+    fn carry_forward_files_copies_every_non_exempt_column() {
+        // Columns intentionally excluded from the generic sentinel-and-verify
+        // sweep below. Each entry is exempt for a specific, different reason
+        // -- none of them are "silently dropped", they just aren't a literal
+        // same-value copy, so a sentinel round-trip check doesn't apply.
+        let exempt: &[(&str, &[&str])] = &[
+            (
+                "symbols",
+                &[
+                    // INTEGER PRIMARY KEY: every copy gets a fresh autoincrement
+                    // id by design (that's how the "old" and "new" rows stay
+                    // distinguishable at all).
+                    "id",
+                    // Set to `to_version` by the copy itself -- carrying a file
+                    // "forward" to a new version *is* changing this column.
+                    "graph_version",
+                    // Used verbatim in the copy's own `WHERE file_id IN (...)`
+                    // filter; stamping it with a sentinel would stop the source
+                    // row from being selected at all instead of exercising the
+                    // bug. It's still carried forward unchanged (`SELECT
+                    // file_id`) -- checked by the real-value `file_id`
+                    // assertion below instead of the generic sentinel sweep.
+                    "file_id",
+                ],
+            ),
+            (
+                "edges",
+                &[
+                    "id",
+                    "graph_version",
+                    // Same reasoning as symbols.file_id above: used in this
+                    // copy's own `WHERE e.file_id IN (...)` filter.
+                    "file_id",
+                    // Remapped via a `stable_id` lookup into the new version's
+                    // symbols (see the "ponytail" comment on
+                    // `carry_forward_files`), not a literal copy of the old
+                    // id -- an endpoint with no match is intentionally carried
+                    // as NULL. Binding correctness for these is covered by the
+                    // dangling-edges query elsewhere, not this test.
+                    "source_symbol_id",
+                    "target_symbol_id",
+                ],
+            ),
+            (
+                "symbol_metrics",
+                &[
+                    "id",
+                    // Same stable_id-based remap as edges' endpoints above.
+                    "symbol_id",
+                    // `FOREIGN KEY(file_id) REFERENCES files(id)`: a sentinel
+                    // string here would fail that constraint (foreign keys
+                    // are on for every connection, see `Db::new`), unlike
+                    // symbols/edges' unconstrained `file_id`. It's still
+                    // carried forward unchanged (`sm.file_id`) -- checked by
+                    // the real-value `file_id` assertion below instead of the
+                    // generic sentinel sweep.
+                    "file_id",
+                ],
+            ),
+        ];
+        let is_exempt = |table: &str, column: &str| {
+            exempt
+                .iter()
+                .find(|(t, _)| *t == table)
+                .map(|(_, cols)| cols.contains(&column))
+                .unwrap_or(false)
+        };
+
+        let (mut db, _temp) = create_test_db();
+
+        let file_id = db
+            .upsert_file("carry_guard.py", "hash1", "python", 10, 0)
+            .unwrap();
+
+        let symbols = vec![make_test_symbol(
+            "carry_guard.fn",
+            Some("()"),
+            "function",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "carry_guard.py", &symbols, 1, Some("sha1"))
+            .unwrap();
+        let symbol_id = inserted[0].id;
+        let mut symbol_map = HashMap::new();
+        symbol_map.insert("carry_guard.fn".to_string(), symbol_id);
+
+        // Self-referential CALLS edge: only the DB wiring matters here, not
+        // realistic call semantics.
+        let edges = vec![make_test_edge_with_receiver_type(
+            "CALLS",
+            "carry_guard.fn",
+            "carry_guard.fn",
+            ReceiverType::Known("Foo".to_string()),
+        )];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, Some("sha1"))
+            .unwrap();
+
+        let metrics = vec![SymbolMetricsInput {
+            qualname: "carry_guard.fn".to_string(),
+            loc: 5,
+            complexity: 2,
+            duplication_hash: Some("duphash".to_string()),
+        }];
+        db.insert_symbol_metrics(file_id, &metrics, &symbol_map)
+            .unwrap();
+
+        // Stamp a unique, non-NULL sentinel into every non-exempt column of
+        // the one row on each table, so a column `carry_forward_files`
+        // silently drops comes back NULL instead of "not obviously wrong".
+        for table in ["symbols", "edges", "symbol_metrics"] {
+            for column in table_columns(&db, table) {
+                if is_exempt(table, &column) {
+                    continue;
+                }
+                let sentinel = format!("cf_guard::{table}::{column}");
+                db.conn()
+                    .execute(
+                        &format!("UPDATE {table} SET {column} = ?1"),
+                        params![sentinel],
+                    )
+                    .unwrap_or_else(|e| panic!("seeding sentinel for {table}.{column}: {e}"));
+            }
+        }
+
+        db.carry_forward_files(&[file_id], 1, 2).unwrap();
+
+        let new_symbol_id: i64 = db
+            .conn()
+            .query_row(
+                "SELECT id FROM symbols WHERE file_id = ?1 AND graph_version = 2",
+                params![file_id],
+                |row| row.get(0),
+            )
+            .expect("carry_forward_files must copy the symbols row to the new graph version");
+        let new_edge_id: i64 = db
+            .conn()
+            .query_row(
+                "SELECT id FROM edges WHERE file_id = ?1 AND graph_version = 2",
+                params![file_id],
+                |row| row.get(0),
+            )
+            .expect("carry_forward_files must copy the edges row to the new graph version");
+        let new_metrics_id: i64 = db
+            .conn()
+            .query_row(
+                "SELECT id FROM symbol_metrics WHERE symbol_id = ?1",
+                params![new_symbol_id],
+                |row| row.get(0),
+            )
+            .expect(
+                "carry_forward_files must copy the symbol_metrics row to the new graph version",
+            );
+
+        let new_row_ids: &[(&str, i64)] = &[
+            ("symbols", new_symbol_id),
+            ("edges", new_edge_id),
+            ("symbol_metrics", new_metrics_id),
+        ];
+
+        for (table, row_id) in new_row_ids {
+            for column in table_columns(&db, table) {
+                if is_exempt(table, &column) {
+                    continue;
+                }
+                let expected = rusqlite::types::Value::Text(format!("cf_guard::{table}::{column}"));
+                let actual: rusqlite::types::Value = db
+                    .conn()
+                    .query_row(
+                        &format!("SELECT {column} FROM {table} WHERE id = ?1"),
+                        params![row_id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    actual, expected,
+                    "carry_forward_files did not copy `{table}.{column}` into the new graph \
+                     version (found {actual:?}, expected the source row's value {expected:?}). \
+                     Add `{column}` to both the INSERT column list and the SELECT in \
+                     Db::carry_forward_files's `{table}` copy -- or, if `{column}` must \
+                     genuinely never be carried forward, add it to this test's `exempt` list \
+                     with a comment explaining why."
+                );
+            }
+        }
+
+        // `file_id` is excluded from the generic sweep above on all three
+        // tables (see the `exempt` comments), but it must still survive the
+        // copy unchanged -- check it directly against the real value instead
+        // of a sentinel.
+        for (table, row_id) in new_row_ids {
+            let actual_file_id: i64 = db
+                .conn()
+                .query_row(
+                    &format!("SELECT file_id FROM {table} WHERE id = ?1"),
+                    params![row_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                actual_file_id, file_id,
+                "carry_forward_files did not preserve `{table}.file_id` on the copied row"
+            );
+        }
     }
 
     #[test]
@@ -2971,27 +3647,6 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_symbol_id_fuzzy_finds_by_suffix() {
-        let (mut db, _temp) = create_test_db();
-        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
-        let symbols = vec![make_test_symbol(
-            "a.b.DeployAsync",
-            Some("fn deploy_async()"),
-            "method",
-            1,
-        )];
-        let inserted = db
-            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
-            .unwrap();
-
-        // Fuzzy: short qualname "_svc.DeployAsync" should match by suffix
-        let id = db
-            .lookup_symbol_id_fuzzy("_svc.DeployAsync", None, 1)
-            .unwrap();
-        assert_eq!(id, Some(inserted[0].id));
-    }
-
-    #[test]
     fn test_edges_for_symbol_returns_edges() {
         let (mut db, _temp) = create_test_db();
         let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
@@ -3015,6 +3670,9 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+            import_candidates: Vec::new(),
+            bare_call: false,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -3101,7 +3759,172 @@ mod tests {
     }
 
     #[test]
-    fn test_incoming_edges_by_qualname_pattern() {
+    fn test_edges_for_symbols_does_not_resurrect_null_target_edge() {
+        // Regression for the read-path resurrection bug: a receiver-qualified
+        // call (`buf.append(x)`) whose receiver type isn't in scope has two
+        // same-language, same-bare-name candidates, so it's genuinely
+        // ambiguous and the write path (insert_edges' ambiguity guard)
+        // deliberately leaves it unresolved. Neither candidate symbol must
+        // see it as an incoming call. The target is deliberately dotted
+        // ("buf.append", not bare "append") so this exercises the exact
+        // `target_qualname.ends_with(".{name}")` suffix match the old
+        // `edges_for_symbols` second query used to resurrect through.
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("pkg/store.py", "h1", "python", 100, 0)
+            .unwrap();
+        let symbols = vec![
+            make_test_symbol("builtins.list.append", Some("def append(x)"), "method", 1),
+            make_test_symbol(
+                "pkg.store.EventStore.append",
+                Some("def append(self, event)"),
+                "method",
+                10,
+            ),
+            make_test_symbol("pkg.store.caller", Some("def caller()"), "function", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "pkg/store.py", &symbols, 1, None)
+            .unwrap();
+        let list_append_id = inserted
+            .iter()
+            .find(|s| s.qualname == "builtins.list.append")
+            .unwrap()
+            .id;
+        let event_store_append_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.store.EventStore.append")
+            .unwrap()
+            .id;
+
+        let edges = vec![make_test_edge("CALLS", "pkg.store.caller", "buf.append")];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Confirm the edge really is unresolved (the write path refused it,
+        // and issue #79 means it never became an edge at all -- only a
+        // store row).
+        let edge_count: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(edge_count, 0);
+        let unresolved_count: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM unresolved_references WHERE graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unresolved_count, 1);
+
+        let by_symbol = db
+            .edges_for_symbols(&[list_append_id, event_store_append_id], None, 1)
+            .unwrap();
+        assert!(
+            by_symbol[&list_append_id].is_empty(),
+            "ambiguous unresolved edge must not be attributed to list.append"
+        );
+        assert!(
+            by_symbol[&event_store_append_id].is_empty(),
+            "ambiguous unresolved edge must not be attributed to EventStore.append either"
+        );
+    }
+
+    #[test]
+    fn test_edges_for_symbols_case_differing_name_in_another_language_does_not_match() {
+        // Regression for the exact bug the user hit: a C# `value.Trim()` call
+        // (receiver type unresolved, so the write path correctly leaves it
+        // NULL) must never be shown as a callee/caller of an unrelated Python
+        // `trim` function just because SQLite's LIKE is case-insensitive for
+        // ASCII (`'value.Trim' LIKE '%.trim'`).
+        let (mut db, _temp) = create_test_db();
+        let cs_file = db
+            .upsert_file("UniqueName.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+        let py_file = db
+            .upsert_file("functions.py", "h2", "python", 100, 0)
+            .unwrap();
+
+        let cs_symbols = vec![make_test_symbol(
+            "Dpb.UniqueName.Create",
+            Some("static Create(string value)"),
+            "method",
+            1,
+        )];
+        let cs_inserted = db
+            .insert_symbols(cs_file, "UniqueName.cs", &cs_symbols, 1, None)
+            .unwrap();
+
+        let py_symbols = vec![make_test_symbol(
+            "py.dpbuilder.functions.trim",
+            Some("def trim(e)"),
+            "function",
+            1,
+        )];
+        let py_inserted = db
+            .insert_symbols(py_file, "functions.py", &py_symbols, 1, None)
+            .unwrap();
+        let py_trim_id = py_inserted[0].id;
+
+        // receiver_type: Unresolved -- tracked but the receiver's type
+        // (`value`, a local `string?`) could not be determined, so resolution
+        // must not bind this edge to any real symbol (exact match also can't
+        // hit: no symbol is named exactly "value.Trim"). No import is
+        // involved, so issue #80's known-external stub tier doesn't apply
+        // either (that's scoped to imports known to resolve outside the
+        // repo) -- this stays unresolved, no edge at all, same as before
+        // #80. The load-bearing check below is still that it never
+        // resurrects as a caller of the unrelated Python `trim`.
+        let edges = vec![make_test_edge_with_receiver_type(
+            "CALLS",
+            "Dpb.UniqueName.Create",
+            "value.Trim",
+            ReceiverType::Unresolved,
+        )];
+        let symbol_map: HashMap<String, i64> = cs_inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(cs_file, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // CALLS isn't a Bridge Edge kind, so a builtin/unresolved receiver
+        // with no import involved leaves no edge at all, only an
+        // `unresolved_references` row.
+        let edge_count: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'value.Trim'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(edge_count, 0);
+
+        let by_symbol = db.edges_for_symbols(&[py_trim_id], None, 1).unwrap();
+        assert!(
+            by_symbol[&py_trim_id].is_empty(),
+            "C# value.Trim() must not resurrect as a caller of Python trim()"
+        );
+    }
+
+    #[test]
+    fn test_edges_for_symbols_still_shows_genuinely_resolved_edge() {
+        // Sanity check that the fix above didn't throw out the happy path:
+        // an edge the write path *did* resolve must still show up.
         let (mut db, _temp) = create_test_db();
         let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
         let symbols = vec![
@@ -3111,20 +3934,10 @@ mod tests {
         let inserted = db
             .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
             .unwrap();
+        let caller_id = inserted[0].id;
+        let callee_id = inserted[1].id;
 
-        let edges = vec![crate::indexer::extract::EdgeInput {
-            kind: "CALLS".to_string(),
-            source_qualname: Some("mod.Caller".to_string()),
-            target_qualname: Some("mod.Callee".to_string()),
-            detail: None,
-            evidence_snippet: None,
-            evidence_start_line: None,
-            evidence_end_line: None,
-            confidence: Some(1.0),
-            trace_id: None,
-            span_id: None,
-            event_ts: None,
-        }];
+        let edges = vec![make_test_edge("CALLS", "mod.Caller", "mod.Callee")];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
             .map(|s| (s.qualname.clone(), s.id))
@@ -3132,11 +3945,12 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        let found = db
-            .incoming_edges_by_qualname_pattern("Callee", "CALLS", None, 1)
+        let by_symbol = db
+            .edges_for_symbols(&[caller_id, callee_id], None, 1)
             .unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].kind, "CALLS");
+        assert_eq!(by_symbol[&caller_id].len(), 1);
+        assert_eq!(by_symbol[&caller_id][0].target_symbol_id, Some(callee_id));
+        assert_eq!(by_symbol[&callee_id].len(), 1);
     }
 
     #[test]
@@ -3233,62 +4047,6 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_symbol_id_fuzzy_no_match() {
-        let (mut db, _temp) = create_test_db();
-        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
-        let symbols = vec![make_test_symbol(
-            "a.b.DeployAsync",
-            Some("fn deploy_async()"),
-            "method",
-            1,
-        )];
-        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
-            .unwrap();
-
-        // Completely unrelated name should return None
-        let id = db
-            .lookup_symbol_id_fuzzy("_svc.NonexistentMethod", None, 1)
-            .unwrap();
-        assert!(id.is_none());
-    }
-
-    #[test]
-    fn test_lookup_symbol_id_fuzzy_exact_name() {
-        let (mut db, _temp) = create_test_db();
-        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
-        let symbols = vec![make_test_symbol(
-            "Deploy",
-            Some("fn deploy()"),
-            "function",
-            1,
-        )];
-        let inserted = db
-            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
-            .unwrap();
-
-        // Bare name (no dots) should match via exact name search
-        let id = db.lookup_symbol_id_fuzzy("Deploy", None, 1).unwrap();
-        assert_eq!(id, Some(inserted[0].id));
-    }
-
-    #[test]
-    fn test_lookup_symbol_id_fuzzy_multiple_matches_prefers_shortest() {
-        let (mut db, _temp) = create_test_db();
-        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
-        let symbols = vec![
-            make_test_symbol("a.b.c.Run", Some("fn run()"), "method", 1),
-            make_test_symbol("x.Run", Some("fn run()"), "method", 10),
-        ];
-        let inserted = db
-            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
-            .unwrap();
-
-        // Should prefer "x.Run" (shorter qualname)
-        let id = db.lookup_symbol_id_fuzzy("_svc.Run", None, 1).unwrap();
-        assert_eq!(id, Some(inserted[1].id));
-    }
-
-    #[test]
     fn test_edges_for_symbol_wrong_graph_version() {
         let (mut db, _temp) = create_test_db();
         let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
@@ -3312,6 +4070,9 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+            import_candidates: Vec::new(),
+            bare_call: false,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -3357,6 +4118,9 @@ mod tests {
                 trace_id: None,
                 span_id: None,
                 event_ts: None,
+                receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+                import_candidates: Vec::new(),
+                bare_call: false,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CHANNEL_SUBSCRIBE".to_string(),
@@ -3370,6 +4134,9 @@ mod tests {
                 trace_id: None,
                 span_id: None,
                 event_ts: None,
+                receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+                import_candidates: Vec::new(),
+                bare_call: false,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted
@@ -3410,6 +4177,145 @@ mod tests {
     }
 
     #[test]
+    fn test_edge_lookups_use_selective_index_not_graph_version() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("src/a.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols: Vec<_> = (0..200)
+            .map(|i| make_test_symbol(&format!("m.f{i}"), None, "function", i + 1))
+            .collect();
+        let inserted = db
+            .insert_symbols(file_id, "src/a.rs", &symbols, 1, None)
+            .unwrap();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        let edges: Vec<_> = (0..199)
+            .map(|i| crate::indexer::extract::EdgeInput {
+                kind: "CALLS".to_string(),
+                source_qualname: Some(format!("m.f{i}")),
+                target_qualname: Some(format!("m.f{}", i + 1)),
+                ..Default::default()
+            })
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+        let plan: String = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT id FROM edges
+                 WHERE target_symbol_id = 5 AND graph_version = 1",
+                [],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("idx_edges_target"), "{plan}");
+    }
+
+    #[test]
+    fn test_migration_15_drops_graph_version_indexes_from_existing_db() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("old.db");
+        drop(Db::new(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE INDEX idx_edges_graph_version ON edges(graph_version);
+             UPDATE meta SET value = '14' WHERE key = 'schema_version';",
+        )
+        .unwrap();
+        drop(conn);
+        drop(Db::new(&path).unwrap());
+        let left: i64 = Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name LIKE 'idx_%graph_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn test_rpc_bridge_requires_real_route_when_protos_indexed() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/Svc.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+        let symbols = vec![
+            make_test_symbol("A.Test", None, "method", 1),
+            make_test_symbol("B.Impl.Deploy", None, "method", 10),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/Svc.cs", &symbols, 1, None)
+            .unwrap();
+        let edge = |kind: &str, src: Option<&str>, tq: &str| crate::indexer::extract::EdgeInput {
+            kind: kind.to_string(),
+            source_qualname: src.map(str::to_string),
+            target_qualname: Some(tq.to_string()),
+            ..Default::default()
+        };
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        // Both sides guessed the same bogus package; no .proto defines it.
+        let guessed = "/dpb.datamgr.deployerservice/deploy";
+        db.insert_edges(
+            file_id,
+            &[
+                edge("RPC_CALL", Some("A.Test"), guessed),
+                edge("RPC_IMPL", Some("B.Impl.Deploy"), guessed),
+            ],
+            &symbol_map,
+            1,
+            None,
+        )
+        .unwrap();
+        // No RPC_ROUTE anywhere yet: unguarded, the pair still bridges.
+        let found = db
+            .edges_by_target_qualname_and_kinds(guessed, &["RPC_IMPL"], None, 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+
+        // Once any real route is indexed, an unbacked path no longer bridges.
+        let proto_id = db
+            .upsert_file("protos/d.proto", "h2", "proto", 10, 0)
+            .unwrap();
+        let real = "/datasource.deployer.v1.deployerservice/deploy";
+        db.insert_edges(
+            proto_id,
+            &[edge("RPC_ROUTE", None, real)],
+            &HashMap::new(),
+            1,
+            None,
+        )
+        .unwrap();
+        let found = db
+            .edges_by_target_qualname_and_kinds(guessed, &["RPC_IMPL"], None, 1)
+            .unwrap();
+        assert!(found.is_empty());
+
+        // A route-backed path still bridges.
+        let file2 = db
+            .upsert_file("src/Real.cs", "h3", "csharp", 100, 0)
+            .unwrap();
+        db.insert_edges(
+            file2,
+            &[edge("RPC_IMPL", Some("B.Impl.Deploy"), real)],
+            &symbol_map,
+            1,
+            None,
+        )
+        .unwrap();
+        let found = db
+            .edges_by_target_qualname_and_kinds(real, &["RPC_IMPL"], None, 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
     fn test_source_symbols_for_config_uri_with_data() {
         let (mut db, _temp) = create_test_db();
         let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
@@ -3435,6 +4341,9 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+            import_candidates: Vec::new(),
+            bare_call: false,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -3491,6 +4400,9 @@ mod tests {
                 trace_id: None,
                 span_id: None,
                 event_ts: None,
+                receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+                import_candidates: Vec::new(),
+                bare_call: false,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CONFIG_BIND".to_string(),
@@ -3504,6 +4416,9 @@ mod tests {
                 trace_id: None,
                 span_id: None,
                 event_ts: None,
+                receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+                import_candidates: Vec::new(),
+                bare_call: false,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted
@@ -3555,116 +4470,77 @@ mod tests {
         assert_eq!(id, Some(ins_py[0].id));
     }
 
-    // --- qualname_trailing_name helper ---
+    // --- insert_edges must not resolve targets against stale graph versions ---
 
     #[test]
-    fn test_qualname_trailing_name() {
-        let cases: &[(&str, &str)] = &[
-            // '.' separator
-            ("a.b.process", "process"),
-            ("_svc.DeployAsync", "DeployAsync"),
-            // '::' separator
-            ("crate::util::helper::process", "process"),
-            ("foo::bar", "bar"),
-            // no separator
-            ("process", "process"),
-            // mixed separators: last one wins
-            ("crate::Foo.method", "method"),
-            ("pkg.module::func", "func"),
-            // trailing separators yield an empty name; downstream patterns
-            // ('', '%.', '%::') cannot match any real qualname
-            ("foo.", ""),
-            ("foo::", ""),
-            // leading separators are stripped
-            (".foo", "foo"),
-            ("::foo", "foo"),
-            // a lone ':' (not '::') is part of the name, never a split point
-            ("label:name", "label:name"),
-            ("a::b:c", "b:c"),
-            (":", ":"),
-            // degenerate inputs
-            ("", ""),
-            (".", ""),
-            ("::", ""),
-            // repeated separators collapse to the last one
-            ("a..b", "b"),
-            ("a:::b", "b"),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(qualname_trailing_name(input), *expected, "input: {input:?}");
-        }
-    }
-
-    // --- lookup_symbol_id_fuzzy with '::' qualnames ---
-
-    #[test]
-    fn test_lookup_symbol_id_fuzzy_resolves_rust_colons_qualname() {
+    fn test_insert_edges_target_only_in_older_graph_version_resolves_to_null() {
         let (mut db, _temp) = create_test_db();
-        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
-        let symbols = vec![make_test_symbol(
-            "crate::util::helper::process",
-            Some("fn process()"),
+        let file_id = db
+            .upsert_file("src/gather_context.rs", "h1", "rust", 100, 0)
+            .unwrap();
+
+        // graph_version 1: a symbol exists under this qualname (e.g. before the file was
+        // reorganized into a submodule).
+        let old_symbol = vec![make_test_symbol(
+            "crate::gather_context::resolve_seeds",
+            Some("fn resolve_seeds()"),
+            "function",
+            182,
+        )];
+        let old_inserted = db
+            .insert_symbols(file_id, "src/gather_context.rs", &old_symbol, 1, None)
+            .unwrap();
+
+        // graph_version 2: the symbol above no longer exists under that qualname in this
+        // version (it moved/renamed, or its file was deleted). Only the caller is present.
+        let caller_symbol = vec![make_test_symbol(
+            "crate::gather_context::gather",
+            Some("fn gather()"),
             "function",
             1,
         )];
-        let inserted = db
-            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+        let caller_inserted = db
+            .insert_symbols(file_id, "src/gather_context.rs", &caller_symbol, 2, None)
             .unwrap();
 
-        // Bare name target should match via '%::process' suffix pattern
-        let id = db.lookup_symbol_id_fuzzy("process", None, 1).unwrap();
-        assert_eq!(id, Some(inserted[0].id));
-
-        // Short '::'-qualified target should match full qualname via suffix pattern
-        let id = db
-            .lookup_symbol_id_fuzzy("helper::process", None, 1)
-            .unwrap();
-        assert_eq!(id, Some(inserted[0].id));
-    }
-
-    #[test]
-    fn test_lookup_symbol_id_fuzzy_partial_name_does_not_match() {
-        let (mut db, _temp) = create_test_db();
-        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
-        let symbols = vec![make_test_symbol(
-            "crate::util::reprocess",
-            Some("fn reprocess()"),
-            "function",
-            1,
+        // An edge written against graph_version 2 still carries the old target_qualname
+        // (this is exactly what a re-run of xref::link_cross_language_refs produces: the
+        // extractor found a reference by name, but no current-version symbol matches it).
+        let edges = vec![make_test_edge(
+            "CALLS",
+            "crate::gather_context::gather",
+            "crate::gather_context::resolve_seeds",
         )];
-        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+        let symbol_map: HashMap<String, i64> = caller_inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 2, None)
             .unwrap();
 
-        // "process" must NOT match "reprocess" — no bare '%process' suffix
-        let id = db.lookup_symbol_id_fuzzy("process", None, 1).unwrap();
-        assert!(id.is_none());
-    }
-
-    #[test]
-    fn test_lookup_symbol_id_fuzzy_degenerate_targets_return_none() {
-        let (mut db, _temp) = create_test_db();
-        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
-        let symbols = vec![make_test_symbol(
-            "crate::util::process",
-            Some("fn process()"),
-            "function",
-            1,
-        )];
-        db.insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
-            .unwrap();
-
-        // Trailing separators produce an empty trailing name; the resulting
-        // patterns ('', '%.', '%::') must not match any real qualname
-        assert_eq!(db.lookup_symbol_id_fuzzy("util::", None, 1).unwrap(), None);
-        assert_eq!(db.lookup_symbol_id_fuzzy("util.", None, 1).unwrap(), None);
-        assert_eq!(db.lookup_symbol_id_fuzzy("", None, 1).unwrap(), None);
-
-        // A single ':' is not a separator: "Foo:process" keeps the whole
-        // string as the name and must NOT resolve to "process"
+        // Issue #79: a CALLS edge that can't resolve (target_qualname matches
+        // only a graph_version=1 symbol, id {old id}; it must not bind to
+        // that stale row) is not written as an edge at all -- only a store
+        // row, with the unresolved qualname preserved for later
+        // re-resolution / display.
+        let found = db.edges_for_symbol(caller_inserted[0].id, None, 2).unwrap();
         assert_eq!(
-            db.lookup_symbol_id_fuzzy("Foo:process", None, 1).unwrap(),
-            None
+            found.len(),
+            0,
+            "an unresolved CALLS edge must not be written at all (target_qualname matches \
+             only a stale graph_version=1 symbol, id {})",
+            old_inserted[0].id
         );
+        let reference_name: String = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT reference_name FROM unresolved_references WHERE graph_version = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(reference_name, "crate::gather_context::resolve_seeds");
     }
 
     // --- insert_edges fuzzy resolution with '::' qualnames ---
@@ -3707,66 +4583,6 @@ mod tests {
             .unwrap();
 
         // The inserted edge should have resolved target_symbol_id
-        let found = db.edges_for_symbol(caller_inserted[0].id, None, 1).unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].target_symbol_id, Some(callee_inserted[0].id));
-    }
-
-    // --- resolve_null_target_edges with '::' qualnames ---
-
-    #[test]
-    fn test_resolve_null_target_edges_resolves_rust_colons_qualname() {
-        let (mut db, _temp) = create_test_db();
-        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
-
-        let caller_sym = vec![make_test_symbol(
-            "crate::caller::do_work",
-            Some("fn do_work()"),
-            "function",
-            1,
-        )];
-        let caller_inserted = db
-            .insert_symbols(file_id, "src/lib.rs", &caller_sym, 1, None)
-            .unwrap();
-
-        // Insert the edge before the callee symbol exists — so target_symbol_id stays NULL.
-        // This simulates out-of-order incremental indexing (caller file indexed before callee file).
-        let edges = vec![make_test_edge("CALLS", "crate::caller::do_work", "compute")];
-        let symbol_map: HashMap<String, i64> = caller_inserted
-            .iter()
-            .map(|s| (s.qualname.clone(), s.id))
-            .collect();
-        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
-            .unwrap();
-
-        // Now insert the callee symbol (the callee file is indexed later)
-        let callee_sym = vec![make_test_symbol(
-            "crate::util::helper::compute",
-            Some("fn compute()"),
-            "function",
-            10,
-        )];
-        let callee_inserted = db
-            .insert_symbols(file_id, "src/lib.rs", &callee_sym, 1, None)
-            .unwrap();
-
-        // Confirm edge is unresolved
-        let conn = db.read_conn().unwrap();
-        let unresolved_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM edges WHERE target_symbol_id IS NULL AND graph_version = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(unresolved_count, 1);
-        drop(conn);
-
-        // Now run resolve_null_target_edges — should resolve via '%::compute' pattern
-        let resolved = db.resolve_null_target_edges(1).unwrap();
-        assert!(resolved >= 1);
-
-        // Verify the edge now points to the callee
         let found = db.edges_for_symbol(caller_inserted[0].id, None, 1).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].target_symbol_id, Some(callee_inserted[0].id));
@@ -3819,22 +4635,1061 @@ mod tests {
         assert_eq!(found[0].target_symbol_id, Some(rs_inserted[1].id));
     }
 
+    // --- JS/TS family: tsx/typescript/javascript resolve as one language ---
+
+    /// Insert `symbols` into a fresh file per (path, language) and return
+    /// every inserted symbol's id by qualname.
+    fn insert_files(
+        db: &mut Db,
+        files: &[(&str, &str, Vec<SymbolInput>)],
+    ) -> (HashMap<String, i64>, HashMap<String, i64>) {
+        let mut ids = HashMap::new();
+        let mut file_ids = HashMap::new();
+        for (i, (path, lang, syms)) in files.iter().enumerate() {
+            let file_id = db
+                .upsert_file(path, &format!("h{i}"), lang, 100, 0)
+                .unwrap();
+            file_ids.insert(path.to_string(), file_id);
+            for s in db.insert_symbols(file_id, path, syms, 1, None).unwrap() {
+                ids.insert(s.qualname.clone(), s.id);
+            }
+        }
+        (ids, file_ids)
+    }
+
+    /// The one edge's resolved target for `source_id`, or `None` for both a
+    /// NULL-target edge and (issue #79) an unresolved, non-Bridge-Edge-kind
+    /// reference that was never written as an edge at all -- callers use
+    /// this to assert "this call didn't bind to anything" either way.
+    fn only_target(db: &Db, source_id: i64) -> Option<i64> {
+        let found = db.edges_for_symbol(source_id, None, 1).unwrap();
+        assert!(found.len() <= 1);
+        found.first().and_then(|e| e.target_symbol_id)
+    }
+
     #[test]
-    fn test_lookup_symbol_id_fuzzy_shortest_wins_across_separator_styles() {
+    fn test_insert_edges_tsx_receiver_typed_call_binds_method_declared_in_ts() {
+        let (mut db, _temp) = create_test_db();
+        let (ids, file_ids) = insert_files(
+            &mut db,
+            &[
+                (
+                    "lib/svc.ts",
+                    "typescript",
+                    vec![
+                        make_test_symbol("lib/svc.CatalogService", None, "class", 1),
+                        make_test_symbol("lib/svc.CatalogService.list", None, "method", 2),
+                    ],
+                ),
+                (
+                    "app/page.tsx",
+                    "tsx",
+                    vec![make_test_symbol("app/page.Page", None, "function", 1)],
+                ),
+            ],
+        );
+        let edges = vec![make_test_edge_with_receiver_type(
+            "CALLS",
+            "app/page.Page",
+            "svc.list",
+            ReceiverType::Known("CatalogService".to_string()),
+        )];
+        db.insert_edges(file_ids["app/page.tsx"], &edges, &ids, 1, None)
+            .unwrap();
+        assert_eq!(
+            only_target(&db, ids["app/page.Page"]),
+            Some(ids["lib/svc.CatalogService.list"])
+        );
+    }
+
+    #[test]
+    fn test_insert_edges_ts_family_never_binds_python_or_csharp() {
+        let (mut db, _temp) = create_test_db();
+        let (ids, file_ids) = insert_files(
+            &mut db,
+            &[
+                (
+                    "py/mod.py",
+                    "python",
+                    vec![make_test_symbol("py.mod.pyOnly", None, "function", 1)],
+                ),
+                (
+                    "cs/C.cs",
+                    "csharp",
+                    vec![make_test_symbol("Ns.C.csOnly", None, "method", 1)],
+                ),
+                (
+                    "app/page.tsx",
+                    "tsx",
+                    vec![
+                        make_test_symbol("app/page.A", None, "function", 1),
+                        make_test_symbol("app/page.B", None, "function", 10),
+                    ],
+                ),
+            ],
+        );
+        let edges = vec![
+            make_test_edge("CALLS", "app/page.A", "app/page.pyOnly"),
+            make_test_edge("CALLS", "app/page.B", "app/page.csOnly"),
+        ];
+        db.insert_edges(file_ids["app/page.tsx"], &edges, &ids, 1, None)
+            .unwrap();
+        assert_eq!(only_target(&db, ids["app/page.A"]), None);
+        assert_eq!(only_target(&db, ids["app/page.B"]), None);
+    }
+
+    #[test]
+    fn test_insert_edges_ts_import_candidate_miss_refuses_family_fuzzy() {
+        let (mut db, _temp) = create_test_db();
+        let (ids, file_ids) = insert_files(
+            &mut db,
+            &[
+                (
+                    "other/hooks.ts",
+                    "typescript",
+                    vec![
+                        make_test_symbol("other/hooks.useState", None, "function", 1),
+                        make_test_symbol("other/hooks.helper", None, "function", 5),
+                    ],
+                ),
+                (
+                    "app/page.tsx",
+                    "tsx",
+                    vec![
+                        make_test_symbol("app/page.A", None, "function", 1),
+                        make_test_symbol("app/page.B", None, "function", 10),
+                    ],
+                ),
+            ],
+        );
+        let edges = vec![
+            // External package import (`import { useState } from 'react'`).
+            make_test_edge_with_import_candidates(
+                "CALLS",
+                "app/page.A",
+                "app/page.useState",
+                vec!["react:useState".to_string()],
+            ),
+            // Repo import whose export isn't declared in the resolved file
+            // (a barrel re-export): still must not guess by name.
+            make_test_edge_with_import_candidates(
+                "CALLS",
+                "app/page.B",
+                "app/page.helper",
+                vec!["lib.helper".to_string()],
+            ),
+        ];
+        db.insert_edges(file_ids["app/page.tsx"], &edges, &ids, 1, None)
+            .unwrap();
+        // Issue #80: a TS/TSX import-candidate miss is the resolver's
+        // known-external tier, so both calls now bind to an external stub
+        // (named from the call's own `target_qualname` text here, since
+        // neither test edge is a bare call -- see `external_stub_qualname`)
+        // instead of staying unresolved. Neither ever guesses a real repo
+        // symbol by name, which was always the actual point of this test.
+        let a_target = only_target(&db, ids["app/page.A"]).expect("stub target");
+        let a_qualname = db.get_symbol_by_id(a_target).unwrap().unwrap().qualname;
+        assert_eq!(a_qualname, "ext:app/page.useState");
+
+        let b_target = only_target(&db, ids["app/page.B"]).expect("stub target");
+        let b_qualname = db.get_symbol_by_id(b_target).unwrap().unwrap().qualname;
+        assert_eq!(b_qualname, "ext:app/page.helper");
+        assert!(
+            !ids.values().any(|&id| id == a_target || id == b_target),
+            "must never guess one of the real repo symbols by name"
+        );
+    }
+
+    // --- ambiguity guard: bare-name fuzzy fallback must not bind arbitrarily ---
+
+    #[test]
+    fn test_insert_edges_ambiguous_bare_name_stays_null_unambiguous_still_resolves() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("pkg/store.py", "h1", "python", 100, 0)
+            .unwrap();
+
+        // Two unrelated same-language "append" methods on different classes, exactly the
+        // pathology from the bug report: `list.append` vs. a domain `EventStore.append`.
+        // A caller who writes `some_list.append(x)` has no receiver-type information
+        // recorded, so the extractor's target_qualname is just an import-relative guess
+        // that resolves to neither of these by exact qualname — both are only reachable
+        // through the bare-name fuzzy fallback, which is exactly what must now refuse.
+        let ambiguous_syms = vec![
+            make_test_symbol("builtins.list.append", Some("def append(x)"), "method", 1),
+            make_test_symbol(
+                "pkg.store.EventStore.append",
+                Some("def append(self, event)"),
+                "method",
+                10,
+            ),
+            // One unambiguous symbol in the same file/version, to prove the guard
+            // doesn't just NULL everything.
+            make_test_symbol("pkg.store.compute", Some("def compute()"), "function", 20),
+            make_test_symbol("pkg.store.caller", Some("def caller()"), "function", 30),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "pkg/store.py", &ambiguous_syms, 1, None)
+            .unwrap();
+        let caller_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.store.caller")
+            .unwrap()
+            .id;
+        let compute_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.store.compute")
+            .unwrap()
+            .id;
+
+        let edges = vec![
+            // Bare-name target with two same-language candidates ("...list.append" and
+            // "...EventStore.append") -> must stay NULL, not bind to whichever the
+            // fuzzy LIKE happens to return first.
+            make_test_edge("CALLS", "pkg.store.caller", "append"),
+            // Bare-name target with exactly one candidate -> must still resolve.
+            make_test_edge("CALLS", "pkg.store.caller", "compute"),
+        ];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Issue #79: the ambiguous "append" reference gets no edge at all,
+        // only a store row -- only the resolved "compute" edge is written.
+        let found = db.edges_for_symbol(caller_id, None, 1).unwrap();
+        assert_eq!(found.len(), 1);
+
+        let compute_edge = found
+            .iter()
+            .find(|e| e.target_qualname.as_deref() == Some("compute"))
+            .unwrap();
+        assert_eq!(
+            compute_edge.target_symbol_id,
+            Some(compute_id),
+            "unambiguous bare-name call must still resolve"
+        );
+
+        let unresolved_count: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM unresolved_references \
+                 WHERE graph_version = 1 AND reference_name = 'append'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            unresolved_count, 1,
+            "ambiguous bare-name call must not bind to either same-named candidate, \
+             and must be tracked in the unresolved-reference store"
+        );
+    }
+
+    // --- two-segment tier: `Type::method` disambiguates same-named methods on different types ---
+
+    #[test]
+    fn test_insert_edges_two_segment_qualname_disambiguates_same_named_methods() {
         let (mut db, _temp) = create_test_db();
         let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
 
-        // One dot-style and one colons-style candidate; the colons one is shorter
-        let symbols = vec![
-            make_test_symbol("a.b.deeply.process", Some("fn process()"), "function", 1),
-            make_test_symbol("x::process", Some("fn process()"), "function", 10),
+        // Two unrelated Rust types with same-named `new` constructors — the exact
+        // pathology from the bug report (`Db::new` colliding with every other
+        // `new` in the crate, e.g. `Vec::new`, once resolution is limited to the
+        // bare trailing name). Neither call site's target_qualname is a full
+        // path, so it can't be found by exact qualname; bare-name-only
+        // resolution (tier 2) would see two same-named `new` candidates here and
+        // refuse to bind either. The two-segment tier (tier 1) uses the extra
+        // `Type::` segment already present in the call site's recorded
+        // target_qualname to tell them apart.
+        let syms = vec![
+            make_test_symbol("crate::db::Db::new", Some("fn new() -> Self"), "method", 1),
+            make_test_symbol(
+                "crate::cache::Cache::new",
+                Some("fn new() -> Self"),
+                "method",
+                10,
+            ),
+            make_test_symbol("crate::caller::run", Some("fn run()"), "function", 20),
         ];
         let inserted = db
-            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+        let db_new_id = inserted
+            .iter()
+            .find(|s| s.qualname == "crate::db::Db::new")
+            .unwrap()
+            .id;
+        let cache_new_id = inserted
+            .iter()
+            .find(|s| s.qualname == "crate::cache::Cache::new")
+            .unwrap()
+            .id;
+        let caller_id = inserted
+            .iter()
+            .find(|s| s.qualname == "crate::caller::run")
+            .unwrap()
+            .id;
+
+        let edges = vec![
+            make_test_edge("CALLS", "crate::caller::run", "Db::new"),
+            make_test_edge("CALLS", "crate::caller::run", "Cache::new"),
+        ];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        // Shortest qualname wins across both LIKE branches
-        let id = db.lookup_symbol_id_fuzzy("process", None, 1).unwrap();
-        assert_eq!(id, Some(inserted[1].id));
+        let found = db.edges_for_symbol(caller_id, None, 1).unwrap();
+        assert_eq!(found.len(), 2);
+
+        let db_edge = found
+            .iter()
+            .find(|e| e.target_qualname.as_deref() == Some("Db::new"))
+            .unwrap();
+        assert_eq!(
+            db_edge.target_symbol_id,
+            Some(db_new_id),
+            "Db::new must resolve to Db's constructor via the two-segment tier"
+        );
+
+        let cache_edge = found
+            .iter()
+            .find(|e| e.target_qualname.as_deref() == Some("Cache::new"))
+            .unwrap();
+        assert_eq!(
+            cache_edge.target_symbol_id,
+            Some(cache_new_id),
+            "Cache::new must resolve to Cache's constructor, not Db's, even though both share the bare name `new`"
+        );
+        assert_ne!(
+            db_edge.target_symbol_id, cache_edge.target_symbol_id,
+            "same-named methods on different types must not collide"
+        );
+    }
+
+    // --- receiver-type tier: gate resolution on the extractor's inferred receiver type ---
+
+    #[test]
+    fn test_insert_edges_receiver_type_known_resolves_via_receiver_type_tier() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
+            .unwrap();
+
+        // A domain `append` method — the exact collision pathology from
+        // issue #45: any call site literally named "<var>.append" would,
+        // under the old bare-name tier, be the *only* candidate and bind
+        // confidently to this method regardless of the variable's real type.
+        let syms = vec![make_test_symbol(
+            "pkg.store.EventStore.append",
+            Some("def append(self, event)"),
+            "method",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+        let append_id = inserted[0].id;
+
+        // Receiver type inferred from an annotated parameter (`store:
+        // EventStore`) — target_qualname is the call site's literal text
+        // ("store.append"), NOT rewritten to use the type name; only
+        // receiver_type carries the inferred type.
+        let edges = vec![make_test_edge_with_receiver_type(
+            "CALLS",
+            "pkg.caller.run",
+            "store.append",
+            ReceiverType::Known("EventStore".to_string()),
+        )];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'store.append'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id,
+            Some(append_id),
+            "a known receiver type must resolve to that type's own method"
+        );
+        assert_eq!(resolution_kind.as_deref(), Some("receiver_type"));
+    }
+
+    #[test]
+    fn test_insert_edges_receiver_type_unresolved_never_binds() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
+            .unwrap();
+
+        // Same domain `append` method as above — the only "append" symbol
+        // in the index, so the old bare-name tier would bind confidently.
+        let syms = vec![make_test_symbol(
+            "pkg.store.EventStore.append",
+            Some("def append(self, event)"),
+            "method",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+
+        // Receiver type inferred as a builtin (`cells = []`) — tracked, but
+        // must not bind at all, not even speculatively.
+        let edges = vec![make_test_edge_with_receiver_type(
+            "CALLS",
+            "pkg.caller.run",
+            "cells.append",
+            ReceiverType::Unresolved,
+        )];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // A builtin/unresolved receiver type must never bind to a real repo
+        // symbol, even though EventStore.append is the sole candidate for
+        // the bare name "append". No import is involved, so issue #80's
+        // known-external stub tier doesn't apply either -- this stays
+        // unresolved exactly as before #80: CALLS isn't a Bridge Edge kind,
+        // so no edge at all, only an `unresolved_references` row, whose own
+        // `receiver_type` column still records the tracked-but-unresolved
+        // marker (`""`, distinct from NULL/not tracked at all).
+        let edge_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'cells.append'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            edge_count, 0,
+            "must never bind to EventStore.append just because it's the sole bare-name candidate, \
+             and must not stub either since no import is involved"
+        );
+        let (receiver_type, reason): (Option<String>, String) = db
+            .conn()
+            .query_row(
+                "SELECT receiver_type, reason FROM unresolved_references
+                 WHERE reference_name = 'cells.append'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            receiver_type.as_deref(),
+            Some(""),
+            "the receiver_type column encodes tracked-but-unresolved as an empty string, \
+             distinct from NULL (not tracked at all)"
+        );
+        assert_eq!(reason, "external");
+    }
+
+    // --- import tier: import-qualified candidates disambiguate a bare
+    // two-segment call whose receiver is a type name, not a tracked local
+    // (see `EdgeInput::import_candidates` / `csharp::import_qualified_candidates`) ---
+
+    #[test]
+    fn test_insert_edges_import_candidate_resolves_unambiguous_tier() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/Caller.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+
+        // Twin-class-shaped setup: a bare `Widget.Create` two-segment call
+        // is ambiguous by itself, but only ONE of the candidate namespaces
+        // the extractor guessed from this file's `using`s actually names a
+        // real symbol.
+        let syms = vec![
+            make_test_symbol(
+                "Dpb.DomainA.Widget.Create",
+                Some("static Widget Create()"),
+                "method",
+                1,
+            ),
+            make_test_symbol("Dpb.Caller.Run", Some("void Run()"), "method", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/Caller.cs", &syms, 1, None)
+            .unwrap();
+        let widget_create_id = inserted
+            .iter()
+            .find(|s| s.qualname == "Dpb.DomainA.Widget.Create")
+            .unwrap()
+            .id;
+
+        let edges = vec![make_test_edge_with_import_candidates(
+            "CALLS",
+            "Dpb.Caller.Run",
+            "Widget.Create",
+            vec![
+                "Dpb.DomainA.Widget.Create".to_string(),
+                "Dpb.NoSuchNamespace.Widget.Create".to_string(),
+            ],
+        )];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'Widget.Create'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id,
+            Some(widget_create_id),
+            "the one import candidate that names a real symbol must bind, \
+             even though the literal call-site text (\"Widget.Create\") is \
+             ambiguous by itself and the other candidate names nothing"
+        );
+        assert_eq!(resolution_kind.as_deref(), Some("import"));
+    }
+
+    #[test]
+    fn test_insert_edges_import_candidate_ambiguous_across_two_real_symbols_refuses() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/Caller.cs", "h1", "csharp", 100, 0)
+            .unwrap();
+
+        // The actual twin-class pathology this feature exists to fix:
+        // TWO distinct namespaces both really do declare a `Widget` with a
+        // `Create` method, so both import candidates resolve to real (but
+        // different) symbols. The import tier must refuse rather than pick
+        // one -- and so must every tier after it, since the fallback
+        // two-segment pattern ("%.Widget.Create") matches both as well.
+        let syms = vec![
+            make_test_symbol(
+                "Dpb.DomainA.Widget.Create",
+                Some("static Widget Create()"),
+                "method",
+                1,
+            ),
+            make_test_symbol(
+                "Dpb.DomainB.Widget.Create",
+                Some("static Widget Create()"),
+                "method",
+                10,
+            ),
+            make_test_symbol("Dpb.Caller.Run", Some("void Run()"), "method", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/Caller.cs", &syms, 1, None)
+            .unwrap();
+
+        let edges = vec![make_test_edge_with_import_candidates(
+            "CALLS",
+            "Dpb.Caller.Run",
+            "Widget.Create",
+            vec![
+                "Dpb.DomainA.Widget.Create".to_string(),
+                "Dpb.DomainB.Widget.Create".to_string(),
+            ],
+        )];
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Two import candidates that both name real (but different) symbols
+        // must not bind to either -- the ambiguity guard must still refuse,
+        // exactly as it did before import qualification. Pre-#80 that
+        // refusal was reported as `external` rather than `ambiguous` (the
+        // known-external check already ran ahead of the ambiguity check in
+        // `Resolver::resolve`'s tier order, unchanged here -- an import
+        // candidate list this language's policy refuses on a miss is
+        // "known-external" first, regardless of *why* the import tier
+        // itself came up empty), so issue #80 turns this same refusal into
+        // a bind to the external stub instead of a `no-edge` store row --
+        // still never either real `Widget.Create`.
+        let target_symbol_id: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id FROM edges WHERE target_qualname = 'Widget.Create'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let domain_a_id = inserted[0].id;
+        let domain_b_id = inserted[1].id;
+        assert!(
+            target_symbol_id.is_some()
+                && target_symbol_id != Some(domain_a_id)
+                && target_symbol_id != Some(domain_b_id),
+            "must bind to the external stub, never guess between the two real Widget.Create symbols"
+        );
+        let stub_qualname: String = db
+            .conn()
+            .query_row(
+                "SELECT qualname FROM symbols WHERE id = ?",
+                [target_symbol_id.unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stub_qualname, "ext:Widget.Create");
+    }
+
+    #[test]
+    fn test_insert_edges_import_candidate_unresolved_refuses_bare_name_fallback() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/conftest.py", "h1", "python", 100, 0)
+            .unwrap();
+
+        // The actual reported pathology: `datetime.now(timezone.utc)` in a
+        // file that does `from datetime import datetime` (stdlib). The
+        // extractor resolves "datetime" through this file's own import
+        // bindings to a candidate qualname ("datetime.now") that names
+        // nothing in this repo's index -- but `now` also happens to be the
+        // *only* locally-defined symbol named `now` anywhere in the index
+        // (a test double, `FakeClock.now`). Before this fix, a failed
+        // import candidate fell through to the old bare-name tier, which
+        // saw only "one candidate named `now`" and bound to it -- the
+        // stdlib call, resolved to a test fake.
+        let syms = vec![make_test_symbol(
+            "pkg.tests.conftest.FakeClock.now",
+            Some("def now(cls)"),
+            "method",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "src/conftest.py", &syms, 1, None)
+            .unwrap();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+
+        let edges = vec![make_test_edge_with_import_candidates(
+            "CALLS",
+            "pkg.caller.run",
+            "datetime.now",
+            vec!["datetime.now".to_string()],
+        )];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // A receiver positively known (via this file's own imports) to come
+        // from an external module must never fall through to bare-name
+        // matching, even though FakeClock.now is the sole local symbol
+        // named "now" -- issue #80: it binds to the external stub instead
+        // (`ext:datetime.now`, not `pkg.tests.conftest.FakeClock.now`), and
+        // the edge's own `receiver_type` column still records the
+        // tracked-but-unresolved marker a repair pass relies on to never
+        // fuzzy-resolve it.
+        let (target_symbol_id, receiver_type): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, receiver_type FROM edges WHERE target_qualname = 'datetime.now'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_ne!(
+            target_symbol_id,
+            Some(inserted[0].id),
+            "must never bind to FakeClock.now just because it's the sole bare-name candidate"
+        );
+        let stub_qualname: String = db
+            .conn()
+            .query_row(
+                "SELECT qualname FROM symbols WHERE id = ?",
+                [target_symbol_id.expect("known-external binds to a stub, not NULL")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stub_qualname, "ext:datetime.now");
+        assert_eq!(
+            receiver_type.as_deref(),
+            Some(""),
+            "a failed import candidate must be persisted as tracked-but-unresolved, the same \
+             column value a receiver-type-tracked builtin uses, so a later repair pass also \
+             refuses to fuzzy-resolve it"
+        );
+    }
+
+    /// Insert `syms` into one python file, then one CALLS edge carrying
+    /// `candidates`; return the stored edge row (`None` when issue #79's
+    /// write-path gate refused to write one at all -- an unresolved,
+    /// non-Bridge-Edge-kind reference lives only in the store now), that
+    /// store row's own `receiver_type` (populated whether or not an edge
+    /// exists), and the qualname -> id map.
+    #[allow(clippy::type_complexity)]
+    fn insert_python_import_call(
+        syms: &[(&str, &str)],
+        target: &str,
+        candidates: &[&str],
+    ) -> (
+        Option<(Option<i64>, Option<String>, Option<String>)>,
+        Option<String>,
+        HashMap<String, i64>,
+    ) {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("py/pkg/src/pkg/a.py", "h1", "python", 100, 0)
+            .unwrap();
+        let syms: Vec<_> = syms
+            .iter()
+            .enumerate()
+            .map(|(i, (qn, kind))| make_test_symbol(qn, None, kind, i as i64 * 10 + 1))
+            .collect();
+        let inserted = db
+            .insert_symbols(file_id, "py/pkg/src/pkg/a.py", &syms, 1, None)
+            .unwrap();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        let edges = vec![make_test_edge_with_import_candidates(
+            "CALLS",
+            "py.pkg.src.pkg.a.caller",
+            target,
+            candidates.iter().map(|c| c.to_string()).collect(),
+        )];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+        let row: Option<(Option<i64>, Option<String>, Option<String>)> = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges WHERE kind = 'CALLS'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .unwrap();
+        let store_receiver_type: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT receiver_type FROM unresolved_references WHERE edge_kind = 'CALLS'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+            .flatten();
+        (row, store_receiver_type, symbol_map)
+    }
+
+    #[test]
+    fn test_insert_edges_bare_external_import_shadows_unique_repo_method() {
+        // `from urllib.parse import quote; quote(x)` in a repo whose only
+        // `quote` is an unrelated method. The external import must shadow
+        // the name: no bare-name binding to `MssqlCodeWriter.quote`. Issue
+        // #80: it binds to the external stub instead of staying unresolved.
+        let (row, store_receiver_type, map) = insert_python_import_call(
+            &[
+                ("py.pkg.src.pkg", "module"),
+                ("py.pkg.src.pkg.writer.MssqlCodeWriter.quote", "method"),
+            ],
+            "py.pkg.src.pkg.a.quote",
+            &["urllib.parse.quote"],
+        );
+        let (target, receiver_type, kind) =
+            row.expect("known-external must still bind, to the stub");
+        assert_ne!(
+            target,
+            Some(map["py.pkg.src.pkg.writer.MssqlCodeWriter.quote"]),
+            "external import must not bind a repo symbol"
+        );
+        assert_eq!(kind.as_deref(), Some("external"));
+        assert_eq!(receiver_type.as_deref(), Some(""));
+        // No `unresolved_references` store row either -- it's resolved now.
+        assert_eq!(store_receiver_type, None);
+    }
+
+    #[test]
+    fn test_insert_edges_import_candidate_matches_src_layout_qualname_by_suffix() {
+        // dpb shape: module qualnames carry the repo path prefix
+        // (`py.pkg.src.`) the import statement does not.
+        let (row, _, map) = insert_python_import_call(
+            &[
+                ("py.pkg.src.pkg", "module"),
+                ("py.pkg.src.pkg.runtime.run", "function"),
+                ("py.other.src.other.run", "function"),
+            ],
+            "py.pkg.src.pkg.a.run",
+            &["pkg.runtime.run"],
+        );
+        let (target, _, kind) = row.expect("a resolved reference must be written as an edge");
+        assert_eq!(target, Some(map["py.pkg.src.pkg.runtime.run"]));
+        assert_eq!(kind.as_deref(), Some("import"));
+    }
+
+    #[test]
+    fn test_insert_edges_unresolved_repo_import_keeps_fuzzy_fallback() {
+        // `from pkg import helper` where `pkg/__init__.py` re-exports
+        // `helper` from `pkg.core`: the candidate names nothing, but its
+        // root is a repo package, so the pre-existing bare-name tier still
+        // runs instead of the edge being refused as external.
+        let (row, _, map) = insert_python_import_call(
+            &[
+                ("py.pkg.src.pkg", "module"),
+                ("py.pkg.src.pkg.core.helper", "function"),
+            ],
+            "py.pkg.src.pkg.a.helper",
+            &["pkg.helper"],
+        );
+        let (target, receiver_type, kind) =
+            row.expect("a resolved reference must be written as an edge");
+        assert_eq!(target, Some(map["py.pkg.src.pkg.core.helper"]));
+        assert_eq!(kind.as_deref(), Some("bare_name"));
+        assert_eq!(receiver_type, None);
+    }
+
+    #[test]
+    fn test_insert_edges_generated_pb2_import_under_repo_package_is_external() {
+        // `from pkg.v1 import pkg_pb2 as pb; pb.ColumnDef(...)`: the pb2
+        // module is protoc output, so the repo dataclass of the same name
+        // must not be picked up by the fuzzy tiers. Issue #80: it binds to
+        // the external stub instead of staying unresolved.
+        let (row, _, map) = insert_python_import_call(
+            &[
+                ("py.pkg.src.pkg", "module"),
+                ("py.pkg.src.pkg.schema.ColumnDef", "class"),
+            ],
+            "pb.ColumnDef",
+            &["pkg.v1.pkg_pb2.ColumnDef"],
+        );
+        let (target, _, kind) = row.expect("known-external must still bind, to the stub");
+        assert_ne!(target, Some(map["py.pkg.src.pkg.schema.ColumnDef"]));
+        assert_eq!(kind.as_deref(), Some("external"));
+    }
+
+    #[test]
+    fn test_insert_edges_receiver_type_inherited_method_resolves_via_ancestor() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
+            .unwrap();
+
+        // MssqlCodeWriter inherits write_line from CodeWriter without
+        // overriding it — the dpb gap this tier closes. Only CodeWriter
+        // declares the method; MssqlCodeWriter has no symbol of its own
+        // named write_line.
+        let syms = vec![
+            make_test_symbol(
+                "pkg.CodeWriter.write_line",
+                Some("def write_line(self, s)"),
+                "method",
+                1,
+            ),
+            make_test_symbol("pkg.MssqlCodeWriter", None, "class", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+        let write_line_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.CodeWriter.write_line")
+            .unwrap()
+            .id;
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+
+        // `class MssqlCodeWriter(CodeWriter):` — recorded as an EXTENDS edge,
+        // same as the real Python extractor emits — plus the call site
+        // itself, gated by the inferred receiver type.
+        let edges = vec![
+            make_test_edge_with_receiver_type(
+                "EXTENDS",
+                "pkg.MssqlCodeWriter",
+                "CodeWriter",
+                ReceiverType::NotTracked,
+            ),
+            make_test_edge_with_receiver_type(
+                "CALLS",
+                "pkg.caller.run",
+                "cw.write_line",
+                ReceiverType::Known("MssqlCodeWriter".to_string()),
+            ),
+        ];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'cw.write_line'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id,
+            Some(write_line_id),
+            "a call through a subclass-typed receiver must bind to the base class's method \
+             when the subclass itself declares no override"
+        );
+        assert_eq!(
+            resolution_kind.as_deref(),
+            Some("inherited"),
+            "an inherited bind must be tagged distinctly from a direct receiver_type match"
+        );
+    }
+
+    #[test]
+    fn test_insert_edges_receiver_type_inherited_method_ambiguous_bases_refuses() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
+            .unwrap();
+
+        // `class Foo(A, B):` where *both* A and B declare `method` — Python
+        // multiple inheritance with no way to tell, from the recorded
+        // hierarchy alone, which base the language would actually dispatch
+        // to. Must refuse rather than guess.
+        let syms = vec![
+            make_test_symbol("pkg.A.method", Some("def method(self)"), "method", 1),
+            make_test_symbol("pkg.B.method", Some("def method(self)"), "method", 10),
+            make_test_symbol("pkg.Foo", None, "class", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+
+        let edges = vec![
+            make_test_edge_with_receiver_type("EXTENDS", "pkg.Foo", "A", ReceiverType::NotTracked),
+            make_test_edge_with_receiver_type("EXTENDS", "pkg.Foo", "B", ReceiverType::NotTracked),
+            make_test_edge_with_receiver_type(
+                "CALLS",
+                "pkg.caller.run",
+                "foo.method",
+                ReceiverType::Known("Foo".to_string()),
+            ),
+        ];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        // Issue #79: two unrelated ancestors declaring the same method is
+        // ambiguous and must not bind -- and, since CALLS isn't a Bridge
+        // Edge kind, no edge is written at all, only a store row.
+        let edge_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'foo.method'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(edge_count, 0);
+        let unresolved_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM unresolved_references WHERE reference_name = 'foo.method'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unresolved_count, 1);
+    }
+
+    #[test]
+    fn test_insert_edges_receiver_type_direct_override_wins_over_inherited() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/lib.rs", "h1", "python", 100, 0)
+            .unwrap();
+
+        // MssqlCodeWriter *does* override write_line this time — the direct
+        // receiver_type tier must still win, and the ancestor's own
+        // write_line (also present) must not be walked to or preferred.
+        let syms = vec![
+            make_test_symbol(
+                "pkg.MssqlCodeWriter.write_line",
+                Some("def write_line(self, s)"),
+                "method",
+                1,
+            ),
+            make_test_symbol(
+                "pkg.CodeWriter.write_line",
+                Some("def write_line(self, s)"),
+                "method",
+                10,
+            ),
+            make_test_symbol("pkg.MssqlCodeWriter", None, "class", 20),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &syms, 1, None)
+            .unwrap();
+        let own_write_line_id = inserted
+            .iter()
+            .find(|s| s.qualname == "pkg.MssqlCodeWriter.write_line")
+            .unwrap()
+            .id;
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+
+        let edges = vec![
+            make_test_edge_with_receiver_type(
+                "EXTENDS",
+                "pkg.MssqlCodeWriter",
+                "CodeWriter",
+                ReceiverType::NotTracked,
+            ),
+            make_test_edge_with_receiver_type(
+                "CALLS",
+                "pkg.caller.run",
+                "cw.write_line",
+                ReceiverType::Known("MssqlCodeWriter".to_string()),
+            ),
+        ];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+
+        let (target_symbol_id, resolution_kind): (Option<i64>, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT target_symbol_id, resolution_kind FROM edges WHERE target_qualname = 'cw.write_line'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_symbol_id,
+            Some(own_write_line_id),
+            "a direct (non-inherited) call must still bind to the receiver's own method, \
+             not walk past it to an ancestor that happens to declare the same name"
+        );
+        assert_eq!(
+            resolution_kind.as_deref(),
+            Some("receiver_type"),
+            "a direct match must keep the existing receiver_type resolution_kind, not \
+             \"inherited\" — the walk must never even run when the direct tier already hit"
+        );
     }
 }

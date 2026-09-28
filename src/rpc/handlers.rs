@@ -1,6 +1,7 @@
 //! Extracted handler functions for RPC methods.
 //! Each function corresponds to a match arm in `handle_method`.
 
+use super::reading::is_markdown_path;
 use super::*;
 use crate::search::{
     RgSearchOptions, annotate_grep_hits, normalize_rg_context, resolve_rg_paths, search_rg,
@@ -14,7 +15,13 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let params: ExplainSymbolParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
 
-    let max_bytes = params.max_bytes.unwrap_or(40_000).min(200_000);
+    // ponytail: 200_000 is a hard ceiling on the internal section budget, not a
+    // knob anyone tunes; ceiling exists to bound worst-case response size. If a
+    // caller asks for more, we clamp but say so via budget.requested_bytes
+    // rather than silently pretending we honored the request.
+    let requested_max_bytes = params.max_bytes;
+    let max_bytes = requested_max_bytes.unwrap_or(40_000).min(200_000);
+    let max_bytes_clamped = requested_max_bytes.is_some_and(|v| v != max_bytes);
     let max_refs = params.max_refs.unwrap_or(10);
 
     // Normalize sections: resolve aliases and warn on unknowns
@@ -51,6 +58,39 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         lower
     }).collect();
 
+    // Issue #67: resolve `min_resolution` against the resolver's canonical,
+    // strongest-to-weakest tier order (`db::resolver::ALL_RESOLUTION_KINDS`,
+    // the same single source of truth issue #81's `exclude_resolution_kinds`
+    // validates against on trace_flow/analyze_impact) rather than inventing
+    // a second ordering here. An unknown tier name warns -- same treatment
+    // as an unknown `sections` value above -- instead of erroring, and the
+    // filter is then simply not applied.
+    let min_resolution_rank: Option<usize> = params.min_resolution.as_deref().and_then(|tier| {
+        resolution_kind_rank(tier).or_else(|| {
+            warnings.push(format!(
+                "Unknown resolution tier '{}' in min_resolution -- valid tiers: {}",
+                tier,
+                crate::db::resolver::ALL_RESOLUTION_KINDS.join(", ")
+            ));
+            None
+        })
+    });
+    // A ref passes when its edge's tier ranks at or above (index <=)
+    // `min_resolution_rank`. An edge whose `resolution_kind` is absent
+    // (never resolved -- e.g. a String-Targeted Edge Kind whose own target
+    // is a config key/secret URI, not a symbol, such as CONFIG_SOURCE)
+    // never passes once a tier floor is set, since "absent" is weaker than
+    // every named tier.
+    let meets_min_resolution = |kind: &Option<String>| -> bool {
+        match min_resolution_rank {
+            None => true,
+            Some(min_rank) => kind
+                .as_deref()
+                .and_then(resolution_kind_rank)
+                .is_some_and(|rank| rank <= min_rank),
+        }
+    };
+
     // 1. Resolve symbol
     let sym_ref = if let Some(id) = params.id {
         crate::resolve::SymbolRef::Id(id)
@@ -68,14 +108,20 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         ctx.graph_version,
     )?;
 
-    // 2. Budget allocation (30% source, 20% callers, 20% callees, 10% tests, 20% expansion) - FIX #4
+    // 2. Budget allocation (30% source, 20% callers, 20% callees, 10% tests,
+    // 10% implements, 10% expansion) - FIX #4
     let source_budget = max_bytes * 30 / 100;
     let callers_budget = max_bytes * 20 / 100;
     let callees_budget = max_bytes * 20 / 100;
     let tests_budget = max_bytes * 10 / 100;
-    let expansion_budget = max_bytes * 20 / 100;
+    let implements_budget = max_bytes * 10 / 100;
+    let expansion_budget = max_bytes * 10 / 100;
     let mut used_bytes = 0usize;
-    let mut truncated = false;
+    // Tracks only the source-snippet cut; caller/callee/test/implements
+    // truncation is derived honestly below from `returned.len() < total` for
+    // each section (see step 9.5), so a section capped by max_refs is never
+    // reported as complete just because it didn't also blow its byte budget.
+    let mut source_truncated = false;
 
     // 3. Read source (FIX #5: truncate at line boundaries)
     let source = if sections.contains(&"source".to_string()) {
@@ -88,7 +134,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             let end = (symbol.end_line as usize).min(lines.len());
             let snippet = lines[start..end].join("\n");
             let snippet = if snippet.len() > source_budget {
-                truncated = true;
+                source_truncated = true;
                 // Find last newline before budget limit to avoid mid-line truncation
                 let truncate_pos = snippet[..source_budget]
                     .rfind('\n')
@@ -112,43 +158,64 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             .db()
             .edges_for_symbol(symbol.id, ctx.languages.as_deref(), ctx.graph_version)?;
 
+    // 4b. Cross-boundary neighbours (RPC/HTTP/channel/config), appended after
+    // the CALLS refs in callers/callees/tests below. Same seed set as the
+    // CALLS aggregation: a class also speaks for its members.
+    let cross_seeds = if symbol.kind == "class" {
+        crate::resolve::expand_seeds(indexer.db(), symbol.id, ctx.graph_version)?
+    } else {
+        vec![symbol.id]
+    };
+    let wants = |s: &str| sections.iter().any(|x| x == s);
+    let incoming_cross = if wants("callers") || wants("tests") {
+        cross_boundary_refs(indexer.db(), &cross_seeds, false, &ctx)?
+    } else {
+        Vec::new()
+    };
+    let outgoing_cross = if wants("callees") {
+        cross_boundary_refs(indexer.db(), &cross_seeds, true, &ctx)?
+    } else {
+        Vec::new()
+    };
+
     // 5. Build callers (incoming CALLS)
-    let mut callers = if sections.contains(&"callers".to_string()) {
+    //
+    // `callers_total` counts every distinct matching caller, independent of
+    // max_refs/byte-budget capping, so the response can honestly say how many
+    // were dropped instead of asserting completeness it doesn't have. Once a
+    // cap is hit we stop resolving+pushing refs (`still_adding = false`) but
+    // keep scanning edges already in hand to finish the count.
+    let (mut callers, callers_total) = if sections.contains(&"callers".to_string()) {
         let mut caller_refs = Vec::new();
         let mut caller_bytes = 0usize;
+        let mut caller_total = 0usize;
+        let mut still_adding = true;
         let mut seen_caller_ids = std::collections::HashSet::new();
 
         // Determine which symbol IDs to collect callers for
         let is_class_symbol = symbol.kind == "class";
-        let target_ids: Vec<(i64, String)> = if is_class_symbol {
+        let target_ids: Vec<i64> = if is_class_symbol {
             // For class symbols, find all methods and collect callers for each
             let all_symbols = indexer
                 .db()
                 .get_symbols_for_file(&symbol.file_path, ctx.graph_version)?;
-            let mut ids: Vec<(i64, String)> = all_symbols
+            let mut ids: Vec<i64> = all_symbols
                 .into_iter()
                 .filter(|s| {
                     (s.kind == "method" || s.kind == "function")
                         && s.start_line >= symbol.start_line
                         && s.end_line <= symbol.end_line
                 })
-                .map(|s| {
-                    let name = s.name.clone();
-                    (s.id, name)
-                })
+                .map(|s| s.id)
                 .collect();
             // Also include the class itself
-            ids.push((symbol.id, symbol.name.clone()));
+            ids.push(symbol.id);
             ids
         } else {
-            vec![(symbol.id, symbol.name.clone())]
+            vec![symbol.id]
         };
 
-        for (target_id, target_name) in &target_ids {
-            if caller_refs.len() >= max_refs || caller_bytes > callers_budget {
-                break;
-            }
-
+        for target_id in &target_ids {
             // Get edges for this target
             let target_edges = if *target_id == symbol.id {
                 edges.clone()
@@ -164,76 +231,78 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             for edge in &target_edges {
                 if edge.kind == "CALLS"
                     && edge.target_symbol_id == Some(*target_id)
+                    && meets_min_resolution(&edge.resolution_kind)
                     && let Some(source_id) = edge.source_symbol_id
                     && seen_caller_ids.insert(source_id)
-                    && let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id)
                 {
-                    let evidence = edge.evidence_snippet.clone();
-                    let ref_json = serde_json::to_string(&caller_sym).unwrap_or_default();
-                    caller_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                    if caller_bytes > callers_budget {
-                        truncated = true;
-                        break;
+                    caller_total += 1;
+                    if !still_adding {
+                        continue;
                     }
-                    caller_refs.push(ExplainRef {
-                        signature: caller_sym.signature.clone(),
-                        symbol: caller_sym,
-                        evidence,
-                        edge_kind: "CALLS".to_string(),
-                    });
                     if caller_refs.len() >= max_refs {
-                        break;
+                        still_adding = false;
+                        continue;
                     }
-                }
-            }
-
-            // Check for unresolved callers by qualname
-            if caller_refs.len() < max_refs && caller_bytes <= callers_budget {
-                let unresolved_edges = indexer.db().incoming_edges_by_qualname_pattern(
-                    target_name,
-                    "CALLS",
-                    ctx.languages.as_deref(),
-                    ctx.graph_version,
-                )?;
-
-                for edge in &unresolved_edges {
-                    if let Some(ref target_qn) = edge.target_qualname
-                        && target_qn.ends_with(target_name)
-                        && let Some(source_id) = edge.source_symbol_id
-                        && seen_caller_ids.insert(source_id)
-                        && let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id)
-                    {
+                    if let Ok(Some(caller_sym)) = indexer.db().get_symbol_by_id(source_id) {
                         let evidence = edge.evidence_snippet.clone();
                         let ref_json = serde_json::to_string(&caller_sym).unwrap_or_default();
-                        caller_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                        if caller_bytes > callers_budget {
-                            truncated = true;
-                            break;
+                        let ref_bytes = ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                        if caller_bytes + ref_bytes > callers_budget {
+                            still_adding = false;
+                            continue;
                         }
+                        caller_bytes += ref_bytes;
                         caller_refs.push(ExplainRef {
-                            signature: caller_sym.signature.clone(),
                             symbol: caller_sym,
                             evidence,
                             edge_kind: "CALLS".to_string(),
+                            protocol_context: None,
+                            resolution_kind: edge.resolution_kind.clone(),
                         });
-                        if caller_refs.len() >= max_refs {
-                            break;
-                        }
                     }
                 }
             }
         }
 
+        for r in &incoming_cross {
+            if !meets_min_resolution(&r.resolution_kind) {
+                continue;
+            }
+            if !seen_caller_ids.insert(r.symbol.id) {
+                continue;
+            }
+            caller_total += 1;
+            if !still_adding {
+                continue;
+            }
+            if caller_refs.len() >= max_refs {
+                still_adding = false;
+                continue;
+            }
+            let ref_bytes = serde_json::to_string(r).map_or(0, |j| j.len());
+            if caller_bytes + ref_bytes > callers_budget {
+                still_adding = false;
+                continue;
+            }
+            caller_bytes += ref_bytes;
+            caller_refs.push(r.clone());
+        }
+
         used_bytes += caller_bytes;
-        Some(caller_refs)
+        (Some(caller_refs), caller_total)
     } else {
-        None
+        (None, 0)
     };
 
     // 6. Build callees (outgoing CALLS) - FIX #3: For class symbols, aggregate from methods
-    let mut callees = if sections.contains(&"callees".to_string()) {
+    //
+    // Same honest-counting shape as callers: `callee_total` counts every
+    // distinct match, `still_adding` gates whether we still resolve+push.
+    let (mut callees, callees_total) = if sections.contains(&"callees".to_string()) {
         let mut callee_refs = Vec::new();
         let mut callee_bytes = 0usize;
+        let mut callee_total = 0usize;
+        let mut still_adding = true;
         let mut seen_callee_ids = std::collections::HashSet::new();
 
         // Determine if this is a class-level symbol
@@ -263,156 +332,246 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
                 for edge in &method_edges {
                     if edge.kind == "CALLS" && edge.source_symbol_id == Some(method.id) {
-                        // Resolve target_id, with fuzzy fallback for unresolved edges
-                        let target_id = match edge.target_symbol_id {
-                            Some(id) => Some(id),
-                            None => edge.target_qualname.as_deref().and_then(|qn| {
-                                indexer
-                                    .db()
-                                    .lookup_symbol_id_fuzzy(
-                                        qn,
-                                        ctx.languages.as_deref(),
-                                        ctx.graph_version,
-                                    )
-                                    .ok()
-                                    .flatten()
-                            }),
-                        };
+                        // `target_symbol_id` is NULL means the write path could not
+                        // attribute this call (ambiguous or unresolved receiver) —
+                        // the read path must not invent one via fuzzy qualname
+                        // lookup (that's how a C# `value.Trim()` call used to
+                        // surface a Python `trim` function as its callee).
+                        let target_id = edge.target_symbol_id;
                         if let Some(target_id) = target_id
+                            && meets_min_resolution(&edge.resolution_kind)
                             && seen_callee_ids.insert(target_id)
-                            && let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id)
                         {
-                            let evidence = edge.evidence_snippet.clone();
-                            let ref_json = serde_json::to_string(&callee_sym).unwrap_or_default();
-                            callee_bytes +=
-                                ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                            if callee_bytes > callees_budget {
-                                truncated = true;
-                                break;
+                            callee_total += 1;
+                            if !still_adding {
+                                continue;
                             }
-                            callee_refs.push(ExplainRef {
-                                signature: callee_sym.signature.clone(),
-                                symbol: callee_sym,
-                                evidence,
-                                edge_kind: "CALLS".to_string(),
-                            });
                             if callee_refs.len() >= max_refs {
-                                break;
+                                still_adding = false;
+                                continue;
+                            }
+                            if let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id) {
+                                let evidence = edge.evidence_snippet.clone();
+                                let ref_json =
+                                    serde_json::to_string(&callee_sym).unwrap_or_default();
+                                let ref_bytes =
+                                    ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                                if callee_bytes + ref_bytes > callees_budget {
+                                    still_adding = false;
+                                    continue;
+                                }
+                                callee_bytes += ref_bytes;
+                                callee_refs.push(ExplainRef {
+                                    symbol: callee_sym,
+                                    evidence,
+                                    edge_kind: "CALLS".to_string(),
+                                    protocol_context: None,
+                                    resolution_kind: edge.resolution_kind.clone(),
+                                });
                             }
                         }
                     }
-                }
-                if callee_refs.len() >= max_refs || callee_bytes > callees_budget {
-                    break;
                 }
             }
         } else {
             // For non-class symbols, use direct edges
             for edge in &edges {
                 if edge.kind == "CALLS" && edge.source_symbol_id == Some(symbol.id) {
-                    let target_id = match edge.target_symbol_id {
-                        Some(id) => Some(id),
-                        None => edge.target_qualname.as_deref().and_then(|qn| {
-                            indexer
-                                .db()
-                                .lookup_symbol_id_fuzzy(
-                                    qn,
-                                    ctx.languages.as_deref(),
-                                    ctx.graph_version,
-                                )
-                                .ok()
-                                .flatten()
-                        }),
-                    };
+                    // See the class-symbol branch above: NULL target_symbol_id
+                    // means the write path deliberately refused to attribute
+                    // this call, so the read path must not guess one either.
+                    let target_id = edge.target_symbol_id;
                     if let Some(target_id) = target_id
+                        && meets_min_resolution(&edge.resolution_kind)
                         && seen_callee_ids.insert(target_id)
-                        && let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id)
                     {
-                        let evidence = edge.evidence_snippet.clone();
-                        let ref_json = serde_json::to_string(&callee_sym).unwrap_or_default();
-                        callee_bytes += ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                        if callee_bytes > callees_budget {
-                            truncated = true;
-                            break;
+                        callee_total += 1;
+                        if !still_adding {
+                            continue;
                         }
-                        callee_refs.push(ExplainRef {
-                            signature: callee_sym.signature.clone(),
-                            symbol: callee_sym,
-                            evidence,
-                            edge_kind: "CALLS".to_string(),
-                        });
                         if callee_refs.len() >= max_refs {
-                            break;
+                            still_adding = false;
+                            continue;
+                        }
+                        if let Ok(Some(callee_sym)) = indexer.db().get_symbol_by_id(target_id) {
+                            let evidence = edge.evidence_snippet.clone();
+                            let ref_json = serde_json::to_string(&callee_sym).unwrap_or_default();
+                            let ref_bytes =
+                                ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
+                            if callee_bytes + ref_bytes > callees_budget {
+                                still_adding = false;
+                                continue;
+                            }
+                            callee_bytes += ref_bytes;
+                            callee_refs.push(ExplainRef {
+                                symbol: callee_sym,
+                                evidence,
+                                edge_kind: "CALLS".to_string(),
+                                protocol_context: None,
+                                resolution_kind: edge.resolution_kind.clone(),
+                            });
                         }
                     }
                 }
             }
+        }
+
+        for r in &outgoing_cross {
+            if !meets_min_resolution(&r.resolution_kind) {
+                continue;
+            }
+            if !seen_callee_ids.insert(r.symbol.id) {
+                continue;
+            }
+            callee_total += 1;
+            if !still_adding {
+                continue;
+            }
+            if callee_refs.len() >= max_refs {
+                still_adding = false;
+                continue;
+            }
+            let ref_bytes = serde_json::to_string(r).map_or(0, |j| j.len());
+            if callee_bytes + ref_bytes > callees_budget {
+                still_adding = false;
+                continue;
+            }
+            callee_bytes += ref_bytes;
+            callee_refs.push(r.clone());
         }
 
         used_bytes += callee_bytes;
-        Some(callee_refs)
+        (Some(callee_refs), callee_total)
     } else {
-        None
+        (None, 0)
     };
 
     // 7. Find tests (incoming CALLS from test files)
-    let mut tests = if sections.contains(&"tests".to_string()) {
+    let (mut tests, tests_total) = if sections.contains(&"tests".to_string()) {
         let mut test_refs = Vec::new();
         let mut test_bytes = 0usize;
+        let mut test_total = 0usize;
+        let mut still_adding = true;
+        let mut calls_test_ids = std::collections::HashSet::new();
         for edge in &edges {
             if edge.kind == "CALLS"
                 && edge.target_symbol_id == Some(symbol.id)
+                && meets_min_resolution(&edge.resolution_kind)
                 && let Some(source_id) = edge.source_symbol_id
                 && let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id)
+                && is_test_symbol(&test_sym)
             {
-                let is_test = test_sym.file_path.contains("test")
-                    || test_sym.file_path.contains("spec")
-                    || test_sym.name.starts_with("test_")
-                    || test_sym.name.starts_with("Test");
-                if is_test {
-                    let ref_json = serde_json::to_string(&test_sym).unwrap_or_default();
-                    test_bytes += ref_json.len();
-                    if test_bytes > tests_budget {
-                        truncated = true;
-                        break;
-                    }
-                    test_refs.push(ExplainRef {
-                        signature: test_sym.signature.clone(),
-                        symbol: test_sym,
-                        evidence: edge.evidence_snippet.clone(),
-                        edge_kind: "CALLS".to_string(),
-                    });
-                    if test_refs.len() >= max_refs {
-                        break;
-                    }
+                calls_test_ids.insert(test_sym.id);
+                test_total += 1;
+                if !still_adding {
+                    continue;
+                }
+                let ref_json = serde_json::to_string(&test_sym).unwrap_or_default();
+                let ref_bytes = ref_json.len();
+                if test_bytes + ref_bytes > tests_budget {
+                    still_adding = false;
+                    continue;
+                }
+                test_bytes += ref_bytes;
+                test_refs.push(ExplainRef {
+                    symbol: test_sym,
+                    evidence: edge.evidence_snippet.clone(),
+                    edge_kind: "CALLS".to_string(),
+                    protocol_context: None,
+                    resolution_kind: edge.resolution_kind.clone(),
+                });
+                if test_refs.len() >= max_refs {
+                    still_adding = false;
                 }
             }
         }
+        // Tests reaching the symbol over RPC/HTTP/a channel (e.g. a gRPC
+        // client test against a service impl) count too.
+        for r in &incoming_cross {
+            if !is_test_symbol(&r.symbol)
+                || !meets_min_resolution(&r.resolution_kind)
+                || !calls_test_ids.insert(r.symbol.id)
+            {
+                continue;
+            }
+            test_total += 1;
+            if !still_adding {
+                continue;
+            }
+            let ref_bytes = serde_json::to_string(r).map_or(0, |j| j.len());
+            if test_bytes + ref_bytes > tests_budget {
+                still_adding = false;
+                continue;
+            }
+            test_bytes += ref_bytes;
+            test_refs.push(r.clone());
+            if test_refs.len() >= max_refs {
+                still_adding = false;
+            }
+        }
         used_bytes += test_bytes;
-        Some(test_refs)
+        (Some(test_refs), test_total)
     } else {
-        None
+        (None, 0)
     };
 
+    // 7.5. Issue #68: an empty tests list means two different things -- "no
+    // test-scope files were ever indexed" or "tests exist but none reach
+    // this symbol". Only the first is worth a warning; the second is a
+    // genuine "no" and would be noise. Reuses #63's scope-count query, so
+    // this only runs when the tests section was requested and came back
+    // empty.
+    if sections.contains(&"tests".to_string())
+        && tests_total == 0
+        && !indexer
+            .db()
+            .has_test_scope_files(ctx.languages.as_deref(), ctx.graph_version)?
+    {
+        warnings.push(
+            "No test-scope files exist in this index, so the empty tests list doesn't mean \
+             this symbol is untested -- it means lidx found no files it classifies as \
+             tests (tests are detected by file path, so tests living inline in an \
+             otherwise-non-test file, e.g. Rust's #[cfg(test)] modules, won't count)."
+                .to_string(),
+        );
+    }
+
     // 8. Find implements (EXTENDS/IMPLEMENTS/INHERITS edges) - FIX #2
-    let implements = if sections.contains(&"implements".to_string()) {
+    //
+    // Same honest-counting shape as callers/callees/tests: `implements_total`
+    // counts every distinct match, `still_adding` gates whether we still
+    // collect once max_refs or the byte budget is hit.
+    let (implements, implements_total) = if sections.contains(&"implements".to_string()) {
         let mut impl_syms = Vec::new();
+        let mut impl_bytes = 0usize;
+        let mut impl_total = 0usize;
+        let mut still_adding = true;
         for edge in &edges {
             if (edge.kind == "EXTENDS" || edge.kind == "IMPLEMENTS" || edge.kind == "INHERITS")
                 && edge.source_symbol_id == Some(symbol.id)
                 && let Some(target_id) = edge.target_symbol_id
                 && let Ok(Some(impl_sym)) = indexer.db().get_symbol_by_id(target_id)
             {
+                impl_total += 1;
+                if !still_adding {
+                    continue;
+                }
+                let ref_bytes = serde_json::to_string(&impl_sym).unwrap_or_default().len();
+                if impl_bytes + ref_bytes > implements_budget {
+                    still_adding = false;
+                    continue;
+                }
+                impl_bytes += ref_bytes;
                 impl_syms.push(impl_sym);
+                if impl_syms.len() >= max_refs {
+                    still_adding = false;
+                }
             }
         }
-        if impl_syms.is_empty() {
-            None
-        } else {
-            Some(impl_syms)
-        }
+        used_bytes += impl_bytes;
+        (Some(impl_syms), impl_total)
     } else {
-        None
+        (None, 0)
     };
 
     // 9. FIX #4: Budget expansion - if >30% budget remaining, fetch source snippets for refs
@@ -509,25 +668,172 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let next_hops = vec![
         json!({"method": "analyze_impact", "params": {"id": symbol.id, "direction": "both"}, "description": "Explore full graph neighborhood via impact analysis"}),
         json!({"method": "gather_context", "params": {"seeds": [{"type": "symbol", "qualname": symbol.qualname}], "max_bytes": 80000}, "description": "Assemble full context"}),
+        // Issue #97: point at the exact source for the symbol this call just resolved,
+        // so understanding (explain_symbol) leads straight to reading (read_symbol).
+        json!({"method": "read_symbol", "params": {"qualname": symbol.qualname}, "description": format!("Read exact source of {}", symbol.name)}),
     ];
+
+    // Honest truncation: true if the source snippet was cut, or if any
+    // returned section holds fewer items than actually exist -- regardless of
+    // whether the shortfall came from max_refs or the byte budget.
+    let truncated = source_truncated
+        || callers.as_ref().is_some_and(|c| c.len() < callers_total)
+        || callees.as_ref().is_some_and(|c| c.len() < callees_total)
+        || tests.as_ref().is_some_and(|t| t.len() < tests_total)
+        || implements
+            .as_ref()
+            .is_some_and(|i| i.len() < implements_total);
+
+    // `commit_sha`/`graph_version` are constant for the whole response --
+    // captured once here, before `symbol` moves into the struct below, so
+    // they can be stamped onto the envelope instead of every nested symbol.
+    let graph_version = symbol.graph_version;
+    let commit_sha = symbol.commit_sha.clone();
 
     let result = ExplainSymbolResult {
         symbol,
         source,
+        callers_total: callers.as_ref().map(|_| callers_total),
         callers,
+        callees_total: callees.as_ref().map(|_| callees_total),
         callees,
+        tests_total: tests.as_ref().map(|_| tests_total),
         tests,
+        implements_total: implements.as_ref().map(|_| implements_total),
         implements,
+        graph_version,
+        commit_sha,
         budget: BudgetInfo {
             budget_bytes: max_bytes,
             used_bytes,
             truncated,
+            requested_bytes: if max_bytes_clamped {
+                requested_max_bytes
+            } else {
+                None
+            },
         },
         next_hops,
         warnings,
     };
 
+    // `graph_version`/`commit_sha` live once on `ExplainSymbolResult`
+    // (issue #66); the generic dispatch-boundary hoist in `rpc::mod`
+    // (`hoist_symbol_run_metadata`, applied to every method's result in
+    // `handle_method`) strips the copies `Symbol`'s derive still stamps
+    // onto every nested symbol -- the main `symbol`, each `ExplainRef.symbol`
+    // in `callers`/`callees`/`tests`, and each entry of `implements` -- since
+    // the top-level `graph_version` field above is already present.
     Ok(serde_json::to_value(&result)?)
+}
+
+/// Client side of each bridge pair (see `bridge_complement`): the kinds an
+/// explained symbol's *outgoing* cross-boundary edges carry.
+const CLIENT_BRIDGE_KINDS: &[&str] = &["RPC_CALL", "HTTP_CALL", "CHANNEL_PUBLISH", "CONFIG_READ"];
+/// Server side of each bridge pair: the kinds a callee-of-a-bridge carries.
+const SERVER_BRIDGE_KINDS: &[&str] = &[
+    "RPC_IMPL",
+    "HTTP_ROUTE",
+    "CHANNEL_SUBSCRIBE",
+    "CONFIG_SOURCE",
+];
+
+/// One-hop cross-boundary neighbours of `seeds` for explain_symbol, found by
+/// running trace_flow's own traversal (direct resolved edges + bridge
+/// crossing by exact target_qualname) with `max_hops: 0`.
+///
+/// Every ref is labelled with the *client-side* kind (RPC_CALL, HTTP_CALL,
+/// CHANNEL_PUBLISH, CONFIG_READ) or CONFIG_BIND, so a test -> impl gRPC hop
+/// reads RPC_CALL from both ends.
+///
+/// RPC_CALL fan-out: a C# client call emits one RPC_CALL per candidate
+/// (package, service) pair, all with a NULL target. Only candidates that
+/// bridge to a real RPC_IMPL surface, deduped by target symbol, so the
+/// unresolvable guesses never appear or count toward `callees_total`.
+fn cross_boundary_refs(
+    db: &crate::db::Db,
+    seeds: &[i64],
+    outgoing: bool,
+    ctx: &HandlerContext,
+) -> Result<Vec<ExplainRef>> {
+    // Outgoing starts from the client kinds and crosses to the server side;
+    // incoming starts from the server kinds and crosses back to the clients.
+    let mut allowed_kinds: Vec<String> = if outgoing {
+        CLIENT_BRIDGE_KINDS
+    } else {
+        SERVER_BRIDGE_KINDS
+    }
+    .iter()
+    .map(|k| k.to_string())
+    .collect();
+    if outgoing {
+        // Resolved method -> options-class binding; a direct edge, no bridge.
+        allowed_kinds.push("CONFIG_BIND".to_string());
+    }
+    let config = crate::traversal::TraceConfig {
+        max_hops: 0,
+        max_bytes: usize::MAX,
+        allowed_kinds,
+        ..Default::default()
+    };
+    let hops = crate::traversal::trace_flow(
+        db,
+        seeds.to_vec(),
+        None,
+        ctx.languages.as_deref(),
+        ctx.graph_version,
+        &config,
+    )?
+    .hops;
+    let mut refs: Vec<ExplainRef> = hops
+        .into_iter()
+        .filter_map(|hop| {
+            let edge_kind = if config.allowed_kinds.contains(&hop.edge_kind) {
+                // Direct edge from a seed. Incoming wants only bridged hops.
+                if !outgoing {
+                    return None;
+                }
+                hop.edge_kind
+            } else if outgoing {
+                // Bridged hop carries the far (server) side's kind.
+                crate::indexer::channel::bridge_complement(&hop.edge_kind)?[0].to_string()
+            } else if CLIENT_BRIDGE_KINDS.contains(&hop.edge_kind.as_str()) {
+                hop.edge_kind
+            } else {
+                // e.g. RPC_ROUTE: the .proto declaration, not a caller.
+                return None;
+            };
+            Some(ExplainRef {
+                symbol: hop.symbol,
+                evidence: hop.snippet,
+                edge_kind,
+                protocol_context: hop.protocol_context,
+                resolution_kind: hop.resolution_kind,
+            })
+        })
+        .collect();
+    if !outgoing {
+        // CONFIG_BIND is resolved and unbridged, so trace_flow's downstream
+        // walk never sees it arriving; read it straight off the seeds.
+        for &seed in seeds {
+            for edge in db.edges_for_symbol(seed, ctx.languages.as_deref(), ctx.graph_version)? {
+                if edge.kind == "CONFIG_BIND"
+                    && edge.target_symbol_id == Some(seed)
+                    && let Some(source_id) = edge.source_symbol_id
+                    && let Some(sym) = db.get_symbol_by_id(source_id)?
+                {
+                    refs.push(ExplainRef {
+                        symbol: sym,
+                        evidence: edge.evidence_snippet,
+                        edge_kind: edge.kind,
+                        protocol_context: None,
+                        resolution_kind: edge.resolution_kind,
+                    });
+                }
+            }
+        }
+    }
+    Ok(refs)
 }
 
 // ---------------------------------------------------------------------------
@@ -651,11 +957,64 @@ pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Va
 
     let config = crate::repo_map::RepoMapConfig {
         max_bytes,
-        languages: ctx.languages,
-        paths: ctx.paths,
+        languages: ctx.languages.clone(),
+        paths: ctx.paths.clone(),
         graph_version: ctx.graph_version,
     };
     let map_result = crate::repo_map::build_repo_map(indexer.db(), &config)?;
+
+    if map_result.modules == 0 {
+        // Issue #65: zero modules is ambiguous -- it could mean "the
+        // languages/paths filter matched nothing in an otherwise-populated
+        // index" or "nothing is indexed at all". Disambiguate by re-running
+        // the same aggregate with every filter dropped: if that's also
+        // empty, the index itself is empty.
+        let filter_applied = ctx.languages.is_some() || ctx.paths.is_some();
+        let index_empty = if filter_applied {
+            indexer
+                .db()
+                .module_summary(1, None, None, ctx.graph_version)?
+                .is_empty()
+        } else {
+            true
+        };
+        let mut next_hops: Vec<serde_json::Value> = Vec::new();
+        let warnings: Vec<String> = if index_empty {
+            next_hops.push(json!({
+                "method": "reindex",
+                "params": {},
+                "description": "Nothing is indexed yet -- reindex the repo before calling repo_map",
+            }));
+            vec![
+                "Nothing is indexed for this repo at this graph version -- reindex before calling repo_map."
+                    .to_string(),
+            ]
+        } else {
+            next_hops.push(json!({
+                "method": "repo_map",
+                "params": {},
+                "description": "Retry without the languages/paths filter to see the full repo map",
+            }));
+            vec![
+                "The languages/paths filter matched no indexed files -- widen or drop the filter to see the repo map."
+                    .to_string(),
+            ]
+        };
+        return Ok(json!({
+            "text": map_result.text,
+            "modules": map_result.modules,
+            "symbols": map_result.symbols,
+            "bytes": map_result.bytes,
+            "counts": {
+                "modules": map_result.modules,
+                "symbols": map_result.symbols,
+            },
+            "index_empty": index_empty,
+            "warnings": warnings,
+            "next_hops": next_hops,
+        }));
+    }
+
     Ok(json!({
         "text": map_result.text,
         "modules": map_result.modules,
@@ -728,7 +1087,86 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
         ctx.paths.as_deref(),
         ctx.graph_version,
     )?;
-    Ok(json!(results))
+
+    if results.is_empty() {
+        // Issue #65: an empty ranking is ambiguous on its own -- it could mean
+        // "every function in scope is below min_complexity" (metrics exist) or
+        // "no function/method symbols were ever extracted for this scope"
+        // (metrics never existed: an unsupported/unindexed language, or a
+        // paths filter matching nothing). Report both explicitly instead of a
+        // bare `[]`.
+        //
+        // Whether metrics exist at all is answered by re-running the same
+        // query with the complexity floor lifted (`i64::MIN`) and a 1-row
+        // limit, rather than a second query carrying its own copy of the
+        // join/version/path-filter SQL.
+        let metrics_exist = !indexer
+            .db()
+            .top_complexity(
+                1,
+                i64::MIN,
+                ctx.languages.as_deref(),
+                ctx.paths.as_deref(),
+                ctx.graph_version,
+            )?
+            .is_empty();
+        let mut next_hops: Vec<serde_json::Value> = Vec::new();
+        // `limit:0` empties `results` unconditionally (`LIMIT 0`), regardless
+        // of whether any symbol actually clears `min_complexity` -- only
+        // diagnose "below threshold" when the limit itself isn't already
+        // sufficient to explain the empty result.
+        let warnings: Vec<String> = if limit == 0 {
+            vec![
+                "limit:0 was requested, so no results can be returned regardless of scope -- retry with a positive limit to see results."
+                    .to_string(),
+            ]
+        } else if metrics_exist {
+            if min_complexity > 1 {
+                let mut retry_params = serde_json::Map::new();
+                retry_params.insert("min_complexity".to_string(), json!(1));
+                if let Some(ref langs) = ctx.languages {
+                    retry_params.insert("languages".to_string(), json!(langs));
+                }
+                if let Some(ref paths) = ctx.paths {
+                    retry_params.insert("paths".to_string(), json!(paths));
+                }
+                next_hops.push(json!({
+                    "method": "top_complexity",
+                    "params": retry_params,
+                    "description": "Retry with min_complexity:1 to see the full (unfiltered) ranking",
+                }));
+            }
+            vec![format!(
+                "No symbol reached min_complexity:{min_complexity} in this scope -- complexity metrics exist, the scope is just uniformly simple relative to the threshold."
+            )]
+        } else {
+            vec![
+                "No complexity metrics exist for this scope at all -- no function/method symbols were extracted for the requested languages/paths (unsupported or unindexed language, or a paths filter with no matches)."
+                    .to_string(),
+            ]
+        };
+        return Ok(json!({
+            "results": [],
+            "counts": { "results": 0 },
+            "metrics_exist": metrics_exist,
+            "warnings": warnings,
+            "next_hops": next_hops,
+        }));
+    }
+
+    // Issue: this used to be a bare `Ok(json!(results))`, so the response's
+    // top-level shape depended on whether `results` was empty (an object
+    // above, a bare array here). That made `hoist_symbol_run_metadata`
+    // (`rpc/mod.rs`) unable to hoist `graph_version`/`commit_sha` on the
+    // non-empty path -- there's nowhere to hoist a field to on a bare array
+    // -- so every entry repeated it. Always return an object, mirroring the
+    // empty path's `results`/`counts` field names, so the shape is uniform
+    // and the generic hoist can do its job.
+    let count = results.len();
+    Ok(json!({
+        "results": results,
+        "counts": { "results": count },
+    }))
 }
 
 pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Value> {
@@ -750,9 +1188,40 @@ pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Val
 // GROUP 2 -- Graph handlers
 // ---------------------------------------------------------------------------
 
+/// Rank of `kind` in `db::resolver::ALL_RESOLUTION_KINDS`'s
+/// strongest-to-weakest tier order, or `None` when `kind` isn't one of
+/// those values. Shared lookup behind `explain_symbol`'s `min_resolution`
+/// filter (issue #67) -- unlike `validate_resolution_kinds` below, a miss
+/// here isn't an error, just "unranked".
+fn resolution_kind_rank(kind: &str) -> Option<usize> {
+    crate::db::resolver::ALL_RESOLUTION_KINDS
+        .iter()
+        .position(|k| *k == kind)
+}
+
+/// Issue #81 (R3): reject an unknown or wrong-case resolution kind
+/// (`"BARE_NAME"`, `"bogus"`) up front, rather than silently matching
+/// nothing while `next_hops` still offers "retry without the filter" for a
+/// filter that quietly did nothing. Validates against
+/// `db::resolver::ALL_RESOLUTION_KINDS`, the resolver's own single source
+/// of truth for the column's possible values.
+fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
+    if let Some(bad) = kinds
+        .iter()
+        .find(|k| !crate::db::resolver::ALL_RESOLUTION_KINDS.contains(&k.as_str()))
+    {
+        anyhow::bail!(
+            "unknown resolution kind '{bad}' in exclude_resolution_kinds -- valid kinds: {}",
+            crate::db::resolver::ALL_RESOLUTION_KINDS.join(", ")
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let raw_params = params.clone();
     let params: TraceFlowParams = serde_json::from_value(params)?;
-    let ctx = HandlerContext::new(indexer, params.common)?;
+    let ctx = HandlerContext::new(indexer, params.common.clone())?;
     let max_hops = params.max_hops.unwrap_or(5).min(10);
     let include_snippets = params.include_snippets.unwrap_or(true);
     let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
@@ -766,6 +1235,9 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         .kinds
         .clone()
         .unwrap_or_else(|| crate::traversal::TraceConfig::default().allowed_kinds);
+    let exclude_resolution_kinds: Vec<String> =
+        params.exclude_resolution_kinds.clone().unwrap_or_default();
+    validate_resolution_kinds(&exclude_resolution_kinds)?;
 
     // Config URI resolution: find all symbols connected to the URI
     let config_uri_seeds: Vec<i64> = if let Some(ref qn) = params.start_qualname {
@@ -780,15 +1252,28 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         vec![]
     };
 
-    // Resolve start symbol
+    // Resolve start symbol.
+    // For ID lookups we propagate errors (the ID either exists or it doesn't).
+    // For qualname/query lookups, and for a config URI with no connected
+    // symbols, we catch resolution failure and return a structured recovery
+    // payload instead of a flat {error: ...} so the caller has a path forward.
     let start_ref = if let Some(id) = params.start_id {
         crate::resolve::SymbolRef::Id(id)
     } else if let Some(ref qn) = params.start_qualname {
         if crate::indexer::config::is_config_uri(qn) {
-            let first_id = config_uri_seeds
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("no symbols found for config URI: {}", qn))?;
-            crate::resolve::SymbolRef::Id(*first_id)
+            match config_uri_seeds.first() {
+                Some(&first_id) => crate::resolve::SymbolRef::Id(first_id),
+                None => {
+                    return Ok(crate::resolve::build_resolution_recovery_payload(
+                        indexer.db(),
+                        qn,
+                        &[],
+                        ctx.graph_version,
+                        "trace_flow",
+                        &raw_params,
+                    ));
+                }
+            }
         } else {
             crate::resolve::SymbolRef::Qualname(qn.clone())
         }
@@ -797,12 +1282,17 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     } else {
         anyhow::bail!("trace_flow requires start_id, start_qualname, or query");
     };
-    let start = crate::resolve::resolve_symbol(
+    let start = match crate::resolve::resolve_or_recovery(
         indexer.db(),
         start_ref,
         ctx.languages.as_deref(),
         ctx.graph_version,
-    )?;
+        "trace_flow",
+        &raw_params,
+    )? {
+        Ok(sym) => sym,
+        Err(payload) => return Ok(payload),
+    };
 
     // Resolve optional end symbol
     let end_id = if let Some(id) = params.end_id {
@@ -830,6 +1320,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         allowed_kinds,
         trace_offset,
         compact: compact_mode,
+        exclude_resolution_kinds,
     };
     let trace_result = crate::traversal::trace_flow(
         indexer.db(),
@@ -920,6 +1411,85 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         }
     }
 
+    let lower_bound = LowerBound {
+        is_lower_bound: trace_result.unresolved_reference_count > 0,
+        unresolved_count: trace_result.unresolved_reference_count,
+    };
+
+    // Issue #81: suggest the filtered/unfiltered counterpart of this call,
+    // where useful -- never both, since asking for the opposite of a filter
+    // that wasn't applied is a no-op. `trace_flow` already always attaches
+    // informational hops to a non-empty trace (the explain_symbol hops
+    // above), so this one follows the same convention unconditionally
+    // rather than gating on `lower_bound` (unlike `analyze_impact`, which
+    // has an existing "unchanged when non-empty" contract to preserve).
+    let has_exclude_filter = params
+        .exclude_resolution_kinds
+        .as_ref()
+        .is_some_and(|k| !k.is_empty());
+    // R2/R4: a retry hop must reconstruct the same trace, not a bare start --
+    // a call started via `query`/`start_query` has neither start_qualname nor
+    // start_id, so it falls back to the symbol `resolve_symbol` already
+    // resolved it to (`start.id`); end_qualname/end_id/kinds/max_hops/
+    // include_snippets all carry over too, so only the filter itself changes.
+    let hop_start_params = |extra: &mut serde_json::Map<String, serde_json::Value>| {
+        if let Some(ref qn) = params.start_qualname {
+            extra.insert("start_qualname".to_string(), json!(qn));
+        } else if let Some(id) = params.start_id {
+            extra.insert("start_id".to_string(), json!(id));
+        } else {
+            extra.insert("start_id".to_string(), json!(start.id));
+        }
+        if let Some(id) = params.end_id {
+            extra.insert("end_id".to_string(), json!(id));
+        } else if let Some(ref qn) = params.end_qualname {
+            extra.insert("end_qualname".to_string(), json!(qn));
+        }
+        if let Some(ref d) = params.direction {
+            extra.insert("direction".to_string(), json!(d));
+        }
+        if let Some(ref k) = params.kinds {
+            extra.insert("kinds".to_string(), json!(k));
+        }
+        if let Some(h) = params.max_hops {
+            extra.insert("max_hops".to_string(), json!(h));
+        }
+        if let Some(s) = params.include_snippets {
+            extra.insert("include_snippets".to_string(), json!(s));
+        }
+        if let Some(ref langs) = params.common.languages {
+            extra.insert("languages".to_string(), json!(langs));
+        }
+        if let Some(gv) = params.common.graph_version {
+            extra.insert("graph_version".to_string(), json!(gv));
+        }
+    };
+    if has_exclude_filter {
+        let mut retry_params = serde_json::Map::new();
+        hop_start_params(&mut retry_params);
+        next_hops.push(json!({
+            "method": "trace_flow",
+            "params": retry_params,
+            "description": "Retry without the resolution-kind filter to see the full (unfiltered) trace, including heuristic edges",
+        }));
+    } else if trace_result.traversed_heuristic_kind {
+        // R5: only suggest the filtered retry when a heuristic-kind edge was
+        // actually traversed -- a non-empty trace made entirely of exact/
+        // import/receiver_type/inherited edges has nothing for the filter
+        // to remove.
+        let mut retry_params = serde_json::Map::new();
+        hop_start_params(&mut retry_params);
+        retry_params.insert(
+            "exclude_resolution_kinds".to_string(),
+            json!(crate::db::resolver::HEURISTIC_RESOLUTION_KINDS),
+        );
+        next_hops.push(json!({
+            "method": "trace_flow",
+            "params": retry_params,
+            "description": "Retry excluding heuristic name-fallback edges (bare_name, two_segment) for a higher-confidence trace",
+        }));
+    }
+
     let result = TraceFlowResult {
         start: trace_result.start,
         end: trace_result.end,
@@ -931,7 +1501,9 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             budget_bytes: trace_result.budget_bytes,
             used_bytes: trace_result.used_bytes,
             truncated,
+            requested_bytes: None,
         },
+        lower_bound,
         next_hops,
     };
 
@@ -982,19 +1554,30 @@ fn build_impact_config(
     if let Some(ref kinds) = params.kinds {
         config.direct.kinds = kinds.clone();
     }
+    if let Some(ref exclude) = params.exclude_resolution_kinds {
+        config.direct.exclude_resolution_kinds = exclude.clone();
+    }
     config
 }
 
-/// Resolve a single qualname (or config URI) to seed IDs and run impact analysis.
-fn resolve_and_analyze_single(
+/// Resolve a single batch qualname (or config URI) to seed IDs. Exact match
+/// only (no fuzzy fallback) -- a batch entry that doesn't resolve this way
+/// is treated as an unresolvable seed by the caller, which builds a
+/// recovery payload for it. Kept separate from the analysis step below so
+/// the caller can tell "seed not found" (recoverable) apart from "seed
+/// found, analysis failed afterward" (a real error, not recoverable) --
+/// see issue: batch analyze_impact previously labeled every per-entry
+/// error "not found", even analysis failures like a `languages` filter
+/// that excludes the seed's own language.
+fn resolve_batch_seed_ids(
     indexer: &mut Indexer,
     qualname: &str,
     config: &crate::impact::config::MultiLayerConfig,
     graph_version: i64,
-) -> Result<crate::impact::types::UnifiedImpactResult> {
+) -> Result<Vec<i64>> {
     let dir = config.direct.direction.as_str();
 
-    let seed_ids = if crate::indexer::config::is_config_uri(qualname) {
+    if crate::indexer::config::is_config_uri(qualname) {
         let uri_kinds: &[&str] = match dir {
             "downstream" => &["CONFIG_SOURCE"],
             "upstream" => &["CONFIG_READ", "CONFIG_BIND"],
@@ -1009,26 +1592,65 @@ fn resolve_and_analyze_single(
                 qualname
             ));
         }
-        ids
+        Ok(ids)
     } else {
         let symbol = indexer
             .db()
             .get_symbol_by_qualname(qualname, graph_version)?
             .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", qualname))?;
-        vec![symbol.id]
-    };
+        Ok(vec![symbol.id])
+    }
+}
 
-    crate::impact::analyze_impact_multi_layer(
-        indexer.db(),
-        &seed_ids,
-        config.clone(),
-        graph_version,
-    )
+/// Build a batch entry for a qualname that produced no result, carrying the
+/// real error in the legacy `layers.direct.error` field. `recovery` is
+/// `Some` only when the seed itself couldn't be resolved -- never for a
+/// downstream analysis failure on an already-resolved seed.
+fn batch_error_entry(
+    qn: &str,
+    error: String,
+    recovery: Option<Value>,
+) -> crate::impact::types::BatchImpactEntry {
+    crate::impact::types::BatchImpactEntry {
+        seed_qualname: qn.to_string(),
+        seeds: vec![],
+        affected: vec![],
+        summary: crate::impact::types::ImpactSummary {
+            by_file: vec![],
+            by_relationship: std::collections::HashMap::new(),
+            by_distance: std::collections::HashMap::new(),
+            total_affected: 0,
+        },
+        truncated: false,
+        layers: crate::impact::types::LayerMetadata {
+            direct: Some(crate::impact::types::LayerStats {
+                enabled: false,
+                duration_ms: 0,
+                result_count: 0,
+                truncated: false,
+                error: Some(error),
+            }),
+            test: None,
+            historical: None,
+        },
+        lower_bound: LowerBound {
+            is_lower_bound: false,
+            unresolved_count: 0,
+        },
+        recovery,
+    }
 }
 
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let raw_params = params.clone();
     let params: AnalyzeImpactParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
+    // Issue #81 (R3): validated once here, ahead of both the batch path
+    // (`build_impact_config`) and the single-seed path below -- both read
+    // `params.exclude_resolution_kinds`.
+    if let Some(ref exclude) = params.exclude_resolution_kinds {
+        validate_resolution_kinds(exclude)?;
+    }
 
     // ---- Batch path: multiple qualnames in one call ----
     if let Some(ref qualnames) = params.qualnames {
@@ -1047,8 +1669,13 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         let mut all_files: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for qn in qualnames {
-            let entry =
-                match resolve_and_analyze_single(indexer, qn, &base_config, ctx.graph_version) {
+            let entry = match resolve_batch_seed_ids(indexer, qn, &base_config, ctx.graph_version) {
+                Ok(seed_ids) => match crate::impact::analyze_impact_multi_layer(
+                    indexer.db(),
+                    &seed_ids,
+                    base_config.clone(),
+                    ctx.graph_version,
+                ) {
                     Ok(result) => {
                         total_affected += result.summary.total_affected;
                         for fi in &result.summary.by_file {
@@ -1061,35 +1688,40 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                             summary: result.summary,
                             truncated: result.truncated,
                             layers: result.layers,
+                            lower_bound: result.lower_bound,
+                            recovery: None,
                         }
                     }
                     Err(e) => {
-                        // Include error entry rather than failing the whole batch
-                        crate::impact::types::BatchImpactEntry {
-                            seed_qualname: qn.clone(),
-                            seeds: vec![],
-                            affected: vec![],
-                            summary: crate::impact::types::ImpactSummary {
-                                by_file: vec![],
-                                by_relationship: std::collections::HashMap::new(),
-                                by_distance: std::collections::HashMap::new(),
-                                total_affected: 0,
-                            },
-                            truncated: false,
-                            layers: crate::impact::types::LayerMetadata {
-                                direct: Some(crate::impact::types::LayerStats {
-                                    enabled: false,
-                                    duration_ms: 0,
-                                    result_count: 0,
-                                    truncated: false,
-                                    error: Some(e.to_string()),
-                                }),
-                                test: None,
-                                historical: None,
-                            },
-                        }
+                        // The seed resolved fine -- this is a genuine analysis
+                        // failure (e.g. a `languages` filter that excludes the
+                        // seed's own language, so `load_seeds` finds nothing),
+                        // not an unresolvable seed. No recovery payload: that
+                        // would misreport a found symbol as "not found".
+                        batch_error_entry(qn, e.to_string(), None)
                     }
-                };
+                },
+                Err(e) => {
+                    // The seed itself could not be resolved -- build a structured
+                    // recovery payload rather than failing the whole batch or
+                    // returning a bare error message. The batch loop resolves each
+                    // qualname by exact match only (no fuzzy fallback), so
+                    // candidates aren't already computed the way resolve_by_query's
+                    // failure carries them -- find them the same way (find_candidates
+                    // is the one candidate-search algorithm).
+                    let candidates =
+                        crate::resolve::find_candidates(indexer.db(), qn, ctx.graph_version);
+                    let recovery = crate::resolve::build_resolution_recovery_payload(
+                        indexer.db(),
+                        qn,
+                        &candidates,
+                        ctx.graph_version,
+                        "analyze_impact",
+                        &raw_params,
+                    );
+                    batch_error_entry(qn, e.to_string(), Some(recovery))
+                }
+            };
             results.push(entry);
         }
 
@@ -1130,9 +1762,13 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 ctx.graph_version,
             )?;
             if ids.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "no symbols found for config URI: {}",
-                    qualname
+                return Ok(crate::resolve::build_resolution_recovery_payload(
+                    indexer.db(),
+                    qualname,
+                    &[],
+                    ctx.graph_version,
+                    "analyze_impact",
+                    &raw_params,
                 ));
             }
             ids
@@ -1143,7 +1779,9 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         vec![]
     };
 
-    // Resolve symbol by id, qualname, or fuzzy query (skip if config URI already resolved)
+    // Resolve symbol by id, qualname, or fuzzy query (skip if config URI already resolved).
+    // For qualname/query we catch resolution failure and return a structured recovery payload
+    // instead of propagating a flat error — giving the caller actionable next_hops.
     let seed_ids = if !seed_ids.is_empty() {
         seed_ids
     } else {
@@ -1158,12 +1796,17 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 "analyze_impact requires id, qualname, or query"
             ));
         };
-        let symbol = crate::resolve::resolve_symbol(
+        let symbol = match crate::resolve::resolve_or_recovery(
             indexer.db(),
             sym_ref,
             ctx.languages.as_deref(),
             ctx.graph_version,
-        )?;
+            "analyze_impact",
+            &raw_params,
+        )? {
+            Ok(sym) => sym,
+            Err(payload) => return Ok(payload),
+        };
 
         // Property→parent expansion: if the seed is a property/field/attribute/const,
         // also add the parent class so CONFIG_BIND consumers are reachable
@@ -1186,6 +1829,12 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     let direction = params.direction.unwrap_or_else(|| "both".to_string());
     // Capture before params.kinds is moved into config.
     let original_kinds: Option<Vec<String>> = params.kinds.clone();
+    // Issue #81: whether this call already applied a resolution-kind filter,
+    // for the filtered/unfiltered next_hops suggestion below.
+    let has_exclude_filter = params
+        .exclude_resolution_kinds
+        .as_ref()
+        .is_some_and(|k| !k.is_empty());
 
     // Build multi-layer configuration
     let config = crate::impact::config::MultiLayerConfig::builder()
@@ -1219,6 +1868,9 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     if let Some(kinds) = params.kinds {
         config.direct.kinds = kinds;
     }
+    if let Some(ref exclude) = params.exclude_resolution_kinds {
+        config.direct.exclude_resolution_kinds = exclude.clone();
+    }
 
     // Perform multi-layer impact analysis
     let result = crate::impact::analyze_impact_multi_layer(
@@ -1227,6 +1879,84 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         config,
         ctx.graph_version,
     )?;
+
+    // Issue #81: suggest the filtered/unfiltered counterpart of this call,
+    // where useful -- never both, since asking for the opposite of a filter
+    // that wasn't applied is a no-op. Merged into whichever next_hops list
+    // below actually gets returned (the zero-result recovery hops, or a
+    // fresh one for a normal, non-empty result). R5: the exclude-filter
+    // suggestion fires only when the direct layer actually traversed a
+    // heuristic-kind edge -- `lower_bound` (pending unresolved references)
+    // is a different signal and doesn't imply a heuristic edge was crossed.
+    let mut resolution_next_hops: Vec<serde_json::Value> = Vec::new();
+    {
+        // R4: rebuild the retry from the ORIGINAL request's own identifying
+        // and config params, not just the first seed id and direction -- so
+        // a config-URI qualname's multi-symbol seeding, `max_depth`,
+        // `kinds`, `include_tests`/`include_paths`/`limit`/`min_confidence`
+        // and layer toggles all survive the retry; only
+        // `exclude_resolution_kinds` itself changes.
+        let mut retry_params = serde_json::Map::new();
+        if let Some(id) = params.id {
+            retry_params.insert("id".to_string(), json!(id));
+        } else if let Some(ref qn) = params.qualname {
+            retry_params.insert("qualname".to_string(), json!(qn));
+        } else if let Some(ref q) = params.query {
+            retry_params.insert("query".to_string(), json!(q));
+        }
+        retry_params.insert("direction".to_string(), json!(direction));
+        if let Some(depth) = params.max_depth {
+            retry_params.insert("max_depth".to_string(), json!(depth));
+        }
+        if let Some(ref kinds) = original_kinds {
+            retry_params.insert("kinds".to_string(), json!(kinds));
+        }
+        if let Some(include_tests) = params.include_tests {
+            retry_params.insert("include_tests".to_string(), json!(include_tests));
+        }
+        if let Some(include_paths) = params.include_paths {
+            retry_params.insert("include_paths".to_string(), json!(include_paths));
+        }
+        if let Some(limit) = params.limit {
+            retry_params.insert("limit".to_string(), json!(limit));
+        }
+        if let Some(min_confidence) = params.min_confidence {
+            retry_params.insert("min_confidence".to_string(), json!(min_confidence));
+        }
+        if let Some(enable_direct) = params.enable_direct {
+            retry_params.insert("enable_direct".to_string(), json!(enable_direct));
+        }
+        if let Some(enable_test) = params.enable_test {
+            retry_params.insert("enable_test".to_string(), json!(enable_test));
+        }
+        if let Some(enable_historical) = params.enable_historical {
+            retry_params.insert("enable_historical".to_string(), json!(enable_historical));
+        }
+        if let Some(ref langs) = params.common.languages {
+            retry_params.insert("languages".to_string(), json!(langs));
+        }
+        if let Some(gv) = params.common.graph_version {
+            retry_params.insert("graph_version".to_string(), json!(gv));
+        }
+
+        if has_exclude_filter {
+            resolution_next_hops.push(json!({
+                "method": "analyze_impact",
+                "params": retry_params,
+                "description": "Retry without the resolution-kind filter to see the full (unfiltered) impact set, including heuristic edges",
+            }));
+        } else if !result.affected.is_empty() && result.traversed_heuristic_kind {
+            retry_params.insert(
+                "exclude_resolution_kinds".to_string(),
+                json!(crate::db::resolver::HEURISTIC_RESOLUTION_KINDS),
+            );
+            resolution_next_hops.push(json!({
+                "method": "analyze_impact",
+                "params": retry_params,
+                "description": "Retry excluding heuristic name-fallback edges (bare_name, two_segment) for a higher-confidence impact set",
+            }));
+        }
+    }
 
     // When zero symbols were affected, attach recovery next_hops so the LLM has a path
     // forward instead of a dead-end payload.
@@ -1238,6 +1968,13 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 map.insert("id".to_string(), json!(id));
             }
             map.insert("direction".to_string(), json!(dir));
+            // Keep a filtered call's filter so following the hop doesn't
+            // silently widen it.
+            if let Some(ref exclude) = params.exclude_resolution_kinds
+                && !exclude.is_empty()
+            {
+                map.insert("exclude_resolution_kinds".to_string(), json!(exclude));
+            }
             map
         };
         let mut next_hops: Vec<serde_json::Value> = Vec::new();
@@ -1302,6 +2039,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
             }));
         }
 
+        next_hops.extend(resolution_next_hops);
         let mut value = serde_json::to_value(&result)?;
         if let Some(obj) = value.as_object_mut() {
             obj.insert("next_hops".to_string(), json!(next_hops));
@@ -1309,7 +2047,15 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         return Ok(value);
     }
 
-    Ok(json!(result))
+    if resolution_next_hops.is_empty() {
+        Ok(json!(result))
+    } else {
+        let mut value = serde_json::to_value(&result)?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("next_hops".to_string(), json!(resolution_next_hops));
+        }
+        Ok(value)
+    }
 }
 
 pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Result<Value> {
@@ -1472,41 +2218,8 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                         },
                         distance: current_distance,
                         confidence: base_confidence,
+                        resolution_kind: edge.resolution_kind.clone(),
                     });
-                }
-            }
-
-            // Qualname fallback for unresolved incoming edges
-            if downstream.len() < max_downstream {
-                let unresolved = indexer
-                    .db()
-                    .incoming_edges_by_qualname_pattern(
-                        &sym.name,
-                        "CALLS",
-                        languages.as_deref(),
-                        ctx.graph_version,
-                    )
-                    .unwrap_or_default();
-                for edge in &unresolved {
-                    if downstream.len() >= max_downstream {
-                        break;
-                    }
-                    if let Some(source_id) = edge.source_symbol_id
-                        && seen_ids.insert(source_id)
-                        && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
-                    {
-                        next_level.push(caller.clone());
-                        downstream.push(DiffImpactEntry {
-                            symbol: caller,
-                            relationship: if current_distance == 1 {
-                                "caller".to_string()
-                            } else {
-                                format!("caller_depth_{}", current_distance)
-                            },
-                            distance: current_distance,
-                            confidence: base_confidence * 0.8,
-                        });
-                    }
                 }
             }
         }
@@ -1518,7 +2231,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         base_confidence *= 0.8; // Decay confidence per level
     }
 
-    // Step 4: Test coverage (with qualname fallback)
+    // Step 4: Test coverage
     let test_coverage = if include_tests {
         let mut coverage = Vec::new();
         for cs in &changed_symbols {
@@ -1534,29 +2247,6 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 if edge.kind == "CALLS"
                     && edge.target_symbol_id == Some(cs.symbol.id)
                     && let Some(source_id) = edge.source_symbol_id
-                    && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
-                    && is_test_symbol(&caller)
-                    && seen_test_ids.insert(source_id)
-                {
-                    tests.push(TestRef {
-                        test_qualname: caller.qualname.clone(),
-                        test_file: caller.file_path.clone(),
-                        coverage_type: "direct".to_string(),
-                    });
-                }
-            }
-            // Qualname fallback for unresolved edges
-            let unresolved = indexer
-                .db()
-                .incoming_edges_by_qualname_pattern(
-                    &cs.symbol.name,
-                    "CALLS",
-                    languages.as_deref(),
-                    ctx.graph_version,
-                )
-                .unwrap_or_default();
-            for edge in &unresolved {
-                if let Some(source_id) = edge.source_symbol_id
                     && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
                     && is_test_symbol(&caller)
                     && seen_test_ids.insert(source_id)
@@ -1792,6 +2482,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             budget_bytes: max_bytes,
             used_bytes,
             truncated: false,
+            requested_bytes: None,
         },
         next_hops,
         warnings,
@@ -1898,6 +2589,31 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
         }));
     }
 
+    // Issue #97: point each hit toward an `outline` of its file -- one hop per
+    // distinct file, not per hit, since a file with several matching lines only
+    // needs one skeleton. Only emitted when the file is something `outline`
+    // can actually handle: an indexed language (reused from the scanner's own
+    // extension-to-language detection, not a hand-rolled extension list) or
+    // Markdown (read straight off disk -- see `is_markdown_path`). A hop
+    // toward e.g. Cargo.toml or a .json file would just error.
+    let mut hopped_paths: HashSet<String> = HashSet::new();
+    for hit in results.iter_mut() {
+        if !hopped_paths.insert(hit.path.clone()) {
+            continue;
+        }
+        let path = hit.path.clone();
+        let outlineable = is_markdown_path(&path)
+            || scan::language_for_path(std::path::Path::new(&path)).is_some();
+        if !outlineable {
+            continue;
+        }
+        hit.next_hops = Some(vec![RpcSuggestion {
+            method: "outline".to_string(),
+            params: json!({"path": path}),
+            description: Some(format!("Outline {}", path)),
+        }]);
+    }
+
     Ok(json!(results))
 }
 
@@ -1909,14 +2625,28 @@ pub(super) fn handle_reindex(indexer: &mut Indexer, params: Value) -> Result<Val
     let params: ReindexParams = serde_json::from_value(params)?;
     let stats = indexer.reindex()?;
 
-    // Optionally resolve unresolved edges after reindexing
+    // Optionally force another repair pass after reindexing, beyond the one
+    // `reindex()` already runs when it detects work to do (see
+    // `Indexer::reindex`'s `needs_repair` gate) -- issue #79 retired the
+    // older, untargeted `resolve_null_target_edges` full-edge-table rescan
+    // this param used to run (nothing was left for it to find once
+    // `insert_edges` stopped writing a NULL-target edge for any kind but a
+    // Bridge Edge), so this now forces the same store-driven repair
+    // (`Db::repair_unresolved`) reindex's own gate would otherwise skip on
+    // a purely-carried-forward run.
     let mut json_stats = json!(stats);
     if params.resolve_edges.unwrap_or(false) {
         let graph_version = indexer.db().current_graph_version()?;
-        let resolved = indexer.db().resolve_null_target_edges(graph_version)?;
+        let (reconciled, store_resolved) =
+            indexer
+                .db()
+                .repair_unresolved(graph_version, true, "manual resolve_edges request")?;
         // Add resolved count to stats
         if let Some(obj) = json_stats.as_object_mut() {
-            obj.insert("edges_resolved".to_string(), json!(resolved));
+            obj.insert(
+                "edges_resolved".to_string(),
+                json!(reconciled + store_resolved),
+            );
         }
     }
 
@@ -2083,4 +2813,98 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
         "index_status": { "stale": stale, "hint": hint },
         "suggested_queries": suggested,
     }))
+}
+
+#[cfg(test)]
+mod explain_symbol_cross_boundary_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// A python gRPC server, its .proto, and a test that calls it both
+    /// directly (`helper()`, a CALLS edge) and over gRPC (an RPC_CALL edge
+    /// with a NULL target that only trace_flow's bridge resolves).
+    fn grpc_repo() -> (TempDir, Indexer) {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("users.proto"),
+            "syntax = \"proto3\";\n\nservice UserService {\n  rpc GetUser (GetUserRequest) returns (User);\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("server.py"),
+            "import users_pb2_grpc\n\n\nclass UserService(users_pb2_grpc.UserServiceServicer):\n    def GetUser(self, request, context):\n        return None\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("test_client.py"),
+            "import users_pb2_grpc\n\n\ndef helper():\n    return 1\n\n\ndef test_get_user(channel):\n    helper()\n    users_pb2_grpc.UserServiceStub(channel).GetUser(None)\n",
+        )
+        .unwrap();
+        let mut indexer =
+            Indexer::new(root.to_path_buf(), root.join(".lidx").join(".lidx.sqlite")).unwrap();
+        indexer.reindex().unwrap();
+        (dir, indexer)
+    }
+
+    fn explain(indexer: &mut Indexer, qualname: &str) -> Value {
+        handle_explain_symbol(indexer, json!({"qualname": qualname})).unwrap()
+    }
+
+    fn refs<'a>(v: &'a Value, section: &str) -> Vec<(&'a str, &'a str)> {
+        v[section]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["symbol"]["qualname"].as_str().unwrap(),
+                    r["edge_kind"].as_str().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn callees_include_rpc_hop_after_calls_with_kind_and_protocol_context() {
+        let (_dir, mut indexer) = grpc_repo();
+        let v = explain(&mut indexer, "test_client.test_get_user");
+        // `users_pb2_grpc.UserServiceStub(channel)` is a call into a
+        // generated-protobuf import (issue #80: known-external, so it binds
+        // to that stub symbol instead of staying unresolved) between the
+        // plain CALLS callee and the RPC_CALL hop.
+        assert_eq!(
+            refs(&v, "callees"),
+            vec![
+                ("test_client.helper", "CALLS"),
+                ("ext:users_pb2_grpc.UserServiceStub", "CALLS"),
+                ("server.UserService.GetUser", "RPC_CALL"),
+            ],
+            "{v:#}"
+        );
+        assert_eq!(v["callees_total"], 3);
+        let ctx = &v["callees"][2]["protocol_context"];
+        assert_eq!(ctx["service"], "UserService", "{v:#}");
+        assert_eq!(ctx["rpc"], "GetUser", "{v:#}");
+        assert!(v["callees"][0].get("protocol_context").is_none());
+        assert!(v["callees"][1].get("protocol_context").is_none());
+    }
+
+    #[test]
+    fn callers_and_tests_include_rpc_clients_but_not_the_proto_declaration() {
+        let (_dir, mut indexer) = grpc_repo();
+        let v = explain(&mut indexer, "server.UserService.GetUser");
+        assert_eq!(
+            refs(&v, "callers"),
+            vec![("test_client.test_get_user", "RPC_CALL")],
+            "{v:#}"
+        );
+        assert_eq!(v["callers_total"], 1);
+        assert_eq!(
+            refs(&v, "tests"),
+            vec![("test_client.test_get_user", "RPC_CALL")],
+            "{v:#}"
+        );
+        assert_eq!(v["tests_total"], 1);
+    }
 }

@@ -288,7 +288,7 @@ def4567890123456789012345678901234567890 1234567900
 
     #[test]
     fn test_max_files_per_commit_reasonable() {
-        assert!(MAX_FILES_PER_COMMIT >= 20);
-        assert!(MAX_FILES_PER_COMMIT <= 100);
+        const { assert!(MAX_FILES_PER_COMMIT >= 20) };
+        const { assert!(MAX_FILES_PER_COMMIT <= 100) };
     }
 }

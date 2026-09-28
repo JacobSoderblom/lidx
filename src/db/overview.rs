@@ -1,5 +1,6 @@
 use super::{Db, DbDigest, ModuleSummaryEntry, SymbolRefRecord, TableDigest, append_path_filters};
-use crate::model::RepoOverview;
+use crate::model::{RepoOverview, ScopeCounts};
+use crate::search::{SearchScope, scope_allows};
 use anyhow::Result;
 use blake3::Hasher;
 use rusqlite::{Connection, params};
@@ -18,9 +19,15 @@ impl Db {
         let commit_sha = self.graph_version_commit(graph_version)?;
 
         let conn = self.read_conn()?;
-        let files = count_files_for_version(&conn, languages, graph_version)?;
+        // Issue #69: `files` and `scope_counts` both used to run their own
+        // copy of this same file-set query (`count_files_for_version` and
+        // `scope_counts_for_version`'s `file_paths_for_version` call); fetch
+        // the paths once and derive both from it.
+        let paths = file_paths_for_version(&conn, languages, graph_version)?;
+        let files = paths.len() as i64;
         let symbols = count_symbols_for_version(&conn, languages, graph_version)?;
         let edges = count_edges_for_version(&conn, languages, graph_version)?;
+        let scope_counts = scope_counts_for_paths(&paths);
 
         Ok(RepoOverview {
             repo_root: repo_root.to_string_lossy().to_string(),
@@ -30,7 +37,27 @@ impl Db {
             last_indexed,
             graph_version: Some(graph_version),
             commit_sha,
+            scope_counts,
         })
+    }
+
+    /// Issue #68: cheap check for whether the index holds any test-scope
+    /// files at all, reusing #63's `file_paths_for_version` query rather
+    /// than a second test-file tally. `explain_symbol` calls this only when
+    /// its `tests` section comes back empty, to decide whether that empty
+    /// list needs an explanatory warning or is a genuine "no". Issue #69:
+    /// early-exits on the first tests-scope match instead of classifying
+    /// every path into all four scopes just to read one field back off.
+    pub fn has_test_scope_files(
+        &self,
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<bool> {
+        let conn = self.read_conn()?;
+        let paths = file_paths_for_version(&conn, languages, graph_version)?;
+        Ok(paths
+            .iter()
+            .any(|path| scope_allows(path, Some(SearchScope::Tests), false, None)))
     }
 
     pub fn list_languages(&self, graph_version: i64) -> Result<Vec<String>> {
@@ -49,6 +76,12 @@ impl Db {
         Ok(languages)
     }
 
+    /// Feeds `xref::SymbolRefIndex` (cross-language reference detection).
+    /// Issue #80: excludes external stub symbols (`s.kind = 'external'`) --
+    /// a stub's language is always the synthetic `'external'` file's, which
+    /// would make it look cross-language against every real source
+    /// language and let a same-named string literal (e.g. `"check_output"`)
+    /// bind an XREF edge to it.
     pub fn list_symbol_refs(&self, graph_version: i64) -> Result<Vec<SymbolRefRecord>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
@@ -56,7 +89,8 @@ impl Db {
              FROM symbols s
              JOIN files f ON s.file_id = f.id
              WHERE s.graph_version = ?
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+               AND s.kind != 'external'",
         )?;
         let rows = stmt.query_map(params![graph_version, graph_version], |row| {
             Ok(SymbolRefRecord {
@@ -254,12 +288,17 @@ impl Db {
     ) -> Result<Vec<ModuleSummaryEntry>> {
         let conn = self.read_conn()?;
 
-        // Query all files with their symbol counts
+        // Query all files with their symbol counts. Issue #80: excludes the
+        // single synthetic external pseudo-file every stub symbol belongs
+        // to (`f.language = 'external'`, see `Resolver::external_file_id`)
+        // -- it would otherwise show up as its own noise "module" in the
+        // repo map.
         let mut sql = String::from(
             "SELECT f.path, f.language, COUNT(s.id) as sym_count
              FROM files f
              LEFT JOIN symbols s ON s.file_id = f.id AND s.graph_version = ?
-             WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)",
+             WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)
+               AND f.language != 'external'",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
 
@@ -326,7 +365,10 @@ impl Db {
     ) -> Result<Vec<(String, String, usize, usize)>> {
         let conn = self.read_conn()?;
 
-        // Query all CALLS, IMPORTS, and XREF edges with source and target file paths
+        // Query all CALLS, IMPORTS, and XREF edges with source and target
+        // file paths. Issue #80: excludes an edge into an external stub
+        // symbol (`tgt_f.language = 'external'`) -- it would otherwise show
+        // up as a "module" dependency on the synthetic `<external>` file.
         let mut sql = String::from(
             "SELECT e.kind, src_f.path as src_path, tgt_f.path as tgt_path
              FROM edges e
@@ -337,7 +379,8 @@ impl Db {
              WHERE e.kind IN ('CALLS', 'IMPORTS', 'XREF')
                AND e.graph_version = ?
                AND (src_f.deleted_version IS NULL OR src_f.deleted_version > ?)
-               AND (tgt_f.deleted_version IS NULL OR tgt_f.deleted_version > ? OR tgt_f.id IS NULL)",
+               AND (tgt_f.deleted_version IS NULL OR tgt_f.deleted_version > ? OR tgt_f.id IS NULL)
+               AND (tgt_f.language IS NULL OR tgt_f.language != 'external')",
         );
         let mut params: Vec<&dyn rusqlite::ToSql> =
             vec![&graph_version, &graph_version, &graph_version];
@@ -432,15 +475,45 @@ where
     })
 }
 
-fn count_files_for_version(
+/// Issue #63: per-scope file counts for `repo_overview`, reusing
+/// `search::scope_allows` -- the same query-time classifier the `search`
+/// method's `scope` param uses -- rather than introducing a stored scope
+/// column. Runs the classifier in-process over a file set the caller
+/// already fetched via `file_paths_for_version` (issue #69: `repo_overview`
+/// shares that one query with its own `files` count instead of each
+/// running a separate copy of the same WHERE clause).
+fn scope_counts_for_paths(paths: &[String]) -> ScopeCounts {
+    let mut counts = ScopeCounts::default();
+    for path in paths {
+        if scope_allows(path, Some(SearchScope::Code), false, None) {
+            counts.code += 1;
+        }
+        if scope_allows(path, Some(SearchScope::Tests), false, None) {
+            counts.tests += 1;
+        }
+        if scope_allows(path, Some(SearchScope::Docs), false, None) {
+            counts.docs += 1;
+        }
+        if scope_allows(path, Some(SearchScope::Examples), false, None) {
+            counts.examples += 1;
+        }
+    }
+    counts
+}
+
+fn file_paths_for_version(
     conn: &Connection,
     languages: Option<&[String]>,
     graph_version: i64,
-) -> Result<i64> {
+) -> Result<Vec<String>> {
+    // Issue #80: excludes deleted files and the single synthetic external
+    // pseudo-file every stub symbol belongs to (`f.language = 'external'`,
+    // see `Resolver::external_file_id`) -- it's not a real repo file.
     let mut sql = String::from(
-        "SELECT COUNT(*)
+        "SELECT f.path
          FROM files f
-         WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)",
+         WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)
+           AND f.language != 'external'",
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
     if let Some(languages) = languages
@@ -458,8 +531,13 @@ fn count_files_for_version(
             params.push(language as &dyn rusqlite::ToSql);
         }
     }
-    let count: i64 = conn.query_row(&sql, &*params, |row| row.get(0))?;
-    Ok(count)
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(&*params, |row| row.get::<_, String>(0))?;
+    let mut paths = Vec::new();
+    for row in rows {
+        paths.push(row?);
+    }
+    Ok(paths)
 }
 
 fn count_symbols_for_version(
@@ -467,12 +545,15 @@ fn count_symbols_for_version(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<i64> {
+    // Issue #80: excludes external stub symbols (`s.kind = 'external'`) --
+    // they're not real extracted symbols.
     let mut sql = String::from(
         "SELECT COUNT(*)
          FROM symbols s
          JOIN files f ON s.file_id = f.id
          WHERE s.graph_version = ?
-           AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+           AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+           AND s.kind != 'external'",
     );
     let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
     if let Some(languages) = languages
@@ -543,7 +624,11 @@ mod tests {
     fn make_symbol(qualname: &str, kind: &str) -> SymbolInput {
         SymbolInput {
             kind: kind.to_string(),
-            name: qualname.split('.').last().unwrap_or(qualname).to_string(),
+            name: qualname
+                .split('.')
+                .next_back()
+                .unwrap_or(qualname)
+                .to_string(),
             qualname: qualname.to_string(),
             start_line: 1,
             start_col: 0,
@@ -692,6 +777,30 @@ mod tests {
         assert!(refs.iter().any(|r| r.qualname == "mod.bar"));
     }
 
+    /// Issue #80: an external stub symbol must never be handed to XREF
+    /// candidate matching -- its language ('external') would otherwise
+    /// look cross-language against every real source file.
+    #[test]
+    fn list_symbol_refs_excludes_external_stubs() {
+        let (mut db, _temp) = create_test_db();
+        let fid = db.upsert_file("a.py", "h1", "python", 10, 0).unwrap();
+        db.insert_symbols(fid, "a.py", &[make_symbol("mod.Foo", "class")], 1, None)
+            .unwrap();
+        let ext_fid = db.upsert_file("<external>", "", "external", 0, 0).unwrap();
+        db.insert_symbols(
+            ext_fid,
+            "<external>",
+            &[make_symbol("ext:json.JSONDecodeError", "external")],
+            1,
+            None,
+        )
+        .unwrap();
+
+        let refs = db.list_symbol_refs(1).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].qualname, "mod.Foo");
+    }
+
     #[test]
     fn list_symbol_refs_excludes_deleted_file() {
         let (mut db, _temp) = create_test_db();
@@ -795,6 +904,38 @@ mod tests {
         assert_eq!(ov.commit_sha, Some("abc".to_string()));
     }
 
+    /// Issue #80: the synthetic external pseudo-file and its stub symbols
+    /// must never inflate `repo_overview`'s counts -- they aren't a real
+    /// repo file or a real extracted symbol.
+    #[test]
+    fn repo_overview_counts_exclude_external_stubs() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(Some("abc")).unwrap();
+        let fid = db.upsert_file("src/a.py", "h1", "python", 10, 0).unwrap();
+        db.insert_symbols(
+            fid,
+            "src/a.py",
+            &[make_symbol("a.foo", "function")],
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let ext_fid = db.upsert_file("<external>", "", "external", 0, 0).unwrap();
+        db.insert_symbols(
+            ext_fid,
+            "<external>",
+            &[make_symbol("ext:requests.get", "external")],
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let ov = db.repo_overview("/repo".into(), None, gv).unwrap();
+        assert_eq!(ov.files, 1, "the external pseudo-file must not be counted");
+        assert_eq!(ov.symbols, 1, "the external stub must not be counted");
+    }
+
     #[test]
     fn repo_overview_language_filter() {
         let (mut db, _temp) = create_test_db();
@@ -819,6 +960,30 @@ mod tests {
         let ov = db.repo_overview("/repo".into(), Some(&langs), gv).unwrap();
         assert_eq!(ov.files, 1);
         assert_eq!(ov.symbols, 2);
+    }
+
+    /// Issue #63: `scope_counts` aggregates `search::scope_allows` (the
+    /// same query-time classifier `search`'s `scope` param uses) over the
+    /// indexed file set, with an explicit zero for a scope that has
+    /// nothing in it rather than the field being omitted.
+    #[test]
+    fn repo_overview_scope_counts_classifies_known_mix() {
+        let (db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+        db.upsert_file("src/a.py", "h1", "python", 10, 0).unwrap();
+        db.upsert_file("tests/test_a.py", "h2", "python", 10, 0)
+            .unwrap();
+        db.upsert_file("docs/guide.py", "h3", "python", 10, 0)
+            .unwrap();
+
+        let ov = db.repo_overview("/repo".into(), None, gv).unwrap();
+        assert_eq!(ov.scope_counts.code, 1);
+        assert_eq!(ov.scope_counts.tests, 1);
+        assert_eq!(ov.scope_counts.docs, 1);
+        assert_eq!(
+            ov.scope_counts.examples, 0,
+            "no examples-scope file was indexed; must report an explicit zero"
+        );
     }
 
     // ---- digest ----
