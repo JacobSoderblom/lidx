@@ -302,8 +302,9 @@ pub fn build_resolution_recovery_payload(
         .collect();
 
     let message = format!(
-        "Symbol '{}' not found. {} suggestion(s) below.",
+        "Symbol '{}' not found. {} suggestion(s), {} next hop(s) below.",
         query,
+        candidates.len() + config_uri_candidates.len(),
         next_hops.len()
     );
 
