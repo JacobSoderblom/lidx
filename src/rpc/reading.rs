@@ -541,17 +541,15 @@ const MAX_SKELETON_CHILD_HOPS: usize = 25;
 /// stored byte span, no re-parse), optionally widened by `context_lines` of
 /// surrounding lines (clamped at file bounds), line-numbered against the real
 /// file. `stale` is threaded in rather than recomputed so single and
-/// multi-symbol callers share one staleness check per symbol.
+/// multi-symbol callers share one staleness check per symbol. `content` is
+/// the file's already-loaded text (see `build_symbol_entry`), so this never
+/// re-reads the file that was just read to compute `stale`.
 fn build_source_response(
-    indexer: &Indexer,
     symbol: &Symbol,
+    content: &str,
     context_lines: usize,
     stale: bool,
 ) -> Result<ReadSymbolEntry> {
-    let repo_root = indexer.repo_root().clone();
-    let full_path = repo_root.join(&symbol.file_path);
-    let content = crate::util::read_to_string(&full_path)?;
-
     // If only whitespace precedes `start_byte` on its own line (e.g. an
     // indented method), widen the slice to that line's true start so every
     // returned line -- including the first -- matches the real file line,
@@ -569,7 +567,7 @@ fn build_source_response(
         }
     };
 
-    let raw_source = crate::util::slice_bytes(&content, effective_start_byte, symbol.end_byte)
+    let raw_source = crate::util::slice_bytes(content, effective_start_byte, symbol.end_byte)
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "symbol span no longer valid in '{}' (file changed extensively); run 'reindex' to refresh the index",
@@ -652,18 +650,23 @@ fn build_symbol_entry(
 ) -> Result<Value> {
     let repo_root = indexer.repo_root().clone();
     let full_path = repo_root.join(&symbol.file_path);
-    let scanned = scan::scan_path(&repo_root, &full_path)?;
-    let Some(scanned) = scanned else {
+    if !full_path.is_file() {
         anyhow::bail!(
             "file '{}' is missing from disk; run 'reindex' to refresh the index",
             symbol.file_path
         );
-    };
+    }
+    // Read once and hash the loaded content (rather than calling
+    // scan::scan_path, which would re-read the file from disk just to hash
+    // it) -- build_source_response below reuses this same content instead of
+    // reading the file a second time.
+    let content = crate::util::read_to_string(&full_path)?;
+    let hash = scan::hash_bytes(content.as_bytes());
     let indexed_hash = indexer
         .db()
         .get_file_by_path(&symbol.file_path)?
         .map(|f| f.hash);
-    let stale = indexed_hash.is_some_and(|hash| hash != scanned.hash);
+    let stale = indexed_hash.is_some_and(|indexed| indexed != hash);
 
     let mut next_hops: Vec<Value> = Vec::new();
     let mut entry = if skeleton {
@@ -672,7 +675,7 @@ fn build_symbol_entry(
             // Not a container (or has none in this file) -- skeleton has
             // nothing to skeletonize, so fall back to a normal read rather
             // than returning an empty, useless response.
-            build_source_response(indexer, symbol, context_lines, stale)?
+            build_source_response(symbol, &content, context_lines, stale)?
         } else {
             for child in children.iter().take(MAX_SKELETON_CHILD_HOPS) {
                 next_hops.push(json!({
@@ -697,7 +700,7 @@ fn build_symbol_entry(
             }
         }
     } else {
-        build_source_response(indexer, symbol, context_lines, stale)?
+        build_source_response(symbol, &content, context_lines, stale)?
     };
 
     if stale {

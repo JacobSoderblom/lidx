@@ -421,7 +421,15 @@ fn extensions_for_language(language: &str) -> &'static [&'static str] {
 
 fn hash_file(path: &Path) -> Result<String> {
     let data = fs::read(path)?;
+    Ok(hash_bytes(&data))
+}
+
+/// Hashes content the same way `scan_path` hashes files on disk, for callers
+/// that already have a file's bytes/text in memory (e.g. `read_symbol`'s
+/// staleness check) and would otherwise have to re-read the file just to
+/// hash it the way `files.hash` was computed at index time.
+pub(crate) fn hash_bytes(data: &[u8]) -> String {
     let mut hasher = Hasher::new();
-    hasher.update(&data);
-    Ok(hasher.finalize().to_hex().to_string())
+    hasher.update(data);
+    hasher.finalize().to_hex().to_string()
 }
