@@ -241,8 +241,11 @@ pub struct ContextLine {
 pub struct RpcSuggestion {
     pub method: String,
     pub params: Value,
+    // Named `description` (not `label`) to match every other handler's
+    // hand-rolled `next_hops` entries (see e.g. explain_symbol/outline/
+    // read_symbol in `src/rpc/handlers.rs`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]

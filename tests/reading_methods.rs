@@ -651,7 +651,11 @@ fn read_symbol_context_lines_does_not_panic_when_file_shrank_after_indexing() {
     // still succeed (both offsets remain within the new content's length),
     // but the file now has far fewer lines than the indexed start_line/end_line.
     let replacement = "a".repeat(src.len().saturating_sub(1)) + "\n";
-    assert_eq!(replacement.len(), src.len(), "fixture must keep the byte length constant");
+    assert_eq!(
+        replacement.len(),
+        src.len(),
+        "fixture must keep the byte length constant"
+    );
     std::fs::write(repo_root.join("m.py"), &replacement).unwrap();
 
     let result = rpc::handle_method(
@@ -722,8 +726,7 @@ fn outline_markdown_ignores_hash_lines_inside_fenced_code_blocks() {
         ~~~\n\
         \n\
         ## Another Real Heading\n";
-    let (mut indexer, repo_root) =
-        indexed_from_source("markdown-fenced-code", &[("NOTES.md", md)]);
+    let (mut indexer, repo_root) = indexed_from_source("markdown-fenced-code", &[("NOTES.md", md)]);
 
     let result = rpc::handle_method(
         &mut indexer,
@@ -748,8 +751,7 @@ fn outline_markdown_heading_only_strips_closing_hashes_preceded_by_space() {
     let md = "## F#\n\
         \n\
         ## Closed Heading ##\n";
-    let (mut indexer, repo_root) =
-        indexed_from_source("markdown-hash-suffix", &[("NOTES.md", md)]);
+    let (mut indexer, repo_root) = indexed_from_source("markdown-hash-suffix", &[("NOTES.md", md)]);
 
     let result = rpc::handle_method(
         &mut indexer,

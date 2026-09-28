@@ -1152,9 +1152,9 @@ fn resolve_read_target(
     {
         return Ok(ReadTarget::Found(Box::new(symbol)));
     }
-    let text = qualname
-        .or(query)
-        .expect("exactly one of qualname/query validated by caller");
+    let Some(text) = qualname.or(query) else {
+        anyhow::bail!("resolve_read_target requires a qualname or query");
+    };
 
     let trimmed = text.trim();
     if !trimmed.is_empty() {
@@ -1429,14 +1429,14 @@ fn handle_read_symbol_multi(
         // A single qualname's file being missing/stale-beyond-repair
         // shouldn't abort the whole batch -- record it and keep going so the
         // rest of the request still resolves.
-        let entry = match build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version)
-        {
-            Ok(entry) => entry,
-            Err(err) => {
-                errors.push(json!({"qualname": qn, "error": err.to_string()}));
-                continue;
-            }
-        };
+        let entry =
+            match build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version) {
+                Ok(entry) => entry,
+                Err(err) => {
+                    errors.push(json!({"qualname": qn, "error": err.to_string()}));
+                    continue;
+                }
+            };
 
         let mut candidate_symbols = symbols.clone();
         candidate_symbols.push(entry);
@@ -3142,7 +3142,7 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
         hit.next_hops = Some(vec![RpcSuggestion {
             method: "outline".to_string(),
             params: json!({"path": path}),
-            label: Some(format!("Outline {}", path)),
+            description: Some(format!("Outline {}", path)),
         }]);
     }
 
@@ -3345,6 +3345,34 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
         "index_status": { "stale": stale, "hint": hint },
         "suggested_queries": suggested,
     }))
+}
+
+#[cfg(test)]
+mod resolve_read_target_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// `resolve_read_target` is only ever called (from `handle_read_symbol`)
+    /// after validating exactly one of qualname/query/qualnames was given, so
+    /// this invariant violation is unreachable through the public RPC seam --
+    /// this test calls the private function directly to exercise it, the way
+    /// a future refactor that drops that upstream guard would.
+    #[test]
+    fn errors_instead_of_panicking_when_neither_qualname_nor_query_given() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("m.py"), "def foo():\n    return 1\n").unwrap();
+        let mut indexer =
+            Indexer::new(root.to_path_buf(), root.join(".lidx").join(".lidx.sqlite")).unwrap();
+        indexer.reindex().unwrap();
+        let graph_version = indexer.db().current_graph_version().unwrap();
+
+        let result = resolve_read_target(indexer.db(), None, None, graph_version);
+        assert!(
+            result.is_err(),
+            "resolve_read_target with neither qualname nor query must return an error, not panic"
+        );
+    }
 }
 
 #[cfg(test)]

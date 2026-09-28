@@ -377,6 +377,38 @@ fn search_hits_include_outline_hops_deduplicated_per_file() {
     );
 }
 
+/// Standards: `RpcSuggestion` (search's hop type) should use `description`
+/// like every other handler's hand-rolled next_hops, not its own `label`.
+#[test]
+fn search_outline_hops_use_description_field_like_other_hops() {
+    if !rg_available() {
+        return; // rg not available -- skip
+    }
+    let temp = many_files_repo(1);
+
+    let result = call_and_get_result(
+        &temp,
+        "search",
+        r#"{"query":"NEXT_HOPS_SEARCH_MARKER","limit":50}"#,
+    );
+    let hits = result.as_array().unwrap();
+    let hop = hits
+        .iter()
+        .find_map(|h| h.get("next_hops"))
+        .and_then(|v| v.as_array())
+        .and_then(|a| a.first())
+        .expect("a hit should carry an outline hop");
+
+    assert!(
+        hop.get("description").is_some_and(|d| d.is_string()),
+        "search hops should use `description` like every other handler's next_hops, got: {hop:#?}"
+    );
+    assert!(
+        hop.get("label").is_none(),
+        "the old `label` field should be gone in favor of `description`: {hop:#?}"
+    );
+}
+
 /// #97/standards follow-up: a search hit whose file `outline` can't handle
 /// (not an indexed language, not Markdown -- e.g. Cargo.toml, a .json file)
 /// must not carry an outline hop; a hit for an outline-able file still does.
