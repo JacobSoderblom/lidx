@@ -743,11 +743,84 @@ pub(super) fn handle_outline(_indexer: &mut Indexer, params: Value) -> Result<Va
     anyhow::bail!("'outline' is not implemented yet")
 }
 
-/// Stub for issue #94: `read_symbol` is registered (METHOD_LIST, param schema,
-/// dispatch) so follow-up tickets can build the real source-reading behaviour
-/// without touching these shared registration points. The schema can't express
-/// "exactly one of qualname/query/qualnames", so that's validated here.
-pub(super) fn handle_read_symbol(_indexer: &mut Indexer, params: Value) -> Result<Value> {
+/// Resolution outcome for a `read_symbol` `qualname`/`query` selector.
+enum ReadTarget {
+    Found(Box<Symbol>),
+    /// Multiple candidates tied for best match -- returning one would be a guess.
+    Ambiguous(Vec<Symbol>),
+}
+
+/// Resolves a `read_symbol` selector (either `qualname` or `query` text) the same
+/// way `explain_symbol` does: an exact qualname hit short-circuits (mirrors
+/// `resolve::resolve_symbol`'s `SymbolRef::Qualname` branch), otherwise falls back
+/// to the fuzzy query path.
+///
+/// Before delegating to `resolve::resolve_symbol`, this checks the same
+/// `find_symbols` candidates its query path would consult for a tie at the
+/// exact-name-match tier (`find_symbols`'s own top ranking criterion). Unlike
+/// `explain_symbol`, which silently takes the best match, `read_symbol` returns
+/// one symbol's exact source, so guessing between two equally-ranked candidates
+/// is costly -- a tie is reported as ambiguous instead. When there is no tie,
+/// resolution is delegated to `resolve::resolve_symbol` unchanged, so a
+/// non-ambiguous `read_symbol` query always resolves to the same symbol
+/// `explain_symbol` would.
+fn resolve_read_target(
+    db: &crate::db::Db,
+    qualname: Option<&str>,
+    query: Option<&str>,
+    graph_version: i64,
+) -> Result<ReadTarget> {
+    if let Some(qn) = qualname
+        && let Some(symbol) = db.get_symbol_by_qualname(qn, graph_version)?
+    {
+        return Ok(ReadTarget::Found(Box::new(symbol)));
+    }
+    let text = qualname
+        .or(query)
+        .expect("exactly one of qualname/query validated by caller");
+
+    let trimmed = text.trim();
+    if !trimmed.is_empty() {
+        let candidates = db.find_symbols(trimmed, 5, None, graph_version)?;
+        if candidates.len() > 1 {
+            let longest_token = trimmed
+                .split_whitespace()
+                .max_by_key(|t| t.len())
+                .unwrap_or(trimmed);
+            let longest_lower = longest_token.to_lowercase();
+            let tied: Vec<Symbol> = candidates
+                .into_iter()
+                .filter(|s| s.name.to_lowercase() == longest_lower)
+                .collect();
+            if tied.len() > 1 {
+                return Ok(ReadTarget::Ambiguous(tied));
+            }
+        }
+    }
+
+    let symbol = crate::resolve::resolve_symbol(
+        db,
+        crate::resolve::SymbolRef::Query(text.to_string()),
+        None,
+        graph_version,
+    )?;
+    Ok(ReadTarget::Found(Box::new(symbol)))
+}
+
+/// Prefixes each line of `text` with its real file line number (1-based, starting
+/// at `start_line`), so a caller's follow-up edits/references use correct locations.
+fn number_source_lines(text: &str, start_line: i64) -> String {
+    text.lines()
+        .enumerate()
+        .map(|(i, line)| format!("{}: {}", start_line + i as i64, line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `read_symbol` (#96): fetch one symbol's exact source from disk by its stored
+/// byte span, no re-parse. `qualnames` (multi-symbol reads) and
+/// `skeleton`/`context_lines` are #98 and stay a not-implemented stub here.
+pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: ReadSymbolParams = serde_json::from_value(params)?;
     let selectors_given = [
         params.qualname.is_some(),
@@ -763,7 +836,90 @@ pub(super) fn handle_read_symbol(_indexer: &mut Indexer, params: Value) -> Resul
             selectors_given
         );
     }
-    anyhow::bail!("'read_symbol' is not implemented yet")
+    if params.qualnames.is_some() {
+        anyhow::bail!("read_symbol with 'qualnames' (multi-symbol read) is not implemented yet");
+    }
+
+    let graph_version = indexer.db().current_graph_version()?;
+    let resolution = resolve_read_target(
+        indexer.db(),
+        params.qualname.as_deref(),
+        params.query.as_deref(),
+        graph_version,
+    )?;
+
+    let symbol = match resolution {
+        ReadTarget::Ambiguous(candidates) => {
+            let query_text = params
+                .qualname
+                .as_deref()
+                .or(params.query.as_deref())
+                .unwrap_or_default();
+            let candidates_json: Vec<Value> = candidates
+                .iter()
+                .map(|s| json!({"qualname": s.qualname, "kind": s.kind, "path": s.file_path}))
+                .collect();
+            return Ok(json!({
+                "ambiguous": true,
+                "query": query_text,
+                "candidates": candidates_json,
+            }));
+        }
+        ReadTarget::Found(symbol) => symbol,
+    };
+
+    if symbol.kind == "external" || symbol.qualname.starts_with("ext:") {
+        anyhow::bail!(
+            "symbol not found: '{}' is an external stub with no indexed source",
+            symbol.qualname
+        );
+    }
+
+    let repo_root = indexer.repo_root().clone();
+    let full_path = repo_root.join(&symbol.file_path);
+    let scanned = scan::scan_path(&repo_root, &full_path)?;
+    let Some(scanned) = scanned else {
+        anyhow::bail!(
+            "file '{}' is missing from disk; run 'reindex' to refresh the index",
+            symbol.file_path
+        );
+    };
+    let indexed_hash = indexer
+        .db()
+        .get_file_by_path(&symbol.file_path)?
+        .map(|f| f.hash);
+    let stale = indexed_hash.is_some_and(|hash| hash != scanned.hash);
+
+    let content = crate::util::read_to_string(&full_path)?;
+    let raw_source = crate::util::slice_bytes(&content, symbol.start_byte, symbol.end_byte)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "symbol span no longer valid in '{}' (file changed extensively); run 'reindex' to refresh the index",
+                symbol.file_path
+            )
+        })?;
+    let source = number_source_lines(&raw_source, symbol.start_line);
+
+    let mut response = json!({
+        "qualname": symbol.qualname,
+        "kind": symbol.kind,
+        "path": symbol.file_path,
+        "start_line": symbol.start_line,
+        "end_line": symbol.end_line,
+        "stale": stale,
+        "source": source,
+    });
+    if stale {
+        response["next_hops"] = json!([{
+            "method": "reindex",
+            "params": {},
+            "description": format!(
+                "'{}' changed on disk since indexing; reindex to refresh symbol spans",
+                symbol.file_path
+            ),
+        }]);
+    }
+    Ok(response)
 }
 
 // ---------------------------------------------------------------------------

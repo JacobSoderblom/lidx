@@ -281,20 +281,21 @@ struct OutlineParams {
 
 /// Params for `read_symbol`: fetch a symbol's exact source from disk.
 /// Exactly one of `qualname`, `query`, `qualnames` must be given.
-/// `skeleton`/`context_lines` are unread until the #93 follow-up ticket implements
-/// the handler body; `qualname`/`query`/`qualnames` are already used for validation.
+/// `qualnames` (multi-symbol reads) and `skeleton`/`context_lines` are #98 --
+/// only single-symbol `qualname`/`query` reads are implemented here (#96).
 #[derive(Deserialize, schemars::JsonSchema)]
-#[allow(dead_code)]
 struct ReadSymbolParams {
     /// Exact qualname of the symbol to read (exactly one of qualname/query/qualnames required)
     qualname: Option<String>,
     /// Fuzzy search query resolved the same way as explain_symbol/trace_flow (exactly one of qualname/query/qualnames required)
     query: Option<String>,
-    /// Multiple qualnames to read in one call (exactly one of qualname/query/qualnames required)
+    /// Multiple qualnames to read in one call (exactly one of qualname/query/qualnames required) -- #98, not yet implemented
     qualnames: Option<Vec<String>>,
-    /// For container symbols (class/struct/impl), return child signatures instead of the full body (default: false)
+    /// For container symbols (class/struct/impl), return child signatures instead of the full body (default: false) -- #98
+    #[allow(dead_code)]
     skeleton: Option<bool>,
-    /// Lines of surrounding context to include around the symbol's span (default: 0)
+    /// Lines of surrounding context to include around the symbol's span (default: 0) -- #98
+    #[allow(dead_code)]
     context_lines: Option<usize>,
 }
 
