@@ -160,33 +160,32 @@ fn builtin_local_variable_call_does_not_bind() {
     indexer.reindex().unwrap();
     let gv = indexer.db().current_graph_version().unwrap();
 
+    // Issue #79: cells.append(1) must NOT bind to EventStore.append (or
+    // anything else), and -- since CALLS isn't a Bridge Edge kind -- it has
+    // no edge at all, only an unresolved_references store row.
     let conn = indexer.db().read_conn().unwrap();
-    let (target_symbol_id, receiver_type, resolution_kind): (
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-    ) = conn
+    let edge_count: i64 = conn
         .query_row(
-            "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges
+            "SELECT COUNT(*) FROM edges
              WHERE kind = 'CALLS' AND target_qualname = 'cells.append' AND graph_version = ?",
             params![gv],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| row.get(0),
         )
         .unwrap();
-
-    assert_eq!(
-        target_symbol_id, None,
-        "cells.append(1) must NOT bind to EventStore.append (or anything else)"
-    );
+    assert_eq!(edge_count, 0);
+    let receiver_type: Option<String> = conn
+        .query_row(
+            "SELECT receiver_type FROM unresolved_references
+             WHERE edge_kind = 'CALLS' AND reference_name = 'cells.append' AND graph_version = ?",
+            params![gv],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
         receiver_type.as_deref(),
         Some(""),
         "a builtin-typed local must be recorded as tracked-but-unresolved (empty string), \
          not left as NULL (not-tracked)"
-    );
-    assert_eq!(
-        resolution_kind, None,
-        "an edge that never binds must have no resolution provenance"
     );
 
     let _ = std::fs::remove_dir_all(&repo_root);
@@ -206,31 +205,32 @@ fn lambda_parameter_call_does_not_bind() {
     indexer.reindex().unwrap();
     let gv = indexer.db().current_graph_version().unwrap();
 
+    // Issue #79: acc.append(n) inside the lambda body must NOT bind to
+    // EventStore.append, and has no edge at all, only a store row.
     let conn = indexer.db().read_conn().unwrap();
-    let (target_symbol_id, receiver_type, resolution_kind): (
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-    ) = conn
+    let edge_count: i64 = conn
         .query_row(
-            "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges
+            "SELECT COUNT(*) FROM edges
              WHERE kind = 'CALLS' AND target_qualname = 'acc.append' AND graph_version = ?",
             params![gv],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| row.get(0),
         )
         .unwrap();
-
-    assert_eq!(
-        target_symbol_id, None,
-        "acc.append(n) inside the lambda body must NOT bind to EventStore.append"
-    );
+    assert_eq!(edge_count, 0);
+    let receiver_type: Option<String> = conn
+        .query_row(
+            "SELECT receiver_type FROM unresolved_references
+             WHERE edge_kind = 'CALLS' AND reference_name = 'acc.append' AND graph_version = ?",
+            params![gv],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
         receiver_type.as_deref(),
         Some(""),
         "the lambda's own parameter must be tracked (folded into the enclosing scope) and \
          recorded as unresolved, not left NULL as if it were never a local at all"
     );
-    assert_eq!(resolution_kind, None);
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -249,30 +249,33 @@ fn chained_class_attribute_call_does_not_bind() {
     indexer.reindex().unwrap();
     let gv = indexer.db().current_graph_version().unwrap();
 
+    // Issue #79: Registry.instances.append(self) must NOT bind to
+    // EventStore.append, and has no edge at all, only a store row.
     let conn = indexer.db().read_conn().unwrap();
-    let (target_symbol_id, receiver_type, resolution_kind): (
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-    ) = conn
+    let edge_count: i64 = conn
         .query_row(
-            "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges
-             WHERE kind = 'CALLS' AND target_qualname = 'Registry.instances.append' AND graph_version = ?",
+            "SELECT COUNT(*) FROM edges
+             WHERE kind = 'CALLS' AND target_qualname = 'Registry.instances.append' \
+               AND graph_version = ?",
             params![gv],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| row.get(0),
         )
         .unwrap();
-
-    assert_eq!(
-        target_symbol_id, None,
-        "Registry.instances.append(self) must NOT bind to EventStore.append"
-    );
+    assert_eq!(edge_count, 0);
+    let receiver_type: Option<String> = conn
+        .query_row(
+            "SELECT receiver_type FROM unresolved_references
+             WHERE edge_kind = 'CALLS' AND reference_name = 'Registry.instances.append' \
+               AND graph_version = ?",
+            params![gv],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(
         receiver_type.as_deref(),
         Some(""),
         "a chained attribute off a class reference must be tracked-but-unresolved, not NULL"
     );
-    assert_eq!(resolution_kind, None);
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -287,20 +290,28 @@ fn chained_self_attribute_call_does_not_bind() {
     indexer.reindex().unwrap();
     let gv = indexer.db().current_graph_version().unwrap();
 
+    // Issue #79: self._events.append(event) must NOT bind (_events has no
+    // class-level type annotation), and has no edge at all, only a store row.
     let conn = indexer.db().read_conn().unwrap();
-    let (target_symbol_id, receiver_type): (Option<i64>, Option<String>) = conn
+    let edge_count: i64 = conn
         .query_row(
-            "SELECT target_symbol_id, receiver_type FROM edges
-             WHERE kind = 'CALLS' AND target_qualname = 'self._events.append' AND graph_version = ?",
+            "SELECT COUNT(*) FROM edges
+             WHERE kind = 'CALLS' AND target_qualname = 'self._events.append' \
+               AND graph_version = ?",
             params![gv],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )
         .unwrap();
-
-    assert_eq!(
-        target_symbol_id, None,
-        "self._events.append(event) must NOT bind — _events has no class-level type annotation"
-    );
+    assert_eq!(edge_count, 0);
+    let receiver_type: Option<String> = conn
+        .query_row(
+            "SELECT receiver_type FROM unresolved_references
+             WHERE edge_kind = 'CALLS' AND reference_name = 'self._events.append' \
+               AND graph_version = ?",
+            params![gv],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(receiver_type.as_deref(), Some(""));
 
     let _ = std::fs::remove_dir_all(&repo_root);

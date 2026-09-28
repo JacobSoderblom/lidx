@@ -167,3 +167,78 @@ fn reindex_auto_prune_bounds_history_without_disturbing_current_version() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+fn unresolved_reference_count_at_version(db: &lidx::db::Db, graph_version: i64) -> i64 {
+    db.read_conn()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM unresolved_references WHERE graph_version = ?",
+            rusqlite::params![graph_version],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// Issue #79's self-contained `unresolved_references` store rows (`edge_id
+/// NULL` for a non-Bridge-Edge-kind reference, e.g. `nowhere_fn()`) have no
+/// edge to cascade-delete through when their graph version is pruned --
+/// unlike a Bridge Edge kind row, which still keeps its placeholder edge and
+/// so is cleaned up for free by the `edges` delete above it. Without an
+/// explicit delete, `carry_forward_files` copying every pending row forward
+/// on each reindex would grow the store without bound even though
+/// `prune_old_graph_versions` is bounding `symbols`/`edges` correctly.
+#[test]
+fn reindex_auto_prune_bounds_unresolved_reference_store_too() {
+    let (repo_root, db_path) = setup_repo("py_mvp");
+    std::fs::write(
+        repo_root.join("unresolved.py"),
+        "import os\n\ndef f():\n    os.getcwd()\n    nowhere_fn()\n",
+    )
+    .unwrap();
+
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+
+    for _ in 0..6 {
+        indexer.reindex().unwrap();
+    }
+
+    let db = indexer.db();
+    let current = db.current_graph_version().unwrap();
+
+    let versions_with_rows: Vec<i64> = {
+        let conn = db.read_conn().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT graph_version FROM unresolved_references ORDER BY graph_version DESC",
+            )
+            .unwrap();
+        stmt.query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+
+    assert!(
+        !versions_with_rows.is_empty(),
+        "fixture must produce at least one unresolved reference (nowhere_fn) to prune"
+    );
+    assert!(
+        versions_with_rows.len() as i64 <= lidx::db::DEFAULT_GRAPH_VERSION_RETENTION,
+        "reindex's automatic prune should bound unresolved_references history to {} version(s), \
+         found rows in {versions_with_rows:?}",
+        lidx::db::DEFAULT_GRAPH_VERSION_RETENTION
+    );
+    assert_eq!(
+        versions_with_rows[0], current,
+        "the current version must still have its unresolved_references rows"
+    );
+
+    // Pruning older graph versions must not remove the current version's own
+    // pending rows -- only strictly older ones.
+    assert!(
+        unresolved_reference_count_at_version(db, current) > 0,
+        "current version {current} must still have its own unresolved_references row(s)"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}

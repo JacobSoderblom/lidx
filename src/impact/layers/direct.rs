@@ -590,9 +590,10 @@ mod tests {
     }
 
     // -- Regression tests: the read path must not re-attribute edges the
-    // write path refused to resolve (NULL target_symbol_id). These build a
-    // minimal DB directly so `insert_edges`' ambiguity guard deterministically
-    // leaves an edge unresolved. --
+    // write path refused to resolve. Since issue #79, a genuinely
+    // unresolved CALLS reference has no edge at all (only a store row).
+    // These build a minimal DB directly so `insert_edges`' ambiguity guard
+    // deterministically leaves a reference unresolved. --
 
     fn test_db() -> (crate::db::Db, tempfile::TempDir) {
         let temp = tempfile::TempDir::new().unwrap();
@@ -671,12 +672,28 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        // Confirm the write path really did refuse to attribute this edge.
+        // Issue #79: an ambiguous CALLS edge is no longer written at all --
+        // confirm the write path really did refuse to attribute it by
+        // checking the unresolved-reference store instead of a NULL-target
+        // edge row.
+        let edge_count: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            edge_count, 0,
+            "an ambiguous, unresolved CALLS edge must not be written at all"
+        );
         let unresolved: i64 = db
             .read_conn()
             .unwrap()
             .query_row(
-                "SELECT COUNT(*) FROM edges WHERE target_symbol_id IS NULL AND graph_version = 1",
+                "SELECT COUNT(*) FROM unresolved_references WHERE graph_version = 1",
                 [],
                 |row| row.get(0),
             )
@@ -702,7 +719,7 @@ mod tests {
         .unwrap();
         assert!(
             result.impacts.is_empty(),
-            "NULL-target edge must not be traversed downstream, got {:?}",
+            "an unresolved reference must not be traversed downstream, got {:?}",
             result.impacts
         );
     }

@@ -13,8 +13,12 @@ A typed, directional relationship between two symbols — CALLS, IMPORTS, CONTAI
 _Avoid_: link, reference, relation
 
 **Bridge Edge**:
-An **Edge Kind** that crosses process or language boundaries — RPC_CALL↔RPC_IMPL, CHANNEL_PUBLISH↔CHANNEL_SUBSCRIBE, HTTP_CALL↔HTTP_ROUTE. Traversal methods automatically cross these.
+An **Edge Kind** that crosses process or language boundaries — RPC_CALL↔RPC_IMPL (plus RPC_ROUTE, the .proto definition side), CHANNEL_PUBLISH↔CHANNEL_SUBSCRIBE, HTTP_CALL↔HTTP_ROUTE. Traversal methods automatically cross these.
 _Avoid_: cross-language edge (too narrow — bridges also cross process boundaries within one language)
+
+**String-Targeted Edge Kind**:
+An **Edge Kind** `Db::insert_edges` keeps a live edge for even when unresolved (issue #79's exemption from "every other kind's unresolved reference lives only in `unresolved_references`") — grouped by why its `target_qualname`/`detail` text has to stay readable off the edge itself, not just a resolved `target_symbol_id`. Three groups, not one reason: **Bridge Edge** kinds, whose target is a cross-process join key that `trace_flow`'s traversal bridging looks up by that text; CONFIG_SOURCE/CONFIG_READ/CONFIG_BIND, whose target is a config key/secret URI (`secret://...`, `env://...`) that a config-URI-rooted `trace_flow`/`analyze_impact` looks up the same way, not a Bridge Edge pair itself; and XREF, whose target is usually a real symbol qualname but is read directly, confidence-gated, by evidence-based consumers regardless of whether it resolved.
+_Avoid_: assuming this list is the same as **Bridge Edge** — CONFIG_BIND and XREF stay string-targeted for a different reason and aren't traversal-bridged
 
 **XREF**:
 Transitional **Edge Kind** for cross-language references that don't yet have a named pattern. Should shrink over time as specific patterns are promoted to dedicated Edge Kinds (as CONFIG_* and CHANNEL_* were). Treat new XREF edges as a signal that a new named Edge Kind may be warranted.

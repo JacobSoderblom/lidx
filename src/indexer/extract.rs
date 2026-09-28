@@ -95,14 +95,14 @@ pub struct EdgeInput {
     /// see `is_repo_python_import`; every other language refuses).
     /// Empty for Go, and for call shapes no extractor recognizes.
     ///
-    /// Also persisted (JSON-encoded) to the `edges.import_candidates`
-    /// column by `insert_edges` whenever non-empty, so
-    /// `Db::resolve_null_target_edges` can retry this same tier later —
-    /// e.g. once an incremental reindex's carry-forward step gives the
-    /// candidate's target file a current-version symbol row it didn't have
-    /// yet at insert time. See the migration 14 comment in
-    /// `db::migrations` and the `ponytail:` doc on
-    /// `resolve_null_target_edges`.
+    /// Also persisted (JSON-encoded) whenever non-empty -- to the edge's
+    /// own `import_candidates` column when it resolves or is a Bridge Edge
+    /// kind, else to the `unresolved_references` store row's column of the
+    /// same name (issue #79) -- so `Db::retry_unresolved_references` can
+    /// retry this same tier later, e.g. once an incremental reindex's
+    /// carry-forward step gives the candidate's target file a
+    /// current-version symbol row it didn't have yet at insert time. See
+    /// the migration 14 comment in `db::migrations`.
     pub import_candidates: Vec<String>,
     /// True when a `CALLS` edge's call site was a genuinely bare
     /// identifier call (`foo()`) rather than anything receiver-qualified

@@ -422,8 +422,8 @@ fn incremental_delete_file_leaves_no_dangling_or_wrong_targets() {
 /// other `process` in the repo is a method (see `bare_call_method.py`'s
 /// docstring) -- then sync just that path.
 ///
-/// Exercises the same NULL-target repair pass
-/// (`Db::resolve_null_target_edges`, run by `Indexer::sync_abs_paths`
+/// Exercises the same store-driven repair pass
+/// (`Db::repair_unresolved`, run by `Indexer::sync_abs_paths`
 /// after every sync that touches a file) as the edit-callee test above,
 /// but from the opposite direction: instead of an existing target
 /// surviving a sync of its own file, a previously-unresolved *caller*

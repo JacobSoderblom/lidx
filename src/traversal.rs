@@ -1437,9 +1437,11 @@ mod tsx_normalization_tests {
 }
 
 // Regression tests for the read path no longer re-attributing edges the
-// write path refused to resolve (NULL target_symbol_id). These build a
-// minimal DB directly (not through a fixture repo) so the ambiguity guard
-// in `insert_edges` deterministically leaves an edge unresolved.
+// write path refused to resolve. Since issue #79, a genuinely unresolved
+// non-Bridge-Edge-kind reference has no edge at all (only a store row) --
+// these build a minimal DB directly (not through a fixture repo) so the
+// ambiguity guard in `insert_edges` deterministically leaves a reference
+// unresolved.
 #[cfg(test)]
 mod null_target_regression_tests {
     use super::*;
@@ -1491,10 +1493,10 @@ mod null_target_regression_tests {
     }
 
     /// A bare-name call with two same-language candidates is genuinely
-    /// ambiguous, so `insert_edges`' ambiguity guard leaves it unresolved
-    /// (target_symbol_id NULL). `trace_flow` must not traverse it via a
-    /// fuzzy qualname guess -- neither candidate should appear as a
-    /// downstream hop from the caller.
+    /// ambiguous, so `insert_edges`' ambiguity guard leaves it unresolved --
+    /// no edge is written at all (issue #79), only a store row. `trace_flow`
+    /// must not traverse it via a fuzzy qualname guess -- neither candidate
+    /// should appear as a downstream hop from the caller.
     #[test]
     fn downstream_does_not_traverse_null_target_edge() {
         let (mut db, _temp) = test_db();
@@ -1523,12 +1525,28 @@ mod null_target_regression_tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        // Confirm the write path really did refuse to attribute this edge.
+        // Issue #79: an ambiguous CALLS edge is no longer written at all --
+        // confirm the write path really did refuse to attribute it by
+        // checking the unresolved-reference store instead of a NULL-target
+        // edge row.
+        let edge_count: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE graph_version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            edge_count, 0,
+            "an ambiguous, unresolved CALLS edge must not be written at all"
+        );
         let unresolved: i64 = db
             .read_conn()
             .unwrap()
             .query_row(
-                "SELECT COUNT(*) FROM edges WHERE target_symbol_id IS NULL AND graph_version = 1",
+                "SELECT COUNT(*) FROM unresolved_references WHERE graph_version = 1",
                 [],
                 |row| row.get(0),
             )
@@ -1546,7 +1564,7 @@ mod null_target_regression_tests {
         let result = trace_flow(&db, vec![caller_id], None, None, 1, &config).unwrap();
         assert!(
             result.hops.is_empty(),
-            "NULL-target edge must not be traversed downstream, got {:?}",
+            "an unresolved reference must not be traversed downstream, got {:?}",
             result.hops
         );
     }
