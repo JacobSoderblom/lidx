@@ -245,12 +245,7 @@ fn trace_flow_hops_expose_resolution_kind_and_omit_it_when_unresolved() {
 }
 
 /// Find the one path step landing on `to_symbol`, or panic with the full
-/// steps list for debugging. Matches on `to_symbol` alone, not
-/// `from_symbol`: for a distance-1 step off the seed, `reconstruct_path_steps`
-/// (`src/impact/orchestrator.rs`) looks the parent up in a `symbol_map` built
-/// only from non-seed impacted symbols, so a seed parent's qualname always
-/// renders as `""` -- a pre-existing quirk unrelated to resolution_kind, out
-/// of scope here.
+/// steps list for debugging.
 fn find_step<'a>(steps: &'a [Value], to_symbol: &str) -> &'a Value {
     steps
         .iter()
@@ -288,6 +283,42 @@ fn analyze_impact_path_steps_expose_resolution_kind_exact_tier() {
     assert_eq!(
         step["resolution_kind"], "exact",
         "caller.entry's call to caller.local_util binds exact: {step}"
+    );
+}
+
+/// A path step whose parent is the seed itself must still carry a real
+/// `from_symbol`. `reconstruct_path_steps` (`src/impact/orchestrator.rs`)
+/// looks the parent up in a `symbol_map`; before this was fixed, that map
+/// was built only from non-seed impacted symbols, so a seed parent's
+/// qualname rendered as `""`. `caller.entry` is a distance-1 seed off
+/// `caller.local_util` downstream, so the first (and only) step's
+/// `from_symbol` must equal the seed's own qualname.
+#[test]
+fn analyze_impact_path_step_from_seed_has_real_from_symbol() {
+    let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let result = call_rpc(
+        repo_root,
+        db_path,
+        "analyze_impact",
+        r#"{"qualname":"caller.entry","direction":"downstream","kinds":["CALLS"]}"#,
+    );
+    let affected = result["affected"]
+        .as_array()
+        .expect("affected should be an array");
+    let entry = affected
+        .iter()
+        .find(|e| e["symbol"]["qualname"] == "caller.local_util")
+        .expect("expected an affected entry for caller.local_util");
+    let steps = entry["path"]["steps"]
+        .as_array()
+        .expect("expected path.steps on the affected entry");
+    let step = find_step(steps, "caller.local_util");
+    assert_eq!(
+        step["from_symbol"], "caller.entry",
+        "the step off the seed must name the seed, not render \"\": {step}"
     );
 }
 
