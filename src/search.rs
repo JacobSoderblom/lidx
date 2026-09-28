@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::indexer::test_detection;
 use crate::indexer::{Indexer, scan};
 use crate::model::{ContextLine, GrepHit, SearchHit, Symbol};
 use crate::util;
@@ -866,7 +867,6 @@ fn classify_path(path: &str) -> PathFlags {
     for segment in &segments {
         match *segment {
             "docs" | "doc" | "documentation" => flags.docs = true,
-            "test" | "tests" | "__tests__" | "spec" | "specs" => flags.tests = true,
             "examples" | "example" | "samples" | "sample" | "demo" | "demos" => {
                 flags.examples = true
             }
@@ -882,7 +882,10 @@ fn classify_path(path: &str) -> PathFlags {
     if is_docs_filename(filename) || is_docs_extension(filename) {
         flags.docs = true;
     }
-    if is_tests_filename(filename) {
+    // Issue #61: test-ness is decided by the one canonical predicate
+    // (`indexer::test_detection::is_test_file`), not a second, divergent
+    // segment/filename rule set living here.
+    if test_detection::is_test_file(&lower) {
         flags.tests = true;
     }
     if is_generated_filename(filename) {
@@ -904,13 +907,6 @@ fn is_docs_extension(name: &str) -> bool {
         name.rsplit('.').next().unwrap_or(""),
         "md" | "markdown" | "rst" | "adoc" | "txt"
     )
-}
-
-fn is_tests_filename(name: &str) -> bool {
-    name.starts_with("test_")
-        || name.contains("_test.")
-        || name.contains(".test.")
-        || name.contains(".spec.")
 }
 
 fn is_generated_filename(name: &str) -> bool {

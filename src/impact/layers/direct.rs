@@ -7,6 +7,7 @@
 use crate::db::Db;
 use crate::impact::confidence::apply_distance_decay;
 use crate::impact::types::{ConfidenceScore, ImpactSource, LayerResult};
+use crate::indexer::test_detection::is_test_file;
 use crate::model::{Edge, Symbol};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -61,28 +62,6 @@ fn next_symbol(edge: &Edge, current_id: i64, direction: TraversalDirection) -> O
             }
         }
     }
-}
-
-/// Check if a file path appears to be a test file
-pub fn is_test_file(path: &str) -> bool {
-    let path_lower = path.to_lowercase();
-    path_lower.contains("/test/")
-        || path_lower.contains("/tests/")
-        || path_lower.contains("/_test/")
-        || path_lower.contains("/__tests__/")
-        || path_lower.contains("/spec/")
-        || path_lower.contains("test_")
-        || path_lower.contains("_test.")
-        || path_lower.contains(".test.")
-        || path_lower.contains(".spec.")
-        || path_lower.ends_with("_test.rs")
-        || path_lower.ends_with("_test.py")
-        || path_lower.ends_with(".test.ts")
-        || path_lower.ends_with(".test.tsx")
-        || path_lower.ends_with(".spec.ts")
-        || path_lower.ends_with(".spec.tsx")
-        || path_lower.ends_with("_spec.rb")
-        || path_lower.ends_with("test.java")
 }
 
 /// Check if an edge matches the filtering criteria

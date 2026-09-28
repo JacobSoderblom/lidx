@@ -413,7 +413,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 && edge.target_symbol_id == Some(symbol.id)
                 && let Some(source_id) = edge.source_symbol_id
                 && let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id)
-                && looks_like_test(&test_sym)
+                && is_test_symbol(&test_sym)
             {
                 calls_test_ids.insert(test_sym.id);
                 test_total += 1;
@@ -442,7 +442,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         // Tests reaching the symbol over RPC/HTTP/a channel (e.g. a gRPC
         // client test against a service impl) count too.
         for r in &incoming_cross {
-            if !looks_like_test(&r.symbol) || !calls_test_ids.insert(r.symbol.id) {
+            if !is_test_symbol(&r.symbol) || !calls_test_ids.insert(r.symbol.id) {
                 continue;
             }
             test_total += 1;
@@ -616,13 +616,6 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     };
 
     Ok(serde_json::to_value(&result)?)
-}
-
-fn looks_like_test(sym: &Symbol) -> bool {
-    sym.file_path.contains("test")
-        || sym.file_path.contains("spec")
-        || sym.name.starts_with("test_")
-        || sym.name.starts_with("Test")
 }
 
 /// Client side of each bridge pair (see `bridge_complement`): the kinds an
