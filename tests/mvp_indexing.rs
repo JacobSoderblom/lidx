@@ -258,7 +258,7 @@ fn rpc_top_complexity_respects_paths() {
     )
     .unwrap();
     let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let results = value["result"].as_array().unwrap();
+    let results = value["result"]["results"].as_array().unwrap();
     assert!(!results.is_empty());
     assert!(results.iter().all(|entry| {
         entry["symbol"]["file_path"]

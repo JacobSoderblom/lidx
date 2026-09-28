@@ -1150,7 +1150,19 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
         }));
     }
 
-    Ok(json!(results))
+    // Issue: this used to be a bare `Ok(json!(results))`, so the response's
+    // top-level shape depended on whether `results` was empty (an object
+    // above, a bare array here). That made `hoist_symbol_run_metadata`
+    // (`rpc/mod.rs`) unable to hoist `graph_version`/`commit_sha` on the
+    // non-empty path -- there's nowhere to hoist a field to on a bare array
+    // -- so every entry repeated it. Always return an object, mirroring the
+    // empty path's `results`/`counts` field names, so the shape is uniform
+    // and the generic hoist can do its job.
+    let count = results.len();
+    Ok(json!({
+        "results": results,
+        "counts": { "results": count },
+    }))
 }
 
 pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Value> {
