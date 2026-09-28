@@ -249,7 +249,6 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         }
                         caller_bytes += ref_bytes;
                         caller_refs.push(ExplainRef {
-                            signature: caller_sym.signature.clone(),
                             symbol: caller_sym,
                             evidence,
                             edge_kind: "CALLS".to_string(),
@@ -359,7 +358,6 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                 }
                                 callee_bytes += ref_bytes;
                                 callee_refs.push(ExplainRef {
-                                    signature: callee_sym.signature.clone(),
                                     symbol: callee_sym,
                                     evidence,
                                     edge_kind: "CALLS".to_string(),
@@ -402,7 +400,6 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             }
                             callee_bytes += ref_bytes;
                             callee_refs.push(ExplainRef {
-                                signature: callee_sym.signature.clone(),
                                 symbol: callee_sym,
                                 evidence,
                                 edge_kind: "CALLS".to_string(),
@@ -473,7 +470,6 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 }
                 test_bytes += ref_bytes;
                 test_refs.push(ExplainRef {
-                    signature: test_sym.signature.clone(),
                     symbol: test_sym,
                     evidence: edge.evidence_snippet.clone(),
                     edge_kind: "CALLS".to_string(),
@@ -640,6 +636,12 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         || callees.as_ref().is_some_and(|c| c.len() < callees_total)
         || tests.as_ref().is_some_and(|t| t.len() < tests_total);
 
+    // `commit_sha`/`graph_version` are constant for the whole response --
+    // captured once here, before `symbol` moves into the struct below, so
+    // they can be stamped onto the envelope instead of every nested symbol.
+    let graph_version = symbol.graph_version;
+    let commit_sha = symbol.commit_sha.clone();
+
     let result = ExplainSymbolResult {
         symbol,
         source,
@@ -650,6 +652,8 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         tests_total: tests.as_ref().map(|_| tests_total),
         tests,
         implements,
+        graph_version,
+        commit_sha,
         budget: BudgetInfo {
             budget_bytes: max_bytes,
             used_bytes,
@@ -664,7 +668,45 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         warnings,
     };
 
-    Ok(serde_json::to_value(&result)?)
+    Ok(strip_redundant_symbol_run_metadata(serde_json::to_value(
+        &result,
+    )?))
+}
+
+/// `graph_version`/`commit_sha` now live once on `ExplainSymbolResult`
+/// (issue #66); strip the copies `Symbol`'s derive still stamps onto every
+/// nested symbol -- the main `symbol`, each `ExplainRef.symbol` in
+/// `callers`/`callees`/`tests`, and each entry of `implements`.
+fn strip_redundant_symbol_run_metadata(mut value: Value) -> Value {
+    fn strip(sym: &mut Value) {
+        if let Value::Object(map) = sym {
+            map.remove("graph_version");
+            map.remove("commit_sha");
+        }
+    }
+
+    if let Value::Object(map) = &mut value {
+        if let Some(sym) = map.get_mut("symbol") {
+            strip(sym);
+        }
+        for section in ["callers", "callees", "tests"] {
+            if let Some(Value::Array(refs)) = map.get_mut(section) {
+                for r in refs.iter_mut() {
+                    if let Value::Object(rmap) = r
+                        && let Some(sym) = rmap.get_mut("symbol")
+                    {
+                        strip(sym);
+                    }
+                }
+            }
+        }
+        if let Some(Value::Array(impls)) = map.get_mut("implements") {
+            for sym in impls.iter_mut() {
+                strip(sym);
+            }
+        }
+    }
+    value
 }
 
 fn looks_like_test(sym: &Symbol) -> bool {
@@ -751,7 +793,6 @@ fn cross_boundary_refs(
                 return None;
             };
             Some(ExplainRef {
-                signature: hop.symbol.signature.clone(),
                 symbol: hop.symbol,
                 evidence: hop.snippet,
                 edge_kind,
@@ -771,7 +812,6 @@ fn cross_boundary_refs(
                     && let Some(sym) = db.get_symbol_by_id(source_id)?
                 {
                     refs.push(ExplainRef {
-                        signature: sym.signature.clone(),
                         symbol: sym,
                         evidence: edge.evidence_snippet,
                         edge_kind: edge.kind,
