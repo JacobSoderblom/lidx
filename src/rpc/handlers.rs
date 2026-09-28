@@ -1653,8 +1653,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         let mut all_files: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for qn in qualnames {
-            let entry = match resolve_batch_seed_ids(indexer, qn, &base_config, ctx.graph_version)
-            {
+            let entry = match resolve_batch_seed_ids(indexer, qn, &base_config, ctx.graph_version) {
                 Ok(seed_ids) => match crate::impact::analyze_impact_multi_layer(
                     indexer.db(),
                     &seed_ids,
