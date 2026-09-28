@@ -9,6 +9,13 @@
 //! `trace_flow`/`analyze_impact` on (exact, import, receiver_type,
 //! inherited, two_segment, bare_name, external) -- not a second ordering
 //! invented for this ticket.
+//!
+//! The import/receiver_type, inherited/two_segment and two_segment/
+//! bare_name boundary tests instead reuse `tests/fixtures/golden/
+//! typescript`, whose `expected_edges.txt` pins one edge at every tier
+//! from `import` through `bare_name` (Python's fixture only reliably pins
+//! up to `inherited`; its own two_segment/bare_name shape depends on the
+//! `worker.py` incremental-add trick and isn't pinned to a fixed tier).
 
 mod common;
 
@@ -150,6 +157,114 @@ fn min_resolution_filters_callees_at_inherited_tier_boundary() {
         r#"{"qualname":"caller.call_inherited","sections":["callees"],"min_resolution":"inherited"}"#,
     );
     assert!(ref_qualnames(&lenient["callees"]).contains(&"animals.Animal.speak".to_string()));
+}
+
+/// Filtering at the `import`/`receiver_type` tier boundary, using
+/// `tests/fixtures/golden/typescript`: `caller.callReceiverTyped` CALLS
+/// `greeter.Greeter.greet` binds `receiver_type` (pinned by that fixture's
+/// `expected_edges.txt`), one tier weaker than `import`.
+/// `min_resolution: "import"` must exclude it (a stricter floor than the
+/// edge's own tier); `min_resolution: "receiver_type"` must keep it.
+#[test]
+fn min_resolution_filters_callees_at_import_tier_boundary() {
+    let (_tmp, repo_root, db_path) = common::setup_repo("golden/typescript");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let strict = call_rpc(
+        &repo_root,
+        &db_path,
+        "explain_symbol",
+        r#"{"qualname":"caller.callReceiverTyped","sections":["callees"],"min_resolution":"import"}"#,
+    );
+    assert!(
+        !ref_qualnames(&strict["callees"]).contains(&"greeter.Greeter.greet".to_string()),
+        "a receiver_type-tier callee must be excluded once the floor is import: {strict}"
+    );
+    assert_eq!(strict["callees_total"], Value::from(0));
+
+    let lenient = call_rpc(
+        &repo_root,
+        &db_path,
+        "explain_symbol",
+        r#"{"qualname":"caller.callReceiverTyped","sections":["callees"],"min_resolution":"receiver_type"}"#,
+    );
+    assert!(ref_qualnames(&lenient["callees"]).contains(&"greeter.Greeter.greet".to_string()));
+}
+
+/// Filtering at the `inherited`/`two_segment` tier boundary, using
+/// `tests/fixtures/golden/typescript`: `SecretHelper.callLocally` CALLS
+/// `SecretHelper.doSecret` binds `two_segment` (pinned by that fixture's
+/// `expected_edges.txt` -- the call-site text keeps the literal
+/// `SecretHelper.doSecret` receiver rather than rewriting it to `this.
+/// doSecret`), one tier weaker than `inherited`. `min_resolution:
+/// "inherited"` must exclude it; `min_resolution: "two_segment"` must keep
+/// it.
+#[test]
+fn min_resolution_filters_callees_at_two_segment_tier_boundary() {
+    let (_tmp, repo_root, db_path) = common::setup_repo("golden/typescript");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let strict = call_rpc(
+        &repo_root,
+        &db_path,
+        "explain_symbol",
+        r#"{"qualname":"visibilityPrivateOwner.SecretHelper.callLocally","sections":["callees"],"min_resolution":"inherited"}"#,
+    );
+    assert!(
+        !ref_qualnames(&strict["callees"])
+            .contains(&"visibilityPrivateOwner.SecretHelper.doSecret".to_string()),
+        "a two_segment-tier callee must be excluded once the floor is inherited: {strict}"
+    );
+    assert_eq!(strict["callees_total"], Value::from(0));
+
+    let lenient = call_rpc(
+        &repo_root,
+        &db_path,
+        "explain_symbol",
+        r#"{"qualname":"visibilityPrivateOwner.SecretHelper.callLocally","sections":["callees"],"min_resolution":"two_segment"}"#,
+    );
+    assert!(
+        ref_qualnames(&lenient["callees"])
+            .contains(&"visibilityPrivateOwner.SecretHelper.doSecret".to_string())
+    );
+}
+
+/// Filtering at the `two_segment`/`bare_name` tier boundary, using
+/// `tests/fixtures/golden/typescript`: `commonjsExportUse.useHelperOne`
+/// CALLS `commonjsExportOwner.helperOne` binds `bare_name` (pinned by that
+/// fixture's `expected_edges.txt` -- a CommonJS-exported function reached
+/// via a bare, receiver-less call), the weakest named tier.
+/// `min_resolution: "two_segment"` must exclude it; `min_resolution:
+/// "bare_name"` must keep it.
+#[test]
+fn min_resolution_filters_callees_at_bare_name_tier_boundary() {
+    let (_tmp, repo_root, db_path) = common::setup_repo("golden/typescript");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let strict = call_rpc(
+        &repo_root,
+        &db_path,
+        "explain_symbol",
+        r#"{"qualname":"commonjsExportUse.useHelperOne","sections":["callees"],"min_resolution":"two_segment"}"#,
+    );
+    assert!(
+        !ref_qualnames(&strict["callees"]).contains(&"commonjsExportOwner.helperOne".to_string()),
+        "a bare_name-tier callee must be excluded once the floor is two_segment: {strict}"
+    );
+    assert_eq!(strict["callees_total"], Value::from(0));
+
+    let lenient = call_rpc(
+        &repo_root,
+        &db_path,
+        "explain_symbol",
+        r#"{"qualname":"commonjsExportUse.useHelperOne","sections":["callees"],"min_resolution":"bare_name"}"#,
+    );
+    assert!(
+        ref_qualnames(&lenient["callees"]).contains(&"commonjsExportOwner.helperOne".to_string())
+    );
 }
 
 /// An unknown tier name produces a warning in the existing `warnings`
