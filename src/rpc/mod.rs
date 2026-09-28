@@ -1,6 +1,7 @@
 mod compact;
 mod format;
 mod handlers;
+mod reading;
 mod schema;
 mod validate;
 
@@ -8,8 +9,8 @@ pub(crate) use crate::indexer::differ::{ChangedFile, parse_diff_with_ranges};
 use crate::indexer::{Indexer, scan, test_detection};
 use crate::model::{
     AnalyzeDiffResult, BudgetInfo, ChangedSymbol, DiffImpactEntry, ExplainRef, ExplainSymbolResult,
-    LowerBound, ModuleEdge, ModuleNode, RiskAssessment, RiskFactor, Symbol, TestCoverageEntry,
-    TestRef, TraceFlowResult,
+    LowerBound, ModuleEdge, ModuleNode, OutlineEntry, OutlineResult, ReadSymbolEntry,
+    RiskAssessment, RiskFactor, RpcSuggestion, Symbol, TestCoverageEntry, TestRef, TraceFlowResult,
 };
 use crate::util::normalize_search_paths;
 use crate::watch;
@@ -284,11 +285,64 @@ struct ContextParams {
     graph_version: Option<i64>,
 }
 
+/// Params for `outline`: a compact, no-bodies skeleton of a file's symbols.
+#[derive(Deserialize, schemars::JsonSchema)]
+struct OutlineParams {
+    /// Repo-relative file path to outline
+    path: String,
+    /// Filter to specific symbol kinds (e.g. ["function", "class"]). For Markdown
+    /// files, kinds are heading levels ("h1".."h6").
+    kinds: Option<Vec<String>>,
+    /// Maximum nesting depth to include. Depth 0 is a top-level entry (no parent
+    /// in this file); a method inside a class is depth 1, and so on. Default:
+    /// unlimited (all depths included).
+    max_depth: Option<usize>,
+}
+
+/// Params for `read_symbol`: fetch a symbol's exact source from disk.
+/// Exactly one of `qualname`, `query`, `qualnames` must be given.
+///
+/// Response fields beyond the echoed header (qualname/kind/path/start_line/
+/// end_line/stale/source): for a `qualnames` read, `omitted` lists qualnames
+/// that resolved but didn't fit `max_bytes` (whole symbols, never cut
+/// mid-body), `not_found` lists ones that didn't resolve to a real symbol,
+/// and `errors` lists ones that resolved but failed to read (e.g. a missing
+/// file), each as `{"qualname", "error"}`. For a single `qualname`/`query`
+/// read, `omitted: true` plus `size_bytes` replace `source` when the result
+/// would exceed `max_bytes`.
+#[derive(Deserialize, schemars::JsonSchema)]
+struct ReadSymbolParams {
+    /// Exact qualname of the symbol to read (exactly one of qualname/query/qualnames required)
+    qualname: Option<String>,
+    /// Fuzzy search query resolved the same way as explain_symbol/trace_flow (exactly one of qualname/query/qualnames required)
+    query: Option<String>,
+    /// Multiple qualnames to read in one call, filled in request order (exactly one of qualname/query/qualnames required)
+    qualnames: Option<Vec<String>>,
+    /// For a container symbol (class/struct/impl/module), return its children's
+    /// signatures and line ranges instead of the full body (default: false).
+    /// Falls back to a normal read for a symbol with no children.
+    skeleton: Option<bool>,
+    /// Lines of surrounding context to include around the symbol's span, clamped
+    /// at file bounds (default: 0)
+    context_lines: Option<usize>,
+    /// Response byte budget (default: 30000), a hard cap on the whole
+    /// response including `omitted`/`not_found`/`errors`. For a `qualnames`
+    /// (multi-symbol) read, symbols are added in request order until the next
+    /// one would exceed this, then it and every symbol after it are omitted
+    /// whole and listed by qualname under `omitted`. For a single
+    /// `qualname`/`query` read, if the resolved symbol's response would
+    /// exceed this, only its header fields are returned with `omitted: true`
+    /// -- a symbol is never cut mid-body.
+    max_bytes: Option<usize>,
+}
+
 /// Hard cap on result count to prevent huge responses that blow LLM context windows.
 const MAX_RESPONSE_LIMIT: usize = 500;
 
 pub const METHOD_LIST: &[&str] = &[
     "search",
+    "outline",
+    "read_symbol",
     "explain_symbol",
     "trace_flow",
     "analyze_impact",
@@ -385,6 +439,8 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
     let max_response_bytes = format::extract_max_response_bytes(method, &params);
     let value = match method {
         "search" => handlers::handle_search_rg(indexer, params)?,
+        "outline" => reading::handle_outline(indexer, params)?,
+        "read_symbol" => reading::handle_read_symbol(indexer, params)?,
         "explain_symbol" => handlers::handle_explain_symbol(indexer, params)?,
         "trace_flow" => handlers::handle_trace_flow(indexer, params)?,
         "analyze_impact" => handlers::handle_analyze_impact(indexer, params)?,
@@ -410,7 +466,7 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
 
     let exempt = matches!(
         method,
-        "gather_context" | "onboard" | "orient" | "context" | "repo_map"
+        "gather_context" | "onboard" | "orient" | "context" | "repo_map" | "read_symbol"
     );
     let effective_max = max_response_bytes.or({
         if exempt {

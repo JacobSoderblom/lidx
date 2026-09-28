@@ -25,6 +25,15 @@ pub struct Symbol {
     pub stable_id: Option<String>,
 }
 
+impl Symbol {
+    /// True for an external stub: a symbol attributed to a synthetic `ext:`
+    /// location rather than a real repo file (e.g. a known third-party
+    /// import target), which every repo-internal listing excludes.
+    pub fn is_external(&self) -> bool {
+        self.kind == "external" || self.qualname.starts_with("ext:")
+    }
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct SymbolCompact {
     pub id: i64,
@@ -61,6 +70,136 @@ impl From<&Symbol> for SymbolCompact {
             file_path: s.file_path.clone(),
             start_line: s.start_line,
             signature: s.signature.clone(),
+        }
+    }
+}
+
+/// One entry in an `outline` response: a symbol (or, for Markdown, a heading)
+/// in source order, with no body. `parent` is the qualname of the nearest
+/// containing entry within the same file (omitted for top-level entries).
+#[derive(Debug, Serialize, Clone)]
+pub struct OutlineEntry {
+    pub kind: String,
+    pub name: String,
+    pub qualname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    pub start_line: i64,
+    pub end_line: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// First line of the symbol's docstring, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+}
+
+impl OutlineEntry {
+    /// Builds an outline entry from an indexed `Symbol`'s own fields, under
+    /// `parent`'s qualname (`None` for a top-level entry) with a
+    /// caller-computed `doc` (each caller derives it from `docstring`
+    /// differently: a fresh borrow vs. an already-owned `Symbol`) -- the field
+    /// mapping shared by every symbol-derived outline/skeleton-children entry.
+    /// A Markdown heading entry has no backing `Symbol` and builds its own
+    /// literal instead.
+    pub fn from_symbol(symbol: &Symbol, parent: Option<String>, doc: Option<String>) -> Self {
+        OutlineEntry {
+            kind: symbol.kind.clone(),
+            name: symbol.name.clone(),
+            qualname: symbol.qualname.clone(),
+            signature: symbol.signature.clone(),
+            start_line: symbol.start_line,
+            end_line: symbol.end_line,
+            parent,
+            doc,
+        }
+    }
+}
+
+/// Response for `outline`: a compact, no-bodies skeleton of an indexed file.
+#[derive(Debug, Serialize, Clone)]
+pub struct OutlineResult {
+    pub path: String,
+    pub language: String,
+    pub total_lines: i64,
+    pub entries: Vec<OutlineEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub next_hops: Vec<Value>,
+}
+
+/// Header and payload shared by `read_symbol`'s three response shapes: a full
+/// source read, a container's `skeleton` (children only, no bodies), and an
+/// over-budget stub (`omitted: true`). Every shape shares the header fields
+/// (`qualname`/`kind`/`path`/`start_line`/`end_line`/`stale`); each fills in
+/// only the payload fields it uses, and the rest are skipped from the JSON
+/// (`skip_serializing_if`) rather than emitted as `null`, so the field set
+/// for a given shape matches what it always has.
+#[derive(Debug, Serialize, Clone)]
+pub struct ReadSymbolEntry {
+    pub qualname: String,
+    pub kind: String,
+    pub path: String,
+    pub start_line: i64,
+    pub end_line: i64,
+    pub stale: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skeleton: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<OutlineEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub omitted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub next_hops: Vec<Value>,
+}
+
+impl ReadSymbolEntry {
+    /// Header fields shared by every `read_symbol` response shape, with every
+    /// payload field defaulted -- each of the three constructors below fills
+    /// in only the payload fields its shape uses.
+    fn header(symbol: &Symbol, stale: bool) -> Self {
+        ReadSymbolEntry {
+            qualname: symbol.qualname.clone(),
+            kind: symbol.kind.clone(),
+            path: symbol.file_path.clone(),
+            start_line: symbol.start_line,
+            end_line: symbol.end_line,
+            stale,
+            source: None,
+            skeleton: None,
+            children: None,
+            omitted: None,
+            size_bytes: None,
+            next_hops: Vec::new(),
+        }
+    }
+
+    /// A full source read: `source` filled in, no skeleton/omitted payload.
+    pub fn source(symbol: &Symbol, stale: bool, source: String) -> Self {
+        ReadSymbolEntry {
+            source: Some(source),
+            ..Self::header(symbol, stale)
+        }
+    }
+
+    /// A container's skeleton: `children`'s signatures/line ranges, no body.
+    pub fn skeleton(symbol: &Symbol, stale: bool, children: Vec<OutlineEntry>) -> Self {
+        ReadSymbolEntry {
+            skeleton: Some(true),
+            children: Some(children),
+            ..Self::header(symbol, stale)
+        }
+    }
+
+    /// An over-budget stub: header fields only, plus `omitted: true` and the
+    /// actual (over-budget) size -- never a partial/cut source.
+    pub fn omitted_header(symbol: &Symbol, stale: bool, size_bytes: usize) -> Self {
+        ReadSymbolEntry {
+            omitted: Some(true),
+            size_bytes: Some(size_bytes),
+            ..Self::header(symbol, stale)
         }
     }
 }
@@ -241,8 +380,11 @@ pub struct ContextLine {
 pub struct RpcSuggestion {
     pub method: String,
     pub params: Value,
+    // Named `description` (not `label`) to match every other handler's
+    // hand-rolled `next_hops` entries (see e.g. explain_symbol in
+    // `src/rpc/handlers.rs`, outline/read_symbol in `src/rpc/reading.rs`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
