@@ -621,6 +621,51 @@ mod tests {
     }
 
     #[test]
+    fn explain_symbol_schema_documents_sections_and_max_refs() {
+        // issue #69: `sections` and `max_refs` carried no doc comments, so
+        // the generated tool schema exposed them with no description and
+        // callers never discovered they could narrow their request.
+        let schema = super::method_param_schema("explain_symbol");
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("explain_symbol should have properties");
+
+        let sections_desc = props
+            .get("sections")
+            .and_then(|p| p.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or_else(|| panic!("'sections' should carry a description: {:?}", props));
+        for value in ["source", "callers", "callees", "tests", "implements"] {
+            assert!(
+                sections_desc.contains(value),
+                "'sections' description should list accepted value '{}': {:?}",
+                value,
+                sections_desc
+            );
+        }
+        for alias in ["dependencies", "dependents", "summary", "body"] {
+            assert!(
+                sections_desc.contains(alias),
+                "'sections' description should list alias '{}': {:?}",
+                alias,
+                sections_desc
+            );
+        }
+
+        let max_refs_desc = props
+            .get("max_refs")
+            .and_then(|p| p.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or_else(|| panic!("'max_refs' should carry a description: {:?}", props));
+        assert!(
+            max_refs_desc.contains("10"),
+            "'max_refs' description should state its default: {:?}",
+            max_refs_desc
+        );
+    }
+
+    #[test]
     fn param_schema_no_refs() {
         fn check_no_refs(value: &serde_json::Value, path: &str) {
             match value {
