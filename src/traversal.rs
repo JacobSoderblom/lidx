@@ -265,6 +265,7 @@ pub fn trace_flow(
                                 boundary_type: Some(b_type.to_string()),
                                 boundary_detail: Some(b_detail),
                                 protocol_context: p_context,
+                                resolution_kind: bridged_edge.resolution_kind.clone(),
                             };
                             let hop_size = estimate_hop_size(&hop, config.compact);
                             let hop_idx = trace.len();
@@ -384,6 +385,7 @@ fn build_hop(
         boundary_type,
         boundary_detail,
         protocol_context,
+        resolution_kind: edge.resolution_kind.clone(),
     }
 }
 
@@ -1404,6 +1406,7 @@ mod tests {
             boundary_type: None,
             boundary_detail: None,
             protocol_context: None,
+            resolution_kind: None,
         };
 
         let full_size = estimate_hop_size(&hop, false);

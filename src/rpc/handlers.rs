@@ -221,6 +221,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             evidence,
                             edge_kind: "CALLS".to_string(),
                             protocol_context: None,
+                            resolution_kind: edge.resolution_kind.clone(),
                         });
                     }
                 }
@@ -326,6 +327,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                     evidence,
                                     edge_kind: "CALLS".to_string(),
                                     protocol_context: None,
+                                    resolution_kind: edge.resolution_kind.clone(),
                                 });
                             }
                         }
@@ -367,6 +369,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                 evidence,
                                 edge_kind: "CALLS".to_string(),
                                 protocol_context: None,
+                                resolution_kind: edge.resolution_kind.clone(),
                             });
                         }
                     }
@@ -433,6 +436,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     evidence: edge.evidence_snippet.clone(),
                     edge_kind: "CALLS".to_string(),
                     protocol_context: None,
+                    resolution_kind: edge.resolution_kind.clone(),
                 });
                 if test_refs.len() >= max_refs {
                     still_adding = false;
@@ -707,6 +711,7 @@ fn cross_boundary_refs(
                 evidence: hop.snippet,
                 edge_kind,
                 protocol_context: hop.protocol_context,
+                resolution_kind: hop.resolution_kind,
             })
         })
         .collect();
@@ -726,6 +731,7 @@ fn cross_boundary_refs(
                         evidence: edge.evidence_snippet,
                         edge_kind: edge.kind,
                         protocol_context: None,
+                        resolution_kind: edge.resolution_kind,
                     });
                 }
             }
@@ -1897,6 +1903,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                         },
                         distance: current_distance,
                         confidence: base_confidence,
+                        resolution_kind: edge.resolution_kind.clone(),
                     });
                 }
             }

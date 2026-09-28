@@ -689,6 +689,11 @@ pub struct ExplainRef {
     /// (RPC_CALL, HTTP_CALL, CHANNEL_PUBLISH, CONFIG_READ, ...) ref.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol_context: Option<serde_json::Value>,
+    /// The tier that bound this ref's edge -- see `Edge::resolution_kind`.
+    /// Absent when the edge itself never carries one (a Bridge Edge kind
+    /// still pending, or an edge kind the resolver doesn't label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -790,6 +795,12 @@ pub struct DiffImpactEntry {
     pub relationship: String, // "calls", "imports", "extends"
     pub distance: usize,
     pub confidence: f64,
+    /// The tier that bound the edge connecting this entry to the previous
+    /// BFS level -- see `Edge::resolution_kind`. Absent when that edge
+    /// never carries one (a Bridge Edge kind still pending, or an edge
+    /// kind the resolver doesn't label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -866,4 +877,10 @@ pub struct TraceHop {
     pub boundary_detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol_context: Option<serde_json::Value>,
+    /// The tier that bound the edge this hop traversed -- see
+    /// `Edge::resolution_kind`. Absent when the edge itself never carries
+    /// one (a Bridge Edge kind still pending, or an edge kind the resolver
+    /// doesn't label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
 }

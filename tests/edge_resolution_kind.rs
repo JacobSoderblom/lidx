@@ -1,14 +1,26 @@
 //! Issue #62: surface `resolution_kind` on every edge.
 //!
-//! `dead_symbols`'s `unused_imports` list is the one live RPC response that
-//! serializes raw `Edge` objects directly (`Db::unused_imports`, which
-//! unions resolved `edges` rows with pending, never-bound
-//! `unresolved_references` rows -- see `src/rpc/handlers.rs`'s
-//! `handle_dead_symbols`). That makes it the seam this test exercises: a
-//! same-repo unused import resolved by exact qualname match must report
-//! its resolution tier, and an unused import that was never bound (an
-//! external package the write path could not attribute) must omit the
-//! field entirely rather than reporting `null`.
+//! Three seam-A checks, one per response shape that carries a
+//! `resolution_kind`-bearing edge:
+//!
+//! - `dead_symbols`'s `unused_imports` list is the one live RPC response
+//!   that serializes raw `Edge` objects directly (`Db::unused_imports`,
+//!   which unions resolved `edges` rows with pending, never-bound
+//!   `unresolved_references` rows -- see `src/rpc/handlers.rs`'s
+//!   `handle_dead_symbols`). A same-repo unused import resolved by exact
+//!   qualname match must report its resolution tier, and an unused import
+//!   that was never bound (an external package the write path could not
+//!   attribute) must omit the field entirely rather than reporting `null`.
+//! - `explain_symbol`'s `callers`/`callees` entries (`ExplainRef`) must
+//!   carry the tier of the edge each ref was built from -- checked against
+//!   `tests/fixtures/golden/python`, which documents (in its
+//!   `expected_edges.txt`) exactly which qualname binds at which tier.
+//! - `trace_flow`'s hops (`TraceHop`) must carry the tier of the edge each
+//!   hop traversed, including the bridged-edge case where a Bridge Edge
+//!   kind's own target was never bound (its query-time complement lookup
+//!   crosses a language boundary by exact `target_qualname`, not through
+//!   the name tiers), so the hop must omit the field rather than report a
+//!   tier that was never computed.
 
 mod common;
 
@@ -77,5 +89,148 @@ fn unused_imports_expose_resolution_kind_and_omit_it_when_unresolved() {
     assert!(
         unresolved.get("resolution_kind").is_none(),
         "an unresolved (never-bound) unused import must omit resolution_kind rather than report null: {unresolved}"
+    );
+}
+
+fn call_rpc(
+    repo_root: std::path::PathBuf,
+    db_path: std::path::PathBuf,
+    method: &str,
+    params: &str,
+) -> Value {
+    let raw = rpc::call(repo_root, db_path, method.to_string(), params, "1").unwrap();
+    let envelope: Value = serde_json::from_str(&raw).unwrap();
+    assert!(
+        envelope.get("error").is_none_or(|e| e.is_null()),
+        "{method} returned an error: {envelope}"
+    );
+    envelope["result"].clone()
+}
+
+/// `explain_symbol`'s `callers`/`callees` refs carry the tier of the edge
+/// each ref was built from, across two different tiers in one fixture:
+/// `caller.entry CALLS caller.local_util` binds `exact` (same-module,
+/// unambiguous target), and `downstream.use_entry CALLS caller.entry`
+/// binds `import` (cross-file, bound by name through the caller's own
+/// import) -- both pinned in `tests/fixtures/golden/python/expected_edges.txt`.
+#[test]
+fn explain_symbol_refs_expose_resolution_kind_across_tiers() {
+    let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let result = call_rpc(
+        repo_root,
+        db_path,
+        "explain_symbol",
+        r#"{"qualname":"caller.entry","sections":["callers","callees"]}"#,
+    );
+
+    let callees = result["callees"]
+        .as_array()
+        .expect("callees should be an array");
+    let callee = callees
+        .iter()
+        .find(|r| r["symbol"]["qualname"] == "caller.local_util")
+        .expect("expected a callee ref for caller.local_util");
+    assert_eq!(
+        callee["resolution_kind"], "exact",
+        "caller.entry's call to caller.local_util binds exact: {callee}"
+    );
+
+    let callers = result["callers"]
+        .as_array()
+        .expect("callers should be an array");
+    let caller = callers
+        .iter()
+        .find(|r| r["symbol"]["qualname"] == "downstream.use_entry")
+        .expect("expected a caller ref for downstream.use_entry");
+    assert_eq!(
+        caller["resolution_kind"], "import",
+        "downstream.use_entry's call to caller.entry binds import: {caller}"
+    );
+}
+
+const TF_SETTINGS_SOURCE: &str = "\
+import os
+
+
+def format_url(url):
+    return url.strip()
+
+
+def read_url():
+    raw = os.getenv(\"DATABASE_URL\")
+    return format_url(raw)
+";
+
+const TF_DEPLOY_YAML: &str = "\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: app:latest
+          env:
+            - name: DATABASE_URL
+              value: \"postgres://localhost/app\"
+";
+
+/// `trace_flow`'s hops carry the tier of the edge each hop traversed. This
+/// fixture's `settings.read_url` reaches three hops in one downstream
+/// trace: a direct `CALLS` to `format_url` (binds `exact`), a direct
+/// `CALLS` to the external `os.getenv` stub (binds `external`), and a
+/// bridged `CONFIG_SOURCE` hop crossing into `k8s/deploy.yaml` -- that
+/// last edge's own target is a `env://DATABASE_URL` URI, not a symbol, so
+/// the write path never binds it and its hop must omit `resolution_kind`
+/// entirely rather than report a tier that was never computed.
+#[test]
+fn trace_flow_hops_expose_resolution_kind_and_omit_it_when_unresolved() {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-trace-flow-resolution-kind-")
+        .tempdir()
+        .unwrap();
+    common::write_files(
+        tmp.path(),
+        &[
+            ("settings.py", TF_SETTINGS_SOURCE),
+            ("k8s/deploy.yaml", TF_DEPLOY_YAML),
+        ],
+    );
+    let repo_root = tmp.path().to_path_buf();
+    let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let result = call_rpc(
+        repo_root,
+        db_path,
+        "trace_flow",
+        r#"{"start_qualname":"settings.read_url","direction":"downstream"}"#,
+    );
+    let trace = result["trace"]
+        .as_array()
+        .expect("trace should be an array");
+
+    let direct_hop = trace
+        .iter()
+        .find(|h| h["symbol"]["qualname"] == "settings.format_url")
+        .expect("expected a direct CALLS hop to settings.format_url");
+    assert_eq!(
+        direct_hop["resolution_kind"], "exact",
+        "the direct call to format_url binds exact: {direct_hop}"
+    );
+
+    let bridged_hop = trace
+        .iter()
+        .find(|h| h["edge_kind"] == "CONFIG_SOURCE")
+        .expect("expected a bridged CONFIG_SOURCE hop into k8s/deploy.yaml");
+    assert!(
+        bridged_hop.get("resolution_kind").is_none(),
+        "a CONFIG_SOURCE edge's target is a URI, never bound to a symbol, so its hop must omit resolution_kind rather than report null: {bridged_hop}"
     );
 }
