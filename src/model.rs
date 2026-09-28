@@ -25,6 +25,15 @@ pub struct Symbol {
     pub stable_id: Option<String>,
 }
 
+impl Symbol {
+    /// True for an external stub: a symbol attributed to a synthetic `ext:`
+    /// location rather than a real repo file (e.g. a known third-party
+    /// import target), which every repo-internal listing excludes.
+    pub fn is_external(&self) -> bool {
+        self.kind == "external" || self.qualname.starts_with("ext:")
+    }
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct SymbolCompact {
     pub id: i64,

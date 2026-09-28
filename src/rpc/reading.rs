@@ -197,7 +197,7 @@ fn symbol_outline_entries(
         // Defensive: external stubs are attributed to a synthetic `ext:` location,
         // not a real repo file, so this shouldn't normally match -- excluded anyway
         // to match their exclusion from every other repo-internal listing.
-        .filter(|s| s.kind != "external" && !s.qualname.starts_with("ext:"))
+        .filter(|s| !s.is_external())
         .collect();
     if symbols.is_empty() {
         return Ok(Vec::new());
@@ -493,7 +493,7 @@ fn container_children(
         // Defensive: external stubs are attributed to a synthetic `ext:`
         // location, not a real repo file, so this shouldn't normally match --
         // excluded anyway to mirror `symbol_outline_entries`'s own exclusion.
-        if child.kind == "external" || child.qualname.starts_with("ext:") {
+        if child.is_external() {
             continue;
         }
         let doc = child.docstring.as_deref().and_then(first_doc_line);
@@ -753,7 +753,7 @@ fn handle_read_symbol_multi(
         }
         let found = indexer.db().get_symbol_by_qualname(qn, graph_version)?;
         let symbol = match found {
-            Some(s) if s.kind != "external" && !s.qualname.starts_with("ext:") => s,
+            Some(s) if !s.is_external() => s,
             _ => {
                 not_found_array_bytes += array_element_cost(not_found.len(), quoted_len(qn));
                 not_found.push(qn.clone());
@@ -877,7 +877,7 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         ReadTarget::Found(symbol) => symbol,
     };
 
-    if symbol.kind == "external" || symbol.qualname.starts_with("ext:") {
+    if symbol.is_external() {
         anyhow::bail!(
             "symbol not found: '{}' is an external stub with no indexed source",
             symbol.qualname
