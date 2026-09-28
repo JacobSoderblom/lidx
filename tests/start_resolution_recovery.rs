@@ -793,6 +793,42 @@ fn search_fallback_hop_uses_fixed_string_and_survives_regex_metacharacters() {
     }
 }
 
+/// A batch entry whose seed resolves fine but whose analysis subsequently
+/// fails (here: a `languages` filter that excludes the seed's own language,
+/// so `load_seeds` finds zero matching symbols and the orchestrator errors
+/// with "No valid seed symbols found") must NOT carry a `recovery` payload.
+/// `recovery` means "the seed itself couldn't be found" — a
+/// `build_resolution_recovery_payload` "Symbol '...' not found" message
+/// would be actively wrong here, since the symbol WAS found. The real error
+/// must still land in `layers.direct.error`, as before.
+#[test]
+fn analyze_impact_batch_resolved_seed_with_failed_analysis_has_no_recovery() {
+    let temp = indexed_repo("py_mvp");
+    let envelope = call_raw(
+        &temp,
+        "analyze_impact",
+        r#"{"qualnames":["pkg.core.Greeter"],"languages":["rust"]}"#,
+    );
+    assert!(
+        envelope.get("error").is_none(),
+        "batch must succeed, got: {envelope}"
+    );
+    let results = envelope["result"]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    let entry = &results[0];
+
+    assert!(
+        entry.as_object().unwrap().get("recovery").is_none(),
+        "a resolved seed whose analysis fails afterward must not carry a recovery \
+         payload (recovery means 'seed not found', not 'analysis failed'), got: {entry}"
+    );
+    let direct_error = &entry["layers"]["direct"]["error"];
+    assert!(
+        direct_error.is_string(),
+        "the real analysis error must still be preserved in layers.direct.error, got: {entry}"
+    );
+}
+
 /// An unmatched config URI passed directly as trace_flow's start_qualname
 /// must return a structured recovery payload, not a flat error — matching
 /// the batch path's existing recovery for the same kind of input.
