@@ -164,7 +164,10 @@ fn top_complexity_hoists_graph_version_once_and_returns_object() {
     );
 
     let results = result["results"].as_array().expect("results array");
-    assert!(!results.is_empty(), "expected at least one entry: {result:?}");
+    assert!(
+        !results.is_empty(),
+        "expected at least one entry: {result:?}"
+    );
 
     let envelope_graph_version = result.get("graph_version").unwrap_or_else(|| {
         panic!("top_complexity must carry graph_version at the envelope: {result:?}")
