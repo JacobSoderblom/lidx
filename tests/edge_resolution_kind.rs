@@ -46,14 +46,7 @@ fn unused_imports_expose_resolution_kind_and_omit_it_when_unresolved() {
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer.reindex().unwrap();
 
-    let raw = rpc::call(
-        repo_root,
-        db_path,
-        "dead_symbols".to_string(),
-        "{}",
-        "1",
-    )
-    .unwrap();
+    let raw = rpc::call(repo_root, db_path, "dead_symbols".to_string(), "{}", "1").unwrap();
     let envelope: Value = serde_json::from_str(&raw).unwrap();
     assert!(
         envelope.get("error").is_none_or(|e| e.is_null()),
