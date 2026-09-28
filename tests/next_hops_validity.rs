@@ -131,6 +131,22 @@ fn call_and_get_result(temp: &TempRepo, method: &str, params: &str) -> serde_jso
     result
 }
 
+/// Execute a next_hop suggestion and return its `result` -- panics on an error
+/// envelope, so a hop whose params don't actually validate against the target
+/// method's schema fails loudly here rather than passing silently.
+fn follow_hop(temp: &TempRepo, hop: &serde_json::Value) -> serde_json::Value {
+    let method = hop["method"].as_str().expect("hop must have a method");
+    let params = serde_json::to_string(&hop["params"]).unwrap();
+    call_and_get_result(temp, method, &params)
+}
+
+fn rg_available() -> bool {
+    std::process::Command::new("rg")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
 /// Assert every hop method in `result` is dispatchable, and return the emitted hops
 /// so callers can additionally assert the handler emitted any at all.
 fn assert_all_hops_valid(result: &serde_json::Value, handler: &str) -> Vec<String> {
@@ -158,7 +174,8 @@ fn all_next_hops_methods_are_dispatchable() {
     indexer.reindex().unwrap();
     drop(indexer);
 
-    // explain_symbol — emits analyze_impact and gather_context hops
+    // explain_symbol — emits analyze_impact and gather_context hops, plus
+    // (#97) a read_symbol hop for the resolved symbol.
     let result = call_and_get_result(
         &temp,
         "explain_symbol",
@@ -168,6 +185,31 @@ fn all_next_hops_methods_are_dispatchable() {
     assert!(
         !hops.is_empty(),
         "explain_symbol emitted no hops; the validity check exercised nothing"
+    );
+    let next_hops = result["next_hops"].as_array().unwrap();
+    let read_symbol_hop = next_hops
+        .iter()
+        .find(|h| h["method"].as_str() == Some("read_symbol"))
+        .expect("explain_symbol must emit a read_symbol hop for the resolved symbol");
+    assert_eq!(
+        read_symbol_hop["params"]["qualname"],
+        serde_json::json!("pkg.core.Greeter"),
+        "read_symbol hop must target the resolved symbol's qualname, got: {}",
+        read_symbol_hop
+    );
+    // The hop's params must actually validate against read_symbol: following it
+    // must resolve back to the same symbol and return its source, not error.
+    let followed = follow_hop(&temp, read_symbol_hop);
+    assert_eq!(
+        followed["qualname"],
+        serde_json::json!("pkg.core.Greeter"),
+        "following the read_symbol hop must read the same symbol explain_symbol resolved, got: {}",
+        followed
+    );
+    assert!(
+        followed["source"].as_str().is_some_and(|s| !s.is_empty()),
+        "following the read_symbol hop must return non-empty source, got: {}",
+        followed
     );
 
     // analyze_diff — emits explain_symbol plus analyze_impact (upstream + both) hops.
@@ -213,5 +255,123 @@ fn all_next_hops_methods_are_dispatchable() {
     assert!(
         !hops.is_empty(),
         "onboard emitted no suggested_queries; the validity check exercised nothing"
+    );
+}
+
+/// Writes `count` python files under a fresh temp repo, each containing a
+/// shared marker string so a single search query matches all of them. The
+/// first file matches on two separate lines, so the fixture also exercises
+/// "one hop per file, not per hit" within a single file.
+fn many_files_repo(count: usize) -> TempRepo {
+    let dir = temp_repo_dir("many-files");
+    for i in 0..count {
+        let body = if i == 0 {
+            "def marker_a():\n    return \"NEXT_HOPS_SEARCH_MARKER\"\n\n\ndef marker_b():\n    return \"NEXT_HOPS_SEARCH_MARKER\"\n"
+        } else {
+            "def marker():\n    return \"NEXT_HOPS_SEARCH_MARKER\"\n"
+        };
+        std::fs::write(dir.join(format!("file_{i}.py")), body).unwrap();
+    }
+    let db_path = dir.join(".lidx").join(".lidx.sqlite");
+    let repo = TempRepo {
+        repo_root: dir,
+        db_path,
+    };
+    let mut indexer = Indexer::new(repo.repo_root.clone(), repo.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+    repo
+}
+
+/// #97: `search` hits point at `outline` for their file, one hop per distinct
+/// file (not per hit), capped at a handful of files even when more match.
+#[test]
+fn search_hits_include_outline_hops_deduplicated_per_file_and_capped() {
+    if !rg_available() {
+        return; // rg not available -- skip
+    }
+    // 7 distinct files match; file_0.py matches twice, on two separate lines.
+    let temp = many_files_repo(7);
+
+    let result = call_and_get_result(
+        &temp,
+        "search",
+        r#"{"query":"NEXT_HOPS_SEARCH_MARKER","limit":50}"#,
+    );
+    let hits = result
+        .as_array()
+        .expect("non-empty search must stay a bare array (unchanged format)");
+    assert_eq!(
+        hits.len(),
+        8,
+        "expected 8 hits (7 files, one with 2 matches), got: {:?}",
+        hits
+    );
+
+    let hops = assert_all_hops_valid(&result, "search");
+    assert!(
+        !hops.is_empty(),
+        "search emitted no hops; the validity check exercised nothing"
+    );
+    assert!(
+        hops.iter().all(|m| m == "outline"),
+        "search hits should only emit outline hops, got: {:?}",
+        hops
+    );
+
+    // Collect the file path named by each hit that carries a hop, in hit order.
+    let mut hop_paths: Vec<String> = Vec::new();
+    for hit in hits {
+        let Some(hop_list) = hit.get("next_hops").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        assert_eq!(
+            hop_list.len(),
+            1,
+            "each hopped hit should carry exactly one outline hop, got: {:?}",
+            hop_list
+        );
+        let hop = &hop_list[0];
+        assert_eq!(hop["method"], serde_json::json!("outline"));
+        assert_eq!(
+            hop["params"]["path"], hit["path"],
+            "outline hop must point at the hit's own file, got hop: {} hit: {}",
+            hop, hit
+        );
+        hop_paths.push(hop["params"]["path"].as_str().unwrap().to_string());
+    }
+
+    // Capped at 5 distinct files even though 7 (really 8 hits) matched.
+    assert_eq!(
+        hop_paths.len(),
+        5,
+        "expected exactly 5 hits to carry an outline hop (cap), got {}: {:?}",
+        hop_paths.len(),
+        hop_paths
+    );
+
+    // Deduplicated: no file's hop appears twice, so file_0.py's second hit
+    // (same file as its first) must not have added a second hop.
+    let unique: HashSet<&String> = hop_paths.iter().collect();
+    assert_eq!(
+        unique.len(),
+        hop_paths.len(),
+        "outline hops must be deduplicated per file, got: {:?}",
+        hop_paths
+    );
+
+    // The hop's params must actually validate against outline: following it
+    // must succeed and outline the same file it named.
+    let first_hop = hits
+        .iter()
+        .find_map(|h| h.get("next_hops"))
+        .and_then(|v| v.as_array())
+        .and_then(|a| a.first())
+        .expect("at least one hit carries an outline hop");
+    let followed = follow_hop(&temp, first_hop);
+    assert_eq!(
+        followed["path"], first_hop["params"]["path"],
+        "following the outline hop must outline the file it named, got: {}",
+        followed
     );
 }

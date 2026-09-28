@@ -581,6 +581,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let next_hops = vec![
         json!({"method": "analyze_impact", "params": {"id": symbol.id, "direction": "both"}, "description": "Explore full graph neighborhood via impact analysis"}),
         json!({"method": "gather_context", "params": {"seeds": [{"type": "symbol", "qualname": symbol.qualname}], "max_bytes": 80000}, "description": "Assemble full context"}),
+        // Issue #97: point at the exact source for the symbol this call just resolved,
+        // so understanding (explain_symbol) leads straight to reading (read_symbol).
+        json!({"method": "read_symbol", "params": {"qualname": symbol.qualname}, "description": format!("Read exact source of {}", symbol.name)}),
     ];
 
     // Honest truncation: true if the source snippet was cut, or if any
@@ -2762,6 +2765,28 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
             "query": query,
             "next_hops": next_hops,
         }));
+    }
+
+    // Issue #97: point each hit toward an `outline` of its file -- one hop per
+    // distinct file, not per hit, since a file with several matching lines only
+    // needs one skeleton. Capped at a handful of files: hops add bytes to every
+    // hit that carries one, and a wide search (many files) gains little from an
+    // outline hop on every single one of them.
+    const OUTLINE_HOP_FILE_CAP: usize = 5;
+    let mut hopped_paths: HashSet<String> = HashSet::new();
+    for hit in results.iter_mut() {
+        if hopped_paths.len() >= OUTLINE_HOP_FILE_CAP {
+            break;
+        }
+        if !hopped_paths.insert(hit.path.clone()) {
+            continue;
+        }
+        let path = hit.path.clone();
+        hit.next_hops = Some(vec![RpcSuggestion {
+            method: "outline".to_string(),
+            params: json!({"path": path}),
+            label: Some(format!("Outline {}", path)),
+        }]);
     }
 
     Ok(json!(results))

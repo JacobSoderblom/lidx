@@ -9,7 +9,7 @@ use crate::indexer::{Indexer, scan, test_detection};
 use crate::model::{
     AnalyzeDiffResult, BudgetInfo, ChangedSymbol, DiffImpactEntry, ExplainRef, ExplainSymbolResult,
     LowerBound, ModuleEdge, ModuleNode, OutlineEntry, OutlineResult, RiskAssessment, RiskFactor,
-    Symbol, TestCoverageEntry, TestRef, TraceFlowResult,
+    RpcSuggestion, Symbol, TestCoverageEntry, TestRef, TraceFlowResult,
 };
 use crate::util::normalize_search_paths;
 use crate::watch;
