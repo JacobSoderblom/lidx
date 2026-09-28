@@ -276,14 +276,13 @@ fn analyze_impact_resolvable_ref_is_unchanged() {
         result.get("affected").is_some(),
         "resolvable analyze_impact must have 'affected' field"
     );
-    // Non-empty result must NOT have next_hops (unchanged behaviour)
-    let affected = result["affected"].as_array().unwrap();
-    if !affected.is_empty() {
-        assert!(
-            result.get("next_hops").is_none(),
-            "non-zero affected analyze_impact must not add next_hops (unchanged)"
-        );
-    }
+    // A resolved seed must not carry the recovery payload. (next_hops may still
+    // appear on success, e.g. the heuristic-edge retry hop.)
+    assert!(
+        result.get("resolved").is_none(),
+        "resolvable analyze_impact must not return the recovery payload, got: {}",
+        result
+    );
 }
 
 // ---------------------------------------------------------------------------
