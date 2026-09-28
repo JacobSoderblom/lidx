@@ -734,13 +734,322 @@ fn cross_boundary_refs(
     Ok(refs)
 }
 
-/// Stub for issue #94: `outline` is registered (METHOD_LIST, param schema, dispatch)
-/// so follow-up tickets can build the real file-skeleton behaviour without touching
-/// these shared registration points. Params are validated (required `path`) before
-/// the not-implemented error, so callers can tell "bad request" from "not built yet".
-pub(super) fn handle_outline(_indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let _params: OutlineParams = serde_json::from_value(params)?;
-    anyhow::bail!("'outline' is not implemented yet")
+/// Extensions treated as Markdown for `outline`. Markdown isn't a scanned
+/// language (no entry in `indexer::scan`'s `LANGUAGE_SPECS`, so `.md` files
+/// never get a `files`/`symbols` row) -- `search` still finds them via
+/// ripgrep, so `outline` reads Markdown straight off disk and parses ATX
+/// headings, rather than requiring a DB row like every other language here.
+fn is_markdown_path(path: &str) -> bool {
+    matches!(
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("md") | Some("markdown")
+    )
+}
+
+/// First non-empty, trimmed line of a (possibly multi-line) docstring.
+fn first_doc_line(docstring: &str) -> Option<String> {
+    let line = docstring.lines().find(|l| !l.trim().is_empty())?.trim();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+/// One ATX Markdown heading (`# ... ######`), CommonMark-ish: up to 3 leading
+/// spaces tolerated, requires a space (or EOL) after the hashes, and strips an
+/// optional closing hash run (`## Heading ##`).
+struct MarkdownHeading {
+    level: usize,
+    text: String,
+    start_line: i64,
+}
+
+fn parse_markdown_headings(content: &str) -> Vec<MarkdownHeading> {
+    let mut headings = Vec::new();
+    for (idx, line) in content.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if line.len() - trimmed.len() > 3 {
+            continue; // indented code block, not a heading
+        }
+        let level = trimmed.chars().take_while(|c| *c == '#').count();
+        if level == 0 || level > 6 {
+            continue;
+        }
+        let rest = &trimmed[level..];
+        if !(rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t')) {
+            continue; // e.g. "#tag", not a heading
+        }
+        let mut text = rest.trim().to_string();
+        while text.ends_with('#') {
+            text.pop();
+        }
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        headings.push(MarkdownHeading {
+            level,
+            text,
+            start_line: (idx + 1) as i64,
+        });
+    }
+    headings
+}
+
+/// Builds `outline` entries for a Markdown file from its headings: `kind` is
+/// `"h1"`.."h6"`, `qualname` is the breadcrumb of ancestor headings (the
+/// closest thing Markdown has to a qualname), and depth/parent follow the
+/// heading level stack -- a level skip (h1 straight to h3) still nests under
+/// the nearest actual ancestor, not a synthesized one.
+fn markdown_outline_entries(
+    content: &str,
+    total_lines: i64,
+    kinds_filter: Option<&HashSet<String>>,
+    max_depth: Option<usize>,
+) -> Vec<OutlineEntry> {
+    let headings = parse_markdown_headings(content);
+    let mut entries = Vec::new();
+    let mut stack: Vec<(usize, String)> = Vec::new();
+
+    for (i, h) in headings.iter().enumerate() {
+        while stack.last().is_some_and(|(level, _)| *level >= h.level) {
+            stack.pop();
+        }
+        let parent = stack.last().map(|(_, qualname)| qualname.clone());
+        let depth = stack.len();
+        let qualname = match &parent {
+            Some(p) => format!("{p} > {}", h.text),
+            None => h.text.clone(),
+        };
+        stack.push((h.level, qualname.clone()));
+
+        let end_line = headings[(i + 1)..]
+            .iter()
+            .find(|next| next.level <= h.level)
+            .map(|next| next.start_line - 1)
+            .unwrap_or(total_lines);
+
+        let kind = format!("h{}", h.level);
+        if kinds_filter.is_some_and(|filter| !filter.contains(&kind)) {
+            continue;
+        }
+        if max_depth.is_some_and(|max| depth > max) {
+            continue;
+        }
+        entries.push(OutlineEntry {
+            kind,
+            name: h.text.clone(),
+            qualname,
+            signature: None,
+            start_line: h.start_line,
+            end_line,
+            parent,
+            doc: None,
+        });
+    }
+    entries
+}
+
+/// Builds `outline` entries for a code file from its indexed symbols, using
+/// existing `CONTAINS` edges for nesting (the same edges every extractor
+/// already emits for parent/child structure) rather than re-deriving nesting
+/// from qualname string-splitting (which varies by language delimiter) or
+/// byte-range containment (which is wrong for Rust: a method's byte span sits
+/// inside its `impl` block, not inside the struct symbol it's qualname-nested
+/// under -- `impl` blocks have no symbol of their own).
+///
+/// Each file's extractor also emits one whole-file `module`-kind root symbol
+/// (see `indexer::tree_helpers::module_symbol_with_span`); since `path`/
+/// `language` already say "this is the file", that root is identified (a
+/// `module` symbol with no incoming `CONTAINS` edge in this file) and hidden
+/// from entries -- its direct children become top-level (depth 0) instead of
+/// nesting one level under a redundant "whole file" entry. A *nested* `mod`
+/// block does have an incoming `CONTAINS` edge (from its enclosing module) and
+/// stays a normal entry.
+fn symbol_outline_entries(
+    db: &crate::db::Db,
+    path: &str,
+    graph_version: i64,
+    kinds_filter: Option<&HashSet<String>>,
+    max_depth: Option<usize>,
+) -> Result<Vec<OutlineEntry>> {
+    let symbols: Vec<Symbol> = db
+        .get_symbols_for_file(path, graph_version)?
+        .into_iter()
+        // Defensive: external stubs are attributed to a synthetic `ext:` location,
+        // not a real repo file, so this shouldn't normally match -- excluded anyway
+        // to match their exclusion from every other repo-internal listing.
+        .filter(|s| s.kind != "external" && !s.qualname.starts_with("ext:"))
+        .collect();
+    if symbols.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids: Vec<i64> = symbols.iter().map(|s| s.id).collect();
+    let id_set: HashSet<i64> = ids.iter().copied().collect();
+    let by_id: std::collections::HashMap<i64, &Symbol> =
+        symbols.iter().map(|s| (s.id, s)).collect();
+
+    let edges_map = db.edges_for_symbols(&ids, None, graph_version)?;
+    let mut parent_of: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    let mut seen_edge_ids = HashSet::new();
+    for edges in edges_map.values() {
+        for edge in edges {
+            if edge.kind != "CONTAINS" || !seen_edge_ids.insert(edge.id) {
+                continue;
+            }
+            if let (Some(source_id), Some(target_id)) =
+                (edge.source_symbol_id, edge.target_symbol_id)
+                && id_set.contains(&source_id)
+                && id_set.contains(&target_id)
+            {
+                parent_of.insert(target_id, source_id);
+            }
+        }
+    }
+
+    let root_ids: HashSet<i64> = symbols
+        .iter()
+        .filter(|s| s.kind == "module" && !parent_of.contains_key(&s.id))
+        .map(|s| s.id)
+        .collect();
+
+    // The visible parent: the raw `CONTAINS` parent, unless that parent is a
+    // hidden file-root module -- in which case there's no visible parent.
+    let effective_parent = |id: i64| -> Option<i64> {
+        parent_of
+            .get(&id)
+            .copied()
+            .filter(|parent_id| !root_ids.contains(parent_id))
+    };
+    let depth_of = |id: i64| -> usize {
+        let mut depth = 0;
+        let mut current = id;
+        // Guard against a pathological cycle; real containment trees are a
+        // handful of levels deep at most.
+        for _ in 0..64 {
+            match effective_parent(current) {
+                Some(parent_id) => {
+                    depth += 1;
+                    current = parent_id;
+                }
+                None => break,
+            }
+        }
+        depth
+    };
+
+    let mut entries = Vec::new();
+    for symbol in &symbols {
+        if root_ids.contains(&symbol.id) {
+            continue;
+        }
+        if kinds_filter.is_some_and(|filter| !filter.contains(&symbol.kind)) {
+            continue;
+        }
+        let depth = depth_of(symbol.id);
+        if max_depth.is_some_and(|max| depth > max) {
+            continue;
+        }
+        let parent = effective_parent(symbol.id)
+            .and_then(|parent_id| by_id.get(&parent_id))
+            .map(|p| p.qualname.clone());
+        let doc = symbol.docstring.as_deref().and_then(first_doc_line);
+        entries.push(OutlineEntry {
+            kind: symbol.kind.clone(),
+            name: symbol.name.clone(),
+            qualname: symbol.qualname.clone(),
+            signature: symbol.signature.clone(),
+            start_line: symbol.start_line,
+            end_line: symbol.end_line,
+            parent,
+            doc,
+        });
+    }
+    Ok(entries)
+}
+
+/// `outline` (#95): a compact, no-bodies skeleton of an indexed file's symbols
+/// in source order -- kind, qualname, signature, line range, nesting parent,
+/// first doc line. Answers "what's in this file?" for a fraction of the
+/// file's size; the response is still subject to the default response byte
+/// cap like any other method (see `handle_method`'s `effective_max`).
+pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let params: OutlineParams = serde_json::from_value(params)?;
+    let path = params.path.trim();
+    if path.is_empty() {
+        anyhow::bail!("outline requires a non-empty 'path'");
+    }
+    let kinds_filter: Option<HashSet<String>> =
+        params.kinds.map(|kinds| kinds.into_iter().collect());
+    let max_depth = params.max_depth;
+
+    let repo_root = indexer.repo_root().clone();
+    let full_path = repo_root.join(path);
+    let markdown = is_markdown_path(path);
+
+    // Markdown has no `files`/`symbols` row to check (see `is_markdown_path`), so
+    // disk presence is its "indexed" check; every other language must already be
+    // in the DB, which is checked before touching disk at all.
+    let language = if markdown {
+        "markdown".to_string()
+    } else {
+        let file_record = indexer.db().get_file_by_path(path)?;
+        let Some(file_record) = file_record else {
+            anyhow::bail!(
+                "path '{}' is not indexed -- fall back to Read, or run 'reindex' if it should be tracked",
+                path
+            );
+        };
+        file_record.language
+    };
+
+    let content = crate::util::read_to_string(&full_path).map_err(|_| {
+        if markdown {
+            anyhow::anyhow!(
+                "path '{}' is not indexed -- fall back to Read for this file",
+                path
+            )
+        } else {
+            anyhow::anyhow!(
+                "file '{}' is missing from disk; run 'reindex' to refresh the index",
+                path
+            )
+        }
+    })?;
+    let total_lines = crate::indexer::tree_helpers::line_count(&content);
+
+    let entries = if markdown {
+        markdown_outline_entries(&content, total_lines, kinds_filter.as_ref(), max_depth)
+    } else {
+        let graph_version = indexer.db().current_graph_version()?;
+        symbol_outline_entries(
+            indexer.db(),
+            path,
+            graph_version,
+            kinds_filter.as_ref(),
+            max_depth,
+        )?
+    };
+
+    let next_hops = match entries.first() {
+        Some(first) => vec![json!({
+            "method": "read_symbol",
+            "params": {"qualname": first.qualname},
+            "description": "read_symbol accepts any entry's qualname above to fetch its exact source",
+        })],
+        None => vec![],
+    };
+
+    let result = OutlineResult {
+        path: path.to_string(),
+        language,
+        total_lines,
+        entries,
+        next_hops,
+    };
+    Ok(serde_json::to_value(result)?)
 }
 
 /// Resolution outcome for a `read_symbol` `qualname`/`query` selector.

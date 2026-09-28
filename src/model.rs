@@ -65,6 +65,36 @@ impl From<&Symbol> for SymbolCompact {
     }
 }
 
+/// One entry in an `outline` response: a symbol (or, for Markdown, a heading)
+/// in source order, with no body. `parent` is the qualname of the nearest
+/// containing entry within the same file (omitted for top-level entries).
+#[derive(Debug, Serialize, Clone)]
+pub struct OutlineEntry {
+    pub kind: String,
+    pub name: String,
+    pub qualname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    pub start_line: i64,
+    pub end_line: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// First line of the symbol's docstring, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+}
+
+/// Response for `outline`: a compact, no-bodies skeleton of an indexed file.
+#[derive(Debug, Serialize, Clone)]
+pub struct OutlineResult {
+    pub path: String,
+    pub language: String,
+    pub total_lines: i64,
+    pub entries: Vec<OutlineEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub next_hops: Vec<Value>,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct Edge {
     pub id: i64,

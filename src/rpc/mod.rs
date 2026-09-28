@@ -8,8 +8,8 @@ pub(crate) use crate::indexer::differ::{ChangedFile, parse_diff_with_ranges};
 use crate::indexer::{Indexer, scan, test_detection};
 use crate::model::{
     AnalyzeDiffResult, BudgetInfo, ChangedSymbol, DiffImpactEntry, ExplainRef, ExplainSymbolResult,
-    LowerBound, ModuleEdge, ModuleNode, RiskAssessment, RiskFactor, Symbol, TestCoverageEntry,
-    TestRef, TraceFlowResult,
+    LowerBound, ModuleEdge, ModuleNode, OutlineEntry, OutlineResult, RiskAssessment, RiskFactor,
+    Symbol, TestCoverageEntry, TestRef, TraceFlowResult,
 };
 use crate::util::normalize_search_paths;
 use crate::watch;
@@ -267,15 +267,16 @@ struct ContextParams {
 }
 
 /// Params for `outline`: a compact, no-bodies skeleton of a file's symbols.
-/// Fields are unread until the #93 follow-up ticket implements the handler body.
 #[derive(Deserialize, schemars::JsonSchema)]
-#[allow(dead_code)]
 struct OutlineParams {
     /// Repo-relative file path to outline
     path: String,
-    /// Filter to specific symbol kinds (e.g. ["function", "class"])
+    /// Filter to specific symbol kinds (e.g. ["function", "class"]). For Markdown
+    /// files, kinds are heading levels ("h1".."h6").
     kinds: Option<Vec<String>>,
-    /// Maximum nesting depth to include (default: unlimited)
+    /// Maximum nesting depth to include. Depth 0 is a top-level entry (no parent
+    /// in this file); a method inside a class is depth 1, and so on. Default:
+    /// unlimited (all depths included).
     max_depth: Option<usize>,
 }
 
