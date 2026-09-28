@@ -4,8 +4,12 @@
 /// from "the requested scope has no data at all". Both now report explicit
 /// counts plus a diagnostic flag on the empty path, matching the
 /// explicit-counts precedent set by `dead_symbols` (see `tests/dead_symbols.rs`).
-/// Non-empty results are asserted unchanged (still a bare array for
-/// `top_complexity`, still the same object shape for `repo_map`).
+/// `top_complexity`'s non-empty path used to stay a bare array, which left
+/// its response shape data-dependent and gave the generic
+/// `graph_version`/`commit_sha` hoist in `rpc/mod.rs` nowhere to hoist onto
+/// (see `tests/response_metadata_hoist.rs`); it now always returns an
+/// object, mirroring the empty path's `results`/`counts` field names.
+/// `repo_map`'s non-empty shape is unchanged.
 use lidx::indexer::Indexer;
 use lidx::rpc;
 use std::path::{Path, PathBuf};
@@ -59,7 +63,7 @@ fn setup_repo(fixture: &str) -> (PathBuf, PathBuf) {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn top_complexity_non_empty_stays_bare_array() {
+fn top_complexity_non_empty_returns_object_with_results() {
     let (repo_root, db_path) = setup_repo("py_mvp");
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer.reindex().unwrap();
@@ -67,13 +71,22 @@ fn top_complexity_non_empty_stays_bare_array() {
     let result = rpc::handle_method(&mut indexer, "top_complexity", serde_json::json!({})).unwrap();
 
     assert!(
-        result.is_array(),
-        "non-empty top_complexity must remain a bare array: {:?}",
+        result.is_object(),
+        "non-empty top_complexity must be an object like the empty path, not a bare array: {:?}",
         result
     );
+    let results = result["results"]
+        .as_array()
+        .expect("results should be an array");
     assert!(
-        !result.as_array().unwrap().is_empty(),
+        !results.is_empty(),
         "py_mvp has functions, top_complexity should not be empty"
+    );
+    assert_eq!(
+        result["counts"]["results"].as_u64(),
+        Some(results.len() as u64),
+        "counts.results should mirror the results length: {:?}",
+        result
     );
 
     let _ = std::fs::remove_dir_all(&repo_root);

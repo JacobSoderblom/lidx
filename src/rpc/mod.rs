@@ -508,10 +508,12 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
 /// copy to the top level of the result.
 ///
 /// Two cases leave a result untouched:
-/// - The result is a bare array (e.g. non-empty `top_complexity`): there is
+/// - The result is a bare array (e.g. non-empty `search`): there is
 ///   nowhere to hoist a field to without changing the response's top-level
 ///   type, so the array -- and every symbol inside it -- is left exactly
-///   as `Symbol`'s derive produced it.
+///   as `Symbol`'s derive produced it. (`top_complexity` used to be an
+///   example of this too, but always returns an object now -- see its
+///   handler and `tests/response_metadata_hoist.rs`.)
 /// - The top level already carries its own `graph_version` (e.g.
 ///   `explain_symbol`'s `ExplainSymbolResult.graph_version`, stamped
 ///   deliberately): the nested duplicates are still stripped, but nothing

@@ -641,8 +641,12 @@ impl<'a> MultiLayerOrchestrator<'a> {
             }
         }
 
-        // Load all impacted symbols
-        let symbol_ids: Vec<i64> = symbol_evidence.keys().copied().collect();
+        // Load all impacted symbols, plus the seeds themselves -- a path
+        // step's parent can be a seed (e.g. the distance-1 step off the
+        // start symbol), and `reconstruct_path_steps` needs a qualname for
+        // it too, not just for non-seed impacted symbols.
+        let mut symbol_ids: Vec<i64> = symbol_evidence.keys().copied().collect();
+        symbol_ids.extend(seed_ids.iter().copied());
         let symbols = self.db.symbols_by_ids(&symbol_ids, None, graph_version)?;
         let symbol_map: HashMap<i64, Symbol> = symbols.into_iter().map(|s| (s.id, s)).collect();
 

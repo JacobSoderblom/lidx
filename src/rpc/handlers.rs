@@ -1154,7 +1154,19 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
         }));
     }
 
-    Ok(json!(results))
+    // Issue: this used to be a bare `Ok(json!(results))`, so the response's
+    // top-level shape depended on whether `results` was empty (an object
+    // above, a bare array here). That made `hoist_symbol_run_metadata`
+    // (`rpc/mod.rs`) unable to hoist `graph_version`/`commit_sha` on the
+    // non-empty path -- there's nowhere to hoist a field to on a bare array
+    // -- so every entry repeated it. Always return an object, mirroring the
+    // empty path's `results`/`counts` field names, so the shape is uniform
+    // and the generic hoist can do its job.
+    let count = results.len();
+    Ok(json!({
+        "results": results,
+        "counts": { "results": count },
+    }))
 }
 
 pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Value> {
@@ -1548,16 +1560,24 @@ fn build_impact_config(
     config
 }
 
-/// Resolve a single qualname (or config URI) to seed IDs and run impact analysis.
-fn resolve_and_analyze_single(
+/// Resolve a single batch qualname (or config URI) to seed IDs. Exact match
+/// only (no fuzzy fallback) -- a batch entry that doesn't resolve this way
+/// is treated as an unresolvable seed by the caller, which builds a
+/// recovery payload for it. Kept separate from the analysis step below so
+/// the caller can tell "seed not found" (recoverable) apart from "seed
+/// found, analysis failed afterward" (a real error, not recoverable) --
+/// see issue: batch analyze_impact previously labeled every per-entry
+/// error "not found", even analysis failures like a `languages` filter
+/// that excludes the seed's own language.
+fn resolve_batch_seed_ids(
     indexer: &mut Indexer,
     qualname: &str,
     config: &crate::impact::config::MultiLayerConfig,
     graph_version: i64,
-) -> Result<crate::impact::types::UnifiedImpactResult> {
+) -> Result<Vec<i64>> {
     let dir = config.direct.direction.as_str();
 
-    let seed_ids = if crate::indexer::config::is_config_uri(qualname) {
+    if crate::indexer::config::is_config_uri(qualname) {
         let uri_kinds: &[&str] = match dir {
             "downstream" => &["CONFIG_SOURCE"],
             "upstream" => &["CONFIG_READ", "CONFIG_BIND"],
@@ -1572,21 +1592,53 @@ fn resolve_and_analyze_single(
                 qualname
             ));
         }
-        ids
+        Ok(ids)
     } else {
         let symbol = indexer
             .db()
             .get_symbol_by_qualname(qualname, graph_version)?
             .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", qualname))?;
-        vec![symbol.id]
-    };
+        Ok(vec![symbol.id])
+    }
+}
 
-    crate::impact::analyze_impact_multi_layer(
-        indexer.db(),
-        &seed_ids,
-        config.clone(),
-        graph_version,
-    )
+/// Build a batch entry for a qualname that produced no result, carrying the
+/// real error in the legacy `layers.direct.error` field. `recovery` is
+/// `Some` only when the seed itself couldn't be resolved -- never for a
+/// downstream analysis failure on an already-resolved seed.
+fn batch_error_entry(
+    qn: &str,
+    error: String,
+    recovery: Option<Value>,
+) -> crate::impact::types::BatchImpactEntry {
+    crate::impact::types::BatchImpactEntry {
+        seed_qualname: qn.to_string(),
+        seeds: vec![],
+        affected: vec![],
+        summary: crate::impact::types::ImpactSummary {
+            by_file: vec![],
+            by_relationship: std::collections::HashMap::new(),
+            by_distance: std::collections::HashMap::new(),
+            total_affected: 0,
+        },
+        truncated: false,
+        layers: crate::impact::types::LayerMetadata {
+            direct: Some(crate::impact::types::LayerStats {
+                enabled: false,
+                duration_ms: 0,
+                result_count: 0,
+                truncated: false,
+                error: Some(error),
+            }),
+            test: None,
+            historical: None,
+        },
+        lower_bound: LowerBound {
+            is_lower_bound: false,
+            unresolved_count: 0,
+        },
+        recovery,
+    }
 }
 
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
@@ -1617,8 +1669,13 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         let mut all_files: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for qn in qualnames {
-            let entry =
-                match resolve_and_analyze_single(indexer, qn, &base_config, ctx.graph_version) {
+            let entry = match resolve_batch_seed_ids(indexer, qn, &base_config, ctx.graph_version) {
+                Ok(seed_ids) => match crate::impact::analyze_impact_multi_layer(
+                    indexer.db(),
+                    &seed_ids,
+                    base_config.clone(),
+                    ctx.graph_version,
+                ) {
                     Ok(result) => {
                         total_affected += result.summary.total_affected;
                         for fi in &result.summary.by_file {
@@ -1636,52 +1693,35 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                         }
                     }
                     Err(e) => {
-                        // Include error entry with a structured recovery payload rather
-                        // than failing the whole batch or returning a bare error message.
-                        // The batch loop resolves each qualname by exact match only (no
-                        // fuzzy fallback), so candidates aren't already computed the way
-                        // resolve_by_query's failure carries them -- find them the same
-                        // way (find_candidates is the one candidate-search algorithm).
-                        let candidates =
-                            crate::resolve::find_candidates(indexer.db(), qn, ctx.graph_version);
-                        let recovery = crate::resolve::build_resolution_recovery_payload(
-                            indexer.db(),
-                            qn,
-                            &candidates,
-                            ctx.graph_version,
-                            "analyze_impact",
-                            &raw_params,
-                        );
-                        crate::impact::types::BatchImpactEntry {
-                            seed_qualname: qn.clone(),
-                            seeds: vec![],
-                            affected: vec![],
-                            summary: crate::impact::types::ImpactSummary {
-                                by_file: vec![],
-                                by_relationship: std::collections::HashMap::new(),
-                                by_distance: std::collections::HashMap::new(),
-                                total_affected: 0,
-                            },
-                            truncated: false,
-                            layers: crate::impact::types::LayerMetadata {
-                                direct: Some(crate::impact::types::LayerStats {
-                                    enabled: false,
-                                    duration_ms: 0,
-                                    result_count: 0,
-                                    truncated: false,
-                                    error: Some(e.to_string()),
-                                }),
-                                test: None,
-                                historical: None,
-                            },
-                            lower_bound: LowerBound {
-                                is_lower_bound: false,
-                                unresolved_count: 0,
-                            },
-                            recovery: Some(recovery),
-                        }
+                        // The seed resolved fine -- this is a genuine analysis
+                        // failure (e.g. a `languages` filter that excludes the
+                        // seed's own language, so `load_seeds` finds nothing),
+                        // not an unresolvable seed. No recovery payload: that
+                        // would misreport a found symbol as "not found".
+                        batch_error_entry(qn, e.to_string(), None)
                     }
-                };
+                },
+                Err(e) => {
+                    // The seed itself could not be resolved -- build a structured
+                    // recovery payload rather than failing the whole batch or
+                    // returning a bare error message. The batch loop resolves each
+                    // qualname by exact match only (no fuzzy fallback), so
+                    // candidates aren't already computed the way resolve_by_query's
+                    // failure carries them -- find them the same way (find_candidates
+                    // is the one candidate-search algorithm).
+                    let candidates =
+                        crate::resolve::find_candidates(indexer.db(), qn, ctx.graph_version);
+                    let recovery = crate::resolve::build_resolution_recovery_payload(
+                        indexer.db(),
+                        qn,
+                        &candidates,
+                        ctx.graph_version,
+                        "analyze_impact",
+                        &raw_params,
+                    );
+                    batch_error_entry(qn, e.to_string(), Some(recovery))
+                }
+            };
             results.push(entry);
         }
 

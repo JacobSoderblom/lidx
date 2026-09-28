@@ -624,7 +624,11 @@ mod tests {
     fn make_symbol(qualname: &str, kind: &str) -> SymbolInput {
         SymbolInput {
             kind: kind.to_string(),
-            name: qualname.split('.').last().unwrap_or(qualname).to_string(),
+            name: qualname
+                .split('.')
+                .next_back()
+                .unwrap_or(qualname)
+                .to_string(),
             qualname: qualname.to_string(),
             start_line: 1,
             start_col: 0,
