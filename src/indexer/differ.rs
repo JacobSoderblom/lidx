@@ -1143,11 +1143,7 @@ mod integration_tests {
         assert_eq!(diff.added.len(), 4);
 
         // All should have unique stable IDs
-        let ids: Vec<String> = diff
-            .added
-            .iter()
-            .map(compute_stable_symbol_id)
-            .collect();
+        let ids: Vec<String> = diff.added.iter().map(compute_stable_symbol_id).collect();
 
         let unique_ids: std::collections::HashSet<_> = ids.iter().collect();
         assert_eq!(unique_ids.len(), 4, "All symbols should have unique IDs");

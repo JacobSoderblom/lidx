@@ -571,7 +571,7 @@ fn analyze_impact_v2_direct_layer_only() {
     );
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(direct_layer["enabled"].as_bool().unwrap(), true);
+    assert!(direct_layer["enabled"].as_bool().unwrap());
     // Duration may be 0ms for fast operations, just verify it exists
     assert!(
         direct_layer.contains_key("duration_ms"),
@@ -702,9 +702,8 @@ fn analyze_impact_v2_test_layer_basic() {
     );
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         test_layer["enabled"].as_bool().unwrap(),
-        true,
         "Test layer should be enabled"
     );
     // Verify duration_ms exists and is a valid u64
@@ -737,9 +736,8 @@ fn analyze_impact_v2_test_layer_disabled_by_default() {
     let layers = value["result"]["layers"].as_object().unwrap();
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         test_layer["enabled"].as_bool().unwrap(),
-        true,
         "Test layer should be enabled by default"
     );
 }
@@ -767,11 +765,11 @@ fn analyze_impact_v2_test_layer_with_direct() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(direct_layer["enabled"].as_bool().unwrap(), true);
+    assert!(direct_layer["enabled"].as_bool().unwrap());
     assert!(direct_layer["result_count"].as_u64().unwrap() > 0);
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(test_layer["enabled"].as_bool().unwrap(), true);
+    assert!(test_layer["enabled"].as_bool().unwrap());
 
     // Should have affected symbols (from direct layer at minimum)
     let affected = result["affected"].as_array().unwrap();
@@ -801,10 +799,10 @@ fn analyze_impact_v2_test_layer_only() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(direct_layer["enabled"].as_bool().unwrap(), false);
+    assert!(!direct_layer["enabled"].as_bool().unwrap());
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(test_layer["enabled"].as_bool().unwrap(), true);
+    assert!(test_layer["enabled"].as_bool().unwrap());
 
     // Results may be empty if no tests found via test layer strategies
     // (which is fine - the fixture may not have test edges)
@@ -840,9 +838,8 @@ fn analyze_impact_v2_historical_layer_basic() {
     );
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         historical_layer["enabled"].as_bool().unwrap(),
-        true,
         "Historical layer should be enabled"
     );
     // Verify duration_ms exists and is a valid u64
@@ -876,9 +873,8 @@ fn analyze_impact_v2_historical_layer_disabled_by_default() {
     let layers = value["result"]["layers"].as_object().unwrap();
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         historical_layer["enabled"].as_bool().unwrap(),
-        true,
         "Historical layer should be enabled by default"
     );
 }
@@ -906,10 +902,10 @@ fn analyze_impact_v2_historical_layer_with_direct() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(direct_layer["enabled"].as_bool().unwrap(), true);
+    assert!(direct_layer["enabled"].as_bool().unwrap());
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(historical_layer["enabled"].as_bool().unwrap(), true);
+    assert!(historical_layer["enabled"].as_bool().unwrap());
 
     // Should have affected symbols (from direct layer at minimum)
     let affected = result["affected"].as_array().unwrap();
@@ -942,23 +938,20 @@ fn analyze_impact_v2_all_three_layers() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         direct_layer["enabled"].as_bool().unwrap(),
-        true,
         "Direct layer should be enabled"
     );
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         test_layer["enabled"].as_bool().unwrap(),
-        true,
         "Test layer should be enabled"
     );
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         historical_layer["enabled"].as_bool().unwrap(),
-        true,
         "Historical layer should be enabled"
     );
 
@@ -995,9 +988,8 @@ fn analyze_impact_v2_semantic_layer_disabled_by_default() {
     // Semantic layer should be disabled by default
     let layers = result["layers"].as_object().unwrap();
     let semantic_layer = layers["semantic"].as_object().unwrap();
-    assert_eq!(
-        semantic_layer["enabled"].as_bool().unwrap(),
-        false,
+    assert!(
+        !semantic_layer["enabled"].as_bool().unwrap(),
         "Semantic layer should be disabled by default"
     );
 }
@@ -1025,22 +1017,18 @@ fn analyze_impact_v2_semantic_layer_graceful_degradation() {
     // Semantic layer should be enabled and gracefully degrade to lexical search
     let layers = result["layers"].as_object().unwrap();
     let semantic_layer = layers["semantic"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         semantic_layer["enabled"].as_bool().unwrap(),
-        true,
         "Semantic layer should be enabled"
     );
     // Lexical fallback may find results even without embeddings — no error should be reported
-    let has_error = semantic_layer.get("error").map_or(false, |v| !v.is_null());
+    let has_error = semantic_layer.get("error").is_some_and(|v| !v.is_null());
     assert!(!has_error, "Semantic layer should not error");
 
     // Should not fail the entire analysis
     let _affected = result["affected"].as_array().unwrap();
-    // May be empty or have results from other layers
-    assert!(
-        true,
-        "Analysis should complete successfully even when semantic layer returns empty"
-    );
+    // May be empty or have results from other layers.
+    // Analysis should complete successfully even when semantic layer returns empty.
 }
 
 #[test]
@@ -1067,30 +1055,26 @@ fn analyze_impact_v2_all_four_layers() {
     let layers = result["layers"].as_object().unwrap();
 
     let direct_layer = layers["direct"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         direct_layer["enabled"].as_bool().unwrap(),
-        true,
         "Direct layer should be enabled"
     );
 
     let test_layer = layers["test"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         test_layer["enabled"].as_bool().unwrap(),
-        true,
         "Test layer should be enabled"
     );
 
     let historical_layer = layers["historical"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         historical_layer["enabled"].as_bool().unwrap(),
-        true,
         "Historical layer should be enabled"
     );
 
     let semantic_layer = layers["semantic"].as_object().unwrap();
-    assert_eq!(
+    assert!(
         semantic_layer["enabled"].as_bool().unwrap(),
-        true,
         "Semantic layer should be enabled"
     );
 
