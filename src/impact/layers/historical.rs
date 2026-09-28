@@ -497,14 +497,14 @@ mod tests {
 
     #[test]
     fn test_max_cochange_symbols_reasonable() {
-        assert!(MAX_COCHANGE_SYMBOLS <= 1000);
-        assert!(MAX_COCHANGE_SYMBOLS >= 100);
+        const { assert!(MAX_COCHANGE_SYMBOLS <= 1000) };
+        const { assert!(MAX_COCHANGE_SYMBOLS >= 100) };
     }
 
     #[test]
     fn test_max_time_window_reasonable() {
-        assert!(MAX_TIME_WINDOW_DAYS <= 730); // Max 2 years
-        assert!(MAX_TIME_WINDOW_DAYS >= 30); // At least 1 month
+        const { assert!(MAX_TIME_WINDOW_DAYS <= 730) }; // Max 2 years
+        const { assert!(MAX_TIME_WINDOW_DAYS >= 30) }; // At least 1 month
     }
 
     #[test]

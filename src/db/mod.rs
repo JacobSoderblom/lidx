@@ -2140,7 +2140,11 @@ mod tests {
     ) -> SymbolInput {
         SymbolInput {
             kind: kind.to_string(),
-            name: qualname.split('.').last().unwrap_or(qualname).to_string(),
+            name: qualname
+                .split('.')
+                .next_back()
+                .unwrap_or(qualname)
+                .to_string(),
             qualname: qualname.to_string(),
             start_line,
             start_col: 0,

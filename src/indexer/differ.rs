@@ -249,7 +249,7 @@ mod tests {
         // Compute stable_id from the symbol input to ensure consistency
         let input = SymbolInput {
             kind: "function".to_string(),
-            name: qualname.split('.').last().unwrap().to_string(),
+            name: qualname.split('.').next_back().unwrap().to_string(),
             qualname: qualname.to_string(),
             start_line,
             start_col: 0,
@@ -266,7 +266,7 @@ mod tests {
             id: 1,
             file_path: "test.py".to_string(),
             kind: "function".to_string(),
-            name: qualname.split('.').last().unwrap().to_string(),
+            name: qualname.split('.').next_back().unwrap().to_string(),
             qualname: qualname.to_string(),
             start_line,
             start_col: 0,
@@ -297,7 +297,7 @@ mod tests {
 
         SymbolInput {
             kind: "function".to_string(),
-            name: qualname.split('.').last().unwrap().to_string(),
+            name: qualname.split('.').next_back().unwrap().to_string(),
             qualname: qualname.to_string(),
             start_line,
             start_col: 0,
@@ -713,7 +713,7 @@ mod integration_tests {
     fn make_symbol_input(qualname: &str, line: i64, sig: &str) -> SymbolInput {
         SymbolInput {
             kind: "function".to_string(),
-            name: qualname.split('.').last().unwrap().to_string(),
+            name: qualname.split('.').next_back().unwrap().to_string(),
             qualname: qualname.to_string(),
             start_line: line,
             start_col: 0,
@@ -1057,8 +1057,8 @@ mod integration_tests {
 
         // Now modify half of them
         let mut modified_symbols = symbols.clone();
-        for i in 0..750 {
-            modified_symbols[i].start_line += 1; // Change line
+        for symbol in modified_symbols.iter_mut().take(750) {
+            symbol.start_line += 1; // Change line
         }
 
         // Convert to existing symbols
@@ -1143,11 +1143,7 @@ mod integration_tests {
         assert_eq!(diff.added.len(), 4);
 
         // All should have unique stable IDs
-        let ids: Vec<String> = diff
-            .added
-            .iter()
-            .map(|s| compute_stable_symbol_id(s))
-            .collect();
+        let ids: Vec<String> = diff.added.iter().map(compute_stable_symbol_id).collect();
 
         let unique_ids: std::collections::HashSet<_> = ids.iter().collect();
         assert_eq!(unique_ids.len(), 4, "All symbols should have unique IDs");

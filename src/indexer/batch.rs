@@ -267,7 +267,7 @@ mod tests {
                 end_col: 0,
                 start_byte: 0,
                 end_byte: 0,
-                signature: Some(format!("() -> None")),
+                signature: Some("() -> None".to_string()),
                 docstring: Some(format!("Docstring for func{}", i)),
             });
         }
