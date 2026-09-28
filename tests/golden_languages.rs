@@ -36,6 +36,7 @@ fn assert_golden(language: &str, scope: HashSet<String>) {
         PRECISION_FLOOR,
         RECALL_FLOOR,
     );
+    golden::print_unresolved_summary(indexer.db(), graph_version, language);
 }
 
 /// Every Rust qualname is rooted in `crate`, every C# one in the fixture's

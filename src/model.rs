@@ -111,6 +111,18 @@ pub struct EdgeSnapshotRow {
     pub resolution_kind: Option<String>,
 }
 
+/// One `(language, reason, count)` bucket of `Db::unresolved_reference_summary`
+/// (issue #78): how many rows the `unresolved_references` store currently
+/// holds for that language and `UnresolvedReason`, at the queried graph
+/// version. Test/reporting support for the golden-corpus scoreboard, same
+/// spirit as `EdgeSnapshotRow`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UnresolvedReferenceSummary {
+    pub language: String,
+    pub reason: String,
+    pub count: i64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RepoOverview {
     pub repo_root: String,
