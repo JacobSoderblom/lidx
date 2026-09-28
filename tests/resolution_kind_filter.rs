@@ -458,7 +458,8 @@ fn trace_flow_retry_hop_preserves_end_kinds_max_hops_and_snippets() {
         &db_path,
         "trace_flow",
         r#"{"start_qualname":"bare_call_method.bare_caller","end_qualname":"worker.process",
-            "direction":"downstream","kinds":["CALLS"],"max_hops":3,"include_snippets":false}"#,
+            "direction":"downstream","kinds":["CALLS"],"max_hops":3,"include_snippets":false,
+            "languages":["python"]}"#,
     );
     let hops = result["next_hops"].as_array().unwrap();
     let hop = hops
@@ -472,6 +473,7 @@ fn trace_flow_retry_hop_preserves_end_kinds_max_hops_and_snippets() {
     assert_eq!(hop["params"]["kinds"], serde_json::json!(["CALLS"]));
     assert_eq!(hop["params"]["max_hops"], Value::from(3));
     assert_eq!(hop["params"]["include_snippets"], Value::from(false));
+    assert_eq!(hop["params"]["languages"], serde_json::json!(["python"]));
 }
 
 /// Issue #81 (R4): an `analyze_impact` retry hop used to keep only
@@ -559,5 +561,30 @@ fn exclude_resolution_kinds_rejects_unknown_values() {
     assert!(
         message.contains("bogus"),
         "error should name the offending value, got {message:?}"
+    );
+}
+
+/// A filtered analyze_impact that finds nothing must keep its filter on the
+/// zero-result recovery hops, or following them silently widens it.
+#[test]
+fn analyze_impact_recovery_hops_keep_the_filter() {
+    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+
+    let result = call(
+        &repo_root,
+        &db_path,
+        "analyze_impact",
+        r#"{"qualname":"worker.process","direction":"downstream","exclude_resolution_kinds":["bare_name"]}"#,
+    );
+    let hops = result["next_hops"]
+        .as_array()
+        .expect("zero-result call should offer recovery hops");
+    let flip = hops
+        .iter()
+        .find(|h| h["method"] == "analyze_impact" && h["params"]["direction"] == "upstream")
+        .unwrap_or_else(|| panic!("expected a flip-direction hop, got {:?}", hops));
+    assert_eq!(
+        flip["params"]["exclude_resolution_kinds"],
+        serde_json::json!(["bare_name"])
     );
 }

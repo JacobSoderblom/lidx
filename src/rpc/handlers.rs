@@ -975,7 +975,7 @@ fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
 
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: TraceFlowParams = serde_json::from_value(params)?;
-    let ctx = HandlerContext::new(indexer, params.common)?;
+    let ctx = HandlerContext::new(indexer, params.common.clone())?;
     let max_hops = params.max_hops.unwrap_or(5).min(10);
     let include_snippets = params.include_snippets.unwrap_or(true);
     let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
@@ -1192,6 +1192,12 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         }
         if let Some(s) = params.include_snippets {
             extra.insert("include_snippets".to_string(), json!(s));
+        }
+        if let Some(ref langs) = params.common.languages {
+            extra.insert("languages".to_string(), json!(langs));
+        }
+        if let Some(gv) = params.common.graph_version {
+            extra.insert("graph_version".to_string(), json!(gv));
         }
     };
     if has_exclude_filter {
@@ -1541,8 +1547,8 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     if let Some(kinds) = params.kinds {
         config.direct.kinds = kinds;
     }
-    if let Some(exclude) = params.exclude_resolution_kinds {
-        config.direct.exclude_resolution_kinds = exclude;
+    if let Some(ref exclude) = params.exclude_resolution_kinds {
+        config.direct.exclude_resolution_kinds = exclude.clone();
     }
 
     // Perform multi-layer impact analysis
@@ -1605,6 +1611,12 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         if let Some(enable_historical) = params.enable_historical {
             retry_params.insert("enable_historical".to_string(), json!(enable_historical));
         }
+        if let Some(ref langs) = params.common.languages {
+            retry_params.insert("languages".to_string(), json!(langs));
+        }
+        if let Some(gv) = params.common.graph_version {
+            retry_params.insert("graph_version".to_string(), json!(gv));
+        }
 
         if has_exclude_filter {
             resolution_next_hops.push(json!({
@@ -1635,6 +1647,13 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 map.insert("id".to_string(), json!(id));
             }
             map.insert("direction".to_string(), json!(dir));
+            // Keep a filtered call's filter so following the hop doesn't
+            // silently widen it.
+            if let Some(ref exclude) = params.exclude_resolution_kinds
+                && !exclude.is_empty()
+            {
+                map.insert("exclude_resolution_kinds".to_string(), json!(exclude));
+            }
             map
         };
         let mut next_hops: Vec<serde_json::Value> = Vec::new();
