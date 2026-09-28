@@ -974,6 +974,7 @@ fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
 }
 
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let raw_params = params.clone();
     let params: TraceFlowParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
     let max_hops = params.max_hops.unwrap_or(5).min(10);
@@ -1010,23 +1011,18 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     // For ID lookups we propagate errors (the ID either exists or it doesn't).
     // For qualname/query lookups we catch resolution failure and return a structured
     // recovery payload instead of a flat {error: ...} so the caller has a path forward.
-    let recovery_query: Option<String>;
     let start_ref = if let Some(id) = params.start_id {
-        recovery_query = None;
         crate::resolve::SymbolRef::Id(id)
     } else if let Some(ref qn) = params.start_qualname {
         if crate::indexer::config::is_config_uri(qn) {
-            recovery_query = None;
             let first_id = config_uri_seeds
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("no symbols found for config URI: {}", qn))?;
             crate::resolve::SymbolRef::Id(*first_id)
         } else {
-            recovery_query = Some(qn.clone());
             crate::resolve::SymbolRef::Qualname(qn.clone())
         }
     } else if let Some(ref query) = params.query {
-        recovery_query = Some(query.clone());
         crate::resolve::SymbolRef::Query(query.clone())
     } else {
         anyhow::bail!("trace_flow requires start_id, start_qualname, or query");
@@ -1036,8 +1032,8 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         start_ref,
         ctx.languages.as_deref(),
         ctx.graph_version,
-        recovery_query.as_deref(),
         "trace_flow",
+        &raw_params,
     )? {
         Ok(sym) => sym,
         Err(payload) => return Ok(payload),
@@ -1351,6 +1347,7 @@ fn resolve_and_analyze_single(
 }
 
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let raw_params = params.clone();
     let params: AnalyzeImpactParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
     // Issue #81 (R3): validated once here, ahead of both the batch path
@@ -1398,11 +1395,19 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                     Err(e) => {
                         // Include error entry with a structured recovery payload rather
                         // than failing the whole batch or returning a bare error message.
+                        // The batch loop resolves each qualname by exact match only (no
+                        // fuzzy fallback), so candidates aren't already computed the way
+                        // resolve_by_query's failure carries them -- find them the same
+                        // way (find_candidates is the one candidate-search algorithm).
+                        let candidates =
+                            crate::resolve::find_candidates(indexer.db(), qn, ctx.graph_version);
                         let recovery = crate::resolve::build_resolution_recovery_payload(
                             indexer.db(),
                             qn,
+                            &candidates,
                             ctx.graph_version,
                             "analyze_impact",
+                            &raw_params,
                         );
                         crate::impact::types::BatchImpactEntry {
                             seed_qualname: qn.clone(),
@@ -1493,15 +1498,11 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     let seed_ids = if !seed_ids.is_empty() {
         seed_ids
     } else {
-        let recovery_query: Option<String>;
         let sym_ref = if let Some(id) = params.id {
-            recovery_query = None;
             crate::resolve::SymbolRef::Id(id)
         } else if let Some(ref qualname) = params.qualname {
-            recovery_query = Some(qualname.clone());
             crate::resolve::SymbolRef::Qualname(qualname.clone())
         } else if let Some(ref query) = params.query {
-            recovery_query = Some(query.clone());
             crate::resolve::SymbolRef::Query(query.clone())
         } else {
             return Err(anyhow::anyhow!(
@@ -1513,8 +1514,8 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
             sym_ref,
             ctx.languages.as_deref(),
             ctx.graph_version,
-            recovery_query.as_deref(),
             "analyze_impact",
+            &raw_params,
         )? {
             Ok(sym) => sym,
             Err(payload) => return Ok(payload),

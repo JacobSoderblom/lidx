@@ -172,10 +172,11 @@ fn trace_flow_unresolvable_start_returns_structured_payload() {
     }
 }
 
-/// Resolvable trace_flow start refs must produce the same result as before —
-/// no next_hops on non-empty traces.
+/// Resolvable trace_flow start refs must produce the standard result shape —
+/// no recovery payload, no next_hops on non-empty traces. (Not a byte-identical
+/// snapshot: this asserts the fields a caller actually depends on.)
 #[test]
-fn trace_flow_resolvable_ref_is_byte_identical_to_before() {
+fn trace_flow_resolvable_ref_still_returns_standard_fields() {
     let temp = indexed_repo("py_mvp");
 
     let envelope = call_raw(&temp, "trace_flow", r#"{"query":"Greeter"}"#);
@@ -196,6 +197,18 @@ fn trace_flow_resolvable_ref_is_byte_identical_to_before() {
     assert!(
         result.get("trace").is_some(),
         "resolvable trace_flow result must have 'trace' field"
+    );
+    // A resolved start must not carry the recovery payload shape.
+    assert!(
+        result.get("resolved").is_none(),
+        "resolvable trace_flow must not return the recovery payload, got: {}",
+        result
+    );
+    assert_eq!(
+        result["start"]["qualname"].as_str(),
+        Some("pkg.core.Greeter"),
+        "resolvable trace_flow must resolve to the expected symbol, got: {}",
+        result
     );
 }
 
@@ -297,12 +310,9 @@ fn analyze_impact_resolvable_ref_is_unchanged() {
 fn trace_flow_recovery_hops_are_executable() {
     let temp = indexed_repo("py_mvp");
 
-    // "Greeter zzz" — the "Greeter" token suggests real symbols
-    let envelope = call_raw(
-        &temp,
-        "trace_flow",
-        r#"{"query":"Greeter zzz_nonexistent"}"#,
-    );
+    // "Greeter zz" — "Greeter" is the longer token, so the single-longest-token
+    // "did you mean" lookup (shared with resolve_by_query) lands on it.
+    let envelope = call_raw(&temp, "trace_flow", r#"{"query":"Greeter zz"}"#);
 
     assert!(
         envelope.get("error").is_none(),
@@ -344,12 +354,8 @@ fn trace_flow_recovery_hops_are_executable() {
 fn analyze_impact_recovery_hops_are_executable() {
     let temp = indexed_repo("py_mvp");
 
-    // A near-miss that triggers "Did you mean" — token "Greeter" matches
-    let envelope = call_raw(
-        &temp,
-        "analyze_impact",
-        r#"{"query":"Greeter zzz_nonexistent"}"#,
-    );
+    // A near-miss that triggers "Did you mean" — "Greeter" is the longer token
+    let envelope = call_raw(&temp, "analyze_impact", r#"{"query":"Greeter zz"}"#);
 
     assert!(
         envelope.get("error").is_none(),
@@ -586,6 +592,203 @@ fn analyze_impact_batch_all_bad_entries_each_recover() {
         assert!(
             entry.get("recovery").is_some(),
             "every failed entry must carry a recovery payload, got: {entry}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #58 findings: a single typed "not found" error (not a duplicate
+// suggestion algorithm), structured `suggestions`, id-based retry hops that
+// carry the caller's params, a safe search fallback, and config-URI recovery
+// on the single-seed path.
+// ---------------------------------------------------------------------------
+
+/// A query too large for the DB to plan (SQLite's expression-tree limit) must
+/// propagate as a real error, not be swallowed into a "not found" recovery
+/// payload. `explain_symbol` (which never catches resolution failure) already
+/// surfaces the real DB error for the same input — trace_flow must match it
+/// instead of reporting "not found".
+#[test]
+fn trace_flow_db_error_propagates_instead_of_becoming_recovery() {
+    let temp = indexed_repo("py_mvp");
+    let huge_query = "greet ".repeat(1200);
+    let params = serde_json::json!({ "query": huge_query }).to_string();
+
+    let envelope = call_raw(&temp, "trace_flow", &params);
+    let error = envelope.get("error").unwrap_or_else(|| {
+        panic!("expected a flat error for a DB-breaking query, got: {envelope}")
+    });
+    let msg = error["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("Expression tree is too large"),
+        "expected the real SQLite error to propagate (matching explain_symbol's behavior \
+         for the same input), got: {msg}"
+    );
+}
+
+/// A recovery payload must carry its candidates as structured data (id,
+/// qualname, kind, file_path, start_line), not only inside hop params/text.
+#[test]
+fn recovery_payload_includes_structured_suggestions() {
+    let temp = indexed_repo("py_mvp");
+    let envelope = call_raw(&temp, "trace_flow", r#"{"query":"Greeter zz"}"#);
+
+    let result = &envelope["result"];
+    let suggestions = result["suggestions"]
+        .as_array()
+        .expect("recovery payload must have a structured 'suggestions' array");
+    assert!(
+        !suggestions.is_empty(),
+        "expected at least one candidate suggestion, got: {result}"
+    );
+    for s in suggestions {
+        let obj = s.as_object().expect("each suggestion must be an object");
+        for key in ["id", "qualname", "kind", "file_path", "start_line"] {
+            assert!(
+                obj.contains_key(key),
+                "each suggestion must have '{key}', got: {s}"
+            );
+        }
+    }
+}
+
+/// A batch entry whose qualname normalizes to a real config URI must surface
+/// that URI in a structured `config_uri_candidates` array on its recovery
+/// payload (not just buried in a hop description).
+#[test]
+fn analyze_impact_batch_recovery_includes_config_uri_candidates() {
+    let temp = indexed_repo("py_config");
+    let envelope = call_raw(&temp, "analyze_impact", r#"{"qualnames":["DATABASE_URL"]}"#);
+
+    assert!(envelope.get("error").is_none(), "batch must succeed");
+    let results = envelope["result"]["results"].as_array().unwrap();
+    let entry = &results[0];
+    let recovery = entry
+        .get("recovery")
+        .expect("failed entry must carry recovery");
+    let config_candidates = recovery["config_uri_candidates"].as_array().unwrap_or_else(|| {
+        panic!("recovery payload should surface config_uri_candidates for a config-key-shaped qualname, got: {recovery}")
+    });
+    assert!(
+        config_candidates
+            .iter()
+            .any(|c| c.as_str() == Some("env://DATABASE_URL")),
+        "expected 'env://DATABASE_URL' among config_uri_candidates, got: {config_candidates:?}"
+    );
+}
+
+/// A retry hop for a same-name candidate must target it by id, not by name —
+/// a name-based retry can resolve to a different, shorter-qualname symbol
+/// that happens to share the same bare name.
+#[test]
+fn trace_flow_recovery_retry_hop_pins_candidate_by_id_not_name() {
+    let temp = indexed_repo("py_greet_conflict");
+    // "Greeter" is the longer token; the "did you mean" search on it
+    // substring-matches both the Greeter class and its `greet` method
+    // (pkg.core.Greeter.greet), plus the decoy pkg.util.greet shares the
+    // method's bare name "greet" but has a much shorter qualname.
+    let envelope = call_raw(&temp, "trace_flow", r#"{"query":"Greeter zz"}"#);
+    assert!(envelope.get("error").is_none(), "got: {envelope}");
+
+    let result = &envelope["result"];
+    let next_hops = result["next_hops"].as_array().unwrap();
+
+    let retry_hop = next_hops
+        .iter()
+        .find(|h| {
+            h["method"].as_str() == Some("trace_flow")
+                && h["description"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("pkg.core.Greeter.greet"))
+        })
+        .unwrap_or_else(|| {
+            panic!("expected a trace_flow retry hop for pkg.core.Greeter.greet, got: {next_hops:?}")
+        });
+
+    assert!(
+        retry_hop["params"]["start_id"].is_i64(),
+        "retry hop must target the candidate by start_id, got params: {}",
+        retry_hop["params"]
+    );
+    assert!(
+        retry_hop["params"].get("query").is_none(),
+        "retry hop must not fall back to a name-based query, got params: {}",
+        retry_hop["params"]
+    );
+
+    let followed = follow_hop(&temp, retry_hop);
+    assert!(
+        followed.get("error").is_none(),
+        "retry hop must execute, got: {followed}"
+    );
+    assert_eq!(
+        followed["result"]["start"]["qualname"].as_str(),
+        Some("pkg.core.Greeter.greet"),
+        "retry hop must resolve to the pinned candidate, not the same-name decoy, got: {followed}"
+    );
+}
+
+/// A retry hop must carry the caller's other traversal params (direction,
+/// etc.) forward, replacing only the start ref — not drop them.
+#[test]
+fn analyze_impact_recovery_retry_hop_carries_caller_params() {
+    let temp = indexed_repo("py_mvp");
+    let envelope = call_raw(
+        &temp,
+        "analyze_impact",
+        r#"{"query":"Greeter zz","direction":"upstream"}"#,
+    );
+    assert!(envelope.get("error").is_none(), "got: {envelope}");
+
+    let result = &envelope["result"];
+    let next_hops = result["next_hops"].as_array().unwrap();
+
+    let retry_hop = next_hops
+        .iter()
+        .find(|h| h["method"].as_str() == Some("analyze_impact") && h["params"].get("id").is_some())
+        .unwrap_or_else(|| {
+            panic!("expected an id-based analyze_impact retry hop, got: {next_hops:?}")
+        });
+
+    assert_eq!(
+        retry_hop["params"]["direction"].as_str(),
+        Some("upstream"),
+        "retry hop must carry the caller's direction param, got params: {}",
+        retry_hop["params"]
+    );
+
+    let followed = follow_hop(&temp, retry_hop);
+    assert!(
+        followed.get("error").is_none(),
+        "retry hop must execute, got: {followed}"
+    );
+}
+
+/// The always-present search fallback hop must use fixed_string mode so a
+/// token containing regex metacharacters (unbalanced parens, etc.) doesn't
+/// blow up the hop with a regex parse error.
+#[test]
+fn search_fallback_hop_uses_fixed_string_and_survives_regex_metacharacters() {
+    let temp = indexed_repo("py_mvp");
+    let envelope = call_raw(&temp, "trace_flow", r#"{"query":"handle_request("}"#);
+
+    let result = &envelope["result"];
+    let next_hops = result["next_hops"].as_array().unwrap();
+    let search_hop = next_hops
+        .iter()
+        .find(|h| h["method"].as_str() == Some("search"))
+        .expect("expected a search fallback hop");
+    assert_eq!(
+        search_hop["params"]["fixed_string"],
+        serde_json::json!(true),
+        "search fallback hop must use fixed_string mode, got: {search_hop}"
+    );
+
+    if rg_available() {
+        let followed = follow_hop(&temp, search_hop);
+        assert!(
+            followed.get("error").is_none(),
+            "search fallback hop with an unbalanced paren must not error, got: {followed}"
         );
     }
 }

@@ -1,5 +1,5 @@
 use crate::db::Db;
-use crate::model::Symbol;
+use crate::model::{Symbol, SymbolCompact};
 use anyhow::Result;
 use serde_json::{Value, json};
 
@@ -10,6 +10,44 @@ pub enum SymbolRef {
     Qualname(String),
     Query(String),
 }
+
+/// A query/qualname-based symbol lookup found no confident match. Carries the
+/// same "did you mean" candidates the lookup already computed, so a caller
+/// building a recovery payload doesn't need to re-run the search with a
+/// second algorithm.
+///
+/// An ID-based lookup never produces this (an ID either exists or it
+/// doesn't — there is nothing to suggest), and neither does a genuine
+/// data-access error (a DB error, a pattern-too-large rejection, ...); both
+/// stay ordinary `anyhow` errors so `resolve_or_recovery`'s `downcast_ref`
+/// catch never mistakes a real failure for "not found".
+#[derive(Debug)]
+struct SymbolNotFound {
+    query: String,
+    candidates: Vec<Symbol>,
+}
+
+impl std::fmt::Display for SymbolNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.candidates.is_empty() {
+            write!(f, "no symbol found for query: {}", self.query)
+        } else {
+            let names: Vec<&str> = self
+                .candidates
+                .iter()
+                .map(|s| s.qualname.as_str())
+                .collect();
+            write!(
+                f,
+                "Symbol '{}' not found. Did you mean: {}?",
+                self.query,
+                names.join(", ")
+            )
+        }
+    }
+}
+
+impl std::error::Error for SymbolNotFound {}
 
 /// Resolves a `SymbolRef` to a `Symbol` using the full fallback chain:
 /// ID lookup → qualname lookup → fuzzy query → config key → "did you mean".
@@ -41,7 +79,11 @@ fn resolve_by_query(
 ) -> Result<Symbol> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        anyhow::bail!("no symbol found for query: {}", query);
+        return Err(SymbolNotFound {
+            query: query.to_string(),
+            candidates: Vec::new(),
+        }
+        .into());
     }
 
     let results = db.find_symbols(trimmed, 5, languages, graph_version)?;
@@ -56,15 +98,8 @@ fn resolve_by_query(
         }
     }
 
-    let config_uris: Vec<String> = [
-        crate::indexer::config::normalize_env_var_name(trimmed),
-        crate::indexer::config::normalize_secret_name(trimmed),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    for uri in &config_uris {
-        let ids = db.source_symbols_for_config_uri(uri, &[], graph_version)?;
+    for uri in config_uri_guesses(trimmed) {
+        let ids = db.source_symbols_for_config_uri(&uri, &[], graph_version)?;
         if let Some(&first_id) = ids.first()
             && let Some(sym) = db.get_symbol_by_id(first_id)?
         {
@@ -72,80 +107,106 @@ fn resolve_by_query(
         }
     }
 
-    let suggestion_query = trimmed
-        .split_whitespace()
-        .max_by_key(|t| t.len())
-        .unwrap_or(trimmed);
-    let suggestions = db
-        .find_symbols(suggestion_query, 10, None, graph_version)
-        .unwrap_or_default();
-    if !suggestions.is_empty() {
-        let names: Vec<String> = suggestions.into_iter().map(|s| s.qualname).collect();
-        anyhow::bail!(
-            "Symbol '{}' not found. Did you mean: {}?",
-            query,
-            names.join(", ")
-        );
+    let candidates = find_candidates(db, trimmed, graph_version);
+    Err(SymbolNotFound {
+        query: query.to_string(),
+        candidates,
     }
-    anyhow::bail!("no symbol found for query: {}", query);
+    .into())
 }
 
-/// Candidate symbols and config URIs found when resolution of a start ref fails.
-pub struct RecoverySuggestions {
-    /// Symbols whose name or qualname partially matches the query term.
-    pub symbol_candidates: Vec<Symbol>,
-    /// Config URIs that partially match the query term (e.g. `env://FOO`).
-    pub config_uri_candidates: Vec<String>,
-}
-
-/// Find candidate symbols and config URIs for a failed query, using the same
-/// machinery as `resolve_by_query` (token-based search, config key normalisation).
-/// Returns an empty struct when no candidates are found rather than an error.
-pub fn find_recovery_suggestions(db: &Db, query: &str, graph_version: i64) -> RecoverySuggestions {
-    let trimmed = query.trim();
-
-    // Candidate symbols: try each whitespace token in the query, largest first,
-    // stopping at the first token that produces results. This mirrors
-    // resolve_by_query's "longest token" heuristic but also tries shorter tokens
-    // so that near-misses like "Greeter zzz_nonexistent" still find Greeter.
-    let mut tokens: Vec<&str> = trimmed.split_whitespace().collect();
-    tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
-    let mut symbol_candidates: Vec<Symbol> = Vec::new();
-    for token in &tokens {
-        let found = db
-            .find_symbols(token, 5, None, graph_version)
-            .unwrap_or_default();
-        if !found.is_empty() {
-            symbol_candidates = found;
-            break;
-        }
-    }
-    // If no token produced results, fall back to the full query.
-    if symbol_candidates.is_empty() {
-        symbol_candidates = db
-            .find_symbols(trimmed, 5, None, graph_version)
-            .unwrap_or_default();
-    }
-
-    // Config URI candidates: normalise as env var or secret name.
-    let config_uri_candidates: Vec<String> = [
+/// Config URIs a free-text term might refer to, e.g. `"DATABASE_URL"` ->
+/// `env://DATABASE_URL`. Unfiltered — callers check which (if any) actually
+/// have symbols connected to them.
+fn config_uri_guesses(trimmed: &str) -> Vec<String> {
+    [
         crate::indexer::config::normalize_env_var_name(trimmed),
         crate::indexer::config::normalize_secret_name(trimmed),
     ]
     .into_iter()
     .flatten()
-    .filter(|uri| {
-        // Only include URIs that actually have symbols connected to them.
-        db.source_symbols_for_config_uri(uri, &[], graph_version)
-            .ok()
-            .is_some_and(|ids| !ids.is_empty())
-    })
-    .collect();
+    .collect()
+}
 
-    RecoverySuggestions {
-        symbol_candidates,
-        config_uri_candidates,
+/// "Did you mean" candidate symbols for a query that didn't resolve: the
+/// longest whitespace-delimited token, matched against name/qualname. This is
+/// the single candidate-search algorithm in the resolution path — both
+/// `resolve_by_query`'s own failure and any caller building a recovery
+/// payload for a lookup that skipped `resolve_by_query` entirely (e.g. an
+/// exact-only batch lookup) go through this same function rather than a
+/// second, different heuristic.
+pub fn find_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
+    let trimmed = query.trim();
+    let suggestion_query = trimmed
+        .split_whitespace()
+        .max_by_key(|t| t.len())
+        .unwrap_or(trimmed);
+    db.find_symbols(suggestion_query, 10, None, graph_version)
+        .unwrap_or_default()
+}
+
+/// The longest whitespace-delimited token in `trimmed`, used as the always-
+/// executable `search` fallback term in a recovery payload. Strips a
+/// config-URI scheme first (so `env://NOPE_VAR` searches for `NOPE_VAR`, the
+/// part actually likely to appear in source text) and caps the result well
+/// under `validate_pattern_length`'s limit regardless of how large the
+/// original input was, without ever slicing into a multi-byte character.
+fn recovery_search_term(trimmed: &str) -> String {
+    const MAX_LEN_CHARS: usize = 200;
+    let stripped = trimmed
+        .strip_prefix("secret://")
+        .or_else(|| trimmed.strip_prefix("env://"))
+        .unwrap_or(trimmed);
+    let token = stripped
+        .split_whitespace()
+        .max_by_key(|t| t.chars().count())
+        .unwrap_or(stripped);
+    token.chars().take(MAX_LEN_CHARS).collect()
+}
+
+/// Method-specific param keys that identify a start/seed reference — stripped
+/// from a cloned caller-params object before a retry hop sets its own.
+fn start_ref_keys(method: &str) -> &'static [&'static str] {
+    if method == "trace_flow" {
+        &["start_id", "start_qualname", "query"]
+    } else {
+        &["id", "qualname", "query", "qualnames"]
     }
+}
+
+/// Clone `base_params`, drop its start-ref keys, and set `id` under the
+/// method's id param name. `languages` is dropped too — an id is unambiguous,
+/// so a language filter can only narrow it to nothing.
+fn retry_params_for_id(method: &str, id: i64, base_params: &Value) -> Value {
+    let mut map = base_params.as_object().cloned().unwrap_or_default();
+    for key in start_ref_keys(method) {
+        map.remove(*key);
+    }
+    map.remove("languages");
+    let id_key = if method == "trace_flow" {
+        "start_id"
+    } else {
+        "id"
+    };
+    map.insert(id_key.to_string(), json!(id));
+    Value::Object(map)
+}
+
+/// Clone `base_params`, drop its start-ref keys, and set `qualname` (a config
+/// URI) under the method's qualname param name. Unlike the id-based retry,
+/// `languages` is kept — a qualname can still be ambiguous across languages.
+fn retry_params_for_qualname(method: &str, qualname: &str, base_params: &Value) -> Value {
+    let mut map = base_params.as_object().cloned().unwrap_or_default();
+    for key in start_ref_keys(method) {
+        map.remove(*key);
+    }
+    let qualname_key = if method == "trace_flow" {
+        "start_qualname"
+    } else {
+        "qualname"
+    };
+    map.insert(qualname_key.to_string(), json!(qualname));
+    Value::Object(map)
 }
 
 /// Build the structured recovery payload returned when start-symbol resolution
@@ -156,23 +217,31 @@ pub fn find_recovery_suggestions(db: &Db, query: &str, graph_version: i64) -> Re
 /// {
 ///   "resolved": false,
 ///   "message": "...",
-///   "next_hops": [...]
+///   "next_hops": [...],
+///   "suggestions": [...],          // present only when candidates is non-empty
+///   "config_uri_candidates": [...] // present only when any URI has symbols
 /// }
 /// ```
 ///
-/// `method` is the calling method name (`"trace_flow"` or `"analyze_impact"`) so
-/// the suggested retries use the correct method name.
+/// `method` is the calling method name (`"trace_flow"` or `"analyze_impact"`)
+/// so the suggested retries use the correct method and param names.
+/// `candidates` are the near-miss symbols already found for `query` (e.g. from
+/// `SymbolNotFound` or `find_candidates`). `base_params` is the caller's
+/// original request params, cloned into each retry hop with only the start
+/// ref replaced, so direction/kinds/max_depth/etc. survive the retry.
 pub fn build_resolution_recovery_payload(
     db: &Db,
     query: &str,
+    candidates: &[Symbol],
     graph_version: i64,
     method: &str,
+    base_params: &Value,
 ) -> Value {
-    let suggestions = find_recovery_suggestions(db, query, graph_version);
+    let trimmed = query.trim();
     let mut next_hops: Vec<Value> = Vec::new();
 
     // Suggest explain_symbol for each candidate symbol.
-    for sym in &suggestions.symbol_candidates {
+    for sym in candidates {
         next_hops.push(json!({
             "method": "explain_symbol",
             "params": {"id": sym.id},
@@ -180,41 +249,48 @@ pub fn build_resolution_recovery_payload(
         }));
     }
 
-    // Suggest the calling method with each candidate symbol's id.
-    for sym in &suggestions.symbol_candidates {
+    // Suggest the calling method retried at each candidate's id. An id, unlike
+    // a name, cannot resolve to a different, shorter-qualname symbol that
+    // happens to share the same bare name.
+    for sym in candidates {
         next_hops.push(json!({
             "method": method,
-            "params": {"query": sym.name.clone()},
-            "description": format!("Retry {} with near-match '{}'", method, sym.name),
+            "params": retry_params_for_id(method, sym.id, base_params),
+            "description": format!(
+                "Retry {} with near-match '{}' (id={})",
+                method, sym.qualname, sym.id
+            ),
         }));
     }
 
-    // Suggest the calling method via each config URI candidate.
-    // trace_flow uses `start_qualname`; analyze_impact uses `qualname`.
-    let qualname_key = if method == "trace_flow" {
-        "start_qualname"
-    } else {
-        "qualname"
-    };
-    for uri in &suggestions.config_uri_candidates {
+    // Suggest the calling method via each config URI candidate that actually
+    // has symbols connected to it.
+    let config_uri_candidates: Vec<String> = config_uri_guesses(trimmed)
+        .into_iter()
+        .filter(|uri| {
+            db.source_symbols_for_config_uri(uri, &[], graph_version)
+                .ok()
+                .is_some_and(|ids| !ids.is_empty())
+        })
+        .collect();
+    for uri in &config_uri_candidates {
         next_hops.push(json!({
             "method": method,
-            "params": {qualname_key: uri},
+            "params": retry_params_for_qualname(method, uri, base_params),
             "description": format!("Try {} with config URI '{}'", method, uri),
         }));
     }
 
-    // Always include a text search for the query as a fallback — `search` succeeds even
-    // when nothing matches, so this hop is always executable.
-    let trimmed_query = query.trim();
-    let longest_token = trimmed_query
-        .split_whitespace()
-        .max_by_key(|t| t.len())
-        .unwrap_or(trimmed_query);
+    // Always include a text search for the query as a fallback — `search`
+    // succeeds even when nothing matches, so this hop is always executable.
+    // fixed_string avoids a regex-parse failure on a token containing regex
+    // metacharacters, and the term is capped well under the pattern-length
+    // limit regardless of how large the original input was.
+    let search_term = recovery_search_term(trimmed);
     next_hops.push(json!({
         "method": "search",
-        "params": {"query": longest_token, "limit": 10},
-        "description": format!("Text search for '{}' to find related symbols", longest_token),
+        "params": {"query": search_term, "limit": 10, "fixed_string": true},
+        "description": format!("Text search for '{}' to find related symbols", search_term),
     }));
 
     // Deduplicate: there may be overlap between method retries and explain hops.
@@ -231,41 +307,61 @@ pub fn build_resolution_recovery_payload(
         next_hops.len()
     );
 
-    json!({
+    let mut payload = json!({
         "resolved": false,
         "message": message,
         "next_hops": next_hops,
-    })
+    });
+    if let Some(obj) = payload.as_object_mut() {
+        if !candidates.is_empty() {
+            let suggestions: Vec<SymbolCompact> =
+                candidates.iter().map(SymbolCompact::from).collect();
+            obj.insert("suggestions".to_string(), json!(suggestions));
+        }
+        if !config_uri_candidates.is_empty() {
+            obj.insert(
+                "config_uri_candidates".to_string(),
+                json!(config_uri_candidates),
+            );
+        }
+    }
+    payload
 }
 
-/// Resolve a start reference, falling back to a structured recovery payload when
-/// resolution fails *and* a `recovery_query` is available (qualname/query refs).
+/// Resolve a start reference, falling back to a structured recovery payload
+/// when resolution fails with an unresolvable query/qualname.
 ///
 /// Returns:
 /// - `Ok(Ok(symbol))` — resolved successfully.
 /// - `Ok(Err(payload))` — resolution failed but a recovery payload was built;
 ///   the caller should return it as a successful response.
-/// - `Err(e)` — resolution failed with nothing to suggest (e.g. an ID miss, when
-///   `recovery_query` is `None`); the caller should propagate the error.
+/// - `Err(e)` — resolution failed with nothing to suggest: an ID miss (never
+///   produces `SymbolNotFound`) or a genuine data-access error (DB error,
+///   pattern-too-large, ...); the caller should propagate it.
 ///
-/// Centralising the recovery boundary here keeps both `trace_flow` and
+/// Only `SymbolNotFound` is caught, via `downcast_ref` — every other error
+/// propagates untouched, so a real failure (e.g. a query too large for the DB
+/// to plan) is never mistaken for "not found" and silently swallowed into a
+/// recovery payload. Centralising this boundary here keeps `trace_flow` and
 /// `analyze_impact` from duplicating the catch logic.
 pub fn resolve_or_recovery(
     db: &Db,
     reference: SymbolRef,
     languages: Option<&[String]>,
     graph_version: i64,
-    recovery_query: Option<&str>,
     method: &str,
+    base_params: &Value,
 ) -> Result<std::result::Result<Symbol, Value>> {
     match resolve_symbol(db, reference, languages, graph_version) {
         Ok(sym) => Ok(Ok(sym)),
-        Err(e) => match recovery_query {
-            Some(query) => Ok(Err(build_resolution_recovery_payload(
+        Err(e) => match e.downcast_ref::<SymbolNotFound>() {
+            Some(not_found) => Ok(Err(build_resolution_recovery_payload(
                 db,
-                query,
+                &not_found.query,
+                &not_found.candidates,
                 graph_version,
                 method,
+                base_params,
             ))),
             None => Err(e),
         },
