@@ -144,7 +144,7 @@ fn resolve_bridge_targets(
     symbol_cache: &mut HashMap<i64, Symbol>,
     symbol_checked: &mut HashSet<i64>,
     distance_map: &mut HashMap<i64, usize>,
-    parent_map: &mut HashMap<i64, (i64, String)>,
+    parent_map: &mut HashMap<i64, (i64, String, Option<String>)>,
     queue: &mut VecDeque<(i64, usize)>,
     current_distance: usize,
     limit: usize,
@@ -175,9 +175,11 @@ fn resolve_bridge_targets(
                     continue;
                 }
                 distance_map.insert(bridged_id, current_distance + 1);
-                parent_map
-                    .entry(bridged_id)
-                    .or_insert((*source_id, edge_kind.clone()));
+                parent_map.entry(bridged_id).or_insert((
+                    *source_id,
+                    edge_kind.clone(),
+                    bridged_edge.resolution_kind.clone(),
+                ));
                 queue.push_back((bridged_id, current_distance + 1));
                 if visited.len() >= limit {
                     return Ok(true);
@@ -241,7 +243,7 @@ pub fn analyze_direct_impact(
     }
 
     let mut truncated = false;
-    let mut parent_map: HashMap<i64, (i64, String)> = HashMap::new();
+    let mut parent_map: HashMap<i64, (i64, String, Option<String>)> = HashMap::new();
     // Issue #81 (R5): every edge that actually contributed a newly-visited
     // symbol -- checked once, after the BFS, against `HEURISTIC_RESOLUTION_KINDS`
     // to decide whether suggesting the exclude-heuristics retry is useful at
@@ -351,9 +353,11 @@ pub fn analyze_direct_impact(
                     }
 
                     distance_map.insert(next_id, current_distance + 1);
-                    parent_map
-                        .entry(next_id)
-                        .or_insert((*current_id, edge.kind.clone()));
+                    parent_map.entry(next_id).or_insert((
+                        *current_id,
+                        edge.kind.clone(),
+                        edge.resolution_kind.clone(),
+                    ));
                     queue.push_back((next_id, current_distance + 1));
                     traversed_edge_ids.push(edge.id);
 
@@ -409,12 +413,18 @@ pub fn analyze_direct_impact(
 
         impacts.push((symbol_id, confidence));
 
+        // Resolution tier of the edge that first reached this symbol
+        // (issue #62's AC), read off the same parent_map entry
+        // reconstruct_path_steps walks later.
+        let resolution_kind = parent_map.get(&symbol_id).and_then(|(_, _, rk)| rk.clone());
+
         // Track evidence source
         evidence.insert(
             symbol_id,
             vec![ImpactSource::DirectEdge {
                 edge_kind: "DIRECT".to_string(), // Simplified for now
                 distance,
+                resolution_kind,
             }],
         );
     }

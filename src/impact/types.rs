@@ -17,6 +17,12 @@ pub struct PathStep {
     pub edge_kind: String,
     pub from_symbol: String,
     pub to_symbol: String,
+    /// Resolution tier of the traversed edge (issue #62's AC: every
+    /// response carrying edges exposes the resolution tier). Absent when
+    /// the edge has no resolution kind at all -- a Bridge Edge kind or any
+    /// edge kind the resolver never labels.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
 }
 
 /// Path from seed symbol to impacted symbol
@@ -88,7 +94,15 @@ pub type ConfidenceScore = f32;
 #[serde(tag = "type")]
 pub enum ImpactSource {
     /// Direct graph edge (CALL, IMPORT, etc.)
-    DirectEdge { edge_kind: String, distance: usize },
+    DirectEdge {
+        edge_kind: String,
+        distance: usize,
+        /// Resolution tier of the traversed edge (issue #62's AC). Absent
+        /// when the edge has no resolution kind at all -- a Bridge Edge
+        /// kind or any edge kind the resolver never labels.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resolution_kind: Option<String>,
+    },
     /// Test relationship
     TestLink {
         strategy: String,  // "import", "call", "naming", "proximity"
@@ -115,8 +129,9 @@ pub struct LayerResult {
     pub duration_ms: u64,
     /// Whether this layer was truncated
     pub truncated: bool,
-    /// Parent tracking for path reconstruction: child_id -> (parent_id, edge_kind)
-    pub parent_map: HashMap<i64, (i64, String)>,
+    /// Parent tracking for path reconstruction: child_id -> (parent_id,
+    /// edge_kind, resolution_kind of the traversed edge)
+    pub parent_map: HashMap<i64, (i64, String, Option<String>)>,
     /// Issue #81 (R5): whether this layer traversed at least one edge with a
     /// heuristic (`bare_name`/`two_segment`) resolution kind. Only the direct
     /// layer (`analyze_direct_impact`) computes this meaningfully; every

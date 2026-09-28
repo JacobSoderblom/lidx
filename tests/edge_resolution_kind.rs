@@ -1,6 +1,6 @@
 //! Issue #62: surface `resolution_kind` on every edge.
 //!
-//! Three seam-A checks, one per response shape that carries a
+//! Four seam-A checks, one per response shape that carries a
 //! `resolution_kind`-bearing edge:
 //!
 //! - `dead_symbols`'s `unused_imports` list is the one live RPC response
@@ -21,6 +21,12 @@
 //!   crosses a language boundary by exact `target_qualname`, not through
 //!   the name tiers), so the hop must omit the field rather than report a
 //!   tier that was never computed.
+//! - `analyze_impact`'s `affected[].path.steps` (`PathStep`, reconstructed
+//!   from the direct layer's BFS `parent_map`) must carry the tier of the
+//!   edge each step traversed, across two different tiers in the same
+//!   fixture as the `explain_symbol` check above: `exact` downstream from
+//!   `caller.entry` to `caller.local_util`, and `import` upstream from
+//!   `caller.entry` to `downstream.use_entry`.
 
 mod common;
 
@@ -232,5 +238,85 @@ fn trace_flow_hops_expose_resolution_kind_and_omit_it_when_unresolved() {
     assert!(
         bridged_hop.get("resolution_kind").is_none(),
         "a CONFIG_SOURCE edge's target is a URI, never bound to a symbol, so its hop must omit resolution_kind rather than report null: {bridged_hop}"
+    );
+}
+
+/// Find the one path step landing on `to_symbol`, or panic with the full
+/// steps list for debugging. Matches on `to_symbol` alone, not
+/// `from_symbol`: for a distance-1 step off the seed, `reconstruct_path_steps`
+/// (`src/impact/orchestrator.rs`) looks the parent up in a `symbol_map` built
+/// only from non-seed impacted symbols, so a seed parent's qualname always
+/// renders as `""` -- a pre-existing quirk unrelated to resolution_kind, out
+/// of scope here.
+fn find_step<'a>(steps: &'a [Value], to_symbol: &str) -> &'a Value {
+    steps
+        .iter()
+        .find(|s| s["to_symbol"] == to_symbol)
+        .unwrap_or_else(|| panic!("expected a path step to {to_symbol}, got {steps:?}"))
+}
+
+/// `analyze_impact`'s `affected[].path.steps` carry the tier of the edge
+/// each step traversed. `caller.entry CALLS caller.local_util` binds
+/// `exact` (same-module, unambiguous target) -- see
+/// `tests/fixtures/golden/python/expected_edges.txt`.
+#[test]
+fn analyze_impact_path_steps_expose_resolution_kind_exact_tier() {
+    let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let result = call_rpc(
+        repo_root,
+        db_path,
+        "analyze_impact",
+        r#"{"qualname":"caller.entry","direction":"downstream","kinds":["CALLS"]}"#,
+    );
+    let affected = result["affected"]
+        .as_array()
+        .expect("affected should be an array");
+    let entry = affected
+        .iter()
+        .find(|e| e["symbol"]["qualname"] == "caller.local_util")
+        .expect("expected an affected entry for caller.local_util");
+    let steps = entry["path"]["steps"]
+        .as_array()
+        .expect("expected path.steps on the affected entry");
+    let step = find_step(steps, "caller.local_util");
+    assert_eq!(
+        step["resolution_kind"], "exact",
+        "caller.entry's call to caller.local_util binds exact: {step}"
+    );
+}
+
+/// Same response shape, `import` tier: `downstream.use_entry CALLS
+/// caller.entry` binds `import` (cross-file, bound by name through the
+/// caller's own import) -- reached from `caller.entry` via an upstream
+/// analysis.
+#[test]
+fn analyze_impact_path_steps_expose_resolution_kind_import_tier() {
+    let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let result = call_rpc(
+        repo_root,
+        db_path,
+        "analyze_impact",
+        r#"{"qualname":"caller.entry","direction":"upstream","kinds":["CALLS"]}"#,
+    );
+    let affected = result["affected"]
+        .as_array()
+        .expect("affected should be an array");
+    let entry = affected
+        .iter()
+        .find(|e| e["symbol"]["qualname"] == "downstream.use_entry")
+        .expect("expected an affected entry for downstream.use_entry");
+    let steps = entry["path"]["steps"]
+        .as_array()
+        .expect("expected path.steps on the affected entry");
+    let step = find_step(steps, "downstream.use_entry");
+    assert_eq!(
+        step["resolution_kind"], "import",
+        "downstream.use_entry's call to caller.entry binds import: {step}"
     );
 }

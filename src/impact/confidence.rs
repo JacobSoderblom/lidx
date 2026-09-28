@@ -202,6 +202,7 @@ mod tests {
         let source = ImpactSource::DirectEdge {
             edge_kind: "CALL".to_string(),
             distance: 1,
+            resolution_kind: None,
         };
         let conf = confidence_from_source(&source);
         assert!((conf - 0.855).abs() < 0.001);
@@ -238,6 +239,7 @@ mod tests {
             ImpactSource::DirectEdge {
                 edge_kind: "CALL".to_string(),
                 distance: 1,
+                resolution_kind: None,
             },
             ImpactSource::TestLink {
                 strategy: "call".to_string(),
