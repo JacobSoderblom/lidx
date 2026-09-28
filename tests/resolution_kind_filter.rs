@@ -343,3 +343,221 @@ fn omitting_exclude_resolution_kinds_keeps_default_behaviour() {
     );
     assert!(impact_affected_qualnames(&result).contains(&"worker.process".to_string()));
 }
+
+/// Issue #81 (R1): `analyze_impact`'s test layer (`impact/layers/test.rs`'s
+/// `discover_call_tests`, on by default) walks CALLS edges via
+/// `edges_for_symbol` just like the direct layer -- the orchestrator used to
+/// pass `exclude_resolution_kinds` only to the direct layer, so a test found
+/// solely through a heuristically-resolved CALLS edge still surfaced even
+/// with that resolution kind excluded.
+#[test]
+fn test_layer_honors_resolution_kind_filter() {
+    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+
+    // `from worker import *` never populates import candidates for `process`
+    // (a star import), so the bare `process()` call inside `test_alpha`
+    // resolves via the guarded name-fallback tier, same shape as
+    // `bare_call_method.bare_caller`'s heuristic edge above.
+    std::fs::create_dir_all(repo_root.join("tests")).unwrap();
+    std::fs::write(
+        repo_root.join("tests").join("test_zzz.py"),
+        "from worker import *\n\ndef test_alpha():\n    process()\n",
+    )
+    .unwrap();
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer
+        .sync_rel_paths(&["tests/test_zzz.py".to_string()])
+        .unwrap();
+    drop(indexer);
+
+    let unfiltered = call(
+        &repo_root,
+        &db_path,
+        "analyze_impact",
+        r#"{"qualname":"worker.process","direction":"upstream"}"#,
+    );
+    let unfiltered_affected = impact_affected_qualnames(&unfiltered);
+    assert!(
+        unfiltered_affected.contains(&"tests.test_zzz.test_alpha".to_string()),
+        "precondition: unfiltered upstream impact must find the test via the call-based \
+         test layer, got {:?}",
+        unfiltered_affected
+    );
+
+    let filtered = call(
+        &repo_root,
+        &db_path,
+        "analyze_impact",
+        r#"{"qualname":"worker.process","direction":"upstream",
+            "exclude_resolution_kinds":["bare_name","two_segment"]}"#,
+    );
+    let filtered_affected = impact_affected_qualnames(&filtered);
+    assert!(
+        !filtered_affected.contains(&"tests.test_zzz.test_alpha".to_string()),
+        "R1: the test layer must also refuse a heuristically-resolved CALLS edge once \
+         excluded, got {:?}",
+        filtered_affected
+    );
+}
+
+/// Issue #81 (R2): a `trace_flow` call started via `query` (or
+/// `start_query`) has neither `start_qualname` nor `start_id` in its own
+/// params, so a retry hop built by copying only those two fields had no
+/// start at all -- following it failed with "trace_flow requires start_id,
+/// start_qualname, or query". The retry hop must fall back to the symbol
+/// `resolve_symbol` already resolved the query to.
+#[test]
+fn trace_flow_query_started_retry_hop_is_followable() {
+    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+
+    let result = call(
+        &repo_root,
+        &db_path,
+        "trace_flow",
+        r#"{"query":"bare_caller","direction":"downstream","kinds":["CALLS"]}"#,
+    );
+    let hops = result["next_hops"].as_array().unwrap();
+    let hop = hops
+        .iter()
+        .find(|h| {
+            h["method"] == "trace_flow" && h["params"].get("exclude_resolution_kinds").is_some()
+        })
+        .unwrap_or_else(|| panic!("expected an exclude-heuristics retry hop, got {:?}", hops));
+    assert!(
+        hop["params"].get("start_id").is_some() || hop["params"].get("start_qualname").is_some(),
+        "R2: a query-started trace's retry hop must carry a resolvable start, got {:?}",
+        hop
+    );
+
+    let raw = rpc::call(
+        repo_root.clone(),
+        db_path.clone(),
+        "trace_flow".to_string(),
+        &serde_json::to_string(&hop["params"]).unwrap(),
+        "2",
+    )
+    .unwrap();
+    let envelope: Value = serde_json::from_str(&raw).unwrap();
+    assert!(
+        envelope.get("error").is_none_or(|e| e.is_null()),
+        "R2: following the retry hop from a query-started trace must not error, got {envelope}"
+    );
+}
+
+/// Issue #81 (R4): a `trace_flow` retry hop used to be rebuilt from scratch
+/// (only start + direction), dropping `end_qualname`/`end_id`, `kinds`,
+/// `max_hops` and `include_snippets` -- the retry silently became a
+/// different, broader trace instead of the same one with only the filter
+/// toggled.
+#[test]
+fn trace_flow_retry_hop_preserves_end_kinds_max_hops_and_snippets() {
+    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+
+    let result = call(
+        &repo_root,
+        &db_path,
+        "trace_flow",
+        r#"{"start_qualname":"bare_call_method.bare_caller","end_qualname":"worker.process",
+            "direction":"downstream","kinds":["CALLS"],"max_hops":3,"include_snippets":false}"#,
+    );
+    let hops = result["next_hops"].as_array().unwrap();
+    let hop = hops
+        .iter()
+        .find(|h| {
+            h["method"] == "trace_flow" && h["params"].get("exclude_resolution_kinds").is_some()
+        })
+        .unwrap_or_else(|| panic!("expected an exclude-heuristics retry hop, got {:?}", hops));
+
+    assert_eq!(hop["params"]["end_qualname"], Value::from("worker.process"));
+    assert_eq!(hop["params"]["kinds"], serde_json::json!(["CALLS"]));
+    assert_eq!(hop["params"]["max_hops"], Value::from(3));
+    assert_eq!(hop["params"]["include_snippets"], Value::from(false));
+}
+
+/// Issue #81 (R4): an `analyze_impact` retry hop used to keep only
+/// `{id: seed_ids.first(), direction}`, dropping `max_depth`, `kinds`,
+/// `include_tests` and the layer enable/disable toggles -- the retry
+/// silently became a different, unbounded analysis instead of the same one
+/// with only the filter toggled.
+#[test]
+fn analyze_impact_retry_hop_preserves_max_depth_kinds_include_tests_and_layer_config() {
+    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+
+    let result = call(
+        &repo_root,
+        &db_path,
+        "analyze_impact",
+        r#"{"qualname":"bare_call_method.bare_caller","direction":"downstream","kinds":["CALLS"],
+            "max_depth":2,"include_tests":true,"enable_historical":false}"#,
+    );
+    let hops = result["next_hops"].as_array().unwrap();
+    let hop = hops
+        .iter()
+        .find(|h| {
+            h["method"] == "analyze_impact" && h["params"].get("exclude_resolution_kinds").is_some()
+        })
+        .unwrap_or_else(|| panic!("expected an exclude-heuristics retry hop, got {:?}", hops));
+
+    assert_eq!(
+        hop["params"]["qualname"],
+        Value::from("bare_call_method.bare_caller")
+    );
+    assert_eq!(hop["params"]["max_depth"], Value::from(2));
+    assert_eq!(hop["params"]["kinds"], serde_json::json!(["CALLS"]));
+    assert_eq!(hop["params"]["include_tests"], Value::from(true));
+    assert_eq!(hop["params"]["enable_historical"], Value::from(false));
+}
+
+/// Issue #81 (R3): an unknown or wrong-case resolution kind used to be
+/// silently ignored (matching nothing), while the response still offered
+/// "retry without the filter" as if the filter had done something. Both
+/// handlers must reject it with a clear error instead.
+#[test]
+fn exclude_resolution_kinds_rejects_unknown_values() {
+    let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    let raw = rpc::call(
+        repo_root.clone(),
+        db_path.clone(),
+        "trace_flow".to_string(),
+        r#"{"start_qualname":"caller.entry","exclude_resolution_kinds":["BARE_NAME"]}"#,
+        "1",
+    )
+    .unwrap();
+    let envelope: Value = serde_json::from_str(&raw).unwrap();
+    let message = envelope["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.is_empty(),
+        "trace_flow must reject a wrong-case resolution kind, got {envelope}"
+    );
+    assert!(
+        message.contains("BARE_NAME"),
+        "error should name the offending value, got {message:?}"
+    );
+    assert!(
+        message.contains("bare_name"),
+        "error should list a valid kind so the caller can self-correct, got {message:?}"
+    );
+
+    let raw = rpc::call(
+        repo_root.clone(),
+        db_path.clone(),
+        "analyze_impact".to_string(),
+        r#"{"qualname":"caller.entry","exclude_resolution_kinds":["bogus"]}"#,
+        "1",
+    )
+    .unwrap();
+    let envelope: Value = serde_json::from_str(&raw).unwrap();
+    let message = envelope["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.is_empty(),
+        "analyze_impact must reject an unknown resolution kind, got {envelope}"
+    );
+    assert!(
+        message.contains("bogus"),
+        "error should name the offending value, got {message:?}"
+    );
+}

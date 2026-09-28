@@ -117,6 +117,12 @@ pub struct LayerResult {
     pub truncated: bool,
     /// Parent tracking for path reconstruction: child_id -> (parent_id, edge_kind)
     pub parent_map: HashMap<i64, (i64, String)>,
+    /// Issue #81 (R5): whether this layer traversed at least one edge with a
+    /// heuristic (`bare_name`/`two_segment`) resolution kind. Only the direct
+    /// layer (`analyze_direct_impact`) computes this meaningfully; every
+    /// other layer reports `false` since they don't walk resolved graph
+    /// edges the same way.
+    pub traversed_heuristic_kind: bool,
 }
 
 /// Configuration for multi-layer impact analysis
@@ -234,6 +240,13 @@ pub struct UnifiedImpactResult {
     /// when the direct layer is disabled, since only that layer traverses
     /// resolvable graph edges.
     pub lower_bound: LowerBound,
+    /// Issue #81 (R5): whether the direct layer's own traversal crossed at
+    /// least one heuristic (`bare_name`/`two_segment`) edge -- gates the
+    /// "retry excluding heuristics" next_hops suggestion in
+    /// `handle_analyze_impact`. Internal signal, not part of the response
+    /// payload.
+    #[serde(skip)]
+    pub traversed_heuristic_kind: bool,
 }
 
 /// A single entry in a batch impact result

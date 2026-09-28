@@ -954,6 +954,25 @@ pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Val
 // GROUP 2 -- Graph handlers
 // ---------------------------------------------------------------------------
 
+/// Issue #81 (R3): reject an unknown or wrong-case resolution kind
+/// (`"BARE_NAME"`, `"bogus"`) up front, rather than silently matching
+/// nothing while `next_hops` still offers "retry without the filter" for a
+/// filter that quietly did nothing. Validates against
+/// `db::resolver::ALL_RESOLUTION_KINDS`, the resolver's own single source
+/// of truth for the column's possible values.
+fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
+    if let Some(bad) = kinds
+        .iter()
+        .find(|k| !crate::db::resolver::ALL_RESOLUTION_KINDS.contains(&k.as_str()))
+    {
+        anyhow::bail!(
+            "unknown resolution kind '{bad}' in exclude_resolution_kinds -- valid kinds: {}",
+            crate::db::resolver::ALL_RESOLUTION_KINDS.join(", ")
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: TraceFlowParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
@@ -972,6 +991,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         .unwrap_or_else(|| crate::traversal::TraceConfig::default().allowed_kinds);
     let exclude_resolution_kinds: Vec<String> =
         params.exclude_resolution_kinds.clone().unwrap_or_default();
+    validate_resolution_kinds(&exclude_resolution_kinds)?;
 
     // Config URI resolution: find all symbols connected to the URI
     let config_uri_seeds: Vec<i64> = if let Some(ref qn) = params.start_qualname {
@@ -1143,14 +1163,35 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         .exclude_resolution_kinds
         .as_ref()
         .is_some_and(|k| !k.is_empty());
+    // R2/R4: a retry hop must reconstruct the same trace, not a bare start --
+    // a call started via `query`/`start_query` has neither start_qualname nor
+    // start_id, so it falls back to the symbol `resolve_symbol` already
+    // resolved it to (`start.id`); end_qualname/end_id/kinds/max_hops/
+    // include_snippets all carry over too, so only the filter itself changes.
     let hop_start_params = |extra: &mut serde_json::Map<String, serde_json::Value>| {
         if let Some(ref qn) = params.start_qualname {
             extra.insert("start_qualname".to_string(), json!(qn));
         } else if let Some(id) = params.start_id {
             extra.insert("start_id".to_string(), json!(id));
+        } else {
+            extra.insert("start_id".to_string(), json!(start.id));
+        }
+        if let Some(id) = params.end_id {
+            extra.insert("end_id".to_string(), json!(id));
+        } else if let Some(ref qn) = params.end_qualname {
+            extra.insert("end_qualname".to_string(), json!(qn));
         }
         if let Some(ref d) = params.direction {
             extra.insert("direction".to_string(), json!(d));
+        }
+        if let Some(ref k) = params.kinds {
+            extra.insert("kinds".to_string(), json!(k));
+        }
+        if let Some(h) = params.max_hops {
+            extra.insert("max_hops".to_string(), json!(h));
+        }
+        if let Some(s) = params.include_snippets {
+            extra.insert("include_snippets".to_string(), json!(s));
         }
     };
     if has_exclude_filter {
@@ -1161,12 +1202,16 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             "params": retry_params,
             "description": "Retry without the resolution-kind filter to see the full (unfiltered) trace, including heuristic edges",
         }));
-    } else if !trace.is_empty() {
+    } else if trace_result.traversed_heuristic_kind {
+        // R5: only suggest the filtered retry when a heuristic-kind edge was
+        // actually traversed -- a non-empty trace made entirely of exact/
+        // import/receiver_type/inherited edges has nothing for the filter
+        // to remove.
         let mut retry_params = serde_json::Map::new();
         hop_start_params(&mut retry_params);
         retry_params.insert(
             "exclude_resolution_kinds".to_string(),
-            json!(["bare_name", "two_segment"]),
+            json!(crate::db::resolver::HEURISTIC_RESOLUTION_KINDS),
         );
         next_hops.push(json!({
             "method": "trace_flow",
@@ -1289,6 +1334,12 @@ fn resolve_and_analyze_single(
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: AnalyzeImpactParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
+    // Issue #81 (R3): validated once here, ahead of both the batch path
+    // (`build_impact_config`) and the single-seed path below -- both read
+    // `params.exclude_resolution_kinds`.
+    if let Some(ref exclude) = params.exclude_resolution_kinds {
+        validate_resolution_kinds(exclude)?;
+    }
 
     // ---- Batch path: multiple qualnames in one call ----
     if let Some(ref qualnames) = params.qualnames {
@@ -1506,28 +1557,65 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     // where useful -- never both, since asking for the opposite of a filter
     // that wasn't applied is a no-op. Merged into whichever next_hops list
     // below actually gets returned (the zero-result recovery hops, or a
-    // fresh one for a normal, non-empty result). The exclude-filter
-    // suggestion only fires when `lower_bound` shows real evidence of
-    // resolution incompleteness -- a clean, already-precise result stays
-    // unchanged rather than always nudging toward a narrower retry.
+    // fresh one for a normal, non-empty result). R5: the exclude-filter
+    // suggestion fires only when the direct layer actually traversed a
+    // heuristic-kind edge -- `lower_bound` (pending unresolved references)
+    // is a different signal and doesn't imply a heuristic edge was crossed.
     let mut resolution_next_hops: Vec<serde_json::Value> = Vec::new();
     {
-        let seed_id = seed_ids.first().copied();
+        // R4: rebuild the retry from the ORIGINAL request's own identifying
+        // and config params, not just the first seed id and direction -- so
+        // a config-URI qualname's multi-symbol seeding, `max_depth`,
+        // `kinds`, `include_tests`/`include_paths`/`limit`/`min_confidence`
+        // and layer toggles all survive the retry; only
+        // `exclude_resolution_kinds` itself changes.
         let mut retry_params = serde_json::Map::new();
-        if let Some(id) = seed_id {
+        if let Some(id) = params.id {
             retry_params.insert("id".to_string(), json!(id));
+        } else if let Some(ref qn) = params.qualname {
+            retry_params.insert("qualname".to_string(), json!(qn));
+        } else if let Some(ref q) = params.query {
+            retry_params.insert("query".to_string(), json!(q));
         }
         retry_params.insert("direction".to_string(), json!(direction));
+        if let Some(depth) = params.max_depth {
+            retry_params.insert("max_depth".to_string(), json!(depth));
+        }
+        if let Some(ref kinds) = original_kinds {
+            retry_params.insert("kinds".to_string(), json!(kinds));
+        }
+        if let Some(include_tests) = params.include_tests {
+            retry_params.insert("include_tests".to_string(), json!(include_tests));
+        }
+        if let Some(include_paths) = params.include_paths {
+            retry_params.insert("include_paths".to_string(), json!(include_paths));
+        }
+        if let Some(limit) = params.limit {
+            retry_params.insert("limit".to_string(), json!(limit));
+        }
+        if let Some(min_confidence) = params.min_confidence {
+            retry_params.insert("min_confidence".to_string(), json!(min_confidence));
+        }
+        if let Some(enable_direct) = params.enable_direct {
+            retry_params.insert("enable_direct".to_string(), json!(enable_direct));
+        }
+        if let Some(enable_test) = params.enable_test {
+            retry_params.insert("enable_test".to_string(), json!(enable_test));
+        }
+        if let Some(enable_historical) = params.enable_historical {
+            retry_params.insert("enable_historical".to_string(), json!(enable_historical));
+        }
+
         if has_exclude_filter {
             resolution_next_hops.push(json!({
                 "method": "analyze_impact",
                 "params": retry_params,
                 "description": "Retry without the resolution-kind filter to see the full (unfiltered) impact set, including heuristic edges",
             }));
-        } else if !result.affected.is_empty() && result.lower_bound.is_lower_bound {
+        } else if !result.affected.is_empty() && result.traversed_heuristic_kind {
             retry_params.insert(
                 "exclude_resolution_kinds".to_string(),
-                json!(["bare_name", "two_segment"]),
+                json!(crate::db::resolver::HEURISTIC_RESOLUTION_KINDS),
             );
             resolution_next_hops.push(json!({
                 "method": "analyze_impact",

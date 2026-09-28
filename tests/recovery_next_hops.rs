@@ -488,11 +488,21 @@ fn zero_affected_omits_parent_hop_when_parent_is_not_a_symbol() {
     }
 }
 
+/// Issue #81 (R5): the "retry excluding heuristics" next_hop is gated on
+/// whether the direct layer actually traversed a heuristic-kind edge, not
+/// on `lower_bound` (a different signal entirely -- pending unresolved
+/// references). This fixture exercises both signals at once, coincidentally:
+/// `app.run`'s own `g.greet(...)` call stays fully unresolved (no edge at
+/// all is ever written for it, so it can't be excluded by a resolution-kind
+/// filter -- `lower_bound` is set for this reason alone), while separately
+/// `Greeter EXTENDS Base` resolves via the guarded name-fallback tier
+/// (`bare_name`) and genuinely is a traversed edge. The suggested hop must
+/// be more than merely present: following it must actually shrink the
+/// result by excluding that edge.
 #[test]
-fn non_zero_affected_analyze_impact_is_unchanged() {
+fn non_zero_affected_analyze_impact_suggests_hop_when_heuristic_edge_traversed() {
     let temp = indexed_repo("py_mvp");
 
-    // A symbol that definitely has callers
     let value = rpc_json(
         &temp,
         "analyze_impact",
@@ -505,30 +515,41 @@ fn non_zero_affected_analyze_impact_is_unchanged() {
         !affected.is_empty(),
         "precondition: Greeter must have affected symbols"
     );
-
-    // Issue #81: this fixture's `app.run` calls `g.greet(...)` on a value
-    // whose type the resolver can't infer across `make_greeter()`'s return,
-    // so that CALLS reference stays unresolved -- a genuine gap in what
-    // this Greeter impact traversal can see. `lower_bound` must say so, and
-    // that's exactly the one case where a non-empty analyze_impact result
-    // is now allowed to carry next_hops: a suggestion to retry excluding
-    // heuristic edges is not useful signal here, but the point of this test
-    // is the precondition, checked by the sibling test below.
     let lower_bound = result["lower_bound"].as_object().unwrap();
     assert!(
         lower_bound["is_lower_bound"].as_bool().unwrap(),
-        "precondition: Greeter's traversal must be a lower bound (app.run's unresolved \
-         g.greet() call) for this test to exercise the branch it's named for"
+        "precondition: Greeter's traversal must also be a lower bound (app.run's \
+         unresolved g.greet() call), so this test actually exercises a case where the \
+         old (wrong) lower_bound-gated check and the new heuristic-edge-gated check \
+         could disagree"
     );
-    assert!(result.contains_key("next_hops"));
+
+    let hops = result["next_hops"].as_array().unwrap();
+    let hop = hops
+        .iter()
+        .find(|h| {
+            h["method"] == "analyze_impact" && h["params"].get("exclude_resolution_kinds").is_some()
+        })
+        .unwrap_or_else(|| {
+            panic!("expected an exclude-heuristics next_hop (a real bare_name EXTENDS edge is traversed here), got {:?}", hops)
+        });
+
+    let followed = follow_hop(&temp, hop);
+    let followed_affected = followed["result"]["affected"].as_array().unwrap();
+    assert!(
+        followed_affected.len() < affected.len(),
+        "excluding heuristic edges must remove at least the bare_name-resolved \
+         EXTENDS edge to Base, got {} affected before and {} after",
+        affected.len(),
+        followed_affected.len()
+    );
 }
 
-/// Sibling of the test above: a symbol whose traversal touches no pending
-/// unresolved reference at all must still get the pre-#81 "unchanged"
-/// contract -- `lower_bound` alone must gate the new next_hops, not merely
-/// "affected is non-empty".
+/// Sibling of the test above: a symbol whose traversal crosses no
+/// heuristic-kind edge at all must still get the pre-#81 "unchanged"
+/// contract -- "affected is non-empty" alone must not add the suggestion.
 #[test]
-fn non_zero_affected_analyze_impact_without_lower_bound_is_unchanged() {
+fn non_zero_affected_analyze_impact_without_heuristic_edge_is_unchanged() {
     let temp = indexed_repo("py_mvp");
 
     let value = rpc_json(
@@ -543,16 +564,10 @@ fn non_zero_affected_analyze_impact_without_lower_bound_is_unchanged() {
         !affected.is_empty(),
         "precondition: pkg.b.helper must have affected symbols"
     );
-    let lower_bound = result["lower_bound"].as_object().unwrap();
-    assert!(
-        !lower_bound["is_lower_bound"].as_bool().unwrap(),
-        "precondition: pkg.b.helper's traversal must not touch a pending unresolved \
-         reference, so this test exercises the still-unchanged branch"
-    );
     assert!(
         !result.contains_key("next_hops"),
-        "non-zero affected analyze_impact with no lower bound should not add next_hops \
-         (response unchanged)"
+        "non-zero affected analyze_impact with no heuristic-kind edge traversed should \
+         not add next_hops (response unchanged)"
     );
 }
 

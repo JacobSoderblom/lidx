@@ -128,7 +128,7 @@ pub(crate) enum ResolutionKind {
 
 impl ResolutionKind {
     /// The `edges.resolution_kind` column value.
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Exact => "exact",
             Self::Import => "import",
@@ -140,6 +140,35 @@ impl ResolutionKind {
         }
     }
 }
+
+/// The guarded name-fallback tier's own resolution kinds (tier 5 -- see the
+/// module doc): a heuristic match by name alone, unlike `exact`/`import`/
+/// `receiver_type`/`inherited`, which all bind on more than a bare name.
+/// Issue #81's default `exclude_resolution_kinds` suggestion set --
+/// single source of truth for the `["bare_name", "two_segment"]` literal
+/// that used to be duplicated across `rpc/handlers.rs`'s next_hops.
+pub(crate) const HEURISTIC_RESOLUTION_KINDS: [&str; 2] = [
+    ResolutionKind::BareName.as_str(),
+    ResolutionKind::TwoSegment.as_str(),
+];
+
+/// Every `edges.resolution_kind` value the resolver can produce -- the
+/// single source of truth issue #81's `exclude_resolution_kinds` param
+/// validates against (`rpc/handlers.rs`'s `validate_resolution_kinds`), so
+/// an unknown or wrong-case kind (`"BARE_NAME"`, `"bogus"`) is rejected
+/// with a clear error instead of silently matching nothing.
+pub(crate) const ALL_RESOLUTION_KINDS: [&str; 7] = [
+    ResolutionKind::Exact.as_str(),
+    ResolutionKind::Import.as_str(),
+    ResolutionKind::ReceiverType.as_str(),
+    ResolutionKind::Inherited.as_str(),
+    ResolutionKind::TwoSegment.as_str(),
+    ResolutionKind::BareName.as_str(),
+    ResolutionKind::External {
+        via_language_fallback: false,
+    }
+    .as_str(),
+];
 
 /// Why a reference stayed unresolved.
 ///

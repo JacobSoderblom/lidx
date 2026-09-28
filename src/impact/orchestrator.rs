@@ -151,6 +151,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
         if self.config.test.enabled {
             let db_path = self.db.db_path().to_path_buf();
             let seed_ids = seed_ids.to_vec();
+            let exclude_resolution_kinds = self.config.direct.exclude_resolution_kinds.clone();
             let metadata = Arc::clone(&layer_metadata);
             let results = Arc::clone(&layer_results);
 
@@ -175,7 +176,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
                 };
 
                 let test_layer = TestImpactLayer::new(&db);
-                match test_layer.analyze(&seed_ids, graph_version) {
+                match test_layer.analyze(&seed_ids, &exclude_resolution_kinds, graph_version) {
                     Ok(result) => {
                         let mut meta = metadata.lock().unwrap();
                         meta.test = Some(LayerStats {
@@ -302,6 +303,11 @@ impl<'a> MultiLayerOrchestrator<'a> {
             .find(|r| r.layer_name == "direct")
             .map(|r| r.impacts.iter().map(|(id, _)| *id).collect())
             .unwrap_or_default();
+        // Issue #81 (R5): see `analyze_sequential`'s identical extraction.
+        let traversed_heuristic_kind = layer_results
+            .iter()
+            .find(|r| r.layer_name == "direct")
+            .is_some_and(|r| r.traversed_heuristic_kind);
 
         // Fuse results from all layers
         let num_layers = layer_results.len();
@@ -343,6 +349,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
             config: self.build_config_summary(),
             layers: layer_metadata,
             lower_bound,
+            traversed_heuristic_kind,
         })
     }
 
@@ -479,6 +486,14 @@ impl<'a> MultiLayerOrchestrator<'a> {
             .find(|r| r.layer_name == "direct")
             .map(|r| r.impacts.iter().map(|(id, _)| *id).collect())
             .unwrap_or_default();
+        // Issue #81 (R5): whether the direct layer's own traversal crossed
+        // at least one heuristic-kind edge -- gates the "retry excluding
+        // heuristics" next_hops suggestion, unlike `lower_bound` (unresolved
+        // references), which is a different signal entirely.
+        let traversed_heuristic_kind = layer_results
+            .iter()
+            .find(|r| r.layer_name == "direct")
+            .is_some_and(|r| r.traversed_heuristic_kind);
 
         // Fuse results from all layers
         let num_layers = layer_results.len();
@@ -519,6 +534,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
             truncated,
             config: self.build_config_summary(),
             layers: layer_metadata,
+            traversed_heuristic_kind,
             lower_bound,
         })
     }
@@ -575,7 +591,11 @@ impl<'a> MultiLayerOrchestrator<'a> {
     /// Run Layer 2: Test impact
     fn run_test_layer(&self, seed_ids: &[i64], graph_version: i64) -> Result<LayerResult> {
         let test_layer = TestImpactLayer::new(self.db);
-        test_layer.analyze(seed_ids, graph_version)
+        test_layer.analyze(
+            seed_ids,
+            &self.config.direct.exclude_resolution_kinds,
+            graph_version,
+        )
     }
 
     /// Run Layer 3: Historical impact (co-change patterns)

@@ -41,7 +41,12 @@ impl<'a> TestImpactLayer<'a> {
     /// Analyze test impact for changed symbols
     ///
     /// Returns tests that are likely affected by changes to the seed symbols
-    pub fn analyze(&self, seed_ids: &[i64], graph_version: i64) -> Result<LayerResult> {
+    pub fn analyze(
+        &self,
+        seed_ids: &[i64],
+        exclude_resolution_kinds: &[String],
+        graph_version: i64,
+    ) -> Result<LayerResult> {
         let start = Instant::now();
 
         // Track all discovered test symbols and their evidence
@@ -54,7 +59,8 @@ impl<'a> TestImpactLayer<'a> {
         }
 
         // Strategy 2: Call-based discovery
-        let call_tests = self.discover_call_tests(seed_ids, graph_version)?;
+        let call_tests =
+            self.discover_call_tests(seed_ids, exclude_resolution_kinds, graph_version)?;
         for (test_id, evidence) in call_tests {
             test_impacts.entry(test_id).or_default().push(evidence);
         }
@@ -103,6 +109,7 @@ impl<'a> TestImpactLayer<'a> {
             duration_ms,
             truncated: false,
             parent_map: HashMap::new(),
+            traversed_heuristic_kind: false,
         })
     }
 
@@ -164,6 +171,7 @@ impl<'a> TestImpactLayer<'a> {
     fn discover_call_tests(
         &self,
         seed_ids: &[i64],
+        exclude_resolution_kinds: &[String],
         graph_version: i64,
     ) -> Result<Vec<(i64, ImpactSource)>> {
         let mut results = Vec::new();
@@ -173,9 +181,28 @@ impl<'a> TestImpactLayer<'a> {
             // Find edges where this symbol is the source or target
             let edges = self.db.edges_for_symbol(*seed_id, None, graph_version)?;
 
+            // Issue #81 (R1): same "no extra query when the filter is empty"
+            // discipline as the direct layer (impact/layers/direct.rs) --
+            // this layer walks CALLS edges too, so it must honor the same
+            // `exclude_resolution_kinds` filter the orchestrator only used to
+            // pass to the direct layer.
+            let resolution_kinds: HashMap<i64, String> = if exclude_resolution_kinds.is_empty() {
+                HashMap::new()
+            } else {
+                let edge_ids: Vec<i64> = edges.iter().map(|e| e.id).collect();
+                self.db.edge_resolution_kinds(&edge_ids)?
+            };
+
             for edge in edges {
                 // We want CALL edges where the seed is the TARGET (being called)
                 if edge.kind != "CALLS" {
+                    continue;
+                }
+                if crate::model::is_resolution_excluded(
+                    edge.id,
+                    &resolution_kinds,
+                    exclude_resolution_kinds,
+                ) {
                     continue;
                 }
 

@@ -331,6 +331,24 @@ pub fn xref_is_traversable(edge: &Edge) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether `edge_id`'s resolution kind (as returned by
+/// `Db::edge_resolution_kinds`, keyed by edge id) is one of `exclude` --
+/// the shared `exclude_resolution_kinds` predicate (issue #81) behind
+/// `trace_flow` (`traversal.rs`), the direct impact layer
+/// (`impact/layers/direct.rs`), and the test impact layer
+/// (`impact/layers/test.rs`). An edge id absent from `resolution_kinds` has
+/// no resolution kind at all -- a Bridge Edge kind or any edge kind the
+/// resolver never labels -- and is never excluded by this check.
+pub fn is_resolution_excluded(
+    edge_id: i64,
+    resolution_kinds: &std::collections::HashMap<i64, String>,
+    exclude: &[String],
+) -> bool {
+    resolution_kinds
+        .get(&edge_id)
+        .is_some_and(|rk| exclude.iter().any(|k| k == rk))
+}
+
 #[derive(Debug, Serialize)]
 pub struct EdgeReference {
     pub edge: Edge,
