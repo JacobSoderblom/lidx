@@ -10,6 +10,15 @@ pub enum SymbolRef {
     Query(String),
 }
 
+/// Outcome of `resolve_symbol_with_candidates`.
+pub enum QueryResolution {
+    Found(Box<Symbol>),
+    /// Multiple candidates tied for best match at the exact-name-match tier
+    /// (`find_symbols`'s own top ranking criterion) -- picking one would be
+    /// a guess.
+    Ambiguous(Vec<Symbol>),
+}
+
 /// Resolves a `SymbolRef` to a `Symbol` using the full fallback chain:
 /// ID lookup → qualname lookup → fuzzy query → config key → "did you mean".
 pub fn resolve_symbol(
@@ -32,29 +41,101 @@ pub fn resolve_symbol(
     }
 }
 
-fn resolve_by_query(
+/// Like `resolve_symbol`, but surfaces a tie at the exact-name-match tier as
+/// `QueryResolution::Ambiguous` instead of silently taking the first match --
+/// for callers (namely `read_symbol`) where guessing between tied candidates
+/// is costly. `resolve_symbol` keeps the silent-pick behaviour, which is what
+/// callers like `explain_symbol`/`trace_flow` want.
+///
+/// Shares its `find_symbols` lookup with the rest of the fallback chain
+/// (`find_symbol_candidates` / `resolve_after_candidates`), so checking for a
+/// tie doesn't cost a second query on top of the one `resolve_symbol` would
+/// run for the same reference.
+pub fn resolve_symbol_with_candidates(
     db: &Db,
-    query: &str,
+    reference: SymbolRef,
     languages: Option<&[String]>,
     graph_version: i64,
-) -> Result<Symbol> {
+) -> Result<QueryResolution> {
+    let query = match reference {
+        SymbolRef::Id(_) => {
+            let sym = resolve_symbol(db, reference, languages, graph_version)?;
+            return Ok(QueryResolution::Found(Box::new(sym)));
+        }
+        SymbolRef::Qualname(qn) => {
+            if let Some(sym) = db.get_symbol_by_qualname(&qn, graph_version)? {
+                return Ok(QueryResolution::Found(Box::new(sym)));
+            }
+            qn
+        }
+        SymbolRef::Query(query) => query,
+    };
+
     let trimmed = query.trim();
     if trimmed.is_empty() {
         anyhow::bail!("no symbol found for query: {}", query);
     }
 
+    let candidates = find_symbol_candidates(db, trimmed, languages, graph_version)?;
+    if let Some(tied) = tied_candidates(trimmed, &candidates) {
+        return Ok(QueryResolution::Ambiguous(tied));
+    }
+    let sym = resolve_after_candidates(db, &query, candidates, graph_version)?;
+    Ok(QueryResolution::Found(Box::new(sym)))
+}
+
+/// `find_symbols` lookup shared by `resolve_by_query` and
+/// `resolve_symbol_with_candidates`: tries the language filter first, then
+/// retries without one -- so a caller that only wants ranked candidates
+/// doesn't have to duplicate that retry, and a later fallback stage doesn't
+/// have to re-run the query to get the same candidates.
+fn find_symbol_candidates(
+    db: &Db,
+    trimmed: &str,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> Result<Vec<Symbol>> {
     let results = db.find_symbols(trimmed, 5, languages, graph_version)?;
-    if let Some(sym) = results.into_iter().next() {
+    if !results.is_empty() || languages.is_none() {
+        return Ok(results);
+    }
+    db.find_symbols(trimmed, 5, None, graph_version)
+}
+
+/// Candidates whose name (case-insensitively) matches `trimmed`'s longest
+/// whitespace-separated token -- `find_symbols`'s own top ranking criterion.
+/// More than one such candidate is a tie: returning either would be a guess.
+fn tied_candidates(trimmed: &str, candidates: &[Symbol]) -> Option<Vec<Symbol>> {
+    if candidates.len() < 2 {
+        return None;
+    }
+    let longest_token = trimmed
+        .split_whitespace()
+        .max_by_key(|t| t.len())
+        .unwrap_or(trimmed);
+    let longest_lower = longest_token.to_lowercase();
+    let tied: Vec<Symbol> = candidates
+        .iter()
+        .filter(|s| s.name.to_lowercase() == longest_lower)
+        .cloned()
+        .collect();
+    (tied.len() > 1).then_some(tied)
+}
+
+/// Continues the fallback chain once `find_symbols` candidates are already in
+/// hand: the top candidate if there is one, else the config-key lookup, else
+/// a "did you mean" error built from a broader unfiltered search.
+fn resolve_after_candidates(
+    db: &Db,
+    query: &str,
+    candidates: Vec<Symbol>,
+    graph_version: i64,
+) -> Result<Symbol> {
+    if let Some(sym) = candidates.into_iter().next() {
         return Ok(sym);
     }
 
-    if languages.is_some() {
-        let results = db.find_symbols(trimmed, 5, None, graph_version)?;
-        if let Some(sym) = results.into_iter().next() {
-            return Ok(sym);
-        }
-    }
-
+    let trimmed = query.trim();
     let config_uris: Vec<String> = [
         crate::indexer::config::normalize_env_var_name(trimmed),
         crate::indexer::config::normalize_secret_name(trimmed),
@@ -87,6 +168,20 @@ fn resolve_by_query(
         );
     }
     anyhow::bail!("no symbol found for query: {}", query);
+}
+
+fn resolve_by_query(
+    db: &Db,
+    query: &str,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> Result<Symbol> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("no symbol found for query: {}", query);
+    }
+    let candidates = find_symbol_candidates(db, trimmed, languages, graph_version)?;
+    resolve_after_candidates(db, query, candidates, graph_version)
 }
 
 /// Expands a symbol into seed IDs for BFS traversal.

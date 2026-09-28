@@ -401,60 +401,37 @@ enum ReadTarget {
 }
 
 /// Resolves a `read_symbol` selector (either `qualname` or `query` text) the same
-/// way `explain_symbol` does: an exact qualname hit short-circuits (mirrors
-/// `resolve::resolve_symbol`'s `SymbolRef::Qualname` branch), otherwise falls back
-/// to the fuzzy query path.
-///
-/// Before delegating to `resolve::resolve_symbol`, this checks the same
-/// `find_symbols` candidates its query path would consult for a tie at the
-/// exact-name-match tier (`find_symbols`'s own top ranking criterion). Unlike
-/// `explain_symbol`, which silently takes the best match, `read_symbol` returns
+/// way `explain_symbol` does: an exact qualname hit short-circuits, otherwise
+/// falls back to the fuzzy query path -- but via
+/// `resolve::resolve_symbol_with_candidates` rather than `resolve::resolve_symbol`,
+/// so a tie at the exact-name-match tier (`find_symbols`'s own top ranking
+/// criterion) comes back as `ReadTarget::Ambiguous` instead of a silent pick.
+/// Unlike `explain_symbol`, which takes the best match, `read_symbol` returns
 /// one symbol's exact source, so guessing between two equally-ranked candidates
-/// is costly -- a tie is reported as ambiguous instead. When there is no tie,
-/// resolution is delegated to `resolve::resolve_symbol` unchanged, so a
-/// non-ambiguous `read_symbol` query always resolves to the same symbol
-/// `explain_symbol` would.
+/// is costly. When there is no tie, resolution is the same `resolve::resolve_symbol`
+/// would produce -- both share the same candidates lookup rather than each
+/// running `find_symbols` on its own, so a non-ambiguous `read_symbol` query
+/// always resolves to the same symbol `explain_symbol` would, at the cost of
+/// one shared query rather than two.
 fn resolve_read_target(
     db: &crate::db::Db,
     qualname: Option<&str>,
     query: Option<&str>,
     graph_version: i64,
 ) -> Result<ReadTarget> {
-    if let Some(qn) = qualname
-        && let Some(symbol) = db.get_symbol_by_qualname(qn, graph_version)?
-    {
-        return Ok(ReadTarget::Found(Box::new(symbol)));
-    }
     let Some(text) = qualname.or(query) else {
         anyhow::bail!("resolve_read_target requires a qualname or query");
     };
-
-    let trimmed = text.trim();
-    if !trimmed.is_empty() {
-        let candidates = db.find_symbols(trimmed, 5, None, graph_version)?;
-        if candidates.len() > 1 {
-            let longest_token = trimmed
-                .split_whitespace()
-                .max_by_key(|t| t.len())
-                .unwrap_or(trimmed);
-            let longest_lower = longest_token.to_lowercase();
-            let tied: Vec<Symbol> = candidates
-                .into_iter()
-                .filter(|s| s.name.to_lowercase() == longest_lower)
-                .collect();
-            if tied.len() > 1 {
-                return Ok(ReadTarget::Ambiguous(tied));
-            }
+    let sym_ref = match qualname {
+        Some(qn) => crate::resolve::SymbolRef::Qualname(qn.to_string()),
+        None => crate::resolve::SymbolRef::Query(text.to_string()),
+    };
+    match crate::resolve::resolve_symbol_with_candidates(db, sym_ref, None, graph_version)? {
+        crate::resolve::QueryResolution::Found(symbol) => Ok(ReadTarget::Found(symbol)),
+        crate::resolve::QueryResolution::Ambiguous(candidates) => {
+            Ok(ReadTarget::Ambiguous(candidates))
         }
     }
-
-    let symbol = crate::resolve::resolve_symbol(
-        db,
-        crate::resolve::SymbolRef::Query(text.to_string()),
-        None,
-        graph_version,
-    )?;
-    Ok(ReadTarget::Found(Box::new(symbol)))
 }
 
 /// Prefixes each line of `text` with its real file line number (1-based, starting
