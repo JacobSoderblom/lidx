@@ -76,9 +76,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     });
     // A ref passes when its edge's tier ranks at or above (index <=)
     // `min_resolution_rank`. An edge whose `resolution_kind` is absent
-    // (never resolved -- e.g. a Bridge Edge whose own target is a URI, not
-    // a symbol) never passes once a tier floor is set, since "absent" is
-    // weaker than every named tier.
+    // (never resolved -- e.g. a String-Targeted Edge Kind whose own target
+    // is a config key/secret URI, not a symbol, such as CONFIG_SOURCE)
+    // never passes once a tier floor is set, since "absent" is weaker than
+    // every named tier.
     let meets_min_resolution = |kind: &Option<String>| -> bool {
         match min_resolution_rank {
             None => true,
