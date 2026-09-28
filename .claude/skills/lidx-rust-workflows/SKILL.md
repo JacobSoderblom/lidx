@@ -19,28 +19,54 @@ description: "Common Rust development workflows for lidx. Use when adding migrat
 
 ### Adding a New RPC Method
 
-1. **Define params** in `src/rpc.rs`:
+1. **Define params** in `src/rpc/mod.rs`:
    ```rust
-   #[derive(Deserialize)]
-   struct MyMethodParams { field: String, limit: Option<usize> }
+   #[derive(Deserialize, schemars::JsonSchema)]
+   struct MyMethodParams {
+       field: String,
+       limit: Option<usize>,
+       #[serde(flatten)]
+       common: CommonParams, // or LangVersionParams if it doesn't filter by path
+   }
    ```
 
-2. **Add to METHOD_NAMES** array (around line 766)
+2. **Add the method name** to `METHOD_LIST` (same file)
 
-3. **Add MethodDoc** in `method_docs()` with name, summary, param schema, examples
-
-4. **Add dispatch arm** in `handle_method()`:
+3. **Add a dispatch arm** in `handle_method()` (same file):
    ```rust
-   "my_method" => {
-       let params: MyMethodParams = serde_json::from_value(params_val)?;
+   "my_method" => handlers::handle_my_method(indexer, params)?,
+   ```
+   Route to `handlers::` for a one-off addition, or a dedicated feature
+   module (declared with `mod reading;` etc. in `rpc/mod.rs`, following the
+   same `use super::*;` wiring as `handlers`/`reading`) when the method and
+   its helpers are substantial enough to deserve their own file -- see
+   `src/rpc/reading.rs` (`outline`/`read_symbol`) for the pattern.
+
+4. **Register the schema** in `src/rpc/schema.rs`'s `method_param_schema()`:
+   ```rust
+   "my_method" => schema_value::<MyMethodParams>(),
+   ```
+   (add `MyMethodParams` to that function's `use super::{...}` import list too)
+
+5. **Implement the handler**, in `src/rpc/handlers.rs` or the feature module
+   from step 3:
+   ```rust
+   pub(super) fn handle_my_method(indexer: &mut Indexer, params: Value) -> Result<Value> {
+       let params: MyMethodParams = serde_json::from_value(params)?;
        let result = json!({ "data": data, "next_hops": next_hops });
        Ok(result)
    }
    ```
 
-5. **Add response type** to `src/model.rs` if needed (derive `Debug, Serialize, Clone`)
+6. **Add a response type** to `src/model.rs` if the shape is reused or worth
+   typing instead of ad hoc `json!` (derive `Debug, Serialize, Clone`, and
+   `#[serde(skip_serializing_if = "Option::is_none")]` on optional fields so
+   they're omitted rather than emitted as `null`)
 
-6. **Add DB query** to `src/db/mod.rs` if needed
+7. **Add a DB query** to `src/db/` (e.g. `graph_query.rs`, `overview.rs`) if needed
+
+8. **Write tests** by calling `rpc::handle_method(&mut indexer, "my_method", json!({...}))`
+   directly -- see `tests/reading_methods.rs` for the pattern
 
 ---
 
@@ -129,7 +155,7 @@ cargo fmt --check && cargo clippy && cargo test
 
 ## Quick Reference
 
-**Add RPC method**: params struct -> METHOD_NAMES -> MethodDoc -> dispatch arm -> model type -> DB query
+**Add RPC method**: params struct (rpc/mod.rs) -> METHOD_LIST -> dispatch arm in handle_method -> schema in rpc/schema.rs -> handler (handlers.rs or a feature module) -> model type -> DB query -> tests via rpc::handle_method
 **Add extractor**: tree-sitter dep -> `indexer/{lang}.rs` -> register in `mod.rs` -> map extension in `scan.rs` -> test
 **Add migration**: bump SCHEMA_VERSION -> version-gated block in `migrations.rs`
 **Run tests**: `cargo test` or `cargo test --test <name>`
