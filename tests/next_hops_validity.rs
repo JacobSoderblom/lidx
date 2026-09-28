@@ -284,9 +284,9 @@ fn many_files_repo(count: usize) -> TempRepo {
 }
 
 /// #97: `search` hits point at `outline` for their file, one hop per distinct
-/// file (not per hit), capped at a handful of files even when more match.
+/// file (not per hit) -- no cap: every distinct matching file gets one.
 #[test]
-fn search_hits_include_outline_hops_deduplicated_per_file_and_capped() {
+fn search_hits_include_outline_hops_deduplicated_per_file() {
     if !rg_available() {
         return; // rg not available -- skip
     }
@@ -341,11 +341,12 @@ fn search_hits_include_outline_hops_deduplicated_per_file_and_capped() {
         hop_paths.push(hop["params"]["path"].as_str().unwrap().to_string());
     }
 
-    // Capped at 5 distinct files even though 7 (really 8 hits) matched.
+    // One hop per distinct file, uncapped: 7 files matched (8 hits, one file
+    // matching twice), so 7 hits should carry a hop.
     assert_eq!(
         hop_paths.len(),
-        5,
-        "expected exactly 5 hits to carry an outline hop (cap), got {}: {:?}",
+        7,
+        "expected exactly 7 hits to carry an outline hop (one per distinct file, no cap), got {}: {:?}",
         hop_paths.len(),
         hop_paths
     );
@@ -374,4 +375,58 @@ fn search_hits_include_outline_hops_deduplicated_per_file_and_capped() {
         "following the outline hop must outline the file it named, got: {}",
         followed
     );
+}
+
+/// #97/standards follow-up: a search hit whose file `outline` can't handle
+/// (not an indexed language, not Markdown -- e.g. Cargo.toml, a .json file)
+/// must not carry an outline hop; a hit for an outline-able file still does.
+#[test]
+fn search_hits_skip_outline_hop_for_non_outlineable_files() {
+    if !rg_available() {
+        return; // rg not available -- skip
+    }
+    let dir = temp_repo_dir("non-outlineable");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"NEXT_HOPS_SEARCH_MARKER\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("data.json"),
+        "{\"key\": \"NEXT_HOPS_SEARCH_MARKER\"}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.py"), "# NEXT_HOPS_SEARCH_MARKER\n").unwrap();
+    let db_path = dir.join(".lidx").join(".lidx.sqlite");
+    let repo = TempRepo {
+        repo_root: dir,
+        db_path,
+    };
+    let mut indexer = Indexer::new(repo.repo_root.clone(), repo.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    let result = call_and_get_result(
+        &repo,
+        "search",
+        r#"{"query":"NEXT_HOPS_SEARCH_MARKER","limit":50}"#,
+    );
+    let hits = result.as_array().expect("non-empty search stays an array");
+    assert_eq!(hits.len(), 3, "{:?}", hits);
+
+    for hit in hits {
+        let path = hit["path"].as_str().unwrap();
+        let has_hop = hit.get("next_hops").is_some();
+        if path.ends_with(".py") {
+            assert!(
+                has_hop,
+                "an outline-able .py file should carry an outline hop: {hit:#?}"
+            );
+        } else {
+            assert!(
+                !has_hop,
+                "a non-outline-able file ('{path}') should not carry an outline hop: {hit:#?}"
+            );
+        }
+    }
 }

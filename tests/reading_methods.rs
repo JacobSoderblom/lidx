@@ -1306,6 +1306,107 @@ fn read_symbol_with_no_selector_is_rejected() {
 }
 
 #[test]
+fn read_symbol_qualnames_large_multi_read_is_not_re_truncated_by_the_generic_response_cap() {
+    // Three functions large enough that their combined response exceeds the
+    // generic 30KB response cap `handle_method` applies to methods that don't
+    // manage their own budget -- read_symbol DOES manage its own via
+    // `max_bytes`, so the outer cap must not re-truncate it down to nothing.
+    fn padded_fn(name: &str, target_body_bytes: usize) -> String {
+        let mut src = format!("pub fn {name}() -> i32 {{\n    let mut x = 0;\n");
+        while src.len() < target_body_bytes {
+            src.push_str("    x += 1;\n");
+        }
+        src.push_str("    x\n}\n\n");
+        src
+    }
+
+    let mut file_src = String::new();
+    for i in 0..3 {
+        file_src.push_str(&padded_fn(&format!("big_fn_{i}"), 15_000));
+    }
+
+    let (mut indexer, repo_root) =
+        indexed_from_source("read-symbol-large-multi", &[("src/lib.rs", &file_src)]);
+
+    let qualnames = vec![
+        "crate::big_fn_0".to_string(),
+        "crate::big_fn_1".to_string(),
+        "crate::big_fn_2".to_string(),
+    ];
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualnames": qualnames, "max_bytes": 100000}),
+    )
+    .unwrap();
+
+    assert!(
+        result.get("truncated").is_none(),
+        "read_symbol manages its own budget; the outer generic response cap \
+         must not wrap it in a second truncated envelope: {result:#}"
+    );
+    let symbols = result["symbols"].as_array().expect("symbols array");
+    assert_eq!(
+        symbols.len(),
+        3,
+        "all three symbols should fit under the requested 100000-byte budget: {result:#}"
+    );
+    let omitted = result["omitted"].as_array().expect("omitted array");
+    assert!(omitted.is_empty(), "{result:#}");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_single_large_symbol_is_capped_with_omitted_header_and_next_hops() {
+    // A large generated function whose full source would blow past a modest
+    // max_bytes budget -- read_symbol must never cut a symbol mid-body, so it
+    // returns just the header fields plus `omitted: true` instead.
+    let mut src = String::from("pub fn huge() -> i32 {\n    let mut x = 0;\n");
+    for _ in 0..5000 {
+        src.push_str("    x += 1;\n");
+    }
+    src.push_str("    x\n}\n");
+
+    let (mut indexer, repo_root) =
+        indexed_from_source("read-symbol-single-large", &[("src/lib.rs", &src)]);
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "crate::huge", "max_bytes": 20000}),
+    )
+    .unwrap();
+
+    assert_eq!(result["qualname"], "crate::huge");
+    assert_eq!(result["omitted"], true, "{result:#}");
+    assert!(
+        result.get("source").is_none(),
+        "an over-budget single read must not include a partial/cut source: {result:#}"
+    );
+    assert!(
+        result["size_bytes"].as_u64().is_some_and(|n| n > 20000),
+        "expected the actual (over-budget) size to be reported: {result:#}"
+    );
+
+    let hops = result["next_hops"].as_array().expect("next_hops array");
+    assert!(!hops.is_empty(), "{result:#}");
+    assert!(
+        hops.iter()
+            .any(|h| h["method"] == "read_symbol" && h["params"]["skeleton"] == true),
+        "expected a read_symbol skeleton:true suggestion for the container case: {hops:#?}"
+    );
+    for hop in hops {
+        assert!(
+            METHOD_LIST.contains(&hop["method"].as_str().unwrap()),
+            "hop must be dispatchable: {hop:#?}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
 fn read_symbol_with_multiple_selectors_is_rejected() {
     let (mut indexer, _repo_root) = indexed("py_mvp");
 

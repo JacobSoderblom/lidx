@@ -297,10 +297,13 @@ struct ReadSymbolParams {
     /// Lines of surrounding context to include around the symbol's span, clamped
     /// at file bounds (default: 0)
     context_lines: Option<usize>,
-    /// Response byte budget for a `qualnames` (multi-symbol) read: symbols are
-    /// added in request order until the next one would exceed this, then it and
-    /// every symbol after it are omitted whole and listed by qualname under
-    /// `omitted` (default: 30000). Ignored for single `qualname`/`query` reads.
+    /// Response byte budget (default: 30000). For a `qualnames` (multi-symbol)
+    /// read, symbols are added in request order until the next one would
+    /// exceed this, then it and every symbol after it are omitted whole and
+    /// listed by qualname under `omitted`. For a single `qualname`/`query`
+    /// read, if the resolved symbol's response would exceed this, only its
+    /// header fields are returned with `omitted: true` -- a symbol is never
+    /// cut mid-body.
     max_bytes: Option<usize>,
 }
 
@@ -433,7 +436,7 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
 
     let exempt = matches!(
         method,
-        "gather_context" | "onboard" | "orient" | "context" | "repo_map"
+        "gather_context" | "onboard" | "orient" | "context" | "repo_map" | "read_symbol"
     );
     let effective_max = max_response_bytes.or({
         if exempt {

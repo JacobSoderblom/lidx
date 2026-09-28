@@ -1498,7 +1498,7 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         let max_bytes = params
             .max_bytes
             .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
-            .min(500_000);
+            .min(200_000);
         return handle_read_symbol_multi(
             indexer,
             &qualnames,
@@ -1543,7 +1543,49 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         );
     }
 
-    build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version)
+    let entry = build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version)?;
+
+    // A single symbol's response is otherwise uncapped (the outer generic
+    // response-size cap can't safely shrink a plain object with no array
+    // field to slice -- see `format::truncate_response`, and `read_symbol` is
+    // exempt from it anyway so it can honour its own `max_bytes`). Rather
+    // than ever return a source cut mid-body, an over-budget response is
+    // replaced by just its header fields plus `omitted: true`.
+    let max_bytes = params
+        .max_bytes
+        .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
+        .min(200_000);
+    let entry_size = serde_json::to_string(&entry).map(|s| s.len()).unwrap_or(0);
+    if entry_size > max_bytes {
+        let stale = entry.get("stale").cloned().unwrap_or(json!(false));
+        return Ok(json!({
+            "qualname": symbol.qualname,
+            "kind": symbol.kind,
+            "path": symbol.file_path,
+            "start_line": symbol.start_line,
+            "end_line": symbol.end_line,
+            "stale": stale,
+            "omitted": true,
+            "size_bytes": entry_size,
+            "next_hops": [
+                {
+                    "method": "read_symbol",
+                    "params": {"qualname": symbol.qualname, "skeleton": true},
+                    "description": format!(
+                        "'{}' is too large to read in full ({} bytes > {} budget) -- read_symbol with skeleton:true returns just its children's signatures (containers only)",
+                        symbol.qualname, entry_size, max_bytes
+                    ),
+                },
+                {
+                    "method": "outline",
+                    "params": {"path": symbol.file_path},
+                    "description": "Outline the file to pick a narrower symbol to read",
+                },
+            ],
+        }));
+    }
+
+    Ok(entry)
 }
 
 // ---------------------------------------------------------------------------
@@ -3081,19 +3123,22 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
 
     // Issue #97: point each hit toward an `outline` of its file -- one hop per
     // distinct file, not per hit, since a file with several matching lines only
-    // needs one skeleton. Capped at a handful of files: hops add bytes to every
-    // hit that carries one, and a wide search (many files) gains little from an
-    // outline hop on every single one of them.
-    const OUTLINE_HOP_FILE_CAP: usize = 5;
+    // needs one skeleton. Only emitted when the file is something `outline`
+    // can actually handle: an indexed language (reused from the scanner's own
+    // extension-to-language detection, not a hand-rolled extension list) or
+    // Markdown (read straight off disk -- see `is_markdown_path`). A hop
+    // toward e.g. Cargo.toml or a .json file would just error.
     let mut hopped_paths: HashSet<String> = HashSet::new();
     for hit in results.iter_mut() {
-        if hopped_paths.len() >= OUTLINE_HOP_FILE_CAP {
-            break;
-        }
         if !hopped_paths.insert(hit.path.clone()) {
             continue;
         }
         let path = hit.path.clone();
+        let outlineable = is_markdown_path(&path)
+            || scan::language_for_path(std::path::Path::new(&path)).is_some();
+        if !outlineable {
+            continue;
+        }
         hit.next_hops = Some(vec![RpcSuggestion {
             method: "outline".to_string(),
             params: json!({"path": path}),
