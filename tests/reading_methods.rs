@@ -673,6 +673,72 @@ fn read_symbol_context_lines_does_not_panic_when_file_shrank_after_indexing() {
 }
 
 #[test]
+fn read_symbol_does_not_panic_when_stale_start_byte_lands_mid_multibyte_char() {
+    // `foo`'s indexed start_byte is 6 (`"x = 1\n"` is 6 ASCII bytes).
+    let src = "x = 1\ndef foo():\n    return 1\n";
+    let (mut indexer, repo_root) = indexed_from_source("stale-multibyte", &[("m.py", src)]);
+
+    let before = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "m.foo"}),
+    )
+    .unwrap();
+    assert_eq!(before["start_line"], 2, "{before:#}");
+
+    // Overwrite the file with multibyte characters, without reindexing: byte
+    // offset 6 (the stale start_byte) now lands in the middle of a 2-byte
+    // UTF-8 'é' rather than on a char boundary -- indexing the new content at
+    // that raw offset must not panic.
+    let replacement = format!("a{}\n", "é".repeat(22));
+    std::fs::write(repo_root.join("m.py"), &replacement).unwrap();
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "m.foo"}),
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.to_lowercase().contains("reindex"),
+        "expected the pre-existing 'symbol span no longer valid ... reindex' error, got: {err_msg}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_qualnames_does_not_panic_when_stale_start_byte_lands_mid_multibyte_char() {
+    let src = "x = 1\ndef foo():\n    return 1\n";
+    let (mut indexer, repo_root) =
+        indexed_from_source("stale-multibyte-multi", &[("m.py", src)]);
+
+    let replacement = format!("a{}\n", "é".repeat(22));
+    std::fs::write(repo_root.join("m.py"), &replacement).unwrap();
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualnames": ["m.foo"]}),
+    )
+    .unwrap();
+
+    let symbols = result["symbols"].as_array().expect("symbols array");
+    assert!(symbols.is_empty(), "{result:#}");
+    let errors = result["errors"].as_array().expect("errors array");
+    assert_eq!(errors.len(), 1, "{result:#}");
+    assert_eq!(errors[0]["qualname"], "m.foo", "{errors:?}");
+    assert!(
+        errors[0]["error"]
+            .as_str()
+            .is_some_and(|e| e.to_lowercase().contains("reindex")),
+        "{errors:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
 fn read_symbol_qualnames_missing_file_records_per_qualname_error_and_continues() {
     let (mut indexer, repo_root) = indexed("py_mvp");
 

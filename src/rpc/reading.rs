@@ -550,12 +550,28 @@ fn build_source_response(
     context_lines: usize,
     stale: bool,
 ) -> Result<ReadSymbolEntry> {
+    let stale_span_err = || {
+        anyhow::anyhow!(
+            "symbol span no longer valid in '{}' (file changed extensively); run 'reindex' to refresh the index",
+            symbol.file_path
+        )
+    };
+
     // If only whitespace precedes `start_byte` on its own line (e.g. an
     // indented method), widen the slice to that line's true start so every
     // returned line -- including the first -- matches the real file line,
-    // rather than a dedented fragment starting mid-line.
+    // rather than a dedented fragment starting mid-line. `start` must land on
+    // a real char boundary before it's used to index `content` at all: a
+    // stale `start_byte` (file changed on disk since indexing, without a
+    // reindex) can point into the middle of a multibyte character, and
+    // indexing a `&str` at a non-boundary offset panics rather than
+    // returning an error -- so that case falls back to the same
+    // "symbol span no longer valid" error as an out-of-range slice below.
+    let start = (symbol.start_byte.max(0) as usize).min(content.len());
+    if !content.is_char_boundary(start) {
+        return Err(stale_span_err());
+    }
     let effective_start_byte = {
-        let start = (symbol.start_byte.max(0) as usize).min(content.len());
         let line_start = content[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
         if content[line_start..start]
             .chars()
@@ -568,12 +584,7 @@ fn build_source_response(
     };
 
     let raw_source = crate::util::slice_bytes(content, effective_start_byte, symbol.end_byte)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "symbol span no longer valid in '{}' (file changed extensively); run 'reindex' to refresh the index",
-                symbol.file_path
-            )
-        })?;
+        .ok_or_else(stale_span_err)?;
 
     let (source_text, numbering_start_line) = if context_lines > 0 {
         let all_lines: Vec<&str> = content.lines().collect();
