@@ -133,7 +133,12 @@ fn expected_edges_after_rename() -> Vec<ExpectedEdge> {
 /// `expected_edges()`, transformed for the state after `caller.py` is
 /// deleted and synced: every line sourced from `caller.py` is dropped (the
 /// file, and everything it defined, no longer exists to be a source at
-/// all), and `downstream.use_entry`'s call into it goes UNRESOLVED.
+/// all), and `downstream.use_entry`'s call into it binds to the external
+/// stub symbol (issue #80) instead -- `caller` no longer has a module
+/// symbol for `is_repo_python_import` to find, so it's indistinguishable
+/// from a genuine external import, exactly as a fresh reindex of this same
+/// post-deletion state would also see it (asserted by this test's
+/// `common::assert_matches_fresh` call).
 fn expected_edges_after_caller_deleted() -> Vec<ExpectedEdge> {
     expected_edges()
         .into_iter()
@@ -142,8 +147,8 @@ fn expected_edges_after_caller_deleted() -> Vec<ExpectedEdge> {
             if edge.key.source_qualname == "downstream.use_entry"
                 && edge.key.target_qualname.as_deref() == Some("caller.entry")
             {
-                edge.key.target_qualname = None;
-                edge.key.resolution_kind = None;
+                edge.key.target_qualname = Some("ext:caller.entry".to_string());
+                edge.key.resolution_kind = Some("external".to_string());
             }
             edge
         })

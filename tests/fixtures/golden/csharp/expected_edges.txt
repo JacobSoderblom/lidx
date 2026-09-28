@@ -39,8 +39,9 @@ Golden.App.Caller.CallInterface CALLS Golden.Animals.ISpeaker.Say receiver_type
 # using picks A.
 Golden.App.Caller.CallAmbiguous CALLS Golden.Ambiguous.A.Runner.Run  # xfail: receiver type Runner is ambiguous and usings are not used to disambiguate it
 
-# External call: System.Console is never indexed.
-Golden.App.Caller.CallExternal CALLS UNRESOLVED
+# External call: System.Console is never indexed, so this binds to the
+# external stub symbol (issue #80) instead of staying unresolved.
+Golden.App.Caller.CallExternal CALLS ext:Console.WriteLine external
 
 # Private static helper in the same class.
 Golden.Helpers.Helper.FormatGreeting CALLS Golden.Helpers.Helper.Decorate exact

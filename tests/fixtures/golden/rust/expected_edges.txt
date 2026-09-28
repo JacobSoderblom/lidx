@@ -54,8 +54,9 @@ crate::caller::call_inherited CALLS crate::animals::Speak::speak  # xfail: no re
 # fallback here would be ambiguous between the two decoys and refuse).
 crate::caller::call_ambiguous CALLS crate::ambiguous_a::run import
 
-# External path: std is never indexed.
-crate::caller::call_external CALLS UNRESOLVED
+# External path: std is never indexed, so this binds to the external stub
+# symbol (issue #80) instead of staying unresolved.
+crate::caller::call_external CALLS ext:std::process::id external
 
 # pub item calling a private item in its own module. other_module::decorate
 # is a same-named private decoy.

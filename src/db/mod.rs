@@ -194,12 +194,25 @@ impl Db {
         self.write_conn.lock().unwrap()
     }
 
+    /// Every real, currently-live file -- both of this method's callers
+    /// (`Indexer::changed_files`, `Indexer::reindex`) compare it against a
+    /// filesystem scan to decide what's added/modified/deleted, so issue
+    /// #80's single synthetic external pseudo-file (`Resolver::
+    /// external_file_id`, `files.language = 'external'`) is excluded here:
+    /// it never appears in a filesystem scan (it isn't a real file), so
+    /// either caller would otherwise treat it as permanently "deleted" on
+    /// every single reindex -- and `Db::mark_file_deleted` stamping its
+    /// `deleted_version` with the *current* graph_version would make every
+    /// stub symbol on it invisible to any query that also checks its own
+    /// file's `deleted_version` (`Resolver::same_lang_lookup`'s candidate
+    /// query, `dead_symbols`, ...) starting in that very version.
     pub fn list_files(&self, graph_version: i64) -> Result<Vec<FileRecord>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
             "SELECT id, path, hash, language, deleted_version
              FROM files
-             WHERE deleted_version IS NULL OR deleted_version > ?
+             WHERE (deleted_version IS NULL OR deleted_version > ?)
+               AND language != 'external'
              ORDER BY path",
         )?;
         let rows = stmt.query_map(params![graph_version], |row| {
@@ -383,6 +396,37 @@ impl Db {
                 rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
             )?
         };
+
+        // Issue #80: external stub symbols (`kind = 'external'`) aren't
+        // owned by any of `file_ids` -- they all live on the one synthetic
+        // external pseudo-file (`Resolver::external_file_id`), never a
+        // scanned repo file -- so the per-file copy above never carries
+        // them forward. But an edge from one of these carried files into a
+        // stub, copied by `edges_sql` below, still needs that stub to
+        // already exist in `to_version` for its stable_id-based remap to
+        // find. Carry every stub in `from_version` forward unconditionally
+        // (not just ones these particular files call): cheap (stubs are
+        // few), and simpler than computing which ones this batch's carried
+        // edges actually still reference. `ON CONFLICT DO NOTHING` against
+        // the `(graph_version, qualname)` partial unique index (schema
+        // v20) makes this a no-op wherever `Indexer::reindex`'s fresh-file
+        // edge loop -- which runs before this function -- already created
+        // the same qualname's stub in `to_version`. A stub with no
+        // surviving caller after this reindex is swept by
+        // `Db::prune_orphan_external_symbols` in the repair pass, same as
+        // a fresh reindex would simply never have created it.
+        let stubs_copied = tx.execute(
+            "INSERT INTO symbols
+                (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                 start_byte, end_byte, signature, docstring, graph_version, commit_sha, stable_id, visibility)
+             SELECT file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                    start_byte, end_byte, signature, docstring, ?, commit_sha, stable_id, visibility
+             FROM symbols
+             WHERE graph_version = ? AND kind = 'external'
+             ON CONFLICT DO NOTHING",
+            params![to_version, from_version],
+        )?;
+        let symbols_copied = symbols_copied + stubs_copied;
 
         // Issue #79: whether any of these carried files have a *Bridge Edge
         // kind* stored unresolved reference to carry forward -- the only
@@ -3830,8 +3874,13 @@ mod tests {
 
         // receiver_type: Unresolved -- tracked but the receiver's type
         // (`value`, a local `string?`) could not be determined, so resolution
-        // must not bind this edge at all (exact match also can't hit: no
-        // symbol is named exactly "value.Trim").
+        // must not bind this edge to any real symbol (exact match also can't
+        // hit: no symbol is named exactly "value.Trim"). No import is
+        // involved, so issue #80's known-external stub tier doesn't apply
+        // either (that's scoped to imports known to resolve outside the
+        // repo) -- this stays unresolved, no edge at all, same as before
+        // #80. The load-bearing check below is still that it never
+        // resurrects as a caller of the unrelated Python `trim`.
         let edges = vec![make_test_edge_with_receiver_type(
             "CALLS",
             "Dpb.UniqueName.Create",
@@ -3845,8 +3894,9 @@ mod tests {
         db.insert_edges(cs_file, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        // Confirm the edge is unresolved before exercising the read path:
-        // issue #79 means it has no edge row at all, only a store row.
+        // CALLS isn't a Bridge Edge kind, so a builtin/unresolved receiver
+        // with no import involved leaves no edge at all, only an
+        // `unresolved_references` row.
         let edge_count: i64 = db
             .read_conn()
             .unwrap()
@@ -4725,8 +4775,23 @@ mod tests {
         ];
         db.insert_edges(file_ids["app/page.tsx"], &edges, &ids, 1, None)
             .unwrap();
-        assert_eq!(only_target(&db, ids["app/page.A"]), None);
-        assert_eq!(only_target(&db, ids["app/page.B"]), None);
+        // Issue #80: a TS/TSX import-candidate miss is the resolver's
+        // known-external tier, so both calls now bind to an external stub
+        // (named from the call's own `target_qualname` text here, since
+        // neither test edge is a bare call -- see `external_stub_qualname`)
+        // instead of staying unresolved. Neither ever guesses a real repo
+        // symbol by name, which was always the actual point of this test.
+        let a_target = only_target(&db, ids["app/page.A"]).expect("stub target");
+        let a_qualname = db.get_symbol_by_id(a_target).unwrap().unwrap().qualname;
+        assert_eq!(a_qualname, "ext:app/page.useState");
+
+        let b_target = only_target(&db, ids["app/page.B"]).expect("stub target");
+        let b_qualname = db.get_symbol_by_id(b_target).unwrap().unwrap().qualname;
+        assert_eq!(b_qualname, "ext:app/page.helper");
+        assert!(
+            !ids.values().any(|&id| id == a_target || id == b_target),
+            "must never guess one of the real repo symbols by name"
+        );
     }
 
     // --- ambiguity guard: bare-name fuzzy fallback must not bind arbitrarily ---
@@ -4993,10 +5058,14 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        // Issue #79: a builtin/unresolved receiver type must never bind,
-        // even though EventStore.append is the sole candidate for the bare
-        // name "append" -- and, since CALLS isn't a Bridge Edge kind, it
-        // must not be written as an edge at all, only a store row.
+        // A builtin/unresolved receiver type must never bind to a real repo
+        // symbol, even though EventStore.append is the sole candidate for
+        // the bare name "append". No import is involved, so issue #80's
+        // known-external stub tier doesn't apply either -- this stays
+        // unresolved exactly as before #80: CALLS isn't a Bridge Edge kind,
+        // so no edge at all, only an `unresolved_references` row, whose own
+        // `receiver_type` column still records the tracked-but-unresolved
+        // marker (`""`, distinct from NULL/not tracked at all).
         let edge_count: i64 = db
             .conn()
             .query_row(
@@ -5005,13 +5074,18 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(edge_count, 0);
-        let receiver_type: Option<String> = db
+        assert_eq!(
+            edge_count, 0,
+            "must never bind to EventStore.append just because it's the sole bare-name candidate, \
+             and must not stub either since no import is involved"
+        );
+        let (receiver_type, reason): (Option<String>, String) = db
             .conn()
             .query_row(
-                "SELECT receiver_type FROM unresolved_references WHERE reference_name = 'cells.append'",
+                "SELECT receiver_type, reason FROM unresolved_references
+                 WHERE reference_name = 'cells.append'",
                 [],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
         assert_eq!(
@@ -5020,6 +5094,7 @@ mod tests {
             "the receiver_type column encodes tracked-but-unresolved as an empty string, \
              distinct from NULL (not tracked at all)"
         );
+        assert_eq!(reason, "external");
     }
 
     // --- import tier: import-qualified candidates disambiguate a bare
@@ -5137,28 +5212,42 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        // Issue #79: two import candidates that both name real (but
-        // different) symbols must not bind to either -- the ambiguity guard
-        // must still refuse, exactly as it did before import qualification
-        // -- and no edge is written at all, only a store row.
-        let edge_count: i64 = db
+        // Two import candidates that both name real (but different) symbols
+        // must not bind to either -- the ambiguity guard must still refuse,
+        // exactly as it did before import qualification. Pre-#80 that
+        // refusal was reported as `external` rather than `ambiguous` (the
+        // known-external check already ran ahead of the ambiguity check in
+        // `Resolver::resolve`'s tier order, unchanged here -- an import
+        // candidate list this language's policy refuses on a miss is
+        // "known-external" first, regardless of *why* the import tier
+        // itself came up empty), so issue #80 turns this same refusal into
+        // a bind to the external stub instead of a `no-edge` store row --
+        // still never either real `Widget.Create`.
+        let target_symbol_id: Option<i64> = db
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'Widget.Create'",
+                "SELECT target_symbol_id FROM edges WHERE target_qualname = 'Widget.Create'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(edge_count, 0);
-        let unresolved_count: i64 = db
+        let domain_a_id = inserted[0].id;
+        let domain_b_id = inserted[1].id;
+        assert!(
+            target_symbol_id.is_some()
+                && target_symbol_id != Some(domain_a_id)
+                && target_symbol_id != Some(domain_b_id),
+            "must bind to the external stub, never guess between the two real Widget.Create symbols"
+        );
+        let stub_qualname: String = db
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM unresolved_references WHERE reference_name = 'Widget.Create'",
-                [],
+                "SELECT qualname FROM symbols WHERE id = ?",
+                [target_symbol_id.unwrap()],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(unresolved_count, 1);
+        assert_eq!(stub_qualname, "ext:Widget.Create");
     }
 
     #[test]
@@ -5201,28 +5290,36 @@ mod tests {
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
 
-        // Issue #79: a receiver positively known (via this file's own
-        // imports) to come from an external module must never fall through
-        // to bare-name matching, even though FakeClock.now is the sole
-        // local symbol named "now" -- and it must not be written as an edge
-        // at all, only a store row.
-        let edge_count: i64 = db
+        // A receiver positively known (via this file's own imports) to come
+        // from an external module must never fall through to bare-name
+        // matching, even though FakeClock.now is the sole local symbol
+        // named "now" -- issue #80: it binds to the external stub instead
+        // (`ext:datetime.now`, not `pkg.tests.conftest.FakeClock.now`), and
+        // the edge's own `receiver_type` column still records the
+        // tracked-but-unresolved marker a repair pass relies on to never
+        // fuzzy-resolve it.
+        let (target_symbol_id, receiver_type): (Option<i64>, Option<String>) = db
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'datetime.now'",
+                "SELECT target_symbol_id, receiver_type FROM edges WHERE target_qualname = 'datetime.now'",
                 [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_ne!(
+            target_symbol_id,
+            Some(inserted[0].id),
+            "must never bind to FakeClock.now just because it's the sole bare-name candidate"
+        );
+        let stub_qualname: String = db
+            .conn()
+            .query_row(
+                "SELECT qualname FROM symbols WHERE id = ?",
+                [target_symbol_id.expect("known-external binds to a stub, not NULL")],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(edge_count, 0);
-        let receiver_type: Option<String> = db
-            .conn()
-            .query_row(
-                "SELECT receiver_type FROM unresolved_references WHERE reference_name = 'datetime.now'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+        assert_eq!(stub_qualname, "ext:datetime.now");
         assert_eq!(
             receiver_type.as_deref(),
             Some(""),
@@ -5298,9 +5395,9 @@ mod tests {
     fn test_insert_edges_bare_external_import_shadows_unique_repo_method() {
         // `from urllib.parse import quote; quote(x)` in a repo whose only
         // `quote` is an unrelated method. The external import must shadow
-        // the name: no bare-name binding to `MssqlCodeWriter.quote`, and
-        // (issue #79) no edge at all -- only a store row.
-        let (row, store_receiver_type, _) = insert_python_import_call(
+        // the name: no bare-name binding to `MssqlCodeWriter.quote`. Issue
+        // #80: it binds to the external stub instead of staying unresolved.
+        let (row, store_receiver_type, map) = insert_python_import_call(
             &[
                 ("py.pkg.src.pkg", "module"),
                 ("py.pkg.src.pkg.writer.MssqlCodeWriter.quote", "method"),
@@ -5308,11 +5405,17 @@ mod tests {
             "py.pkg.src.pkg.a.quote",
             &["urllib.parse.quote"],
         );
-        assert_eq!(
-            row, None,
-            "external import must not bind a repo symbol, and must not be written as an edge"
+        let (target, receiver_type, kind) =
+            row.expect("known-external must still bind, to the stub");
+        assert_ne!(
+            target,
+            Some(map["py.pkg.src.pkg.writer.MssqlCodeWriter.quote"]),
+            "external import must not bind a repo symbol"
         );
-        assert_eq!(store_receiver_type.as_deref(), Some(""));
+        assert_eq!(kind.as_deref(), Some("external"));
+        assert_eq!(receiver_type.as_deref(), Some(""));
+        // No `unresolved_references` store row either -- it's resolved now.
+        assert_eq!(store_receiver_type, None);
     }
 
     #[test]
@@ -5358,9 +5461,9 @@ mod tests {
     fn test_insert_edges_generated_pb2_import_under_repo_package_is_external() {
         // `from pkg.v1 import pkg_pb2 as pb; pb.ColumnDef(...)`: the pb2
         // module is protoc output, so the repo dataclass of the same name
-        // must not be picked up by the fuzzy tiers, and (issue #79) no edge
-        // is written at all.
-        let (row, _, _) = insert_python_import_call(
+        // must not be picked up by the fuzzy tiers. Issue #80: it binds to
+        // the external stub instead of staying unresolved.
+        let (row, _, map) = insert_python_import_call(
             &[
                 ("py.pkg.src.pkg", "module"),
                 ("py.pkg.src.pkg.schema.ColumnDef", "class"),
@@ -5368,7 +5471,9 @@ mod tests {
             "pb.ColumnDef",
             &["pkg.v1.pkg_pb2.ColumnDef"],
         );
-        assert_eq!(row, None);
+        let (target, _, kind) = row.expect("known-external must still bind, to the stub");
+        assert_ne!(target, Some(map["py.pkg.src.pkg.schema.ColumnDef"]));
+        assert_eq!(kind.as_deref(), Some("external"));
     }
 
     #[test]

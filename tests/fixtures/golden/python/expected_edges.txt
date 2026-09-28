@@ -64,8 +64,9 @@ caller.call_inherited CALLS animals.Animal.speak inherited
 caller.call_ambiguous CALLS UNRESOLVED
 
 # Call into an external library: `requests` is never indexed (it isn't
-# part of this fixture repo), so this must stay unresolved.
-caller.call_external CALLS UNRESOLVED
+# part of this fixture repo), so this binds to the external stub symbol
+# (issue #80) instead of staying unresolved.
+caller.call_external CALLS ext:requests.get external
 
 # Cross-file incoming call, for the incremental golden test: downstream.py
 # imports and calls caller.entry, so the incremental scenario has a

@@ -37,8 +37,9 @@ caller.callInterface CALLS animals.Speaker.say  # xfail: interface method signat
 # picks ambiguous_a.
 caller.callAmbiguous CALLS ambiguous_a.run import
 
-# External call: axios is never indexed.
-caller.callExternal CALLS UNRESOLVED
+# External call: axios is never indexed, so this binds to the external
+# stub symbol (issue #80) instead of staying unresolved.
+caller.callExternal CALLS ext:axios.get external
 
 # Non-exported function in the same module. other_module.decorate is a
 # same-named decoy.
