@@ -36,6 +36,21 @@ impl Db {
         })
     }
 
+    /// Issue #68: cheap check for whether the index holds any test-scope
+    /// files at all, reusing #63's `scope_counts_for_version` query rather
+    /// than a second test-file tally. `explain_symbol` calls this only when
+    /// its `tests` section comes back empty, to decide whether that empty
+    /// list needs an explanatory warning or is a genuine "no".
+    pub fn has_test_scope_files(
+        &self,
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<bool> {
+        let conn = self.read_conn()?;
+        let counts = scope_counts_for_version(&conn, languages, graph_version)?;
+        Ok(counts.tests > 0)
+    }
+
     pub fn list_languages(&self, graph_version: i64) -> Result<Vec<String>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(

@@ -466,6 +466,25 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         (None, 0)
     };
 
+    // 7.5. Issue #68: an empty tests list means two different things -- "no
+    // test-scope files were ever indexed" or "tests exist but none reach
+    // this symbol". Only the first is worth a warning; the second is a
+    // genuine "no" and would be noise. Reuses #63's scope-count query, so
+    // this only runs when the tests section was requested and came back
+    // empty.
+    if sections.contains(&"tests".to_string())
+        && tests_total == 0
+        && !indexer
+            .db()
+            .has_test_scope_files(ctx.languages.as_deref(), ctx.graph_version)?
+    {
+        warnings.push(
+            "No test-scope files exist in this index, so the empty tests list doesn't mean \
+             this symbol is untested -- it means no tests were ever indexed."
+                .to_string(),
+        );
+    }
+
     // 8. Find implements (EXTENDS/IMPLEMENTS/INHERITS edges) - FIX #2
     let implements = if sections.contains(&"implements".to_string()) {
         let mut impl_syms = Vec::new();
