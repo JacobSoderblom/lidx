@@ -17,8 +17,10 @@ use std::path::Path;
 ///
 /// ## Rust
 /// - Symbol kind is "test"
-/// - Has `#[test]` attribute (detected by tree-sitter)
-/// - Has `#[tokio::test]` or `#[actix_rt::test]` attribute
+/// - Has `#[test]` attribute (surfaced onto the symbol's `signature` by the
+///   Rust extractor -- see `indexer::rust::extract_signature`)
+/// - Has `#[tokio::test]`, `#[actix_rt::test]`, or `#[rstest]` attribute
+/// - Function in a `tests/` directory whose name looks like a test
 ///
 /// ## JavaScript/TypeScript
 /// - Function name contains "test", "it", "describe", "spec"
@@ -60,12 +62,16 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
 
     // Rust tests
     if file_lower.ends_with(".rs") {
-        // Check for test attributes in signature
+        // Check for test attributes in signature -- the Rust extractor
+        // prefixes any `#[test]`/`#[tokio::test]`/`#[rstest]`-shaped
+        // attribute onto `signature` for exactly this check (issue #67
+        // finding 1; see `indexer::rust::extract_signature`).
         if let Some(sig) = &symbol.signature {
             let sig_lower = sig.to_lowercase();
             if sig_lower.contains("#[test]")
                 || sig_lower.contains("#[tokio::test]")
                 || sig_lower.contains("#[actix_rt::test]")
+                || sig_lower.contains("#[rstest]")
             {
                 return true;
             }

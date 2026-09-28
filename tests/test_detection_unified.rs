@@ -44,8 +44,11 @@ fn indexed_repo(files: &[(&str, &str)]) -> (tempfile::TempDir, Indexer) {
 const GO_FILE: &str = "go/mathutil/add_test.go";
 const GO_SRC: &str = "package mathutil\n\nfunc Add(a, b int) int {\n\treturn a + b\n}\n\nfunc TestAdd() {\n\tAdd(1, 2)\n}\n";
 
-const RUST_FILE: &str = "rust/tests/mathutil_test.rs";
-const RUST_SRC: &str = "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n#[test]\nfn test_add_two_numbers() {\n    add(1, 2);\n}\n";
+// Neither in a `tests/` directory nor named like a test (`verifies_addition`
+// doesn't start with `test_`/end with `_test`), so this only passes via the
+// `#[test]` attribute reaching `is_test_symbol` -- see issue #67 finding 1.
+const RUST_FILE: &str = "rust/mathutil.rs";
+const RUST_SRC: &str = "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn verifies_addition() {\n        add(1, 2);\n    }\n}\n";
 
 const CS_PROD_FILE: &str = "csharp/Billing/Calculator.cs";
 const CS_PROD_SRC: &str = "namespace Billing\n{\n    public static class Calculator\n    {\n        public static int Sum(int a, int b) => a + b;\n    }\n}\n";
