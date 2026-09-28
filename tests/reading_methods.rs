@@ -710,8 +710,7 @@ fn read_symbol_does_not_panic_when_stale_start_byte_lands_mid_multibyte_char() {
 #[test]
 fn read_symbol_qualnames_does_not_panic_when_stale_start_byte_lands_mid_multibyte_char() {
     let src = "x = 1\ndef foo():\n    return 1\n";
-    let (mut indexer, repo_root) =
-        indexed_from_source("stale-multibyte-multi", &[("m.py", src)]);
+    let (mut indexer, repo_root) = indexed_from_source("stale-multibyte-multi", &[("m.py", src)]);
 
     let replacement = format!("a{}\n", "é".repeat(22));
     std::fs::write(repo_root.join("m.py"), &replacement).unwrap();
@@ -1083,6 +1082,113 @@ fn read_symbol_with_qualnames_list_returns_symbols_in_request_order() {
             "each symbol should carry its own source text: {sym:#?}"
         );
     }
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_qualnames_errors_count_against_max_bytes() {
+    let (mut indexer, repo_root) = indexed_from_source(
+        "multi-budget-errors",
+        &[
+            ("m.py", "def a():\n    return 1\n"),
+            ("n.py", "def c():\n    return 2\n"),
+        ],
+    );
+
+    // Baseline: the response for a single resolving qualname, with room for
+    // nothing else.
+    let baseline = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualnames": ["m.a"]}),
+    )
+    .unwrap();
+    let max_bytes = serde_json::to_string(&baseline).unwrap().len();
+
+    // n.py is deleted from disk (without reindexing), so n.c's file can no
+    // longer be read -- it lands in `errors`, which must count against
+    // `max_bytes` just like `symbols`/`omitted`/`not_found` do.
+    std::fs::remove_file(repo_root.join("n.py")).unwrap();
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualnames": ["m.a", "n.c"], "max_bytes": max_bytes}),
+    )
+    .unwrap();
+
+    let response_bytes = serde_json::to_string(&result).unwrap().len();
+    assert!(
+        response_bytes <= max_bytes,
+        "max_bytes is a hard budget: errors must count against it too \
+         ({response_bytes} > {max_bytes}): {result:#}"
+    );
+    let errors = result["errors"].as_array().expect("errors array");
+    assert_eq!(errors.len(), 1, "{result:#}");
+    assert_eq!(errors[0]["qualname"], "n.c", "{result:#}");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_qualnames_not_found_counts_against_max_bytes() {
+    let (mut indexer, repo_root) = indexed_from_source(
+        "multi-budget-not-found",
+        &[("m.py", "def a():\n    return 1\n")],
+    );
+
+    let baseline = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualnames": ["m.a"]}),
+    )
+    .unwrap();
+    let max_bytes = serde_json::to_string(&baseline).unwrap().len();
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualnames": ["m.a", "nope"], "max_bytes": max_bytes}),
+    )
+    .unwrap();
+
+    let response_bytes = serde_json::to_string(&result).unwrap().len();
+    assert!(
+        response_bytes <= max_bytes,
+        "max_bytes is a hard budget: not_found must count against it too \
+         ({response_bytes} > {max_bytes}): {result:#}"
+    );
+    let not_found = result["not_found"].as_array().expect("not_found array");
+    assert_eq!(not_found, &vec![serde_json::json!("nope")], "{result:#}");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_qualnames_many_not_found_terminates_without_symbols_to_trim() {
+    // A budget too small to ever fit, with nothing but not_found entries --
+    // there's no symbol left to move into `omitted`, so the response can't
+    // be shrunk further. This must still terminate (not loop forever) and
+    // report every name.
+    let (mut indexer, repo_root) = indexed_from_source(
+        "multi-budget-many-not-found",
+        &[("m.py", "def a():\n    return 1\n")],
+    );
+
+    let qualnames: Vec<String> = (0..50).map(|i| format!("nope_{i}")).collect();
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualnames": qualnames, "max_bytes": 50}),
+    )
+    .unwrap();
+
+    let symbols = result["symbols"].as_array().expect("symbols array");
+    assert!(symbols.is_empty(), "{result:#}");
+    let not_found = result["not_found"].as_array().expect("not_found array");
+    assert_eq!(not_found.len(), 50, "{result:#}");
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }

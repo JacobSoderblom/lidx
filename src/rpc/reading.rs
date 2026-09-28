@@ -728,45 +728,47 @@ fn build_symbol_entry(
     Ok(serde_json::to_value(entry)?)
 }
 
-/// Byte length of `s` as a JSON string literal (quotes and any escaping
-/// included) -- used to track a JSON string array's running size without
-/// re-serialising the whole array.
-fn quoted_len(s: &str) -> usize {
-    serde_json::to_string(s)
-        .map(|q| q.len())
-        .unwrap_or(s.len() + 2)
-}
-
-/// Byte cost of adding one more element to a JSON array that already holds
-/// `existing_count` elements (0 if this is the first): the element itself,
-/// plus a leading comma once the array is non-empty. The array's own `[`/`]`
-/// brackets are accounted separately, once, by the caller.
-fn array_element_cost(existing_count: usize, element_len: usize) -> usize {
-    if existing_count == 0 {
-        element_len
-    } else {
-        1 + element_len
+/// Assembles the `read_symbol` `qualnames` response object from its four
+/// parts, gating `not_found`/`errors` on non-empty the same way both the
+/// greedy pass and the exact-trim pass below need to -- one place so they
+/// can't drift.
+fn build_multi_response(
+    symbols: &[Value],
+    omitted: &[String],
+    not_found: &[String],
+    errors: &[Value],
+) -> Value {
+    let mut response = json!({"symbols": symbols, "omitted": omitted});
+    if !not_found.is_empty() {
+        response["not_found"] = json!(not_found);
     }
+    if !errors.is_empty() {
+        response["errors"] = json!(errors);
+    }
+    response
 }
 
 /// Multi-symbol `read_symbol`: resolves each qualname in request order by
 /// exact match (batch reads name symbols precisely -- unlike the single
-/// `query` selector, there's no fuzzy fallback here) and fills `symbols` while
-/// the running response stays within `max_bytes`. A symbol that would push the
-/// response over budget, and every symbol after it, is omitted whole (never
-/// cut mid-symbol) and listed by qualname in `omitted`. A qualname that
-/// doesn't resolve to a real, non-external symbol is listed in `not_found`
-/// instead and doesn't consume budget.
+/// `query` selector, there's no fuzzy fallback here). A qualname that doesn't
+/// resolve to a real, non-external symbol is listed in `not_found`; one that
+/// resolves but fails to read (e.g. its file went missing/stale-beyond-repair)
+/// is listed in `errors`; either way the batch keeps going. `max_bytes` is a
+/// hard budget on the whole response, `not_found`/`errors` included -- a
+/// symbol that would push it over budget, and every symbol after it, is
+/// omitted whole (never cut mid-symbol) and listed by qualname in `omitted`.
 ///
-/// The per-symbol budget check tracks each of `symbols`/`omitted`/`not_found`'s
-/// serialized-array byte length as a running total (`*_array_bytes`, each
-/// starting at 2 for `[]`) rather than re-serialising the whole response on
-/// every qualname -- serialising only the one new entry keeps this loop O(n)
-/// instead of O(n^2). The byte arithmetic mirrors exactly what
-/// `serde_json::to_string` would produce for `{"symbols":[...],"omitted":[...]}`
-/// (plus `,"not_found":[...]` once that list is non-empty), so the decisions
-/// -- and the final response size -- match what re-serialising every time
-/// would have produced.
+/// Two passes keep this both simple and exact rather than re-deriving
+/// `serde_json`'s own byte-counting rules by hand:
+/// 1. A greedy O(n) pass tracks a running sum of just the accepted symbols'
+///    own serialized bytes, stopping (and routing the rest straight to
+///    `omitted` without paying for a DB/file lookup) once that alone would
+///    exceed `max_bytes`. This ignores the envelope and `not_found`/`errors`,
+///    so it's only an approximation.
+/// 2. The real response is serialized once; while it's still over budget,
+///    the last accepted symbol is moved to `omitted` and it's re-serialized.
+///    This is the exact check -- it's what guarantees the final response
+///    fits, correcting anything the approximation in pass 1 missed.
 fn handle_read_symbol_multi(
     indexer: &Indexer,
     qualnames: &[String],
@@ -779,15 +781,12 @@ fn handle_read_symbol_multi(
     let mut omitted: Vec<String> = Vec::new();
     let mut not_found: Vec<String> = Vec::new();
     let mut errors: Vec<Value> = Vec::new();
-    let mut budget_exhausted = false;
 
-    let mut symbols_array_bytes = 2usize; // "[]"
-    let mut omitted_array_bytes = 2usize;
-    let mut not_found_array_bytes = 2usize;
+    let mut running_symbol_bytes = 0usize;
+    let mut budget_exhausted = false;
 
     for qn in qualnames {
         if budget_exhausted {
-            omitted_array_bytes += array_element_cost(omitted.len(), quoted_len(qn));
             omitted.push(qn.clone());
             continue;
         }
@@ -795,7 +794,6 @@ fn handle_read_symbol_multi(
         let symbol = match found {
             Some(s) if !s.is_external() => s,
             _ => {
-                not_found_array_bytes += array_element_cost(not_found.len(), quoted_len(qn));
                 not_found.push(qn.clone());
                 continue;
             }
@@ -815,35 +813,29 @@ fn handle_read_symbol_multi(
         let entry_len = serde_json::to_string(&entry)
             .map(|s| s.len())
             .unwrap_or(usize::MAX);
-        let candidate_symbols_bytes =
-            symbols_array_bytes + array_element_cost(symbols.len(), entry_len);
-
-        // `{` + `}` + `"symbols":<array>` + `,` + `"omitted":<array>`, plus
-        // `,"not_found":<array>` once that list is non-empty -- the same
-        // fields (and the same not_found gating) the old per-iteration
-        // `json!({"symbols": ..., "omitted": ...})` probe serialised.
-        let mut probe_size = 2 + 10 + candidate_symbols_bytes + 1 + 10 + omitted_array_bytes;
-        if !not_found.is_empty() {
-            probe_size += 1 + 12 + not_found_array_bytes;
-        }
-
-        if probe_size <= max_bytes {
-            symbols_array_bytes = candidate_symbols_bytes;
-            symbols.push(entry);
-        } else {
-            omitted_array_bytes += array_element_cost(omitted.len(), quoted_len(qn));
+        if running_symbol_bytes.saturating_add(entry_len) > max_bytes {
             omitted.push(qn.clone());
             budget_exhausted = true;
+            continue;
         }
+        running_symbol_bytes += entry_len;
+        symbols.push(entry);
     }
 
-    let mut response = json!({"symbols": symbols, "omitted": omitted});
-    if !not_found.is_empty() {
-        response["not_found"] = json!(not_found);
+    let mut response = build_multi_response(&symbols, &omitted, &not_found, &errors);
+    while !symbols.is_empty()
+        && serde_json::to_string(&response)
+            .map(|s| s.len())
+            .unwrap_or(0)
+            > max_bytes
+    {
+        let removed = symbols.pop().expect("just checked symbols is non-empty");
+        if let Some(qn) = removed.get("qualname").and_then(|v| v.as_str()) {
+            omitted.insert(0, qn.to_string());
+        }
+        response = build_multi_response(&symbols, &omitted, &not_found, &errors);
     }
-    if !errors.is_empty() {
-        response["errors"] = json!(errors);
-    }
+
     Ok(response)
 }
 
