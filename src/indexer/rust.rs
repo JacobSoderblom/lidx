@@ -698,7 +698,16 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // same shape the single-line form would.
     let collapsed = collapse_call_target_whitespace(&raw);
     let import_candidates = import_qualified_candidates(&collapsed, ctx);
-    let target = resolve_call_target(&collapsed, ctx);
+    // When full resolution fails for a dotted call (e.g. `db.insert(...)`),
+    // emit the bare method name as target_qualname rather than dropping the
+    // target, giving Rust the same reach as Python, C#, and Go. Fully-resolved
+    // targets are left untouched.
+    let target = resolve_call_target(&collapsed, ctx).or_else(|| {
+        call_target_parts(function_node, source)
+            .filter(|parts| parts.receiver.is_some())
+            .map(|parts| parts.name)
+            .filter(|name| !name.is_empty())
+    });
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
@@ -1529,6 +1538,19 @@ fn call_target_parts(node: Node<'_>, source: &str) -> Option<CallTarget> {
             name: full.clone(),
             full,
         }),
+        // A turbofished call (`x.foo::<T>()`, `foo::<T>()`) parses as a
+        // generic_function whose `function` field holds the real callee. Resolve
+        // receiver/name from that inner node so the turbofish suffix never leaks
+        // into the bare method name; keep `full` as the complete callee text.
+        "generic_function" => {
+            let inner = node.child_by_field_name("function")?;
+            let inner_parts = call_target_parts(inner, source)?;
+            Some(CallTarget {
+                receiver: inner_parts.receiver,
+                name: inner_parts.name,
+                full,
+            })
+        }
         _ => {
             let (receiver, name) = split_last_segment(&full);
             Some(CallTarget {
