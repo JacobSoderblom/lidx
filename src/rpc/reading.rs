@@ -688,6 +688,27 @@ fn build_symbol_entry(
     Ok(response)
 }
 
+/// Byte length of `s` as a JSON string literal (quotes and any escaping
+/// included) -- used to track a JSON string array's running size without
+/// re-serialising the whole array.
+fn quoted_len(s: &str) -> usize {
+    serde_json::to_string(s)
+        .map(|q| q.len())
+        .unwrap_or(s.len() + 2)
+}
+
+/// Byte cost of adding one more element to a JSON array that already holds
+/// `existing_count` elements (0 if this is the first): the element itself,
+/// plus a leading comma once the array is non-empty. The array's own `[`/`]`
+/// brackets are accounted separately, once, by the caller.
+fn array_element_cost(existing_count: usize, element_len: usize) -> usize {
+    if existing_count == 0 {
+        element_len
+    } else {
+        1 + element_len
+    }
+}
+
 /// Multi-symbol `read_symbol`: resolves each qualname in request order by
 /// exact match (batch reads name symbols precisely -- unlike the single
 /// `query` selector, there's no fuzzy fallback here) and fills `symbols` while
@@ -696,6 +717,16 @@ fn build_symbol_entry(
 /// cut mid-symbol) and listed by qualname in `omitted`. A qualname that
 /// doesn't resolve to a real, non-external symbol is listed in `not_found`
 /// instead and doesn't consume budget.
+///
+/// The per-symbol budget check tracks each of `symbols`/`omitted`/`not_found`'s
+/// serialized-array byte length as a running total (`*_array_bytes`, each
+/// starting at 2 for `[]`) rather than re-serialising the whole response on
+/// every qualname -- serialising only the one new entry keeps this loop O(n)
+/// instead of O(n^2). The byte arithmetic mirrors exactly what
+/// `serde_json::to_string` would produce for `{"symbols":[...],"omitted":[...]}`
+/// (plus `,"not_found":[...]` once that list is non-empty), so the decisions
+/// -- and the final response size -- match what re-serialising every time
+/// would have produced.
 fn handle_read_symbol_multi(
     indexer: &Indexer,
     qualnames: &[String],
@@ -710,8 +741,13 @@ fn handle_read_symbol_multi(
     let mut errors: Vec<Value> = Vec::new();
     let mut budget_exhausted = false;
 
+    let mut symbols_array_bytes = 2usize; // "[]"
+    let mut omitted_array_bytes = 2usize;
+    let mut not_found_array_bytes = 2usize;
+
     for qn in qualnames {
         if budget_exhausted {
+            omitted_array_bytes += array_element_cost(omitted.len(), quoted_len(qn));
             omitted.push(qn.clone());
             continue;
         }
@@ -719,6 +755,7 @@ fn handle_read_symbol_multi(
         let symbol = match found {
             Some(s) if s.kind != "external" && !s.qualname.starts_with("ext:") => s,
             _ => {
+                not_found_array_bytes += array_element_cost(not_found.len(), quoted_len(qn));
                 not_found.push(qn.clone());
                 continue;
             }
@@ -735,19 +772,26 @@ fn handle_read_symbol_multi(
                 }
             };
 
-        let mut candidate_symbols = symbols.clone();
-        candidate_symbols.push(entry);
-        let mut probe = json!({"symbols": candidate_symbols, "omitted": omitted});
-        if !not_found.is_empty() {
-            probe["not_found"] = json!(not_found);
-        }
-        let probe_size = serde_json::to_string(&probe)
+        let entry_len = serde_json::to_string(&entry)
             .map(|s| s.len())
             .unwrap_or(usize::MAX);
+        let candidate_symbols_bytes =
+            symbols_array_bytes + array_element_cost(symbols.len(), entry_len);
+
+        // `{` + `}` + `"symbols":<array>` + `,` + `"omitted":<array>`, plus
+        // `,"not_found":<array>` once that list is non-empty -- the same
+        // fields (and the same not_found gating) the old per-iteration
+        // `json!({"symbols": ..., "omitted": ...})` probe serialised.
+        let mut probe_size = 2 + 10 + candidate_symbols_bytes + 1 + 10 + omitted_array_bytes;
+        if !not_found.is_empty() {
+            probe_size += 1 + 12 + not_found_array_bytes;
+        }
 
         if probe_size <= max_bytes {
-            symbols = candidate_symbols;
+            symbols_array_bytes = candidate_symbols_bytes;
+            symbols.push(entry);
         } else {
+            omitted_array_bytes += array_element_cost(omitted.len(), quoted_len(qn));
             omitted.push(qn.clone());
             budget_exhausted = true;
         }
