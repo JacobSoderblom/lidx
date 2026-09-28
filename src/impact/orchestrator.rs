@@ -106,6 +106,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
                     config.direct.max_depth,
                     crate::impact::TraversalDirection::from(config.direct.direction.as_str()),
                     &kinds,
+                    &config.direct.exclude_resolution_kinds,
                     config.direct.include_tests,
                     config.limit,
                     languages,
@@ -294,6 +295,14 @@ impl<'a> MultiLayerOrchestrator<'a> {
             .map(|mutex| mutex.into_inner().unwrap())
             .unwrap_or_else(|arc| arc.lock().unwrap().clone());
 
+        // Issue #81: see `analyze_sequential`'s identical extraction for why
+        // this is captured before `fuse_results` consumes `layer_results`.
+        let direct_traversed_ids: Vec<i64> = layer_results
+            .iter()
+            .find(|r| r.layer_name == "direct")
+            .map(|r| r.impacts.iter().map(|(id, _)| *id).collect())
+            .unwrap_or_default();
+
         // Fuse results from all layers
         let num_layers = layer_results.len();
         let (affected, summary, truncated) =
@@ -316,6 +325,9 @@ impl<'a> MultiLayerOrchestrator<'a> {
             summary
         };
 
+        let lower_bound =
+            self.compute_lower_bound(seed_ids, &direct_traversed_ids, graph_version)?;
+
         eprintln!(
             "Multi-layer analysis (parallel) complete in {}ms: {} layers executed, {} symbols affected",
             start.elapsed().as_millis(),
@@ -330,6 +342,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
             truncated,
             config: self.build_config_summary(),
             layers: layer_metadata,
+            lower_bound,
         })
     }
 
@@ -457,6 +470,16 @@ impl<'a> MultiLayerOrchestrator<'a> {
             });
         }
 
+        // Issue #81: the direct layer's own traversed set (seeds + everything
+        // it visited), captured before `fuse_results` consumes `layer_results`
+        // -- the lower-bound signal is specific to graph-edge resolution, so
+        // only the direct layer (not test/historical) feeds it.
+        let direct_traversed_ids: Vec<i64> = layer_results
+            .iter()
+            .find(|r| r.layer_name == "direct")
+            .map(|r| r.impacts.iter().map(|(id, _)| *id).collect())
+            .unwrap_or_default();
+
         // Fuse results from all layers
         let num_layers = layer_results.len();
         let (affected, summary, truncated) =
@@ -479,6 +502,9 @@ impl<'a> MultiLayerOrchestrator<'a> {
             summary
         };
 
+        let lower_bound =
+            self.compute_lower_bound(seed_ids, &direct_traversed_ids, graph_version)?;
+
         eprintln!(
             "Multi-layer analysis complete in {}ms: {} layers executed, {} symbols affected",
             start.elapsed().as_millis(),
@@ -493,6 +519,37 @@ impl<'a> MultiLayerOrchestrator<'a> {
             truncated,
             config: self.build_config_summary(),
             layers: layer_metadata,
+            lower_bound,
+        })
+    }
+
+    /// Issue #81's lower-bound indicator: pending `unresolved_references`
+    /// rows whose source symbol is a seed or one of the direct layer's own
+    /// impacted symbols. `false`/`0` when the direct layer is disabled --
+    /// test/historical layers don't traverse resolvable graph edges, so
+    /// they have nothing meaningful to report here.
+    fn compute_lower_bound(
+        &self,
+        seed_ids: &[i64],
+        direct_traversed_ids: &[i64],
+        graph_version: i64,
+    ) -> Result<crate::model::LowerBound> {
+        if !self.config.direct.enabled {
+            return Ok(crate::model::LowerBound {
+                is_lower_bound: false,
+                unresolved_count: 0,
+            });
+        }
+        let mut ids = seed_ids.to_vec();
+        ids.extend_from_slice(direct_traversed_ids);
+        ids.sort_unstable();
+        ids.dedup();
+        let count = self
+            .db
+            .unresolved_reference_count_for_symbols(&ids, graph_version)?;
+        Ok(crate::model::LowerBound {
+            is_lower_bound: count > 0,
+            unresolved_count: count,
         })
     }
 
@@ -507,6 +564,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
             self.config.direct.max_depth,
             crate::impact::TraversalDirection::from(self.config.direct.direction.as_str()),
             &kinds,
+            &self.config.direct.exclude_resolution_kinds,
             self.config.direct.include_tests,
             self.config.limit,
             languages,

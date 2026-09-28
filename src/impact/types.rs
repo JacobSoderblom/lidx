@@ -3,7 +3,7 @@
 //! This module contains all the data structures used in the impact analysis system,
 //! including both the v1 (legacy) types and new v2 (multi-layer) types.
 
-use crate::model::SymbolCompact;
+use crate::model::{LowerBound, SymbolCompact};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -151,6 +151,9 @@ pub struct DirectConfig {
     pub max_depth: usize,
     pub direction: String,  // "upstream", "downstream", "both"
     pub kinds: Vec<String>, // Edge kinds to follow (empty = all)
+    /// Resolution kinds to refuse to traverse (issue #81), e.g.
+    /// `["bare_name", "two_segment"]`. Empty by default: unchanged behaviour.
+    pub exclude_resolution_kinds: Vec<String>,
     pub include_tests: bool,
     pub languages: Option<Vec<String>>,
 }
@@ -162,6 +165,7 @@ impl Default for DirectConfig {
             max_depth: 3,
             direction: "both".to_string(),
             kinds: Vec::new(),
+            exclude_resolution_kinds: Vec::new(),
             include_tests: true,
             languages: None,
         }
@@ -224,6 +228,12 @@ pub struct UnifiedImpactResult {
     pub config: ImpactConfig,
     /// Layer-specific metadata
     pub layers: LayerMetadata,
+    /// Lower-bound indicator (issue #81) -- set when pending
+    /// `unresolved_references` rows touch the direct layer's traversed
+    /// symbols. Always `{ is_lower_bound: false, unresolved_count: 0 }`
+    /// when the direct layer is disabled, since only that layer traverses
+    /// resolvable graph edges.
+    pub lower_bound: LowerBound,
 }
 
 /// A single entry in a batch impact result
@@ -235,6 +245,7 @@ pub struct BatchImpactEntry {
     pub summary: ImpactSummary,
     pub truncated: bool,
     pub layers: LayerMetadata,
+    pub lower_bound: LowerBound,
 }
 
 /// Result of batch impact analysis (multiple seeds in one call)

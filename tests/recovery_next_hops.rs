@@ -506,10 +506,53 @@ fn non_zero_affected_analyze_impact_is_unchanged() {
         "precondition: Greeter must have affected symbols"
     );
 
-    // Should NOT have next_hops when results are non-empty
+    // Issue #81: this fixture's `app.run` calls `g.greet(...)` on a value
+    // whose type the resolver can't infer across `make_greeter()`'s return,
+    // so that CALLS reference stays unresolved -- a genuine gap in what
+    // this Greeter impact traversal can see. `lower_bound` must say so, and
+    // that's exactly the one case where a non-empty analyze_impact result
+    // is now allowed to carry next_hops: a suggestion to retry excluding
+    // heuristic edges is not useful signal here, but the point of this test
+    // is the precondition, checked by the sibling test below.
+    let lower_bound = result["lower_bound"].as_object().unwrap();
+    assert!(
+        lower_bound["is_lower_bound"].as_bool().unwrap(),
+        "precondition: Greeter's traversal must be a lower bound (app.run's unresolved \
+         g.greet() call) for this test to exercise the branch it's named for"
+    );
+    assert!(result.contains_key("next_hops"));
+}
+
+/// Sibling of the test above: a symbol whose traversal touches no pending
+/// unresolved reference at all must still get the pre-#81 "unchanged"
+/// contract -- `lower_bound` alone must gate the new next_hops, not merely
+/// "affected is non-empty".
+#[test]
+fn non_zero_affected_analyze_impact_without_lower_bound_is_unchanged() {
+    let temp = indexed_repo("py_mvp");
+
+    let value = rpc_json(
+        &temp,
+        "analyze_impact",
+        r#"{"qualname":"pkg.b.helper","max_depth":3}"#,
+    );
+    let result = value["result"].as_object().unwrap();
+
+    let affected = result["affected"].as_array().unwrap();
+    assert!(
+        !affected.is_empty(),
+        "precondition: pkg.b.helper must have affected symbols"
+    );
+    let lower_bound = result["lower_bound"].as_object().unwrap();
+    assert!(
+        !lower_bound["is_lower_bound"].as_bool().unwrap(),
+        "precondition: pkg.b.helper's traversal must not touch a pending unresolved \
+         reference, so this test exercises the still-unchanged branch"
+    );
     assert!(
         !result.contains_key("next_hops"),
-        "non-zero affected analyze_impact should not add next_hops (response unchanged)"
+        "non-zero affected analyze_impact with no lower bound should not add next_hops \
+         (response unchanged)"
     );
 }
 

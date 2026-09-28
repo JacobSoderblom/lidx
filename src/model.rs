@@ -793,6 +793,18 @@ pub struct RiskFactor {
     pub severity: String, // "low", "medium", "high"
 }
 
+/// Lower-bound indicator (issue #81): attached to `trace_flow`/
+/// `analyze_impact` results when pending `unresolved_references` rows
+/// touch the traversed symbols, so an agent doesn't mistake a partial
+/// answer for a complete one. See
+/// `Db::unresolved_reference_count_for_symbols`'s doc for exactly what
+/// counts as "touching" a traversed symbol, per direction.
+#[derive(Debug, Serialize, Clone, Copy)]
+pub struct LowerBound {
+    pub is_lower_bound: bool,
+    pub unresolved_count: i64,
+}
+
 // trace_flow types
 
 #[derive(Debug, Serialize)]
@@ -805,6 +817,7 @@ pub struct TraceFlowResult {
     pub reached_target: bool,
     pub truncated: bool,
     pub budget: BudgetInfo,
+    pub lower_bound: LowerBound,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub next_hops: Vec<serde_json::Value>,
 }

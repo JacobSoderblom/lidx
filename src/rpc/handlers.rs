@@ -970,6 +970,8 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         .kinds
         .clone()
         .unwrap_or_else(|| crate::traversal::TraceConfig::default().allowed_kinds);
+    let exclude_resolution_kinds: Vec<String> =
+        params.exclude_resolution_kinds.clone().unwrap_or_default();
 
     // Config URI resolution: find all symbols connected to the URI
     let config_uri_seeds: Vec<i64> = if let Some(ref qn) = params.start_qualname {
@@ -1034,6 +1036,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         allowed_kinds,
         trace_offset,
         compact: compact_mode,
+        exclude_resolution_kinds,
     };
     let trace_result = crate::traversal::trace_flow(
         indexer.db(),
@@ -1124,6 +1127,54 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         }
     }
 
+    let lower_bound = LowerBound {
+        is_lower_bound: trace_result.unresolved_reference_count > 0,
+        unresolved_count: trace_result.unresolved_reference_count,
+    };
+
+    // Issue #81: suggest the filtered/unfiltered counterpart of this call,
+    // where useful -- never both, since asking for the opposite of a filter
+    // that wasn't applied is a no-op. `trace_flow` already always attaches
+    // informational hops to a non-empty trace (the explain_symbol hops
+    // above), so this one follows the same convention unconditionally
+    // rather than gating on `lower_bound` (unlike `analyze_impact`, which
+    // has an existing "unchanged when non-empty" contract to preserve).
+    let has_exclude_filter = params
+        .exclude_resolution_kinds
+        .as_ref()
+        .is_some_and(|k| !k.is_empty());
+    let hop_start_params = |extra: &mut serde_json::Map<String, serde_json::Value>| {
+        if let Some(ref qn) = params.start_qualname {
+            extra.insert("start_qualname".to_string(), json!(qn));
+        } else if let Some(id) = params.start_id {
+            extra.insert("start_id".to_string(), json!(id));
+        }
+        if let Some(ref d) = params.direction {
+            extra.insert("direction".to_string(), json!(d));
+        }
+    };
+    if has_exclude_filter {
+        let mut retry_params = serde_json::Map::new();
+        hop_start_params(&mut retry_params);
+        next_hops.push(json!({
+            "method": "trace_flow",
+            "params": retry_params,
+            "description": "Retry without the resolution-kind filter to see the full (unfiltered) trace, including heuristic edges",
+        }));
+    } else if !trace.is_empty() {
+        let mut retry_params = serde_json::Map::new();
+        hop_start_params(&mut retry_params);
+        retry_params.insert(
+            "exclude_resolution_kinds".to_string(),
+            json!(["bare_name", "two_segment"]),
+        );
+        next_hops.push(json!({
+            "method": "trace_flow",
+            "params": retry_params,
+            "description": "Retry excluding heuristic name-fallback edges (bare_name, two_segment) for a higher-confidence trace",
+        }));
+    }
+
     let result = TraceFlowResult {
         start: trace_result.start,
         end: trace_result.end,
@@ -1137,6 +1188,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             truncated,
             requested_bytes: None,
         },
+        lower_bound,
         next_hops,
     };
 
@@ -1186,6 +1238,9 @@ fn build_impact_config(
     }
     if let Some(ref kinds) = params.kinds {
         config.direct.kinds = kinds.clone();
+    }
+    if let Some(ref exclude) = params.exclude_resolution_kinds {
+        config.direct.exclude_resolution_kinds = exclude.clone();
     }
     config
 }
@@ -1266,6 +1321,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                             summary: result.summary,
                             truncated: result.truncated,
                             layers: result.layers,
+                            lower_bound: result.lower_bound,
                         }
                     }
                     Err(e) => {
@@ -1291,6 +1347,10 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                                 }),
                                 test: None,
                                 historical: None,
+                            },
+                            lower_bound: LowerBound {
+                                is_lower_bound: false,
+                                unresolved_count: 0,
                             },
                         }
                     }
@@ -1391,6 +1451,12 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     let direction = params.direction.unwrap_or_else(|| "both".to_string());
     // Capture before params.kinds is moved into config.
     let original_kinds: Option<Vec<String>> = params.kinds.clone();
+    // Issue #81: whether this call already applied a resolution-kind filter,
+    // for the filtered/unfiltered next_hops suggestion below.
+    let has_exclude_filter = params
+        .exclude_resolution_kinds
+        .as_ref()
+        .is_some_and(|k| !k.is_empty());
 
     // Build multi-layer configuration
     let config = crate::impact::config::MultiLayerConfig::builder()
@@ -1424,6 +1490,9 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     if let Some(kinds) = params.kinds {
         config.direct.kinds = kinds;
     }
+    if let Some(exclude) = params.exclude_resolution_kinds {
+        config.direct.exclude_resolution_kinds = exclude;
+    }
 
     // Perform multi-layer impact analysis
     let result = crate::impact::analyze_impact_multi_layer(
@@ -1432,6 +1501,41 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         config,
         ctx.graph_version,
     )?;
+
+    // Issue #81: suggest the filtered/unfiltered counterpart of this call,
+    // where useful -- never both, since asking for the opposite of a filter
+    // that wasn't applied is a no-op. Merged into whichever next_hops list
+    // below actually gets returned (the zero-result recovery hops, or a
+    // fresh one for a normal, non-empty result). The exclude-filter
+    // suggestion only fires when `lower_bound` shows real evidence of
+    // resolution incompleteness -- a clean, already-precise result stays
+    // unchanged rather than always nudging toward a narrower retry.
+    let mut resolution_next_hops: Vec<serde_json::Value> = Vec::new();
+    {
+        let seed_id = seed_ids.first().copied();
+        let mut retry_params = serde_json::Map::new();
+        if let Some(id) = seed_id {
+            retry_params.insert("id".to_string(), json!(id));
+        }
+        retry_params.insert("direction".to_string(), json!(direction));
+        if has_exclude_filter {
+            resolution_next_hops.push(json!({
+                "method": "analyze_impact",
+                "params": retry_params,
+                "description": "Retry without the resolution-kind filter to see the full (unfiltered) impact set, including heuristic edges",
+            }));
+        } else if !result.affected.is_empty() && result.lower_bound.is_lower_bound {
+            retry_params.insert(
+                "exclude_resolution_kinds".to_string(),
+                json!(["bare_name", "two_segment"]),
+            );
+            resolution_next_hops.push(json!({
+                "method": "analyze_impact",
+                "params": retry_params,
+                "description": "Retry excluding heuristic name-fallback edges (bare_name, two_segment) for a higher-confidence impact set",
+            }));
+        }
+    }
 
     // When zero symbols were affected, attach recovery next_hops so the LLM has a path
     // forward instead of a dead-end payload.
@@ -1507,6 +1611,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
             }));
         }
 
+        next_hops.extend(resolution_next_hops);
         let mut value = serde_json::to_value(&result)?;
         if let Some(obj) = value.as_object_mut() {
             obj.insert("next_hops".to_string(), json!(next_hops));
@@ -1514,7 +1619,15 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         return Ok(value);
     }
 
-    Ok(json!(result))
+    if resolution_next_hops.is_empty() {
+        Ok(json!(result))
+    } else {
+        let mut value = serde_json::to_value(&result)?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("next_hops".to_string(), json!(resolution_next_hops));
+        }
+        Ok(value)
+    }
 }
 
 pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Result<Value> {
