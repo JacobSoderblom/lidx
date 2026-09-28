@@ -1,6 +1,7 @@
 mod compact;
 mod format;
 mod handlers;
+mod reading;
 mod schema;
 mod validate;
 
@@ -410,8 +411,8 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
     let max_response_bytes = format::extract_max_response_bytes(method, &params);
     let value = match method {
         "search" => handlers::handle_search_rg(indexer, params)?,
-        "outline" => handlers::handle_outline(indexer, params)?,
-        "read_symbol" => handlers::handle_read_symbol(indexer, params)?,
+        "outline" => reading::handle_outline(indexer, params)?,
+        "read_symbol" => reading::handle_read_symbol(indexer, params)?,
         "explain_symbol" => handlers::handle_explain_symbol(indexer, params)?,
         "trace_flow" => handlers::handle_trace_flow(indexer, params)?,
         "analyze_impact" => handlers::handle_analyze_impact(indexer, params)?,
