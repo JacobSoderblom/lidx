@@ -1203,6 +1203,7 @@ fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
 }
 
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let raw_params = params.clone();
     let params: TraceFlowParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
     let max_hops = params.max_hops.unwrap_or(5).min(10);
@@ -1235,15 +1236,28 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         vec![]
     };
 
-    // Resolve start symbol
+    // Resolve start symbol.
+    // For ID lookups we propagate errors (the ID either exists or it doesn't).
+    // For qualname/query lookups, and for a config URI with no connected
+    // symbols, we catch resolution failure and return a structured recovery
+    // payload instead of a flat {error: ...} so the caller has a path forward.
     let start_ref = if let Some(id) = params.start_id {
         crate::resolve::SymbolRef::Id(id)
     } else if let Some(ref qn) = params.start_qualname {
         if crate::indexer::config::is_config_uri(qn) {
-            let first_id = config_uri_seeds
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("no symbols found for config URI: {}", qn))?;
-            crate::resolve::SymbolRef::Id(*first_id)
+            match config_uri_seeds.first() {
+                Some(&first_id) => crate::resolve::SymbolRef::Id(first_id),
+                None => {
+                    return Ok(crate::resolve::build_resolution_recovery_payload(
+                        indexer.db(),
+                        qn,
+                        &[],
+                        ctx.graph_version,
+                        "trace_flow",
+                        &raw_params,
+                    ));
+                }
+            }
         } else {
             crate::resolve::SymbolRef::Qualname(qn.clone())
         }
@@ -1252,12 +1266,17 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     } else {
         anyhow::bail!("trace_flow requires start_id, start_qualname, or query");
     };
-    let start = crate::resolve::resolve_symbol(
+    let start = match crate::resolve::resolve_or_recovery(
         indexer.db(),
         start_ref,
         ctx.languages.as_deref(),
         ctx.graph_version,
-    )?;
+        "trace_flow",
+        &raw_params,
+    )? {
+        Ok(sym) => sym,
+        Err(payload) => return Ok(payload),
+    };
 
     // Resolve optional end symbol
     let end_id = if let Some(id) = params.end_id {
@@ -1567,6 +1586,7 @@ fn resolve_and_analyze_single(
 }
 
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let raw_params = params.clone();
     let params: AnalyzeImpactParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
     // Issue #81 (R3): validated once here, ahead of both the batch path
@@ -1608,10 +1628,26 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                             truncated: result.truncated,
                             layers: result.layers,
                             lower_bound: result.lower_bound,
+                            recovery: None,
                         }
                     }
                     Err(e) => {
-                        // Include error entry rather than failing the whole batch
+                        // Include error entry with a structured recovery payload rather
+                        // than failing the whole batch or returning a bare error message.
+                        // The batch loop resolves each qualname by exact match only (no
+                        // fuzzy fallback), so candidates aren't already computed the way
+                        // resolve_by_query's failure carries them -- find them the same
+                        // way (find_candidates is the one candidate-search algorithm).
+                        let candidates =
+                            crate::resolve::find_candidates(indexer.db(), qn, ctx.graph_version);
+                        let recovery = crate::resolve::build_resolution_recovery_payload(
+                            indexer.db(),
+                            qn,
+                            &candidates,
+                            ctx.graph_version,
+                            "analyze_impact",
+                            &raw_params,
+                        );
                         crate::impact::types::BatchImpactEntry {
                             seed_qualname: qn.clone(),
                             seeds: vec![],
@@ -1638,6 +1674,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                                 is_lower_bound: false,
                                 unresolved_count: 0,
                             },
+                            recovery: Some(recovery),
                         }
                     }
                 };
@@ -1681,9 +1718,13 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 ctx.graph_version,
             )?;
             if ids.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "no symbols found for config URI: {}",
-                    qualname
+                return Ok(crate::resolve::build_resolution_recovery_payload(
+                    indexer.db(),
+                    qualname,
+                    &[],
+                    ctx.graph_version,
+                    "analyze_impact",
+                    &raw_params,
                 ));
             }
             ids
@@ -1694,7 +1735,9 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         vec![]
     };
 
-    // Resolve symbol by id, qualname, or fuzzy query (skip if config URI already resolved)
+    // Resolve symbol by id, qualname, or fuzzy query (skip if config URI already resolved).
+    // For qualname/query we catch resolution failure and return a structured recovery payload
+    // instead of propagating a flat error — giving the caller actionable next_hops.
     let seed_ids = if !seed_ids.is_empty() {
         seed_ids
     } else {
@@ -1709,12 +1752,17 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 "analyze_impact requires id, qualname, or query"
             ));
         };
-        let symbol = crate::resolve::resolve_symbol(
+        let symbol = match crate::resolve::resolve_or_recovery(
             indexer.db(),
             sym_ref,
             ctx.languages.as_deref(),
             ctx.graph_version,
-        )?;
+            "analyze_impact",
+            &raw_params,
+        )? {
+            Ok(sym) => sym,
+            Err(payload) => return Ok(payload),
+        };
 
         // Property→parent expansion: if the seed is a property/field/attribute/const,
         // also add the parent class so CONFIG_BIND consumers are reachable
