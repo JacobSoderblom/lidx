@@ -770,9 +770,38 @@ struct MarkdownHeading {
 
 fn parse_markdown_headings(content: &str) -> Vec<MarkdownHeading> {
     let mut headings = Vec::new();
+    // Tracks an open fenced code block (``` or ~~~) by its fence character and
+    // length, so `#` lines inside one (a shell comment, a C preprocessor
+    // directive, ...) are never mistaken for ATX headings.
+    let mut fence: Option<(char, usize)> = None;
     for (idx, line) in content.lines().enumerate() {
         let trimmed = line.trim_start();
-        if line.len() - trimmed.len() > 3 {
+        let indent = line.len() - trimmed.len();
+
+        if let Some((fence_char, fence_len)) = fence {
+            // Only a closing fence of the same character, at least as long as
+            // the opening one, alone on its line (trailing whitespace only),
+            // ends the block. Anything else -- including a `#` line -- is
+            // code, not a heading.
+            let close_len = trimmed.chars().take_while(|&c| c == fence_char).count();
+            let rest_after = trimmed[close_len..].trim();
+            if indent <= 3 && close_len >= fence_len && close_len >= 3 && rest_after.is_empty() {
+                fence = None;
+            }
+            continue;
+        }
+
+        if indent <= 3
+            && let Some(fence_char) = trimmed.chars().next().filter(|&c| c == '`' || c == '~')
+        {
+            let run_len = trimmed.chars().take_while(|&c| c == fence_char).count();
+            if run_len >= 3 {
+                fence = Some((fence_char, run_len));
+                continue;
+            }
+        }
+
+        if indent > 3 {
             continue; // indented code block, not a heading
         }
         let level = trimmed.chars().take_while(|c| *c == '#').count();
@@ -783,10 +812,22 @@ fn parse_markdown_headings(content: &str) -> Vec<MarkdownHeading> {
         if !(rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t')) {
             continue; // e.g. "#tag", not a heading
         }
-        let mut text = rest.trim().to_string();
-        while text.ends_with('#') {
-            text.pop();
-        }
+        let text = rest.trim_start().trim_end();
+        // CommonMark: an optional closing run of `#`s is only stripped when
+        // it's preceded by a space/tab, or when the text is nothing but
+        // `#`s -- "## F#" keeps its trailing "#" (real text), while
+        // "## Heading ##" and "## ###" both have it stripped.
+        let hash_run = text.chars().rev().take_while(|&c| c == '#').count();
+        let text = if hash_run > 0 {
+            let before = &text[..text.len() - hash_run];
+            if before.is_empty() || before.ends_with(' ') || before.ends_with('\t') {
+                before.trim_end()
+            } else {
+                text
+            }
+        } else {
+            text
+        };
         let text = text.trim().to_string();
         if text.is_empty() {
             continue;
@@ -973,6 +1014,29 @@ fn symbol_outline_entries(
     Ok(entries)
 }
 
+/// Rejects a `path` that's absolute or that escapes the repo root via a `..`
+/// component -- applies to every `outline`/`read_symbol` path, not just
+/// Markdown (whose branch reads straight off disk with no DB row to bound
+/// it; see `is_markdown_path`'s doc comment). A relative path never needs
+/// `..` to name a file inside the repo, so any `..` component is rejected
+/// outright rather than resolved and checked against the repo root.
+fn reject_path_escape(path: &str) -> Result<()> {
+    let candidate = std::path::Path::new(path);
+    if candidate.is_absolute() {
+        anyhow::bail!(
+            "path '{}' must be relative to the repo root, not absolute",
+            path
+        );
+    }
+    if candidate
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        anyhow::bail!("path '{}' escapes the repo root (contains '..')", path);
+    }
+    Ok(())
+}
+
 /// `outline` (#95): a compact, no-bodies skeleton of an indexed file's symbols
 /// in source order -- kind, qualname, signature, line range, nesting parent,
 /// first doc line. Answers "what's in this file?" for a fraction of the
@@ -984,6 +1048,7 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
     if path.is_empty() {
         anyhow::bail!("outline requires a non-empty 'path'");
     }
+    reject_path_escape(path)?;
     let kinds_filter: Option<HashSet<String>> =
         params.kinds.map(|kinds| kinds.into_iter().collect());
     let max_depth = params.max_depth;
@@ -1170,7 +1235,25 @@ fn build_source_response(
     let repo_root = indexer.repo_root().clone();
     let full_path = repo_root.join(&symbol.file_path);
     let content = crate::util::read_to_string(&full_path)?;
-    let raw_source = crate::util::slice_bytes(&content, symbol.start_byte, symbol.end_byte)
+
+    // If only whitespace precedes `start_byte` on its own line (e.g. an
+    // indented method), widen the slice to that line's true start so every
+    // returned line -- including the first -- matches the real file line,
+    // rather than a dedented fragment starting mid-line.
+    let effective_start_byte = {
+        let start = (symbol.start_byte.max(0) as usize).min(content.len());
+        let line_start = content[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        if content[line_start..start]
+            .chars()
+            .all(|c| c == ' ' || c == '\t')
+        {
+            line_start as i64
+        } else {
+            symbol.start_byte
+        }
+    };
+
+    let raw_source = crate::util::slice_bytes(&content, effective_start_byte, symbol.end_byte)
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "symbol span no longer valid in '{}' (file changed extensively); run 'reindex' to refresh the index",
@@ -1188,20 +1271,34 @@ fn build_source_response(
         // The symbol's own body stays the exact byte slice above; only the
         // surrounding context is pulled from line-splitting, so a follow-up
         // edit against `start_line`/`end_line` still targets exactly what was
-        // indexed.
+        // indexed. All slice indices are clamped to `all_lines`' *actual*
+        // bounds: the indexed start_line/end_line can be stale (file changed
+        // on disk since indexing) and outlive the file's current line count,
+        // so an unclamped slice here would panic instead of just yielding
+        // less context than requested.
         let mut combined = String::new();
+        let mut numbering_start_line = symbol.start_line;
         if ctx_start < symbol.start_line {
-            let before = &all_lines[(ctx_start as usize - 1)..(symbol.start_line as usize - 1)];
-            combined.push_str(&before.join("\n"));
-            combined.push('\n');
+            let start_idx = ((ctx_start - 1).max(0) as usize).min(all_lines.len());
+            let end_idx = ((symbol.start_line - 1).max(0) as usize).min(all_lines.len());
+            if start_idx < end_idx {
+                let before = &all_lines[start_idx..end_idx];
+                combined.push_str(&before.join("\n"));
+                combined.push('\n');
+                numbering_start_line = (start_idx + 1) as i64;
+            }
         }
         combined.push_str(&raw_source);
         if ctx_end > symbol.end_line {
-            let after = &all_lines[(symbol.end_line as usize)..(ctx_end as usize)];
-            combined.push('\n');
-            combined.push_str(&after.join("\n"));
+            let start_idx = (symbol.end_line.max(0) as usize).min(all_lines.len());
+            let end_idx = (ctx_end.max(0) as usize).min(all_lines.len());
+            if start_idx < end_idx {
+                let after = &all_lines[start_idx..end_idx];
+                combined.push('\n');
+                combined.push_str(&after.join("\n"));
+            }
         }
-        (combined, ctx_start)
+        (combined, numbering_start_line)
     } else {
         (raw_source, symbol.start_line)
     };
@@ -1313,6 +1410,7 @@ fn handle_read_symbol_multi(
     let mut symbols: Vec<Value> = Vec::new();
     let mut omitted: Vec<String> = Vec::new();
     let mut not_found: Vec<String> = Vec::new();
+    let mut errors: Vec<Value> = Vec::new();
     let mut budget_exhausted = false;
 
     for qn in qualnames {
@@ -1328,7 +1426,17 @@ fn handle_read_symbol_multi(
                 continue;
             }
         };
-        let entry = build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version)?;
+        // A single qualname's file being missing/stale-beyond-repair
+        // shouldn't abort the whole batch -- record it and keep going so the
+        // rest of the request still resolves.
+        let entry = match build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version)
+        {
+            Ok(entry) => entry,
+            Err(err) => {
+                errors.push(json!({"qualname": qn, "error": err.to_string()}));
+                continue;
+            }
+        };
 
         let mut candidate_symbols = symbols.clone();
         candidate_symbols.push(entry);
@@ -1351,6 +1459,9 @@ fn handle_read_symbol_multi(
     let mut response = json!({"symbols": symbols, "omitted": omitted});
     if !not_found.is_empty() {
         response["not_found"] = json!(not_found);
+    }
+    if !errors.is_empty() {
+        response["errors"] = json!(errors);
     }
     Ok(response)
 }

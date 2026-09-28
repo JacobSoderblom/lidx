@@ -590,12 +590,12 @@ fn read_symbol_qualname_returns_exact_source_with_line_numbers() {
     let result = rpc::handle_method(
         &mut indexer,
         "read_symbol",
-        serde_json::json!({"qualname": "pkg.core.Greeter"}),
+        serde_json::json!({"qualname": "pkg.core.Greeter.greet"}),
     )
     .unwrap();
 
-    assert_eq!(result["qualname"], "pkg.core.Greeter");
-    assert_eq!(result["kind"], "class");
+    assert_eq!(result["qualname"], "pkg.core.Greeter.greet");
+    assert_eq!(result["kind"], "method");
     assert_eq!(result["path"], "pkg/core.py");
     assert_eq!(result["stale"], false, "{result:#}");
     assert!(
@@ -605,11 +605,14 @@ fn read_symbol_qualname_returns_exact_source_with_line_numbers() {
 
     let start_line = result["start_line"].as_i64().expect("start_line");
     let end_line = result["end_line"].as_i64().expect("end_line");
-    assert_eq!(start_line, 9, "{result:#}");
+    assert_eq!(start_line, 11, "{result:#}");
     assert_eq!(end_line, 13, "{result:#}");
 
-    // Build the expected line-numbered text straight from the file on disk using
-    // the response's own start/end_line, rather than hardcoding fixture content.
+    // Build the expected line-numbered text from the REAL file lines
+    // (start_line..=end_line), not a raw byte slice -- `greet` is indented
+    // (nested inside `Greeter`), so its stored start_byte lands after the
+    // leading whitespace on line 11. The returned source must still carry
+    // that whitespace, matching the file exactly line for line.
     let content = std::fs::read_to_string(repo_root.join("pkg/core.py")).unwrap();
     let lines: Vec<&str> = content.lines().collect();
     let expected_source = lines[(start_line as usize - 1)..(end_line as usize)]
@@ -622,9 +625,203 @@ fn read_symbol_qualname_returns_exact_source_with_line_numbers() {
     assert_eq!(
         result["source"].as_str().unwrap(),
         expected_source,
-        "source should be byte-identical to the fixture slice, line-numbered"
+        "source should be byte-identical to the real file lines, line-numbered"
     );
 
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_context_lines_does_not_panic_when_file_shrank_after_indexing() {
+    // `foo` is defined at line 10 -- indexed with that start_line/end_line
+    // stored in the DB.
+    let src = "# 1\n# 2\n# 3\n# 4\n# 5\n# 6\n# 7\n# 8\n# 9\ndef foo():\n    return 1\n";
+    let (mut indexer, repo_root) = indexed_from_source("shrink-panic", &[("m.py", src)]);
+
+    let before = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "m.foo"}),
+    )
+    .unwrap();
+    assert_eq!(before["start_line"], 10, "{before:#}");
+
+    // Overwrite the file with a single line of the SAME total byte length,
+    // without reindexing: `slice_bytes` on the stale start_byte/end_byte can
+    // still succeed (both offsets remain within the new content's length),
+    // but the file now has far fewer lines than the indexed start_line/end_line.
+    let replacement = "a".repeat(src.len().saturating_sub(1)) + "\n";
+    assert_eq!(replacement.len(), src.len(), "fixture must keep the byte length constant");
+    std::fs::write(repo_root.join("m.py"), &replacement).unwrap();
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "m.foo", "context_lines": 2}),
+    );
+    assert!(
+        result.is_ok(),
+        "context_lines must not panic when the indexed start_line/end_line outlive \
+         the file's current line count: {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_qualnames_missing_file_records_per_qualname_error_and_continues() {
+    let (mut indexer, repo_root) = indexed("py_mvp");
+
+    // pkg/b.py is deleted from disk (without reindexing), so pkg.b.helper's
+    // span can no longer be read, while pkg.core.Greeter's file is untouched.
+    std::fs::remove_file(repo_root.join("pkg/b.py")).unwrap();
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualnames": ["pkg.b.helper", "pkg.core.Greeter"]}),
+    )
+    .unwrap();
+
+    let symbols = result["symbols"].as_array().expect("symbols array");
+    let qualnames: Vec<&str> = symbols
+        .iter()
+        .filter_map(|s| s["qualname"].as_str())
+        .collect();
+    assert_eq!(
+        qualnames,
+        vec!["pkg.core.Greeter"],
+        "the symbol whose file is missing should be skipped, not abort the whole call: {result:#}"
+    );
+
+    let errors = result["errors"]
+        .as_array()
+        .expect("errors array for the failed qualname");
+    assert_eq!(errors.len(), 1, "{result:#}");
+    assert_eq!(errors[0]["qualname"], "pkg.b.helper", "{errors:?}");
+    assert!(
+        errors[0]["error"].as_str().is_some_and(|e| !e.is_empty()),
+        "{errors:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn outline_markdown_ignores_hash_lines_inside_fenced_code_blocks() {
+    let md = "# Title\n\
+        \n\
+        ```\n\
+        # not a heading, this is code\n\
+        ```\n\
+        \n\
+        ## Real Heading\n\
+        \n\
+        ~~~\n\
+        # also not a heading\n\
+        ~~~\n\
+        \n\
+        ## Another Real Heading\n";
+    let (mut indexer, repo_root) =
+        indexed_from_source("markdown-fenced-code", &[("NOTES.md", md)]);
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "outline",
+        serde_json::json!({"path": "NOTES.md"}),
+    )
+    .unwrap();
+
+    let entries = result["entries"].as_array().expect("entries array");
+    let names: Vec<&str> = entries.iter().filter_map(|e| e["name"].as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["Title", "Real Heading", "Another Real Heading"],
+        "hash lines inside ``` and ~~~ fences must not be parsed as headings: {entries:#?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn outline_markdown_heading_only_strips_closing_hashes_preceded_by_space() {
+    let md = "## F#\n\
+        \n\
+        ## Closed Heading ##\n";
+    let (mut indexer, repo_root) =
+        indexed_from_source("markdown-hash-suffix", &[("NOTES.md", md)]);
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "outline",
+        serde_json::json!({"path": "NOTES.md"}),
+    )
+    .unwrap();
+
+    let entries = result["entries"].as_array().expect("entries array");
+    let names: Vec<&str> = entries.iter().filter_map(|e| e["name"].as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["F#", "Closed Heading"],
+        "a trailing '#' that isn't preceded by a space is real text, not a closing \
+         sequence to strip: {entries:#?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn outline_rejects_absolute_path() {
+    let (mut indexer, repo_root) = indexed("py_mvp");
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "outline",
+        serde_json::json!({"path": "/etc/passwd"}),
+    );
+
+    assert!(
+        result.is_err(),
+        "an absolute path must be rejected: {result:?}"
+    );
+    let err_msg = result.unwrap_err().to_string().to_lowercase();
+    assert!(
+        err_msg.contains("absolute") || err_msg.contains("relative"),
+        "expected a clear absolute-path error, got: {err_msg}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn outline_rejects_path_escaping_repo_root() {
+    let (mut indexer, repo_root) = indexed("py_mvp");
+
+    // Plant a secret file directly outside the repo root (repo_root's parent
+    // is the shared temp dir) and try to reach it via `..`.
+    let secret_path = repo_root
+        .parent()
+        .expect("repo_root has a parent")
+        .join("lidx-outline-escape-secret.md");
+    std::fs::write(&secret_path, "SECRET_OUTSIDE_REPO_CONTENT_DO_NOT_LEAK").unwrap();
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "outline",
+        serde_json::json!({"path": "../lidx-outline-escape-secret.md"}),
+    );
+
+    assert!(
+        result.is_err(),
+        "a path escaping the repo root via '..' must be rejected, not read: {result:?}"
+    );
+    let err_msg = result.unwrap_err().to_string().to_lowercase();
+    assert!(
+        err_msg.contains("escape") || err_msg.contains("..") || err_msg.contains("outside"),
+        "expected a clear escape-path error, got: {err_msg}"
+    );
+
+    let _ = std::fs::remove_file(&secret_path);
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
