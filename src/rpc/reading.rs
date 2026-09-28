@@ -460,11 +460,58 @@ fn container_children(
     container: &Symbol,
     graph_version: i64,
 ) -> Result<Vec<OutlineEntry>> {
-    let entries = symbol_outline_entries(db, &container.file_path, graph_version, None, None)?;
-    Ok(entries
-        .into_iter()
-        .filter(|e| e.parent.as_deref() == Some(container.qualname.as_str()))
-        .collect())
+    let touching = db.edges_for_symbol(container.id, None, graph_version)?;
+
+    // The whole-file `module` root has no incoming `CONTAINS` edge of its own
+    // within its file -- `symbol_outline_entries` hides it as a container, so
+    // its direct children come back parentless instead of nested under it
+    // (see this function's doc comment). Mirror that here: skeletonizing the
+    // root itself has no visible children.
+    let is_root_module = container.kind == "module"
+        && !touching
+            .iter()
+            .any(|e| e.kind == "CONTAINS" && e.target_symbol_id == Some(container.id));
+    if is_root_module {
+        return Ok(Vec::new());
+    }
+
+    let mut seen_children: HashSet<i64> = HashSet::new();
+    let mut entries = Vec::new();
+    for edge in &touching {
+        if edge.kind != "CONTAINS" || edge.source_symbol_id != Some(container.id) {
+            continue;
+        }
+        let Some(child_id) = edge.target_symbol_id else {
+            continue;
+        };
+        if !seen_children.insert(child_id) {
+            continue;
+        }
+        let Some(child) = db.get_symbol_by_id(child_id)? else {
+            continue;
+        };
+        // Defensive: external stubs are attributed to a synthetic `ext:`
+        // location, not a real repo file, so this shouldn't normally match --
+        // excluded anyway to mirror `symbol_outline_entries`'s own exclusion.
+        if child.kind == "external" || child.qualname.starts_with("ext:") {
+            continue;
+        }
+        let doc = child.docstring.as_deref().and_then(first_doc_line);
+        entries.push(OutlineEntry {
+            kind: child.kind,
+            name: child.name,
+            qualname: child.qualname,
+            signature: child.signature,
+            start_line: child.start_line,
+            end_line: child.end_line,
+            parent: Some(container.qualname.clone()),
+            doc,
+        });
+    }
+    // `edges_for_symbol` orders by edge id, not source position -- sort by
+    // start_line to match `symbol_outline_entries`' source-order output.
+    entries.sort_by_key(|e| e.start_line);
+    Ok(entries)
 }
 
 /// Bound on `read_symbol` next_hops emitted for a skeleton container's children,
