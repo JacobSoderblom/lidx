@@ -282,22 +282,26 @@ struct OutlineParams {
 
 /// Params for `read_symbol`: fetch a symbol's exact source from disk.
 /// Exactly one of `qualname`, `query`, `qualnames` must be given.
-/// `qualnames` (multi-symbol reads) and `skeleton`/`context_lines` are #98 --
-/// only single-symbol `qualname`/`query` reads are implemented here (#96).
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ReadSymbolParams {
     /// Exact qualname of the symbol to read (exactly one of qualname/query/qualnames required)
     qualname: Option<String>,
     /// Fuzzy search query resolved the same way as explain_symbol/trace_flow (exactly one of qualname/query/qualnames required)
     query: Option<String>,
-    /// Multiple qualnames to read in one call (exactly one of qualname/query/qualnames required) -- #98, not yet implemented
+    /// Multiple qualnames to read in one call, filled in request order (exactly one of qualname/query/qualnames required)
     qualnames: Option<Vec<String>>,
-    /// For container symbols (class/struct/impl), return child signatures instead of the full body (default: false) -- #98
-    #[allow(dead_code)]
+    /// For a container symbol (class/struct/impl/module), return its children's
+    /// signatures and line ranges instead of the full body (default: false).
+    /// Falls back to a normal read for a symbol with no children.
     skeleton: Option<bool>,
-    /// Lines of surrounding context to include around the symbol's span (default: 0) -- #98
-    #[allow(dead_code)]
+    /// Lines of surrounding context to include around the symbol's span, clamped
+    /// at file bounds (default: 0)
     context_lines: Option<usize>,
+    /// Response byte budget for a `qualnames` (multi-symbol) read: symbols are
+    /// added in request order until the next one would exceed this, then it and
+    /// every symbol after it are omitted whole and listed by qualname under
+    /// `omitted` (default: 30000). Ignored for single `qualname`/`query` reads.
+    max_bytes: Option<usize>,
 }
 
 /// Hard cap on result count to prevent huge responses that blow LLM context windows.

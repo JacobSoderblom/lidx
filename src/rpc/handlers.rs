@@ -1129,9 +1129,239 @@ fn number_source_lines(text: &str, start_line: i64) -> String {
         .join("\n")
 }
 
-/// `read_symbol` (#96): fetch one symbol's exact source from disk by its stored
-/// byte span, no re-parse. `qualnames` (multi-symbol reads) and
-/// `skeleton`/`context_lines` are #98 and stay a not-implemented stub here.
+/// Direct children (one nesting level) of `container`, via the same
+/// `CONTAINS`-edge nesting `outline` uses (`symbol_outline_entries`) rather than
+/// re-deriving containment from byte ranges, which is wrong for Rust `impl`
+/// blocks (see that function's doc comment): a method's byte span sits inside
+/// its `impl` block, not inside the struct symbol it's qualname-nested under.
+///
+/// Note: the whole-file `module` root symbol is hidden by
+/// `symbol_outline_entries` (its direct children come back as top-level,
+/// parentless entries instead of nested under it), so skeletonizing that root
+/// symbol itself currently returns no children here -- `build_symbol_entry`
+/// falls back to a normal read in that case.
+fn container_children(
+    db: &crate::db::Db,
+    container: &Symbol,
+    graph_version: i64,
+) -> Result<Vec<OutlineEntry>> {
+    let entries = symbol_outline_entries(db, &container.file_path, graph_version, None, None)?;
+    Ok(entries
+        .into_iter()
+        .filter(|e| e.parent.as_deref() == Some(container.qualname.as_str()))
+        .collect())
+}
+
+/// Bound on `read_symbol` next_hops emitted for a skeleton container's children,
+/// so a large class/module doesn't blow the response on hop suggestions alone.
+const MAX_SKELETON_CHILD_HOPS: usize = 25;
+
+/// Builds the non-skeleton `read_symbol` result: exact source from disk (by
+/// stored byte span, no re-parse), optionally widened by `context_lines` of
+/// surrounding lines (clamped at file bounds), line-numbered against the real
+/// file. `stale` is threaded in rather than recomputed so single and
+/// multi-symbol callers share one staleness check per symbol.
+fn build_source_response(
+    indexer: &Indexer,
+    symbol: &Symbol,
+    context_lines: usize,
+    stale: bool,
+) -> Result<Value> {
+    let repo_root = indexer.repo_root().clone();
+    let full_path = repo_root.join(&symbol.file_path);
+    let content = crate::util::read_to_string(&full_path)?;
+    let raw_source = crate::util::slice_bytes(&content, symbol.start_byte, symbol.end_byte)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "symbol span no longer valid in '{}' (file changed extensively); run 'reindex' to refresh the index",
+                symbol.file_path
+            )
+        })?;
+
+    let (source_text, numbering_start_line) = if context_lines > 0 {
+        let all_lines: Vec<&str> = content.lines().collect();
+        let total_lines = all_lines.len() as i64;
+        let ctx_lines = context_lines as i64;
+        let ctx_start = (symbol.start_line - ctx_lines).max(1);
+        let ctx_end = (symbol.end_line + ctx_lines).min(total_lines);
+
+        // The symbol's own body stays the exact byte slice above; only the
+        // surrounding context is pulled from line-splitting, so a follow-up
+        // edit against `start_line`/`end_line` still targets exactly what was
+        // indexed.
+        let mut combined = String::new();
+        if ctx_start < symbol.start_line {
+            let before = &all_lines[(ctx_start as usize - 1)..(symbol.start_line as usize - 1)];
+            combined.push_str(&before.join("\n"));
+            combined.push('\n');
+        }
+        combined.push_str(&raw_source);
+        if ctx_end > symbol.end_line {
+            let after = &all_lines[(symbol.end_line as usize)..(ctx_end as usize)];
+            combined.push('\n');
+            combined.push_str(&after.join("\n"));
+        }
+        (combined, ctx_start)
+    } else {
+        (raw_source, symbol.start_line)
+    };
+
+    let source = number_source_lines(&source_text, numbering_start_line);
+
+    Ok(json!({
+        "qualname": symbol.qualname,
+        "kind": symbol.kind,
+        "path": symbol.file_path,
+        "start_line": symbol.start_line,
+        "end_line": symbol.end_line,
+        "stale": stale,
+        "source": source,
+    }))
+}
+
+/// Builds one `read_symbol` result for an already-resolved, already-validated
+/// (non-external) symbol: staleness check, then either the full source
+/// (optionally widened by `context_lines`) or, for `skeleton: true` on a
+/// container, its children's signatures/line ranges plus a bounded
+/// `read_symbol` next_hop per child. Shared by the single (`qualname`/`query`)
+/// and multi (`qualnames`) selector paths so both behave identically.
+fn build_symbol_entry(
+    indexer: &Indexer,
+    symbol: &Symbol,
+    skeleton: bool,
+    context_lines: usize,
+    graph_version: i64,
+) -> Result<Value> {
+    let repo_root = indexer.repo_root().clone();
+    let full_path = repo_root.join(&symbol.file_path);
+    let scanned = scan::scan_path(&repo_root, &full_path)?;
+    let Some(scanned) = scanned else {
+        anyhow::bail!(
+            "file '{}' is missing from disk; run 'reindex' to refresh the index",
+            symbol.file_path
+        );
+    };
+    let indexed_hash = indexer
+        .db()
+        .get_file_by_path(&symbol.file_path)?
+        .map(|f| f.hash);
+    let stale = indexed_hash.is_some_and(|hash| hash != scanned.hash);
+
+    let mut next_hops: Vec<Value> = Vec::new();
+    let mut response = if skeleton {
+        let children = container_children(indexer.db(), symbol, graph_version)?;
+        if children.is_empty() {
+            // Not a container (or has none in this file) -- skeleton has
+            // nothing to skeletonize, so fall back to a normal read rather
+            // than returning an empty, useless response.
+            build_source_response(indexer, symbol, context_lines, stale)?
+        } else {
+            for child in children.iter().take(MAX_SKELETON_CHILD_HOPS) {
+                next_hops.push(json!({
+                    "method": "read_symbol",
+                    "params": {"qualname": child.qualname},
+                    "description": format!("read_symbol fetches the full source of '{}'", child.qualname),
+                }));
+            }
+            json!({
+                "qualname": symbol.qualname,
+                "kind": symbol.kind,
+                "path": symbol.file_path,
+                "start_line": symbol.start_line,
+                "end_line": symbol.end_line,
+                "stale": stale,
+                "skeleton": true,
+                "children": children,
+            })
+        }
+    } else {
+        build_source_response(indexer, symbol, context_lines, stale)?
+    };
+
+    if stale {
+        next_hops.push(json!({
+            "method": "reindex",
+            "params": {},
+            "description": format!(
+                "'{}' changed on disk since indexing; reindex to refresh symbol spans",
+                symbol.file_path
+            ),
+        }));
+    }
+    if !next_hops.is_empty() {
+        response["next_hops"] = json!(next_hops);
+    }
+    Ok(response)
+}
+
+/// Multi-symbol `read_symbol`: resolves each qualname in request order by
+/// exact match (batch reads name symbols precisely -- unlike the single
+/// `query` selector, there's no fuzzy fallback here) and fills `symbols` while
+/// the running response stays within `max_bytes`. A symbol that would push the
+/// response over budget, and every symbol after it, is omitted whole (never
+/// cut mid-symbol) and listed by qualname in `omitted`. A qualname that
+/// doesn't resolve to a real, non-external symbol is listed in `not_found`
+/// instead and doesn't consume budget.
+fn handle_read_symbol_multi(
+    indexer: &Indexer,
+    qualnames: &[String],
+    skeleton: bool,
+    context_lines: usize,
+    max_bytes: usize,
+    graph_version: i64,
+) -> Result<Value> {
+    let mut symbols: Vec<Value> = Vec::new();
+    let mut omitted: Vec<String> = Vec::new();
+    let mut not_found: Vec<String> = Vec::new();
+    let mut budget_exhausted = false;
+
+    for qn in qualnames {
+        if budget_exhausted {
+            omitted.push(qn.clone());
+            continue;
+        }
+        let found = indexer.db().get_symbol_by_qualname(qn, graph_version)?;
+        let symbol = match found {
+            Some(s) if s.kind != "external" && !s.qualname.starts_with("ext:") => s,
+            _ => {
+                not_found.push(qn.clone());
+                continue;
+            }
+        };
+        let entry = build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version)?;
+
+        let mut candidate_symbols = symbols.clone();
+        candidate_symbols.push(entry);
+        let mut probe = json!({"symbols": candidate_symbols, "omitted": omitted});
+        if !not_found.is_empty() {
+            probe["not_found"] = json!(not_found);
+        }
+        let probe_size = serde_json::to_string(&probe)
+            .map(|s| s.len())
+            .unwrap_or(usize::MAX);
+
+        if probe_size <= max_bytes {
+            symbols = candidate_symbols;
+        } else {
+            omitted.push(qn.clone());
+            budget_exhausted = true;
+        }
+    }
+
+    let mut response = json!({"symbols": symbols, "omitted": omitted});
+    if !not_found.is_empty() {
+        response["not_found"] = json!(not_found);
+    }
+    Ok(response)
+}
+
+/// `read_symbol`: fetch one or more symbols' exact source from disk by their
+/// stored byte spans, no re-parse (#96, #98). `qualname`/`query` resolve and
+/// return one symbol, with the same fuzzy fallback and "did you mean"
+/// ambiguity handling as `explain_symbol`/`trace_flow`. `qualnames` reads
+/// several exact qualnames in one call under a shared byte budget (see
+/// `handle_read_symbol_multi`). `skeleton` and `context_lines` apply to
+/// either mode (see `build_symbol_entry`).
 pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: ReadSymbolParams = serde_json::from_value(params)?;
     let selectors_given = [
@@ -1148,11 +1378,26 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
             selectors_given
         );
     }
-    if params.qualnames.is_some() {
-        anyhow::bail!("read_symbol with 'qualnames' (multi-symbol read) is not implemented yet");
-    }
 
     let graph_version = indexer.db().current_graph_version()?;
+    let skeleton = params.skeleton.unwrap_or(false);
+    let context_lines = params.context_lines.unwrap_or(0);
+
+    if let Some(qualnames) = params.qualnames {
+        let max_bytes = params
+            .max_bytes
+            .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
+            .min(500_000);
+        return handle_read_symbol_multi(
+            indexer,
+            &qualnames,
+            skeleton,
+            context_lines,
+            max_bytes,
+            graph_version,
+        );
+    }
+
     let resolution = resolve_read_target(
         indexer.db(),
         params.qualname.as_deref(),
@@ -1187,51 +1432,7 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         );
     }
 
-    let repo_root = indexer.repo_root().clone();
-    let full_path = repo_root.join(&symbol.file_path);
-    let scanned = scan::scan_path(&repo_root, &full_path)?;
-    let Some(scanned) = scanned else {
-        anyhow::bail!(
-            "file '{}' is missing from disk; run 'reindex' to refresh the index",
-            symbol.file_path
-        );
-    };
-    let indexed_hash = indexer
-        .db()
-        .get_file_by_path(&symbol.file_path)?
-        .map(|f| f.hash);
-    let stale = indexed_hash.is_some_and(|hash| hash != scanned.hash);
-
-    let content = crate::util::read_to_string(&full_path)?;
-    let raw_source = crate::util::slice_bytes(&content, symbol.start_byte, symbol.end_byte)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "symbol span no longer valid in '{}' (file changed extensively); run 'reindex' to refresh the index",
-                symbol.file_path
-            )
-        })?;
-    let source = number_source_lines(&raw_source, symbol.start_line);
-
-    let mut response = json!({
-        "qualname": symbol.qualname,
-        "kind": symbol.kind,
-        "path": symbol.file_path,
-        "start_line": symbol.start_line,
-        "end_line": symbol.end_line,
-        "stale": stale,
-        "source": source,
-    });
-    if stale {
-        response["next_hops"] = json!([{
-            "method": "reindex",
-            "params": {},
-            "description": format!(
-                "'{}' changed on disk since indexing; reindex to refresh symbol spans",
-                symbol.file_path
-            ),
-        }]);
-    }
-    Ok(response)
+    build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version)
 }
 
 // ---------------------------------------------------------------------------

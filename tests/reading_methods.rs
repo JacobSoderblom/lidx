@@ -8,9 +8,16 @@
 ///
 /// `read_symbol` with a single `qualname`/`query` selector is implemented (issue #96):
 /// exact source cut from disk by stored byte span, line-numbered, with staleness
-/// detection against the indexed file hash. `qualnames` (multi-symbol reads),
-/// `skeleton`, and `context_lines` stay a follow-up (#98) and are still asserted
-/// against a "not implemented" stub below.
+/// detection against the indexed file hash.
+///
+/// `qualnames` (multi-symbol reads), `skeleton`, and `context_lines` are implemented
+/// (issue #98): `qualnames` fills a `symbols` array in request order under a shared
+/// `max_bytes` budget, omitting trailing symbols whole (by qualname, under `omitted`)
+/// rather than truncating one mid-body; `skeleton` on a container symbol returns its
+/// children's signatures/line ranges (via the same `CONTAINS`-edge nesting `outline`
+/// uses) instead of the full body, with a bounded `read_symbol` next_hop per child;
+/// `context_lines` widens the returned source by N lines each side, clamped at file
+/// bounds.
 ///
 /// Setup mirrors `tests/repo_map.rs` / `tests/next_hops_validity.rs`: copy a fixture repo
 /// into a temp dir and index it. Follow-up tickets extend this same file (and can reuse
@@ -91,14 +98,6 @@ fn assert_not_unknown_method(err_msg: &str) {
     assert!(
         !err_msg.to_lowercase().contains("unknown method"),
         "expected a not-implemented error, got 'unknown method': {}",
-        err_msg
-    );
-}
-
-fn assert_not_implemented(err_msg: &str) {
-    assert!(
-        err_msg.to_lowercase().contains("not implemented"),
-        "expected a 'not implemented' error, got: {}",
         err_msg
     );
 }
@@ -784,40 +783,308 @@ fn read_symbol_missing_file_errors_with_reindex_hint() {
 }
 
 #[test]
-fn read_symbol_with_qualnames_list_returns_not_implemented_error() {
-    let (mut indexer, _repo_root) = indexed("py_mvp");
+fn read_symbol_with_qualnames_list_returns_symbols_in_request_order() {
+    let (mut indexer, repo_root) = indexed("py_mvp");
 
+    // Deliberately out of file/definition order, to prove the response follows
+    // request order rather than qualname or on-disk order.
     let result = rpc::handle_method(
         &mut indexer,
         "read_symbol",
-        serde_json::json!({"qualnames": ["pkg.core.Greeter", "pkg.utils.helper"]}),
+        serde_json::json!({"qualnames": ["pkg.b.helper", "pkg.core.Greeter", "pkg.utils.add"]}),
+    )
+    .unwrap();
+
+    assert!(
+        result.get("ambiguous").is_none(),
+        "multi-symbol reads shouldn't hit the ambiguous-query path: {result:#}"
     );
+    let symbols = result["symbols"].as_array().expect("symbols array");
+    let qualnames: Vec<&str> = symbols
+        .iter()
+        .filter_map(|s| s["qualname"].as_str())
+        .collect();
+    assert_eq!(
+        qualnames,
+        vec!["pkg.b.helper", "pkg.core.Greeter", "pkg.utils.add"],
+        "{symbols:#?}"
+    );
+    let omitted = result["omitted"].as_array().expect("omitted array");
+    assert!(omitted.is_empty(), "{result:#}");
 
-    let err_msg = result.unwrap_err().to_string();
-    assert_not_unknown_method(&err_msg);
-    assert_not_implemented(&err_msg);
+    for sym in symbols {
+        assert!(
+            sym.get("source").is_some(),
+            "each symbol should carry its own source text: {sym:#?}"
+        );
+    }
 
-    let _ = std::fs::remove_dir_all(&_repo_root);
+    let _ = std::fs::remove_dir_all(&repo_root);
 }
 
 #[test]
-fn read_symbol_accepts_skeleton_and_context_lines_params_but_ignores_them() {
-    let (mut indexer, _repo_root) = indexed("py_mvp");
+fn read_symbol_qualnames_small_byte_cap_omits_trailing_symbols_by_qualname() {
+    let (mut indexer, repo_root) = indexed("py_mvp");
 
-    // skeleton/context_lines are part of the final param schema (#98 scope), so
-    // passing them must not fail validation -- but #96 doesn't implement them yet,
-    // so a single-symbol qualname read still succeeds normally, ignoring both.
+    // A cap generous enough for one symbol's JSON but not all three forces the
+    // trailing symbols out, whole, into `omitted` -- never a partial/cut source.
+    let one_symbol = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualnames": ["pkg.b.helper"]}),
+    )
+    .unwrap();
+    let one_symbol_bytes = serde_json::to_string(&one_symbol).unwrap().len();
+    let cap = one_symbol_bytes + 40;
+
     let result = rpc::handle_method(
         &mut indexer,
         "read_symbol",
-        serde_json::json!({"qualname": "pkg.core.Greeter", "skeleton": true, "context_lines": 3}),
+        serde_json::json!({
+            "qualnames": ["pkg.b.helper", "pkg.core.Greeter", "pkg.utils.add"],
+            "max_bytes": cap,
+        }),
+    )
+    .unwrap();
+
+    let response_bytes = serde_json::to_string(&result).unwrap().len();
+    assert!(
+        response_bytes <= cap + 200,
+        "response ({response_bytes} bytes) should stay close to the requested cap ({cap}): {result:#}"
+    );
+
+    let symbols = result["symbols"].as_array().expect("symbols array");
+    let included: Vec<&str> = symbols
+        .iter()
+        .filter_map(|s| s["qualname"].as_str())
+        .collect();
+    assert_eq!(
+        included,
+        vec!["pkg.b.helper"],
+        "only the first symbol should fit under the cap: {result:#}"
+    );
+    for sym in symbols {
+        let source = sym["source"].as_str().expect("source string");
+        assert!(
+            source.starts_with("1: def helper():"),
+            "an included symbol must be whole, not truncated mid-body: {source:?}"
+        );
+    }
+
+    let omitted: Vec<&str> = result["omitted"]
+        .as_array()
+        .expect("omitted array")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        omitted,
+        vec!["pkg.core.Greeter", "pkg.utils.add"],
+        "the trailing symbols should be reported by qualname, not silently dropped: {result:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_skeleton_on_class_returns_child_signatures_and_no_bodies() {
+    let (mut indexer, repo_root) = indexed("py_mvp");
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "pkg.core.Greeter", "skeleton": true}),
     )
     .unwrap();
 
     assert_eq!(result["qualname"], "pkg.core.Greeter");
+    assert_eq!(result["skeleton"], true, "{result:#}");
+    assert!(
+        result.get("source").is_none(),
+        "skeleton mode must not include the full body: {result:#}"
+    );
+
+    let children = result["children"].as_array().expect("children array");
+    let qualnames: Vec<&str> = children
+        .iter()
+        .filter_map(|c| c["qualname"].as_str())
+        .collect();
+    assert_eq!(qualnames, vec!["pkg.core.Greeter.greet"], "{children:#?}");
+
+    let greet = &children[0];
+    assert_eq!(greet["kind"], "method");
+    assert_eq!(greet["start_line"], 11);
+    assert_eq!(greet["end_line"], 13);
+    assert!(
+        greet["signature"].as_str().is_some_and(|s| !s.is_empty()),
+        "child entries should carry a signature: {greet:#?}"
+    );
+    assert!(
+        children.iter().all(|c| c.get("source").is_none()),
+        "child entries are signatures only, no bodies: {children:#?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_skeleton_on_rust_struct_returns_impl_method_children() {
+    // Rust `impl` blocks have no symbol of their own -- their methods are
+    // attributed to the struct via CONTAINS regardless of the impl block's own
+    // byte range (see `container_children`'s doc comment). Skeletonizing the
+    // struct should surface those methods as children.
+    let (mut indexer, repo_root) = indexed_from_source(
+        "skeleton-rust-struct-impl",
+        &[("src/lib.rs", OUTLINE_RUST_SRC)],
+    );
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "crate::Foo", "skeleton": true}),
+    )
+    .unwrap();
+
+    assert_eq!(result["skeleton"], true, "{result:#}");
+    assert!(result.get("source").is_none(), "{result:#}");
+    let children = result["children"].as_array().expect("children array");
+    let qualnames: Vec<&str> = children
+        .iter()
+        .filter_map(|c| c["qualname"].as_str())
+        .collect();
+    assert_eq!(
+        qualnames,
+        vec!["crate::Foo::bar", "crate::Foo::helper"],
+        "{children:#?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_skeleton_container_emits_valid_read_symbol_hops_for_children() {
+    let (mut indexer, repo_root) = indexed("py_mvp");
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "pkg.core.Greeter", "skeleton": true}),
+    )
+    .unwrap();
+
+    let hops = result["next_hops"].as_array().expect("next_hops array");
+    assert!(!hops.is_empty(), "{result:#}");
+    for hop in hops {
+        assert_eq!(hop["method"], "read_symbol", "{hop:#?}");
+        assert!(
+            METHOD_LIST.contains(&hop["method"].as_str().unwrap()),
+            "hop method must be dispatchable: {hop:#?}"
+        );
+        let hop_params = &hop["params"];
+        assert!(
+            hop_params.get("qualname").is_some(),
+            "each child hop should select by qualname: {hop:#?}"
+        );
+        assert_eq!(
+            [
+                hop_params.get("qualname").is_some(),
+                hop_params.get("query").is_some(),
+                hop_params.get("qualnames").is_some(),
+            ]
+            .into_iter()
+            .filter(|x| *x)
+            .count(),
+            1,
+            "a valid read_symbol selector has exactly one of qualname/query/qualnames: {hop:#?}"
+        );
+
+        // The hop must actually resolve.
+        let followed = rpc::handle_method(&mut indexer, "read_symbol", hop_params.clone())
+            .unwrap_or_else(|e| panic!("child hop failed to resolve: {e} ({hop:#?})"));
+        assert!(followed.get("source").is_some(), "{followed:#?}");
+    }
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_skeleton_on_leaf_symbol_falls_back_to_normal_read() {
+    let (mut indexer, repo_root) = indexed("py_mvp");
+
+    // `greet` is a method with no children of its own -- skeleton on a leaf has
+    // nothing to skeletonize.
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "pkg.core.Greeter.greet", "skeleton": true}),
+    )
+    .unwrap();
+
+    assert!(result.get("skeleton").is_none(), "{result:#}");
     assert!(result.get("source").is_some(), "{result:#}");
 
-    let _ = std::fs::remove_dir_all(&_repo_root);
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_context_lines_adds_exactly_n_lines_each_side() {
+    let (mut indexer, repo_root) = indexed("py_mvp");
+
+    // `pkg.core.Base` spans lines 6-7 in a 16-line file, top-level (column 0,
+    // so its own span isn't missing leading indentation the way a nested
+    // symbol's would be) -- 2 lines of context on each side stays well within
+    // file bounds: 4-9.
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "pkg.core.Base", "context_lines": 2}),
+    )
+    .unwrap();
+
+    assert_eq!(result["start_line"], 6, "{result:#}");
+    assert_eq!(result["end_line"], 7, "{result:#}");
+
+    let content = std::fs::read_to_string(repo_root.join("pkg/core.py")).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    let expected = lines[3..9]
+        .iter()
+        .enumerate()
+        .map(|(i, line)| format!("{}: {}", 4 + i as i64, line))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_eq!(result["source"].as_str().unwrap(), expected, "{result:#}");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn read_symbol_context_lines_clamped_at_file_bounds() {
+    let (mut indexer, repo_root) = indexed("py_mvp");
+
+    // A huge context_lines request clamps to the file's actual bounds (line 1
+    // through the last line) instead of panicking or going out of range.
+    let result = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "pkg.core.Base", "context_lines": 1000}),
+    )
+    .unwrap();
+
+    let content = std::fs::read_to_string(repo_root.join("pkg/core.py")).unwrap();
+    let total_lines = content.lines().count();
+    let expected = content
+        .lines()
+        .enumerate()
+        .map(|(i, line)| format!("{}: {}", i + 1, line))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_eq!(result["source"].as_str().unwrap(), expected, "{result:#}");
+    let source_line_count = result["source"].as_str().unwrap().lines().count();
+    assert_eq!(source_line_count, total_lines, "{result:#}");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
 }
 
 #[test]
