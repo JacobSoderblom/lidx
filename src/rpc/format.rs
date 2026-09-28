@@ -17,6 +17,7 @@ const METHODS_WITH_OWN_MAX_BYTES: &[&str] = &[
     "gather_context",
     "explain_symbol",
     "trace_flow",
+    "read_symbol",
 ];
 
 /// Extract the response byte budget from params. Supports three names:
