@@ -137,7 +137,9 @@ fn top_complexity_excludes_external_stubs() {
         serde_json::json!({"min_complexity": 0}),
     )
     .unwrap();
-    let results = result.as_array().expect("top_complexity returns an array");
+    let results = result["results"]
+        .as_array()
+        .expect("top_complexity returns an object with a results array");
     assert!(
         !results.iter().any(|s| s["symbol"]["qualname"]
             .as_str()
