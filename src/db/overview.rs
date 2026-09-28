@@ -992,7 +992,7 @@ mod tests {
     /// nothing in it rather than the field being omitted.
     #[test]
     fn repo_overview_scope_counts_classifies_known_mix() {
-        let (mut db, _temp) = create_test_db();
+        let (db, _temp) = create_test_db();
         let gv = db.create_graph_version(None).unwrap();
         db.upsert_file("src/a.py", "h1", "python", 10, 0).unwrap();
         db.upsert_file("tests/test_a.py", "h2", "python", 10, 0)
