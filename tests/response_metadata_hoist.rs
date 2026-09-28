@@ -133,3 +133,136 @@ fn analyze_diff_hoists_graph_version_once_and_strips_nested_symbols() {
         );
     }
 }
+
+fn git(repo_root: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?} failed in {repo_root:?}");
+}
+
+/// `git add -A && git commit` with a throwaway identity so this test has no
+/// dependency on the machine's global git config, returning the new HEAD sha.
+fn git_commit_all(repo_root: &std::path::Path, message: &str) -> String {
+    git(repo_root, &["add", "-A"]);
+    git(
+        repo_root,
+        &[
+            "-c",
+            "user.email=lidx-test@example.com",
+            "-c",
+            "user.name=lidx test",
+            "commit",
+            "-m",
+            message,
+        ],
+    );
+    lidx::util::git_head_sha(repo_root).expect("HEAD sha after commit")
+}
+
+/// Regression: `Db::carry_forward_files` stamps a carried-forward file's
+/// symbols with the *new* `graph_version` but keeps their *original*
+/// `commit_sha` (see its doc comment in `src/db/mod.rs`) -- so a normal
+/// reindex spanning two commits, where one file is unchanged and another is
+/// edited, produces a response whose nested `Symbol`-shaped objects agree on
+/// `graph_version` but disagree on `commit_sha`. The old all-or-nothing
+/// veto in `hoist_symbol_run_metadata` treated that as "any two symbols
+/// disagree" and left *everything* untouched, including `graph_version`,
+/// which was never actually in dispute. `graph_version` must still hoist
+/// and strip whenever it's consistent (it always is, within one response);
+/// `commit_sha` must only hoist/strip when it's consistent too, and
+/// otherwise stay on the nested symbols that disagree -- dropping it there
+/// would lose real information about which commit each symbol actually
+/// came from.
+#[test]
+fn explain_symbol_hoists_graph_version_even_when_commit_sha_disagrees_after_carry_forward() {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-hoist-carry-forward-")
+        .tempdir()
+        .unwrap();
+    let repo_root = tmp.path().to_path_buf();
+    common::write_files(
+        &repo_root,
+        &[("target.py", TARGET_SOURCE), ("caller.py", CALLER_SOURCE)],
+    );
+
+    git(&repo_root, &["init", "-q"]);
+    let commit1 = git_commit_all(&repo_root, "initial");
+
+    let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    // Edit caller.py only -- target.py stays byte-identical across commits,
+    // so its symbols are carried forward with commit1's sha still attached,
+    // while caller.py is freshly re-parsed and picks up commit2's sha.
+    common::write_files(
+        &repo_root,
+        &[(
+            "caller.py",
+            "from target import target\n\n\ndef wrapper():\n    # edited\n    return target()\n",
+        )],
+    );
+    let commit2 = git_commit_all(&repo_root, "edit caller");
+    assert_ne!(commit1, commit2, "the two commits must actually differ");
+
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    let result = call(
+        repo_root,
+        db_path,
+        "explain_symbol",
+        r#"{"query":"target.target","sections":["callers"]}"#,
+    );
+
+    let envelope_graph_version = result.get("graph_version").unwrap_or_else(|| {
+        panic!("explain_symbol must carry graph_version at the envelope: {result:?}")
+    });
+    assert!(
+        envelope_graph_version.as_i64().is_some_and(|v| v > 0),
+        "graph_version must be a positive integer: {result:?}"
+    );
+
+    assert!(
+        result["symbol"].get("graph_version").is_none(),
+        "graph_version is consistent across this response's symbols and must still be \
+         hoisted/stripped even though commit_sha disagrees: {:?}",
+        result["symbol"]
+    );
+
+    let callers = result["callers"].as_array().expect("callers array");
+    assert!(!callers.is_empty(), "{result:?}");
+    assert!(
+        callers[0]["symbol"].get("graph_version").is_none(),
+        "a caller's nested symbol must not repeat graph_version either: {:?}",
+        callers[0]
+    );
+
+    let symbol_commit_sha = result["symbol"]["commit_sha"].as_str().unwrap_or_else(|| {
+        panic!("carried-forward symbol must keep its real (disagreeing) commit_sha: {result:?}")
+    });
+    let caller_commit_sha = callers[0]["symbol"]["commit_sha"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!(
+                "freshly parsed caller symbol must keep its real (disagreeing) commit_sha: {:?}",
+                callers[0]
+            )
+        });
+    assert_eq!(
+        symbol_commit_sha, commit1,
+        "target.py was carried forward, so its symbol should still carry commit1's sha"
+    );
+    assert_eq!(
+        caller_commit_sha, commit2,
+        "caller.py was re-parsed, so its symbol should carry commit2's sha"
+    );
+    assert_ne!(
+        symbol_commit_sha, caller_commit_sha,
+        "the disagreement is exactly what vetoed the old all-or-nothing hoist"
+    );
+}

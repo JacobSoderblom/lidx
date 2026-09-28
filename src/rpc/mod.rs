@@ -462,12 +462,20 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
 ///   is inserted, so a real field is never removed or shadowed by a second
 ///   copy.
 ///
+/// `graph_version` and `commit_sha` are hoisted/stripped independently.
 /// Before touching anything, every nested `Symbol`-shaped object's
-/// `graph_version`/`commit_sha` pair is collected and compared. If any two
-/// disagree, the whole result is left untouched -- stripping would throw
-/// away real information for a method whose entries can legitimately span
-/// more than one graph version (a comparison across versions, say), and no
-/// method in `METHOD_LIST` should ever produce that disagreement today.
+/// `graph_version` and `commit_sha` are each collected and compared
+/// separately. A method's entries are all stamped with the same
+/// `graph_version` within a single response, so that field hoists whenever
+/// it's found. `commit_sha` is not as reliable: `Db::carry_forward_files`
+/// bumps a carried-forward file's `graph_version` to the new one but keeps
+/// its *original* `commit_sha`, so a response spanning a reindex across two
+/// commits (one file unchanged, another re-parsed) can legitimately mix two
+/// different `commit_sha`s while every `graph_version` still agrees. When
+/// `commit_sha` disagrees like that, it is left on every nested symbol
+/// instead of hoisted -- stripping it there would throw away real
+/// information about which commit each symbol actually came from -- while
+/// `graph_version` still hoists and strips normally.
 fn hoist_symbol_run_metadata(mut value: Value) -> Value {
     let Value::Object(ref mut top) = value else {
         // Bare array (or, in principle, a scalar) result: no top level to
@@ -475,25 +483,35 @@ fn hoist_symbol_run_metadata(mut value: Value) -> Value {
         return value;
     };
 
-    let mut found: Option<(Value, Value)> = None;
-    let mut consistent = true;
+    let mut graph_version: Option<Value> = None;
+    let mut graph_version_consistent = true;
+    let mut commit_sha: Option<Value> = None;
+    let mut commit_sha_consistent = true;
     for child in top.values() {
-        collect_symbol_run_metadata(child, &mut found, &mut consistent);
-        if !consistent {
-            break;
-        }
+        collect_symbol_run_metadata(
+            child,
+            &mut graph_version,
+            &mut graph_version_consistent,
+            &mut commit_sha,
+            &mut commit_sha_consistent,
+        );
     }
 
-    let Some((graph_version, commit_sha)) = (if consistent { found } else { None }) else {
+    let hoist_graph_version = graph_version_consistent && graph_version.is_some();
+    let hoist_commit_sha = commit_sha_consistent && commit_sha.is_some();
+    if !hoist_graph_version && !hoist_commit_sha {
         return value;
-    };
+    }
 
     for child in top.values_mut() {
-        strip_symbol_run_metadata(child);
+        strip_symbol_run_metadata(child, hoist_graph_version, hoist_commit_sha);
     }
 
-    if !top.contains_key("graph_version") {
-        top.insert("graph_version".to_string(), graph_version);
+    if hoist_graph_version && !top.contains_key("graph_version") {
+        top.insert("graph_version".to_string(), graph_version.unwrap());
+    }
+    if hoist_commit_sha && !top.contains_key("commit_sha") {
+        let commit_sha = commit_sha.unwrap();
         if !commit_sha.is_null() {
             top.insert("commit_sha".to_string(), commit_sha);
         }
@@ -512,68 +530,81 @@ fn is_symbol_shaped(obj: &serde_json::Map<String, Value>) -> bool {
 }
 
 /// First pass: walk `value` (a child of the top-level result, never the
-/// top level itself) and record the `(graph_version, commit_sha)` pair off
-/// every `Symbol`-shaped object found, short-circuiting the moment two
-/// disagree. Read-only -- nothing is stripped here, so a disagreement can
-/// veto the whole hoist before any information is lost.
+/// top level itself) and record `graph_version` and `commit_sha` off every
+/// `Symbol`-shaped object found, tracking each field's consistency
+/// separately -- a `commit_sha` disagreement must not stop `graph_version`
+/// from being collected, and vice versa. Read-only -- nothing is stripped
+/// here.
 fn collect_symbol_run_metadata(
     value: &Value,
-    found: &mut Option<(Value, Value)>,
-    consistent: &mut bool,
+    graph_version: &mut Option<Value>,
+    graph_version_consistent: &mut bool,
+    commit_sha: &mut Option<Value>,
+    commit_sha_consistent: &mut bool,
 ) {
-    if !*consistent {
-        return;
-    }
     match value {
         Value::Object(obj) => {
             if is_symbol_shaped(obj) {
                 let gv = obj.get("graph_version").cloned().unwrap_or(Value::Null);
+                match graph_version {
+                    None => *graph_version = Some(gv),
+                    Some(found) if *found == gv => {}
+                    Some(_) => *graph_version_consistent = false,
+                }
                 let cs = obj.get("commit_sha").cloned().unwrap_or(Value::Null);
-                match found {
-                    None => *found = Some((gv, cs)),
-                    Some((fgv, fcs)) if *fgv == gv && *fcs == cs => {}
-                    Some(_) => {
-                        *consistent = false;
-                        return;
-                    }
+                match commit_sha {
+                    None => *commit_sha = Some(cs),
+                    Some(found) if *found == cs => {}
+                    Some(_) => *commit_sha_consistent = false,
                 }
             }
             for v in obj.values() {
-                collect_symbol_run_metadata(v, found, consistent);
-                if !*consistent {
-                    return;
-                }
+                collect_symbol_run_metadata(
+                    v,
+                    graph_version,
+                    graph_version_consistent,
+                    commit_sha,
+                    commit_sha_consistent,
+                );
             }
         }
         Value::Array(arr) => {
             for v in arr {
-                collect_symbol_run_metadata(v, found, consistent);
-                if !*consistent {
-                    return;
-                }
+                collect_symbol_run_metadata(
+                    v,
+                    graph_version,
+                    graph_version_consistent,
+                    commit_sha,
+                    commit_sha_consistent,
+                );
             }
         }
         _ => {}
     }
 }
 
-/// Second pass, run only once `collect_symbol_run_metadata` has confirmed
-/// every `Symbol`-shaped object agrees: remove `graph_version`/`commit_sha`
-/// from each of them, recursively.
-fn strip_symbol_run_metadata(value: &mut Value) {
+/// Second pass, run only once `hoist_symbol_run_metadata` has decided which
+/// of `graph_version`/`commit_sha` are consistent enough to hoist: remove
+/// just those fields from every `Symbol`-shaped object, recursively. A
+/// field whose nested copies disagree is left in place.
+fn strip_symbol_run_metadata(value: &mut Value, strip_graph_version: bool, strip_commit_sha: bool) {
     match value {
         Value::Object(obj) => {
             if is_symbol_shaped(obj) {
-                obj.remove("graph_version");
-                obj.remove("commit_sha");
+                if strip_graph_version {
+                    obj.remove("graph_version");
+                }
+                if strip_commit_sha {
+                    obj.remove("commit_sha");
+                }
             }
             for v in obj.values_mut() {
-                strip_symbol_run_metadata(v);
+                strip_symbol_run_metadata(v, strip_graph_version, strip_commit_sha);
             }
         }
         Value::Array(arr) => {
             for v in arr {
-                strip_symbol_run_metadata(v);
+                strip_symbol_run_metadata(v, strip_graph_version, strip_commit_sha);
             }
         }
         _ => {}
