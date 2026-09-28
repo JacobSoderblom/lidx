@@ -310,6 +310,56 @@ fn reject_path_escape(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// (language, total_lines, entries) for a Markdown `outline` path: no
+/// `files`/`symbols` DB row to check (see `is_markdown_path`), so disk
+/// presence is its only "indexed" check, and entries come from parsing ATX
+/// headings straight off disk.
+fn markdown_outline(
+    full_path: &std::path::Path,
+    path: &str,
+    kinds_filter: Option<&HashSet<String>>,
+    max_depth: Option<usize>,
+) -> Result<(String, i64, Vec<OutlineEntry>)> {
+    let content = crate::util::read_to_string(full_path).map_err(|_| {
+        anyhow::anyhow!(
+            "path '{}' is not indexed -- fall back to Read for this file",
+            path
+        )
+    })?;
+    let total_lines = crate::indexer::tree_helpers::line_count(&content);
+    let entries = markdown_outline_entries(&content, total_lines, kinds_filter, max_depth);
+    Ok(("markdown".to_string(), total_lines, entries))
+}
+
+/// (language, total_lines, entries) for an indexed (non-Markdown) `outline`
+/// path: requires a `files` DB row -- checked before touching disk at all --
+/// and entries come from indexed symbols/`CONTAINS` edges.
+fn indexed_outline(
+    db: &crate::db::Db,
+    full_path: &std::path::Path,
+    path: &str,
+    graph_version: i64,
+    kinds_filter: Option<&HashSet<String>>,
+    max_depth: Option<usize>,
+) -> Result<(String, i64, Vec<OutlineEntry>)> {
+    let file_record = db.get_file_by_path(path)?;
+    let Some(file_record) = file_record else {
+        anyhow::bail!(
+            "path '{}' is not indexed -- fall back to Read, or run 'reindex' if it should be tracked",
+            path
+        );
+    };
+    let content = crate::util::read_to_string(full_path).map_err(|_| {
+        anyhow::anyhow!(
+            "file '{}' is missing from disk; run 'reindex' to refresh the index",
+            path
+        )
+    })?;
+    let total_lines = crate::indexer::tree_helpers::line_count(&content);
+    let entries = symbol_outline_entries(db, path, graph_version, kinds_filter, max_depth)?;
+    Ok((file_record.language, total_lines, entries))
+}
+
 /// `outline` (#95): a compact, no-bodies skeleton of an indexed file's symbols
 /// in source order -- kind, qualname, signature, line range, nesting parent,
 /// first doc line. Answers "what's in this file?" for a fraction of the
@@ -328,45 +378,14 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
 
     let repo_root = indexer.repo_root().clone();
     let full_path = repo_root.join(path);
-    let markdown = is_markdown_path(path);
 
-    // Markdown has no `files`/`symbols` row to check (see `is_markdown_path`), so
-    // disk presence is its "indexed" check; every other language must already be
-    // in the DB, which is checked before touching disk at all.
-    let language = if markdown {
-        "markdown".to_string()
-    } else {
-        let file_record = indexer.db().get_file_by_path(path)?;
-        let Some(file_record) = file_record else {
-            anyhow::bail!(
-                "path '{}' is not indexed -- fall back to Read, or run 'reindex' if it should be tracked",
-                path
-            );
-        };
-        file_record.language
-    };
-
-    let content = crate::util::read_to_string(&full_path).map_err(|_| {
-        if markdown {
-            anyhow::anyhow!(
-                "path '{}' is not indexed -- fall back to Read for this file",
-                path
-            )
-        } else {
-            anyhow::anyhow!(
-                "file '{}' is missing from disk; run 'reindex' to refresh the index",
-                path
-            )
-        }
-    })?;
-    let total_lines = crate::indexer::tree_helpers::line_count(&content);
-
-    let entries = if markdown {
-        markdown_outline_entries(&content, total_lines, kinds_filter.as_ref(), max_depth)
+    let (language, total_lines, entries) = if is_markdown_path(path) {
+        markdown_outline(&full_path, path, kinds_filter.as_ref(), max_depth)?
     } else {
         let graph_version = indexer.db().current_graph_version()?;
-        symbol_outline_entries(
+        indexed_outline(
             indexer.db(),
+            &full_path,
             path,
             graph_version,
             kinds_filter.as_ref(),
