@@ -285,23 +285,11 @@ pub fn analyze_direct_impact(
         // Batch fetch edges for all symbols at this level
         let edges_by_symbol = db.edges_for_symbols(&current_level, languages, graph_version)?;
 
-        // Issue #81: only fetched when a filter is actually requested -- the
-        // common (unfiltered) case pays no extra query per BFS level. An
-        // edge id absent from this map (a Bridge Edge kind) is always
-        // traversable, since bridging is governed separately below.
-        let resolution_kinds: HashMap<i64, String> = if exclude_resolution_kinds.is_empty() {
-            HashMap::new()
-        } else {
-            let edge_ids: Vec<i64> = edges_by_symbol
-                .values()
-                .flat_map(|edges| edges.iter().map(|e| e.id))
-                .collect();
-            db.edge_resolution_kinds(&edge_ids)?
-        };
+        // Issue #81: an edge with no resolution kind (a Bridge Edge kind) is
+        // always traversable, since bridging is governed separately below.
         let excluded = |edge: &Edge| {
             crate::model::is_resolution_excluded(
-                edge.id,
-                &resolution_kinds,
+                edge.resolution_kind.as_deref(),
                 exclude_resolution_kinds,
             )
         };

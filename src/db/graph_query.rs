@@ -566,18 +566,18 @@ impl Db {
     /// `edges.resolution_kind` for a batch of edge ids, keyed by edge id.
     /// Since issue #62, `Edge::resolution_kind` (via `edge_from_row`) also
     /// carries this column for any caller that already has full `Edge`
-    /// values in hand. This batch, id-keyed form stays separate because
-    /// `trace_flow`'s BFS (`traversal.rs`) and `analyze_direct_impact`'s
-    /// BFS (`impact/layers/direct.rs`) only ever have bare edge ids at the
-    /// point they need to filter on this column (via their
-    /// `exclude_resolution_kinds` filter, issue #81) -- fetching one
-    /// `HashMap<i64, String>` for the batch is cheaper than loading a full
-    /// `Edge` per id just to read one field. An edge id absent from the
+    /// values in hand -- prefer reading `edge.resolution_kind` directly in
+    /// that case, as `trace_flow`'s BFS (`traversal.rs`) and
+    /// `analyze_direct_impact`'s BFS (`impact/layers/direct.rs`) now do for
+    /// their per-node `exclude_resolution_kinds` filter (issue #81). This
+    /// batch, id-keyed form stays for the one remaining case where a caller
+    /// only has bare edge ids: those same two BFS functions' post-traversal
+    /// `traversed_heuristic_kind` summary, which checks every edge that
+    /// actually produced a hop/neighbor in one query rather than loading a
+    /// full `Edge` per id just to read one field. An edge id absent from the
     /// returned map has no resolution kind at all -- a Bridge Edge kind
     /// (its target is a cross-process join key, resolved separately from
-    /// the name tiers) or any edge kind the resolver never labels -- and
-    /// the caller treats "no entry" as always-traversable, since the
-    /// filter only ever excludes a *named* kind.
+    /// the name tiers) or any edge kind the resolver never labels.
     pub fn edge_resolution_kinds(&self, edge_ids: &[i64]) -> Result<HashMap<i64, String>> {
         if edge_ids.is_empty() {
             return Ok(HashMap::new());
