@@ -906,11 +906,64 @@ pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Va
 
     let config = crate::repo_map::RepoMapConfig {
         max_bytes,
-        languages: ctx.languages,
-        paths: ctx.paths,
+        languages: ctx.languages.clone(),
+        paths: ctx.paths.clone(),
         graph_version: ctx.graph_version,
     };
     let map_result = crate::repo_map::build_repo_map(indexer.db(), &config)?;
+
+    if map_result.modules == 0 {
+        // Issue #65: zero modules is ambiguous -- it could mean "the
+        // languages/paths filter matched nothing in an otherwise-populated
+        // index" or "nothing is indexed at all". Disambiguate by re-running
+        // the same aggregate with every filter dropped: if that's also
+        // empty, the index itself is empty.
+        let filter_applied = ctx.languages.is_some() || ctx.paths.is_some();
+        let index_empty = if filter_applied {
+            indexer
+                .db()
+                .module_summary(1, None, None, ctx.graph_version)?
+                .is_empty()
+        } else {
+            true
+        };
+        let mut next_hops: Vec<serde_json::Value> = Vec::new();
+        let warnings: Vec<String> = if index_empty {
+            next_hops.push(json!({
+                "method": "reindex",
+                "params": {},
+                "description": "Nothing is indexed yet -- reindex the repo before calling repo_map",
+            }));
+            vec![
+                "Nothing is indexed for this repo at this graph version -- reindex before calling repo_map."
+                    .to_string(),
+            ]
+        } else {
+            next_hops.push(json!({
+                "method": "repo_map",
+                "params": {},
+                "description": "Retry without the languages/paths filter to see the full repo map",
+            }));
+            vec![
+                "The languages/paths filter matched no indexed files -- widen or drop the filter to see the repo map."
+                    .to_string(),
+            ]
+        };
+        return Ok(json!({
+            "text": map_result.text,
+            "modules": map_result.modules,
+            "symbols": map_result.symbols,
+            "bytes": map_result.bytes,
+            "counts": {
+                "modules": map_result.modules,
+                "symbols": map_result.symbols,
+            },
+            "index_empty": index_empty,
+            "warnings": warnings,
+            "next_hops": next_hops,
+        }));
+    }
+
     Ok(json!({
         "text": map_result.text,
         "modules": map_result.modules,
@@ -983,6 +1036,54 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
         ctx.paths.as_deref(),
         ctx.graph_version,
     )?;
+
+    if results.is_empty() {
+        // Issue #65: an empty ranking is ambiguous on its own -- it could mean
+        // "every function in scope is below min_complexity" (metrics exist) or
+        // "no function/method symbols were ever extracted for this scope"
+        // (metrics never existed: an unsupported/unindexed language, or a
+        // paths filter matching nothing). Report both explicitly instead of a
+        // bare `[]`.
+        let metrics_exist = indexer.db().complexity_metrics_exist(
+            ctx.languages.as_deref(),
+            ctx.paths.as_deref(),
+            ctx.graph_version,
+        )?;
+        let mut next_hops: Vec<serde_json::Value> = Vec::new();
+        let warnings: Vec<String> = if metrics_exist {
+            if min_complexity > 1 {
+                let mut retry_params = serde_json::Map::new();
+                retry_params.insert("min_complexity".to_string(), json!(1));
+                if let Some(ref langs) = ctx.languages {
+                    retry_params.insert("languages".to_string(), json!(langs));
+                }
+                if let Some(ref paths) = ctx.paths {
+                    retry_params.insert("paths".to_string(), json!(paths));
+                }
+                next_hops.push(json!({
+                    "method": "top_complexity",
+                    "params": retry_params,
+                    "description": "Retry with min_complexity:1 to see the full (unfiltered) ranking",
+                }));
+            }
+            vec![format!(
+                "No symbol reached min_complexity:{min_complexity} in this scope -- complexity metrics exist, the scope is just uniformly simple relative to the threshold."
+            )]
+        } else {
+            vec![
+                "No complexity metrics exist for this scope at all -- no function/method symbols were extracted for the requested languages/paths (unsupported or unindexed language, or a paths filter with no matches)."
+                    .to_string(),
+            ]
+        };
+        return Ok(json!({
+            "results": [],
+            "counts": { "results": 0 },
+            "metrics_exist": metrics_exist,
+            "warnings": warnings,
+            "next_hops": next_hops,
+        }));
+    }
+
     Ok(json!(results))
 }
 

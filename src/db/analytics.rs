@@ -110,6 +110,53 @@ impl Db {
         Ok(results)
     }
 
+    /// Whether *any* complexity metric exists for the given language/path
+    /// scope, ignoring the `min_complexity` floor `top_complexity` filters
+    /// on. Lets a caller tell "this scope is uniformly below the threshold"
+    /// (metrics exist, none passed the filter) apart from "no function or
+    /// method symbols were ever extracted for this scope" (metrics never
+    /// existed at all -- an unsupported/unindexed language or an empty
+    /// paths match).
+    pub fn complexity_metrics_exist(
+        &self,
+        languages: Option<&[String]>,
+        paths: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<bool> {
+        let mut sql = String::from(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM symbol_metrics sm
+                 JOIN symbols s ON sm.symbol_id = s.id
+                 JOIN files f ON sm.file_id = f.id
+                 WHERE s.graph_version = ?
+                   AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
+        if let Some(languages) = languages
+            && !languages.is_empty()
+        {
+            sql.push_str(" AND f.language IN (");
+            for (idx, _) in languages.iter().enumerate() {
+                if idx > 0 {
+                    sql.push(',');
+                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for language in languages {
+                params.push(language as &dyn rusqlite::ToSql);
+            }
+        }
+        let mut path_params = Vec::new();
+        append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
+        sql.push(')');
+
+        let conn = self.read_conn()?;
+        let exists: bool = conn.query_row(&sql, &*params, |row| row.get(0))?;
+        Ok(exists)
+    }
+
     pub fn top_fan_in(
         &self,
         limit: usize,
