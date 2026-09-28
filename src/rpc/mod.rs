@@ -9,8 +9,8 @@ pub(crate) use crate::indexer::differ::{ChangedFile, parse_diff_with_ranges};
 use crate::indexer::{Indexer, scan, test_detection};
 use crate::model::{
     AnalyzeDiffResult, BudgetInfo, ChangedSymbol, DiffImpactEntry, ExplainRef, ExplainSymbolResult,
-    LowerBound, ModuleEdge, ModuleNode, OutlineEntry, OutlineResult, RiskAssessment, RiskFactor,
-    RpcSuggestion, Symbol, TestCoverageEntry, TestRef, TraceFlowResult,
+    LowerBound, ModuleEdge, ModuleNode, OutlineEntry, OutlineResult, ReadSymbolEntry,
+    RiskAssessment, RiskFactor, RpcSuggestion, Symbol, TestCoverageEntry, TestRef, TraceFlowResult,
 };
 use crate::util::normalize_search_paths;
 use crate::watch;

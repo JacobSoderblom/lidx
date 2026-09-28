@@ -528,7 +528,7 @@ fn build_source_response(
     symbol: &Symbol,
     context_lines: usize,
     stale: bool,
-) -> Result<Value> {
+) -> Result<ReadSymbolEntry> {
     let repo_root = indexer.repo_root().clone();
     let full_path = repo_root.join(&symbol.file_path);
     let content = crate::util::read_to_string(&full_path)?;
@@ -602,15 +602,20 @@ fn build_source_response(
 
     let source = number_source_lines(&source_text, numbering_start_line);
 
-    Ok(json!({
-        "qualname": symbol.qualname,
-        "kind": symbol.kind,
-        "path": symbol.file_path,
-        "start_line": symbol.start_line,
-        "end_line": symbol.end_line,
-        "stale": stale,
-        "source": source,
-    }))
+    Ok(ReadSymbolEntry {
+        qualname: symbol.qualname.clone(),
+        kind: symbol.kind.clone(),
+        path: symbol.file_path.clone(),
+        start_line: symbol.start_line,
+        end_line: symbol.end_line,
+        stale,
+        source: Some(source),
+        skeleton: None,
+        children: None,
+        omitted: None,
+        size_bytes: None,
+        next_hops: Vec::new(),
+    })
 }
 
 /// Builds one `read_symbol` result for an already-resolved, already-validated
@@ -642,7 +647,7 @@ fn build_symbol_entry(
     let stale = indexed_hash.is_some_and(|hash| hash != scanned.hash);
 
     let mut next_hops: Vec<Value> = Vec::new();
-    let mut response = if skeleton {
+    let mut entry = if skeleton {
         let children = container_children(indexer.db(), symbol, graph_version)?;
         if children.is_empty() {
             // Not a container (or has none in this file) -- skeleton has
@@ -657,16 +662,20 @@ fn build_symbol_entry(
                     "description": format!("read_symbol fetches the full source of '{}'", child.qualname),
                 }));
             }
-            json!({
-                "qualname": symbol.qualname,
-                "kind": symbol.kind,
-                "path": symbol.file_path,
-                "start_line": symbol.start_line,
-                "end_line": symbol.end_line,
-                "stale": stale,
-                "skeleton": true,
-                "children": children,
-            })
+            ReadSymbolEntry {
+                qualname: symbol.qualname.clone(),
+                kind: symbol.kind.clone(),
+                path: symbol.file_path.clone(),
+                start_line: symbol.start_line,
+                end_line: symbol.end_line,
+                stale,
+                source: None,
+                skeleton: Some(true),
+                children: Some(children),
+                omitted: None,
+                size_bytes: None,
+                next_hops: Vec::new(),
+            }
         }
     } else {
         build_source_response(indexer, symbol, context_lines, stale)?
@@ -682,10 +691,8 @@ fn build_symbol_entry(
             ),
         }));
     }
-    if !next_hops.is_empty() {
-        response["next_hops"] = json!(next_hops);
-    }
-    Ok(response)
+    entry.next_hops = next_hops;
+    Ok(serde_json::to_value(entry)?)
 }
 
 /// Byte length of `s` as a JSON string literal (quotes and any escaping
@@ -898,32 +905,39 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         .min(200_000);
     let entry_size = serde_json::to_string(&entry).map(|s| s.len()).unwrap_or(0);
     if entry_size > max_bytes {
-        let stale = entry.get("stale").cloned().unwrap_or(json!(false));
-        return Ok(json!({
-            "qualname": symbol.qualname,
-            "kind": symbol.kind,
-            "path": symbol.file_path,
-            "start_line": symbol.start_line,
-            "end_line": symbol.end_line,
-            "stale": stale,
-            "omitted": true,
-            "size_bytes": entry_size,
-            "next_hops": [
-                {
+        let stale = entry
+            .get("stale")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let header = ReadSymbolEntry {
+            qualname: symbol.qualname.clone(),
+            kind: symbol.kind.clone(),
+            path: symbol.file_path.clone(),
+            start_line: symbol.start_line,
+            end_line: symbol.end_line,
+            stale,
+            source: None,
+            skeleton: None,
+            children: None,
+            omitted: Some(true),
+            size_bytes: Some(entry_size),
+            next_hops: vec![
+                json!({
                     "method": "read_symbol",
                     "params": {"qualname": symbol.qualname, "skeleton": true},
                     "description": format!(
                         "'{}' is too large to read in full ({} bytes > {} budget) -- read_symbol with skeleton:true returns just its children's signatures (containers only)",
                         symbol.qualname, entry_size, max_bytes
                     ),
-                },
-                {
+                }),
+                json!({
                     "method": "outline",
                     "params": {"path": symbol.file_path},
                     "description": "Outline the file to pick a narrower symbol to read",
-                },
+                }),
             ],
-        }));
+        };
+        return Ok(serde_json::to_value(header)?);
     }
 
     Ok(entry)

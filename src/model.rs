@@ -104,6 +104,35 @@ pub struct OutlineResult {
     pub next_hops: Vec<Value>,
 }
 
+/// Header and payload shared by `read_symbol`'s three response shapes: a full
+/// source read, a container's `skeleton` (children only, no bodies), and an
+/// over-budget stub (`omitted: true`). Every shape shares the header fields
+/// (`qualname`/`kind`/`path`/`start_line`/`end_line`/`stale`); each fills in
+/// only the payload fields it uses, and the rest are skipped from the JSON
+/// (`skip_serializing_if`) rather than emitted as `null`, so the field set
+/// for a given shape matches what it always has.
+#[derive(Debug, Serialize, Clone)]
+pub struct ReadSymbolEntry {
+    pub qualname: String,
+    pub kind: String,
+    pub path: String,
+    pub start_line: i64,
+    pub end_line: i64,
+    pub stale: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skeleton: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<OutlineEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub omitted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub next_hops: Vec<Value>,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct Edge {
     pub id: i64,
