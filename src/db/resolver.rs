@@ -128,7 +128,7 @@ pub(crate) enum ResolutionKind {
 
 impl ResolutionKind {
     /// The `edges.resolution_kind` column value.
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Exact => "exact",
             Self::Import => "import",
@@ -140,6 +140,35 @@ impl ResolutionKind {
         }
     }
 }
+
+/// The guarded name-fallback tier's own resolution kinds (tier 5 -- see the
+/// module doc): a heuristic match by name alone, unlike `exact`/`import`/
+/// `receiver_type`/`inherited`, which all bind on more than a bare name.
+/// Issue #81's default `exclude_resolution_kinds` suggestion set --
+/// single source of truth for the `["bare_name", "two_segment"]` literal
+/// that used to be duplicated across `rpc/handlers.rs`'s next_hops.
+pub(crate) const HEURISTIC_RESOLUTION_KINDS: [&str; 2] = [
+    ResolutionKind::BareName.as_str(),
+    ResolutionKind::TwoSegment.as_str(),
+];
+
+/// Every `edges.resolution_kind` value the resolver can produce -- the
+/// single source of truth issue #81's `exclude_resolution_kinds` param
+/// validates against (`rpc/handlers.rs`'s `validate_resolution_kinds`), so
+/// an unknown or wrong-case kind (`"BARE_NAME"`, `"bogus"`) is rejected
+/// with a clear error instead of silently matching nothing.
+pub(crate) const ALL_RESOLUTION_KINDS: [&str; 7] = [
+    ResolutionKind::Exact.as_str(),
+    ResolutionKind::Import.as_str(),
+    ResolutionKind::ReceiverType.as_str(),
+    ResolutionKind::Inherited.as_str(),
+    ResolutionKind::TwoSegment.as_str(),
+    ResolutionKind::BareName.as_str(),
+    ResolutionKind::External {
+        via_language_fallback: false,
+    }
+    .as_str(),
+];
 
 /// Why a reference stayed unresolved.
 ///
@@ -2227,6 +2256,55 @@ impl Db {
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Count of `unresolved_references` rows at `graph_version` whose
+    /// `source_symbol_id` is one of `symbol_ids` -- the minimum lower-bound
+    /// signal `trace_flow`/`analyze_impact` attach to a traversal (issue
+    /// #81): a traversed symbol had at least one outgoing reference the
+    /// write path couldn't attribute a target to, so the traversed graph
+    /// may be missing edges from it.
+    ///
+    /// Deliberately the same query for both traversal directions. For a
+    /// downstream trace this is exact: a pending row's source symbol is
+    /// exactly a symbol the BFS visited, so a missing outgoing edge from it
+    /// is a real gap in what was traversed. For an upstream trace it's a
+    /// conservative minimum, not a full account of missing callers: an
+    /// unresolved reference whose name_tail happens to match a traversed
+    /// symbol, but whose own source symbol was never visited (because the
+    /// reference never resolved to it -- exactly the caller
+    /// `analyze_impact`/`trace_flow` failed to find), can't be counted this
+    /// way without fuzzy name-tail matching, which issue #81 explicitly
+    /// keeps out of scope. What upstream does get: any traversed caller
+    /// that itself has further unresolved outgoing references still flags
+    /// the answer as a lower bound.
+    pub fn unresolved_reference_count_for_symbols(
+        &self,
+        symbol_ids: &[i64],
+        graph_version: i64,
+    ) -> Result<i64> {
+        if symbol_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut placeholders = String::new();
+        for (idx, _) in symbol_ids.iter().enumerate() {
+            if idx > 0 {
+                placeholders.push(',');
+            }
+            placeholders.push('?');
+        }
+        let sql = format!(
+            "SELECT COUNT(*) FROM unresolved_references \
+             WHERE source_symbol_id IN ({placeholders}) AND graph_version = ?"
+        );
+        let conn = self.read_conn()?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = symbol_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        params.push(&graph_version);
+        conn.query_row(&sql, &*params, |row| row.get(0))
+            .map_err(Into::into)
     }
 
     /// The repair pass shared by `Indexer::sync_abs_paths`'s post-batch hook

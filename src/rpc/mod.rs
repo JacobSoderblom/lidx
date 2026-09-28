@@ -8,8 +8,8 @@ pub(crate) use crate::indexer::differ::{ChangedFile, parse_diff_with_ranges};
 use crate::indexer::{Indexer, scan, test_detection};
 use crate::model::{
     AnalyzeDiffResult, BudgetInfo, ChangedSymbol, DiffImpactEntry, ExplainRef, ExplainSymbolResult,
-    ModuleEdge, ModuleNode, RiskAssessment, RiskFactor, Symbol, TestCoverageEntry, TestRef,
-    TraceFlowResult,
+    LowerBound, ModuleEdge, ModuleNode, RiskAssessment, RiskFactor, Symbol, TestCoverageEntry,
+    TestRef, TraceFlowResult,
 };
 use crate::util::normalize_search_paths;
 use crate::watch;
@@ -103,6 +103,9 @@ struct AnalyzeImpactParams {
     /// "upstream" (find consumers/callers), "downstream" (follow calls), or "both" (default). Use "upstream" for "what depends on this?"
     direction: Option<String>,
     kinds: Option<Vec<String>>,
+    /// Resolution kinds to exclude from traversal, e.g. ["bare_name", "two_segment"]
+    /// to exclude the guarded name-fallback tier's heuristic edges. Default: none excluded.
+    exclude_resolution_kinds: Option<Vec<String>>,
     include_tests: Option<bool>,
     include_paths: Option<bool>,
     /// Global configuration
@@ -240,6 +243,9 @@ struct TraceFlowParams {
     max_hops: Option<usize>,
     /// Edge kinds to follow (default: ["CALLS", "RPC_IMPL"])
     kinds: Option<Vec<String>>,
+    /// Resolution kinds to exclude from traversal, e.g. ["bare_name", "two_segment"]
+    /// to exclude the guarded name-fallback tier's heuristic edges. Default: none excluded.
+    exclude_resolution_kinds: Option<Vec<String>>,
     /// Include source snippets
     include_snippets: Option<bool>,
     format: Option<String>,

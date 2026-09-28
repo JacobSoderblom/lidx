@@ -3,7 +3,7 @@ use crate::indexer::channel::{boundary_type_for_kind, bridge_complement};
 use crate::indexer::scan::language_for_path;
 use crate::model::{Edge, Symbol, TraceHop};
 use anyhow::Result;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Direction of a BFS trace through the symbol graph.
 #[derive(Debug, Clone)]
@@ -22,6 +22,13 @@ pub struct TraceConfig {
     pub allowed_kinds: Vec<String>,
     pub trace_offset: usize,
     pub compact: bool,
+    /// Resolution kinds to refuse to traverse (issue #81), e.g.
+    /// `["bare_name", "two_segment"]` to exclude the guarded name-fallback
+    /// tier's heuristic edges. An edge with no resolution kind at all (a
+    /// Bridge Edge kind, governed separately by `bridge_complement`) is
+    /// always traversable regardless of this list. Empty by default:
+    /// unchanged behaviour.
+    pub exclude_resolution_kinds: Vec<String>,
 }
 
 impl Default for TraceConfig {
@@ -51,6 +58,7 @@ impl Default for TraceConfig {
             ],
             trace_offset: 0,
             compact: false,
+            exclude_resolution_kinds: Vec::new(),
         }
     }
 }
@@ -66,6 +74,14 @@ pub struct TraceResult {
     pub truncated: bool,
     pub budget_bytes: usize,
     pub used_bytes: usize,
+    /// Count of `unresolved_references` rows touching the traversed symbols
+    /// (issue #81) -- see `Db::unresolved_reference_count_for_symbols`'s doc.
+    pub unresolved_reference_count: i64,
+    /// Issue #81 (R5): whether at least one edge that produced a hop has a
+    /// heuristic (`bare_name`/`two_segment`) resolution kind -- gates the
+    /// "retry excluding heuristics" next_hops suggestion in
+    /// `handle_trace_flow`.
+    pub traversed_heuristic_kind: bool,
 }
 
 /// BFS traversal of the symbol graph from `seeds`, following edges in the
@@ -99,6 +115,10 @@ pub fn trace_flow(
     let mut truncated = false;
     let mut reached_target = false;
     let is_upstream = matches!(config.direction, TraceDirection::Upstream);
+    // Issue #81 (R5): every edge that actually produced a hop -- checked
+    // once, after the BFS, against `HEURISTIC_RESOLUTION_KINDS` to decide
+    // whether suggesting the exclude-heuristics retry is useful at all.
+    let mut traversed_edge_ids: Vec<i64> = Vec::new();
 
     while let Some((current_id, dist, prev_file)) = queue.pop_front() {
         if dist > config.max_hops {
@@ -112,12 +132,31 @@ pub fn trace_flow(
 
         let edges = db.edges_for_symbol(current_id, languages, graph_version)?;
 
+        // Issue #81: only fetched when a filter is actually requested --
+        // the common (unfiltered) case pays no extra query per BFS node.
+        let resolution_kinds: HashMap<i64, String> = if config.exclude_resolution_kinds.is_empty() {
+            HashMap::new()
+        } else {
+            let edge_ids: Vec<i64> = edges.iter().map(|e| e.id).collect();
+            db.edge_resolution_kinds(&edge_ids)?
+        };
+
         let mut bridge_targets: Vec<(String, String)> = Vec::new();
 
         for edge in &edges {
             if !config.allowed_kinds.contains(&edge.kind)
                 || !crate::model::xref_is_traversable(edge)
             {
+                continue;
+            }
+            // An edge with no resolution kind (a Bridge Edge kind) is always
+            // traversable here -- bridging is governed separately below via
+            // `bridge_targets`/`bridge_complement`.
+            if crate::model::is_resolution_excluded(
+                edge.id,
+                &resolution_kinds,
+                &config.exclude_resolution_kinds,
+            ) {
                 continue;
             }
 
@@ -170,6 +209,7 @@ pub fn trace_flow(
                 let hop_size = estimate_hop_size(&hop, config.compact);
                 let hop_idx = trace.len();
                 trace.push(hop);
+                traversed_edge_ids.push(edge.id);
                 if hop_idx >= config.trace_offset {
                     used_bytes += hop_size;
                     if used_bytes >= config.max_bytes {
@@ -229,6 +269,7 @@ pub fn trace_flow(
                             let hop_size = estimate_hop_size(&hop, config.compact);
                             let hop_idx = trace.len();
                             trace.push(hop);
+                            traversed_edge_ids.push(bridged_edge.id);
                             if hop_idx >= config.trace_offset {
                                 used_bytes += hop_size;
                                 if used_bytes >= config.max_bytes {
@@ -273,6 +314,26 @@ pub fn trace_flow(
         trace.iter().filter(|h| h.distance == max_dist).count()
     };
 
+    // Issue #81: lower-bound signal over every symbol this traversal
+    // actually visited (seeds included), regardless of direction -- see
+    // `Db::unresolved_reference_count_for_symbols`'s doc for the exact
+    // per-direction semantics.
+    let visited_ids: Vec<i64> = visited.into_iter().collect();
+    let unresolved_reference_count =
+        db.unresolved_reference_count_for_symbols(&visited_ids, graph_version)?;
+
+    // Issue #81 (R5): one batched query over every edge that produced a hop,
+    // rather than per-node -- paid only once, and only when there was
+    // anything to check at all.
+    let traversed_heuristic_kind = if traversed_edge_ids.is_empty() {
+        false
+    } else {
+        let resolution_kinds = db.edge_resolution_kinds(&traversed_edge_ids)?;
+        resolution_kinds
+            .values()
+            .any(|rk| crate::db::resolver::HEURISTIC_RESOLUTION_KINDS.contains(&rk.as_str()))
+    };
+
     Ok(TraceResult {
         start: start_sym,
         end: end_sym,
@@ -282,6 +343,8 @@ pub fn trace_flow(
         truncated,
         budget_bytes: config.max_bytes,
         used_bytes,
+        unresolved_reference_count,
+        traversed_heuristic_kind,
     })
 }
 

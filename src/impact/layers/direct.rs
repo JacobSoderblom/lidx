@@ -220,6 +220,7 @@ pub fn analyze_direct_impact(
     max_depth: usize,
     direction: TraversalDirection,
     kinds: &HashSet<String>,
+    exclude_resolution_kinds: &[String],
     include_tests: bool,
     limit: usize,
     languages: Option<&[String]>,
@@ -262,6 +263,12 @@ pub fn analyze_direct_impact(
 
     let mut truncated = false;
     let mut parent_map: HashMap<i64, (i64, String)> = HashMap::new();
+    // Issue #81 (R5): every edge that actually contributed a newly-visited
+    // symbol -- checked once, after the BFS, against `HEURISTIC_RESOLUTION_KINDS`
+    // to decide whether suggesting the exclude-heuristics retry is useful at
+    // all. Bridge-crossed edges aren't tracked here (see `resolve_bridge_targets`);
+    // this is a "was a heuristic edge traversed" signal, not an exhaustive audit.
+    let mut traversed_edge_ids: Vec<i64> = Vec::new();
 
     // BFS traversal with level-by-level batch queries
     while !queue.is_empty() {
@@ -299,12 +306,33 @@ pub fn analyze_direct_impact(
         // Batch fetch edges for all symbols at this level
         let edges_by_symbol = db.edges_for_symbols(&current_level, languages, graph_version)?;
 
+        // Issue #81: only fetched when a filter is actually requested -- the
+        // common (unfiltered) case pays no extra query per BFS level. An
+        // edge id absent from this map (a Bridge Edge kind) is always
+        // traversable, since bridging is governed separately below.
+        let resolution_kinds: HashMap<i64, String> = if exclude_resolution_kinds.is_empty() {
+            HashMap::new()
+        } else {
+            let edge_ids: Vec<i64> = edges_by_symbol
+                .values()
+                .flat_map(|edges| edges.iter().map(|e| e.id))
+                .collect();
+            db.edge_resolution_kinds(&edge_ids)?
+        };
+        let excluded = |edge: &Edge| {
+            crate::model::is_resolution_excluded(
+                edge.id,
+                &resolution_kinds,
+                exclude_resolution_kinds,
+            )
+        };
+
         // Collect all neighbor IDs for batch symbol loading
         let mut neighbor_ids = Vec::new();
         for current_id in &current_level {
             if let Some(edges) = edges_by_symbol.get(current_id) {
                 for edge in edges {
-                    if !edge_matches_filter(edge, kinds, include_tests) {
+                    if !edge_matches_filter(edge, kinds, include_tests) || excluded(edge) {
                         continue;
                     }
                     if let Some(id) = resolve_next_id(edge, *current_id, direction)
@@ -333,7 +361,7 @@ pub fn analyze_direct_impact(
         for current_id in &current_level {
             if let Some(edges) = edges_by_symbol.get(current_id) {
                 for edge in edges {
-                    if !edge_matches_filter(edge, kinds, include_tests) {
+                    if !edge_matches_filter(edge, kinds, include_tests) || excluded(edge) {
                         continue;
                     }
 
@@ -360,6 +388,7 @@ pub fn analyze_direct_impact(
                         .entry(next_id)
                         .or_insert((*current_id, edge.kind.clone()));
                     queue.push_back((next_id, current_distance + 1));
+                    traversed_edge_ids.push(edge.id);
 
                     if visited.len() >= limit {
                         truncated = true;
@@ -423,6 +452,18 @@ pub fn analyze_direct_impact(
         );
     }
 
+    // Issue #81 (R5): one batched query over every edge actually traversed,
+    // rather than per-level -- paid only once, and only when the traversal
+    // found something to traverse at all.
+    let traversed_heuristic_kind = if traversed_edge_ids.is_empty() {
+        false
+    } else {
+        let resolution_kinds = db.edge_resolution_kinds(&traversed_edge_ids)?;
+        resolution_kinds
+            .values()
+            .any(|rk| crate::db::resolver::HEURISTIC_RESOLUTION_KINDS.contains(&rk.as_str()))
+    };
+
     let duration_ms = start.elapsed().as_millis() as u64;
 
     Ok(LayerResult {
@@ -432,6 +473,7 @@ pub fn analyze_direct_impact(
         duration_ms,
         truncated,
         parent_map,
+        traversed_heuristic_kind,
     })
 }
 
@@ -711,6 +753,7 @@ mod tests {
             5,
             TraversalDirection::Downstream,
             &kinds,
+            &[],
             true,
             100,
             None,
@@ -765,6 +808,7 @@ mod tests {
             5,
             TraversalDirection::Downstream,
             &kinds,
+            &[],
             true,
             100,
             None,
