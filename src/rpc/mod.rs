@@ -221,9 +221,27 @@ struct ExplainSymbolParams {
     qualname: Option<String>,
     query: Option<String>,
     max_bytes: Option<usize>,
+    /// Sections to include in the response. Accepts any of: "source",
+    /// "callers", "callees", "tests", "implements". Aliases: "dependencies"
+    /// -> "callees", "dependents" -> "callers", "summary"/"body" -> "source".
+    /// Default: all five sections.
     sections: Option<Vec<String>>,
+    /// Max references returned per section (callers, callees, tests,
+    /// implements). Each capped section also reports its true `<section>_total`
+    /// count, so a list capped here can be told apart from a complete one.
+    /// Default: 10.
     max_refs: Option<usize>,
     format: Option<String>,
+    /// Keep only callers, callees and tests refs whose edge resolved at or
+    /// above this tier (exact, import, receiver_type, inherited,
+    /// two_segment, bare_name, external -- strongest to weakest; see
+    /// `Edge::resolution_kind`). A ref whose edge never resolved (no
+    /// `resolution_kind` at all) is always excluded once this is set.
+    /// Distinct from `analyze_impact`'s `min_confidence`, which filters an
+    /// unrelated query-time heuristic. Omit to return every ref regardless
+    /// of tier. An unknown tier name is ignored with a warning rather than
+    /// an error.
+    min_resolution: Option<String>,
     #[serde(flatten)]
     common: LangVersionParams,
 }
@@ -383,6 +401,7 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
             return Err(anyhow::anyhow!("unknown method: {other}"));
         }
     };
+    let value = hoist_symbol_run_metadata(value);
 
     let elapsed = start.elapsed();
     if elapsed.as_millis() > 100 {
@@ -421,6 +440,174 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
         }
     } else {
         Ok(value)
+    }
+}
+
+/// `graph_version`/`commit_sha` are properties of the indexing run, not of
+/// any individual symbol, but `Symbol`'s derive stamps both onto every
+/// serialized instance (issue #66). This is the single mechanism, applied
+/// to every method's result here at the dispatch boundary, that removes
+/// the redundant copies from every nested object that looks like a
+/// `Symbol` (carries both `qualname` and `graph_version`) and hoists one
+/// copy to the top level of the result.
+///
+/// Two cases leave a result untouched:
+/// - The result is a bare array (e.g. non-empty `top_complexity`): there is
+///   nowhere to hoist a field to without changing the response's top-level
+///   type, so the array -- and every symbol inside it -- is left exactly
+///   as `Symbol`'s derive produced it.
+/// - The top level already carries its own `graph_version` (e.g.
+///   `explain_symbol`'s `ExplainSymbolResult.graph_version`, stamped
+///   deliberately): the nested duplicates are still stripped, but nothing
+///   is inserted, so a real field is never removed or shadowed by a second
+///   copy.
+///
+/// `graph_version` and `commit_sha` are hoisted/stripped independently.
+/// Before touching anything, every nested `Symbol`-shaped object's
+/// `graph_version` and `commit_sha` are each collected and compared
+/// separately. A method's entries are all stamped with the same
+/// `graph_version` within a single response, so that field hoists whenever
+/// it's found. `commit_sha` is not as reliable: `Db::carry_forward_files`
+/// bumps a carried-forward file's `graph_version` to the new one but keeps
+/// its *original* `commit_sha`, so a response spanning a reindex across two
+/// commits (one file unchanged, another re-parsed) can legitimately mix two
+/// different `commit_sha`s while every `graph_version` still agrees. When
+/// `commit_sha` disagrees like that, it is left on every nested symbol
+/// instead of hoisted -- stripping it there would throw away real
+/// information about which commit each symbol actually came from -- while
+/// `graph_version` still hoists and strips normally.
+fn hoist_symbol_run_metadata(mut value: Value) -> Value {
+    let Value::Object(ref mut top) = value else {
+        // Bare array (or, in principle, a scalar) result: no top level to
+        // hoist onto, so leave it untouched.
+        return value;
+    };
+
+    let mut graph_version: Option<Value> = None;
+    let mut graph_version_consistent = true;
+    let mut commit_sha: Option<Value> = None;
+    let mut commit_sha_consistent = true;
+    for child in top.values() {
+        collect_symbol_run_metadata(
+            child,
+            &mut graph_version,
+            &mut graph_version_consistent,
+            &mut commit_sha,
+            &mut commit_sha_consistent,
+        );
+    }
+
+    let hoist_graph_version = graph_version_consistent && graph_version.is_some();
+    let hoist_commit_sha = commit_sha_consistent && commit_sha.is_some();
+    if !hoist_graph_version && !hoist_commit_sha {
+        return value;
+    }
+
+    for child in top.values_mut() {
+        strip_symbol_run_metadata(child, hoist_graph_version, hoist_commit_sha);
+    }
+
+    if hoist_graph_version && !top.contains_key("graph_version") {
+        top.insert("graph_version".to_string(), graph_version.unwrap());
+    }
+    if hoist_commit_sha && !top.contains_key("commit_sha") {
+        let commit_sha = commit_sha.unwrap();
+        if !commit_sha.is_null() {
+            top.insert("commit_sha".to_string(), commit_sha);
+        }
+    }
+
+    value
+}
+
+/// Does this JSON object look like a serialized `Symbol`? `qualname` plus
+/// `graph_version` is the pair the finding behind #66 singles out --
+/// specific enough that no other response shape in `model.rs` collides
+/// with it (`TestCoverageEntry` carries `symbol_qualname`, not `qualname`;
+/// `Edge` carries `graph_version` but no `qualname` at all).
+fn is_symbol_shaped(obj: &serde_json::Map<String, Value>) -> bool {
+    obj.contains_key("qualname") && obj.contains_key("graph_version")
+}
+
+/// First pass: walk `value` (a child of the top-level result, never the
+/// top level itself) and record `graph_version` and `commit_sha` off every
+/// `Symbol`-shaped object found, tracking each field's consistency
+/// separately -- a `commit_sha` disagreement must not stop `graph_version`
+/// from being collected, and vice versa. Read-only -- nothing is stripped
+/// here.
+fn collect_symbol_run_metadata(
+    value: &Value,
+    graph_version: &mut Option<Value>,
+    graph_version_consistent: &mut bool,
+    commit_sha: &mut Option<Value>,
+    commit_sha_consistent: &mut bool,
+) {
+    match value {
+        Value::Object(obj) => {
+            if is_symbol_shaped(obj) {
+                let gv = obj.get("graph_version").cloned().unwrap_or(Value::Null);
+                match graph_version {
+                    None => *graph_version = Some(gv),
+                    Some(found) if *found == gv => {}
+                    Some(_) => *graph_version_consistent = false,
+                }
+                let cs = obj.get("commit_sha").cloned().unwrap_or(Value::Null);
+                match commit_sha {
+                    None => *commit_sha = Some(cs),
+                    Some(found) if *found == cs => {}
+                    Some(_) => *commit_sha_consistent = false,
+                }
+            }
+            for v in obj.values() {
+                collect_symbol_run_metadata(
+                    v,
+                    graph_version,
+                    graph_version_consistent,
+                    commit_sha,
+                    commit_sha_consistent,
+                );
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                collect_symbol_run_metadata(
+                    v,
+                    graph_version,
+                    graph_version_consistent,
+                    commit_sha,
+                    commit_sha_consistent,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Second pass, run only once `hoist_symbol_run_metadata` has decided which
+/// of `graph_version`/`commit_sha` are consistent enough to hoist: remove
+/// just those fields from every `Symbol`-shaped object, recursively. A
+/// field whose nested copies disagree is left in place.
+fn strip_symbol_run_metadata(value: &mut Value, strip_graph_version: bool, strip_commit_sha: bool) {
+    match value {
+        Value::Object(obj) => {
+            if is_symbol_shaped(obj) {
+                if strip_graph_version {
+                    obj.remove("graph_version");
+                }
+                if strip_commit_sha {
+                    obj.remove("commit_sha");
+                }
+            }
+            for v in obj.values_mut() {
+                strip_symbol_run_metadata(v, strip_graph_version, strip_commit_sha);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                strip_symbol_run_metadata(v, strip_graph_version, strip_commit_sha);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -609,6 +796,76 @@ mod tests {
         assert!(
             props.contains_key("graph_version"),
             "context schema should advertise 'graph_version'"
+        );
+    }
+
+    /// Issue #67: `min_resolution` carries a doc comment specifically so it
+    /// shows up in the generated tool schema with a description -- the
+    /// omission #60 calls out for `sections`/`max_refs` on this same
+    /// method.
+    #[test]
+    fn explain_symbol_schema_describes_min_resolution() {
+        let schema = super::method_param_schema("explain_symbol");
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("explain_symbol schema should have properties");
+        let min_resolution = props
+            .get("min_resolution")
+            .expect("explain_symbol schema should advertise 'min_resolution'");
+        let description = min_resolution
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap_or_default();
+        assert!(
+            !description.is_empty(),
+            "min_resolution should carry a non-empty description in the generated schema, got {:?}",
+            min_resolution
+        );
+    }
+
+    #[test]
+    fn explain_symbol_schema_documents_sections_and_max_refs() {
+        // issue #69: `sections` and `max_refs` carried no doc comments, so
+        // the generated tool schema exposed them with no description and
+        // callers never discovered they could narrow their request.
+        let schema = super::method_param_schema("explain_symbol");
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("explain_symbol should have properties");
+
+        let sections_desc = props
+            .get("sections")
+            .and_then(|p| p.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or_else(|| panic!("'sections' should carry a description: {:?}", props));
+        for value in ["source", "callers", "callees", "tests", "implements"] {
+            assert!(
+                sections_desc.contains(value),
+                "'sections' description should list accepted value '{}': {:?}",
+                value,
+                sections_desc
+            );
+        }
+        for alias in ["dependencies", "dependents", "summary", "body"] {
+            assert!(
+                sections_desc.contains(alias),
+                "'sections' description should list alias '{}': {:?}",
+                alias,
+                sections_desc
+            );
+        }
+
+        let max_refs_desc = props
+            .get("max_refs")
+            .and_then(|p| p.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or_else(|| panic!("'max_refs' should carry a description: {:?}", props));
+        assert!(
+            max_refs_desc.contains("10"),
+            "'max_refs' description should state its default: {:?}",
+            max_refs_desc
         );
     }
 

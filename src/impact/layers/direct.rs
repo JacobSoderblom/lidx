@@ -7,6 +7,7 @@
 use crate::db::Db;
 use crate::impact::confidence::apply_distance_decay;
 use crate::impact::types::{ConfidenceScore, ImpactSource, LayerResult};
+use crate::indexer::test_detection::is_test_file;
 use crate::model::{Edge, Symbol};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -61,28 +62,6 @@ fn next_symbol(edge: &Edge, current_id: i64, direction: TraversalDirection) -> O
             }
         }
     }
-}
-
-/// Check if a file path appears to be a test file
-pub fn is_test_file(path: &str) -> bool {
-    let path_lower = path.to_lowercase();
-    path_lower.contains("/test/")
-        || path_lower.contains("/tests/")
-        || path_lower.contains("/_test/")
-        || path_lower.contains("/__tests__/")
-        || path_lower.contains("/spec/")
-        || path_lower.contains("test_")
-        || path_lower.contains("_test.")
-        || path_lower.contains(".test.")
-        || path_lower.contains(".spec.")
-        || path_lower.ends_with("_test.rs")
-        || path_lower.ends_with("_test.py")
-        || path_lower.ends_with(".test.ts")
-        || path_lower.ends_with(".test.tsx")
-        || path_lower.ends_with(".spec.ts")
-        || path_lower.ends_with(".spec.tsx")
-        || path_lower.ends_with("_spec.rb")
-        || path_lower.ends_with("test.java")
 }
 
 /// Check if an edge matches the filtering criteria
@@ -165,7 +144,7 @@ fn resolve_bridge_targets(
     symbol_cache: &mut HashMap<i64, Symbol>,
     symbol_checked: &mut HashSet<i64>,
     distance_map: &mut HashMap<i64, usize>,
-    parent_map: &mut HashMap<i64, (i64, String)>,
+    parent_map: &mut HashMap<i64, (i64, String, Option<String>)>,
     queue: &mut VecDeque<(i64, usize)>,
     current_distance: usize,
     limit: usize,
@@ -196,9 +175,11 @@ fn resolve_bridge_targets(
                     continue;
                 }
                 distance_map.insert(bridged_id, current_distance + 1);
-                parent_map
-                    .entry(bridged_id)
-                    .or_insert((*source_id, edge_kind.clone()));
+                parent_map.entry(bridged_id).or_insert((
+                    *source_id,
+                    edge_kind.clone(),
+                    bridged_edge.resolution_kind.clone(),
+                ));
                 queue.push_back((bridged_id, current_distance + 1));
                 if visited.len() >= limit {
                     return Ok(true);
@@ -262,7 +243,7 @@ pub fn analyze_direct_impact(
     }
 
     let mut truncated = false;
-    let mut parent_map: HashMap<i64, (i64, String)> = HashMap::new();
+    let mut parent_map: HashMap<i64, (i64, String, Option<String>)> = HashMap::new();
     // Issue #81 (R5): every edge that actually contributed a newly-visited
     // symbol -- checked once, after the BFS, against `HEURISTIC_RESOLUTION_KINDS`
     // to decide whether suggesting the exclude-heuristics retry is useful at
@@ -306,23 +287,11 @@ pub fn analyze_direct_impact(
         // Batch fetch edges for all symbols at this level
         let edges_by_symbol = db.edges_for_symbols(&current_level, languages, graph_version)?;
 
-        // Issue #81: only fetched when a filter is actually requested -- the
-        // common (unfiltered) case pays no extra query per BFS level. An
-        // edge id absent from this map (a Bridge Edge kind) is always
-        // traversable, since bridging is governed separately below.
-        let resolution_kinds: HashMap<i64, String> = if exclude_resolution_kinds.is_empty() {
-            HashMap::new()
-        } else {
-            let edge_ids: Vec<i64> = edges_by_symbol
-                .values()
-                .flat_map(|edges| edges.iter().map(|e| e.id))
-                .collect();
-            db.edge_resolution_kinds(&edge_ids)?
-        };
+        // Issue #81: an edge with no resolution kind (a Bridge Edge kind) is
+        // always traversable, since bridging is governed separately below.
         let excluded = |edge: &Edge| {
             crate::model::is_resolution_excluded(
-                edge.id,
-                &resolution_kinds,
+                edge.resolution_kind.as_deref(),
                 exclude_resolution_kinds,
             )
         };
@@ -384,9 +353,11 @@ pub fn analyze_direct_impact(
                     }
 
                     distance_map.insert(next_id, current_distance + 1);
-                    parent_map
-                        .entry(next_id)
-                        .or_insert((*current_id, edge.kind.clone()));
+                    parent_map.entry(next_id).or_insert((
+                        *current_id,
+                        edge.kind.clone(),
+                        edge.resolution_kind.clone(),
+                    ));
                     queue.push_back((next_id, current_distance + 1));
                     traversed_edge_ids.push(edge.id);
 
@@ -442,12 +413,18 @@ pub fn analyze_direct_impact(
 
         impacts.push((symbol_id, confidence));
 
+        // Resolution tier of the edge that first reached this symbol
+        // (issue #62's AC), read off the same parent_map entry
+        // reconstruct_path_steps walks later.
+        let resolution_kind = parent_map.get(&symbol_id).and_then(|(_, _, rk)| rk.clone());
+
         // Track evidence source
         evidence.insert(
             symbol_id,
             vec![ImpactSource::DirectEdge {
                 edge_kind: "DIRECT".to_string(), // Simplified for now
                 distance,
+                resolution_kind,
             }],
         );
     }
@@ -523,6 +500,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -557,6 +535,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -616,6 +595,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,

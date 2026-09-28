@@ -57,6 +57,39 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         lower
     }).collect();
 
+    // Issue #67: resolve `min_resolution` against the resolver's canonical,
+    // strongest-to-weakest tier order (`db::resolver::ALL_RESOLUTION_KINDS`,
+    // the same single source of truth issue #81's `exclude_resolution_kinds`
+    // validates against on trace_flow/analyze_impact) rather than inventing
+    // a second ordering here. An unknown tier name warns -- same treatment
+    // as an unknown `sections` value above -- instead of erroring, and the
+    // filter is then simply not applied.
+    let min_resolution_rank: Option<usize> = params.min_resolution.as_deref().and_then(|tier| {
+        resolution_kind_rank(tier).or_else(|| {
+            warnings.push(format!(
+                "Unknown resolution tier '{}' in min_resolution -- valid tiers: {}",
+                tier,
+                crate::db::resolver::ALL_RESOLUTION_KINDS.join(", ")
+            ));
+            None
+        })
+    });
+    // A ref passes when its edge's tier ranks at or above (index <=)
+    // `min_resolution_rank`. An edge whose `resolution_kind` is absent
+    // (never resolved -- e.g. a String-Targeted Edge Kind whose own target
+    // is a config key/secret URI, not a symbol, such as CONFIG_SOURCE)
+    // never passes once a tier floor is set, since "absent" is weaker than
+    // every named tier.
+    let meets_min_resolution = |kind: &Option<String>| -> bool {
+        match min_resolution_rank {
+            None => true,
+            Some(min_rank) => kind
+                .as_deref()
+                .and_then(resolution_kind_rank)
+                .is_some_and(|rank| rank <= min_rank),
+        }
+    };
+
     // 1. Resolve symbol
     let sym_ref = if let Some(id) = params.id {
         crate::resolve::SymbolRef::Id(id)
@@ -74,17 +107,19 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         ctx.graph_version,
     )?;
 
-    // 2. Budget allocation (30% source, 20% callers, 20% callees, 10% tests, 20% expansion) - FIX #4
+    // 2. Budget allocation (30% source, 20% callers, 20% callees, 10% tests,
+    // 10% implements, 10% expansion) - FIX #4
     let source_budget = max_bytes * 30 / 100;
     let callers_budget = max_bytes * 20 / 100;
     let callees_budget = max_bytes * 20 / 100;
     let tests_budget = max_bytes * 10 / 100;
-    let expansion_budget = max_bytes * 20 / 100;
+    let implements_budget = max_bytes * 10 / 100;
+    let expansion_budget = max_bytes * 10 / 100;
     let mut used_bytes = 0usize;
-    // Tracks only the source-snippet cut; caller/callee/test truncation is
-    // derived honestly below from `returned.len() < total` for each section
-    // (see step 9.5), so a section capped by max_refs is never reported as
-    // complete just because it didn't also blow its byte budget.
+    // Tracks only the source-snippet cut; caller/callee/test/implements
+    // truncation is derived honestly below from `returned.len() < total` for
+    // each section (see step 9.5), so a section capped by max_refs is never
+    // reported as complete just because it didn't also blow its byte budget.
     let mut source_truncated = false;
 
     // 3. Read source (FIX #5: truncate at line boundaries)
@@ -195,6 +230,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             for edge in &target_edges {
                 if edge.kind == "CALLS"
                     && edge.target_symbol_id == Some(*target_id)
+                    && meets_min_resolution(&edge.resolution_kind)
                     && let Some(source_id) = edge.source_symbol_id
                     && seen_caller_ids.insert(source_id)
                 {
@@ -216,11 +252,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         }
                         caller_bytes += ref_bytes;
                         caller_refs.push(ExplainRef {
-                            signature: caller_sym.signature.clone(),
                             symbol: caller_sym,
                             evidence,
                             edge_kind: "CALLS".to_string(),
                             protocol_context: None,
+                            resolution_kind: edge.resolution_kind.clone(),
                         });
                     }
                 }
@@ -228,6 +264,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         }
 
         for r in &incoming_cross {
+            if !meets_min_resolution(&r.resolution_kind) {
+                continue;
+            }
             if !seen_caller_ids.insert(r.symbol.id) {
                 continue;
             }
@@ -299,6 +338,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         // surface a Python `trim` function as its callee).
                         let target_id = edge.target_symbol_id;
                         if let Some(target_id) = target_id
+                            && meets_min_resolution(&edge.resolution_kind)
                             && seen_callee_ids.insert(target_id)
                         {
                             callee_total += 1;
@@ -321,11 +361,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                 }
                                 callee_bytes += ref_bytes;
                                 callee_refs.push(ExplainRef {
-                                    signature: callee_sym.signature.clone(),
                                     symbol: callee_sym,
                                     evidence,
                                     edge_kind: "CALLS".to_string(),
                                     protocol_context: None,
+                                    resolution_kind: edge.resolution_kind.clone(),
                                 });
                             }
                         }
@@ -341,6 +381,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     // this call, so the read path must not guess one either.
                     let target_id = edge.target_symbol_id;
                     if let Some(target_id) = target_id
+                        && meets_min_resolution(&edge.resolution_kind)
                         && seen_callee_ids.insert(target_id)
                     {
                         callee_total += 1;
@@ -362,11 +403,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             }
                             callee_bytes += ref_bytes;
                             callee_refs.push(ExplainRef {
-                                signature: callee_sym.signature.clone(),
                                 symbol: callee_sym,
                                 evidence,
                                 edge_kind: "CALLS".to_string(),
                                 protocol_context: None,
+                                resolution_kind: edge.resolution_kind.clone(),
                             });
                         }
                     }
@@ -375,6 +416,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         }
 
         for r in &outgoing_cross {
+            if !meets_min_resolution(&r.resolution_kind) {
+                continue;
+            }
             if !seen_callee_ids.insert(r.symbol.id) {
                 continue;
             }
@@ -411,9 +455,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         for edge in &edges {
             if edge.kind == "CALLS"
                 && edge.target_symbol_id == Some(symbol.id)
+                && meets_min_resolution(&edge.resolution_kind)
                 && let Some(source_id) = edge.source_symbol_id
                 && let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id)
-                && looks_like_test(&test_sym)
+                && is_test_symbol(&test_sym)
             {
                 calls_test_ids.insert(test_sym.id);
                 test_total += 1;
@@ -428,11 +473,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 }
                 test_bytes += ref_bytes;
                 test_refs.push(ExplainRef {
-                    signature: test_sym.signature.clone(),
                     symbol: test_sym,
                     evidence: edge.evidence_snippet.clone(),
                     edge_kind: "CALLS".to_string(),
                     protocol_context: None,
+                    resolution_kind: edge.resolution_kind.clone(),
                 });
                 if test_refs.len() >= max_refs {
                     still_adding = false;
@@ -442,7 +487,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         // Tests reaching the symbol over RPC/HTTP/a channel (e.g. a gRPC
         // client test against a service impl) count too.
         for r in &incoming_cross {
-            if !looks_like_test(&r.symbol) || !calls_test_ids.insert(r.symbol.id) {
+            if !is_test_symbol(&r.symbol)
+                || !meets_min_resolution(&r.resolution_kind)
+                || !calls_test_ids.insert(r.symbol.id)
+            {
                 continue;
             }
             test_total += 1;
@@ -466,25 +514,63 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         (None, 0)
     };
 
+    // 7.5. Issue #68: an empty tests list means two different things -- "no
+    // test-scope files were ever indexed" or "tests exist but none reach
+    // this symbol". Only the first is worth a warning; the second is a
+    // genuine "no" and would be noise. Reuses #63's scope-count query, so
+    // this only runs when the tests section was requested and came back
+    // empty.
+    if sections.contains(&"tests".to_string())
+        && tests_total == 0
+        && !indexer
+            .db()
+            .has_test_scope_files(ctx.languages.as_deref(), ctx.graph_version)?
+    {
+        warnings.push(
+            "No test-scope files exist in this index, so the empty tests list doesn't mean \
+             this symbol is untested -- it means lidx found no files it classifies as \
+             tests (tests are detected by file path, so tests living inline in an \
+             otherwise-non-test file, e.g. Rust's #[cfg(test)] modules, won't count)."
+                .to_string(),
+        );
+    }
+
     // 8. Find implements (EXTENDS/IMPLEMENTS/INHERITS edges) - FIX #2
-    let implements = if sections.contains(&"implements".to_string()) {
+    //
+    // Same honest-counting shape as callers/callees/tests: `implements_total`
+    // counts every distinct match, `still_adding` gates whether we still
+    // collect once max_refs or the byte budget is hit.
+    let (implements, implements_total) = if sections.contains(&"implements".to_string()) {
         let mut impl_syms = Vec::new();
+        let mut impl_bytes = 0usize;
+        let mut impl_total = 0usize;
+        let mut still_adding = true;
         for edge in &edges {
             if (edge.kind == "EXTENDS" || edge.kind == "IMPLEMENTS" || edge.kind == "INHERITS")
                 && edge.source_symbol_id == Some(symbol.id)
                 && let Some(target_id) = edge.target_symbol_id
                 && let Ok(Some(impl_sym)) = indexer.db().get_symbol_by_id(target_id)
             {
+                impl_total += 1;
+                if !still_adding {
+                    continue;
+                }
+                let ref_bytes = serde_json::to_string(&impl_sym).unwrap_or_default().len();
+                if impl_bytes + ref_bytes > implements_budget {
+                    still_adding = false;
+                    continue;
+                }
+                impl_bytes += ref_bytes;
                 impl_syms.push(impl_sym);
+                if impl_syms.len() >= max_refs {
+                    still_adding = false;
+                }
             }
         }
-        if impl_syms.is_empty() {
-            None
-        } else {
-            Some(impl_syms)
-        }
+        used_bytes += impl_bytes;
+        (Some(impl_syms), impl_total)
     } else {
-        None
+        (None, 0)
     };
 
     // 9. FIX #4: Budget expansion - if >30% budget remaining, fetch source snippets for refs
@@ -589,7 +675,16 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let truncated = source_truncated
         || callers.as_ref().is_some_and(|c| c.len() < callers_total)
         || callees.as_ref().is_some_and(|c| c.len() < callees_total)
-        || tests.as_ref().is_some_and(|t| t.len() < tests_total);
+        || tests.as_ref().is_some_and(|t| t.len() < tests_total)
+        || implements
+            .as_ref()
+            .is_some_and(|i| i.len() < implements_total);
+
+    // `commit_sha`/`graph_version` are constant for the whole response --
+    // captured once here, before `symbol` moves into the struct below, so
+    // they can be stamped onto the envelope instead of every nested symbol.
+    let graph_version = symbol.graph_version;
+    let commit_sha = symbol.commit_sha.clone();
 
     let result = ExplainSymbolResult {
         symbol,
@@ -600,7 +695,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         callees,
         tests_total: tests.as_ref().map(|_| tests_total),
         tests,
+        implements_total: implements.as_ref().map(|_| implements_total),
         implements,
+        graph_version,
+        commit_sha,
         budget: BudgetInfo {
             budget_bytes: max_bytes,
             used_bytes,
@@ -615,14 +713,14 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         warnings,
     };
 
+    // `graph_version`/`commit_sha` live once on `ExplainSymbolResult`
+    // (issue #66); the generic dispatch-boundary hoist in `rpc::mod`
+    // (`hoist_symbol_run_metadata`, applied to every method's result in
+    // `handle_method`) strips the copies `Symbol`'s derive still stamps
+    // onto every nested symbol -- the main `symbol`, each `ExplainRef.symbol`
+    // in `callers`/`callees`/`tests`, and each entry of `implements` -- since
+    // the top-level `graph_version` field above is already present.
     Ok(serde_json::to_value(&result)?)
-}
-
-fn looks_like_test(sym: &Symbol) -> bool {
-    sym.file_path.contains("test")
-        || sym.file_path.contains("spec")
-        || sym.name.starts_with("test_")
-        || sym.name.starts_with("Test")
 }
 
 /// Client side of each bridge pair (see `bridge_complement`): the kinds an
@@ -702,11 +800,11 @@ fn cross_boundary_refs(
                 return None;
             };
             Some(ExplainRef {
-                signature: hop.symbol.signature.clone(),
                 symbol: hop.symbol,
                 evidence: hop.snippet,
                 edge_kind,
                 protocol_context: hop.protocol_context,
+                resolution_kind: hop.resolution_kind,
             })
         })
         .collect();
@@ -721,11 +819,11 @@ fn cross_boundary_refs(
                     && let Some(sym) = db.get_symbol_by_id(source_id)?
                 {
                     refs.push(ExplainRef {
-                        signature: sym.signature.clone(),
                         symbol: sym,
                         evidence: edge.evidence_snippet,
                         edge_kind: edge.kind,
                         protocol_context: None,
+                        resolution_kind: edge.resolution_kind,
                     });
                 }
             }
@@ -855,11 +953,64 @@ pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Va
 
     let config = crate::repo_map::RepoMapConfig {
         max_bytes,
-        languages: ctx.languages,
-        paths: ctx.paths,
+        languages: ctx.languages.clone(),
+        paths: ctx.paths.clone(),
         graph_version: ctx.graph_version,
     };
     let map_result = crate::repo_map::build_repo_map(indexer.db(), &config)?;
+
+    if map_result.modules == 0 {
+        // Issue #65: zero modules is ambiguous -- it could mean "the
+        // languages/paths filter matched nothing in an otherwise-populated
+        // index" or "nothing is indexed at all". Disambiguate by re-running
+        // the same aggregate with every filter dropped: if that's also
+        // empty, the index itself is empty.
+        let filter_applied = ctx.languages.is_some() || ctx.paths.is_some();
+        let index_empty = if filter_applied {
+            indexer
+                .db()
+                .module_summary(1, None, None, ctx.graph_version)?
+                .is_empty()
+        } else {
+            true
+        };
+        let mut next_hops: Vec<serde_json::Value> = Vec::new();
+        let warnings: Vec<String> = if index_empty {
+            next_hops.push(json!({
+                "method": "reindex",
+                "params": {},
+                "description": "Nothing is indexed yet -- reindex the repo before calling repo_map",
+            }));
+            vec![
+                "Nothing is indexed for this repo at this graph version -- reindex before calling repo_map."
+                    .to_string(),
+            ]
+        } else {
+            next_hops.push(json!({
+                "method": "repo_map",
+                "params": {},
+                "description": "Retry without the languages/paths filter to see the full repo map",
+            }));
+            vec![
+                "The languages/paths filter matched no indexed files -- widen or drop the filter to see the repo map."
+                    .to_string(),
+            ]
+        };
+        return Ok(json!({
+            "text": map_result.text,
+            "modules": map_result.modules,
+            "symbols": map_result.symbols,
+            "bytes": map_result.bytes,
+            "counts": {
+                "modules": map_result.modules,
+                "symbols": map_result.symbols,
+            },
+            "index_empty": index_empty,
+            "warnings": warnings,
+            "next_hops": next_hops,
+        }));
+    }
+
     Ok(json!({
         "text": map_result.text,
         "modules": map_result.modules,
@@ -932,6 +1083,73 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
         ctx.paths.as_deref(),
         ctx.graph_version,
     )?;
+
+    if results.is_empty() {
+        // Issue #65: an empty ranking is ambiguous on its own -- it could mean
+        // "every function in scope is below min_complexity" (metrics exist) or
+        // "no function/method symbols were ever extracted for this scope"
+        // (metrics never existed: an unsupported/unindexed language, or a
+        // paths filter matching nothing). Report both explicitly instead of a
+        // bare `[]`.
+        //
+        // Whether metrics exist at all is answered by re-running the same
+        // query with the complexity floor lifted (`i64::MIN`) and a 1-row
+        // limit, rather than a second query carrying its own copy of the
+        // join/version/path-filter SQL.
+        let metrics_exist = !indexer
+            .db()
+            .top_complexity(
+                1,
+                i64::MIN,
+                ctx.languages.as_deref(),
+                ctx.paths.as_deref(),
+                ctx.graph_version,
+            )?
+            .is_empty();
+        let mut next_hops: Vec<serde_json::Value> = Vec::new();
+        // `limit:0` empties `results` unconditionally (`LIMIT 0`), regardless
+        // of whether any symbol actually clears `min_complexity` -- only
+        // diagnose "below threshold" when the limit itself isn't already
+        // sufficient to explain the empty result.
+        let warnings: Vec<String> = if limit == 0 {
+            vec![
+                "limit:0 was requested, so no results can be returned regardless of scope -- retry with a positive limit to see results."
+                    .to_string(),
+            ]
+        } else if metrics_exist {
+            if min_complexity > 1 {
+                let mut retry_params = serde_json::Map::new();
+                retry_params.insert("min_complexity".to_string(), json!(1));
+                if let Some(ref langs) = ctx.languages {
+                    retry_params.insert("languages".to_string(), json!(langs));
+                }
+                if let Some(ref paths) = ctx.paths {
+                    retry_params.insert("paths".to_string(), json!(paths));
+                }
+                next_hops.push(json!({
+                    "method": "top_complexity",
+                    "params": retry_params,
+                    "description": "Retry with min_complexity:1 to see the full (unfiltered) ranking",
+                }));
+            }
+            vec![format!(
+                "No symbol reached min_complexity:{min_complexity} in this scope -- complexity metrics exist, the scope is just uniformly simple relative to the threshold."
+            )]
+        } else {
+            vec![
+                "No complexity metrics exist for this scope at all -- no function/method symbols were extracted for the requested languages/paths (unsupported or unindexed language, or a paths filter with no matches)."
+                    .to_string(),
+            ]
+        };
+        return Ok(json!({
+            "results": [],
+            "counts": { "results": 0 },
+            "metrics_exist": metrics_exist,
+            "warnings": warnings,
+            "next_hops": next_hops,
+        }));
+    }
+
     Ok(json!(results))
 }
 
@@ -953,6 +1171,17 @@ pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Val
 // ---------------------------------------------------------------------------
 // GROUP 2 -- Graph handlers
 // ---------------------------------------------------------------------------
+
+/// Rank of `kind` in `db::resolver::ALL_RESOLUTION_KINDS`'s
+/// strongest-to-weakest tier order, or `None` when `kind` isn't one of
+/// those values. Shared lookup behind `explain_symbol`'s `min_resolution`
+/// filter (issue #67) -- unlike `validate_resolution_kinds` below, a miss
+/// here isn't an error, just "unranked".
+fn resolution_kind_rank(kind: &str) -> Option<usize> {
+    crate::db::resolver::ALL_RESOLUTION_KINDS
+        .iter()
+        .position(|k| *k == kind)
+}
 
 /// Issue #81 (R3): reject an unknown or wrong-case resolution kind
 /// (`"BARE_NAME"`, `"bogus"`) up front, rather than silently matching
@@ -1897,6 +2126,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                         },
                         distance: current_distance,
                         confidence: base_confidence,
+                        resolution_kind: edge.resolution_kind.clone(),
                     });
                 }
             }

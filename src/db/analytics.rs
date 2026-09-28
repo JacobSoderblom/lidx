@@ -568,7 +568,8 @@ impl Db {
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_kind
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE e.kind = 'IMPORTS'
@@ -628,7 +629,8 @@ impl Db {
              SELECT -ur.id, f.path, ur.edge_kind, ur.source_symbol_id, NULL,
                     ur.reference_name, ur.detail, ur.evidence_snippet,
                     ur.evidence_start_line, ur.evidence_end_line, ur.confidence,
-                    ur.graph_version, ur.commit_sha, ur.trace_id, ur.span_id, ur.event_ts
+                    ur.graph_version, ur.commit_sha, ur.trace_id, ur.span_id, ur.event_ts,
+                    NULL
              FROM unresolved_references ur
              JOIN files f ON ur.file_id = f.id
              WHERE ur.edge_kind = 'IMPORTS'

@@ -223,7 +223,13 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             return;
         }
         "function_item" => {
-            handle_function(node, ctx, source, output);
+            // Reached directly (not via `walk_declaration_list`'s
+            // attribute-tracking loop), so no preceding `attribute_item`s
+            // are associated with it -- this only happens for a
+            // `function_item` nested somewhere other than a
+            // `source_file`/`declaration_list` (e.g. a fn nested inside a
+            // block), where `#[test]` wouldn't apply anyway.
+            handle_function(node, ctx, source, output, &[]);
             return;
         }
         "function_signature_item" => {
@@ -483,7 +489,13 @@ fn module_dir_for_source(
     Some(dir)
 }
 
-fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn handle_function(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+    attributes: &[Node<'_>],
+) {
     let Some(name) = extract_name(node, source) else {
         return;
     };
@@ -496,7 +508,7 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
         ),
     };
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
-    let signature = extract_signature(node, source);
+    let signature = extract_signature(node, source, attributes);
     // A trait default method or trait-impl method has no `pub` to check —
     // it's exactly as visible as the trait itself (see
     // `Context::in_trait_scope`, issue #75 follow-up, finding B).
@@ -560,7 +572,7 @@ fn handle_function_with_attributes(
     for edge in route_edges_from_attribute_items(attributes, ctx, source, &qualname) {
         output.edges.push(edge);
     }
-    handle_function(node, ctx, source, output);
+    handle_function(node, ctx, source, output, attributes);
 }
 
 fn handle_function_signature(
@@ -577,7 +589,7 @@ fn handle_function_signature(
     };
     let qualname = format!("{container}::{name}");
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
-    let signature = extract_signature(node, source);
+    let signature = extract_signature(node, source, &[]);
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -1828,17 +1840,49 @@ fn has_pub_visibility(node: Node<'_>) -> bool {
         .any(|c| c.kind() == "visibility_modifier")
 }
 
-fn extract_signature(node: Node<'_>, source: &str) -> Option<String> {
+/// Attribute short names (the identifier after the last `::`, e.g. `test`
+/// for both `#[test]` and `#[tokio::test]`) that mark a function as a test.
+/// `signature` is the only place a Rust attribute reaches
+/// `test_detection::is_test_symbol` -- see `test_attribute_prefix` and
+/// issue #67 finding 1.
+const TEST_ATTRIBUTE_NAMES: &[&str] = &["test", "rstest"];
+
+/// Renders any test-marking attribute in `attributes` (see
+/// `TEST_ATTRIBUTE_NAMES`) back out as `#[full_name]\n...` so
+/// `extract_signature` can prefix it onto the signature, giving
+/// `test_detection::is_test_symbol`'s signature check something to see.
+/// Attribute arguments (e.g. `#[rstest(case(1, 2))]`) are dropped -- only
+/// presence matters here.
+fn test_attribute_prefix(attributes: &[Node<'_>], source: &str) -> Option<String> {
+    let mut prefix = String::new();
+    for info in attribute_infos(attributes, source) {
+        if TEST_ATTRIBUTE_NAMES.contains(&info.short_name.as_str()) {
+            prefix.push_str(&format!("#[{}]\n", info.full_name));
+        }
+    }
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix)
+    }
+}
+
+fn extract_signature(node: Node<'_>, source: &str, attributes: &[Node<'_>]) -> Option<String> {
     let params = node
         .child_by_field_name("parameters")
         .map(|n| node_text(n, source));
     let return_type = node
         .child_by_field_name("return_type")
         .map(|n| node_text(n, source));
-    match (params, return_type) {
+    let base = match (params, return_type) {
         (Some(p), Some(r)) => Some(format!("{p} -> {r}")),
         (Some(p), None) => Some(p),
         _ => None,
+    };
+    match (test_attribute_prefix(attributes, source), base) {
+        (Some(prefix), Some(base)) => Some(format!("{prefix}{base}")),
+        (Some(prefix), None) => Some(prefix),
+        (None, base) => base,
     }
 }
 
