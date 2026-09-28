@@ -659,6 +659,12 @@ pub struct ExplainSymbolResult {
     pub tests_total: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub implements: Option<Vec<Symbol>>,
+    /// True count of matching supertypes/interfaces found, before
+    /// `max_refs`/byte-budget capping. Present whenever `implements` is
+    /// present, so a caller can always tell `implements.len() <
+    /// implements_total` apart from "there just aren't more".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub implements_total: Option<usize>,
     /// `commit_sha`/`graph_version` are properties of the indexing run, not
     /// of any one symbol, so they're stamped here once for the whole
     /// response rather than on `symbol` and every `ExplainRef` (issue #66).
