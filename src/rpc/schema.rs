@@ -11,11 +11,14 @@ pub(super) fn schema_value<T: schemars::JsonSchema>() -> Value {
 pub fn method_param_schema(method: &str) -> Value {
     use super::{
         AnalyzeDiffParams, AnalyzeImpactParams, ContextParams, DeadSymbolsParams,
-        ExplainSymbolParams, GatherContextParams, OnboardParams, OrientParams, ReindexParams,
-        RepoMapParams, RgParams, TopComplexityParams, TraceFlowParams,
+        ExplainSymbolParams, GatherContextParams, OnboardParams, OrientParams, OutlineParams,
+        ReadSymbolParams, ReindexParams, RepoMapParams, RgParams, TopComplexityParams,
+        TraceFlowParams,
     };
     match method {
         "search" => schema_value::<RgParams>(),
+        "outline" => schema_value::<OutlineParams>(),
+        "read_symbol" => schema_value::<ReadSymbolParams>(),
         "explain_symbol" => schema_value::<ExplainSymbolParams>(),
         "trace_flow" => schema_value::<TraceFlowParams>(),
         "analyze_impact" => schema_value::<AnalyzeImpactParams>(),

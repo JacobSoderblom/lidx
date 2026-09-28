@@ -266,11 +266,45 @@ struct ContextParams {
     graph_version: Option<i64>,
 }
 
+/// Params for `outline`: a compact, no-bodies skeleton of a file's symbols.
+/// Fields are unread until the #93 follow-up ticket implements the handler body.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct OutlineParams {
+    /// Repo-relative file path to outline
+    path: String,
+    /// Filter to specific symbol kinds (e.g. ["function", "class"])
+    kinds: Option<Vec<String>>,
+    /// Maximum nesting depth to include (default: unlimited)
+    max_depth: Option<usize>,
+}
+
+/// Params for `read_symbol`: fetch a symbol's exact source from disk.
+/// Exactly one of `qualname`, `query`, `qualnames` must be given.
+/// `skeleton`/`context_lines` are unread until the #93 follow-up ticket implements
+/// the handler body; `qualname`/`query`/`qualnames` are already used for validation.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct ReadSymbolParams {
+    /// Exact qualname of the symbol to read (exactly one of qualname/query/qualnames required)
+    qualname: Option<String>,
+    /// Fuzzy search query resolved the same way as explain_symbol/trace_flow (exactly one of qualname/query/qualnames required)
+    query: Option<String>,
+    /// Multiple qualnames to read in one call (exactly one of qualname/query/qualnames required)
+    qualnames: Option<Vec<String>>,
+    /// For container symbols (class/struct/impl), return child signatures instead of the full body (default: false)
+    skeleton: Option<bool>,
+    /// Lines of surrounding context to include around the symbol's span (default: 0)
+    context_lines: Option<usize>,
+}
+
 /// Hard cap on result count to prevent huge responses that blow LLM context windows.
 const MAX_RESPONSE_LIMIT: usize = 500;
 
 pub const METHOD_LIST: &[&str] = &[
     "search",
+    "outline",
+    "read_symbol",
     "explain_symbol",
     "trace_flow",
     "analyze_impact",
@@ -367,6 +401,8 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
     let max_response_bytes = format::extract_max_response_bytes(method, &params);
     let value = match method {
         "search" => handlers::handle_search_rg(indexer, params)?,
+        "outline" => handlers::handle_outline(indexer, params)?,
+        "read_symbol" => handlers::handle_read_symbol(indexer, params)?,
         "explain_symbol" => handlers::handle_explain_symbol(indexer, params)?,
         "trace_flow" => handlers::handle_trace_flow(indexer, params)?,
         "analyze_impact" => handlers::handle_analyze_impact(indexer, params)?,

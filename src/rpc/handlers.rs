@@ -734,6 +734,38 @@ fn cross_boundary_refs(
     Ok(refs)
 }
 
+/// Stub for issue #94: `outline` is registered (METHOD_LIST, param schema, dispatch)
+/// so follow-up tickets can build the real file-skeleton behaviour without touching
+/// these shared registration points. Params are validated (required `path`) before
+/// the not-implemented error, so callers can tell "bad request" from "not built yet".
+pub(super) fn handle_outline(_indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let _params: OutlineParams = serde_json::from_value(params)?;
+    anyhow::bail!("'outline' is not implemented yet")
+}
+
+/// Stub for issue #94: `read_symbol` is registered (METHOD_LIST, param schema,
+/// dispatch) so follow-up tickets can build the real source-reading behaviour
+/// without touching these shared registration points. The schema can't express
+/// "exactly one of qualname/query/qualnames", so that's validated here.
+pub(super) fn handle_read_symbol(_indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let params: ReadSymbolParams = serde_json::from_value(params)?;
+    let selectors_given = [
+        params.qualname.is_some(),
+        params.query.is_some(),
+        params.qualnames.is_some(),
+    ]
+    .into_iter()
+    .filter(|given| *given)
+    .count();
+    if selectors_given != 1 {
+        anyhow::bail!(
+            "read_symbol requires exactly one of 'qualname', 'query', or 'qualnames' ({} provided)",
+            selectors_given
+        );
+    }
+    anyhow::bail!("'read_symbol' is not implemented yet")
+}
+
 // ---------------------------------------------------------------------------
 // GROUP 4 -- Metrics handlers
 // ---------------------------------------------------------------------------

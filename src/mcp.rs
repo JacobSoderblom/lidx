@@ -200,6 +200,8 @@ fn initialize_result(message: &Value) -> Value {
     orient for architecture overview. search for regex. \
     gather_context for LLM-ready context.\n\
     \n\
+    Read code with outline (file skeleton) and read_symbol (exact source) instead of whole-file reads.\n\
+    \n\
     Other methods: {other_methods}.\n\
     \n\
     Edge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, \
