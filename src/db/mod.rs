@@ -1772,7 +1772,8 @@ impl Db {
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
-                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts
+                    e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
+                    e.resolution_kind
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE e.graph_version = ?
@@ -2095,6 +2096,7 @@ fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
         trace_id: row.get(13)?,
         span_id: row.get(14)?,
         event_ts: row.get(15)?,
+        resolution_kind: row.get(16)?,
     })
 }
 

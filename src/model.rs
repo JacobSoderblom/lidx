@@ -86,6 +86,17 @@ pub struct Edge {
     pub evidence_end_line: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
+    /// The tier that bound `target_symbol_id` (`exact`, `import`,
+    /// `receiver_type`, `inherited`, `two_segment`, `bare_name`, or
+    /// `external` -- see `db::resolver::ResolutionKind::as_str`), or
+    /// absent when the target was never bound at all: a still-pending
+    /// Bridge Edge kind, a structural edge kind the resolver doesn't
+    /// label, or a graph indexed before this field existed. Distinct from
+    /// `confidence` (extraction certainty) and, on `analyze_impact`, from
+    /// `min_confidence` (a query-time impact heuristic) -- neither of
+    /// those describes how the target was found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
     pub graph_version: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_sha: Option<String>,
