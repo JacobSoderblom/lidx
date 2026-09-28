@@ -792,3 +792,65 @@ fn search_fallback_hop_uses_fixed_string_and_survives_regex_metacharacters() {
         );
     }
 }
+
+/// An unmatched config URI passed directly as trace_flow's start_qualname
+/// must return a structured recovery payload, not a flat error — matching
+/// the batch path's existing recovery for the same kind of input.
+#[test]
+fn trace_flow_unmatched_config_uri_returns_recovery_not_error() {
+    let temp = indexed_repo("py_config");
+    let envelope = call_raw(
+        &temp,
+        "trace_flow",
+        r#"{"start_qualname":"env://NOPE_VAR"}"#,
+    );
+
+    assert!(
+        envelope.get("error").is_none(),
+        "unmatched config URI must not flat-error, got: {envelope}"
+    );
+    let result = &envelope["result"];
+    assert_eq!(result["resolved"], serde_json::json!(false));
+    let next_hops = result["next_hops"].as_array().unwrap();
+    assert!(!next_hops.is_empty());
+    for hop in next_hops {
+        if hop["method"].as_str() == Some("search") && !rg_available() {
+            continue;
+        }
+        let followed = follow_hop(&temp, hop);
+        assert!(
+            followed.get("error").is_none(),
+            "recovery hop {} must execute, got: {}",
+            hop,
+            followed
+        );
+    }
+}
+
+/// Same as above for analyze_impact's single-seed config-URI path.
+#[test]
+fn analyze_impact_unmatched_config_uri_returns_recovery_not_error() {
+    let temp = indexed_repo("py_config");
+    let envelope = call_raw(&temp, "analyze_impact", r#"{"qualname":"env://NOPE_VAR"}"#);
+
+    assert!(
+        envelope.get("error").is_none(),
+        "unmatched config URI must not flat-error, got: {envelope}"
+    );
+    let result = &envelope["result"];
+    assert_eq!(result["resolved"], serde_json::json!(false));
+    let next_hops = result["next_hops"].as_array().unwrap();
+    assert!(!next_hops.is_empty());
+    for hop in next_hops {
+        if hop["method"].as_str() == Some("search") && !rg_available() {
+            continue;
+        }
+        let followed = follow_hop(&temp, hop);
+        assert!(
+            followed.get("error").is_none(),
+            "recovery hop {} must execute, got: {}",
+            hop,
+            followed
+        );
+    }
+}

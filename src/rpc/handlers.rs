@@ -1009,16 +1009,26 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
 
     // Resolve start symbol.
     // For ID lookups we propagate errors (the ID either exists or it doesn't).
-    // For qualname/query lookups we catch resolution failure and return a structured
-    // recovery payload instead of a flat {error: ...} so the caller has a path forward.
+    // For qualname/query lookups, and for a config URI with no connected
+    // symbols, we catch resolution failure and return a structured recovery
+    // payload instead of a flat {error: ...} so the caller has a path forward.
     let start_ref = if let Some(id) = params.start_id {
         crate::resolve::SymbolRef::Id(id)
     } else if let Some(ref qn) = params.start_qualname {
         if crate::indexer::config::is_config_uri(qn) {
-            let first_id = config_uri_seeds
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("no symbols found for config URI: {}", qn))?;
-            crate::resolve::SymbolRef::Id(*first_id)
+            match config_uri_seeds.first() {
+                Some(&first_id) => crate::resolve::SymbolRef::Id(first_id),
+                None => {
+                    return Ok(crate::resolve::build_resolution_recovery_payload(
+                        indexer.db(),
+                        qn,
+                        &[],
+                        ctx.graph_version,
+                        "trace_flow",
+                        &raw_params,
+                    ));
+                }
+            }
         } else {
             crate::resolve::SymbolRef::Qualname(qn.clone())
         }
@@ -1479,9 +1489,13 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 ctx.graph_version,
             )?;
             if ids.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "no symbols found for config URI: {}",
-                    qualname
+                return Ok(crate::resolve::build_resolution_recovery_payload(
+                    indexer.db(),
+                    qualname,
+                    &[],
+                    ctx.graph_version,
+                    "analyze_impact",
+                    &raw_params,
                 ));
             }
             ids
