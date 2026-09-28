@@ -134,6 +134,60 @@ fn analyze_diff_hoists_graph_version_once_and_strips_nested_symbols() {
     }
 }
 
+/// Issue: `top_complexity`'s non-empty path used to return a bare JSON
+/// array, so `hoist_symbol_run_metadata` had nowhere to hoist
+/// `graph_version` to and left it repeated on every entry's nested
+/// `symbol`. Now that the non-empty path returns `{"results": [...],
+/// "counts": {...}}` like the empty path already did, the generic hoist
+/// should apply the same as it does for `trace_flow`/`analyze_diff` above.
+#[test]
+fn top_complexity_hoists_graph_version_once_and_returns_object() {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-top-complexity-hoist-")
+        .tempdir()
+        .unwrap();
+    common::write_files(
+        tmp.path(),
+        &[("target.py", TARGET_SOURCE), ("caller.py", CALLER_SOURCE)],
+    );
+    let repo_root = tmp.path().to_path_buf();
+    let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    let result = call(repo_root, db_path, "top_complexity", r#"{}"#);
+
+    assert!(
+        result.is_object(),
+        "top_complexity must always return an object, even when non-empty: {result:?}"
+    );
+
+    let results = result["results"].as_array().expect("results array");
+    assert!(!results.is_empty(), "expected at least one entry: {result:?}");
+
+    let envelope_graph_version = result.get("graph_version").unwrap_or_else(|| {
+        panic!("top_complexity must carry graph_version at the envelope: {result:?}")
+    });
+    assert!(
+        envelope_graph_version.as_i64().is_some_and(|v| v > 0),
+        "graph_version must be a positive integer: {result:?}"
+    );
+
+    for entry in results {
+        assert!(
+            entry["symbol"].get("graph_version").is_none(),
+            "an entry's nested symbol must not repeat graph_version now that it's hoisted: {entry:?}"
+        );
+    }
+
+    assert_eq!(
+        result["counts"]["results"].as_u64(),
+        Some(results.len() as u64),
+        "counts.results should mirror the results length: {result:?}"
+    );
+}
+
 fn git(repo_root: &std::path::Path, args: &[&str]) {
     let status = std::process::Command::new("git")
         .arg("-C")
