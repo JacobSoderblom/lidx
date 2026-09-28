@@ -710,45 +710,14 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         warnings,
     };
 
-    Ok(strip_redundant_symbol_run_metadata(serde_json::to_value(
-        &result,
-    )?))
-}
-
-/// `graph_version`/`commit_sha` now live once on `ExplainSymbolResult`
-/// (issue #66); strip the copies `Symbol`'s derive still stamps onto every
-/// nested symbol -- the main `symbol`, each `ExplainRef.symbol` in
-/// `callers`/`callees`/`tests`, and each entry of `implements`.
-fn strip_redundant_symbol_run_metadata(mut value: Value) -> Value {
-    fn strip(sym: &mut Value) {
-        if let Value::Object(map) = sym {
-            map.remove("graph_version");
-            map.remove("commit_sha");
-        }
-    }
-
-    if let Value::Object(map) = &mut value {
-        if let Some(sym) = map.get_mut("symbol") {
-            strip(sym);
-        }
-        for section in ["callers", "callees", "tests"] {
-            if let Some(Value::Array(refs)) = map.get_mut(section) {
-                for r in refs.iter_mut() {
-                    if let Value::Object(rmap) = r
-                        && let Some(sym) = rmap.get_mut("symbol")
-                    {
-                        strip(sym);
-                    }
-                }
-            }
-        }
-        if let Some(Value::Array(impls)) = map.get_mut("implements") {
-            for sym in impls.iter_mut() {
-                strip(sym);
-            }
-        }
-    }
-    value
+    // `graph_version`/`commit_sha` live once on `ExplainSymbolResult`
+    // (issue #66); the generic dispatch-boundary hoist in `rpc::mod`
+    // (`hoist_symbol_run_metadata`, applied to every method's result in
+    // `handle_method`) strips the copies `Symbol`'s derive still stamps
+    // onto every nested symbol -- the main `symbol`, each `ExplainRef.symbol`
+    // in `callers`/`callees`/`tests`, and each entry of `implements` -- since
+    // the top-level `graph_version` field above is already present.
+    Ok(serde_json::to_value(&result)?)
 }
 
 /// Client side of each bridge pair (see `bridge_complement`): the kinds an
