@@ -16,11 +16,13 @@
 //!   `tests/fixtures/golden/python`, which documents (in its
 //!   `expected_edges.txt`) exactly which qualname binds at which tier.
 //! - `trace_flow`'s hops (`TraceHop`) must carry the tier of the edge each
-//!   hop traversed, including the bridged-edge case where a Bridge Edge
-//!   kind's own target was never bound (its query-time complement lookup
-//!   crosses a language boundary by exact `target_qualname`, not through
-//!   the name tiers), so the hop must omit the field rather than report a
-//!   tier that was never computed.
+//!   hop traversed, including the case where a String-Targeted Edge Kind's
+//!   own target was never bound to a symbol at all (a Bridge Edge kind's
+//!   cross-process join key, or -- as exercised below -- a CONFIG_SOURCE
+//!   kind's config key/secret URI): its query-time complement lookup
+//!   matches that target text exactly, not through the name tiers, so the
+//!   hop must omit the field rather than report a tier that was never
+//!   computed.
 //! - `analyze_impact`'s `affected[].path.steps` (`PathStep`, reconstructed
 //!   from the direct layer's BFS `parent_map`) must carry the tier of the
 //!   edge each step traversed, across two different tiers in the same
@@ -190,10 +192,11 @@ spec:
 /// fixture's `settings.read_url` reaches three hops in one downstream
 /// trace: a direct `CALLS` to `format_url` (binds `exact`), a direct
 /// `CALLS` to the external `os.getenv` stub (binds `external`), and a
-/// bridged `CONFIG_SOURCE` hop crossing into `k8s/deploy.yaml` -- that
-/// last edge's own target is a `env://DATABASE_URL` URI, not a symbol, so
-/// the write path never binds it and its hop must omit `resolution_kind`
-/// entirely rather than report a tier that was never computed.
+/// `CONFIG_SOURCE` hop crossing into `k8s/deploy.yaml` -- a
+/// String-Targeted Edge Kind, not a Bridge Edge pair, whose own target is
+/// a `env://DATABASE_URL` config-key URI, not a symbol, so the write path
+/// never binds it and its hop must omit `resolution_kind` entirely rather
+/// than report a tier that was never computed.
 #[test]
 fn trace_flow_hops_expose_resolution_kind_and_omit_it_when_unresolved() {
     let tmp = tempfile::Builder::new()

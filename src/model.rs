@@ -90,7 +90,9 @@ pub struct Edge {
     /// `receiver_type`, `inherited`, `two_segment`, `bare_name`, or
     /// `external` -- see `db::resolver::ResolutionKind::as_str`), or
     /// absent when the target was never bound at all: a still-pending
-    /// Bridge Edge kind, a structural edge kind the resolver doesn't
+    /// String-Targeted Edge Kind (a Bridge Edge kind's cross-process join
+    /// key, or a CONFIG_SOURCE/CONFIG_READ/CONFIG_BIND kind's config
+    /// key/secret URI), a structural edge kind the resolver doesn't
     /// label, or a graph indexed before this field existed. Distinct from
     /// `confidence` (extraction certainty) and, on `analyze_impact`, from
     /// `min_confidence` (a query-time impact heuristic) -- neither of
@@ -364,9 +366,9 @@ pub fn xref_is_traversable(edge: &Edge) -> bool {
 /// (`traversal.rs`), the direct impact layer (`impact/layers/direct.rs`),
 /// and the test impact layer (`impact/layers/test.rs`). `resolution_kind`
 /// is `Edge::resolution_kind` (`edge.resolution_kind.as_deref()`); `None`
-/// means the edge has no resolution kind at all -- a Bridge Edge kind or
-/// any edge kind the resolver never labels -- and is never excluded by
-/// this check.
+/// means the edge has no resolution kind at all -- a String-Targeted Edge
+/// Kind (Bridge Edge or CONFIG_*) or any edge kind the resolver never
+/// labels -- and is never excluded by this check.
 pub fn is_resolution_excluded(resolution_kind: Option<&str>, exclude: &[String]) -> bool {
     resolution_kind.is_some_and(|rk| exclude.iter().any(|k| k == rk))
 }
@@ -711,8 +713,9 @@ pub struct ExplainRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol_context: Option<serde_json::Value>,
     /// The tier that bound this ref's edge -- see `Edge::resolution_kind`.
-    /// Absent when the edge itself never carries one (a Bridge Edge kind
-    /// still pending, or an edge kind the resolver doesn't label).
+    /// Absent when the edge itself never carries one (a still-pending
+    /// String-Targeted Edge Kind -- Bridge Edge or CONFIG_* -- or an edge
+    /// kind the resolver doesn't label).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution_kind: Option<String>,
 }
@@ -818,8 +821,9 @@ pub struct DiffImpactEntry {
     pub confidence: f64,
     /// The tier that bound the edge connecting this entry to the previous
     /// BFS level -- see `Edge::resolution_kind`. Absent when that edge
-    /// never carries one (a Bridge Edge kind still pending, or an edge
-    /// kind the resolver doesn't label).
+    /// never carries one (a still-pending String-Targeted Edge Kind --
+    /// Bridge Edge or CONFIG_* -- or an edge kind the resolver doesn't
+    /// label).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution_kind: Option<String>,
 }
@@ -900,8 +904,8 @@ pub struct TraceHop {
     pub protocol_context: Option<serde_json::Value>,
     /// The tier that bound the edge this hop traversed -- see
     /// `Edge::resolution_kind`. Absent when the edge itself never carries
-    /// one (a Bridge Edge kind still pending, or an edge kind the resolver
-    /// doesn't label).
+    /// one (a still-pending String-Targeted Edge Kind -- Bridge Edge or
+    /// CONFIG_* -- or an edge kind the resolver doesn't label).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution_kind: Option<String>,
 }

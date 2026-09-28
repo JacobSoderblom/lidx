@@ -19,10 +19,15 @@ impl Db {
         let commit_sha = self.graph_version_commit(graph_version)?;
 
         let conn = self.read_conn()?;
-        let files = count_files_for_version(&conn, languages, graph_version)?;
+        // Issue #69: `files` and `scope_counts` both used to run their own
+        // copy of this same file-set query (`count_files_for_version` and
+        // `scope_counts_for_version`'s `file_paths_for_version` call); fetch
+        // the paths once and derive both from it.
+        let paths = file_paths_for_version(&conn, languages, graph_version)?;
+        let files = paths.len() as i64;
         let symbols = count_symbols_for_version(&conn, languages, graph_version)?;
         let edges = count_edges_for_version(&conn, languages, graph_version)?;
-        let scope_counts = scope_counts_for_version(&conn, languages, graph_version)?;
+        let scope_counts = scope_counts_for_paths(&paths);
 
         Ok(RepoOverview {
             repo_root: repo_root.to_string_lossy().to_string(),
@@ -37,18 +42,22 @@ impl Db {
     }
 
     /// Issue #68: cheap check for whether the index holds any test-scope
-    /// files at all, reusing #63's `scope_counts_for_version` query rather
+    /// files at all, reusing #63's `file_paths_for_version` query rather
     /// than a second test-file tally. `explain_symbol` calls this only when
     /// its `tests` section comes back empty, to decide whether that empty
-    /// list needs an explanatory warning or is a genuine "no".
+    /// list needs an explanatory warning or is a genuine "no". Issue #69:
+    /// early-exits on the first tests-scope match instead of classifying
+    /// every path into all four scopes just to read one field back off.
     pub fn has_test_scope_files(
         &self,
         languages: Option<&[String]>,
         graph_version: i64,
     ) -> Result<bool> {
         let conn = self.read_conn()?;
-        let counts = scope_counts_for_version(&conn, languages, graph_version)?;
-        Ok(counts.tests > 0)
+        let paths = file_paths_for_version(&conn, languages, graph_version)?;
+        Ok(paths
+            .iter()
+            .any(|path| scope_allows(path, Some(SearchScope::Tests), false, None)))
     }
 
     pub fn list_languages(&self, graph_version: i64) -> Result<Vec<String>> {
@@ -466,54 +475,16 @@ where
     })
 }
 
-fn count_files_for_version(
-    conn: &Connection,
-    languages: Option<&[String]>,
-    graph_version: i64,
-) -> Result<i64> {
-    // Issue #80: excludes the single synthetic external pseudo-file every
-    // stub symbol belongs to (`f.language = 'external'`, see
-    // `Resolver::external_file_id`) -- it's not a real repo file.
-    let mut sql = String::from(
-        "SELECT COUNT(*)
-         FROM files f
-         WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)
-           AND f.language != 'external'",
-    );
-    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
-    if let Some(languages) = languages
-        && !languages.is_empty()
-    {
-        sql.push_str(" AND f.language IN (");
-        for (idx, _) in languages.iter().enumerate() {
-            if idx > 0 {
-                sql.push(',');
-            }
-            sql.push('?');
-        }
-        sql.push(')');
-        for language in languages {
-            params.push(language as &dyn rusqlite::ToSql);
-        }
-    }
-    let count: i64 = conn.query_row(&sql, &*params, |row| row.get(0))?;
-    Ok(count)
-}
-
 /// Issue #63: per-scope file counts for `repo_overview`, reusing
 /// `search::scope_allows` -- the same query-time classifier the `search`
 /// method's `scope` param uses -- rather than introducing a stored scope
-/// column. Runs the classifier in-process over the same file set
-/// `count_files_for_version` counts (same exclusions: deleted, `external`
-/// pseudo-file, optional language filter).
-fn scope_counts_for_version(
-    conn: &Connection,
-    languages: Option<&[String]>,
-    graph_version: i64,
-) -> Result<ScopeCounts> {
-    let paths = file_paths_for_version(conn, languages, graph_version)?;
+/// column. Runs the classifier in-process over a file set the caller
+/// already fetched via `file_paths_for_version` (issue #69: `repo_overview`
+/// shares that one query with its own `files` count instead of each
+/// running a separate copy of the same WHERE clause).
+fn scope_counts_for_paths(paths: &[String]) -> ScopeCounts {
     let mut counts = ScopeCounts::default();
-    for path in &paths {
+    for path in paths {
         if scope_allows(path, Some(SearchScope::Code), false, None) {
             counts.code += 1;
         }
@@ -527,7 +498,7 @@ fn scope_counts_for_version(
             counts.examples += 1;
         }
     }
-    Ok(counts)
+    counts
 }
 
 fn file_paths_for_version(
@@ -535,8 +506,9 @@ fn file_paths_for_version(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<Vec<String>> {
-    // Same filter as `count_files_for_version`: excludes deleted files and
-    // the synthetic `external` pseudo-file (issue #80).
+    // Issue #80: excludes deleted files and the single synthetic external
+    // pseudo-file every stub symbol belongs to (`f.language = 'external'`,
+    // see `Resolver::external_file_id`) -- it's not a real repo file.
     let mut sql = String::from(
         "SELECT f.path
          FROM files f

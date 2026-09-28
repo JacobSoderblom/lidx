@@ -76,9 +76,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     });
     // A ref passes when its edge's tier ranks at or above (index <=)
     // `min_resolution_rank`. An edge whose `resolution_kind` is absent
-    // (never resolved -- e.g. a Bridge Edge whose own target is a URI, not
-    // a symbol) never passes once a tier floor is set, since "absent" is
-    // weaker than every named tier.
+    // (never resolved -- e.g. a String-Targeted Edge Kind whose own target
+    // is a config key/secret URI, not a symbol, such as CONFIG_SOURCE)
+    // never passes once a tier floor is set, since "absent" is weaker than
+    // every named tier.
     let meets_min_resolution = |kind: &Option<String>| -> bool {
         match min_resolution_rank {
             None => true,
@@ -1088,13 +1089,32 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
         // (metrics never existed: an unsupported/unindexed language, or a
         // paths filter matching nothing). Report both explicitly instead of a
         // bare `[]`.
-        let metrics_exist = indexer.db().complexity_metrics_exist(
-            ctx.languages.as_deref(),
-            ctx.paths.as_deref(),
-            ctx.graph_version,
-        )?;
+        //
+        // Whether metrics exist at all is answered by re-running the same
+        // query with the complexity floor lifted (`i64::MIN`) and a 1-row
+        // limit, rather than a second query carrying its own copy of the
+        // join/version/path-filter SQL.
+        let metrics_exist = !indexer
+            .db()
+            .top_complexity(
+                1,
+                i64::MIN,
+                ctx.languages.as_deref(),
+                ctx.paths.as_deref(),
+                ctx.graph_version,
+            )?
+            .is_empty();
         let mut next_hops: Vec<serde_json::Value> = Vec::new();
-        let warnings: Vec<String> = if metrics_exist {
+        // `limit:0` empties `results` unconditionally (`LIMIT 0`), regardless
+        // of whether any symbol actually clears `min_complexity` -- only
+        // diagnose "below threshold" when the limit itself isn't already
+        // sufficient to explain the empty result.
+        let warnings: Vec<String> = if limit == 0 {
+            vec![
+                "limit:0 was requested, so no results can be returned regardless of scope -- retry with a positive limit to see results."
+                    .to_string(),
+            ]
+        } else if metrics_exist {
             if min_complexity > 1 {
                 let mut retry_params = serde_json::Map::new();
                 retry_params.insert("min_complexity".to_string(), json!(1));

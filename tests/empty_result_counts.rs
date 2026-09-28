@@ -151,6 +151,66 @@ fn top_complexity_empty_due_to_missing_language_reports_no_metrics() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// `limit:0` empties `results` unconditionally (`LIMIT 0`), regardless of
+/// whether any symbol actually clears `min_complexity` -- the
+/// below-threshold diagnosis ("No symbol reached min_complexity...") must
+/// not fire here, since the limit, not the threshold, is what caused the
+/// empty result.
+#[test]
+fn top_complexity_zero_limit_does_not_report_below_threshold() {
+    let (repo_root, db_path) = setup_repo("py_mvp");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let result = rpc::handle_method(
+        &mut indexer,
+        "top_complexity",
+        serde_json::json!({"limit": 0}),
+    )
+    .unwrap();
+
+    assert!(
+        result.is_object(),
+        "empty top_complexity must be an explicit-counts object, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result["results"].as_array().unwrap().len(),
+        0,
+        "results should be empty: {:?}",
+        result
+    );
+    assert_eq!(
+        result["counts"]["results"].as_u64(),
+        Some(0),
+        "counts.results should be explicit 0: {:?}",
+        result
+    );
+    assert_eq!(
+        result["metrics_exist"].as_bool(),
+        Some(true),
+        "py_mvp has functions, complexity metrics do exist -- limit:0 is what \
+         emptied results, not a missing scope: {:?}",
+        result
+    );
+
+    let warnings: Vec<String> = result["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.contains("min_complexity") || w.contains("uniformly simple")),
+        "limit:0 must not produce the below-threshold diagnosis, got warnings: {:?}",
+        warnings
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 // ---------------------------------------------------------------------------
 // repo_map
 // ---------------------------------------------------------------------------

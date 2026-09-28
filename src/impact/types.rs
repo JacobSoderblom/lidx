@@ -19,8 +19,8 @@ pub struct PathStep {
     pub to_symbol: String,
     /// Resolution tier of the traversed edge (issue #62's AC: every
     /// response carrying edges exposes the resolution tier). Absent when
-    /// the edge has no resolution kind at all -- a Bridge Edge kind or any
-    /// edge kind the resolver never labels.
+    /// the edge has no resolution kind at all -- a String-Targeted Edge Kind
+    /// (Bridge Edge or CONFIG_*) or any edge kind the resolver never labels.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution_kind: Option<String>,
 }
