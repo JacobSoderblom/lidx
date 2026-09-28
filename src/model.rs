@@ -225,6 +225,19 @@ pub struct Edge {
     pub evidence_end_line: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
+    /// The tier that bound `target_symbol_id` (`exact`, `import`,
+    /// `receiver_type`, `inherited`, `two_segment`, `bare_name`, or
+    /// `external` -- see `db::resolver::ResolutionKind::as_str`), or
+    /// absent when the target was never bound at all: a still-pending
+    /// String-Targeted Edge Kind (a Bridge Edge kind's cross-process join
+    /// key, or a CONFIG_SOURCE/CONFIG_READ/CONFIG_BIND kind's config
+    /// key/secret URI), a structural edge kind the resolver doesn't
+    /// label, or a graph indexed before this field existed. Distinct from
+    /// `confidence` (extraction certainty) and, on `analyze_impact`, from
+    /// `min_confidence` (a query-time impact heuristic) -- neither of
+    /// those describes how the target was found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
     pub graph_version: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_sha: Option<String>,
@@ -271,6 +284,23 @@ pub struct RepoOverview {
     pub last_indexed: Option<i64>,
     pub graph_version: Option<i64>,
     pub commit_sha: Option<String>,
+    pub scope_counts: ScopeCounts,
+}
+
+/// Per-scope file counts (issue #63), aggregated from the same query-time
+/// classifier `search::scope_allows` uses for the `search` method's `scope`
+/// param -- not a stored column. A file can satisfy more than one scope
+/// (e.g. `docs/build.py` is both `docs` and, unlike `code`, not mutually
+/// exclusive with it), so these counts are not guaranteed to sum to
+/// `RepoOverview::files`. Every field is always present, including zero --
+/// this is what makes an empty `tests` list elsewhere in a response
+/// interpretable rather than ambiguous.
+#[derive(Debug, Serialize, Clone, Copy, Default)]
+pub struct ScopeCounts {
+    pub code: i64,
+    pub tests: i64,
+    pub docs: i64,
+    pub examples: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -473,22 +503,16 @@ pub fn xref_is_traversable(edge: &Edge) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether `edge_id`'s resolution kind (as returned by
-/// `Db::edge_resolution_kinds`, keyed by edge id) is one of `exclude` --
-/// the shared `exclude_resolution_kinds` predicate (issue #81) behind
-/// `trace_flow` (`traversal.rs`), the direct impact layer
-/// (`impact/layers/direct.rs`), and the test impact layer
-/// (`impact/layers/test.rs`). An edge id absent from `resolution_kinds` has
-/// no resolution kind at all -- a Bridge Edge kind or any edge kind the
-/// resolver never labels -- and is never excluded by this check.
-pub fn is_resolution_excluded(
-    edge_id: i64,
-    resolution_kinds: &std::collections::HashMap<i64, String>,
-    exclude: &[String],
-) -> bool {
-    resolution_kinds
-        .get(&edge_id)
-        .is_some_and(|rk| exclude.iter().any(|k| k == rk))
+/// Whether an edge's own resolution kind is one of `exclude` -- the shared
+/// `exclude_resolution_kinds` predicate (issue #81) behind `trace_flow`
+/// (`traversal.rs`), the direct impact layer (`impact/layers/direct.rs`),
+/// and the test impact layer (`impact/layers/test.rs`). `resolution_kind`
+/// is `Edge::resolution_kind` (`edge.resolution_kind.as_deref()`); `None`
+/// means the edge has no resolution kind at all -- a String-Targeted Edge
+/// Kind (Bridge Edge or CONFIG_*) or any edge kind the resolver never
+/// labels -- and is never excluded by this check.
+pub fn is_resolution_excluded(resolution_kind: Option<&str>, exclude: &[String]) -> bool {
+    resolution_kind.is_some_and(|rk| exclude.iter().any(|k| k == rk))
 }
 
 #[derive(Debug, Serialize)]
@@ -801,6 +825,18 @@ pub struct ExplainSymbolResult {
     pub tests_total: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub implements: Option<Vec<Symbol>>,
+    /// True count of matching supertypes/interfaces found, before
+    /// `max_refs`/byte-budget capping. Present whenever `implements` is
+    /// present, so a caller can always tell `implements.len() <
+    /// implements_total` apart from "there just aren't more".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub implements_total: Option<usize>,
+    /// `commit_sha`/`graph_version` are properties of the indexing run, not
+    /// of any one symbol, so they're stamped here once for the whole
+    /// response rather than on `symbol` and every `ExplainRef` (issue #66).
+    pub graph_version: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
     pub budget: BudgetInfo,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub next_hops: Vec<serde_json::Value>,
@@ -812,14 +848,18 @@ pub struct ExplainSymbolResult {
 pub struct ExplainRef {
     pub symbol: Symbol,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
     pub edge_kind: String,
     /// Service/rpc, route, channel or config key for a cross-boundary
     /// (RPC_CALL, HTTP_CALL, CHANNEL_PUBLISH, CONFIG_READ, ...) ref.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol_context: Option<serde_json::Value>,
+    /// The tier that bound this ref's edge -- see `Edge::resolution_kind`.
+    /// Absent when the edge itself never carries one (a still-pending
+    /// String-Targeted Edge Kind -- Bridge Edge or CONFIG_* -- or an edge
+    /// kind the resolver doesn't label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -921,6 +961,13 @@ pub struct DiffImpactEntry {
     pub relationship: String, // "calls", "imports", "extends"
     pub distance: usize,
     pub confidence: f64,
+    /// The tier that bound the edge connecting this entry to the previous
+    /// BFS level -- see `Edge::resolution_kind`. Absent when that edge
+    /// never carries one (a still-pending String-Targeted Edge Kind --
+    /// Bridge Edge or CONFIG_* -- or an edge kind the resolver doesn't
+    /// label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -997,4 +1044,10 @@ pub struct TraceHop {
     pub boundary_detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol_context: Option<serde_json::Value>,
+    /// The tier that bound the edge this hop traversed -- see
+    /// `Edge::resolution_kind`. Absent when the edge itself never carries
+    /// one (a still-pending String-Targeted Edge Kind -- Bridge Edge or
+    /// CONFIG_* -- or an edge kind the resolver doesn't label).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_kind: Option<String>,
 }

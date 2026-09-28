@@ -263,7 +263,7 @@ fn tool_spec() -> Value {
                 },
                 "include_structured": {
                     "type": "boolean",
-                    "description": "If false, omit structuredContent from tool responses."
+                    "description": "If true, also include structuredContent in tool responses. Omitted by default -- the text content already carries the full response."
                 }
             },
             "required": ["method"]
@@ -445,7 +445,7 @@ fn include_structured_from_args(arguments: &Value) -> bool {
     arguments
         .get("include_structured")
         .and_then(|value| value.as_bool())
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -570,7 +570,11 @@ mod tests {
 
     #[test]
     fn include_structured_parsing() {
-        assert!(include_structured_from_args(&json!({})));
+        // Issue #66: structuredContent is now opt-in, not opt-out -- a
+        // client that doesn't pass `include_structured` no longer gets it,
+        // halving the payload for callers who never asked for the duplicate
+        // structured serialization.
+        assert!(!include_structured_from_args(&json!({})));
         assert!(!include_structured_from_args(
             &json!({ "include_structured": false })
         ));
@@ -596,6 +600,29 @@ mod tests {
 
         let no_struct = call_result_ok(result, TextMode::Compact, false);
         assert!(no_struct.get("structuredContent").is_none());
+    }
+
+    #[test]
+    fn call_result_ok_omits_structured_content_by_default() {
+        // Issue #66: a tool call that never sets `include_structured` --
+        // the common case -- must not carry structuredContent at all, while
+        // text-mode output (the caller's actual signal) is untouched.
+        let result = json!({ "a": 1 });
+        let include_structured = include_structured_from_args(&json!({}));
+
+        let default_pretty = call_result_ok(result.clone(), TextMode::Pretty, include_structured);
+        assert!(default_pretty.get("structuredContent").is_none());
+        assert_eq!(
+            default_pretty["content"][0]["text"].as_str().unwrap(),
+            serde_json::to_string_pretty(&result).unwrap()
+        );
+
+        let default_compact = call_result_ok(result.clone(), TextMode::Compact, include_structured);
+        assert!(default_compact.get("structuredContent").is_none());
+        assert_eq!(
+            default_compact["content"][0]["text"].as_str().unwrap(),
+            serde_json::to_string(&result).unwrap()
+        );
     }
 
     #[test]

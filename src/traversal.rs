@@ -3,7 +3,7 @@ use crate::indexer::channel::{boundary_type_for_kind, bridge_complement};
 use crate::indexer::scan::language_for_path;
 use crate::model::{Edge, Symbol, TraceHop};
 use anyhow::Result;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 /// Direction of a BFS trace through the symbol graph.
 #[derive(Debug, Clone)]
@@ -132,15 +132,6 @@ pub fn trace_flow(
 
         let edges = db.edges_for_symbol(current_id, languages, graph_version)?;
 
-        // Issue #81: only fetched when a filter is actually requested --
-        // the common (unfiltered) case pays no extra query per BFS node.
-        let resolution_kinds: HashMap<i64, String> = if config.exclude_resolution_kinds.is_empty() {
-            HashMap::new()
-        } else {
-            let edge_ids: Vec<i64> = edges.iter().map(|e| e.id).collect();
-            db.edge_resolution_kinds(&edge_ids)?
-        };
-
         let mut bridge_targets: Vec<(String, String)> = Vec::new();
 
         for edge in &edges {
@@ -153,8 +144,7 @@ pub fn trace_flow(
             // traversable here -- bridging is governed separately below via
             // `bridge_targets`/`bridge_complement`.
             if crate::model::is_resolution_excluded(
-                edge.id,
-                &resolution_kinds,
+                edge.resolution_kind.as_deref(),
                 &config.exclude_resolution_kinds,
             ) {
                 continue;
@@ -265,6 +255,7 @@ pub fn trace_flow(
                                 boundary_type: Some(b_type.to_string()),
                                 boundary_detail: Some(b_detail),
                                 protocol_context: p_context,
+                                resolution_kind: bridged_edge.resolution_kind.clone(),
                             };
                             let hop_size = estimate_hop_size(&hop, config.compact);
                             let hop_idx = trace.len();
@@ -384,6 +375,7 @@ fn build_hop(
         boundary_type,
         boundary_detail,
         protocol_context,
+        resolution_kind: edge.resolution_kind.clone(),
     }
 }
 
@@ -550,6 +542,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -786,6 +779,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -813,6 +807,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -841,6 +836,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -870,6 +866,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -899,6 +896,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -926,6 +924,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -950,6 +949,7 @@ mod tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,
@@ -1396,6 +1396,7 @@ mod tests {
             boundary_type: None,
             boundary_detail: None,
             protocol_context: None,
+            resolution_kind: None,
         };
 
         let full_size = estimate_hop_size(&hop, false);
@@ -1452,6 +1453,7 @@ mod tsx_normalization_tests {
             evidence_start_line: None,
             evidence_end_line: None,
             confidence: None,
+            resolution_kind: None,
             graph_version: 1,
             commit_sha: None,
             trace_id: None,

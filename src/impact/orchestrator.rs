@@ -621,7 +621,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
         let mut any_truncated = false;
 
         // Merge parent maps from all layers (direct layer is primary)
-        let mut merged_parents: HashMap<i64, (i64, String)> = HashMap::new();
+        let mut merged_parents: HashMap<i64, (i64, String, Option<String>)> = HashMap::new();
         for layer_result in &layer_results {
             any_truncated = any_truncated || layer_result.truncated;
 
@@ -751,7 +751,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
 fn reconstruct_path_steps(
     symbol_id: i64,
     seed_set: &HashSet<i64>,
-    parent_map: &HashMap<i64, (i64, String)>,
+    parent_map: &HashMap<i64, (i64, String, Option<String>)>,
     symbol_map: &HashMap<i64, Symbol>,
 ) -> Vec<PathStep> {
     let mut steps = Vec::new();
@@ -761,7 +761,7 @@ fn reconstruct_path_steps(
         if seed_set.contains(&current) {
             break;
         }
-        let Some((parent_id, edge_kind)) = parent_map.get(&current) else {
+        let Some((parent_id, edge_kind, resolution_kind)) = parent_map.get(&current) else {
             break;
         };
         let from_qn = symbol_map
@@ -776,6 +776,7 @@ fn reconstruct_path_steps(
             edge_kind: edge_kind.clone(),
             from_symbol: from_qn,
             to_symbol: to_qn,
+            resolution_kind: resolution_kind.clone(),
         });
         current = *parent_id;
     }

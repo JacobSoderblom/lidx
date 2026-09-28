@@ -15,7 +15,7 @@ pub mod orchestrator;
 pub mod types;
 
 // Re-export key types
-pub use layers::direct::{TraversalDirection, analyze_direct_impact, is_test_file};
+pub use layers::direct::{TraversalDirection, analyze_direct_impact};
 pub use types::{
     FileImpact, ImpactConfig, ImpactEntry, ImpactPath, ImpactResult, ImpactSummary, PathStep,
 };

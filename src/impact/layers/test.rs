@@ -181,26 +181,18 @@ impl<'a> TestImpactLayer<'a> {
             // Find edges where this symbol is the source or target
             let edges = self.db.edges_for_symbol(*seed_id, None, graph_version)?;
 
-            // Issue #81 (R1): same "no extra query when the filter is empty"
-            // discipline as the direct layer (impact/layers/direct.rs) --
-            // this layer walks CALLS edges too, so it must honor the same
-            // `exclude_resolution_kinds` filter the orchestrator only used to
-            // pass to the direct layer.
-            let resolution_kinds: HashMap<i64, String> = if exclude_resolution_kinds.is_empty() {
-                HashMap::new()
-            } else {
-                let edge_ids: Vec<i64> = edges.iter().map(|e| e.id).collect();
-                self.db.edge_resolution_kinds(&edge_ids)?
-            };
-
             for edge in edges {
                 // We want CALL edges where the seed is the TARGET (being called)
                 if edge.kind != "CALLS" {
                     continue;
                 }
+                // Issue #81 (R1): same filter discipline as the direct layer
+                // (impact/layers/direct.rs) -- this layer walks CALLS edges
+                // too, so it must honor the same `exclude_resolution_kinds`
+                // filter the orchestrator only used to pass to the direct
+                // layer.
                 if crate::model::is_resolution_excluded(
-                    edge.id,
-                    &resolution_kinds,
+                    edge.resolution_kind.as_deref(),
                     exclude_resolution_kinds,
                 ) {
                     continue;

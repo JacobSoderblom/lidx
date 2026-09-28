@@ -1,5 +1,6 @@
 use super::{Db, DbDigest, ModuleSummaryEntry, SymbolRefRecord, TableDigest, append_path_filters};
-use crate::model::RepoOverview;
+use crate::model::{RepoOverview, ScopeCounts};
+use crate::search::{SearchScope, scope_allows};
 use anyhow::Result;
 use blake3::Hasher;
 use rusqlite::{Connection, params};
@@ -18,9 +19,15 @@ impl Db {
         let commit_sha = self.graph_version_commit(graph_version)?;
 
         let conn = self.read_conn()?;
-        let files = count_files_for_version(&conn, languages, graph_version)?;
+        // Issue #69: `files` and `scope_counts` both used to run their own
+        // copy of this same file-set query (`count_files_for_version` and
+        // `scope_counts_for_version`'s `file_paths_for_version` call); fetch
+        // the paths once and derive both from it.
+        let paths = file_paths_for_version(&conn, languages, graph_version)?;
+        let files = paths.len() as i64;
         let symbols = count_symbols_for_version(&conn, languages, graph_version)?;
         let edges = count_edges_for_version(&conn, languages, graph_version)?;
+        let scope_counts = scope_counts_for_paths(&paths);
 
         Ok(RepoOverview {
             repo_root: repo_root.to_string_lossy().to_string(),
@@ -30,7 +37,27 @@ impl Db {
             last_indexed,
             graph_version: Some(graph_version),
             commit_sha,
+            scope_counts,
         })
+    }
+
+    /// Issue #68: cheap check for whether the index holds any test-scope
+    /// files at all, reusing #63's `file_paths_for_version` query rather
+    /// than a second test-file tally. `explain_symbol` calls this only when
+    /// its `tests` section comes back empty, to decide whether that empty
+    /// list needs an explanatory warning or is a genuine "no". Issue #69:
+    /// early-exits on the first tests-scope match instead of classifying
+    /// every path into all four scopes just to read one field back off.
+    pub fn has_test_scope_files(
+        &self,
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<bool> {
+        let conn = self.read_conn()?;
+        let paths = file_paths_for_version(&conn, languages, graph_version)?;
+        Ok(paths
+            .iter()
+            .any(|path| scope_allows(path, Some(SearchScope::Tests), false, None)))
     }
 
     pub fn list_languages(&self, graph_version: i64) -> Result<Vec<String>> {
@@ -448,16 +475,42 @@ where
     })
 }
 
-fn count_files_for_version(
+/// Issue #63: per-scope file counts for `repo_overview`, reusing
+/// `search::scope_allows` -- the same query-time classifier the `search`
+/// method's `scope` param uses -- rather than introducing a stored scope
+/// column. Runs the classifier in-process over a file set the caller
+/// already fetched via `file_paths_for_version` (issue #69: `repo_overview`
+/// shares that one query with its own `files` count instead of each
+/// running a separate copy of the same WHERE clause).
+fn scope_counts_for_paths(paths: &[String]) -> ScopeCounts {
+    let mut counts = ScopeCounts::default();
+    for path in paths {
+        if scope_allows(path, Some(SearchScope::Code), false, None) {
+            counts.code += 1;
+        }
+        if scope_allows(path, Some(SearchScope::Tests), false, None) {
+            counts.tests += 1;
+        }
+        if scope_allows(path, Some(SearchScope::Docs), false, None) {
+            counts.docs += 1;
+        }
+        if scope_allows(path, Some(SearchScope::Examples), false, None) {
+            counts.examples += 1;
+        }
+    }
+    counts
+}
+
+fn file_paths_for_version(
     conn: &Connection,
     languages: Option<&[String]>,
     graph_version: i64,
-) -> Result<i64> {
-    // Issue #80: excludes the single synthetic external pseudo-file every
-    // stub symbol belongs to (`f.language = 'external'`, see
-    // `Resolver::external_file_id`) -- it's not a real repo file.
+) -> Result<Vec<String>> {
+    // Issue #80: excludes deleted files and the single synthetic external
+    // pseudo-file every stub symbol belongs to (`f.language = 'external'`,
+    // see `Resolver::external_file_id`) -- it's not a real repo file.
     let mut sql = String::from(
-        "SELECT COUNT(*)
+        "SELECT f.path
          FROM files f
          WHERE (f.deleted_version IS NULL OR f.deleted_version > ?)
            AND f.language != 'external'",
@@ -478,8 +531,13 @@ fn count_files_for_version(
             params.push(language as &dyn rusqlite::ToSql);
         }
     }
-    let count: i64 = conn.query_row(&sql, &*params, |row| row.get(0))?;
-    Ok(count)
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(&*params, |row| row.get::<_, String>(0))?;
+    let mut paths = Vec::new();
+    for row in rows {
+        paths.push(row?);
+    }
+    Ok(paths)
 }
 
 fn count_symbols_for_version(
@@ -898,6 +956,30 @@ mod tests {
         let ov = db.repo_overview("/repo".into(), Some(&langs), gv).unwrap();
         assert_eq!(ov.files, 1);
         assert_eq!(ov.symbols, 2);
+    }
+
+    /// Issue #63: `scope_counts` aggregates `search::scope_allows` (the
+    /// same query-time classifier `search`'s `scope` param uses) over the
+    /// indexed file set, with an explicit zero for a scope that has
+    /// nothing in it rather than the field being omitted.
+    #[test]
+    fn repo_overview_scope_counts_classifies_known_mix() {
+        let (db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+        db.upsert_file("src/a.py", "h1", "python", 10, 0).unwrap();
+        db.upsert_file("tests/test_a.py", "h2", "python", 10, 0)
+            .unwrap();
+        db.upsert_file("docs/guide.py", "h3", "python", 10, 0)
+            .unwrap();
+
+        let ov = db.repo_overview("/repo".into(), None, gv).unwrap();
+        assert_eq!(ov.scope_counts.code, 1);
+        assert_eq!(ov.scope_counts.tests, 1);
+        assert_eq!(ov.scope_counts.docs, 1);
+        assert_eq!(
+            ov.scope_counts.examples, 0,
+            "no examples-scope file was indexed; must report an explicit zero"
+        );
     }
 
     // ---- digest ----
