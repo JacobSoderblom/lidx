@@ -221,7 +221,15 @@ struct ExplainSymbolParams {
     qualname: Option<String>,
     query: Option<String>,
     max_bytes: Option<usize>,
+    /// Sections to include in the response. Accepts any of: "source",
+    /// "callers", "callees", "tests", "implements". Aliases: "dependencies"
+    /// -> "callees", "dependents" -> "callers", "summary"/"body" -> "source".
+    /// Default: all five sections.
     sections: Option<Vec<String>>,
+    /// Max references returned per section (callers, callees, tests,
+    /// implements). Each capped section also reports its true `<section>_total`
+    /// count, so a list capped here can be told apart from a complete one.
+    /// Default: 10.
     max_refs: Option<usize>,
     format: Option<String>,
     /// Keep only callers, callees and tests refs whose edge resolved at or
@@ -644,6 +652,51 @@ mod tests {
             !description.is_empty(),
             "min_resolution should carry a non-empty description in the generated schema, got {:?}",
             min_resolution
+        );
+    }
+
+    #[test]
+    fn explain_symbol_schema_documents_sections_and_max_refs() {
+        // issue #69: `sections` and `max_refs` carried no doc comments, so
+        // the generated tool schema exposed them with no description and
+        // callers never discovered they could narrow their request.
+        let schema = super::method_param_schema("explain_symbol");
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("explain_symbol should have properties");
+
+        let sections_desc = props
+            .get("sections")
+            .and_then(|p| p.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or_else(|| panic!("'sections' should carry a description: {:?}", props));
+        for value in ["source", "callers", "callees", "tests", "implements"] {
+            assert!(
+                sections_desc.contains(value),
+                "'sections' description should list accepted value '{}': {:?}",
+                value,
+                sections_desc
+            );
+        }
+        for alias in ["dependencies", "dependents", "summary", "body"] {
+            assert!(
+                sections_desc.contains(alias),
+                "'sections' description should list alias '{}': {:?}",
+                alias,
+                sections_desc
+            );
+        }
+
+        let max_refs_desc = props
+            .get("max_refs")
+            .and_then(|p| p.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or_else(|| panic!("'max_refs' should carry a description: {:?}", props));
+        assert!(
+            max_refs_desc.contains("10"),
+            "'max_refs' description should state its default: {:?}",
+            max_refs_desc
         );
     }
 

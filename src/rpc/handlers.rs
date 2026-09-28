@@ -106,17 +106,19 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         ctx.graph_version,
     )?;
 
-    // 2. Budget allocation (30% source, 20% callers, 20% callees, 10% tests, 20% expansion) - FIX #4
+    // 2. Budget allocation (30% source, 20% callers, 20% callees, 10% tests,
+    // 10% implements, 10% expansion) - FIX #4
     let source_budget = max_bytes * 30 / 100;
     let callers_budget = max_bytes * 20 / 100;
     let callees_budget = max_bytes * 20 / 100;
     let tests_budget = max_bytes * 10 / 100;
-    let expansion_budget = max_bytes * 20 / 100;
+    let implements_budget = max_bytes * 10 / 100;
+    let expansion_budget = max_bytes * 10 / 100;
     let mut used_bytes = 0usize;
-    // Tracks only the source-snippet cut; caller/callee/test truncation is
-    // derived honestly below from `returned.len() < total` for each section
-    // (see step 9.5), so a section capped by max_refs is never reported as
-    // complete just because it didn't also blow its byte budget.
+    // Tracks only the source-snippet cut; caller/callee/test/implements
+    // truncation is derived honestly below from `returned.len() < total` for
+    // each section (see step 9.5), so a section capped by max_refs is never
+    // reported as complete just because it didn't also blow its byte budget.
     let mut source_truncated = false;
 
     // 3. Read source (FIX #5: truncate at line boundaries)
@@ -531,24 +533,41 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     }
 
     // 8. Find implements (EXTENDS/IMPLEMENTS/INHERITS edges) - FIX #2
-    let implements = if sections.contains(&"implements".to_string()) {
+    //
+    // Same honest-counting shape as callers/callees/tests: `implements_total`
+    // counts every distinct match, `still_adding` gates whether we still
+    // collect once max_refs or the byte budget is hit.
+    let (implements, implements_total) = if sections.contains(&"implements".to_string()) {
         let mut impl_syms = Vec::new();
+        let mut impl_bytes = 0usize;
+        let mut impl_total = 0usize;
+        let mut still_adding = true;
         for edge in &edges {
             if (edge.kind == "EXTENDS" || edge.kind == "IMPLEMENTS" || edge.kind == "INHERITS")
                 && edge.source_symbol_id == Some(symbol.id)
                 && let Some(target_id) = edge.target_symbol_id
                 && let Ok(Some(impl_sym)) = indexer.db().get_symbol_by_id(target_id)
             {
+                impl_total += 1;
+                if !still_adding {
+                    continue;
+                }
+                let ref_bytes = serde_json::to_string(&impl_sym).unwrap_or_default().len();
+                if impl_bytes + ref_bytes > implements_budget {
+                    still_adding = false;
+                    continue;
+                }
+                impl_bytes += ref_bytes;
                 impl_syms.push(impl_sym);
+                if impl_syms.len() >= max_refs {
+                    still_adding = false;
+                }
             }
         }
-        if impl_syms.is_empty() {
-            None
-        } else {
-            Some(impl_syms)
-        }
+        used_bytes += impl_bytes;
+        (Some(impl_syms), impl_total)
     } else {
-        None
+        (None, 0)
     };
 
     // 9. FIX #4: Budget expansion - if >30% budget remaining, fetch source snippets for refs
@@ -653,7 +672,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let truncated = source_truncated
         || callers.as_ref().is_some_and(|c| c.len() < callers_total)
         || callees.as_ref().is_some_and(|c| c.len() < callees_total)
-        || tests.as_ref().is_some_and(|t| t.len() < tests_total);
+        || tests.as_ref().is_some_and(|t| t.len() < tests_total)
+        || implements
+            .as_ref()
+            .is_some_and(|i| i.len() < implements_total);
 
     // `commit_sha`/`graph_version` are constant for the whole response --
     // captured once here, before `symbol` moves into the struct below, so
@@ -670,6 +692,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         callees,
         tests_total: tests.as_ref().map(|_| tests_total),
         tests,
+        implements_total: implements.as_ref().map(|_| implements_total),
         implements,
         graph_version,
         commit_sha,
