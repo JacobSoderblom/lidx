@@ -57,6 +57,38 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         lower
     }).collect();
 
+    // Issue #67: resolve `min_resolution` against the resolver's canonical,
+    // strongest-to-weakest tier order (`db::resolver::ALL_RESOLUTION_KINDS`,
+    // the same single source of truth issue #81's `exclude_resolution_kinds`
+    // validates against on trace_flow/analyze_impact) rather than inventing
+    // a second ordering here. An unknown tier name warns -- same treatment
+    // as an unknown `sections` value above -- instead of erroring, and the
+    // filter is then simply not applied.
+    let min_resolution_rank: Option<usize> = params.min_resolution.as_deref().and_then(|tier| {
+        resolution_kind_rank(tier).or_else(|| {
+            warnings.push(format!(
+                "Unknown resolution tier '{}' in min_resolution -- valid tiers: {}",
+                tier,
+                crate::db::resolver::ALL_RESOLUTION_KINDS.join(", ")
+            ));
+            None
+        })
+    });
+    // A ref passes when its edge's tier ranks at or above (index <=)
+    // `min_resolution_rank`. An edge whose `resolution_kind` is absent
+    // (never resolved -- e.g. a Bridge Edge whose own target is a URI, not
+    // a symbol) never passes once a tier floor is set, since "absent" is
+    // weaker than every named tier.
+    let meets_min_resolution = |kind: &Option<String>| -> bool {
+        match min_resolution_rank {
+            None => true,
+            Some(min_rank) => kind
+                .as_deref()
+                .and_then(resolution_kind_rank)
+                .is_some_and(|rank| rank <= min_rank),
+        }
+    };
+
     // 1. Resolve symbol
     let sym_ref = if let Some(id) = params.id {
         crate::resolve::SymbolRef::Id(id)
@@ -195,6 +227,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             for edge in &target_edges {
                 if edge.kind == "CALLS"
                     && edge.target_symbol_id == Some(*target_id)
+                    && meets_min_resolution(&edge.resolution_kind)
                     && let Some(source_id) = edge.source_symbol_id
                     && seen_caller_ids.insert(source_id)
                 {
@@ -229,6 +262,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         }
 
         for r in &incoming_cross {
+            if !meets_min_resolution(&r.resolution_kind) {
+                continue;
+            }
             if !seen_caller_ids.insert(r.symbol.id) {
                 continue;
             }
@@ -300,6 +336,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         // surface a Python `trim` function as its callee).
                         let target_id = edge.target_symbol_id;
                         if let Some(target_id) = target_id
+                            && meets_min_resolution(&edge.resolution_kind)
                             && seen_callee_ids.insert(target_id)
                         {
                             callee_total += 1;
@@ -343,6 +380,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     // this call, so the read path must not guess one either.
                     let target_id = edge.target_symbol_id;
                     if let Some(target_id) = target_id
+                        && meets_min_resolution(&edge.resolution_kind)
                         && seen_callee_ids.insert(target_id)
                     {
                         callee_total += 1;
@@ -378,6 +416,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         }
 
         for r in &outgoing_cross {
+            if !meets_min_resolution(&r.resolution_kind) {
+                continue;
+            }
             if !seen_callee_ids.insert(r.symbol.id) {
                 continue;
             }
@@ -414,6 +455,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         for edge in &edges {
             if edge.kind == "CALLS"
                 && edge.target_symbol_id == Some(symbol.id)
+                && meets_min_resolution(&edge.resolution_kind)
                 && let Some(source_id) = edge.source_symbol_id
                 && let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id)
                 && looks_like_test(&test_sym)
@@ -446,7 +488,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         // Tests reaching the symbol over RPC/HTTP/a channel (e.g. a gRPC
         // client test against a service impl) count too.
         for r in &incoming_cross {
-            if !looks_like_test(&r.symbol) || !calls_test_ids.insert(r.symbol.id) {
+            if !looks_like_test(&r.symbol)
+                || !meets_min_resolution(&r.resolution_kind)
+                || !calls_test_ids.insert(r.symbol.id)
+            {
                 continue;
             }
             test_total += 1;
@@ -959,6 +1004,17 @@ pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Val
 // ---------------------------------------------------------------------------
 // GROUP 2 -- Graph handlers
 // ---------------------------------------------------------------------------
+
+/// Rank of `kind` in `db::resolver::ALL_RESOLUTION_KINDS`'s
+/// strongest-to-weakest tier order, or `None` when `kind` isn't one of
+/// those values. Shared lookup behind `explain_symbol`'s `min_resolution`
+/// filter (issue #67) -- unlike `validate_resolution_kinds` below, a miss
+/// here isn't an error, just "unranked".
+fn resolution_kind_rank(kind: &str) -> Option<usize> {
+    crate::db::resolver::ALL_RESOLUTION_KINDS
+        .iter()
+        .position(|k| *k == kind)
+}
 
 /// Issue #81 (R3): reject an unknown or wrong-case resolution kind
 /// (`"BARE_NAME"`, `"bogus"`) up front, rather than silently matching

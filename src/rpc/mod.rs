@@ -224,6 +224,16 @@ struct ExplainSymbolParams {
     sections: Option<Vec<String>>,
     max_refs: Option<usize>,
     format: Option<String>,
+    /// Keep only callers, callees and tests refs whose edge resolved at or
+    /// above this tier (exact, import, receiver_type, inherited,
+    /// two_segment, bare_name, external -- strongest to weakest; see
+    /// `Edge::resolution_kind`). A ref whose edge never resolved (no
+    /// `resolution_kind` at all) is always excluded once this is set.
+    /// Distinct from `analyze_impact`'s `min_confidence`, which filters an
+    /// unrelated query-time heuristic. Omit to return every ref regardless
+    /// of tier. An unknown tier name is ignored with a warning rather than
+    /// an error.
+    min_resolution: Option<String>,
     #[serde(flatten)]
     common: LangVersionParams,
 }
@@ -609,6 +619,31 @@ mod tests {
         assert!(
             props.contains_key("graph_version"),
             "context schema should advertise 'graph_version'"
+        );
+    }
+
+    /// Issue #67: `min_resolution` carries a doc comment specifically so it
+    /// shows up in the generated tool schema with a description -- the
+    /// omission #60 calls out for `sections`/`max_refs` on this same
+    /// method.
+    #[test]
+    fn explain_symbol_schema_describes_min_resolution() {
+        let schema = super::method_param_schema("explain_symbol");
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("explain_symbol schema should have properties");
+        let min_resolution = props
+            .get("min_resolution")
+            .expect("explain_symbol schema should advertise 'min_resolution'");
+        let description = min_resolution
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap_or_default();
+        assert!(
+            !description.is_empty(),
+            "min_resolution should carry a non-empty description in the generated schema, got {:?}",
+            min_resolution
         );
     }
 
