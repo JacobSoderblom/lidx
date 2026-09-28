@@ -78,6 +78,23 @@ fn explain_symbol_explains_empty_tests_when_index_has_no_test_scope_files() {
         "expected a warning explaining the empty tests list when the index holds no \
          test-scope files, got warnings: {warnings:?} (full response: {result})"
     );
+    // Issue #67 finding 3: tests are detected by file path, so a crate
+    // whose tests live inline (e.g. Rust's #[cfg(test)] modules) can have
+    // zero test-scope *files* while still having tests. The warning must
+    // not overstate that as "no tests were ever indexed".
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.to_lowercase().contains("file path")),
+        "expected the warning to explain that tests are detected by file path, got \
+         warnings: {warnings:?} (full response: {result})"
+    );
+    assert!(
+        !warnings.iter().any(|w| w.contains("were ever indexed")),
+        "the warning must not overstate this as 'no tests were ever indexed' -- \
+         lidx only knows about test-scope *files*, not whether tests exist inline, \
+         got warnings: {warnings:?} (full response: {result})"
+    );
 }
 
 #[test]

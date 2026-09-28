@@ -3,6 +3,7 @@
 //! Operates on `Db` directly (not `Indexer`) for fast startup (~30ms).
 
 use crate::db::Db;
+use crate::indexer::test_detection::is_test_file;
 use crate::model::{Edge, Symbol};
 use anyhow::Result;
 use serde::Serialize;
@@ -165,13 +166,13 @@ pub fn build_file_context(
     let mut test_files: Vec<String> = Vec::new();
     let mut test_file_set: HashSet<String> = HashSet::new();
     for cr in &callers {
-        if is_test_path(&cr.file_path) && test_file_set.insert(cr.file_path.clone()) {
+        if is_test_file(&cr.file_path) && test_file_set.insert(cr.file_path.clone()) {
             test_files.push(cr.file_path.clone());
         }
     }
 
     // Remove test callers from callers list (they're in test_files)
-    callers.retain(|cr| !is_test_path(&cr.file_path));
+    callers.retain(|cr| !is_test_file(&cr.file_path));
 
     Ok(FileContext {
         path: file_path.to_string(),
@@ -276,19 +277,4 @@ fn short_name(qualname: &str) -> String {
     } else {
         parts[parts.len() - 2..].join(".")
     }
-}
-
-fn is_test_path(path: &str) -> bool {
-    let lower = path.to_lowercase();
-    lower.contains("/test")
-        || lower.contains("/tests/")
-        || lower.contains("\\test")
-        || lower.starts_with("test_")
-        || lower.starts_with("tests/")
-        || lower.ends_with("_test.py")
-        || lower.ends_with("_test.go")
-        || lower.ends_with(".test.ts")
-        || lower.ends_with(".test.js")
-        || lower.ends_with(".spec.ts")
-        || lower.ends_with(".spec.js")
 }
