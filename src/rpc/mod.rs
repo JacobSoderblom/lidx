@@ -401,6 +401,7 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
             return Err(anyhow::anyhow!("unknown method: {other}"));
         }
     };
+    let value = hoist_symbol_run_metadata(value);
 
     let elapsed = start.elapsed();
     if elapsed.as_millis() > 100 {
@@ -439,6 +440,143 @@ pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Resu
         }
     } else {
         Ok(value)
+    }
+}
+
+/// `graph_version`/`commit_sha` are properties of the indexing run, not of
+/// any individual symbol, but `Symbol`'s derive stamps both onto every
+/// serialized instance (issue #66). This is the single mechanism, applied
+/// to every method's result here at the dispatch boundary, that removes
+/// the redundant copies from every nested object that looks like a
+/// `Symbol` (carries both `qualname` and `graph_version`) and hoists one
+/// copy to the top level of the result.
+///
+/// Two cases leave a result untouched:
+/// - The result is a bare array (e.g. non-empty `top_complexity`): there is
+///   nowhere to hoist a field to without changing the response's top-level
+///   type, so the array -- and every symbol inside it -- is left exactly
+///   as `Symbol`'s derive produced it.
+/// - The top level already carries its own `graph_version` (e.g.
+///   `explain_symbol`'s `ExplainSymbolResult.graph_version`, stamped
+///   deliberately): the nested duplicates are still stripped, but nothing
+///   is inserted, so a real field is never removed or shadowed by a second
+///   copy.
+///
+/// Before touching anything, every nested `Symbol`-shaped object's
+/// `graph_version`/`commit_sha` pair is collected and compared. If any two
+/// disagree, the whole result is left untouched -- stripping would throw
+/// away real information for a method whose entries can legitimately span
+/// more than one graph version (a comparison across versions, say), and no
+/// method in `METHOD_LIST` should ever produce that disagreement today.
+fn hoist_symbol_run_metadata(mut value: Value) -> Value {
+    let Value::Object(ref mut top) = value else {
+        // Bare array (or, in principle, a scalar) result: no top level to
+        // hoist onto, so leave it untouched.
+        return value;
+    };
+
+    let mut found: Option<(Value, Value)> = None;
+    let mut consistent = true;
+    for child in top.values() {
+        collect_symbol_run_metadata(child, &mut found, &mut consistent);
+        if !consistent {
+            break;
+        }
+    }
+
+    let Some((graph_version, commit_sha)) = (if consistent { found } else { None }) else {
+        return value;
+    };
+
+    for child in top.values_mut() {
+        strip_symbol_run_metadata(child);
+    }
+
+    if !top.contains_key("graph_version") {
+        top.insert("graph_version".to_string(), graph_version);
+        if !commit_sha.is_null() {
+            top.insert("commit_sha".to_string(), commit_sha);
+        }
+    }
+
+    value
+}
+
+/// Does this JSON object look like a serialized `Symbol`? `qualname` plus
+/// `graph_version` is the pair the finding behind #66 singles out --
+/// specific enough that no other response shape in `model.rs` collides
+/// with it (`TestCoverageEntry` carries `symbol_qualname`, not `qualname`;
+/// `Edge` carries `graph_version` but no `qualname` at all).
+fn is_symbol_shaped(obj: &serde_json::Map<String, Value>) -> bool {
+    obj.contains_key("qualname") && obj.contains_key("graph_version")
+}
+
+/// First pass: walk `value` (a child of the top-level result, never the
+/// top level itself) and record the `(graph_version, commit_sha)` pair off
+/// every `Symbol`-shaped object found, short-circuiting the moment two
+/// disagree. Read-only -- nothing is stripped here, so a disagreement can
+/// veto the whole hoist before any information is lost.
+fn collect_symbol_run_metadata(
+    value: &Value,
+    found: &mut Option<(Value, Value)>,
+    consistent: &mut bool,
+) {
+    if !*consistent {
+        return;
+    }
+    match value {
+        Value::Object(obj) => {
+            if is_symbol_shaped(obj) {
+                let gv = obj.get("graph_version").cloned().unwrap_or(Value::Null);
+                let cs = obj.get("commit_sha").cloned().unwrap_or(Value::Null);
+                match found {
+                    None => *found = Some((gv, cs)),
+                    Some((fgv, fcs)) if *fgv == gv && *fcs == cs => {}
+                    Some(_) => {
+                        *consistent = false;
+                        return;
+                    }
+                }
+            }
+            for v in obj.values() {
+                collect_symbol_run_metadata(v, found, consistent);
+                if !*consistent {
+                    return;
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                collect_symbol_run_metadata(v, found, consistent);
+                if !*consistent {
+                    return;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Second pass, run only once `collect_symbol_run_metadata` has confirmed
+/// every `Symbol`-shaped object agrees: remove `graph_version`/`commit_sha`
+/// from each of them, recursively.
+fn strip_symbol_run_metadata(value: &mut Value) {
+    match value {
+        Value::Object(obj) => {
+            if is_symbol_shaped(obj) {
+                obj.remove("graph_version");
+                obj.remove("commit_sha");
+            }
+            for v in obj.values_mut() {
+                strip_symbol_run_metadata(v);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                strip_symbol_run_metadata(v);
+            }
+        }
+        _ => {}
     }
 }
 
