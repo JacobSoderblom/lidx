@@ -659,6 +659,12 @@ pub struct ExplainSymbolResult {
     pub tests_total: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub implements: Option<Vec<Symbol>>,
+    /// `commit_sha`/`graph_version` are properties of the indexing run, not
+    /// of any one symbol, so they're stamped here once for the whole
+    /// response rather than on `symbol` and every `ExplainRef` (issue #66).
+    pub graph_version: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
     pub budget: BudgetInfo,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub next_hops: Vec<serde_json::Value>,
@@ -669,8 +675,6 @@ pub struct ExplainSymbolResult {
 #[derive(Debug, Clone, Serialize)]
 pub struct ExplainRef {
     pub symbol: Symbol,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
     pub edge_kind: String,
