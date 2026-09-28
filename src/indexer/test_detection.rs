@@ -4,6 +4,7 @@
 //! based on language-specific conventions and naming patterns.
 
 use crate::model::Symbol;
+use std::path::Path;
 
 /// Detects if a symbol is a test based on language-specific conventions
 ///
@@ -155,8 +156,46 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
 /// This is a more lenient check than `is_test_symbol` - used for filtering
 /// files from direct impact analysis results, and by the search-scope
 /// classifier (issue #61) to decide the `tests` scope.
+///
+/// Directory rules match any path segment; filename rules (issue #67
+/// finding 2) match only the file name component, as an anchored
+/// prefix/suffix -- never a substring of the whole path -- so a module
+/// that merely contains "test" as part of a longer word (`latest_version.py`,
+/// `contest_rules.py`) isn't swept in.
 pub fn is_test_file(path: &str) -> bool {
     let path_lower = path.to_lowercase();
+    if is_test_directory(&path_lower) {
+        return true;
+    }
+
+    let file_name = Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path);
+    let name_lower = file_name.to_lowercase();
+
+    name_lower.starts_with("test_")
+        || name_lower.ends_with("_test.rs")
+        || name_lower.ends_with("_test.py")
+        || name_lower.ends_with("_test.go")
+        || name_lower.ends_with(".test.ts")
+        || name_lower.ends_with(".test.tsx")
+        || name_lower.ends_with(".test.js")
+        || name_lower.ends_with(".test.jsx")
+        || name_lower.ends_with(".spec.ts")
+        || name_lower.ends_with(".spec.tsx")
+        || name_lower.ends_with(".spec.js")
+        || name_lower.ends_with(".spec.jsx")
+        || name_lower.ends_with("_spec.rb")
+        // Java's test convention is PascalCase ("FooTest.java" /
+        // "FooTestCase.java") and needs the original casing here: matched
+        // case-insensitively it would also catch a plain word that merely
+        // ends in "test" ("Latest.java").
+        || file_name.ends_with("Test.java")
+        || file_name.ends_with("TestCase.java")
+}
+
+fn is_test_directory(path_lower: &str) -> bool {
     path_lower.contains("/test/")
         || path_lower.contains("/tests/")
         || path_lower.contains("/_test/")
@@ -172,23 +211,6 @@ pub fn is_test_file(path: &str) -> bool {
         || path_lower.starts_with("__tests__/")
         || path_lower.starts_with("spec/")
         || path_lower.starts_with("specs/")
-        || path_lower.contains("test_")
-        || path_lower.contains("_test.")
-        || path_lower.contains(".test.")
-        || path_lower.contains(".spec.")
-        || path_lower.ends_with("_test.rs")
-        || path_lower.ends_with("_test.py")
-        || path_lower.ends_with(".test.ts")
-        || path_lower.ends_with(".test.tsx")
-        || path_lower.ends_with(".test.js")
-        || path_lower.ends_with(".test.jsx")
-        || path_lower.ends_with(".spec.ts")
-        || path_lower.ends_with(".spec.tsx")
-        || path_lower.ends_with(".spec.js")
-        || path_lower.ends_with(".spec.jsx")
-        || path_lower.ends_with("_spec.rb")
-        || path_lower.ends_with("test.java")
-        || path_lower.ends_with("_test.go")
 }
 
 /// Extract test name from a test symbol
@@ -377,6 +399,31 @@ mod tests {
         assert!(is_test_file("specs/support.rb"));
         assert!(!is_test_file("testimony.py"));
         assert!(!is_test_file("attestation.rs"));
+    }
+
+    /// Issue #67 finding 2: filename conventions must match the file name
+    /// component (prefix/suffix), not a substring of the whole path -- a
+    /// module whose name merely contains "test" as part of a longer word
+    /// must not be swept in. `.java` isn't an indexable extension in this
+    /// codebase (see `indexer::scan::LANGUAGE_SPECS`), so the PascalCase
+    /// `FooTest.java` convention can only be exercised at this unit seam,
+    /// not through an RPC call against a reindexed fixture.
+    #[test]
+    fn test_is_test_file_filename_substring_false_positives() {
+        assert!(!is_test_file("src/latest_version.py"));
+        assert!(!is_test_file("src/contest_rules.py"));
+        assert!(!is_test_file("com/example/Latest.java"));
+    }
+
+    /// Java's test convention is PascalCase (`FooTest.java` /
+    /// `FooTestCase.java`) and needs the original casing to avoid the
+    /// false positive above -- matched case-insensitively, "Latest.java"
+    /// would also end in "test.java".
+    #[test]
+    fn test_is_test_file_java_pascal_case_convention() {
+        assert!(is_test_file("FooTest.java"));
+        assert!(is_test_file("com/example/FooTestCase.java"));
+        assert!(!is_test_file("com/example/Latest.java"));
     }
 
     #[test]

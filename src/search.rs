@@ -884,8 +884,11 @@ fn classify_path(path: &str) -> PathFlags {
     }
     // Issue #61: test-ness is decided by the one canonical predicate
     // (`indexer::test_detection::is_test_file`), not a second, divergent
-    // segment/filename rule set living here.
-    if test_detection::is_test_file(&lower) {
+    // segment/filename rule set living here. Pass the original-case
+    // `path`, not `lower` -- issue #67 finding 2's Java PascalCase
+    // convention needs the original casing to disambiguate `FooTest.java`
+    // from a plain word that merely ends in "test" (`Latest.java`).
+    if test_detection::is_test_file(path) {
         flags.tests = true;
     }
     if is_generated_filename(filename) {
