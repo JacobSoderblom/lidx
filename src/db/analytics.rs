@@ -291,11 +291,21 @@ impl Db {
             by_module.entry(module).or_default().push((symbol, fan_in));
         }
 
-        // Flatten with limit per module
+        // Flatten with limit per module. Issue #134: distinct symbols can
+        // share a bare name (e.g. a common helper repeated across files in
+        // the same top-level module) -- rows are already ordered by
+        // `fan_in DESC` per module, so keeping only the first occurrence of
+        // each name drops the lower-ranked duplicate while still surfacing
+        // the highest-fan-in symbol for that name.
         let mut results = Vec::new();
-        for (module, mut symbols) in by_module {
-            symbols.truncate(limit_per_module);
-            for (symbol, fan_in) in symbols {
+        for (module, symbols) in by_module {
+            let mut seen_names = std::collections::HashSet::new();
+            let mut deduped: Vec<(Symbol, i64)> = symbols
+                .into_iter()
+                .filter(|(symbol, _)| seen_names.insert(symbol.name.clone()))
+                .collect();
+            deduped.truncate(limit_per_module);
+            for (symbol, fan_in) in deduped {
                 results.push((module.clone(), symbol, fan_in));
             }
         }
@@ -809,5 +819,119 @@ impl Db {
         }
 
         Ok(orphans)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::Db;
+    use crate::indexer::extract::{EdgeInput, SymbolInput};
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn create_test_db() -> (Db, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = Db::new(&db_path).unwrap();
+        (db, temp_dir)
+    }
+
+    fn make_symbol(qualname: &str, kind: &str) -> SymbolInput {
+        SymbolInput {
+            kind: kind.to_string(),
+            name: qualname
+                .split('.')
+                .next_back()
+                .unwrap_or(qualname)
+                .to_string(),
+            qualname: qualname.to_string(),
+            start_line: 1,
+            start_col: 0,
+            end_line: 5,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 50,
+            signature: None,
+            docstring: None,
+        }
+    }
+
+    fn make_edge(kind: &str, source: &str, target: &str) -> EdgeInput {
+        EdgeInput {
+            kind: kind.to_string(),
+            source_qualname: Some(source.to_string()),
+            target_qualname: Some(target.to_string()),
+            ..Default::default()
+        }
+    }
+
+    // Issue #134: two distinct functions that happen to share a bare name
+    // (e.g. a common helper name like `_require` repeated across files in
+    // the same top-level module) both land in `top_fan_in_by_module`'s
+    // per-module results. Repo map's "Key Symbols" section then lists that
+    // name twice under one module header with no way to tell them apart.
+    #[test]
+    fn top_fan_in_by_module_dedupes_same_name_per_module() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+
+        let fid_a = db.upsert_file("pkg/a.py", "h1", "python", 10, 0).unwrap();
+        let fid_b = db.upsert_file("pkg/b.py", "h2", "python", 10, 0).unwrap();
+        let fid_app = db.upsert_file("app.py", "h3", "python", 10, 0).unwrap();
+
+        let ins_a = db
+            .insert_symbols(
+                fid_a,
+                "pkg/a.py",
+                &[make_symbol("pkg.a.helper", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let ins_b = db
+            .insert_symbols(
+                fid_b,
+                "pkg/b.py",
+                &[make_symbol("pkg.b.helper", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let ins_app = db
+            .insert_symbols(
+                fid_app,
+                "app.py",
+                &[make_symbol("app.caller", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+
+        let mut sym_map = HashMap::new();
+        sym_map.insert("pkg.a.helper".to_string(), ins_a[0].id);
+        sym_map.insert("pkg.b.helper".to_string(), ins_b[0].id);
+        sym_map.insert("app.caller".to_string(), ins_app[0].id);
+        db.insert_edges(
+            fid_app,
+            &[
+                make_edge("CALLS", "app.caller", "pkg.a.helper"),
+                make_edge("CALLS", "app.caller", "pkg.b.helper"),
+            ],
+            &sym_map,
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let results = db.top_fan_in_by_module(10, None, None, gv).unwrap();
+        let helper_count = results
+            .iter()
+            .filter(|(module, sym, _)| module == "pkg" && sym.name == "helper")
+            .count();
+        assert_eq!(
+            helper_count, 1,
+            "expected `helper` to be deduplicated within the `pkg` module, got: {:?}",
+            results
+        );
     }
 }
