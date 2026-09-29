@@ -408,3 +408,123 @@ fn caller() {
         .expect("Foo::make() call edge");
     assert_eq!(call.target_qualname.as_deref(), Some("Foo::make"));
 }
+
+/// Create an isolated temp dir with a crate rooted at
+/// `<repo_root>/<crate_dir>` (a `Cargo.toml` written there) and each
+/// `(rel_path, content)` pair written under that crate root, then index the
+/// whole `repo_root`. Mirrors a polyglot repo where a Rust crate lives
+/// several directories deep (e.g. `node/dpb-app/src-tauri`), not at the repo
+/// root (issue #129).
+fn index_nested_crate(label: &str, crate_dir: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
+    let mut repo_root = std::env::temp_dir();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+    repo_root.push(format!("lidx-rust-nested-crate-{label}-{nanos}-{counter}"));
+    let crate_root = repo_root.join(crate_dir);
+    std::fs::create_dir_all(&crate_root).unwrap();
+    std::fs::write(
+        crate_root.join("Cargo.toml"),
+        "[package]\nname = \"src-tauri\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    for (rel_path, content) in files {
+        let full = crate_root.join(rel_path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, content).unwrap();
+    }
+    let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    (repo_root, db_path)
+}
+
+#[test]
+fn module_name_from_path_uses_nearest_cargo_toml_ancestor() {
+    // A `Cargo.toml` several directories deep marks its own dir as a crate
+    // root; module paths for files under it must be relative to ITS `src/`,
+    // not to the repo root -- not `crate::node::dpb-app::src-tauri::src::...`
+    // (issue #129).
+    let mut repo_root = std::env::temp_dir();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+    repo_root.push(format!("lidx-rust-crate-root-{nanos}-{counter}"));
+    let crate_root = repo_root.join("node/dpb-app/src-tauri");
+    std::fs::create_dir_all(crate_root.join("src/commands/deploy")).unwrap();
+    std::fs::write(
+        crate_root.join("Cargo.toml"),
+        "[package]\nname = \"src-tauri\"\n",
+    )
+    .unwrap();
+
+    let extractor = RustExtractor::new()
+        .unwrap()
+        .with_repo_root(repo_root.clone());
+    assert_eq!(
+        extractor.module_name_from_rel_path("node/dpb-app/src-tauri/src/commands/deploy/sync.rs"),
+        "crate::commands::deploy::sync"
+    );
+    assert_eq!(
+        extractor.module_name_from_rel_path("node/dpb-app/src-tauri/src/lib.rs"),
+        "crate"
+    );
+    assert_eq!(
+        extractor.module_name_from_rel_path("node/dpb-app/src-tauri/src/grpc.rs"),
+        "crate::grpc"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn nested_crate_import_resolves_across_files() {
+    // End-to-end (issue #129): a crate nested under `node/dpb-app/src-tauri`
+    // has a file `src/commands/deploy/sync.rs` with `use
+    // crate::grpc::create_channel;` calling that function. Before the fix,
+    // both files' qualnames embedded the full repo path
+    // (`crate::node::dpb-app::src-tauri::src::...`), so the `use` target
+    // never matched `crate::grpc::create_channel` and the CALLS edge fell
+    // back to the unresolved bare name.
+    let files = [
+        ("src/grpc.rs", "pub fn create_channel() {}\n"),
+        (
+            "src/commands/deploy/sync.rs",
+            "use crate::grpc::create_channel;\n\npub fn call_sync_grpc() {\n    create_channel();\n}\n",
+        ),
+    ];
+    let (repo_root, db_path) =
+        index_nested_crate("import-binding", "node/dpb-app/src-tauri", &files);
+    let indexer = Indexer::new(repo_root.clone(), db_path).unwrap();
+    let db = indexer.db();
+    let graph_version = db.current_graph_version().unwrap();
+
+    let channel_id = db
+        .lookup_symbol_id("crate::grpc::create_channel", graph_version)
+        .unwrap()
+        .expect("crate::grpc::create_channel symbol (crate-relative qualname)");
+    let call_id = db
+        .lookup_symbol_id(
+            "crate::commands::deploy::sync::call_sync_grpc",
+            graph_version,
+        )
+        .unwrap()
+        .expect("crate::commands::deploy::sync::call_sync_grpc symbol (crate-relative qualname)");
+
+    let edges = db
+        .edges_for_symbol(channel_id, None, graph_version)
+        .unwrap();
+    assert!(
+        edges.iter().any(|e| e.kind == "CALLS"
+            && e.target_symbol_id == Some(channel_id)
+            && e.source_symbol_id == Some(call_id)),
+        "expected call_sync_grpc -> grpc::create_channel CALLS edge via \
+         `use crate::grpc::create_channel`, got: {edges:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
