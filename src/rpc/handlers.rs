@@ -2916,10 +2916,7 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
         .collect();
 
     // 3. Languages
-    let lang_list: Vec<String> = scan::language_specs()
-        .iter()
-        .map(|s| s.name.to_string())
-        .collect();
+    let lang_list = indexer.db().list_languages(ctx.graph_version)?;
 
     // 4. Index status
     let changed = indexer.changed_files(ctx.languages.as_deref())?;

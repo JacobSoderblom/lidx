@@ -91,6 +91,10 @@ static LANGUAGE_SPECS: &[LanguageSpec] = &[
         name: "bicep",
         extensions: &["bicep", "bicepparam"],
     },
+    LanguageSpec {
+        name: "markdown",
+        extensions: &["md", "markdown"],
+    },
 ];
 
 static LANGUAGE_FILTERS: &[LanguageFilter] = &[
@@ -237,6 +241,14 @@ static LANGUAGE_FILTERS: &[LanguageFilter] = &[
     LanguageFilter {
         name: "azure",
         languages: &["bicep"],
+    },
+    LanguageFilter {
+        name: "markdown",
+        languages: &["markdown"],
+    },
+    LanguageFilter {
+        name: "md",
+        languages: &["markdown"],
     },
 ];
 

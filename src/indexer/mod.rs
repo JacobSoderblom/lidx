@@ -18,6 +18,7 @@ pub mod extract;
 pub mod go;
 pub mod http;
 pub mod javascript;
+pub mod markdown;
 pub mod postgres;
 pub mod proto;
 pub mod python;
@@ -106,6 +107,7 @@ impl Indexer {
         extractors.insert("proto".into(), Box::new(proto::ProtoExtractor::new()?));
         extractors.insert("yaml".into(), Box::new(yaml::YamlExtractor::new()?));
         extractors.insert("bicep".into(), Box::new(bicep::BicepExtractor::new()?));
+        extractors.insert("markdown".into(), Box::new(markdown::MarkdownExtractor));
 
         Ok(Self {
             repo_root,

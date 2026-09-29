@@ -89,3 +89,41 @@ fn onboard_reports_explicit_zero_tests_count_when_no_test_files_exist() {
     );
     assert_eq!(counts["tests"].as_i64().unwrap(), 0, "counts: {counts}");
 }
+
+/// Issue #133: Markdown files are indexed as `files` rows, so `docs` counts
+/// them and `onboard.languages` reports what is actually present.
+#[test]
+fn markdown_files_count_as_docs_and_appear_in_onboard_languages() {
+    let (_tmp, mut indexer) = build_indexer(&[
+        ("main.py", "def main():\n    pass\n"),
+        ("README.md", "# Title\n\nbody\n"),
+        ("docs/guide.md", "# Guide\n"),
+    ]);
+    let result = rpc::handle_method(&mut indexer, "onboard", serde_json::json!({})).unwrap();
+    let counts = scope_counts(&result);
+    assert_eq!(counts["docs"].as_i64().unwrap(), 2, "counts: {counts}");
+    let langs: Vec<&str> = result["languages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(langs, vec!["markdown", "python"], "languages: {langs:?}");
+}
+
+/// Issue #133: every language `onboard` advertises must be accepted as a
+/// `languages` filter.
+#[test]
+fn markdown_is_a_valid_language_filter() {
+    let (_tmp, mut indexer) = build_indexer(&[
+        ("main.py", "def main():\n    pass\n"),
+        ("README.md", "# Title\n"),
+    ]);
+    let result = rpc::handle_method(
+        &mut indexer,
+        "onboard",
+        serde_json::json!({"languages": ["markdown"]}),
+    )
+    .unwrap();
+    assert_eq!(result["overview"]["files"].as_i64().unwrap(), 1, "{result}");
+}

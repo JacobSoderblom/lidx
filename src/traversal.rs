@@ -773,7 +773,7 @@ mod tests {
         assert_eq!(detect_language("test.bicep"), "bicep");
         assert_eq!(detect_language("test.psql"), "postgres");
         assert_eq!(detect_language("test.pgsql"), "postgres");
-        assert_eq!(detect_language("test.md"), "unknown");
+        assert_eq!(detect_language("test.md"), "markdown");
         assert_eq!(detect_language("test.txt"), "unknown");
         // Paths with directories
         assert_eq!(detect_language("src/services/api.py"), "python");
