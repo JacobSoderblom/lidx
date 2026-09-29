@@ -106,7 +106,7 @@ struct Context {
     /// `collect_method_return_types`. Feeds `var x = Method(..)` /
     /// `var (a, b) = Method(..)` inference. Same-file only; a callee
     /// declared elsewhere stays untracked.
-    method_returns: Rc<HashMap<String, String>>,
+    method_returns: Rc<MethodReturns>,
 }
 
 /// One extension method declaration, as recorded by `record_extension_method`
@@ -273,7 +273,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             base_type: LocalType::Other,
             imports: Rc::new(collect_import_context(root, source)),
             extension_registry: Rc::clone(&self.extension_registry),
-            method_returns: Rc::new(collect_method_return_types(root, source)),
+            method_returns: Rc::new(MethodReturns::collect(root, source)),
         };
         if root.kind() == "compilation_unit" {
             walk_compilation_unit(root, &ctx, source, &mut output);
@@ -1498,7 +1498,8 @@ fn collect_global_grpc_clients(
         if child.kind() != "global_statement" {
             continue;
         }
-        collect_grpc_clients_inner(child, source, &HashMap::new(), &mut clients);
+        // Limitation: top-level statements have no method-return context.
+        collect_grpc_clients_inner(child, source, &MethodReturns::default(), &mut clients);
     }
     clients
 }
@@ -1506,10 +1507,10 @@ fn collect_global_grpc_clients(
 fn collect_grpc_clients(
     node: Node<'_>,
     source: &str,
-    returns: &HashMap<String, String>,
+    method_returns: &MethodReturns,
 ) -> HashMap<String, (String, Option<String>)> {
     let mut clients = HashMap::new();
-    collect_grpc_clients_inner(node, source, returns, &mut clients);
+    collect_grpc_clients_inner(node, source, method_returns, &mut clients);
     clients
 }
 
@@ -1540,7 +1541,7 @@ fn collect_route_groups_inner(node: Node<'_>, source: &str, groups: &mut HashMap
 fn collect_grpc_clients_inner(
     node: Node<'_>,
     source: &str,
-    returns: &HashMap<String, String>,
+    method_returns: &MethodReturns,
     clients: &mut HashMap<String, (String, Option<String>)>,
 ) {
     match node.kind() {
@@ -1565,14 +1566,14 @@ fn collect_grpc_clients_inner(
         // bottom-up match on `variable_declarator` directly, just able to
         // see the declared type too.
         "variable_declaration" => {
-            collect_grpc_clients_from_declaration(node, source, returns, clients);
+            collect_grpc_clients_from_declaration(node, source, method_returns, clients);
             return;
         }
         _ => {}
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_grpc_clients_inner(child, source, returns, clients);
+        collect_grpc_clients_inner(child, source, method_returns, clients);
     }
 }
 
@@ -1600,7 +1601,7 @@ fn collect_grpc_clients_inner(
 fn collect_grpc_clients_from_declaration(
     node: Node<'_>,
     source: &str,
-    returns: &HashMap<String, String>,
+    method_returns: &MethodReturns,
     clients: &mut HashMap<String, (String, Option<String>)>,
 ) {
     let declared = node
@@ -1627,7 +1628,7 @@ fn collect_grpc_clients_from_declaration(
         // declared return type (`Greeter.GreeterClient CreateClient(..)`).
         let from_return = || {
             let value = variable_declarator_value(declarator)?;
-            let ret = call_return_type(value, source, returns)?;
+            let ret = method_returns.call_return_type(value, source)?;
             split_client_service_and_prefix(&ret)
         };
         if let Some(service_and_prefix) = from_initializer
@@ -3653,17 +3654,13 @@ fn classify_type_name(name: &str) -> LocalType {
 /// `Other` — mirrors `python::classify_assignment_value`'s identical
 /// ceiling, and matches this task's "`var` only when the initializer is a
 /// direct `new T()`" scope.
-fn classify_value_expr(
-    value: Node<'_>,
-    source: &str,
-    returns: &HashMap<String, String>,
-) -> LocalType {
+fn classify_value_expr(value: Node<'_>, source: &str, method_returns: &MethodReturns) -> LocalType {
     if value.kind() == "object_creation_expression"
         && let Some(type_node) = value.child_by_field_name("type")
     {
         return classify_annotation(&node_text(type_node, source));
     }
-    if let Some(ret) = call_return_type(value, source, returns) {
+    if let Some(ret) = method_returns.call_return_type(value, source) {
         return classify_annotation(&ret);
     }
     LocalType::Other
@@ -3671,81 +3668,111 @@ fn classify_value_expr(
 
 /// Declared return types (raw text) of every method / local function in a
 /// file, keyed by bare name. A name declared more than once with different
-/// return types is dropped: ambiguous means untracked, never a wrong type.
-fn collect_method_return_types(root: Node<'_>, source: &str) -> HashMap<String, String> {
-    fn walk(node: Node<'_>, source: &str, out: &mut HashMap<String, Option<String>>) {
-        if matches!(
-            node.kind(),
-            "method_declaration" | "local_function_statement"
-        ) && let (Some(name), Some(ret)) = (
-            node.child_by_field_name("name"),
-            node.child_by_field_name("returns")
-                .or_else(|| node.child_by_field_name("type")),
-        ) {
-            let name = node_text(name, source);
-            let ret = node_text(ret, source).trim().to_string();
-            match out.get(&name) {
-                Some(Some(prev)) if *prev == ret => {}
-                Some(_) => {
-                    out.insert(name, None);
-                }
-                None => {
-                    out.insert(name, Some(ret));
+/// return types is dropped, as is a generic method whose return type names
+/// one of its own type parameters: ambiguous means untracked, never a
+/// wrong type.
+#[derive(Debug, Default)]
+struct MethodReturns(HashMap<String, String>);
+
+impl MethodReturns {
+    fn collect(root: Node<'_>, source: &str) -> Self {
+        fn walk(node: Node<'_>, source: &str, out: &mut HashMap<String, Option<String>>) {
+            if matches!(
+                node.kind(),
+                "method_declaration" | "local_function_statement"
+            ) && let (Some(name), Some(ret)) = (
+                node.child_by_field_name("name"),
+                node.child_by_field_name("returns")
+                    .or_else(|| node.child_by_field_name("type")),
+            ) {
+                let name = node_text(name, source);
+                let ret = node_text(ret, source).trim().to_string();
+                let names_type_param =
+                    node.child_by_field_name("type_parameters")
+                        .is_some_and(|tp| {
+                            let params = node_text(tp, source);
+                            params
+                                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                                .filter(|t| !t.is_empty())
+                                .any(|t| {
+                                    ret.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                                        .any(|r| r == t)
+                                })
+                        });
+                match out.get(&name) {
+                    _ if names_type_param => {
+                        out.insert(name, None);
+                    }
+                    Some(Some(prev)) if *prev == ret => {}
+                    Some(_) => {
+                        out.insert(name, None);
+                    }
+                    None => {
+                        out.insert(name, Some(ret));
+                    }
                 }
             }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                walk(child, source, out);
+            }
         }
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            walk(child, source, out);
-        }
+        let mut out = HashMap::new();
+        walk(root, source, &mut out);
+        Self(
+            out.into_iter()
+                .filter_map(|(k, v)| v.map(|v| (k, v)))
+                .collect(),
+        )
     }
-    let mut out = HashMap::new();
-    walk(root, source, &mut out);
-    out.into_iter()
-        .filter_map(|(k, v)| v.map(|v| (k, v)))
-        .collect()
-}
 
-/// The declared return type text of a bare / `this.` call (optionally
-/// awaited) to a same-file method, per `returns`. An awaited call unwraps
-/// `Task<T>` / `ValueTask<T>`; a non-awaited `Task<T>` (or a bare `Task`)
-/// yields `None`, as does `void` and any callee not in `returns`.
-fn call_return_type(
-    value: Node<'_>,
-    source: &str,
-    returns: &HashMap<String, String>,
-) -> Option<String> {
-    let (call, awaited) = if value.kind() == "await_expression" {
-        (value.named_child(0)?, true)
-    } else {
-        (value, false)
-    };
-    if call.kind() != "invocation_expression" {
-        return None;
-    }
-    let function = call.child_by_field_name("function")?;
-    let name_node = match function.kind() {
-        "identifier" | "generic_name" => function,
-        "member_access_expression"
-            if function.child_by_field_name("expression")?.kind() == "this" =>
+    /// The declared return type text of a bare / `this.` call (optionally
+    /// awaited, optionally `.ConfigureAwait(..)`) to a same-file method. An
+    /// awaited call unwraps `Task<T>` / `ValueTask<T>`; a non-awaited
+    /// `Task<T>` (or bare `Task`) yields `None`, as does `void` and any
+    /// callee not recorded.
+    fn call_return_type(&self, value: Node<'_>, source: &str) -> Option<String> {
+        let (mut call, awaited) = if value.kind() == "await_expression" {
+            (value.named_child(0)?, true)
+        } else {
+            (value, false)
+        };
+        if awaited
+            && call.kind() == "invocation_expression"
+            && let Some(f) = call.child_by_field_name("function")
+            && f.kind() == "member_access_expression"
+            && f.child_by_field_name("name")
+                .is_some_and(|n| node_text(n, source) == "ConfigureAwait")
         {
-            function.child_by_field_name("name")?
+            call = f.child_by_field_name("expression")?;
         }
-        _ => return None,
-    };
-    let mut name = node_text(name_node, source);
-    if let Some(idx) = name.find('<') {
-        name.truncate(idx);
-    }
-    let ret = returns.get(&name)?.trim();
-    let wrapped = ["Task<", "ValueTask<"]
-        .iter()
-        .find_map(|p| ret.strip_prefix(p).and_then(|r| r.strip_suffix('>')));
-    let is_task = wrapped.is_some() || ret == "Task" || ret == "ValueTask" || ret == "void";
-    match (awaited, wrapped) {
-        (true, Some(inner)) => Some(inner.trim().to_string()),
-        (_, _) if is_task => None,
-        _ => Some(ret.to_string()),
+        if call.kind() != "invocation_expression" {
+            return None;
+        }
+        let function = call.child_by_field_name("function")?;
+        let name_node = match function.kind() {
+            "identifier" | "generic_name" => function,
+            "member_access_expression"
+                if function.child_by_field_name("expression")?.kind() == "this" =>
+            {
+                function.child_by_field_name("name")?
+            }
+            _ => return None,
+        };
+        let mut name = node_text(name_node, source);
+        if let Some(idx) = name.find('<') {
+            name.truncate(idx);
+        }
+        let ret = self.0.get(&name)?.trim();
+        let wrapped = ["Task<", "ValueTask<"]
+            .iter()
+            .find_map(|p| ret.strip_prefix(p).and_then(|r| r.strip_suffix('>')));
+        let is_task_like = wrapped.is_some() || ["Task", "ValueTask", "void"].contains(&ret);
+        match (awaited, wrapped) {
+            (true, Some(inner)) => Some(inner.trim().to_string()),
+            _ if is_task_like => None,
+            _ => Some(ret.to_string()),
+        }
     }
 }
 
@@ -3790,7 +3817,7 @@ fn variable_declarator_value(node: Node<'_>) -> Option<Node<'_>> {
 fn infer_local_types(
     function_node: Node<'_>,
     source: &str,
-    returns: &HashMap<String, String>,
+    method_returns: &MethodReturns,
 ) -> HashMap<String, LocalType> {
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
     if let Some(params) = function_node.child_by_field_name("parameters") {
@@ -3814,7 +3841,7 @@ fn infer_local_types(
         }
     }
     if let Some(body) = function_node.child_by_field_name("body") {
-        collect_statement_bindings(body, source, returns, &mut bindings);
+        collect_statement_bindings(body, source, method_returns, &mut bindings);
     }
     bindings_to_local_types(bindings)
 }
@@ -3856,7 +3883,7 @@ fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String
 fn collect_statement_bindings(
     node: Node<'_>,
     source: &str,
-    returns: &HashMap<String, String>,
+    method_returns: &MethodReturns,
     bindings: &mut Vec<(String, LocalType)>,
 ) {
     if is_local_function_node(node.kind()) {
@@ -3885,7 +3912,7 @@ fn collect_statement_bindings(
                     && let Some(pattern) =
                         child.named_child(0).filter(|n| n.kind() == "tuple_pattern")
                 {
-                    bind_tuple_pattern(pattern, child, source, returns, bindings);
+                    bind_tuple_pattern(pattern, child, source, method_returns, bindings);
                     continue;
                 }
                 let Some(name_node) = child.child_by_field_name("name") else {
@@ -3900,7 +3927,7 @@ fn collect_statement_bindings(
                 }
                 let ty = if is_var {
                     variable_declarator_value(child)
-                        .map(|v| classify_value_expr(v, source, returns))
+                        .map(|v| classify_value_expr(v, source, method_returns))
                         .unwrap_or(LocalType::Other)
                 } else {
                     classify_annotation(&node_text(type_node.expect("checked above"), source))
@@ -3939,7 +3966,7 @@ fn collect_statement_bindings(
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_statement_bindings(child, source, returns, bindings);
+        collect_statement_bindings(child, source, method_returns, bindings);
     }
 }
 
@@ -3951,11 +3978,11 @@ fn bind_tuple_pattern(
     pattern: Node<'_>,
     declarator: Node<'_>,
     source: &str,
-    returns: &HashMap<String, String>,
+    method_returns: &MethodReturns,
     bindings: &mut Vec<(String, LocalType)>,
 ) {
     let elements = variable_declarator_value(declarator)
-        .and_then(|v| call_return_type(v, source, returns))
+        .and_then(|v| method_returns.call_return_type(v, source))
         .and_then(|ret| tuple_element_types(&ret));
     let mut cursor = pattern.walk();
     for (idx, el) in pattern.named_children(&mut cursor).enumerate() {
@@ -4070,7 +4097,7 @@ fn collect_class_level_grpc_client_fields(
                     collect_grpc_clients_from_declaration(
                         decl,
                         source,
-                        &HashMap::new(),
+                        &MethodReturns::default(), // limitation: field initializers are not resolved against method return types
                         &mut result,
                     );
                 }
@@ -4789,6 +4816,7 @@ public class Tests {
     private Task<Store> Lazy() => default;
     private Store Dup(int a) => default;
     private Other Dup(string a) => default;
+    private T Get<T>() => default;
     public async Task Run() {
         var (pub, bus) = MakePublisher();
         pub.PublishDeleted();
@@ -4805,6 +4833,10 @@ public class Tests {
         d.Write5();
         var (x, _) = Unknown();
         x.Write6();
+        var g = Get<Store>();
+        g.Write7();
+        var c = await OpenAsync().ConfigureAwait(false);
+        c.Write8();
     }
 }
 "#;
@@ -4832,6 +4864,8 @@ public class Tests {
         assert_eq!(recv("l.Write4"), ReceiverType::Unresolved);
         assert_eq!(recv("d.Write5"), ReceiverType::Unresolved);
         assert_eq!(recv("x.Write6"), ReceiverType::Unresolved);
+        assert_eq!(recv("g.Write7"), ReceiverType::Unresolved);
+        assert_eq!(recv("c.Write8"), known("Store"));
     }
 
     #[test]
