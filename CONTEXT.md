@@ -9,7 +9,7 @@ The SQLite-backed store of symbols (functions, classes, modules) and typed edges
 _Avoid_: knowledge graph, code graph (too generic), index
 
 **Edge Kind**:
-A typed, directional relationship between two symbols — CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, RPC_IMPL, CHANNEL_PUBLISH, CONFIG_BIND, etc. First-class concept; new edge kinds are how lidx learns new architectural patterns.
+A typed, directional relationship between two symbols — CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, RPC_IMPL, CHANNEL_PUBLISH, CONFIG_BIND, USES (type/fn-value reference, not a call; Rust only), etc. First-class concept; new edge kinds are how lidx learns new architectural patterns.
 MODULE_EXPORT is an internal-only kind: a Python `__all__` export signal stored only as an unresolved reference for `unused_imports`, not advertised in the MCP edge-kind list.
 _Avoid_: link, reference, relation
 
