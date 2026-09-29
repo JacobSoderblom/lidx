@@ -4,6 +4,9 @@ use anyhow::Result;
 use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
 
+/// Max interface -> interface hops followed by dispatch.
+const MAX_IFACE_CHAIN_DEPTH: i64 = 5;
+
 /// `FROM` clause of the one interface-dispatch query (issue #122), shared
 /// by [`Db::dispatch_pairs`] and `dead_symbols`: yields one row per
 /// `(im.id = interface method, cm.id = implementing method)` -- `cm`'s class
@@ -13,9 +16,6 @@ use std::collections::{HashMap, HashSet};
 /// separators (`.` / `::`). Callers append their own `WHERE`/`JOIN`s.
 /// `graph_version` is inlined (an `i64`, so injection-safe) so callers can
 /// mix it into queries with their own positional parameters.
-/// Max interface -> interface hops followed by dispatch.
-const MAX_IFACE_CHAIN_DEPTH: i64 = 5;
-
 pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
     let gv = graph_version;
     // Every interface a class reaches: its direct IMPLEMENTS targets, then
@@ -32,7 +32,7 @@ pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
                                     AND e.kind IN ('EXTENDS', 'IMPLEMENTS')
                                     AND e.graph_version = {gv}
                                     AND e.target_symbol_id IS NOT NULL
-              WHERE anc.d < {MAX_IFACE_CHAIN_DEPTH})
+              WHERE anc.d <= {MAX_IFACE_CHAIN_DEPTH})
          SELECT cid, iid FROM anc"
     );
     format!(
