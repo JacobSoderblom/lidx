@@ -192,6 +192,140 @@ fn gather_context_handles_search_seeds() {
     assert!(!result["items"].as_array().unwrap().is_empty());
 }
 
+// Regression tests for issue #104: gather_context with a search seed must
+// include the matched symbol itself (tagged as the actual search hit, not
+// folded into unrelated "subgraph" expansion), must not let unrelated
+// expansion starve that match's budget, and must never truncate an item to
+// a partial byte-sliced fragment.
+
+fn write_search_seed_fixture(repo_root: &Path) {
+    // zzz_target_marker is the unique search match. aaa_caller_fn is a real
+    // graph-connected neighbor (via CALLS) whose qualname sorts
+    // alphabetically *before* the match, so it previously starved the
+    // match's budget when related items were processed in alphabetical
+    // order instead of prioritizing the search hit.
+    std::fs::write(
+        repo_root.join("zzz_target.py"),
+        "def zzz_target_marker():\n    return \"UNIQUESEARCHTOKEN42\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo_root.join("aaa_caller.py"),
+        "from zzz_target import zzz_target_marker\n\n\ndef aaa_caller_fn():\n    return zzz_target_marker()\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn gather_context_search_seed_match_is_tagged_search_and_not_duplicated() {
+    let temp = TempRepo::new("py_mvp");
+    write_search_seed_fixture(&temp.repo_root);
+
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "gather_context".to_string(),
+        r#"{"seeds":[{"type":"search","query":"UNIQUESEARCHTOKEN42"}]}"#,
+        "1",
+    )
+    .unwrap();
+
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let items = value["result"]["items"].as_array().unwrap();
+
+    // Match on the function's own qualname rather than raw content, since
+    // the whole-file "module" symbol enclosing it is a distinct, genuinely
+    // graph-connected related item that also happens to contain this
+    // single-function file's text -- that's not the duplication being
+    // guarded against here.
+    let matches: Vec<&serde_json::Value> = items
+        .iter()
+        .filter(|item| item["symbol"]["qualname"].as_str() == Some("zzz_target.zzz_target_marker"))
+        .collect();
+
+    // The search-seed match must appear exactly once, tagged as the actual
+    // search hit -- not silently merged into generic subgraph "related"
+    // items.
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one item containing the search match, got {items:#?}"
+    );
+    assert_eq!(
+        matches[0]["source"]["source_type"].as_str(),
+        Some("search"),
+        "search-seed match must be tagged source_type=search"
+    );
+
+    // The graph-connected caller must still show up as a related expansion
+    // item -- related items must remain graph-connected to the seed.
+    let has_caller = items.iter().any(|item| {
+        item["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("aaa_caller_fn"))
+            && item["source"]["source_type"].as_str() == Some("subgraph")
+    });
+    assert!(
+        has_caller,
+        "expected aaa_caller_fn as a graph-connected related item, got {items:#?}"
+    );
+}
+
+#[test]
+fn gather_context_search_seed_match_wins_tight_budget_without_partial_fragment() {
+    let temp = TempRepo::new("py_mvp");
+    write_search_seed_fixture(&temp.repo_root);
+
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let call = |body: &str| {
+        let response = rpc::call(
+            temp.repo_root.clone(),
+            temp.db_path.clone(),
+            "gather_context".to_string(),
+            body,
+            "1",
+        )
+        .unwrap();
+        serde_json::from_str::<serde_json::Value>(&response).unwrap()
+    };
+
+    // Generous budget: capture the full, untruncated content of the match.
+    let baseline = call(r#"{"seeds":[{"type":"search","query":"UNIQUESEARCHTOKEN42"}]}"#);
+    let baseline_items = baseline["result"]["items"].as_array().unwrap();
+    let full_content = baseline_items
+        .iter()
+        .find(|item| item["symbol"]["qualname"].as_str() == Some("zzz_target.zzz_target_marker"))
+        .and_then(|item| item["content"].as_str())
+        .expect("search match present with generous budget")
+        .to_string();
+
+    // Budget tight enough to hold exactly the match's full content and
+    // nothing else.
+    let tight_budget = full_content.len();
+    let params = format!(
+        r#"{{"seeds":[{{"type":"search","query":"UNIQUESEARCHTOKEN42"}}],"max_bytes":{tight_budget}}}"#
+    );
+    let result = call(&params);
+    let items = result["result"]["items"].as_array().unwrap();
+
+    // The match must still win the budget, in full -- never a byte-sliced
+    // fragment -- and the unrelated (from this angle) caller must not fit
+    // alongside it.
+    assert_eq!(
+        items.len(),
+        1,
+        "only the full match should fit in the tight budget, got {items:#?}"
+    );
+    assert_eq!(items[0]["content"].as_str(), Some(full_content.as_str()));
+    assert_eq!(items[0]["source"]["source_type"].as_str(), Some("search"));
+    assert!(result["result"]["total_bytes"].as_u64().unwrap() <= tight_budget as u64);
+}
+
 #[test]
 fn gather_context_handles_file_seeds() {
     let temp = TempRepo::new("py_mvp");
