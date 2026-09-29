@@ -1357,7 +1357,7 @@ impl<'c> Resolver<'c> {
             let Some((parent, _)) = candidate.rsplit_once('.') else {
                 continue;
             };
-            let Some(id) = self.exact(parent, symbol_map, caller_file)? else {
+            let Some(id) = self.exact(parent, symbol_map, caller_file, false)? else {
                 continue;
             };
             let kind: Option<String> = self
