@@ -1,3 +1,5 @@
+mod common;
+
 use lidx::indexer::extract::LanguageExtractor;
 use lidx::indexer::javascript::{
     TsxExtractor, TypescriptExtractor, module_name_from_rel_path, resolve_import_file_edges,
@@ -436,4 +438,59 @@ function f() {
         assert!(names.contains(&good), "{good} missing: {names:?}");
     }
     assert_eq!(names.iter().filter(|n| **n == "response").count(), 1);
+}
+
+/// Issue #114: a nested Next.js App Router handler and a template-literal
+/// `fetch` client must meet on the same normalized `/api/tables` target.
+#[test]
+fn nextjs_route_handlers_and_template_fetch_link_up() {
+    let tmp = tempfile::tempdir().unwrap();
+    common::write_files(
+        tmp.path(),
+        &[
+            (
+                "web/src/app/api/tables/route.ts",
+                "export async function GET() { return Response.json([]); }\n\
+                 export async function POST(req: Request) { return Response.json({}); }\n",
+            ),
+            (
+                "web/src/lib/client.ts",
+                "const BASE = process.env.API_BASE;\n\
+                 export async function listTables(n: number) {\n  \
+                 return fetch(`${BASE}/api/tables?limit=${n}`);\n}\n",
+            ),
+        ],
+    );
+    let db_path = tmp.path().join(".lidx").join(".lidx.sqlite");
+    let mut indexer = lidx::indexer::Indexer::new(tmp.path().to_path_buf(), db_path).unwrap();
+    indexer.reindex().unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let rows = |kind: &str| -> Vec<(String, Option<String>, String)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT target_qualname, detail FROM edges \
+                 WHERE graph_version = ? AND kind = ? ORDER BY id",
+            )
+            .unwrap();
+        stmt.query_map(rusqlite::params![gv, kind], |r| {
+            let detail: String = r.get(1)?;
+            let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+            Ok((
+                detail["method"].as_str().unwrap().to_string(),
+                r.get::<_, Option<String>>(0)?,
+                detail["path"].as_str().unwrap().to_string(),
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    };
+    let routes = rows("HTTP_ROUTE");
+    let calls = rows("HTTP_CALL");
+    let methods: Vec<&str> = routes.iter().map(|r| r.0.as_str()).collect();
+    assert_eq!(methods, ["GET", "POST"], "{routes:?}");
+    assert!(routes.iter().all(|r| r.1.as_deref() == Some("/api/tables")));
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0].1, routes[0].1);
 }
