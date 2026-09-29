@@ -668,41 +668,60 @@ fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut Extracted
         lines.push((offset, line));
         offset += line.len();
     }
-    let is_go = |l: &str| l.trim().eq_ignore_ascii_case("go");
+    // `GO`, `GO 5`, `go;` end a batch.
+    let is_go = |l: &str| {
+        let l = l.trim().trim_end_matches(';');
+        let mut w = l.split_whitespace();
+        w.next().is_some_and(|f| f.eq_ignore_ascii_case("go"))
+            && w.next().is_none_or(|n| n.parse::<u32>().is_ok())
+            && w.next().is_none()
+    };
+    let normalize = |q: &str| -> String {
+        q.chars()
+            .filter(|c| !matches!(c, '[' | ']' | '"'))
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    let mut in_block_comment = false;
+    let mut in_dollar = false;
 
     for (i, &(line_start, line)) in lines.iter().enumerate() {
-        let trimmed = line.trim_start();
-        let mut words = trimmed.split_whitespace();
-        if !words
-            .next()
-            .is_some_and(|w| w.eq_ignore_ascii_case("create"))
-        {
+        let skip = in_block_comment || in_dollar || line.trim_start().starts_with("--");
+        if line.contains("/*") || line.contains("*/") {
+            // Last marker on the line decides the state.
+            let open = line.rfind("/*");
+            let close = line.rfind("*/");
+            in_block_comment = match (open, close) {
+                (Some(o), Some(c)) => o > c,
+                (Some(_), None) => true,
+                _ => false,
+            };
+        }
+        if line.matches("$$").count() % 2 == 1 {
+            in_dollar = !in_dollar;
+        }
+        if skip {
             continue;
         }
-        let mut word = words.next().unwrap_or("");
-        if word.eq_ignore_ascii_case("or") {
-            if !words
-                .next()
-                .is_some_and(|w| w.eq_ignore_ascii_case("alter"))
-            {
-                continue;
-            }
-            word = words.next().unwrap_or("");
-        }
-        let kind = if word.eq_ignore_ascii_case("proc") || word.eq_ignore_ascii_case("procedure") {
-            "procedure"
-        } else if word.eq_ignore_ascii_case("table") {
-            "table"
-        } else {
+        let trimmed = line.trim_start();
+        let Some((kind, raw)) = parse_create(trimmed) else {
             continue;
         };
-        let raw = words.next().unwrap_or("");
         let raw = raw.split(['(', ';']).next().unwrap_or("");
+        if raw.starts_with(['#', '@']) {
+            continue;
+        }
         let qualname: String = raw
             .chars()
             .filter(|c| !matches!(c, '[' | ']' | '"'))
             .collect();
-        if qualname.is_empty() || output.symbols.iter().any(|s| s.qualname == qualname) {
+        let norm = normalize(&qualname);
+        if qualname.is_empty()
+            || output
+                .symbols
+                .iter()
+                .any(|s| normalize(&s.qualname) == norm)
+        {
             continue;
         }
         let name = qualname.rsplit('.').next().unwrap_or(&qualname).to_string();
@@ -715,7 +734,11 @@ fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut Extracted
         } else {
             let stop = lines[i + 1..]
                 .iter()
-                .find(|(_, l)| is_go(l) || l.to_ascii_lowercase().starts_with("create "))
+                .find(|(_, l)| {
+                    is_go(l)
+                        || parse_create(l).is_some_and(|(_, n)| !n.starts_with(['#', '@']))
+                            && l.starts_with(['c', 'C'])
+                })
                 .map_or(source.len(), |&(s, _)| s);
             start_byte + source[start_byte..stop].trim_end().len()
         };
@@ -748,6 +771,39 @@ fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut Extracted
             ..Default::default()
         });
     }
+}
+
+/// Parses `CREATE [OR ALTER] {PROC|PROCEDURE|TABLE} [IF NOT EXISTS] <name>`
+/// from a trimmed line, returning the symbol kind and the raw name token.
+fn parse_create(line: &str) -> Option<(&'static str, &str)> {
+    let mut words = line.split_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("create") {
+        return None;
+    }
+    let mut word = words.next()?;
+    if word.eq_ignore_ascii_case("or") {
+        if !words.next()?.eq_ignore_ascii_case("alter") {
+            return None;
+        }
+        word = words.next()?;
+    }
+    let kind = if word.eq_ignore_ascii_case("proc") || word.eq_ignore_ascii_case("procedure") {
+        "procedure"
+    } else if word.eq_ignore_ascii_case("table") {
+        "table"
+    } else {
+        return None;
+    };
+    let mut name = words.next()?;
+    if kind == "table" && name.eq_ignore_ascii_case("if") {
+        let not = words.next()?;
+        let exists = words.next()?;
+        if !(not.eq_ignore_ascii_case("not") && exists.eq_ignore_ascii_case("exists")) {
+            return None;
+        }
+        name = words.next()?;
+    }
+    Some((kind, name))
 }
 
 /// End byte of a `CREATE TABLE` statement: the paren matching the first `(`,

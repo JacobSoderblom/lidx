@@ -262,3 +262,49 @@ fn tsql_tables_after_merge_and_inside_if_begin_are_extracted() {
         assert_eq!(syms.iter().filter(|(_, q)| q == name).count(), 1);
     }
 }
+
+#[test]
+fn tsql_fallback_skips_noise_and_duplicates() {
+    let source = "CREATE TABLE IF NOT EXISTS app.foo (id int);\n\
+CREATE TABLE #tmp (id int);\n\
+CREATE TABLE @tv (id int);\n\
+-- CREATE TABLE app.commented (id int);\n\
+/*\nCREATE TABLE app.blocked (id int);\n*/\n\
+CREATE FUNCTION app.f() RETURNS void AS $$\nBEGIN\n  CREATE TABLE app.indollar (id int);\nEND;\n$$ LANGUAGE plpgsql;\n";
+    let syms = tsql_symbols(source);
+    let quals: Vec<&str> = syms.iter().map(|(_, q)| q.as_str()).collect();
+    for bad in ["IF", "#tmp", "app.commented", "app.blocked", "app.indollar"] {
+        assert!(!quals.contains(&bad), "unexpected {bad}: {quals:?}");
+    }
+    let foos = quals
+        .iter()
+        .filter(|q| q.eq_ignore_ascii_case("app.foo"))
+        .count();
+    assert_eq!(foos, 1, "{quals:?}");
+}
+
+#[test]
+fn tsql_fallback_go_variants_tabs_and_temp_table_in_proc() {
+    let source = "CREATE\tPROCEDURE dbo.a AS\nBEGIN\nCREATE TABLE #t (id int);\nSELECT 1;\nEND\nGO 2\nCREATE PROC dbo.b AS SELECT 1;\ngo;\nCREATE PROC dbo.c AS SELECT 1;\n";
+    let mut extractor = SqlExtractor::new().unwrap();
+    let out = extractor.extract(source, "m").unwrap();
+    let a = out.symbols.iter().find(|s| s.qualname == "dbo.a").unwrap();
+    assert_eq!((a.start_line, a.end_line), (1, 5));
+    let b = out.symbols.iter().find(|s| s.qualname == "dbo.b").unwrap();
+    assert_eq!((b.start_line, b.end_line), (7, 7));
+    assert!(out.symbols.iter().any(|s| s.qualname == "dbo.c"));
+    assert!(!out.symbols.iter().any(|s| s.qualname == "#t"));
+}
+
+#[test]
+fn tsql_fallback_table_lines() {
+    let source = "MERGE x AS t USING y AS s ON t.i = s.i WHEN MATCHED THEN UPDATE SET t.i = s.i;\nCREATE TABLE dpb.audit (\n  id int\n);\n";
+    let mut extractor = SqlExtractor::new().unwrap();
+    let out = extractor.extract(source, "m").unwrap();
+    let t = out
+        .symbols
+        .iter()
+        .find(|s| s.qualname == "dpb.audit")
+        .unwrap();
+    assert_eq!((t.start_line, t.end_line), (2, 4));
+}
