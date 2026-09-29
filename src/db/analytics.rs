@@ -1,11 +1,24 @@
+use super::overview::module_prefix;
 use super::resolver::qualname_trailing_name;
-use super::{
-    Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row,
-    symbol_from_row_offset,
-};
+use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row};
 use crate::model::{DuplicateGroup, Edge, Symbol, SymbolComplexity, SymbolCoupling};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+
+// Issue #134 follow-up: module identity used to be computed twice in
+// `top_fan_in_by_module` -- once here via a raw-SQL "first path segment"
+// `CASE` (no trailing separator, and the bare filename for a root-level
+// file), and separately in `module_summary` via `module_prefix()`
+// (configurable depth, and always a trailing separator, `"./"` for
+// root-level files). The two disagreed for root-level files in particular:
+// this method used to group `main.rs` under module `"main.rs"` while
+// `module_summary` grouped it under `"./"`, so the repo map's
+// "## Modules" and "## Key Symbols" sections showed different module
+// identities for the same files. Grouping now happens in Rust with the
+// same `module_prefix()` `module_summary` uses, at the same depth (1) that
+// `repo_map::build_repo_map` passes to `module_summary` -- its only
+// caller -- so both sections always agree on what a "module" is.
+const KEY_SYMBOLS_MODULE_DEPTH: usize = 1;
 
 impl Db {
     pub fn call_edge_count(
@@ -235,11 +248,6 @@ impl Db {
     ) -> Result<Vec<(String, Symbol, i64)>> {
         let mut sql = String::from(
             "SELECT
-                CASE
-                    WHEN INSTR(f.path, '/') > 0
-                    THEN SUBSTR(f.path, 1, INSTR(f.path, '/') - 1)
-                    ELSE f.path
-                END as module,
                 s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                 s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                 s.graph_version, s.commit_sha, s.stable_id,
@@ -274,30 +282,44 @@ impl Db {
         append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
         sql.push_str(" GROUP BY s.id");
         sql.push_str(" HAVING fan_in > 0");
-        sql.push_str(" ORDER BY module, fan_in DESC");
+        // Ordered by `fan_in` alone (not per-module) since grouping now
+        // happens after the query, in Rust -- see the module-identity note
+        // above. A global sort by `fan_in DESC` still leaves every
+        // per-module subsequence in `fan_in DESC` order below.
+        sql.push_str(" ORDER BY fan_in DESC, s.id");
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(&*params, |row| {
-            let module: String = row.get(0)?;
-            let symbol = symbol_from_row_offset(row, 1)?;
-            let fan_in: i64 = row.get(17)?;
-            Ok((module, symbol, fan_in))
+            let symbol = symbol_from_row(row)?;
+            let fan_in: i64 = row.get(16)?;
+            Ok((symbol, fan_in))
         })?;
 
         // Collect and group by module, limiting per module
         let mut by_module: std::collections::HashMap<String, Vec<(Symbol, i64)>> =
             std::collections::HashMap::new();
         for row in rows {
-            let (module, symbol, fan_in) = row?;
+            let (symbol, fan_in) = row?;
+            let module = module_prefix(&symbol.file_path, KEY_SYMBOLS_MODULE_DEPTH);
             by_module.entry(module).or_default().push((symbol, fan_in));
         }
 
-        // Flatten with limit per module
+        // Flatten with limit per module. Issue #134: distinct symbols can
+        // share a bare name (e.g. a common helper repeated across files in
+        // the same top-level module) -- rows are already ordered by
+        // `fan_in DESC` per module, so keeping only the first occurrence of
+        // each name drops the lower-ranked duplicate while still surfacing
+        // the highest-fan-in symbol for that name.
         let mut results = Vec::new();
-        for (module, mut symbols) in by_module {
-            symbols.truncate(limit_per_module);
-            for (symbol, fan_in) in symbols {
+        for (module, symbols) in by_module {
+            let mut seen_names = std::collections::HashSet::new();
+            let mut deduped: Vec<(Symbol, i64)> = symbols
+                .into_iter()
+                .filter(|(symbol, _)| seen_names.insert(symbol.name.clone()))
+                .collect();
+            deduped.truncate(limit_per_module);
+            for (symbol, fan_in) in deduped {
                 results.push((module.clone(), symbol, fan_in));
             }
         }
@@ -987,4 +1009,179 @@ fn signature_mentions(signature: &str, alias: &str) -> bool {
     signature
         .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
         .any(|token| token == alias)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::Db;
+    use crate::indexer::extract::{EdgeInput, SymbolInput};
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn create_test_db() -> (Db, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = Db::new(&db_path).unwrap();
+        (db, temp_dir)
+    }
+
+    fn make_symbol(qualname: &str, kind: &str) -> SymbolInput {
+        SymbolInput {
+            kind: kind.to_string(),
+            name: qualname
+                .split('.')
+                .next_back()
+                .unwrap_or(qualname)
+                .to_string(),
+            qualname: qualname.to_string(),
+            start_line: 1,
+            start_col: 0,
+            end_line: 5,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 50,
+            signature: None,
+            docstring: None,
+        }
+    }
+
+    fn make_edge(kind: &str, source: &str, target: &str) -> EdgeInput {
+        EdgeInput {
+            kind: kind.to_string(),
+            source_qualname: Some(source.to_string()),
+            target_qualname: Some(target.to_string()),
+            ..Default::default()
+        }
+    }
+
+    // Issue #134: two distinct functions that happen to share a bare name
+    // (e.g. a common helper name like `_require` repeated across files in
+    // the same top-level module) both land in `top_fan_in_by_module`'s
+    // per-module results. Repo map's "Key Symbols" section then lists that
+    // name twice under one module header with no way to tell them apart.
+    #[test]
+    fn top_fan_in_by_module_dedupes_same_name_per_module() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+
+        let fid_a = db.upsert_file("pkg/a.py", "h1", "python", 10, 0).unwrap();
+        let fid_b = db.upsert_file("pkg/b.py", "h2", "python", 10, 0).unwrap();
+        let fid_app = db.upsert_file("app.py", "h3", "python", 10, 0).unwrap();
+
+        let ins_a = db
+            .insert_symbols(
+                fid_a,
+                "pkg/a.py",
+                &[make_symbol("pkg.a.helper", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let ins_b = db
+            .insert_symbols(
+                fid_b,
+                "pkg/b.py",
+                &[make_symbol("pkg.b.helper", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let ins_app = db
+            .insert_symbols(
+                fid_app,
+                "app.py",
+                &[make_symbol("app.caller", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+
+        let mut sym_map = HashMap::new();
+        sym_map.insert("pkg.a.helper".to_string(), ins_a[0].id);
+        sym_map.insert("pkg.b.helper".to_string(), ins_b[0].id);
+        sym_map.insert("app.caller".to_string(), ins_app[0].id);
+        db.insert_edges(
+            fid_app,
+            &[
+                make_edge("CALLS", "app.caller", "pkg.a.helper"),
+                make_edge("CALLS", "app.caller", "pkg.b.helper"),
+            ],
+            &sym_map,
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let results = db.top_fan_in_by_module(10, None, None, gv).unwrap();
+        let helper_count = results
+            .iter()
+            .filter(|(module, sym, _)| module == "pkg/" && sym.name == "helper")
+            .count();
+        assert_eq!(
+            helper_count, 1,
+            "expected `helper` to be deduplicated within the `pkg` module, got: {:?}",
+            results
+        );
+    }
+
+    // Issue #134 follow-up: `top_fan_in_by_module` used to group a
+    // root-level file (no `/` in its path) under its bare filename (e.g.
+    // `"main.rs"`), while `module_summary` -- via `module_prefix()` --
+    // grouped it under `"./"`. This left the repo map's "## Modules" and
+    // "## Key Symbols" sections disagreeing on root-level module identity.
+    // Both now go through `module_prefix()`, so they must agree.
+    #[test]
+    fn top_fan_in_by_module_groups_root_level_file_as_dot_slash() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+
+        let fid_main = db.upsert_file("main.rs", "h1", "rust", 10, 0).unwrap();
+        let fid_other = db.upsert_file("other.rs", "h2", "rust", 10, 0).unwrap();
+
+        let ins_main = db
+            .insert_symbols(
+                fid_main,
+                "main.rs",
+                &[make_symbol("main.run", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let ins_other = db
+            .insert_symbols(
+                fid_other,
+                "other.rs",
+                &[make_symbol("other.caller", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+
+        let mut sym_map = HashMap::new();
+        sym_map.insert("main.run".to_string(), ins_main[0].id);
+        sym_map.insert("other.caller".to_string(), ins_other[0].id);
+        db.insert_edges(
+            fid_other,
+            &[make_edge("CALLS", "other.caller", "main.run")],
+            &sym_map,
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let results = db.top_fan_in_by_module(10, None, None, gv).unwrap();
+        let run_entry = results.iter().find(|(_, sym, _)| sym.name == "run");
+        assert_eq!(
+            run_entry.map(|(module, ..)| module.as_str()),
+            Some("./"),
+            "expected root-level file to group under the same \"./\" module \
+             `module_summary` uses, got: {:?}",
+            results
+        );
+        assert!(
+            !results.iter().any(|(module, ..)| module == "main.rs"),
+            "root-level file should not be grouped under its bare filename, got: {:?}",
+            results
+        );
+    }
 }

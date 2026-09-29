@@ -669,3 +669,95 @@ def caller():
         "multi-line chain must resolve to the same qualname as the single-line form"
     );
 }
+
+// Parenthesized `from x import (a, b)` regression tests (issue #117) —
+// `parse_imports`/`parse_import_bindings` used to split the statement's raw
+// text on commas, so the `(`/`)` tokens and interior newlines produced
+// bogus `pkg.mod.(`/`pkg.mod.)` IMPORTS targets, dropped the first name,
+// and made the whole statement's bindings unusable (any text containing
+// `(` was skipped outright). Walking the tree-sitter node's `name` field
+// children sidesteps punctuation and whitespace entirely.
+
+#[test]
+fn from_import_parenthesized_multiline_trailing_comma_emits_clean_targets() {
+    let source = "
+from pkg.engine import (
+    compute_frontier,
+    other_fn as of,
+)
+";
+    let module = module_name_from_rel_path("app/caller.py");
+    let mut extractor = PythonExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    let targets: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "IMPORTS")
+        .filter_map(|e| e.target_qualname.as_deref())
+        .collect();
+
+    assert!(
+        targets.contains(&"pkg.engine.compute_frontier"),
+        "the first name in a parenthesized import list must not be dropped, got: {targets:?}"
+    );
+    assert!(
+        targets.contains(&"pkg.engine.other_fn"),
+        "an aliased name inside the parens must use its pre-alias name as the IMPORTS target, \
+         got: {targets:?}"
+    );
+    assert!(
+        targets
+            .iter()
+            .all(|t| !t.ends_with('(') && !t.ends_with(')')),
+        "no IMPORTS target may be the bare paren punctuation, got: {targets:?}"
+    );
+}
+
+#[test]
+fn from_import_parenthesized_names_bind_for_call_resolution() {
+    // Before the fix, `parse_import_bindings` skipped any import statement
+    // whose text contained `(`, so calls below never got an import
+    // candidate and fell through to the ambiguous/bare-name tier.
+    let source = "
+from pkg.engine import (
+    compute_frontier,
+    other_fn as of,
+)
+
+def run():
+    compute_frontier()
+    of()
+";
+    let module = module_name_from_rel_path("app/caller.py");
+    let mut extractor = PythonExtractor::new().unwrap();
+    let extracted = extractor.extract(source, &module).unwrap();
+
+    // A bare `name()` call's `target_qualname` is qualified with the
+    // enclosing module (`resolve_call_target`'s single-segment branch);
+    // `import_candidates` is the separate, import-derived field this test
+    // is really about.
+    let plain_call = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS" && e.target_qualname.as_deref() == Some("app.caller.compute_frontier")
+        })
+        .expect("compute_frontier() call edge");
+    assert_eq!(
+        plain_call.import_candidates,
+        vec!["pkg.engine.compute_frontier".to_string()],
+        "a parenthesized, unaliased import must still bind its call site"
+    );
+
+    let aliased_call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("app.caller.of"))
+        .expect("of() call edge");
+    assert_eq!(
+        aliased_call.import_candidates,
+        vec!["pkg.engine.other_fn".to_string()],
+        "`as` inside a parenthesized import list must bind the alias to its target"
+    );
+}

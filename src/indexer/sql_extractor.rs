@@ -183,6 +183,12 @@ fn create_kind(kind: &str) -> Option<&'static str> {
 }
 
 fn extract_object_name(node: Node<'_>, source: &str) -> Option<(String, String)> {
+    // `CREATE INDEX <name> ON <table>` must be named after the index itself,
+    // never the table it's built on — the `object_reference` found by
+    // `find_object_reference` below is the *table*. See #127.
+    if node.kind() == "create_index" {
+        return extract_index_name(node, source);
+    }
     if let Some(object_node) = find_object_reference(node) {
         let qualname = object_reference_name(object_node, source)?;
         let name = qualname.rsplit('.').next().unwrap_or(&qualname).to_string();
@@ -196,6 +202,46 @@ fn extract_object_name(node: Node<'_>, source: &str) -> Option<(String, String)>
         return Some((qualname.clone(), qualname));
     }
     None
+}
+
+/// Names an index symbol after the index's own name (the `column` field on
+/// `create_index`, despite the name — it's the identifier right after
+/// `CREATE [UNIQUE] INDEX`), qualified by the indexed table's schema, not the
+/// table's own name. Anonymous indexes (no name given) yield `None`, matching
+/// the prior behavior of emitting no symbol rather than a misnamed one.
+fn extract_index_name(node: Node<'_>, source: &str) -> Option<(String, String)> {
+    let name_node = node.child_by_field_name("column")?;
+    let name = node_text(name_node, source);
+    if name.is_empty() {
+        return None;
+    }
+    let qualname = find_object_reference(node)
+        .and_then(|table_node| object_reference_schema_prefix(table_node, source))
+        .map_or_else(|| name.clone(), |schema| format!("{schema}.{name}"));
+    Some((qualname, name))
+}
+
+/// The database/schema portion of an `object_reference` (excluding the
+/// object's own name), e.g. `"dpb"` for `dpb.dataproduct`.
+fn object_reference_schema_prefix(node: Node<'_>, source: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(db) = node.child_by_field_name("database") {
+        let value = node_text(db, source);
+        if !value.is_empty() {
+            parts.push(value);
+        }
+    }
+    if let Some(schema) = node.child_by_field_name("schema") {
+        let value = node_text(schema, source);
+        if !value.is_empty() {
+            parts.push(value);
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("."))
+    }
 }
 
 fn find_object_reference(node: Node<'_>) -> Option<Node<'_>> {
@@ -716,6 +762,29 @@ CREATE TABLE orders (
             e.source_qualname.as_deref() == Some("orders")
                 && e.target_qualname.as_deref() == Some("products")
         }));
+    }
+
+    #[test]
+    fn create_index_named_by_index_not_table() {
+        // Regression test for #127: `extract_object_name` took the first
+        // `object_reference` node under `create_index`, which is the table
+        // being indexed, not the index itself — so the index symbol got the
+        // table's qualname and shadowed the real table symbol.
+        let source = r#"
+CREATE UNIQUE INDEX ux_dataproduct_unique_name_active
+    ON dpb.dataproduct (name)
+    WHERE active;
+"#;
+        let mut extractor = SqlExtractor::new().unwrap();
+        let file = extractor.extract(source, "migrations/002_index").unwrap();
+        let index = file
+            .symbols
+            .iter()
+            .find(|s| s.kind == "index")
+            .expect("index symbol not extracted");
+        assert_eq!(index.name, "ux_dataproduct_unique_name_active");
+        assert_eq!(index.qualname, "dpb.ux_dataproduct_unique_name_active");
+        assert_ne!(index.qualname, "dpb.dataproduct");
     }
 
     #[test]

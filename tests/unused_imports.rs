@@ -238,3 +238,24 @@ fn unused_imports_dotted_import_binds_first_segment() {
         "xml is never used, got: {unused:?}"
     );
 }
+
+/// Parenthesized, multi-line `from x import (a, b as c)` binds `a` and `c`;
+/// a use of the alias counts and an unused alias is still flagged.
+#[test]
+fn unused_imports_parenthesized_from_import_binds_aliases() {
+    let (_tmp, mut indexer) = temp_indexer(&[(
+        "app.py",
+        "from pkg import (\n    json_util as ju,\n    other_orig as other_alias,\n)\n\n\ndef f():\n    return ju.x()\n",
+    )]);
+    indexer.reindex().unwrap();
+
+    let unused = unused_import_qualnames(&mut indexer);
+    assert!(
+        !unused.iter().any(|q| q == "pkg.json_util"),
+        "ju.x() uses the `ju` binding, got: {unused:?}"
+    );
+    assert!(
+        unused.iter().any(|q| q == "pkg.other_orig"),
+        "other_alias is never used, got: {unused:?}"
+    );
+}
