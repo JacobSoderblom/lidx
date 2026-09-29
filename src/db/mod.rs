@@ -332,29 +332,7 @@ impl Db {
     /// - `delete_edges_for_file()` + `insert_edges()` for edges
     pub fn delete_symbols_edges_for_file(&self, file_id: i64, graph_version: i64) -> Result<()> {
         self.delete_edges_for_file(file_id, graph_version)?;
-        // A namespace declared by several files is one symbol per file, and
-        // other files' edges bind to the one a fresh index saw first: the
-        // file earliest in path order (files are indexed in that order).
-        // Hand such edges to that survivor before this file's copy goes, or
-        // they'd be nulled and diverge from a fresh reindex.
-        let survivor = "SELECT o.id FROM symbols o
-                 JOIN files fo ON fo.id = o.file_id
-                 JOIN symbols d ON d.qualname = o.qualname AND d.kind = o.kind
-                  AND d.graph_version = o.graph_version
-                 WHERE d.id = edges.{col} AND o.file_id != d.file_id
-                 ORDER BY fo.path LIMIT 1";
-        for column in ["source_symbol_id", "target_symbol_id"] {
-            let survivor = survivor.replace("{col}", column);
-            self.conn().execute(
-                &format!(
-                    "UPDATE edges SET {column} = COALESCE(({survivor}), {column})
-                     WHERE graph_version = ?2 AND {column} IN (
-                        SELECT id FROM symbols
-                        WHERE file_id = ?1 AND graph_version = ?2 AND kind = 'namespace')"
-                ),
-                params![file_id, graph_version],
-            )?;
-        }
+        reown_shared_namespace_edges(&self.conn(), file_id, graph_version, None)?;
         // Deleting these symbols nulls any other file's edge that still
         // references one of them via `edges`' `ON DELETE SET NULL` foreign
         // key (issue #76) -- no manual nulling needed here.
@@ -1032,8 +1010,11 @@ impl Db {
         if !diff.deleted.is_empty() {
             let placeholders = vec!["?"; diff.deleted.len()].join(",");
 
+            // `stable_id` is content-only (no file), so scope to this file:
+            // another file's same-qualname symbol shares it.
+            reown_shared_namespace_edges(&tx, file_id, graph_version, Some(&diff.deleted))?;
             let delete_sql = format!(
-                "DELETE FROM symbols WHERE stable_id IN ({}) AND graph_version = ?",
+                "DELETE FROM symbols WHERE stable_id IN ({}) AND graph_version = ? AND file_id = ?",
                 placeholders
             );
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -1041,6 +1022,7 @@ impl Db {
                 params.push(Box::new(stable_id.clone()));
             }
             params.push(Box::new(graph_version));
+            params.push(Box::new(file_id));
 
             tx.execute(
                 &delete_sql,
@@ -1105,7 +1087,7 @@ impl Db {
                 "UPDATE symbols
                  SET start_line = ?, start_col = ?, end_line = ?, end_col = ?,
                      start_byte = ?, end_byte = ?, docstring = ?
-                 WHERE stable_id = ? AND graph_version = ?",
+                 WHERE stable_id = ? AND graph_version = ? AND file_id = ?",
             )?;
 
             for symbol in &diff.modified {
@@ -1121,12 +1103,14 @@ impl Db {
                     symbol.docstring.as_deref(),
                     &stable_id,
                     graph_version,
+                    file_id,
                 ])?;
 
                 // Fetch the updated symbol to get its ID
                 let id: i64 = tx.query_row(
-                    "SELECT id FROM symbols WHERE stable_id = ? AND graph_version = ?",
-                    params![&stable_id, graph_version],
+                    "SELECT id FROM symbols
+                     WHERE stable_id = ? AND graph_version = ? AND file_id = ?",
+                    params![&stable_id, graph_version, file_id],
                     |row| row.get(0),
                 )?;
 
@@ -1162,8 +1146,8 @@ impl Db {
                     "SELECT id, kind, name, qualname, start_line, start_col, end_line, end_col,
                             start_byte, end_byte, signature, docstring, graph_version, commit_sha, stable_id
                      FROM symbols
-                     WHERE stable_id = ? AND graph_version = ?",
-                    params![&stable_id, graph_version],
+                     WHERE stable_id = ? AND graph_version = ? AND file_id = ?",
+                    params![&stable_id, graph_version, file_id],
                     |row| {
                         Ok(Symbol {
                             id: row.get(0)?,
@@ -1240,16 +1224,28 @@ impl Db {
         let mut file_symbols: HashMap<i64, Vec<Symbol>> = HashMap::new();
 
         // PHASE 1: Batch DELETE all removed symbols across all files
-        let all_deleted: Vec<String> = file_diffs
-            .iter()
-            .flat_map(|fd| fd.diff.deleted.clone())
-            .collect();
-
-        if !all_deleted.is_empty() {
-            let placeholders = vec!["?"; all_deleted.len()].join(",");
-            let delete_sql = format!("DELETE FROM symbols WHERE stable_id IN ({})", placeholders);
-
-            tx.execute(&delete_sql, rusqlite::params_from_iter(all_deleted.iter()))?;
+        // `stable_id` is content-only (no file), so each file's deletes are
+        // scoped to that file and graph version.
+        for fd in file_diffs.iter().filter(|fd| !fd.diff.deleted.is_empty()) {
+            reown_shared_namespace_edges(
+                &tx,
+                fd.file_id,
+                fd.graph_version,
+                Some(&fd.diff.deleted),
+            )?;
+            let placeholders = vec!["?"; fd.diff.deleted.len()].join(",");
+            let delete_sql = format!(
+                "DELETE FROM symbols WHERE stable_id IN ({placeholders}) AND graph_version = ? AND file_id = ?"
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> = fd
+                .diff
+                .deleted
+                .iter()
+                .map(|d| d as &dyn rusqlite::ToSql)
+                .collect();
+            params.push(&fd.graph_version);
+            params.push(&fd.file_id);
+            tx.execute(&delete_sql, rusqlite::params_from_iter(params))?;
         }
 
         // PHASE 2: Batch INSERT all new symbols across all files
@@ -1318,7 +1314,7 @@ impl Db {
                 "UPDATE symbols
                  SET start_line = ?, start_col = ?, end_line = ?, end_col = ?,
                      start_byte = ?, end_byte = ?, docstring = ?
-                 WHERE stable_id = ? AND graph_version = ?",
+                 WHERE stable_id = ? AND graph_version = ? AND file_id = ?",
             )?;
 
             for fd in file_diffs {
@@ -1337,12 +1333,14 @@ impl Db {
                         symbol.docstring.as_deref(),
                         &stable_id,
                         fd.graph_version,
+                        fd.file_id,
                     ])?;
 
                     // Fetch the updated symbol
                     let id: i64 = tx.query_row(
-                        "SELECT id FROM symbols WHERE stable_id = ? AND graph_version = ?",
-                        params![&stable_id, fd.graph_version],
+                        "SELECT id FROM symbols
+                         WHERE stable_id = ? AND graph_version = ? AND file_id = ?",
+                        params![&stable_id, fd.graph_version, fd.file_id],
                         |row| row.get(0),
                     )?;
 
@@ -1385,8 +1383,8 @@ impl Db {
                         "SELECT id, kind, name, qualname, start_line, start_col, end_line, end_col,
                                 start_byte, end_byte, signature, docstring, graph_version, commit_sha, stable_id
                          FROM symbols
-                         WHERE stable_id = ? AND graph_version = ?",
-                        params![&stable_id, fd.graph_version],
+                         WHERE stable_id = ? AND graph_version = ? AND file_id = ?",
+                        params![&stable_id, fd.graph_version, fd.file_id],
                         |row| {
                             Ok(Symbol {
                                 id: row.get(0)?,
@@ -2290,6 +2288,48 @@ fn resolve_symbol_id(
         .query_row(params![name, graph_version], |row| row.get(0))
         .optional()?;
     Ok(id)
+}
+
+/// A namespace declared by several files is one symbol per file, and other
+/// files' edges bind to the one a fresh index saw first: the file earliest in
+/// path order (files are indexed in that order). Before `file_id`'s copies
+/// go (all of them, or only those whose `stable_id` is in `only`), hand such
+/// edges to that survivor, or they'd be nulled and diverge from a fresh
+/// reindex.
+fn reown_shared_namespace_edges(
+    conn: &rusqlite::Connection,
+    file_id: i64,
+    graph_version: i64,
+    only: Option<&[String]>,
+) -> Result<()> {
+    let filter = match only {
+        Some(ids) => format!("AND stable_id IN ({})", vec!["?"; ids.len()].join(",")),
+        None => String::new(),
+    };
+    for column in ["source_symbol_id", "target_symbol_id"] {
+        let survivor = format!(
+            "SELECT o.id FROM symbols o
+                 JOIN files fo ON fo.id = o.file_id
+                 JOIN symbols d ON d.qualname = o.qualname AND d.kind = o.kind
+                  AND d.graph_version = o.graph_version
+                 WHERE d.id = edges.{column} AND o.file_id != d.file_id
+                 ORDER BY fo.path LIMIT 1"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&file_id, &graph_version];
+        if let Some(ids) = only {
+            params.extend(ids.iter().map(|i| i as &dyn rusqlite::ToSql));
+        }
+        conn.execute(
+            &format!(
+                "UPDATE edges SET {column} = COALESCE(({survivor}), {column})
+                 WHERE graph_version = ?2 AND {column} IN (
+                    SELECT id FROM symbols
+                    WHERE file_id = ?1 AND graph_version = ?2 AND kind = 'namespace' {filter})"
+            ),
+            rusqlite::params_from_iter(params),
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
