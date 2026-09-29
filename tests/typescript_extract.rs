@@ -380,6 +380,20 @@ function fn() {
 }
 
 #[test]
+fn destructured_require_and_dynamic_import_are_imports_not_symbols() {
+    let source = r#"
+const { a } = require('./m');
+const { m1 } = await import('./n');
+const { b } = obj;
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/mod").unwrap();
+    let names: Vec<_> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(!names.contains(&"a") && !names.contains(&"m1"), "{names:?}");
+    assert!(names.contains(&"b"), "{names:?}");
+}
+
+#[test]
 fn loop_switch_locals_are_not_symbols_but_namespace_members_are() {
     let source = r#"
 for (let i = 0; i < 3; i++) {}

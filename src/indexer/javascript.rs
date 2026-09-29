@@ -2865,6 +2865,11 @@ fn handle_variable_declaration(
         };
         // A destructuring pattern yields one symbol per bound identifier,
         // never one named by the pattern text.
+        // `const { x } = require(..)` / `await import(..)` are imports, not
+        // declarations.
+        if name_node.kind() != "identifier" && is_require_or_import_init(child, source) {
+            continue;
+        }
         let mut names = Vec::new();
         collect_binding_names(name_node, source, &mut names);
         for name in names {
@@ -2893,6 +2898,24 @@ fn handle_variable_declaration(
             });
         }
     }
+}
+
+/// True when a declarator's initializer is `require(..)`, `import(..)`, or
+/// an `await` of either.
+fn is_require_or_import_init(declarator: Node<'_>, source: &str) -> bool {
+    let Some(mut value) = declarator.child_by_field_name("value") else {
+        return false;
+    };
+    while value.kind() == "await_expression" || value.kind() == "parenthesized_expression" {
+        let Some(inner) = value.named_child(0) else {
+            return false;
+        };
+        value = inner;
+    }
+    value.kind() == "call_expression"
+        && value.child_by_field_name("function").is_some_and(|f| {
+            f.kind() == "import" || (f.kind() == "identifier" && node_text(f, source) == "require")
+        })
 }
 
 /// Collects the identifiers a binding pattern introduces: plain identifiers,
