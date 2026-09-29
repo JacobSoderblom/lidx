@@ -400,11 +400,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         "import_statement" | "import_from_statement" => {
             if ctx.fn_depth == 0 {
                 let module = ctx.module.clone();
-                let text = node_text(node, source);
                 let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
                 let snippet =
                     util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
-                for target in parse_imports(&text) {
+                for target in parse_imports(node, source) {
                     output.edges.push(EdgeInput {
                         kind: "IMPORTS".to_string(),
                         source_qualname: Some(module.clone()),
@@ -1970,8 +1969,7 @@ fn collect_import_bindings_rec(
     out: &mut HashMap<String, Vec<String>>,
 ) {
     if matches!(node.kind(), "import_statement" | "import_from_statement") {
-        let text = node_text(node, source);
-        for (bound, target) in parse_import_bindings(&text) {
+        for (bound, target) in parse_import_bindings(node, source) {
             let entry = out.entry(bound).or_default();
             if !entry.contains(&target) {
                 entry.push(target);
@@ -1985,116 +1983,155 @@ fn collect_import_bindings_rec(
     }
 }
 
-/// Parse a `from x import Y [as Z], A [as B]` or `import x.y [as z], a.b`
-/// statement's text into `(bound_name, fully_qualified_target)` pairs — the
-/// name this statement introduces into the file's scope, and what it
-/// stands for. Mirrors `parse_imports`'s crude-but-cheap text-based
-/// parsing (same shape support: single-line, unparenthesized, no
-/// wildcards) but additionally resolves `as` aliases, which `parse_imports`
-/// intentionally discards (it only needs the raw IMPORTS-edge target text,
-/// not the name bound into scope).
-///
-/// ponytail: parenthesized multi-line `from x import (A, B as C)` and
-/// wildcard `from x import *` are not tracked as candidate bindings — same
-/// ceiling `parse_imports` already has for the IMPORTS edge itself (it
-/// emits `"{base}.*"`, not a usable target). Upgrade path: a real
-/// per-name AST walk (the grammar's `aliased_import`/`dotted_name` nodes)
-/// if this gap ever bites.
-fn parse_import_bindings(text: &str) -> Vec<(String, String)> {
-    let cleaned = text.replace('\n', " ");
-    let cleaned = cleaned.trim().trim_end_matches(';');
-    let mut out = Vec::new();
-    if let Some(rest) = cleaned.strip_prefix("import ") {
-        for part in rest.split(',') {
-            let mut tokens = part.split_whitespace();
-            let Some(module) = tokens.next() else {
-                continue;
-            };
-            if module.is_empty() {
-                continue;
-            }
-            let bound = match (tokens.next(), tokens.next()) {
-                (Some("as"), Some(alias)) => alias.to_string(),
-                _ => module.split('.').next().unwrap_or(module).to_string(),
-            };
-            if bound.is_empty() {
-                continue;
-            }
-            out.push((bound, module.to_string()));
-        }
-        return out;
+/// Join a `from`-import's module base and an imported item's name into the
+/// fully-qualified IMPORTS-edge target text (e.g. `base="pkg.mod"`,
+/// `item="Widget"` -> `"pkg.mod.Widget"`; a relative base like `"."` or
+/// `".."` concatenates directly rather than inserting an extra `.`).
+fn join_from_import_target(base: &str, item: &str) -> String {
+    if base.is_empty() {
+        item.to_string()
+    } else if base == "." || base.ends_with('.') {
+        format!("{base}{item}")
+    } else {
+        format!("{base}.{item}")
     }
-    if let Some(rest) = cleaned.strip_prefix("from ")
-        && let Some((module, names)) = rest.split_once(" import ")
-    {
-        let base = module.trim();
-        let trimmed_names = names.trim();
-        if base.contains('(') || trimmed_names.contains('(') || trimmed_names == "*" {
-            return out;
+}
+
+/// An `import_statement`'s or `import_from_statement`'s `name` field is
+/// either a bare `dotted_name` or an `aliased_import` (`dotted_name as
+/// identifier`) — this extracts the pre-alias name node and, if present,
+/// the alias text.
+fn import_name_and_alias<'a>(
+    name_node: Node<'a>,
+    source: &str,
+) -> Option<(Node<'a>, Option<String>)> {
+    match name_node.kind() {
+        "aliased_import" => {
+            let item_node = name_node.child_by_field_name("name")?;
+            let alias = name_node
+                .child_by_field_name("alias")
+                .map(|n| node_text(n, source));
+            Some((item_node, alias))
         }
-        for part in names.split(',') {
-            let mut tokens = part.split_whitespace();
-            let Some(item) = tokens.next() else {
-                continue;
-            };
-            if item == "*" {
-                continue;
+        "dotted_name" => Some((name_node, None)),
+        _ => None,
+    }
+}
+
+/// Parse a `from x import Y [as Z], A [as B]` or `import x.y [as z], a.b`
+/// statement node into `(bound_name, fully_qualified_target)` pairs — the
+/// name this statement introduces into the file's scope, and what it
+/// stands for. Walks the tree-sitter `name` field children directly rather
+/// than splitting the statement's raw text, so parenthesized, multi-line,
+/// trailing-comma, and wildcard forms are all handled correctly by
+/// construction — the parens/newlines/trailing comma are punctuation the
+/// grammar already stripped out of the field, not text this function has
+/// to account for.
+fn parse_import_bindings(node: Node<'_>, source: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    match node.kind() {
+        "import_statement" => {
+            let mut cursor = node.walk();
+            for name_node in node.children_by_field_name("name", &mut cursor) {
+                let Some((item_node, alias)) = import_name_and_alias(name_node, source) else {
+                    continue;
+                };
+                let module = node_text(item_node, source);
+                if module.is_empty() {
+                    continue;
+                }
+                let bound = alias
+                    .filter(|a| !a.is_empty())
+                    .unwrap_or_else(|| module.split('.').next().unwrap_or(&module).to_string());
+                if bound.is_empty() {
+                    continue;
+                }
+                out.push((bound, module));
             }
-            let bound = match (tokens.next(), tokens.next()) {
-                (Some("as"), Some(alias)) => alias.to_string(),
-                _ => item.to_string(),
-            };
-            if bound.is_empty() {
-                continue;
-            }
-            let target = if base.is_empty() {
-                item.to_string()
-            } else if base == "." || base.ends_with('.') {
-                format!("{base}{item}")
-            } else {
-                format!("{base}.{item}")
-            };
-            out.push((bound, target));
         }
+        "import_from_statement" => {
+            let Some(module_node) = node.child_by_field_name("module_name") else {
+                return out;
+            };
+            let base = node_text(module_node, source);
+            // Wildcard imports (`from x import *`) bind no discoverable
+            // names, so there's nothing to add as a candidate.
+            let mut wildcard_cursor = node.walk();
+            if node
+                .children(&mut wildcard_cursor)
+                .any(|c| c.kind() == "wildcard_import")
+            {
+                return out;
+            }
+            let mut cursor = node.walk();
+            for name_node in node.children_by_field_name("name", &mut cursor) {
+                let Some((item_node, alias)) = import_name_and_alias(name_node, source) else {
+                    continue;
+                };
+                let item = node_text(item_node, source);
+                if item.is_empty() {
+                    continue;
+                }
+                let bound = alias
+                    .filter(|a| !a.is_empty())
+                    .unwrap_or_else(|| item.clone());
+                if bound.is_empty() {
+                    continue;
+                }
+                out.push((bound, join_from_import_target(&base, &item)));
+            }
+        }
+        _ => {}
     }
     out
 }
 
-fn parse_imports(text: &str) -> Vec<String> {
-    let cleaned = text.replace('\n', " ");
-    let cleaned = cleaned.trim().trim_end_matches(';');
-    if let Some(rest) = cleaned.strip_prefix("import ") {
-        return rest
-            .split(',')
-            .filter_map(|part| {
-                let mut name = part.split_whitespace();
-                name.next().map(|s| s.to_string())
-            })
-            .collect();
-    }
-    if let Some(rest) = cleaned.strip_prefix("from ")
-        && let Some((module, names)) = rest.split_once(" import ")
-    {
-        let base = module.trim();
-        return names
-            .split(',')
-            .filter_map(|part| {
-                let mut name = part.split_whitespace();
-                let item = name.next()?;
-                if item == "*" {
-                    return Some(format!("{base}.*"));
+/// Parse an `import_statement`'s or `import_from_statement`'s node into
+/// the raw IMPORTS-edge target texts (alias discarded — this only needs
+/// what the import statement stands for, not the name bound into scope).
+/// Same tree-walking approach as `parse_import_bindings`; see its doc.
+fn parse_imports(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    match node.kind() {
+        "import_statement" => {
+            let mut cursor = node.walk();
+            for name_node in node.children_by_field_name("name", &mut cursor) {
+                let Some((item_node, _alias)) = import_name_and_alias(name_node, source) else {
+                    continue;
+                };
+                let module = node_text(item_node, source);
+                if !module.is_empty() {
+                    out.push(module);
                 }
-                if base.is_empty() {
-                    Some(item.to_string())
-                } else if base == "." || base.ends_with('.') {
-                    Some(format!("{base}{item}"))
-                } else {
-                    Some(format!("{base}.{item}"))
+            }
+        }
+        "import_from_statement" => {
+            let Some(module_node) = node.child_by_field_name("module_name") else {
+                return out;
+            };
+            let base = node_text(module_node, source);
+            let mut wildcard_cursor = node.walk();
+            if node
+                .children(&mut wildcard_cursor)
+                .any(|c| c.kind() == "wildcard_import")
+            {
+                out.push(format!("{base}.*"));
+                return out;
+            }
+            let mut cursor = node.walk();
+            for name_node in node.children_by_field_name("name", &mut cursor) {
+                let Some((item_node, _alias)) = import_name_and_alias(name_node, source) else {
+                    continue;
+                };
+                let item = node_text(item_node, source);
+                if !item.is_empty() {
+                    out.push(join_from_import_target(&base, &item));
                 }
-            })
-            .collect();
+            }
+        }
+        _ => {}
     }
-    Vec::new()
+    out
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
