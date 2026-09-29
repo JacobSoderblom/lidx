@@ -223,6 +223,10 @@ pub struct ExtractedFile {
     /// to `private` by `Db::set_private_symbols`; only the C# deferred
     /// `Type.Method()` receiver reads it.
     pub static_qualnames: Vec<String>,
+    /// Qualnames of members declared `override` (C#). Recorded into
+    /// `symbols.visibility` as `override`; interface/base dispatch only
+    /// pairs a base-class member with an override.
+    pub override_qualnames: Vec<String>,
 }
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use anyhow::Result;

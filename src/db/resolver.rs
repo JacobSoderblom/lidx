@@ -904,17 +904,22 @@ impl<'c> Resolver<'c> {
             });
         }
 
+        let types_only = matches!(r.edge_kind, "IMPLEMENTS" | "EXTENDS" | "INHERITS");
         if let Some(qn) = r.target_qualname
-            && let Some(id) = self.exact(
-                qn,
-                symbol_map,
-                r.source_file_path,
-                matches!(r.edge_kind, "IMPLEMENTS" | "EXTENDS" | "INHERITS"),
-            )?
+            && let Some(id) = self.exact(qn, symbol_map, r.source_file_path, types_only)?
         {
             return Ok(resolved(id, ResolutionKind::Exact));
         }
-        if let Some(id) = self.resolve_import(
+        // A base-list type name carries its scope-ordered namespace guesses
+        // (C# enclosing namespaces, then usings): the first that names a
+        // type wins, like the language's own lookup -- never an ambiguity.
+        if types_only {
+            for candidate in r.import_candidates {
+                if let Some(id) = self.exact(candidate, symbol_map, r.source_file_path, true)? {
+                    return Ok(resolved(id, ResolutionKind::Import));
+                }
+            }
+        } else if let Some(id) = self.resolve_import(
             r.import_candidates,
             symbol_map,
             r.source_lang,
@@ -931,7 +936,7 @@ impl<'c> Resolver<'c> {
         // e.g. `datetime.now()` landing on an unrelated local
         // `FakeClock.now`) or falls through to them is this language's
         // `LanguageProfile::import_miss` policy.
-        let refuse_names = !r.import_candidates.is_empty() && {
+        let refuse_names = !types_only && !r.import_candidates.is_empty() && {
             match profile_for(r.source_lang).import_miss {
                 ImportMissPolicy::Refuse => true,
                 ImportMissPolicy::FallThrough => false,

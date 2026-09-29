@@ -1543,8 +1543,12 @@ impl Db {
         graph_version: i64,
         private_qualnames: &[String],
         static_qualnames: &[String],
+        override_qualnames: &[String],
     ) -> Result<()> {
-        if private_qualnames.is_empty() && static_qualnames.is_empty() {
+        if private_qualnames.is_empty()
+            && static_qualnames.is_empty()
+            && override_qualnames.is_empty()
+        {
             self.conn().execute(
                 "UPDATE symbols SET visibility = NULL
                  WHERE file_id = ? AND graph_version = ? AND visibility IS NOT NULL",
@@ -1555,16 +1559,19 @@ impl Db {
         // `visibility` is a space-separated modifier list: `private`, `static`.
         let private_ph = vec!["?"; private_qualnames.len()].join(",");
         let static_ph = vec!["?"; static_qualnames.len()].join(",");
+        let override_ph = vec!["?"; override_qualnames.len()].join(",");
         let sql = format!(
             "UPDATE symbols
                 SET visibility = NULLIF(TRIM(
                     CASE WHEN qualname IN ({private_ph}) THEN 'private' ELSE '' END
-                    || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END), '')
+                    || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END
+                    || CASE WHEN qualname IN ({override_ph}) THEN ' override' ELSE '' END), '')
              WHERE file_id = ? AND graph_version = ?"
         );
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = private_qualnames
             .iter()
             .chain(static_qualnames)
+            .chain(override_qualnames)
             .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
         params.push(Box::new(file_id));

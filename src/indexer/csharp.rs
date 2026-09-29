@@ -488,6 +488,14 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             handle_field(node, ctx, source, output);
             return;
         }
+        "event_declaration" => {
+            handle_event(node, ctx, source, output);
+            return;
+        }
+        "event_field_declaration" => {
+            handle_event_field(node, ctx, source, output);
+            return;
+        }
         "using_directive" => {
             handle_using(node, ctx, source, output);
             return;
@@ -597,7 +605,7 @@ fn handle_type(
     });
 
     if type_kind != TypeKind::Enum {
-        handle_base_list(node, &qualname, source, output, type_kind);
+        handle_base_list(node, &qualname, source, output, type_kind, ctx);
     }
 
     let grpc_service_info = grpc_service_from_bases(node, source);
@@ -692,6 +700,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     if has_modifier(node, source, "static") {
         output.static_qualnames.push(qualname.clone());
     }
+    if has_modifier(node, source, "override") {
+        output.override_qualnames.push(qualname.clone());
+    }
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -733,36 +744,48 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     }
 }
 
-/// Simple name of the interface in an `explicit_interface_specifier`
-/// (`N.IA<T>.` -> `IA`), or `None` for an ordinary method.
+/// Identity segment of an `explicit_interface_specifier` (`void N1.IA<int>.Run()`
+/// -> `N1.IA<int>`), or `None` for an ordinary member. The member's qualname
+/// is `Class.<identity>.Name`, so closed generics and same-named interfaces
+/// from different namespaces never collide.
 fn explicit_interface_name(node: Node<'_>, source: &str) -> Option<String> {
     let mut cursor = node.walk();
     let spec = node
         .children(&mut cursor)
         .find(|c| c.kind() == "explicit_interface_specifier")?;
-    simple_interface_name(&node_text(spec, source))
+    explicit_interface_identity(&node_text(spec, source))
 }
 
-/// `N.IA<T>.` / `Outer<T>.IA.` / `IA<Dictionary<K,V>>.` -> `IA`: drops
-/// generic arguments by bracket depth, then takes the last identifier.
-fn simple_interface_name(text: &str) -> Option<String> {
+/// `global::N.Outer<T>.IA<Dictionary<K, V>>.` -> `N.Outer.IA<Dictionary<K,V>>`:
+/// whitespace and `global::` dropped, generic arguments kept only on the
+/// last segment (the interface itself), so the text before the first `<`
+/// is the interface's namespace-qualified name as written.
+fn explicit_interface_identity(text: &str) -> Option<String> {
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let compact = compact.trim_end_matches('.');
+    let compact = compact.strip_prefix("global::").unwrap_or(compact);
     let mut depth = 0usize;
-    let mut plain = String::new();
-    for ch in text.chars() {
+    let mut last_dot = None;
+    for (i, ch) in compact.char_indices() {
         match ch {
             '<' => depth += 1,
             '>' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => plain.push(ch),
+            '.' if depth == 0 => last_dot = Some(i),
             _ => {}
         }
     }
-    let last = plain
-        .trim()
-        .trim_end_matches('.')
-        .rsplit('.')
-        .next()?
-        .trim();
-    (!last.is_empty()).then(|| last.to_string())
+    let (head, last) = match last_dot {
+        Some(i) => (&compact[..i], &compact[i + 1..]),
+        None => ("", compact),
+    };
+    if last.is_empty() {
+        return None;
+    }
+    if head.is_empty() {
+        Some(last.to_string())
+    } else {
+        Some(format!("{}.{last}", strip_type_args(head)))
+    }
 }
 
 fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -830,11 +853,95 @@ fn handle_property(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     if name.is_empty() {
         return;
     }
-    let qualname = build_qualname(ctx, &name);
+    let qualname = match explicit_interface_name(node, source) {
+        Some(iface) => build_qualname(ctx, &format!("{iface}.{name}")),
+        None => build_qualname(ctx, &name),
+    };
+    if has_modifier(node, source, "override") {
+        output.override_qualnames.push(qualname.clone());
+    }
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     output.symbols.push(SymbolInput {
         kind: "property".to_string(),
         name: name.clone(),
+        qualname: qualname.clone(),
+        start_line,
+        start_col,
+        end_line,
+        end_col,
+        start_byte,
+        end_byte,
+        signature: None,
+        docstring: None,
+    });
+    output.edges.push(EdgeInput {
+        kind: "CONTAINS".to_string(),
+        source_qualname: Some(container_qualname(ctx)),
+        target_qualname: Some(qualname),
+        detail: None,
+        evidence_snippet: None,
+        ..Default::default()
+    });
+}
+
+/// `event T Name { add {} remove {} }` / `event T IA.Name { ... }`.
+fn handle_event(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let name = node_text(name_node, source);
+    if name.is_empty() {
+        return;
+    }
+    let qualname = match explicit_interface_name(node, source) {
+        Some(iface) => build_qualname(ctx, &format!("{iface}.{name}")),
+        None => build_qualname(ctx, &name),
+    };
+    if has_modifier(node, source, "override") {
+        output.override_qualnames.push(qualname.clone());
+    }
+    push_event(node, ctx, output, name, qualname);
+}
+
+/// Field-like `event EventHandler Changed, Other;`.
+fn handle_event_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let mut cursor = node.walk();
+    for decl in node.named_children(&mut cursor) {
+        if decl.kind() != "variable_declaration" {
+            continue;
+        }
+        let mut inner = decl.walk();
+        for child in decl.named_children(&mut inner) {
+            let Some(name_node) = (child.kind() == "variable_declarator")
+                .then(|| child.child_by_field_name("name"))
+                .flatten()
+            else {
+                continue;
+            };
+            let name = node_text(name_node, source);
+            if name.is_empty() {
+                continue;
+            }
+            let qualname = build_qualname(ctx, &name);
+            if has_modifier(node, source, "override") {
+                output.override_qualnames.push(qualname.clone());
+            }
+            push_event(child, ctx, output, name, qualname);
+        }
+    }
+}
+
+fn push_event(
+    node: Node<'_>,
+    ctx: &Context,
+    output: &mut ExtractedFile,
+    name: String,
+    qualname: String,
+) {
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    output.symbols.push(SymbolInput {
+        kind: "event".to_string(),
+        name,
         qualname: qualname.clone(),
         start_line,
         start_col,
@@ -2973,6 +3080,7 @@ fn handle_base_list(
     source: &str,
     output: &mut ExtractedFile,
     kind: TypeKind,
+    ctx: &Context,
 ) {
     let mut cursor = node.walk();
     let mut bases = Vec::new();
@@ -3003,6 +3111,7 @@ fn handle_base_list(
                 output.edges.push(EdgeInput {
                     kind: edge_kind.to_string(),
                     source_qualname: Some(qualname.to_string()),
+                    import_candidates: type_ref_candidates(&base, ctx),
                     target_qualname: Some(base),
                     detail: None,
                     evidence_snippet: None,
@@ -3013,6 +3122,7 @@ fn handle_base_list(
                 output.edges.push(EdgeInput {
                     kind: "IMPLEMENTS".to_string(),
                     source_qualname: Some(qualname.to_string()),
+                    import_candidates: type_ref_candidates(&iface, ctx),
                     target_qualname: Some(iface),
                     detail: None,
                     evidence_snippet: None,
@@ -3025,6 +3135,7 @@ fn handle_base_list(
                 output.edges.push(EdgeInput {
                     kind: "EXTENDS".to_string(),
                     source_qualname: Some(qualname.to_string()),
+                    import_candidates: type_ref_candidates(&iface, ctx),
                     target_qualname: Some(iface),
                     detail: None,
                     evidence_snippet: None,
@@ -3037,6 +3148,7 @@ fn handle_base_list(
                 output.edges.push(EdgeInput {
                     kind: "IMPLEMENTS".to_string(),
                     source_qualname: Some(qualname.to_string()),
+                    import_candidates: type_ref_candidates(&iface, ctx),
                     target_qualname: Some(iface),
                     detail: None,
                     evidence_snippet: None,
@@ -3045,6 +3157,33 @@ fn handle_base_list(
             }
         }
     }
+}
+
+/// Namespace-scoped guesses for a base-list type name, in C# lookup order
+/// (first hit wins in the resolver): an alias, then each enclosing
+/// namespace innermost first, then every `using` namespace.
+fn type_ref_candidates(name: &str, ctx: &Context) -> Vec<String> {
+    let first = name.split('.').next().unwrap_or(name);
+    if let Some(fqn) = ctx.imports.aliases.get(first) {
+        return vec![format!("{fqn}{}", &name[first.len()..])];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |ns: &str| {
+        let c = format!("{ns}.{name}");
+        if !ns.is_empty() && !out.contains(&c) {
+            out.push(c);
+        }
+    };
+    let full = ctx.namespace_stack.join(".");
+    let mut ns = full.as_str();
+    while !ns.is_empty() {
+        push(ns);
+        ns = ns.rsplit_once('.').map_or("", |(parent, _)| parent);
+    }
+    for ns in &ctx.imports.namespaces {
+        push(ns);
+    }
+    out
 }
 
 /// `IRepo<Order>` -> `IRepo`; `A<B>.C<D>` -> `A.C`. Type arguments never
@@ -4557,11 +4696,16 @@ fn collect_class_level_grpc_client_fields(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn simple_interface_name_strips_generics_by_depth() {
-        use super::simple_interface_name as f;
-        assert_eq!(f("Outer<T>.IA.").as_deref(), Some("IA"));
-        assert_eq!(f("N.IA<T>.").as_deref(), Some("IA"));
-        assert_eq!(f("IA<Dictionary<K,V>>.").as_deref(), Some("IA"));
+    fn explicit_interface_identity_keeps_closed_generics_and_namespace() {
+        use super::explicit_interface_identity as f;
+        assert_eq!(f("Outer<T>.IA.").as_deref(), Some("Outer.IA"));
+        assert_eq!(f("N.IA<T>.").as_deref(), Some("N.IA<T>"));
+        assert_eq!(f("IA<int>.").as_deref(), Some("IA<int>"));
+        assert_eq!(
+            f("IA<Dictionary<K, V>>.").as_deref(),
+            Some("IA<Dictionary<K,V>>")
+        );
+        assert_eq!(f("global::N1.IA.").as_deref(), Some("N1.IA"));
         assert_eq!(f("IA.").as_deref(), Some("IA"));
     }
 
@@ -5044,6 +5188,54 @@ fullyQualified.GetBlobContainerClient(containerId);
         assert!(!is_likely_interface_name("Integer"));
         // "I" alone or "Iota" (lowercase after I) are not interfaces
         assert!(!is_likely_interface_name("I"));
+    }
+
+    #[test]
+    fn explicit_impls_of_members_get_distinct_identities() {
+        let source = r#"
+using N2;
+namespace Acme {
+public class C : IA<int>, IA<string>, N1.IB, N2.IB {
+    void IA<int>.Run() {}
+    void IA<string>.Run() {}
+    void N1.IB.Go() {}
+    void N2.IB.Go() {}
+    int N1.IB.P { get; }
+    event System.EventHandler N1.IB.Changed { add {} remove {} }
+    public event System.EventHandler Other;
+    public override void Base() {}
+}
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let sym = |kind: &str| {
+            file.symbols
+                .iter()
+                .filter(|s| s.kind == kind)
+                .map(|s| s.qualname.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sym("method"),
+            [
+                "Acme.C.IA<int>.Run",
+                "Acme.C.IA<string>.Run",
+                "Acme.C.N1.IB.Go",
+                "Acme.C.N2.IB.Go",
+                "Acme.C.Base"
+            ]
+        );
+        assert_eq!(sym("property"), ["Acme.C.N1.IB.P"]);
+        assert_eq!(sym("event"), ["Acme.C.N1.IB.Changed", "Acme.C.Other"]);
+        assert_eq!(file.override_qualnames, ["Acme.C.Base"]);
+        // Base-list edges carry scope-ordered namespace guesses.
+        let edge = file
+            .edges
+            .iter()
+            .find(|e| e.kind == "IMPLEMENTS" && e.target_qualname.as_deref() == Some("IA"))
+            .unwrap();
+        assert_eq!(edge.import_candidates, ["Acme.IA", "N2.IA"]);
     }
 
     #[test]

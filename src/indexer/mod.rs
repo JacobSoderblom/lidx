@@ -470,6 +470,7 @@ impl Indexer {
                 self.graph_version,
                 &extracted.private_qualnames,
                 &extracted.static_qualnames,
+                &extracted.override_qualnames,
             )?;
         }
 
@@ -731,6 +732,7 @@ impl Indexer {
             self.graph_version,
             &extracted.private_qualnames,
             &extracted.static_qualnames,
+            &extracted.override_qualnames,
         )?;
 
         Ok(Some(ScannedFileSymbols {
