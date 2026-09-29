@@ -3,7 +3,7 @@ use crate::indexer::channel::{boundary_type_for_kind, bridge_complement};
 use crate::indexer::scan::language_for_path;
 use crate::model::{Edge, Symbol, TraceHop};
 use anyhow::Result;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Direction of a BFS trace through the symbol graph.
 #[derive(Debug, Clone)]
@@ -29,6 +29,10 @@ pub struct TraceConfig {
     /// always traversable regardless of this list. Empty by default:
     /// unchanged behaviour.
     pub exclude_resolution_kinds: Vec<String>,
+    /// Config URI (`secret://...`/`env://...`) the seeds were resolved from,
+    /// if any (issue #131). Seed nodes then only follow config edges
+    /// carrying that URI; see `config_scope`.
+    pub seed_config_uri: Option<String>,
 }
 
 impl Default for TraceConfig {
@@ -59,6 +63,7 @@ impl Default for TraceConfig {
             trace_offset: 0,
             compact: false,
             exclude_resolution_kinds: Vec::new(),
+            seed_config_uri: None,
         }
     }
 }
@@ -106,8 +111,14 @@ pub fn trace_flow(
     let mut visited = HashSet::new();
     let mut queue: VecDeque<(i64, usize, String)> = VecDeque::new();
 
+    // Config URI each node was entered through (issue #131): it then only
+    // continues along config edges carrying that URI.
+    let mut node_uri: HashMap<i64, String> = HashMap::new();
     for &sid in &seeds {
         visited.insert(sid);
+        if let Some(uri) = &config.seed_config_uri {
+            node_uri.insert(sid, uri.clone());
+        }
         queue.push_back((sid, 0, start_sym.file_path.clone()));
     }
 
@@ -167,11 +178,15 @@ pub fn trace_flow(
 
         let edges = db.edges_for_symbol(current_id, languages, graph_version)?;
 
-        let mut bridge_targets: Vec<(String, String)> = Vec::new();
+        let mut bridge_targets: Vec<(String, String, String)> = Vec::new();
+        let scope = node_uri
+            .get(&current_id)
+            .map(|u| crate::config_scope::allowed_uris(u, &edges));
 
         for edge in &edges {
             if !config.allowed_kinds.contains(&edge.kind)
                 || !crate::model::xref_is_traversable(edge)
+                || !crate::config_scope::edge_allowed(edge, scope.as_ref())
             {
                 continue;
             }
@@ -201,7 +216,7 @@ pub fn trace_flow(
             if let Some(ref tq) = edge.target_qualname
                 && bridge_complement(&edge.kind).is_some()
             {
-                bridge_targets.push((tq.clone(), edge.kind.clone()));
+                bridge_targets.push((tq.clone(), edge.kind.clone(), edge.file_path.clone()));
             }
 
             // `next_id` is None when the write path left this edge's
@@ -253,7 +268,7 @@ pub fn trace_flow(
         }
 
         if !reached_target && !truncated {
-            for (tq, edge_kind) in &bridge_targets {
+            for (tq, edge_kind, origin_path) in &bridge_targets {
                 if let Some(complement_kinds) = bridge_complement(edge_kind) {
                     let bridged = db
                         .edges_by_target_qualname_and_kinds(
@@ -268,8 +283,15 @@ pub fn trace_flow(
                         let Some(bridged_id) = bridged_edge.source_symbol_id else {
                             continue;
                         };
+                        if !crate::config_scope::bridge_edge_allowed(tq, origin_path, bridged_edge)
+                        {
+                            continue;
+                        }
                         if !visited.insert(bridged_id) {
                             continue;
+                        }
+                        if edge_kind.starts_with("CONFIG_") {
+                            node_uri.insert(bridged_id, tq.clone());
                         }
                         if let Ok(Some(bridged_sym)) = db.get_symbol_by_id(bridged_id) {
                             let prev_lang = detect_language(&prev_file);

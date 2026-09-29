@@ -1458,6 +1458,10 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         trace_offset,
         compact: compact_mode,
         exclude_resolution_kinds,
+        seed_config_uri: params
+            .start_qualname
+            .clone()
+            .filter(|qn| crate::indexer::config::is_config_uri(qn)),
     };
     let trace_result = crate::traversal::trace_flow(
         indexer.db(),
@@ -1803,7 +1807,13 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 Ok(seed_ids) => match crate::impact::analyze_impact_multi_layer(
                     indexer.db(),
                     &seed_ids,
-                    base_config.clone(),
+                    {
+                        let mut c = base_config.clone();
+                        if crate::indexer::config::is_config_uri(qn) {
+                            c.direct.seed_config_uri = Some(qn.clone());
+                        }
+                        c
+                    },
                     ctx.graph_version,
                 ) {
                     Ok(result) => {
@@ -1992,6 +2002,12 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     // Set languages if specified (already normalized by HandlerContext)
     if let Some(ref languages) = ctx.languages {
         config.direct.languages = Some(languages.clone());
+    }
+
+    if let Some(qn) = params.qualname.as_deref()
+        && crate::indexer::config::is_config_uri(qn)
+    {
+        config.direct.seed_config_uri = Some(qn.to_string());
     }
 
     // Set kinds if specified

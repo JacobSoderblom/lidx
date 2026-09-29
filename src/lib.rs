@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod config;
+pub mod config_scope;
 pub mod context;
 pub mod db;
 pub mod gather_context;
