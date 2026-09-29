@@ -819,9 +819,9 @@ public class Foo {
                     .is_some_and(|s| s.contains("Baz"))
         })
         .expect("foo(bar).Baz() call edge");
-    // No printable receiver: `?.` names the method for the deferred
-    // receiver type (`Foo.foo`'s return) to resolve, and binds nothing else.
-    assert_eq!(call.target_qualname.as_deref(), Some("?.Baz"));
+    // No printable receiver: the target is the bare method name, bound only
+    // through the deferred receiver type (`Foo.foo`'s return).
+    assert_eq!(call.target_qualname.as_deref(), Some("Baz"));
     assert!(
         matches!(call.receiver_type, ReceiverType::Deferred(_)),
         "call-in-receiver-position must not bind, got {:?}",
@@ -970,7 +970,7 @@ public class Foo {
                     .is_some_and(|s| s.contains("Bar"))
         })
         .expect("await foo().Bar() call edge");
-    assert_eq!(call.target_qualname.as_deref(), Some("?.Bar"));
+    assert_eq!(call.target_qualname.as_deref(), Some("Bar"));
     assert!(
         matches!(call.receiver_type, ReceiverType::Deferred(_)),
         "awaited-call receiver must not bind, got {:?}",

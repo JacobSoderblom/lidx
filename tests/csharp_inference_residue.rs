@@ -343,6 +343,12 @@ namespace App
         public void InLoop(Repo repo, bool c) { var x = repo.Wrong(); while (c) { x.Write(); x = repo.Open(); } }
         public void Dominated(Repo repo, bool c) { var x = repo.Wrong(); if (c) { x = repo.Open(); } x = repo.Nested().Open(); x.Write(); }
         public void Unknown(Repo repo) { var x = repo.Open(); x = repo.Missing(); x.Write(); }
+        public void Ternary(Repo repo, bool c) { var x = repo.Open(); x = c ? repo.Wrong() : repo.Open(); x.Write(); }
+        public void FromName(Repo repo, Other y) { var x = repo.Open(); x = y; x.Write(); }
+        public void Coalesce(Repo repo) { var x = repo.Open(); x ??= repo.Wrong(); x.Write(); }
+        public void Compound(Repo repo) { var x = repo.Open(); x += 1; x.Write(); }
+        public void Deconstruct(Repo repo) { var x = repo.Open(); (x, _) = (repo.Wrong(), 1); x.Write(); }
+        public void FieldFromName(Other y) { _f = y; _f.Write(); }
     }
 }
 "#;
@@ -381,7 +387,18 @@ fn plain_assignments_update_the_tracked_type_flow_sensitively() {
     // Ambiguous after a branch, an embedded statement or a loop: untracked
     // (`InLoop`'s first call is in the loop the assignment sits in).
     // A callee the resolver can't type leaves it untracked too (`Unknown`).
-    for name in ["AfterBranch", "Embedded", "InLoop", "Unknown"] {
+    for name in [
+        "AfterBranch",
+        "Embedded",
+        "InLoop",
+        "Unknown",
+        "Ternary",
+        "FromName",
+        "Coalesce",
+        "Compound",
+        "Deconstruct",
+        "FieldFromName",
+    ] {
         assert!(
             write_targets(&indexer, &format!("App.Assigner.{name}")).is_empty(),
             "{name}"
@@ -564,4 +581,53 @@ fn factory_edits_move_rpc_call_edges_incrementally() {
         ("Greeting.cs", caller.as_str()),
     ];
     assert_matches_fresh(&indexer, &files);
+}
+
+#[test]
+fn chains_through_non_repo_types_store_no_placeholder_names() {
+    const LINQ: &str = r#"
+using System.Linq;
+namespace App
+{
+    public class Q { public IQueryable<Other> Query() { return null; } }
+    public class Linq
+    {
+        public void Run(Q q, Repo repo)
+        {
+            q.Query().Where(1).ToList();
+            var r = q.Query();
+            r.Where(1).ToList();
+            repo.Nested().Open().Write();
+        }
+    }
+}
+"#;
+    let mut files = all_files();
+    files.push(("Linq.cs", LINQ));
+    let (_tmp, _root, indexer) = indexed(&files);
+    assert_eq!(
+        write_targets(&indexer, "App.Linq.Run"),
+        vec!["App.StoreBase.Write".to_string()]
+    );
+    let conn = indexer.db().read_conn().unwrap();
+    let leaked: i64 = conn
+        .query_row(
+            "SELECT
+               (SELECT COUNT(*) FROM edges WHERE target_qualname LIKE '?%' OR target_qualname LIKE '@%')
+             + (SELECT COUNT(*) FROM unresolved_references
+                WHERE reference_name LIKE '?%' OR reference_name LIKE '@%')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leaked, 0);
+    // The chain's method name is still recorded, as an ordinary reference.
+    let stored: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM unresolved_references WHERE reference_name = 'ToList'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(stored > 0);
 }

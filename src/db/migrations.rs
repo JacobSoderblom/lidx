@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 23;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -519,6 +519,23 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_edges_kind_source ON edges(kind, source_symbol_id)",
             [],
+        )?;
+    }
+
+    if existing < 23 {
+        // Deferred-receiver call sites (`receiver_type` = `@ret:...`) and the
+        // `RPC_CALL` edges derived from them are rescanned on every repair
+        // pass (`Db::rederive_deferred_rpc_calls`); these keep those scans
+        // off a full table walk.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_edges_deferred_sites
+                ON edges(graph_version)
+                WHERE kind = 'CALLS' AND receiver_type LIKE '@ret:%';
+             CREATE INDEX IF NOT EXISTS idx_edges_derived_rpc
+                ON edges(graph_version) WHERE call_shape = 'rpc:deferred';
+             CREATE INDEX IF NOT EXISTS idx_unresolved_deferred_sites
+                ON unresolved_references(graph_version)
+                WHERE edge_kind = 'CALLS' AND receiver_type LIKE '@ret:%';",
         )?;
     }
 

@@ -60,8 +60,8 @@
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
-    CallShape, DEFERRED_RETURN_PREFIX, DEFERRED_RPC_KEY, DeferredReturn, MAX_DEFERRED_DEPTH,
-    ReceiverType,
+    CallShape, DEFERRED_RETURN_PREFIX, DERIVED_RPC_SHAPE, DeferredBase, DeferredReturn,
+    MAX_DEFERRED_DEPTH, ReceiverType,
 };
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
@@ -343,11 +343,10 @@ pub(crate) struct LanguageProfile {
     /// signature and whether the call was awaited (`ReceiverType::Deferred`).
     /// `None` for a language that never defers a receiver.
     pub return_receiver: Option<fn(signature: &str, awaited: bool) -> Option<String>>,
-    /// The `(target_qualname, detail)` `RPC_CALL` edges a call site yields
-    /// when its receiver is the return value of a callee with this indexed
-    /// signature (a factory returning a generated gRPC client). `site` is
-    /// the call edge's detail JSON (`DEFERRED_RPC_KEY`). `None` when the
-    /// return type is no client. See `Db::rederive_deferred_rpc_calls`.
+    /// The `RPC_CALL` edges a call site yields when its receiver is the
+    /// return value of a callee with this indexed signature (a factory
+    /// returning a generated gRPC client); `None` when the return type is no
+    /// client. See `Db::rederive_deferred_rpc_calls`.
     pub deferred_rpc: Option<DeferredRpcFn>,
 }
 
@@ -413,9 +412,25 @@ fn declaring_imports(
     Ok((namespaces, aliases))
 }
 
-/// `LanguageProfile::deferred_rpc`: `(target_qualname, detail)` per edge.
+/// A call through a deferred receiver, as `LanguageProfile::deferred_rpc`
+/// sees it.
+pub struct DeferredRpcSite {
+    /// The called method's name (`SayHelloAsync`).
+    pub method: String,
+    /// The namespaces and aliases in scope where the callee is declared.
+    pub namespaces: Vec<String>,
+    pub aliases: HashMap<String, String>,
+}
+
+/// One `RPC_CALL` edge `LanguageProfile::deferred_rpc` yields.
+pub struct RpcCallEdge {
+    pub target_qualname: String,
+    pub detail: String,
+}
+
+/// `LanguageProfile::deferred_rpc`.
 pub type DeferredRpcFn =
-    fn(signature: &str, awaited: bool, site: &str) -> Option<Vec<(String, String)>>;
+    fn(signature: &str, awaited: bool, site: &DeferredRpcSite) -> Option<Vec<RpcCallEdge>>;
 
 impl LanguageProfile {
     /// Dot-separated, no relative-import syntax, import-tier miss refuses
@@ -827,11 +842,13 @@ impl<'c> Resolver<'c> {
         // declared return type, or `""` (unresolved) -- never a guess.
         let deferred;
         let patched;
+        let mut name_only = false;
         let r = match r
             .receiver_type
             .and_then(ReceiverType::parse_deferred_return)
         {
             Some(call) => {
+                name_only = call.name_only;
                 deferred = self.deferred_receiver(&call, r.source_lang, r.source_file_path, 0)?;
                 patched = Reference {
                     receiver_type: Some(&deferred),
@@ -852,7 +869,11 @@ impl<'c> Resolver<'c> {
             .receiver_type
             .filter(|ty| !ty.is_empty())
             .map(|ty| simple_type_name(ty).to_string());
-        let resolution = self.resolve_tiers(r, symbol_map)?;
+        let resolution = if name_only {
+            self.resolve_name_only(r)?
+        } else {
+            self.resolve_tiers(r, symbol_map)?
+        };
         // Issue #124: `new T(...)` names the class, but the call runs one of
         // its constructors -- bind that when exactly one matches by arity.
         if let (Some(shape), Resolution::Resolved { target_id, kind }) = (r.call_shape, resolution)
@@ -867,15 +888,45 @@ impl<'c> Resolver<'c> {
         Ok(resolution)
     }
 
-    /// The receiver type of `ty.method(..)`'s return value: the return type
-    /// (via the language's `return_receiver`) shared by every method named
-    /// `method` on a type named `ty` (overloads, same-named types in other
-    /// namespaces), else `""`. A `static_only` call needs every candidate to
-    /// be `static`, and the return type must name a repo type -- which also
-    /// rules out a generic type parameter such as `T`.
+    /// Resolve a call whose target text is only the called method's name
+    /// (`a.B().C()`, see `DeferredReturn::name_only`) through its receiver
+    /// type alone: the name says nothing about which symbol it is.
+    fn resolve_name_only(&mut self, r: &Reference<'_>) -> Result<Resolution> {
+        self.saw_ambiguous = false;
+        self.saw_private = false;
+        let ty = r.receiver_type.unwrap_or("");
+        let found = match r.target_qualname {
+            Some(name) if !ty.is_empty() => self.resolve_by_name(
+                name,
+                Some(ty),
+                r.edge_kind,
+                r.source_lang,
+                CallerContext {
+                    file_path: r.source_file_path,
+                    qualname: r.source_qualname,
+                },
+                r.bare_call,
+            )?,
+            _ => None,
+        };
+        Ok(match found {
+            Some((id, kind)) => resolved(id, kind),
+            None if ty.is_empty() => Resolution::Unresolved(UnresolvedReason::External),
+            None if self.saw_ambiguous => Resolution::Unresolved(UnresolvedReason::Ambiguous),
+            None if self.saw_private => Resolution::Unresolved(UnresolvedReason::Private),
+            None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
+        })
+    }
+
+    /// The receiver type of a deferred call's return value: the return type
+    /// (via the language's `return_receiver`) shared by every method it may
+    /// reach (overloads, same-named types in other namespaces), else `""`. A
+    /// `static_only` call needs every candidate to be `static`, and the
+    /// return type must name a repo type -- which also rules out a generic
+    /// type parameter such as `T`.
     fn deferred_receiver(
         &mut self,
-        call: &DeferredReturn<'_>,
+        call: &DeferredReturn,
         lang: &str,
         file_path: &str,
         depth: usize,
@@ -884,9 +935,10 @@ impl<'c> Resolver<'c> {
             return Ok(String::new());
         };
         let Some(ret) = self.deferred_lookup(call, lang, file_path, depth, |row, awaited| {
-            row.signature
+            Ok(row
+                .signature
                 .as_deref()
-                .and_then(|sig| return_receiver(sig, awaited))
+                .and_then(|sig| return_receiver(sig, awaited)))
         })?
         else {
             return Ok(String::new());
@@ -902,24 +954,24 @@ impl<'c> Resolver<'c> {
         Ok(if is_repo_type { ret } else { String::new() })
     }
 
-    /// `map` of the signature of every method a deferred call may reach --
-    /// the receiver type's own, else its nearest ancestors' -- when they all
-    /// agree on one non-`None` value. `None` for no method, a disagreement,
-    /// a `map` miss, or a `static_only` call reaching a non-`static` method.
+    /// `map` of every method a deferred call may reach -- the receiver
+    /// type's own, else its nearest ancestors' -- when they all agree on one
+    /// `Some` value. `None` for no method, a disagreement, a `map` miss, or a
+    /// `static_only` call reaching a non-`static` method.
     fn deferred_lookup<T: PartialEq>(
         &mut self,
-        call: &DeferredReturn<'_>,
+        call: &DeferredReturn,
         lang: &str,
         file_path: &str,
         depth: usize,
-        map: impl Fn(&MethodRow, bool) -> Option<T>,
+        map: impl Fn(&MethodRow, bool) -> Result<Option<T>>,
     ) -> Result<Option<T>> {
-        // A nested marker is the receiver's own deferred call (`a.B().C()`).
-        let ty = match ReceiverType::parse_deferred_return(call.type_name) {
-            None => call.type_name.to_string(),
-            Some(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
-            Some(inner) => {
-                let ty = self.deferred_receiver(&inner, lang, file_path, depth + 1)?;
+        // A nested call is the receiver's own deferred call (`a.B().C()`).
+        let ty = match &call.base {
+            DeferredBase::Type(ty) => ty.clone(),
+            DeferredBase::Call(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
+            DeferredBase::Call(inner) => {
+                let ty = self.deferred_receiver(inner, lang, file_path, depth + 1)?;
                 if ty.is_empty() {
                     return Ok(None);
                 }
@@ -927,13 +979,17 @@ impl<'c> Resolver<'c> {
             }
         };
         let mut found: Option<T> = None;
-        for row in self.inherited_method_rows(&ty, call.method, lang)? {
+        for row in self.inherited_method_rows(&ty, &call.method, lang)? {
             let is_static = row
                 .visibility
                 .as_deref()
                 .is_some_and(|v| v.split_whitespace().any(|m| m == "static"));
-            let Some(value) = map(&row, call.awaited).filter(|_| is_static || !call.static_only)
-            else {
+            let value = if is_static || !call.static_only {
+                map(&row, call.awaited)?
+            } else {
+                None
+            };
+            let Some(value) = value else {
                 return Ok(None);
             };
             match &found {
@@ -946,15 +1002,37 @@ impl<'c> Resolver<'c> {
 
     /// The methods named `method` on a type named `ty`.
     fn method_rows(&self, ty: &str, method: &str, lang: &str) -> Result<Vec<MethodRow>> {
+        let suffix = format!(".{ty}.{method}");
+        let qualname = format!("{ty}.{method}");
+        self.query_method_rows(method, &qualname, &suffix, lang)
+    }
+
+    /// The methods named `method` on the type with exactly this qualname.
+    fn method_rows_of(
+        &self,
+        type_qualname: &str,
+        method: &str,
+        lang: &str,
+    ) -> Result<Vec<MethodRow>> {
+        let qualname = format!("{type_qualname}.{method}");
+        self.query_method_rows(method, &qualname, &qualname, lang)
+    }
+
+    fn query_method_rows(
+        &self,
+        method: &str,
+        qualname: &str,
+        suffix: &str,
+        lang: &str,
+    ) -> Result<Vec<MethodRow>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT s.signature, s.visibility, s.file_id, s.qualname FROM symbols s JOIN files f ON s.file_id = f.id
+            "SELECT s.signature, s.visibility, s.file_id, s.qualname FROM symbols s
+             JOIN files f ON s.file_id = f.id
              WHERE s.name = ?1 AND s.kind = 'method' AND f.language = ?5
                AND (s.qualname = ?2 OR substr(s.qualname, -length(?3)) = ?3)
                AND s.graph_version = ?4
                AND (f.deleted_version IS NULL OR f.deleted_version > ?4)",
         )?;
-        let suffix = format!(".{ty}.{method}");
-        let qualname = format!("{ty}.{method}");
         let rows = stmt.query_map(
             params![method, qualname, suffix, self.graph_version, lang],
             |row| {
@@ -982,9 +1060,19 @@ impl<'c> Resolver<'c> {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    fn qualname_of(&self, symbol_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .prepare_cached("SELECT qualname FROM symbols WHERE id = ?")?
+            .query_row(params![symbol_id], |row| row.get(0))
+            .optional()?)
+    }
+
     /// `method_rows` for `ty`, or -- when it declares none -- for the
     /// nearest ancestors (EXTENDS/IMPLEMENTS/INHERITS, breadth first, like
-    /// `resolve_via_inheritance`) that do.
+    /// `resolve_via_inheritance`) that do. An ancestor already bound to a
+    /// symbol is matched by that symbol's full qualname, one still only
+    /// named by its text by its trailing name.
     fn inherited_method_rows(
         &mut self,
         ty: &str,
@@ -1013,17 +1101,24 @@ impl<'c> Resolver<'c> {
                 break;
             }
             let mut found = Vec::new();
-            for (_, qualname) in &level {
-                found.extend(self.method_rows(qualname_trailing_name(qualname), method, lang)?);
+            for (id, text) in &level {
+                let bound = match id {
+                    Some(id) => self.qualname_of(*id)?,
+                    None => None,
+                };
+                found.extend(match bound {
+                    Some(qualname) => self.method_rows_of(&qualname, method, lang)?,
+                    None => self.method_rows(qualname_trailing_name(text), method, lang)?,
+                });
             }
             if !found.is_empty() {
                 return Ok(found);
             }
             frontier = Vec::new();
-            for (id, qualname) in level {
+            for (id, text) in level {
                 let ids = match id {
                     Some(id) => vec![id],
-                    None => self.type_ids(qualname_trailing_name(&qualname), lang)?,
+                    None => self.type_ids(qualname_trailing_name(&text), lang)?,
                 };
                 frontier.extend(ids.into_iter().filter(|id| seen.insert(*id)));
             }
@@ -2664,7 +2759,8 @@ impl Db {
         // not on any symbol sharing its name, so it is always retried.
         let has_deferred_rows: bool = self.read_conn()?.query_row(
             "SELECT EXISTS(SELECT 1 FROM unresolved_references
-             WHERE graph_version = ? AND receiver_type LIKE '@ret:%')",
+             WHERE graph_version = ? AND edge_kind = 'CALLS'
+               AND receiver_type LIKE '@ret:%')",
             params![graph_version],
             |row| row.get(0),
         )?;
@@ -2888,7 +2984,8 @@ impl Db {
         self.rejudge_bound_edges(
             graph_version,
             "",
-            "AND e.target_symbol_id IS NOT NULL AND e.receiver_type LIKE '@ret:%'",
+            "AND e.target_symbol_id IS NOT NULL AND e.kind = 'CALLS'
+             AND e.receiver_type LIKE '@ret:%'",
         )
     }
 
@@ -2896,151 +2993,24 @@ impl Db {
     /// (`ReceiverType::Deferred`) whose callee returns a generated gRPC
     /// client (`var c = CreateClient(); c.SayHello()` with the factory in
     /// another file). The extractor can't see that return type, so the call
-    /// site's `CALLS` edge (or its unresolved-store row) carries the site
-    /// (`DEFERRED_RPC_KEY` in its detail) and this derives the `RPC_CALL`
-    /// edges from it -- deleting last pass's first, so the outcome depends
-    /// only on the current symbols and incremental sync equals a fresh
-    /// reindex (issue #77). Derived edges are tagged `"deferred_rpc": true`
-    /// in their detail. Returns how many edges it wrote.
+    /// site's `CALLS` edge (or its unresolved-store row) is re-read here and
+    /// the edges derived from the callee's declaration. Last pass's derived
+    /// edges (`call_shape = DERIVED_RPC_SHAPE`) go first, so the outcome
+    /// depends only on the current symbols and incremental sync equals a
+    /// fresh reindex (issue #77). Returns how many edges it wrote.
     pub fn rederive_deferred_rpc_calls(&self, graph_version: i64) -> Result<usize> {
-        struct Site {
-            file_id: i64,
-            source_symbol_id: Option<i64>,
-            marker: String,
-            detail: String,
-            snippet: Option<String>,
-            start_line: Option<i64>,
-            end_line: Option<i64>,
-            confidence: Option<f64>,
-            commit_sha: Option<String>,
-            trace_id: Option<String>,
-            span_id: Option<String>,
-            event_ts: Option<i64>,
-            lang: String,
-            path: String,
-        }
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
-            "DELETE FROM edges WHERE graph_version = ?1 AND kind = 'RPC_CALL'
-             AND detail LIKE '%\"deferred_rpc\":true%'",
-            params![graph_version],
+            "DELETE FROM edges WHERE graph_version = ?1 AND call_shape = ?2",
+            params![graph_version, DERIVED_RPC_SHAPE],
         )?;
-        let sites: Vec<Site> = {
-            let mut out = Vec::new();
-            for (table, kind_col) in [("edges", "kind"), ("unresolved_references", "edge_kind")] {
-                let mut stmt = tx.prepare(&format!(
-                    "SELECT t.file_id, t.source_symbol_id, t.receiver_type, t.detail,
-                            t.evidence_snippet, t.evidence_start_line, t.evidence_end_line,
-                            t.confidence, t.commit_sha, t.trace_id, t.span_id, t.event_ts,
-                            COALESCE(f.language, 'unknown'), f.path
-                     FROM {table} t JOIN files f ON f.id = t.file_id
-                     WHERE t.graph_version = ?1 AND t.{kind_col} = 'CALLS'
-                       AND t.receiver_type LIKE '{DEFERRED_RETURN_PREFIX}%'
-                       AND t.detail LIKE '%\"{DEFERRED_RPC_KEY}\"%'
-                     ORDER BY t.id"
-                ))?;
-                let rows = stmt.query_map(params![graph_version], |row| {
-                    Ok(Site {
-                        file_id: row.get(0)?,
-                        source_symbol_id: row.get(1)?,
-                        marker: row.get(2)?,
-                        detail: row.get(3)?,
-                        snippet: row.get(4)?,
-                        start_line: row.get(5)?,
-                        end_line: row.get(6)?,
-                        confidence: row.get(7)?,
-                        commit_sha: row.get(8)?,
-                        trace_id: row.get(9)?,
-                        span_id: row.get(10)?,
-                        event_ts: row.get(11)?,
-                        lang: row.get(12)?,
-                        path: row.get(13)?,
-                    })
-                })?;
-                for row in rows {
-                    out.push(row?);
-                }
-            }
-            out
-        };
-        let mut written = 0;
-        {
-            let conn: &Connection = &tx;
+        let sites = load_deferred_call_sites(&tx, graph_version)?;
+        let derived = {
             let mut resolver = Resolver::new(&tx, graph_version)?;
-            let mut insert_edge = tx.prepare(
-                "INSERT INTO edges
-                 (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
-                  evidence_snippet, evidence_start_line, evidence_end_line, confidence,
-                  graph_version, commit_sha, trace_id, span_id, event_ts, resolution_kind)
-                 VALUES (?, ?, ?, 'RPC_CALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )?;
-            let empty_symbol_map: HashMap<String, i64> = HashMap::new();
-            for site in &sites {
-                let Some(call) = ReceiverType::parse_deferred_return(&site.marker) else {
-                    continue;
-                };
-                let Some(hook) = profile_for(&site.lang).deferred_rpc else {
-                    continue;
-                };
-                let calls = resolver
-                    .deferred_lookup(&call, &site.lang, &site.path, 0, |row, awaited| {
-                        let (namespaces, aliases) =
-                            declaring_imports(conn, row.file_id, &row.qualname, graph_version)
-                                .ok()?;
-                        let rpc = serde_json::from_str::<serde_json::Value>(&site.detail)
-                            .ok()?
-                            .get(DEFERRED_RPC_KEY)?
-                            .get("rpc")?
-                            .clone();
-                        let site = serde_json::json!({
-                            "rpc": rpc,
-                            "namespaces": namespaces,
-                            "aliases": aliases,
-                        })
-                        .to_string();
-                        hook(row.signature.as_deref()?, awaited, &site)
-                    })?
-                    .unwrap_or_default();
-                for (target_qualname, detail) in calls {
-                    let mut detail: serde_json::Value =
-                        serde_json::from_str(&detail).unwrap_or_default();
-                    detail["deferred_rpc"] = serde_json::Value::Bool(true);
-                    let resolution = resolver.resolve(
-                        &Reference {
-                            target_qualname: Some(&target_qualname),
-                            edge_kind: "RPC_CALL",
-                            receiver_type: None,
-                            import_candidates: &[],
-                            source_lang: &site.lang,
-                            source_file_path: &site.path,
-                            source_qualname: None,
-                            bare_call: false,
-                            call_shape: None,
-                        },
-                        &empty_symbol_map,
-                    )?;
-                    insert_edge.execute(params![
-                        site.file_id,
-                        site.source_symbol_id,
-                        resolution.target_id(),
-                        target_qualname,
-                        detail.to_string(),
-                        site.snippet,
-                        site.start_line,
-                        site.end_line,
-                        site.confidence,
-                        graph_version,
-                        site.commit_sha,
-                        site.trace_id,
-                        site.span_id,
-                        site.event_ts,
-                        resolution.kind_column(),
-                    ])?;
-                    written += 1;
-                }
-            }
-        }
+            derive_rpc_calls(&mut resolver, &tx, graph_version, &sites)?
+        };
+        let written = insert_derived_rpc_calls(&tx, graph_version, &derived)?;
         tx.commit()?;
         Ok(written)
     }
@@ -3367,6 +3337,194 @@ struct NullTargetEdgeRow {
     span_id: Option<String>,
     event_ts: Option<i64>,
     ctx: ReferenceContext,
+}
+
+/// A call through a deferred receiver, as stored on its `CALLS` edge or
+/// unresolved-store row.
+struct DeferredCallSite {
+    file_id: i64,
+    source_symbol_id: Option<i64>,
+    /// The `edges.receiver_type` column text.
+    marker: String,
+    /// The call's target text (`c.SayHello`).
+    target: String,
+    snippet: Option<String>,
+    start_line: Option<i64>,
+    end_line: Option<i64>,
+    confidence: Option<f64>,
+    commit_sha: Option<String>,
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    event_ts: Option<i64>,
+    lang: String,
+    path: String,
+}
+
+/// (marker, method, language): what a deferred RPC derivation depends on.
+type RpcCacheKey<'a> = (&'a str, &'a str, &'a str);
+
+/// An `RPC_CALL` edge derived for a `DeferredCallSite`, resolved.
+struct DerivedRpcCall<'a> {
+    site: &'a DeferredCallSite,
+    edge: RpcCallEdge,
+    target_id: Option<i64>,
+    resolution_kind: Option<&'static str>,
+}
+
+/// Every deferred `CALLS` site of `graph_version`, bound (`edges`) or not
+/// (`unresolved_references`). Both scans hit partial indexes on the marker
+/// prefix (migration 23).
+fn load_deferred_call_sites(
+    conn: &Connection,
+    graph_version: i64,
+) -> Result<Vec<DeferredCallSite>> {
+    let mut sites = Vec::new();
+    for (table, kind_col, target_col) in [
+        ("edges", "kind", "target_qualname"),
+        ("unresolved_references", "edge_kind", "reference_name"),
+    ] {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT t.file_id, t.source_symbol_id, t.receiver_type, t.{target_col},
+                    t.evidence_snippet, t.evidence_start_line, t.evidence_end_line,
+                    t.confidence, t.commit_sha, t.trace_id, t.span_id, t.event_ts,
+                    COALESCE(f.language, 'unknown'), f.path
+             FROM {table} t JOIN files f ON f.id = t.file_id
+             WHERE t.graph_version = ?1 AND t.{kind_col} = 'CALLS'
+               AND t.receiver_type LIKE '{DEFERRED_RETURN_PREFIX}%'
+               AND t.{target_col} IS NOT NULL
+             ORDER BY t.id"
+        ))?;
+        let rows = stmt.query_map(params![graph_version], |row| {
+            Ok(DeferredCallSite {
+                file_id: row.get(0)?,
+                source_symbol_id: row.get(1)?,
+                marker: row.get(2)?,
+                target: row.get(3)?,
+                snippet: row.get(4)?,
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
+                confidence: row.get(7)?,
+                commit_sha: row.get(8)?,
+                trace_id: row.get(9)?,
+                span_id: row.get(10)?,
+                event_ts: row.get(11)?,
+                lang: row.get(12)?,
+                path: row.get(13)?,
+            })
+        })?;
+        for row in rows {
+            sites.push(row?);
+        }
+    }
+    Ok(sites)
+}
+
+/// The `RPC_CALL` edges of each site whose callee returns a client, with
+/// their targets resolved. Sites sharing a marker and method are judged once.
+fn derive_rpc_calls<'a>(
+    resolver: &mut Resolver<'_>,
+    conn: &Connection,
+    graph_version: i64,
+    sites: &'a [DeferredCallSite],
+) -> Result<Vec<DerivedRpcCall<'a>>> {
+    let no_symbols: HashMap<String, i64> = HashMap::new();
+    let mut cache: HashMap<RpcCacheKey<'_>, Vec<(String, String)>> = HashMap::new();
+    let mut derived = Vec::new();
+    for site in sites {
+        let Some(call) = ReceiverType::parse_deferred_return(&site.marker) else {
+            continue;
+        };
+        let Some(hook) = profile_for(&site.lang).deferred_rpc else {
+            continue;
+        };
+        let method = qualname_trailing_name(&site.target);
+        let key = (site.marker.as_str(), method, site.lang.as_str());
+        if let std::collections::hash_map::Entry::Vacant(slot) = cache.entry(key) {
+            let edges = resolver
+                .deferred_lookup(&call, &site.lang, &site.path, 0, |row, awaited| {
+                    let Some(signature) = row.signature.as_deref() else {
+                        return Ok(None);
+                    };
+                    let (namespaces, aliases) =
+                        declaring_imports(conn, row.file_id, &row.qualname, graph_version)?;
+                    let rpc_site = DeferredRpcSite {
+                        method: method.to_string(),
+                        namespaces,
+                        aliases,
+                    };
+                    Ok(hook(signature, awaited, &rpc_site).map(|edges| {
+                        edges
+                            .into_iter()
+                            .map(|e| (e.target_qualname, e.detail))
+                            .collect::<Vec<_>>()
+                    }))
+                })?
+                .unwrap_or_default();
+            slot.insert(edges);
+        }
+        for (target_qualname, detail) in &cache[&key] {
+            let resolution = resolver.resolve(
+                &Reference {
+                    target_qualname: Some(target_qualname),
+                    edge_kind: "RPC_CALL",
+                    receiver_type: None,
+                    import_candidates: &[],
+                    source_lang: &site.lang,
+                    source_file_path: &site.path,
+                    source_qualname: None,
+                    bare_call: false,
+                    call_shape: None,
+                },
+                &no_symbols,
+            )?;
+            derived.push(DerivedRpcCall {
+                site,
+                edge: RpcCallEdge {
+                    target_qualname: target_qualname.clone(),
+                    detail: detail.clone(),
+                },
+                target_id: resolution.target_id(),
+                resolution_kind: resolution.kind_column(),
+            });
+        }
+    }
+    Ok(derived)
+}
+
+fn insert_derived_rpc_calls(
+    conn: &Connection,
+    graph_version: i64,
+    derived: &[DerivedRpcCall<'_>],
+) -> Result<usize> {
+    let mut insert = conn.prepare(
+        "INSERT INTO edges
+         (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
+          evidence_snippet, evidence_start_line, evidence_end_line, confidence,
+          graph_version, commit_sha, trace_id, span_id, event_ts, resolution_kind, call_shape)
+         VALUES (?, ?, ?, 'RPC_CALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )?;
+    for d in derived {
+        let site = d.site;
+        insert.execute(params![
+            site.file_id,
+            site.source_symbol_id,
+            d.target_id,
+            d.edge.target_qualname,
+            d.edge.detail,
+            site.snippet,
+            site.start_line,
+            site.end_line,
+            site.confidence,
+            graph_version,
+            site.commit_sha,
+            site.trace_id,
+            site.span_id,
+            site.event_ts,
+            d.resolution_kind,
+            DERIVED_RPC_SHAPE,
+        ])?;
+    }
+    Ok(derived.len())
 }
 
 /// Encode `EdgeInput::import_candidates` for the `edges.import_candidates`
