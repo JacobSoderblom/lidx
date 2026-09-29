@@ -2125,7 +2125,11 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                     "modified".to_string()
                 }
             } else {
-                "modified".to_string()
+                // No hunk ranges to compare against (paths-only mode, no diff
+                // text) -- there's no evidence any of these symbols actually
+                // changed, so "modified" would be a false claim. Label
+                // neutrally instead.
+                "in_changed_file".to_string()
             };
 
             // Step 2a: Detect signature changes by comparing with previous graph version
@@ -2133,7 +2137,9 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             let new_signature = sym.signature.clone();
             let mut final_change_type = change_type.clone();
 
-            if change_type == "modified" && ctx.graph_version > 1 {
+            if (change_type == "modified" || change_type == "in_changed_file")
+                && ctx.graph_version > 1
+            {
                 // Try to find the symbol in the previous graph version
                 if let Some(stable_id) = sym.stable_id.as_ref()
                     && let Ok(Some(old_sym)) = indexer
@@ -2175,11 +2181,12 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         });
     }
 
-    // Step 3: Compute downstream impact via multi-level BFS (depth controlled by max_depth)
+    // Step 3: Compute upstream impact (callers of the changed symbols) via
+    // multi-level BFS (depth controlled by max_depth)
     let seed_ids: Vec<i64> = changed_symbols.iter().map(|cs| cs.symbol.id).collect();
-    let mut downstream = Vec::new();
+    let mut upstream = Vec::new();
     let mut seen_ids: HashSet<i64> = seed_ids.iter().copied().collect();
-    let max_downstream = 50;
+    let max_upstream = 50;
 
     // BFS: start with changed symbols, expand callers level by level
     let mut current_level: Vec<Symbol> =
@@ -2190,7 +2197,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         let mut next_level = Vec::new();
 
         for sym in &current_level {
-            if downstream.len() >= max_downstream {
+            if upstream.len() >= max_upstream {
                 break;
             }
 
@@ -2201,7 +2208,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 
             // Find callers via resolved edges
             for edge in &edges {
-                if downstream.len() >= max_downstream {
+                if upstream.len() >= max_upstream {
                     break;
                 }
                 if edge.kind == "CALLS"
@@ -2211,7 +2218,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                     && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
                 {
                     next_level.push(caller.clone());
-                    downstream.push(DiffImpactEntry {
+                    upstream.push(DiffImpactEntry {
                         symbol: caller,
                         relationship: if current_distance == 1 {
                             "caller".to_string()
@@ -2226,7 +2233,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             }
         }
 
-        if next_level.is_empty() || downstream.len() >= max_downstream {
+        if next_level.is_empty() || upstream.len() >= max_upstream {
             break;
         }
         current_level = next_level;
@@ -2285,7 +2292,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         // 1. Signature change + high fan-in = CRITICAL risk
         for cs in &changed_symbols {
             if cs.change_type == "signature_changed" {
-                let caller_count = downstream
+                let caller_count = upstream
                     .iter()
                     .filter(|d| d.relationship.starts_with("caller"))
                     .count();
@@ -2325,7 +2332,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 
         // 2. Cross-language callers = HIGH risk
         let mut cross_lang_callers: Vec<String> = Vec::new();
-        for impact in &downstream {
+        for impact in &upstream {
             let changed_langs: HashSet<_> = changed_symbols
                 .iter()
                 .map(|cs| infer_language(&cs.symbol.file_path))
@@ -2378,7 +2385,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         }
 
         // 4. High fan-in = HIGH risk
-        let high_fan_in: Vec<_> = downstream
+        let high_fan_in: Vec<_> = upstream
             .iter()
             .filter(|d| d.relationship.starts_with("caller"))
             .collect();
@@ -2400,7 +2407,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         }
 
         // 5. Wide blast radius = MEDIUM risk
-        let affected_files: HashSet<_> = downstream
+        let affected_files: HashSet<_> = upstream
             .iter()
             .map(|d| d.symbol.file_path.as_str())
             .collect();
@@ -2477,7 +2484,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 
     let result = AnalyzeDiffResult {
         changed_symbols,
-        downstream,
+        upstream,
         test_coverage,
         risk,
         budget: BudgetInfo {

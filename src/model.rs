@@ -933,7 +933,9 @@ pub struct TestSummary {
 #[derive(Debug, Serialize)]
 pub struct AnalyzeDiffResult {
     pub changed_symbols: Vec<ChangedSymbol>,
-    pub downstream: Vec<DiffImpactEntry>,
+    // Callers of the changed symbols found via BFS -- i.e. what depends on
+    // the change, which makes this upstream, not downstream.
+    pub upstream: Vec<DiffImpactEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_coverage: Option<Vec<TestCoverageEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -948,7 +950,7 @@ pub struct AnalyzeDiffResult {
 #[derive(Debug, Serialize)]
 pub struct ChangedSymbol {
     pub symbol: Symbol,
-    pub change_type: String, // "modified", "signature_changed", "added", "deleted"
+    pub change_type: String, // "modified", "signature_changed", "added", "deleted", "in_changed_file"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -958,7 +960,7 @@ pub struct ChangedSymbol {
 #[derive(Debug, Serialize)]
 pub struct DiffImpactEntry {
     pub symbol: Symbol,
-    pub relationship: String, // "calls", "imports", "extends"
+    pub relationship: String, // "caller", "caller_depth_2", "caller_depth_3", ...
     pub distance: usize,
     pub confidence: f64,
     /// The tier that bound the edge connecting this entry to the previous
