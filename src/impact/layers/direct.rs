@@ -869,53 +869,72 @@ mod tests {
     }
 
     /// Issue #103: a bridge hop keeps caller/publisher -> callee/subscriber
-    /// order. Tracing from the impl side crosses the bridge to the caller, so
-    /// the recorded hop is reversed; from the caller side it is forward.
+    /// order. Tracing from the callee side crosses the bridge to the caller,
+    /// so the recorded hop is reversed; from the caller side it is forward.
     #[test]
     fn bridge_hop_orientation_follows_edge_kind() {
-        let (mut db, _temp) = test_db();
-        let file_id = db
-            .upsert_file("src/svc.py", "h1", "python", 100, 0)
-            .unwrap();
-        let symbols = vec![
-            symbol("svc.Handler", "function", 1),
-            symbol("svc.client", "function", 10),
-        ];
-        let inserted = db
-            .insert_symbols(file_id, "src/svc.py", &symbols, 1, None)
-            .unwrap();
-        let id_of = |qn: &str| inserted.iter().find(|s| s.qualname == qn).unwrap().id;
-        let mut imp = calls_edge("svc.Handler", "pkg.Svc.Do");
-        imp.kind = "RPC_IMPL".to_string();
-        let mut call = calls_edge("svc.client", "pkg.Svc.Do");
-        call.kind = "RPC_CALL".to_string();
-        let symbol_map: HashMap<String, i64> = inserted
-            .iter()
-            .map(|s| (s.qualname.clone(), s.id))
-            .collect();
-        db.insert_edges(file_id, &[imp, call], &symbol_map, 1, None)
-            .unwrap();
+        // (callee-side kind, caller-side kind, join key)
+        for (callee_kind, caller_kind, key) in [
+            ("RPC_IMPL", "RPC_CALL", "pkg.Svc.Do"),
+            ("CHANNEL_SUBSCRIBE", "CHANNEL_PUBLISH", "orders"),
+            ("HTTP_ROUTE", "HTTP_CALL", "GET /orders"),
+        ] {
+            let (mut db, _temp) = test_db();
+            let file_id = db
+                .upsert_file("src/svc.py", "h1", "python", 100, 0)
+                .unwrap();
+            let symbols = vec![
+                symbol("svc.Handler", "function", 1),
+                symbol("svc.client", "function", 10),
+            ];
+            let inserted = db
+                .insert_symbols(file_id, "src/svc.py", &symbols, 1, None)
+                .unwrap();
+            let id_of = |qn: &str| inserted.iter().find(|s| s.qualname == qn).unwrap().id;
+            let mut callee = calls_edge("svc.Handler", key);
+            callee.kind = callee_kind.to_string();
+            let mut caller = calls_edge("svc.client", key);
+            caller.kind = caller_kind.to_string();
+            let symbol_map: HashMap<String, i64> = inserted
+                .iter()
+                .map(|s| (s.qualname.clone(), s.id))
+                .collect();
+            db.insert_edges(file_id, &[callee, caller], &symbol_map, 1, None)
+                .unwrap();
 
-        let run = |seed: i64| {
-            analyze_direct_impact(
-                &db,
-                &[seed],
-                3,
-                TraversalDirection::Upstream,
-                &HashSet::new(),
-                &[],
-                true,
-                100,
-                None,
-                1,
-            )
-            .unwrap()
-        };
-        let from_impl = run(id_of("svc.Handler"));
-        let hop = from_impl.parent_map.get(&id_of("svc.client")).unwrap();
-        assert!(hop.3, "impl -> caller hop must be reversed: {hop:?}");
-        let from_caller = run(id_of("svc.client"));
-        let hop = from_caller.parent_map.get(&id_of("svc.Handler")).unwrap();
-        assert!(!hop.3, "caller -> impl hop must be forward: {hop:?}");
+            let run = |seed: i64| {
+                analyze_direct_impact(
+                    &db,
+                    &[seed],
+                    3,
+                    TraversalDirection::Upstream,
+                    &HashSet::new(),
+                    &[],
+                    true,
+                    100,
+                    None,
+                    1,
+                )
+                .unwrap()
+            };
+            let from_callee = run(id_of("svc.Handler"));
+            let hop = from_callee
+                .parent_map
+                .get(&id_of("svc.client"))
+                .unwrap_or_else(|| panic!("{callee_kind}: bridge not crossed"));
+            assert!(
+                hop.3,
+                "{callee_kind} -> caller hop must be reversed: {hop:?}"
+            );
+            let from_caller = run(id_of("svc.client"));
+            let hop = from_caller
+                .parent_map
+                .get(&id_of("svc.Handler"))
+                .unwrap_or_else(|| panic!("{caller_kind}: bridge not crossed"));
+            assert!(
+                !hop.3,
+                "{caller_kind} -> callee hop must be forward: {hop:?}"
+            );
+        }
     }
 }
