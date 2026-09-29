@@ -506,10 +506,14 @@ impl Db {
                      AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                      AND s.kind IN ('function', 'method', 'class', 'struct')
                      AND s.name NOT IN ('main', '__init__', 'setup', 'teardown', 'configure', 'register')
+                     AND COALESCE(s.signature, '') NOT LIKE '%#[test]%'
+                     AND COALESCE(s.signature, '') NOT LIKE '%::test]%'
+                     AND COALESCE(s.signature, '') NOT LIKE '%#[rstest]%'
+                     AND COALESCE(s.signature, '') NOT LIKE '#[trait_method]%'
                      AND NOT EXISTS (
                        SELECT 1 FROM edges e
                        WHERE e.target_symbol_id = s.id
-                         AND e.kind IN ('CALLS', 'IMPORTS', 'RPC_IMPL', 'IMPLEMENTS', 'EXTENDS')
+                         AND e.kind IN ('CALLS', 'IMPORTS', 'RPC_IMPL', 'IMPLEMENTS', 'EXTENDS', 'USES')
                          AND e.graph_version = ?
                      )
                      AND NOT EXISTS (

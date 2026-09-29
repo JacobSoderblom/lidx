@@ -135,6 +135,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             in_trait_scope: false,
         };
         walk_node(root, &ctx, source, &mut output);
+        collect_uses(root, &ctx, source, &mut output);
         Ok(output)
     }
 
@@ -508,7 +509,10 @@ fn handle_function(
         ),
     };
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
-    let signature = extract_signature(node, source, attributes);
+    let signature = mark_trait_method(
+        extract_signature(node, source, attributes),
+        ctx.in_trait_scope,
+    );
     // A trait default method or trait-impl method has no `pub` to check —
     // it's exactly as visible as the trait itself (see
     // `Context::in_trait_scope`, issue #75 follow-up, finding B).
@@ -589,7 +593,7 @@ fn handle_function_signature(
     };
     let qualname = format!("{container}::{name}");
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
-    let signature = extract_signature(node, source, &[]);
+    let signature = mark_trait_method(extract_signature(node, source, &[]), true);
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -1886,6 +1890,68 @@ fn test_attribute_prefix(attributes: &[Node<'_>], source: &str) -> Option<String
         None
     } else {
         Some(prefix)
+    }
+}
+
+/// Prefixes `#[trait_method]\n` onto the signature of a trait declaration
+/// method or a trait-impl method, the same way `test_attribute_prefix` marks
+/// tests: `dead_symbols` can't see these are reached through the trait (often
+/// an external one, e.g. `r2d2::CustomizeConnection`), so it reads the marker.
+fn mark_trait_method(signature: Option<String>, in_trait_scope: bool) -> Option<String> {
+    if !in_trait_scope {
+        return signature;
+    }
+    Some(format!(
+        "{TRAIT_METHOD_MARKER}\n{}",
+        signature.unwrap_or_default()
+    ))
+}
+
+const TRAIT_METHOD_MARKER: &str = "#[trait_method]";
+
+/// Emits `USES` edges for type references (field/param/return types, struct
+/// literals) and functions passed as values (`get_or_init(Config::from_env)`),
+/// none of which are calls. Sourced from the enclosing module: `dead_symbols`
+/// only needs to know the target is referenced somewhere.
+fn collect_uses(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let mut ctx = ctx.clone();
+    if node.kind() == "mod_item"
+        && let Some(name) = extract_name(node, source)
+    {
+        ctx.module = format!("{}::{name}", ctx.module);
+    }
+    if !matches!(node.kind(), "use_declaration" | "attribute_item") {
+        let parent = node.parent();
+        let is_value_arg =
+            node.kind() == "identifier" && parent.is_some_and(|p| p.kind() == "arguments");
+        let is_ref = matches!(
+            node.kind(),
+            "type_identifier" | "scoped_type_identifier" | "scoped_identifier"
+        ) || is_value_arg;
+        let is_inner_path = parent
+            .is_some_and(|p| matches!(p.kind(), "scoped_type_identifier" | "scoped_identifier"));
+        let is_definition_name = parent.is_some_and(|p| {
+            p.child_by_field_name("name") == Some(node)
+                || (p.kind() == "impl_item" && p.child_by_field_name("type") == Some(node))
+        });
+        if is_ref && !is_inner_path && !is_definition_name && !is_call_callee(node) {
+            let raw = node_text(node, source);
+            if raw != "Self"
+                && let Some(target) = resolve_call_target(&raw, &ctx)
+            {
+                output.edges.push(EdgeInput {
+                    kind: "USES".to_string(),
+                    source_qualname: Some(ctx.module.clone()),
+                    target_qualname: Some(target),
+                    import_candidates: import_qualified_candidates(&raw, &ctx),
+                    ..Default::default()
+                });
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            collect_uses(child, &ctx, source, output);
+        }
     }
 }
 
