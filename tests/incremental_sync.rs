@@ -1274,6 +1274,249 @@ fn csharp_deleting_each_file_of_a_shared_namespace_keeps_contains_edges() {
     shared_container_matches_fresh(&init, &[("B.cs", None)], &[("A.cs", NS_A), ("C.cs", NS_C)]);
 }
 
+/// How a file of a shared container (namespace, package, module) is written.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    /// The container with one plain member.
+    Plain,
+    /// The container with an extra member calling the first.
+    WithMember,
+    /// No container at all, only a free member.
+    NoContainer,
+    /// C#: file-scoped `namespace App;`.
+    FileScoped,
+    /// C#: the container plus a second, nested-name container `App.Sub`.
+    SecondContainer,
+}
+
+type Render = fn(&str, Shape) -> String;
+
+/// Every edit of, and delete of, one of three files sharing a container that
+/// starts out as `start`, each compared with a fresh index of the final tree.
+fn shared_container_edits_match_fresh(ext: &str, render: Render, start: Shape, edits: &[Shape]) {
+    let names = ["a", "b", "c"];
+    let path = |i: usize| format!("{}.{ext}", names[i]);
+    let tree = |states: [Option<Shape>; 3]| -> Vec<(String, String)> {
+        (0..3)
+            .filter_map(|i| states[i].map(|s| (path(i), render(names[i], s))))
+            .collect()
+    };
+    let borrow = |t: &[(String, String)]| -> Vec<(String, String)> { t.to_vec() };
+    for who in 0..3 {
+        for edit in edits.iter().map(|e| Some(*e)).chain([None]) {
+            let mut states = [Some(start); 3];
+            states[who] = edit;
+            let (init, fin) = (tree([Some(start); 3]), borrow(&tree(states)));
+            let init: Vec<(&str, &str)> =
+                init.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
+            let fin: Vec<(&str, &str)> =
+                fin.iter().map(|(p, c)| (p.as_str(), c.as_str())).collect();
+            let content = edit.map(|e| render(names[who], e));
+            shared_container_matches_fresh(&init, &[(&path(who), content.as_deref())], &fin);
+        }
+    }
+}
+
+fn csharp_shape(cls: &str, shape: Shape) -> String {
+    match shape {
+        Shape::Plain => format!("namespace App {{ public class {cls} {{ }} }}\n"),
+        Shape::WithMember => format!(
+            "using System;\n\nnamespace App\n{{\n    public class {cls}\n    {{\n        public void M() {{ }}\n    }}\n}}\n"
+        ),
+        Shape::NoContainer => format!("public class {cls} {{ }}\n"),
+        Shape::FileScoped => format!("namespace App;\npublic class {cls} {{ }}\n"),
+        Shape::SecondContainer => format!(
+            "namespace App {{ public class {cls} {{ }} }}\nnamespace App.Sub {{ public class {cls}S {{ }} }}\n"
+        ),
+    }
+}
+
+const CSHARP_EDITS: [Shape; 4] = [
+    Shape::Plain,
+    Shape::WithMember,
+    Shape::FileScoped,
+    Shape::SecondContainer,
+];
+
+/// Issue #198: an edit that stops declaring one of several shared namespaces
+/// must leave the other files' CONTAINS edges bound, as a fresh reindex does.
+#[test]
+fn csharp_edit_dropping_a_shared_second_namespace_keeps_contains_edges() {
+    shared_container_edits_match_fresh("cs", csharp_shape, Shape::SecondContainer, &CSHARP_EDITS);
+}
+
+#[test]
+fn csharp_edits_of_a_shared_block_namespace_match_fresh() {
+    shared_container_edits_match_fresh("cs", csharp_shape, Shape::Plain, &CSHARP_EDITS);
+}
+
+#[test]
+fn csharp_edits_of_a_shared_file_scoped_namespace_match_fresh() {
+    shared_container_edits_match_fresh("cs", csharp_shape, Shape::FileScoped, &CSHARP_EDITS);
+}
+
+#[test]
+fn csharp_edits_of_a_multi_line_shared_namespace_match_fresh() {
+    shared_container_edits_match_fresh("cs", csharp_shape, Shape::WithMember, &CSHARP_EDITS);
+}
+
+fn go_shape(n: &str, shape: Shape) -> String {
+    match shape {
+        Shape::WithMember => format!("package app\n\nfunc {n}() {{}}\nfunc {n}2() {{ {n}() }}\n"),
+        Shape::NoContainer => format!("package app\n\ntype T{n} struct{{}}\n"),
+        _ => format!("package app\n\nfunc {n}() {{}}\n"),
+    }
+}
+
+fn python_shape(n: &str, shape: Shape) -> String {
+    match shape {
+        Shape::WithMember => format!("def {n}():\n    pass\n\ndef {n}2():\n    {n}()\n"),
+        Shape::NoContainer => format!("class T{n}:\n    pass\n"),
+        _ => format!("def {n}():\n    pass\n"),
+    }
+}
+
+fn rust_shape(n: &str, shape: Shape) -> String {
+    match shape {
+        Shape::WithMember => {
+            format!("pub mod shared {{ pub fn {n}() {{}} pub fn {n}2() {{ {n}() }} }}\n")
+        }
+        Shape::NoContainer => format!("pub fn {n}() {{}}\n"),
+        _ => format!("pub mod shared {{ pub fn {n}() {{}} }}\n"),
+    }
+}
+
+fn ts_shape(n: &str, shape: Shape) -> String {
+    match shape {
+        Shape::WithMember => format!(
+            "namespace Shared {{ export function {n}() {{}}\n export function {n}2() {{ {n}(); }} }}\n"
+        ),
+        Shape::NoContainer => format!("export function {n}() {{}}\n"),
+        _ => format!("namespace Shared {{ export function {n}() {{}} }}\n"),
+    }
+}
+
+const PLAIN_EDITS: [Shape; 2] = [Shape::WithMember, Shape::NoContainer];
+
+#[test]
+fn go_shared_package_edits_match_fresh() {
+    shared_container_edits_match_fresh("go", go_shape, Shape::Plain, &PLAIN_EDITS);
+}
+
+#[test]
+fn python_shared_package_edits_match_fresh() {
+    shared_container_edits_match_fresh("py", python_shape, Shape::Plain, &PLAIN_EDITS);
+}
+
+#[test]
+fn rust_shared_module_edits_match_fresh() {
+    shared_container_edits_match_fresh("rs", rust_shape, Shape::Plain, &PLAIN_EDITS);
+}
+
+#[test]
+fn ts_shared_namespace_edits_match_fresh() {
+    shared_container_edits_match_fresh("ts", ts_shape, Shape::Plain, &PLAIN_EDITS);
+}
+
+/// A C# partial class is one symbol per declaring file: when one file drops
+/// its declaration, the others' edges to that copy must survive.
+#[test]
+fn csharp_partial_class_dropped_by_one_file_keeps_other_files_edges() {
+    let part = |m: &str| {
+        format!("namespace App {{ public partial class Service {{ void {m}() {{ }} }} }}\n")
+    };
+    let (a, b, c) = (part("A"), part("B"), part("C"));
+    let (a2, b2) = (
+        "namespace App { public class Other { } }\n".to_string(),
+        part("B2"),
+    );
+    for (edited, new, finals) in [
+        ("a.cs", &a2, [("a.cs", &a2), ("b.cs", &b), ("c.cs", &c)]),
+        ("b.cs", &b2, [("a.cs", &a), ("b.cs", &b2), ("c.cs", &c)]),
+    ] {
+        let finals: Vec<(&str, &str)> = finals.iter().map(|(p, s)| (*p, s.as_str())).collect();
+        shared_container_matches_fresh(
+            &[("a.cs", &a), ("b.cs", &b), ("c.cs", &c)]
+                .map(|(p, s): (&str, &String)| (p, s.as_str())),
+            &[(edited, Some(new.as_str()))],
+            &finals,
+        );
+    }
+}
+
+/// Carry-forward remaps symbols by `stable_id`, which files can share: a
+/// full reindex that only re-parses one unrelated file must leave the shared
+/// declarations' edges and metrics as a fresh index has them.
+fn reindex_carry_forward_matches_fresh(files: &[(&str, &str)], edit: (&str, &str)) {
+    let (_tmp, root, mut indexer) = indexed_tree("carry-shared", files);
+    common::write_files(&root, &[edit]);
+    indexer.reindex().unwrap();
+    common::assert_no_dangling_edge_targets(indexer.db());
+    // Edge snapshots key on qualnames, so also check the raw ids: an edge's
+    // source and a metrics row's symbol must live in the row's own file.
+    let conn = indexer.db().read_conn().unwrap();
+    for sql in [
+        "SELECT COUNT(*) FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+         WHERE s.file_id != e.file_id",
+        "SELECT COUNT(*) FROM symbol_metrics m JOIN symbols s ON s.id = m.symbol_id
+         WHERE s.file_id != m.file_id",
+    ] {
+        let bad: i64 = conn.query_row(sql, [], |r| r.get(0)).unwrap();
+        assert_eq!(
+            bad, 0,
+            "carry-forward remapped to another file's copy: {sql}"
+        );
+    }
+    drop(conn);
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let finals: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| if *p == edit.0 { edit } else { (*p, *c) })
+        .collect();
+    let (_t, fresh) = common::index_files(&finals);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn carry_forward_of_files_sharing_a_namespace_matches_fresh() {
+    reindex_carry_forward_matches_fresh(
+        &[
+            ("a.cs", NS_A),
+            ("b.cs", NS_B),
+            ("c.cs", "namespace Other { public class C { } }\n"),
+        ],
+        (
+            "c.cs",
+            "namespace Other { public class C { public void M() { } } }\n",
+        ),
+    );
+}
+
+#[test]
+fn carry_forward_of_files_sharing_a_partial_class_matches_fresh() {
+    let part =
+        |m: &str| format!("namespace App {{ public partial class S {{ void {m}() {{ }} }} }}\n");
+    let (a, b) = (part("A"), part("B"));
+    reindex_carry_forward_matches_fresh(
+        &[("a.cs", &a), ("b.cs", &b), ("c.cs", "public class C { }\n")],
+        ("c.cs", "public class C { public void M() { } }\n"),
+    );
+}
+
+#[test]
+fn carry_forward_of_files_sharing_an_identical_function_matches_fresh() {
+    let helper = "def helper():\n    return 1\n";
+    reindex_carry_forward_matches_fresh(
+        &[
+            ("a.py", helper),
+            ("b.py", helper),
+            ("c.py", "def c():\n    pass\n"),
+        ],
+        ("c.py", "def c():\n    return 2\n"),
+    );
+}
+
 // Issue #187: JS/TS import candidates are chased through re-export barrels
 // and default exports at extraction time, so editing/adding/deleting only
 // the barrel or target must re-extract the (hash-unchanged) importers.
@@ -1797,123 +2040,4 @@ fn csharp_scoped_interface_receiver_survives_carry_forward() {
         )
         .unwrap();
     assert_eq!(resolved, 1, "the scoped call binds to the interface member");
-}
-
-/// Every (edited file, edit kind) combination over three files sharing a
-/// container, for one language: `render(name, kind)` yields file content.
-fn shared_container_all_edits(ext: &str, render: &dyn Fn(&str, u8) -> String, kinds: u8) {
-    let names = ["a", "b", "c"];
-    let path = |i: usize| format!("{}.{ext}", names[i]);
-    for k0 in [0, kinds - 1] {
-        for k1 in 0..kinds {
-            for who in 0..3usize {
-                for del in [false, true] {
-                    let mut state = [Some(k0); 3];
-                    let init: Vec<(String, String)> =
-                        (0..3).map(|i| (path(i), render(names[i], k0))).collect();
-                    let init_r: Vec<(&str, &str)> =
-                        init.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-                    let (_tmp, root, mut indexer) = indexed_tree("shared-all", &init_r);
-                    if del {
-                        state[who] = None;
-                        std::fs::remove_file(root.join(path(who))).unwrap();
-                    } else {
-                        state[who] = Some(k1);
-                        common::write_files(&root, &[(&path(who), &render(names[who], k1))]);
-                    }
-                    indexer.sync_rel_paths(&[path(who)]).unwrap();
-                    common::assert_no_dangling_edge_targets(indexer.db());
-                    let gv = indexer.db().current_graph_version().unwrap();
-                    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
-                    let fin: Vec<(String, String)> = (0..3)
-                        .filter_map(|i| state[i].map(|k| (path(i), render(names[i], k))))
-                        .collect();
-                    let fin_r: Vec<(&str, &str)> =
-                        fin.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-                    let (_t, fresh) = common::index_files(&fin_r);
-                    assert_eq!(
-                        snap, fresh,
-                        "{ext}: k0={k0} k1={k1} who={who} del={del}: incremental != fresh"
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Issue #198: an edit that stops declaring one of several shared namespaces
-/// must leave the other files' CONTAINS edges bound, as a fresh reindex does.
-#[test]
-fn csharp_edit_dropping_a_shared_namespace_keeps_other_files_contains_edges() {
-    shared_container_all_edits(
-        "cs",
-        &|cls, k| match k {
-            0 => format!("namespace App {{ public class {cls} {{ }} }}\n"),
-            1 => format!(
-                "using System;\n\nnamespace App\n{{\n    public class {cls}\n    {{\n        public void M() {{ }}\n    }}\n}}\n"
-            ),
-            2 => format!(
-                "namespace App\n{{\n    public class {cls} {{ }}\n    public class {cls}X {{ }}\n}}\n"
-            ),
-            3 => format!("namespace App;\npublic class {cls} {{ }}\n"),
-            _ => format!(
-                "namespace App {{ public class {cls} {{ }} }}\nnamespace App.Sub {{ public class {cls}S {{ }} }}\n"
-            ),
-        },
-        5,
-    );
-}
-
-#[test]
-fn go_shared_package_edits_match_fresh() {
-    shared_container_all_edits(
-        "go",
-        &|n, k| match k {
-            0 => format!("package app\n\nfunc {n}() {{}}\n"),
-            1 => format!("package app\n\nfunc {n}() {{}}\nfunc {n}2() {{ {n}() }}\n"),
-            _ => format!("package app\n\ntype T{n} struct{{}}\n"),
-        },
-        3,
-    );
-}
-
-#[test]
-fn python_shared_package_edits_match_fresh() {
-    shared_container_all_edits(
-        "py",
-        &|n, k| match k {
-            0 => format!("def {n}():\n    pass\n"),
-            1 => format!("def {n}():\n    pass\n\ndef {n}2():\n    {n}()\n"),
-            _ => format!("class T{n}:\n    pass\n"),
-        },
-        3,
-    );
-}
-
-#[test]
-fn rust_shared_module_edits_match_fresh() {
-    shared_container_all_edits(
-        "rs",
-        &|n, k| match k {
-            0 => format!("pub mod shared {{ pub fn {n}() {{}} }}\n"),
-            1 => format!("pub mod shared {{ pub fn {n}() {{}} pub fn {n}2() {{ {n}() }} }}\n"),
-            _ => format!("pub fn {n}() {{}}\n"),
-        },
-        3,
-    );
-}
-
-#[test]
-fn ts_shared_namespace_edits_match_fresh() {
-    shared_container_all_edits(
-        "ts",
-        &|n, k| match k {
-            0 => format!("namespace Shared {{ export function {n}() {{}} }}\n"),
-            1 => format!(
-                "namespace Shared {{ export function {n}() {{}}\n export function {n}2() {{ {n}(); }} }}\n"
-            ),
-            _ => format!("export function {n}() {{}}\n"),
-        },
-        3,
-    );
 }
