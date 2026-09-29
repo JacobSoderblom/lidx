@@ -387,7 +387,18 @@ impl Indexer {
                 .filter(|p| !scanned_paths.contains(p.as_str()))
                 .cloned(),
         );
-        let importers = self.js_importers_of(&changed_paths, previous_graph_version)?;
+        let mut importers = self.js_importers_of(&changed_paths, previous_graph_version)?;
+        // A changed tsconfig/jsconfig (not itself an indexed file) can
+        // re-map any alias import, so re-extract every JS/TS file.
+        let config_fingerprint = self.js_config_fingerprint(&scanned);
+        if self.db.get_meta_i64("js_config_fingerprint")? != Some(config_fingerprint) {
+            importers.extend(
+                scanned
+                    .iter()
+                    .filter(|f| javascript::is_js_ts_path(&f.rel_path))
+                    .map(|f| f.rel_path.clone()),
+            );
+        }
 
         let mut seen = HashSet::new();
         let mut stats = IndexStats {
@@ -656,6 +667,8 @@ impl Indexer {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
+        self.db
+            .set_meta_i64("js_config_fingerprint", config_fingerprint)?;
         self.db.set_meta_i64("last_indexed", now)?;
 
         // Reclaim rows from graph versions this reindex just aged out. Safe to
@@ -830,12 +843,30 @@ impl Indexer {
     /// even while the file is missing. Excludes `changed` itself.
     fn js_importers_of(&self, changed: &[String], graph_version: i64) -> Result<HashSet<String>> {
         let mut result: HashSet<String> = HashSet::new();
+        // A changed tsconfig/jsconfig can re-map any import under its
+        // directory, so every JS/TS file there is re-extracted.
+        for cfg in changed.iter().filter(|p| javascript::is_js_config_path(p)) {
+            let dir = std::path::Path::new(cfg)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(""));
+            let conn = self.db.read_conn()?;
+            let mut stmt = conn.prepare("SELECT path FROM files")?;
+            let paths = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            result.extend(paths.into_iter().filter(|p| {
+                javascript::is_js_ts_path(p) && std::path::Path::new(p).starts_with(dir)
+            }));
+        }
         let mut frontier: Vec<String> = changed
             .iter()
             .filter(|p| javascript::is_js_ts_path(p))
             .map(|p| javascript::module_name_from_rel_path(p))
             .collect();
         if frontier.is_empty() {
+            for path in changed {
+                result.remove(path);
+            }
             return Ok(result);
         }
         let conn = self.db.read_conn()?;
@@ -871,6 +902,40 @@ impl Indexer {
             result.remove(path);
         }
         Ok(result)
+    }
+
+    /// Fingerprint of every `tsconfig.json`/`jsconfig.json` that could own a
+    /// scanned JS/TS file (its directory or any ancestor). Config files are
+    /// not scanned as indexed files, so a reindex can only notice an edit,
+    /// addition or deletion by comparing this against the stored value.
+    fn js_config_fingerprint(&self, scanned: &[scan::ScannedFile]) -> i64 {
+        let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+        for file in scanned
+            .iter()
+            .filter(|f| javascript::is_js_ts_path(&f.rel_path))
+        {
+            let mut dir = std::path::Path::new(&file.rel_path).parent();
+            while let Some(d) = dir {
+                if !dirs.insert(d.to_path_buf()) {
+                    break;
+                }
+                dir = d.parent();
+            }
+        }
+        let mut data = Vec::new();
+        for dir in &dirs {
+            for name in ["tsconfig.json", "jsconfig.json"] {
+                let path = self.repo_root.join(dir).join(name);
+                if let Ok(bytes) = std::fs::read(&path) {
+                    data.extend_from_slice(dir.join(name).to_string_lossy().as_bytes());
+                    data.push(0);
+                    data.extend_from_slice(&bytes);
+                    data.push(0);
+                }
+            }
+        }
+        let hex = scan::hash_bytes(&data);
+        i64::from_str_radix(&hex[..15], 16).unwrap_or(0)
     }
 
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {

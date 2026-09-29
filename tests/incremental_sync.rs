@@ -1332,3 +1332,58 @@ fn full_reindex_reextracts_importer_of_edited_barrel() {
     indexer.reindex().unwrap();
     assert_eq!(target_of(&indexer).as_deref(), Some("lib/b.foo"));
 }
+
+const ALIAS_TSCONFIG: (&str, &str) = (
+    "tsconfig.json",
+    "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"./*\"]}}}",
+);
+const ALIAS_CALLER: &str =
+    "import { foo } from '@/lib/foo';\nexport function go() {\n  return foo();\n}\n";
+const LIB_FOO: (&str, &str) = ("lib/foo.ts", "export function foo() {}\n");
+
+#[test]
+fn incremental_tsconfig_paths_added_reextracts_alias_importer() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-config-added",
+        &[("tsconfig.json", "{}"), LIB_FOO, ("use.ts", ALIAS_CALLER)],
+        |root| common::write_files(root, &[ALIAS_TSCONFIG]),
+        &["tsconfig.json"],
+        &[ALIAS_TSCONFIG, LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn incremental_tsconfig_deleted_reextracts_alias_importer() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-config-deleted",
+        &[ALIAS_TSCONFIG, LIB_FOO, ("use.ts", ALIAS_CALLER)],
+        |root| std::fs::remove_file(root.join("tsconfig.json")).unwrap(),
+        &["tsconfig.json"],
+        &[LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn full_reindex_reextracts_alias_importer_after_tsconfig_edit() {
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "ts-reindex-config",
+        &[("tsconfig.json", "{}"), LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    common::write_files(&root, &[ALIAS_TSCONFIG]);
+    indexer.reindex().unwrap();
+    assert_eq!(target_of(&indexer).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn incremental_alias_import_of_missing_file_resolves_once_file_added() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-alias-missing",
+        &[ALIAS_TSCONFIG, ("use.ts", ALIAS_CALLER)],
+        |root| common::write_files(root, &[LIB_FOO]),
+        &["lib/foo.ts"],
+        &[ALIAS_TSCONFIG, LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/foo.foo"));
+}

@@ -300,14 +300,25 @@ fn unmapped_alias_and_third_party_specifier_stay_unresolved() {
 
     resolve_import_file_edges(root, file_rel, &module, &mut extracted.edges);
 
+    // The mapped-but-missing alias keeps an *unresolved* (confidence 0)
+    // edge so a later-added file re-resolves it; the third-party import
+    // gets none.
+    let import_files: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "IMPORTS_FILE")
+        .collect();
+    assert_eq!(import_files.len(), 1, "{import_files:?}");
+    assert_eq!(
+        import_files[0].target_qualname.as_deref(),
+        Some("does/not/exist")
+    );
     assert!(
-        extracted.edges.iter().all(|e| e.kind != "IMPORTS_FILE"),
-        "neither the unmapped alias nor the third-party import may resolve, got {:?}",
-        extracted
-            .edges
-            .iter()
-            .filter(|e| e.kind == "IMPORTS_FILE")
-            .collect::<Vec<_>>()
+        import_files[0]
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("\"confidence\":0.0")),
+        "{import_files:?}"
     );
 }
 

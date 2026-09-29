@@ -612,7 +612,7 @@ fn resolve_import_target(
     is_relative: bool,
 ) -> Option<(String, bool)> {
     if !is_relative {
-        return resolve_tsconfig_alias(repo_root, file_rel_path, target).map(|path| (path, true));
+        return resolve_tsconfig_alias(repo_root, file_rel_path, target);
     }
     let rel = relative_import_target(file_rel_path, target)?;
     match probe_module_candidates(repo_root, &rel) {
@@ -669,12 +669,20 @@ fn probe_module_candidates(repo_root: &Path, rel: &Path) -> Option<String> {
 /// `node/dpb-app`, each mapping `@/*` to a different root — never bleed
 /// into each other.
 ///
-/// Returns `None` (never a guess) unless a `paths` entry syntactically
-/// matches the specifier *and* the mapped location, run back through the
-/// same extension/index probing relative imports use, is a real file.
-fn resolve_tsconfig_alias(repo_root: &Path, file_rel_path: &str, target: &str) -> Option<String> {
+/// Returns `None` unless a `paths` entry syntactically matches the
+/// specifier. Then `(path, true)` when the mapped location, run back through
+/// the same extension/index probing relative imports use, is a real file,
+/// else `(guess, false)`: the first mapped location, so the caller can still
+/// record an unresolved `IMPORTS_FILE` edge that a later-added file (or a
+/// tsconfig edit) finds again (`Indexer::js_importers_of`).
+fn resolve_tsconfig_alias(
+    repo_root: &Path,
+    file_rel_path: &str,
+    target: &str,
+) -> Option<(String, bool)> {
     let config_dir = find_owning_tsconfig_dir(repo_root, file_rel_path)?;
     let aliases = load_tsconfig_aliases(repo_root, &config_dir)?;
+    let mut guess: Option<String> = None;
     for (pattern, targets) in &aliases.entries {
         let Some(capture) = match_alias_pattern(pattern, target) else {
             continue;
@@ -689,11 +697,21 @@ fn resolve_tsconfig_alias(repo_root: &Path, file_rel_path: &str, target: &str) -
             let mut rel = aliases.base_dir.clone();
             rel.push(mapped_tail);
             if let Some(resolved) = probe_module_candidates(repo_root, &rel) {
-                return Some(resolved);
+                return Some((resolved, true));
             }
+            guess.get_or_insert_with(|| util::normalize_path(&rel));
         }
     }
-    None
+    guess.map(|g| (g, false))
+}
+
+/// Whether `rel_path` is a `tsconfig.json`/`jsconfig.json`, whose edits can
+/// change how every JS/TS import under its directory resolves.
+pub fn is_js_config_path(rel_path: &str) -> bool {
+    matches!(
+        Path::new(rel_path).file_name().and_then(|n| n.to_str()),
+        Some("tsconfig.json" | "jsconfig.json")
+    )
 }
 
 /// Walks from `file_rel_path`'s directory up toward `repo_root`, returning
