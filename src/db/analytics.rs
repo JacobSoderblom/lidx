@@ -568,7 +568,8 @@ impl Db {
     /// same-file edge's resolved target -- the precise case, e.g. `from
     /// pkg.utils import helper_used` + a same-file call that resolves to
     /// that same symbol despite its own guessed text differing; (2) the
-    /// bound name (the import's trailing qualname segment) occurring as a
+    /// bound name (the IMPORTS edge's `bound_name` detail, so `import numpy as np`
+    /// looks for `np`; else the target's trailing segment) occurring as a
     /// same-file reference's own name, its own bare form, or the leading or
     /// trailing dotted segment of one -- covers both the bare-call-guess
     /// mismatch above and attribute access on an unresolved external import
