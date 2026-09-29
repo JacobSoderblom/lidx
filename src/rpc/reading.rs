@@ -7,11 +7,10 @@
 
 use super::*;
 
-/// Extensions treated as Markdown for `outline`. Markdown isn't a scanned
-/// language (no entry in `indexer::scan`'s `LANGUAGE_SPECS`, so `.md` files
-/// never get a `files`/`symbols` row) -- `search` still finds them via
-/// ripgrep, so `outline` reads Markdown straight off disk and parses ATX
-/// headings, rather than requiring a DB row like every other language here.
+/// Extensions treated as Markdown for `outline`. Markdown files get a
+/// `files` row (issue #133) but no `symbols` rows, so `outline` reads
+/// Markdown straight off disk and parses ATX headings, rather than
+/// requiring indexed symbols like every other language here.
 ///
 /// `pub(super)`: also used by `handlers::handle_search_rg` to decide whether
 /// a hit's file is one `outline` can handle before emitting an `outline` hop.

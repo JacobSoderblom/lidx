@@ -242,6 +242,14 @@ static LANGUAGE_FILTERS: &[LanguageFilter] = &[
         name: "azure",
         languages: &["bicep"],
     },
+    LanguageFilter {
+        name: "markdown",
+        languages: &["markdown"],
+    },
+    LanguageFilter {
+        name: "md",
+        languages: &["markdown"],
+    },
 ];
 
 pub fn language_specs() -> &'static [LanguageSpec] {

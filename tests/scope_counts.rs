@@ -110,3 +110,20 @@ fn markdown_files_count_as_docs_and_appear_in_onboard_languages() {
         .collect();
     assert_eq!(langs, vec!["markdown", "python"], "languages: {langs:?}");
 }
+
+/// Issue #133: every language `onboard` advertises must be accepted as a
+/// `languages` filter.
+#[test]
+fn markdown_is_a_valid_language_filter() {
+    let (_tmp, mut indexer) = build_indexer(&[
+        ("main.py", "def main():\n    pass\n"),
+        ("README.md", "# Title\n"),
+    ]);
+    let result = rpc::handle_method(
+        &mut indexer,
+        "onboard",
+        serde_json::json!({"languages": ["markdown"]}),
+    )
+    .unwrap();
+    assert_eq!(result["overview"]["files"].as_i64().unwrap(), 1, "{result}");
+}
