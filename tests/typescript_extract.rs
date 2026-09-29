@@ -310,3 +310,119 @@ fn unmapped_alias_and_third_party_specifier_stay_unresolved() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn function_local_consts_and_destructuring_are_not_symbols() {
+    let source = r#"
+export const top = 1;
+const { a, b } = require("x");
+const [c, d] = [1, 2];
+
+export async function run() {
+    const controller = new AbortController();
+    const response = await fetch("a");
+    const { timeout = 10, ...rest } = opts;
+    if (x) {
+        const inner = 1;
+    }
+}
+
+export const handler = async () => {
+    const response = await fetch("b");
+    const { q } = opts;
+};
+
+export class K {
+    m() {
+        const local = 1;
+    }
+}
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/mod").unwrap();
+    let names: Vec<_> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+    for bad in ["controller", "response", "inner", "local", "q", "rest"] {
+        assert!(!names.contains(&bad), "{bad} leaked: {names:?}");
+    }
+    assert!(
+        names.iter().all(|n| !n.contains('{') && !n.contains('[')),
+        "pattern symbol: {names:?}"
+    );
+    assert!(names.contains(&"top") && names.contains(&"handler") && names.contains(&"run"));
+}
+
+#[test]
+fn top_level_destructuring_emits_one_symbol_per_binding() {
+    let source = r#"
+const { a, b: c } = x;
+const [d, e] = y;
+export const { f } = z;
+const { g = 1, h: { i }, ...r } = w;
+const [j, [k], ...l] = v;
+function fn() {
+    const { p, q: s } = o;
+    const [t] = o;
+}
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/mod").unwrap();
+    let names: Vec<_> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+    for good in ["a", "c", "d", "e", "f", "g", "i", "r", "j", "k", "l"] {
+        assert!(names.contains(&good), "{good} missing: {names:?}");
+    }
+    for bad in ["b", "h", "p", "q", "s", "t"] {
+        assert!(!names.contains(&bad), "{bad} leaked: {names:?}");
+    }
+    assert!(
+        names.iter().all(|n| !n.contains(['{', '[', ' '])),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn destructured_require_and_dynamic_import_are_imports_not_symbols() {
+    let source = r#"
+const { a } = require('./m');
+const { m1 } = await import('./n');
+const { b } = obj;
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/mod").unwrap();
+    let names: Vec<_> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert!(!names.contains(&"a") && !names.contains(&"m1"), "{names:?}");
+    assert!(names.contains(&"b"), "{names:?}");
+}
+
+#[test]
+fn loop_switch_locals_are_not_symbols_but_namespace_members_are() {
+    let source = r#"
+for (let i = 0; i < 3; i++) {}
+switch (k) {
+    case 1:
+        const inCase = 1;
+        break;
+    default:
+        const inDefault = 2;
+}
+namespace X {
+    export const y = 1;
+}
+export namespace Z {
+    export const w = 1;
+}
+export const response = 1;
+function f() {
+    const response = 2;
+}
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/mod").unwrap();
+    let names: Vec<_> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+    for bad in ["i", "inCase", "inDefault"] {
+        assert!(!names.contains(&bad), "{bad} leaked: {names:?}");
+    }
+    for good in ["y", "w"] {
+        assert!(names.contains(&good), "{good} missing: {names:?}");
+    }
+    assert_eq!(names.iter().filter(|n| **n == "response").count(), 1);
+}

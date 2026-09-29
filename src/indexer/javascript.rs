@@ -2911,7 +2911,7 @@ fn handle_variable_declaration(
     source: &str,
     output: &mut ExtractedFile,
 ) {
-    if !ctx.class_stack.is_empty() {
+    if !ctx.class_stack.is_empty() || is_local_declaration(node) {
         return;
     }
     let decl_kind = declaration_keyword(node, source);
@@ -2928,34 +2928,120 @@ fn handle_variable_declaration(
         let Some(name_node) = child.child_by_field_name("name") else {
             continue;
         };
-        let name = node_text(name_node, source);
-        if name.is_empty() {
+        // A destructuring pattern yields one symbol per bound identifier,
+        // never one named by the pattern text.
+        // `const { x } = require(..)` / `await import(..)` are imports, not
+        // declarations.
+        if name_node.kind() != "identifier" && is_require_or_import_init(child, source) {
             continue;
         }
-        let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
-        let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(child);
-        output.symbols.push(SymbolInput {
-            kind: kind.to_string(),
-            name: name.clone(),
-            qualname: qualname.clone(),
-            start_line,
-            start_col,
-            end_line,
-            end_col,
-            start_byte,
-            end_byte,
-            signature: None,
-            docstring: None,
-        });
-        output.edges.push(EdgeInput {
-            kind: "CONTAINS".to_string(),
-            source_qualname: Some(ctx.module.clone()),
-            target_qualname: Some(qualname),
-            detail: None,
-            evidence_snippet: None,
-            ..Default::default()
-        });
+        let mut names = Vec::new();
+        collect_binding_names(name_node, source, &mut names);
+        for name in names {
+            let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
+            let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(child);
+            output.symbols.push(SymbolInput {
+                kind: kind.to_string(),
+                name,
+                qualname: qualname.clone(),
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+                start_byte,
+                end_byte,
+                signature: None,
+                docstring: None,
+            });
+            output.edges.push(EdgeInput {
+                kind: "CONTAINS".to_string(),
+                source_qualname: Some(ctx.module.clone()),
+                target_qualname: Some(qualname),
+                detail: None,
+                evidence_snippet: None,
+                ..Default::default()
+            });
+        }
     }
+}
+
+/// True when a declarator's initializer is `require(..)`, `import(..)`, or
+/// an `await` of either.
+fn is_require_or_import_init(declarator: Node<'_>, source: &str) -> bool {
+    let Some(mut value) = declarator.child_by_field_name("value") else {
+        return false;
+    };
+    while value.kind() == "await_expression" || value.kind() == "parenthesized_expression" {
+        let Some(inner) = value.named_child(0) else {
+            return false;
+        };
+        value = inner;
+    }
+    value.kind() == "call_expression"
+        && value.child_by_field_name("function").is_some_and(|f| {
+            f.kind() == "import" || (f.kind() == "identifier" && node_text(f, source) == "require")
+        })
+}
+
+/// Collects the identifiers a binding pattern introduces: plain identifiers,
+/// shorthand (`{ a }`), renames (`{ b: c }` -> `c`), defaults, rest and
+/// nested object/array patterns.
+fn collect_binding_names(node: Node<'_>, source: &str, out: &mut Vec<String>) {
+    match node.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => {
+            let name = node_text(node, source);
+            if !name.is_empty() {
+                out.push(name);
+            }
+        }
+        // `{ k: pattern }` binds only the value side.
+        "pair_pattern" => {
+            if let Some(value) = node.child_by_field_name("value") {
+                collect_binding_names(value, source, out);
+            }
+        }
+        // `{ a = 1 }` / `[a = 1]` bind only the left side.
+        "object_assignment_pattern" | "assignment_pattern" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                collect_binding_names(left, source, out);
+            }
+        }
+        "object_pattern" | "array_pattern" | "rest_pattern" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_binding_names(child, source, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A declaration is module scope only if every ancestor up to `program` is
+/// the program itself, an `export`/`declare` wrapper, or a TS namespace (its
+/// wrapper, node and body block). Anything else (function/arrow/method
+/// bodies, `if`/`for`/`switch` blocks, ...) is local.
+fn is_local_declaration(node: Node<'_>) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        let ok = match n.kind() {
+            "program"
+            | "export_statement"
+            | "ambient_declaration"
+            | "expression_statement"
+            | "internal_module"
+            | "module" => true,
+            "statement_block" => matches!(
+                n.parent().map(|p| p.kind()),
+                Some("internal_module" | "module")
+            ),
+            _ => false,
+        };
+        if !ok {
+            return true;
+        }
+        cur = n.parent();
+    }
+    false
 }
 
 fn declaration_keyword(node: Node<'_>, source: &str) -> &'static str {
