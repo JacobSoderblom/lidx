@@ -314,3 +314,25 @@ crate::receiver_infer_remote::remote_async_awaited CALLS crate::receiver_infer::
 crate::receiver_infer_remote::remote_async_awaited CALLS crate::receiver_infer::make_engine_async import
 crate::receiver_infer_remote::remote_async_not_awaited CALLS UNRESOLVED
 crate::receiver_infer_remote::remote_async_not_awaited CALLS crate::receiver_infer::make_engine_async import
+
+# --- generics, smart pointers, #[test] async fn (issue #189 final review). ---
+crate::receiver_infer_remote::remote_boxed_return CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer_remote::remote_boxed_return CALLS crate::receiver_infer::make_boxed import
+crate::receiver_infer_remote::remote_generic_fn_return CALLS crate::receiver_infer::make_generic import
+crate::receiver_infer_remote::remote_generic_fn_return CALLS UNRESOLVED
+crate::receiver_infer_remote::remote_generic_method_return CALLS crate::receiver_infer::Wrapper::get receiver_type
+crate::receiver_infer_remote::remote_generic_method_return CALLS UNRESOLVED
+crate::receiver_infer_remote::remote_test_async_awaited CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer_remote::remote_test_async_awaited CALLS crate::receiver_infer::make_test_engine import
+crate::receiver_infer::make_boxed CALLS ext:Box::new external
+crate::receiver_infer::via_arc_param CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_box_param CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_boxed_return CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_boxed_return CALLS crate::receiver_infer::make_boxed exact
+crate::receiver_infer::via_generic_fn_return CALLS crate::receiver_infer::make_generic exact
+crate::receiver_infer::via_generic_fn_return CALLS UNRESOLVED
+crate::receiver_infer::via_generic_method_return CALLS crate::receiver_infer::Wrapper::get receiver_type
+crate::receiver_infer::via_generic_method_return CALLS UNRESOLVED
+crate::receiver_infer::via_rc_in_option CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer::via_test_async_awaited CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_test_async_awaited CALLS crate::receiver_infer::make_test_engine exact

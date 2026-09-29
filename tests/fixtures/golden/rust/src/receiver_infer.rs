@@ -333,3 +333,72 @@ pub async fn via_async_not_awaited() -> u32 {
     let f = make_engine_async();
     f.resolve()
 }
+
+/// A repo type named like a generic parameter below.
+pub struct Item;
+
+impl Item {
+    pub fn resolve(&self) -> u32 {
+        3
+    }
+}
+
+pub struct Wrapper<T>(pub T);
+
+impl<Item> Wrapper<Item> {
+    /// Returns the generic `Item`, not the repo struct of the same name.
+    pub fn get(self) -> Item {
+        self.0
+    }
+}
+
+/// A generic return type named like a repo struct is a parameter.
+pub fn make_generic<Engine>() -> Engine {
+    todo!()
+}
+
+pub fn via_generic_fn_return() -> u32 {
+    let e = make_generic();
+    e.resolve()
+}
+
+pub fn via_generic_method_return(w: Wrapper<u8>) -> u32 {
+    let i = w.get();
+    i.resolve()
+}
+
+/// Smart pointers auto-deref for method calls.
+pub fn make_boxed() -> Box<Engine> {
+    Box::new(Engine {})
+}
+
+pub fn via_box_param(e: Box<Engine>) -> u32 {
+    e.resolve()
+}
+
+pub fn via_arc_param(e: std::sync::Arc<Engine>) -> u32 {
+    e.resolve()
+}
+
+pub fn via_rc_in_option(o: Option<std::rc::Rc<Cache>>) -> u32 {
+    if let Some(c) = o {
+        return c.resolve();
+    }
+    0
+}
+
+pub fn via_boxed_return() -> u32 {
+    let e = make_boxed();
+    e.resolve()
+}
+
+/// `#[test] async fn`: the attribute line precedes `async` in the signature.
+#[test]
+pub async fn make_test_engine() -> Engine {
+    Engine {}
+}
+
+pub async fn via_test_async_awaited() -> u32 {
+    let e = make_test_engine().await;
+    e.resolve()
+}

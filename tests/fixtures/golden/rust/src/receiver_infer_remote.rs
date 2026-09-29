@@ -1,7 +1,7 @@
 /// Issue #189 review: receiver types read off declarations in another file
 /// (`receiver_infer.rs`), finished by the resolver. `Engine` and `Cache`
 /// both declare `resolve`, so only the deferred type can pick the target.
-use crate::receiver_infer::{Cache, Engine, Pair, Slot, make_cache, make_engine_async};
+use crate::receiver_infer::{Cache, Engine, Pair, Slot, make_boxed, make_cache, make_engine_async, make_generic, make_test_engine, Wrapper};
 
 /// `Ok(e)` of another file's `Result`-returning constructor.
 pub fn remote_ok_of_ctor() -> u32 {
@@ -61,4 +61,27 @@ pub async fn remote_async_awaited() -> u32 {
 pub async fn remote_async_not_awaited() -> u32 {
     let f = make_engine_async();
     f.resolve()
+}
+
+/// Generic return types stay untracked across files too.
+pub fn remote_generic_fn_return() -> u32 {
+    let e = make_generic();
+    e.resolve()
+}
+
+pub fn remote_generic_method_return(w: Wrapper<u8>) -> u32 {
+    let i = w.get();
+    i.resolve()
+}
+
+/// `Box<Engine>` return: receivers auto-deref.
+pub fn remote_boxed_return() -> u32 {
+    let e = make_boxed();
+    e.resolve()
+}
+
+/// `#[test] async fn`, awaited.
+pub async fn remote_test_async_awaited() -> u32 {
+    let e = make_test_engine().await;
+    e.resolve()
 }
