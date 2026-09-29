@@ -816,7 +816,12 @@ fn resolve_extends(repo_root: &Path, config_rel: &Path, spec: &str) -> Option<Pa
 }
 
 /// Every config file `config_rel` depends on: itself plus its `extends`
-/// chain, transitively and cycle-safe.
+/// chain, transitively and cycle-safe. A package-style base that can't be
+/// resolved appears as a `missing:<spec>` marker (not a path).
+///
+/// Sync only sees paths it is asked to sync and `node_modules` is usually
+/// not watched, so an appearing/disappearing package base is caught by
+/// `Indexer::reindex`, whose config fingerprint hashes this chain.
 pub fn config_chain(repo_root: &Path, config_rel: &Path) -> Vec<String> {
     fn walk(repo_root: &Path, config_rel: &Path, seen: &mut Vec<String>) {
         let key = util::normalize_path(config_rel);
@@ -828,8 +833,11 @@ pub fn config_chain(repo_root: &Path, config_rel: &Path) -> Vec<String> {
             return;
         };
         for spec in extends_specs(&value) {
-            if let Some(parent) = resolve_extends(repo_root, config_rel, &spec) {
-                walk(repo_root, &parent, seen);
+            match resolve_extends(repo_root, config_rel, &spec) {
+                Some(parent) => walk(repo_root, &parent, seen),
+                // An unresolved package base is recorded as a marker, so
+                // its appearing or disappearing changes the fingerprint.
+                None => seen.push(format!("missing:{spec}")),
             }
         }
     }

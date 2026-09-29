@@ -1446,3 +1446,25 @@ fn full_reindex_reextracts_alias_importer_after_base_config_edit() {
     indexer.reindex().unwrap();
     assert_eq!(target_of(&indexer).as_deref(), Some("lib/foo.foo"));
 }
+
+#[test]
+fn full_reindex_reextracts_alias_importer_after_package_base_config_deleted() {
+    let pkg = "node_modules/@shared/tsconfig/tsconfig.json";
+    let pkg_cfg = "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"../../../*\"]}}}";
+    let child = (
+        "tsconfig.json",
+        "{\"extends\":\"@shared/tsconfig/tsconfig.json\"}",
+    );
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "ts-package-base-deleted",
+        &[(pkg, pkg_cfg), child, LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    assert_eq!(target_of(&indexer).as_deref(), Some("lib/foo.foo"));
+    std::fs::remove_file(root.join(pkg)).unwrap();
+    indexer.reindex().unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&[child, LIB_FOO, ("use.ts", ALIAS_CALLER)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+    assert_ne!(target_of(&indexer).as_deref(), Some("lib/foo.foo"));
+}
