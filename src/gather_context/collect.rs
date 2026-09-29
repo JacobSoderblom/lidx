@@ -91,6 +91,14 @@ impl<'a> ContentCollector<'a> {
         if !self.dedup.mark_if_new(&symbol.file_path, start, end) {
             return Ok(false);
         }
+        // Whole items only: never emit a byte-sliced fragment (issue #104).
+        // If the full region can't fit in what's left of the budget, drop
+        // the item instead of truncating it mid-token.
+        let size = (end - start).max(0) as usize;
+        if size > self.remaining() {
+            self.truncated = true;
+            return Ok(false);
+        }
         if let Some(item) = read_symbol_content(
             self.repo_root,
             symbol,
@@ -121,6 +129,14 @@ impl<'a> ContentCollector<'a> {
         match_loc: Option<MatchLocation>,
     ) -> Result<bool> {
         if !self.dedup.mark_if_new(path, start_byte, end_byte) {
+            return Ok(false);
+        }
+        // Whole items only: never emit a byte-sliced fragment (issue #104).
+        // If the full region can't fit in what's left of the budget, drop
+        // the item instead of truncating it mid-token.
+        let size = (end_byte - start_byte).max(0) as usize;
+        if size > self.remaining() {
+            self.truncated = true;
             return Ok(false);
         }
         if let Some(item) = read_file_region(
@@ -279,6 +295,41 @@ fn collect_content_file_strategy(
         }
     }
 
+    // Process search-seed matches next: they must win the budget over
+    // unrelated subgraph expansion, and be tagged distinctly as the actual
+    // search hit rather than a generic "related" item (issue #104).
+    for (seed_idx, resolved_seed) in resolved {
+        if c.over_budget() {
+            c.mark_truncated();
+            break;
+        }
+        let ResolvedSeed::SearchResults { symbol_ids, .. } = resolved_seed else {
+            continue;
+        };
+        for (symbol_id, _score) in symbol_ids {
+            if c.over_budget() {
+                c.mark_truncated();
+                break;
+            }
+            let Some(symbol) = db.get_symbol_by_id(*symbol_id)? else {
+                continue;
+            };
+            let source = ItemSource {
+                source_type: SourceType::Search,
+                seed_index: Some(*seed_idx),
+                relationship: None,
+                distance: Some(0),
+            };
+            c.try_add_symbol(
+                &symbol,
+                symbol.start_byte,
+                symbol.end_byte,
+                source,
+                match_locations.get(&symbol.id).cloned(),
+            )?;
+        }
+    }
+
     // Process related symbols
     if config.include_snippets {
         for symbol in related_symbols {
@@ -421,6 +472,48 @@ fn collect_content_symbol_strategy(
                 )?;
             }
             ResolvedSeed::SearchResults { .. } => {}
+        }
+    }
+
+    // Process search-seed matches next at Tier 0 (full source body): they
+    // must win the budget over unrelated subgraph expansion, and be tagged
+    // distinctly as the actual search hit rather than a generic "related"
+    // item (issue #104).
+    for (seed_idx, resolved_seed) in resolved {
+        if c.over_budget() {
+            c.mark_truncated();
+            break;
+        }
+        let ResolvedSeed::SearchResults { symbol_ids, .. } = resolved_seed else {
+            continue;
+        };
+        for (symbol_id, _score) in symbol_ids {
+            if c.over_budget() {
+                c.mark_truncated();
+                break;
+            }
+            let Some(symbol) = db.get_symbol_by_id(*symbol_id)? else {
+                continue;
+            };
+            let file_content = file_cache
+                .entry(symbol.file_path.clone())
+                .or_insert_with(|| {
+                    let abs_path = repo_root.join(&symbol.file_path);
+                    std::fs::read_to_string(&abs_path).unwrap_or_default()
+                });
+            let content = format_tier0(repo_root, &symbol, file_content)?;
+            let source = ItemSource {
+                source_type: SourceType::Search,
+                seed_index: Some(*seed_idx),
+                relationship: None,
+                distance: Some(0),
+            };
+            c.try_add_formatted(
+                &symbol,
+                content,
+                source,
+                match_locations.get(&symbol.id).cloned(),
+            );
         }
     }
 

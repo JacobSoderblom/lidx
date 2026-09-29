@@ -7,8 +7,8 @@ pub(super) fn sort_items(items: &mut [ContextItem]) {
         let source_rank = |source: &ItemSource| -> u8 {
             match source.source_type {
                 SourceType::DirectSeed => 0,
-                SourceType::Subgraph => 1,
-                SourceType::Search => 2,
+                SourceType::Search => 1,
+                SourceType::Subgraph => 2,
             }
         };
 
