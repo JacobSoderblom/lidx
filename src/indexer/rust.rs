@@ -98,7 +98,7 @@ pub struct RustExtractor {
     repo_root: Option<PathBuf>,
     /// Memoizes `find_crate_root`'s Cargo.toml walk per directory queried,
     /// since `module_name_from_rel_path` runs once per file.
-    crate_root_cache: RefCell<HashMap<PathBuf, PathBuf>>,
+    crate_root_cache: RefCell<HashMap<PathBuf, Option<PathBuf>>>,
 }
 
 impl RustExtractor {
@@ -135,7 +135,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             .parent()
             .unwrap_or_else(|| Path::new(""));
         let crate_root = find_crate_root(repo_root, dir, &self.crate_root_cache);
-        module_name_from_rel_path(&strip_crate_root(rel_path, &crate_root))
+        module_name_from_rel_path(&strip_crate_root(rel_path, crate_root.as_deref()))
     }
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
@@ -215,10 +215,9 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
 
 /// The nearest ancestor of `start_dir` (inclusive), relative to
 /// `repo_root`, that contains a `Cargo.toml` -- the crate root for any file
-/// under it (issue #129). Falls back to `""` (meaning "`repo_root` itself is
-/// the crate root") when no ancestor up to and including `repo_root` has
-/// one, which reproduces the pre-#129 single-crate-at-repo-root behavior
-/// exactly (also lidx's own self-index).
+/// under it (issue #129). Returns `None` when no ancestor up to and including
+/// `repo_root` has one, which reproduces the pre-#129 single-crate-at-repo-root
+/// behavior exactly (also lidx's own self-index).
 ///
 /// Memoizes every directory visited during the walk in `cache`, not just
 /// `start_dir` itself, so a later query for a sibling directory (a
@@ -227,8 +226,8 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
 fn find_crate_root(
     repo_root: &Path,
     start_dir: &Path,
-    cache: &RefCell<HashMap<PathBuf, PathBuf>>,
-) -> PathBuf {
+    cache: &RefCell<HashMap<PathBuf, Option<PathBuf>>>,
+) -> Option<PathBuf> {
     let mut visited = Vec::new();
     let mut current = start_dir.to_path_buf();
     let found = loop {
@@ -237,12 +236,12 @@ fn find_crate_root(
         }
         visited.push(current.clone());
         if repo_root.join(&current).join("Cargo.toml").is_file() {
-            break current.clone();
+            break Some(current.clone());
         }
         if !current.pop() {
             // Walked past the repo root without finding a Cargo.toml
-            // anywhere: no crate root to report, repo_root stands in for it.
-            break PathBuf::new();
+            // anywhere: no crate root to report.
+            break None;
         }
     };
     let mut cache = cache.borrow_mut();
@@ -253,18 +252,19 @@ fn find_crate_root(
 }
 
 /// `rel_path` with `crate_root`'s components stripped from the front, as a
-/// `/`-joined string ready for `module_name_from_rel_path`. `crate_root` of
-/// `""` (no Cargo.toml found, see `find_crate_root`) strips nothing --
-/// `strip_prefix` on an empty prefix always succeeds with the path
-/// unchanged.
-fn strip_crate_root(rel_path: &str, crate_root: &Path) -> String {
-    match Path::new(rel_path).strip_prefix(crate_root) {
-        Ok(rest) => rest
-            .components()
-            .filter_map(|comp| comp.as_os_str().to_str())
-            .collect::<Vec<_>>()
-            .join("/"),
-        Err(_) => rel_path.to_string(),
+/// `/`-joined string ready for `module_name_from_rel_path`. When `crate_root`
+/// is `None` (no Cargo.toml found, see `find_crate_root`), strips nothing.
+fn strip_crate_root(rel_path: &str, crate_root: Option<&Path>) -> String {
+    match crate_root {
+        Some(root) => match Path::new(rel_path).strip_prefix(root) {
+            Ok(rest) => rest
+                .components()
+                .filter_map(|comp| comp.as_os_str().to_str())
+                .collect::<Vec<_>>()
+                .join("/"),
+            Err(_) => rel_path.to_string(),
+        },
+        None => rel_path.to_string(),
     }
 }
 

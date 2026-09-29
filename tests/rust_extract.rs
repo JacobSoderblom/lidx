@@ -1,3 +1,5 @@
+mod common;
+
 use lidx::indexer::Indexer;
 use lidx::indexer::extract::LanguageExtractor;
 use lidx::indexer::rust::{RustExtractor, module_name_from_rel_path};
@@ -415,14 +417,14 @@ fn caller() {
 /// whole `repo_root`. Mirrors a polyglot repo where a Rust crate lives
 /// several directories deep (e.g. `node/dpb-app/src-tauri`), not at the repo
 /// root (issue #129).
-fn index_nested_crate(label: &str, crate_dir: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
-    let mut repo_root = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-    repo_root.push(format!("lidx-rust-nested-crate-{label}-{nanos}-{counter}"));
+fn index_nested_crate(
+    label: &str,
+    crate_dir: &str,
+    files: &[(&str, &str)],
+) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let prefix = format!("lidx-rust-nested-crate-{label}-");
+    let tmp = tempfile::Builder::new().prefix(&prefix).tempdir().unwrap();
+    let repo_root = tmp.path().to_path_buf();
     let crate_root = repo_root.join(crate_dir);
     std::fs::create_dir_all(&crate_root).unwrap();
     std::fs::write(
@@ -430,15 +432,11 @@ fn index_nested_crate(label: &str, crate_dir: &str, files: &[(&str, &str)]) -> (
         "[package]\nname = \"src-tauri\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     )
     .unwrap();
-    for (rel_path, content) in files {
-        let full = crate_root.join(rel_path);
-        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
-        std::fs::write(full, content).unwrap();
-    }
+    common::write_files(&crate_root, files);
     let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer.reindex().unwrap();
-    (repo_root, db_path)
+    (tmp, repo_root, db_path)
 }
 
 #[test]
@@ -447,13 +445,11 @@ fn module_name_from_path_uses_nearest_cargo_toml_ancestor() {
     // root; module paths for files under it must be relative to ITS `src/`,
     // not to the repo root -- not `crate::node::dpb-app::src-tauri::src::...`
     // (issue #129).
-    let mut repo_root = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-    repo_root.push(format!("lidx-rust-crate-root-{nanos}-{counter}"));
+    let _tmp = tempfile::Builder::new()
+        .prefix("lidx-rust-crate-root-")
+        .tempdir()
+        .unwrap();
+    let repo_root = _tmp.path().to_path_buf();
     let crate_root = repo_root.join("node/dpb-app/src-tauri");
     std::fs::create_dir_all(crate_root.join("src/commands/deploy")).unwrap();
     std::fs::write(
@@ -477,8 +473,6 @@ fn module_name_from_path_uses_nearest_cargo_toml_ancestor() {
         extractor.module_name_from_rel_path("node/dpb-app/src-tauri/src/grpc.rs"),
         "crate::grpc"
     );
-
-    let _ = std::fs::remove_dir_all(&repo_root);
 }
 
 #[test]
@@ -497,7 +491,7 @@ fn nested_crate_import_resolves_across_files() {
             "use crate::grpc::create_channel;\n\npub fn call_sync_grpc() {\n    create_channel();\n}\n",
         ),
     ];
-    let (repo_root, db_path) =
+    let (_tmp, repo_root, db_path) =
         index_nested_crate("import-binding", "node/dpb-app/src-tauri", &files);
     let indexer = Indexer::new(repo_root.clone(), db_path).unwrap();
     let db = indexer.db();
@@ -525,6 +519,4 @@ fn nested_crate_import_resolves_across_files() {
         "expected call_sync_grpc -> grpc::create_channel CALLS edge via \
          `use crate::grpc::create_channel`, got: {edges:?}"
     );
-
-    let _ = std::fs::remove_dir_all(&repo_root);
 }
