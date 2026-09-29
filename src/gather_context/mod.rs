@@ -1,7 +1,7 @@
 use crate::db::Db;
 use crate::model::{ContextMetadata, GatherContextResult, MatchLocation};
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
@@ -81,6 +81,15 @@ pub fn gather_context(
     // Expand via subgraph to find related symbols
     let related_symbols = expand_via_subgraph(db, &symbol_ids, config)?;
     let symbols_resolved = symbol_ids.len();
+
+    // Related items must be graph-connected neighbors, not seeds echoed
+    // back by the subgraph expansion (issue #104) -- those are already
+    // handled as direct/search seed items above.
+    let seed_id_set: HashSet<i64> = symbol_ids.iter().copied().collect();
+    let related_symbols: Vec<_> = related_symbols
+        .into_iter()
+        .filter(|symbol| !seed_id_set.contains(&symbol.id))
+        .collect();
 
     // Build a map of all match locations from search results
     let mut all_match_locations: HashMap<i64, MatchLocation> = HashMap::new();

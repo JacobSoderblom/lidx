@@ -123,6 +123,7 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             imports: Rc::new(collect_import_bindings(root, source)),
         };
         walk_node(root, &ctx, source, &mut output);
+        emit_module_export_edges(root, module_name, source, &mut output);
         Ok(output)
     }
 
@@ -255,6 +256,26 @@ fn extract_docstring_fallback(source: &str) -> Option<String> {
     None
 }
 
+/// Span to index for a `class_definition`/`function_definition` symbol.
+///
+/// A decorated definition (`@staticmethod\ndef f(): ...`) parses as a
+/// `decorated_definition` node wrapping the decorator(s) followed by the
+/// definition node itself; the definition node's own span starts at the
+/// `class`/`def` keyword, skipping the decorators entirely, which is what
+/// `def`-only spans came from before this fix (issue #118: `read_symbol`
+/// on a decorated method silently dropped `@staticmethod` from the
+/// printed source). Walking up to a `decorated_definition` parent when one
+/// exists recovers the decorator(s) in the indexed span. The end position
+/// is unaffected either way -- a `decorated_definition`'s last child is
+/// always the definition node, so their end positions are identical.
+fn definition_span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
+    let span_node = node
+        .parent()
+        .filter(|p| p.kind() == "decorated_definition")
+        .unwrap_or(node);
+    span(span_node)
+}
+
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     if node.kind() == "decorated_definition" {
         handle_decorated_definition(node, ctx, source, output);
@@ -276,7 +297,8 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = node_text(name_node, source);
                 let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
-                let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+                let (start_line, start_col, end_line, end_col, start_byte, end_byte) =
+                    definition_span(node);
                 let docstring = node
                     .child_by_field_name("body")
                     .and_then(|body| extract_docstring(body, source));
@@ -349,7 +371,8 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = node_text(name_node, source);
                 let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
-                let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+                let (start_line, start_col, end_line, end_col, start_byte, end_byte) =
+                    definition_span(node);
                 let signature = extract_signature(node, source);
                 let docstring = node
                     .child_by_field_name("body")
@@ -403,12 +426,20 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
                 let snippet =
                     util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+                let bindings = parse_import_bindings(node, source);
                 for target in parse_imports(node, source) {
+                    // Issue #116: persist the name this import binds (`np`
+                    // for `import numpy as np`) so `unused_imports` can look
+                    // for it; the target text alone can't say.
+                    let detail = bindings
+                        .iter()
+                        .find(|(_, bound_target)| *bound_target == target)
+                        .map(|(bound, _)| serde_json::json!({ "bound_name": bound }).to_string());
                     output.edges.push(EdgeInput {
                         kind: "IMPORTS".to_string(),
                         source_qualname: Some(module.clone()),
                         target_qualname: Some(target),
-                        detail: None,
+                        detail,
                         evidence_snippet: snippet.clone(),
                         evidence_start_line: Some(start_line),
                         evidence_end_line: Some(end_line),
@@ -1779,6 +1810,69 @@ fn extract_string_list(node: Node<'_>, source: &str) -> Vec<String> {
     out
 }
 
+/// Internal-only edge kind for `__all__` exports (see `emit_module_export_edges`).
+const MODULE_EXPORT_KIND: &str = "MODULE_EXPORT";
+
+/// Issue #116: a name listed in a module-level `__all__ = [...]`/`(...)` is
+/// part of the file's declared public API -- re-exported, so "used" even
+/// when nothing else in this file references it. Recorded as one
+/// `MODULE_EXPORT_KIND` edge per name, `ReceiverType::Unresolved` so it
+/// always lands in `unresolved_references` rather than risking a bind to
+/// some unrelated same-named symbol elsewhere in the repo (see
+/// `db::resolver::Resolver::resolve`'s `Some("")` short-circuit) -- it
+/// exists purely as a same-file text signal for
+/// `db::analytics::Db::unused_imports` to check an import's bound name
+/// against.
+///
+/// ponytail: only a direct module-level `__all__ = [...]` assignment is
+/// recognized -- not `__all__ += [...]`, and not one nested inside an `if`
+/// block. The common shape by a wide margin.
+fn emit_module_export_edges(
+    root: Node<'_>,
+    module_name: &str,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        let assignment = if stmt.kind() == "expression_statement" {
+            stmt.named_child(0)
+                .filter(|child| child.kind() == "assignment")
+        } else if stmt.kind() == "assignment" {
+            Some(stmt)
+        } else {
+            continue;
+        };
+        let Some(assignment) = assignment else {
+            continue;
+        };
+        let Some(left) = assignment.child_by_field_name("left") else {
+            continue;
+        };
+        if left.kind() != "identifier" || node_text(left, source) != "__all__" {
+            continue;
+        }
+        let Some(right) = assignment.child_by_field_name("right") else {
+            continue;
+        };
+        let (start_line, _, end_line, _, _, _) = span(stmt);
+        for name in extract_string_list(right, source) {
+            if name.is_empty() {
+                continue;
+            }
+            output.edges.push(EdgeInput {
+                kind: MODULE_EXPORT_KIND.to_string(),
+                source_qualname: Some(module_name.to_string()),
+                target_qualname: Some(name),
+                receiver_type: ReceiverType::Unresolved,
+                evidence_start_line: Some(start_line),
+                evidence_end_line: Some(end_line),
+                ..Default::default()
+            });
+        }
+    }
+}
+
 fn http_client_label(base: &str) -> Option<&'static str> {
     let base = base.trim();
     if base.starts_with("requests") {
@@ -2415,5 +2509,72 @@ def helper():
         let top = calls_at_line(&file, 9);
         assert_eq!(top.len(), 1, "{top:?}");
         assert_eq!(top[0].receiver_type, ReceiverType::NotTracked);
+    }
+
+    #[test]
+    fn decorated_method_span_starts_at_decorator() {
+        // Issue #118: `read_symbol` sliced from `def`, so `@staticmethod`
+        // above a method was silently dropped and the printed signature
+        // looked like an instance method missing `self`.
+        let source = r#"
+class App:
+    @staticmethod
+    def resolve_target_platform():
+        return "linux"
+"#;
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let method = file
+            .symbols
+            .iter()
+            .find(|s| s.qualname == "module.App.resolve_target_platform")
+            .expect("method symbol");
+        assert_eq!(
+            method.start_line, 3,
+            "span should start at the `@staticmethod` decorator line, not `def`"
+        );
+    }
+
+    #[test]
+    fn decorated_class_span_starts_at_decorator() {
+        let source = r#"
+@dataclass
+class Point:
+    x: int
+    y: int
+"#;
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let class = file
+            .symbols
+            .iter()
+            .find(|s| s.qualname == "module.Point")
+            .expect("class symbol");
+        assert_eq!(
+            class.start_line, 2,
+            "span should start at the `@dataclass` decorator line, not `class`"
+        );
+    }
+
+    #[test]
+    fn multiple_decorators_span_starts_at_first() {
+        let source = r#"
+class App:
+    @cached_property
+    @some_other_decorator
+    def value(self):
+        return 1
+"#;
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let method = file
+            .symbols
+            .iter()
+            .find(|s| s.qualname == "module.App.value")
+            .expect("method symbol");
+        assert_eq!(
+            method.start_line, 3,
+            "span should start at the first decorator when several are stacked"
+        );
     }
 }
