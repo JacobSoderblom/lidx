@@ -11,8 +11,9 @@ use crate::indexer::tree_helpers::{
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use tree_sitter::{Node, Parser};
 
@@ -88,6 +89,16 @@ struct Context {
 
 pub struct RustExtractor {
     parser: Parser,
+    /// Repo root for crate-root detection (issue #129), set via
+    /// `with_repo_root`. `None` (the `new()` default, used by every
+    /// standalone/unit-test extractor that never sees a real repo layout)
+    /// keeps the old behavior: the whole repo is treated as one crate
+    /// rooted at `repo_root`, matching lidx's own self-index (a single
+    /// crate at the repo root).
+    repo_root: Option<PathBuf>,
+    /// Memoizes `find_crate_root`'s Cargo.toml walk per directory queried,
+    /// since `module_name_from_rel_path` runs once per file.
+    crate_root_cache: RefCell<HashMap<PathBuf, Option<PathBuf>>>,
 }
 
 impl RustExtractor {
@@ -95,13 +106,36 @@ impl RustExtractor {
         let mut parser = Parser::new();
         let language = tree_sitter_rust::LANGUAGE;
         parser.set_language(&language.into())?;
-        Ok(Self { parser })
+        Ok(Self {
+            parser,
+            repo_root: None,
+            crate_root_cache: RefCell::new(HashMap::new()),
+        })
+    }
+
+    /// Enables nested-crate-root detection (issue #129):
+    /// `module_name_from_rel_path` walks up from each file's directory to
+    /// the nearest ancestor containing `Cargo.toml` and treats that
+    /// directory -- not `repo_root` -- as the crate root, so a crate nested
+    /// several directories deep (e.g. `node/dpb-app/src-tauri`) gets
+    /// qualnames relative to its own `src/` instead of ones that embed the
+    /// full repo path (`crate::node::dpb-app::src-tauri::src::...`).
+    pub fn with_repo_root(mut self, repo_root: PathBuf) -> Self {
+        self.repo_root = Some(repo_root);
+        self
     }
 }
 
 impl crate::indexer::extract::LanguageExtractor for RustExtractor {
     fn module_name_from_rel_path(&self, rel_path: &str) -> String {
-        module_name_from_rel_path(rel_path)
+        let Some(repo_root) = self.repo_root.as_deref() else {
+            return module_name_from_rel_path(rel_path);
+        };
+        let dir = Path::new(rel_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
+        let crate_root = find_crate_root(repo_root, dir, &self.crate_root_cache);
+        module_name_from_rel_path(&strip_crate_root(rel_path, crate_root.as_deref()))
     }
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
@@ -176,6 +210,61 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
         "crate".to_string()
     } else {
         format!("crate::{}", parts.join("::"))
+    }
+}
+
+/// The nearest ancestor of `start_dir` (inclusive), relative to
+/// `repo_root`, that contains a `Cargo.toml` -- the crate root for any file
+/// under it (issue #129). Returns `None` when no ancestor up to and including
+/// `repo_root` has one, which reproduces the pre-#129 single-crate-at-repo-root
+/// behavior exactly (also lidx's own self-index).
+///
+/// Memoizes every directory visited during the walk in `cache`, not just
+/// `start_dir` itself, so a later query for a sibling directory (a
+/// different file in the same crate) usually resolves in one cache lookup
+/// rather than re-walking to the crate root again.
+fn find_crate_root(
+    repo_root: &Path,
+    start_dir: &Path,
+    cache: &RefCell<HashMap<PathBuf, Option<PathBuf>>>,
+) -> Option<PathBuf> {
+    let mut visited = Vec::new();
+    let mut current = start_dir.to_path_buf();
+    let found = loop {
+        if let Some(hit) = cache.borrow().get(&current) {
+            break hit.clone();
+        }
+        visited.push(current.clone());
+        if repo_root.join(&current).join("Cargo.toml").is_file() {
+            break Some(current.clone());
+        }
+        if !current.pop() {
+            // Walked past the repo root without finding a Cargo.toml
+            // anywhere: no crate root to report.
+            break None;
+        }
+    };
+    let mut cache = cache.borrow_mut();
+    for dir in visited {
+        cache.insert(dir, found.clone());
+    }
+    found
+}
+
+/// `rel_path` with `crate_root`'s components stripped from the front, as a
+/// `/`-joined string ready for `module_name_from_rel_path`. When `crate_root`
+/// is `None` (no Cargo.toml found, see `find_crate_root`), strips nothing.
+fn strip_crate_root(rel_path: &str, crate_root: Option<&Path>) -> String {
+    match crate_root {
+        Some(root) => match Path::new(rel_path).strip_prefix(root) {
+            Ok(rest) => rest
+                .components()
+                .filter_map(|comp| comp.as_os_str().to_str())
+                .collect::<Vec<_>>()
+                .join("/"),
+            Err(_) => rel_path.to_string(),
+        },
+        None => rel_path.to_string(),
     }
 }
 

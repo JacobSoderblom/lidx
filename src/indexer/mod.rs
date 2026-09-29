@@ -82,7 +82,10 @@ impl Indexer {
 
         let mut extractors: HashMap<String, Box<dyn extract::LanguageExtractor>> = HashMap::new();
         extractors.insert("python".into(), Box::new(python::PythonExtractor::new()?));
-        extractors.insert("rust".into(), Box::new(rust::RustExtractor::new()?));
+        extractors.insert(
+            "rust".into(),
+            Box::new(rust::RustExtractor::new()?.with_repo_root(repo_root.clone())),
+        );
         extractors.insert(
             "javascript".into(),
             Box::new(javascript::JavascriptExtractor::new()?),
