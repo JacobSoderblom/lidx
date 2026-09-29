@@ -1682,6 +1682,10 @@ fn project_deferred(
             .1
             .clone()
     } else {
+        let (is_async, signature) = match signature.strip_prefix("async ") {
+            Some(rest) => (true, rest),
+            None => (false, signature),
+        };
         let src = format!("fn __f{signature} {{}}");
         let tree = parser.parse(&src, None)?;
         let func = tree.root_node().named_child(0)?;
@@ -1699,12 +1703,15 @@ fn project_deferred(
             adts: &empty,
             ctx: None,
         };
-        env.ty(func.child_by_field_name("return_type")?)
+        let ret = env.ty(func.child_by_field_name("return_type")?);
+        if is_async {
+            Ty::Future(Box::new(ret))
+        } else {
+            ret
+        }
     };
     for step in steps.split(',').filter(|s| !s.is_empty()) {
-        if step != ".await" {
-            ty = project(ty, step);
-        }
+        ty = project(ty, step);
     }
     match ty {
         Ty::Named(n) => Some(n),
@@ -3276,6 +3283,12 @@ fn extract_signature(node: Node<'_>, source: &str, attributes: &[Node<'_>]) -> O
         (Some(p), None) => Some(p),
         _ => None,
     };
+    // Calling an `async fn` yields a future; `project_deferred` reads this.
+    let mut cursor = node.walk();
+    let is_async = node
+        .children(&mut cursor)
+        .any(|c| c.kind() == "function_modifiers" && node_text(c, source).contains("async"));
+    let base = base.map(|b| if is_async { format!("async {b}") } else { b });
     match (test_attribute_prefix(attributes, source), base) {
         (Some(prefix), Some(base)) => Some(format!("{prefix}{base}")),
         (Some(prefix), None) => Some(prefix),

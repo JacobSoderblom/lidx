@@ -1,7 +1,7 @@
 /// Issue #189 review: receiver types read off declarations in another file
 /// (`receiver_infer.rs`), finished by the resolver. `Engine` and `Cache`
 /// both declare `resolve`, so only the deferred type can pick the target.
-use crate::receiver_infer::{Cache, Engine, Pair, Slot, make_cache};
+use crate::receiver_infer::{Cache, Engine, Pair, Slot, make_cache, make_engine_async};
 
 /// `Ok(e)` of another file's `Result`-returning constructor.
 pub fn remote_ok_of_ctor() -> u32 {
@@ -49,4 +49,16 @@ pub fn remote_method(e: Engine) -> u32 {
 /// Untouched by any of the above: stays unresolved.
 pub fn remote_unknown(c: impl Sized) -> u32 {
     c.resolve()
+}
+
+/// Another file's `async fn`, awaited: the output type is known.
+pub async fn remote_async_awaited() -> u32 {
+    let e = make_engine_async().await;
+    e.resolve()
+}
+
+/// Another file's `async fn`, not awaited: a future, so untracked.
+pub async fn remote_async_not_awaited() -> u32 {
+    let f = make_engine_async();
+    f.resolve()
 }

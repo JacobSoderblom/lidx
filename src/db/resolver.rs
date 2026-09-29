@@ -852,13 +852,17 @@ impl<'c> Resolver<'c> {
             })?;
             for row in rows {
                 let (qualname, signature) = row?;
-                let ty = signature
-                    .and_then(|sig| project(call.kind, &qualname, &sig, call.b, call.steps));
-                let Some(ty) = ty else {
+                // No signature to read: nothing known, keep the fallback. A
+                // declaration that doesn't yield a repo type (a `Result`, a
+                // future never awaited) is *known* not to be the fallback.
+                let Some(signature) = signature else {
                     return Ok(fallback);
                 };
+                let Some(ty) = project(call.kind, &qualname, &signature, call.b, call.steps) else {
+                    return Ok(None);
+                };
                 match &found {
-                    Some(prev) if *prev != ty => return Ok(fallback),
+                    Some(prev) if *prev != ty => return Ok(None),
                     _ => found = Some(ty),
                 }
             }
@@ -874,7 +878,7 @@ impl<'c> Resolver<'c> {
             params![ty, self.graph_version],
             |row| row.get(0),
         )?;
-        Ok(if is_repo_type { Some(ty) } else { fallback })
+        Ok(is_repo_type.then_some(ty))
     }
 
     /// The receiver type of `ty.method(..)`'s return value: the return type

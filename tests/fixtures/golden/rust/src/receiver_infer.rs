@@ -316,3 +316,20 @@ pub fn via_default_generic(h: Holder) -> u32 {
     let Holder { item } = h;
     item.resolve()
 }
+
+/// Calling an `async fn` yields a future, not its output type.
+pub async fn make_engine_async() -> Engine {
+    Engine {}
+}
+
+/// Awaited: the output type is known.
+pub async fn via_async_awaited() -> u32 {
+    let e = make_engine_async().await;
+    e.resolve()
+}
+
+/// Not awaited: a future, so nothing knowable.
+pub async fn via_async_not_awaited() -> u32 {
+    let f = make_engine_async();
+    f.resolve()
+}

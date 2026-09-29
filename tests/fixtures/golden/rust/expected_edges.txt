@@ -304,3 +304,13 @@ crate::receiver_infer::via_result_local CALLS crate::receiver_infer::Engine::fro
 crate::receiver_infer::via_result_local CALLS UNRESOLVED
 crate::receiver_infer::via_some_of_free_fn CALLS crate::receiver_infer::Cache::resolve receiver_type
 crate::receiver_infer::via_some_of_free_fn CALLS crate::receiver_infer::make_cache exact
+
+# --- async fn: awaited call is its output type, un-awaited is a future. ---
+crate::receiver_infer::via_async_awaited CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_async_awaited CALLS crate::receiver_infer::make_engine_async exact
+crate::receiver_infer::via_async_not_awaited CALLS UNRESOLVED
+crate::receiver_infer::via_async_not_awaited CALLS crate::receiver_infer::make_engine_async exact
+crate::receiver_infer_remote::remote_async_awaited CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer_remote::remote_async_awaited CALLS crate::receiver_infer::make_engine_async import
+crate::receiver_infer_remote::remote_async_not_awaited CALLS UNRESOLVED
+crate::receiver_infer_remote::remote_async_not_awaited CALLS crate::receiver_infer::make_engine_async import
