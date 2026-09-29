@@ -328,6 +328,9 @@ pub fn analyze_direct_impact_scoped(
     let mut distance_map: HashMap<i64, usize> = HashMap::new();
     let mut symbol_cache: HashMap<i64, Symbol> = HashMap::new();
     let mut symbol_checked: HashSet<i64> = HashSet::new();
+    // Receiver type arguments each node was entered with (issue #185): a
+    // dispatch edge to a closed explicit impl only follows a matching call.
+    let mut entry_args = crate::db::EntryArgs::default();
 
     // Load and cache seed symbols
     let seed_set: HashSet<i64> = seed_ids.iter().copied().collect();
@@ -429,7 +432,10 @@ pub fn analyze_direct_impact_scoped(
         for (current_id, _) in &current_level {
             if let Some(edges) = edges_by_symbol.get(current_id) {
                 for edge in edges {
-                    if !edge_matches_filter(edge, kinds, include_tests) || excluded(edge) {
+                    if !edge_matches_filter(edge, kinds, include_tests)
+                        || excluded(edge)
+                        || !entry_args.allows(*current_id, edge)
+                    {
                         continue;
                     }
                     if let Some(id) = resolve_next_id(edge, *current_id, direction)
@@ -462,6 +468,7 @@ pub fn analyze_direct_impact_scoped(
                     if !edge_matches_filter(edge, kinds, include_tests)
                         || excluded(edge)
                         || !config_edge_allowed(edge, allowed.as_ref())
+                        || !entry_args.allows(*current_id, edge)
                     {
                         continue;
                     }
@@ -482,7 +489,18 @@ pub fn analyze_direct_impact_scoped(
                         continue;
                     };
 
+                    let widened = matches!(direction, TraversalDirection::Downstream)
+                        && entry_args.record(next_id, edge, db)?;
                     let Some(admission) = scope.admit_plain(next_id) else {
+                        // Reached again through a call with other type
+                        // arguments: expand it again for those closed impls.
+                        if widened && symbol_cache.contains_key(&next_id) {
+                            queue.push_back(QueueItem {
+                                id: next_id,
+                                distance: current_distance + 1,
+                                entry: Entry::Unscoped,
+                            });
+                        }
                         continue;
                     };
                     visited.insert(next_id);
@@ -664,6 +682,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         };
 
         let mut kinds = HashSet::new();
@@ -699,6 +718,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         };
 
         // A bare `name_exact` XREF is the Deserialize-class fabrication: one
@@ -759,6 +779,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         };
 
         let kinds = HashSet::new();

@@ -61,7 +61,7 @@ use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
     CallShape, DEFERRED_ARG_PREFIX, DEFERRED_MARKER_PREFIX, DEFERRED_RETURN_PREFIX,
-    DERIVED_RPC_SHAPE, ReceiverType,
+    DERIVED_RPC_SHAPE, ReceiverType, TypeScope,
 };
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
@@ -1208,23 +1208,32 @@ impl<'c> Resolver<'c> {
             });
         }
 
-        if let Some(qn) = r.target_qualname
-            && let Some(id) = self.exact(
-                qn,
-                symbol_map,
-                r.source_file_path,
-                matches!(r.edge_kind, "IMPLEMENTS" | "EXTENDS" | "INHERITS"),
-            )?
-        {
-            return Ok(resolved(id, ResolutionKind::Exact));
-        }
-        if let Some(id) = self.resolve_import(
-            r.import_candidates,
-            symbol_map,
-            r.source_lang,
-            r.source_file_path,
-        )? {
-            return Ok(resolved(id, ResolutionKind::Import));
+        let types_only = matches!(r.edge_kind, "IMPLEMENTS" | "EXTENDS" | "INHERITS");
+        // A base-list type name carries its scope-ordered guesses (C# enclosing
+        // scopes, the global namespace, then usings): the first that names a
+        // type wins, like the language's own lookup -- never an ambiguity.
+        if types_only && !r.import_candidates.is_empty() {
+            for candidate in r.import_candidates {
+                if let Some(id) = self.exact(candidate, symbol_map, r.source_file_path, true)? {
+                    return Ok(resolved(id, ResolutionKind::Import));
+                }
+            }
+        } else {
+            if let Some(qn) = r.target_qualname
+                && let Some(id) = self.exact(qn, symbol_map, r.source_file_path, types_only)?
+            {
+                return Ok(resolved(id, ResolutionKind::Exact));
+            }
+            if !types_only
+                && let Some(id) = self.resolve_import(
+                    r.import_candidates,
+                    symbol_map,
+                    r.source_lang,
+                    r.source_file_path,
+                )?
+            {
+                return Ok(resolved(id, ResolutionKind::Import));
+            }
         }
         // `new T()` / `: base()` whose `using`s name two repo types `T` is
         // ambiguous, not external: never fall on to the external-stub tier.
@@ -1240,7 +1249,7 @@ impl<'c> Resolver<'c> {
         // e.g. `datetime.now()` landing on an unrelated local
         // `FakeClock.now`) or falls through to them is this language's
         // `LanguageProfile::import_miss` policy.
-        let refuse_names = !r.import_candidates.is_empty() && {
+        let refuse_names = !types_only && !r.import_candidates.is_empty() && {
             match profile_for(r.source_lang).import_miss {
                 ImportMissPolicy::Refuse => true,
                 ImportMissPolicy::FallThrough => false,
@@ -1610,7 +1619,26 @@ impl<'c> Resolver<'c> {
             Some("") => Ok(None),
 
             Some(known_type) => {
+                // C# interface receivers keep the qualifier and closed type
+                // arguments they were declared with (`N1.IA<int>`); the
+                // arguments only discriminate dispatch, never resolution.
+                let (scope, known_type) = TypeScope::decode(known_type);
+                let known_type = known_type.split('<').next().unwrap_or(known_type);
                 let method = qualname_trailing_name(target_qualname);
+                if let Some(id) =
+                    self.scoped_member(&scope, known_type, method, caller.file_path)?
+                {
+                    return Ok(Some((id, ResolutionKind::ReceiverType)));
+                }
+                // A namespace-qualified receiver (`N1.IA`) binds to exactly
+                // that type's member: two same-named interfaces in other
+                // namespaces are not candidates.
+                if known_type.contains('.')
+                    && let Some(id) = self.qualified_member(known_type, method, caller.file_path)?
+                {
+                    return Ok(Some((id, ResolutionKind::ReceiverType)));
+                }
+                let known_type = known_type.rsplit('.').next().unwrap_or(known_type);
                 let seed = format!("{known_type}{}{method}", primary_separator(source_lang));
                 let Some((seg, dot, colons)) = two_segment_qualname_patterns(&seed) else {
                     return Ok(None);
@@ -1680,6 +1708,75 @@ impl<'c> Resolver<'c> {
                     .map(|id| (id, ResolutionKind::BareName)))
             }
         }
+    }
+
+    /// An unqualified receiver type looked up like C# does (see
+    /// [`TypeScope`]): the first enclosing scope declaring `{scope}.{ty}.{member}`
+    /// wins, then the global namespace, then exactly one `using` namespace
+    /// (two is a compile error in C#, so stays ambiguous). `None` falls
+    /// through to the name-based lookup.
+    fn scoped_member(
+        &mut self,
+        scope: &TypeScope,
+        ty: &str,
+        member: &str,
+        caller_file: &str,
+    ) -> Result<Option<i64>> {
+        if scope.enclosing.is_empty() && scope.usings.is_empty() {
+            return Ok(None);
+        }
+        let gv = self.graph_version;
+        let lookup = |this: &mut Self, ns: &str| -> Result<Option<i64>> {
+            let full = if ns.is_empty() {
+                format!("{ty}.{member}")
+            } else {
+                format!("{ns}.{ty}.{member}")
+            };
+            let hits = query_exact_candidates(&mut this.exact, &full, gv, caller_file)?;
+            Ok(collapse_exact_candidates(&hits))
+        };
+        for ns in scope.enclosing.iter().map(String::as_str).chain([""]) {
+            if let Some(id) = lookup(self, ns)? {
+                return Ok(Some(id));
+            }
+        }
+        let mut found = None;
+        for ns in &scope.usings {
+            if let Some(id) = lookup(self, ns)? {
+                if found.is_some_and(|f| f != id) {
+                    self.saw_ambiguous = true;
+                    return Ok(None);
+                }
+                found = Some(id);
+            }
+        }
+        Ok(found)
+    }
+
+    /// `{type_path}.{member}` written as a (possibly partially) qualified
+    /// receiver type: the exact qualname, else the single symbol whose
+    /// qualname ends with `.{type_path}.{member}` (the receiver's own
+    /// enclosing namespace prefix is not repeated). `None` when nothing or
+    /// several match.
+    fn qualified_member(
+        &mut self,
+        type_path: &str,
+        member: &str,
+        caller_file: &str,
+    ) -> Result<Option<i64>> {
+        let full = format!("{type_path}.{member}");
+        let gv = self.graph_version;
+        let exact = query_exact_candidates(&mut self.exact, &full, gv, caller_file)?;
+        if let Some(id) = collapse_exact_candidates(&exact) {
+            return Ok(Some(id));
+        }
+        let saw = self.saw_ambiguous;
+        let found = self.unique(
+            Lookup::ImportSuffix,
+            params![member, format!(".{full}"), gv],
+        )?;
+        self.saw_ambiguous = saw;
+        Ok(found)
     }
 
     /// Whether a foreign-looking Rust path's second-to-last segment is a
@@ -2502,6 +2599,7 @@ fn extension_receiver_type(signature: &str) -> Option<&str> {
 
 /// `Ns.List<int>?` -> `List`.
 fn simple_type_name(ty: &str) -> &str {
+    let ty = ty.rsplit('|').next().unwrap_or(ty);
     let ty = ty.trim().trim_end_matches('?');
     let ty = ty.split('<').next().unwrap_or(ty);
     ty.rsplit('.').next().unwrap_or(ty).trim()

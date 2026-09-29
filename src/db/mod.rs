@@ -17,7 +17,7 @@ use std::time::Duration;
 mod analytics;
 mod co_change;
 mod graph_query;
-pub use graph_query::DispatchPeers;
+pub use graph_query::{DispatchPeers, EntryArgs, closed_impl_args, dispatch_compatible, type_args};
 mod migrations;
 mod overview;
 pub(crate) mod resolver;
@@ -1610,8 +1610,12 @@ impl Db {
         graph_version: i64,
         private_qualnames: &[String],
         static_qualnames: &[String],
+        override_symbols: &[(String, i64)],
     ) -> Result<()> {
-        if private_qualnames.is_empty() && static_qualnames.is_empty() {
+        if private_qualnames.is_empty()
+            && static_qualnames.is_empty()
+            && override_symbols.is_empty()
+        {
             self.conn().execute(
                 "UPDATE symbols SET visibility = NULL
                  WHERE file_id = ? AND graph_version = ? AND visibility IS NOT NULL",
@@ -1622,11 +1626,21 @@ impl Db {
         // `visibility` is a space-separated modifier list: `private`, `static`.
         let private_ph = vec!["?"; private_qualnames.len()].join(",");
         let static_ph = vec!["?"; static_qualnames.len()].join(",");
+        // Overloads share a qualname, so an override is keyed by its line too.
+        let override_test = if override_symbols.is_empty() {
+            "0".to_string()
+        } else {
+            format!(
+                "(qualname, start_line) IN (VALUES {})",
+                vec!["(?,?)"; override_symbols.len()].join(",")
+            )
+        };
         let sql = format!(
             "UPDATE symbols
                 SET visibility = NULLIF(TRIM(
                     CASE WHEN qualname IN ({private_ph}) THEN 'private' ELSE '' END
-                    || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END), '')
+                    || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END
+                    || CASE WHEN {override_test} THEN ' override' ELSE '' END), '')
              WHERE file_id = ? AND graph_version = ?"
         );
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = private_qualnames
@@ -1634,6 +1648,10 @@ impl Db {
             .chain(static_qualnames)
             .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
+        for (qualname, line) in override_symbols {
+            params.push(Box::new(qualname.clone()));
+            params.push(Box::new(*line));
+        }
         params.push(Box::new(file_id));
         params.push(Box::new(graph_version));
         self.conn().execute(
@@ -2041,6 +2059,43 @@ impl Db {
         Ok(value.and_then(|v| v.parse::<i64>().ok()))
     }
 
+    /// Text value of a `meta` row.
+    pub fn get_meta_str(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .read_conn()?
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_meta_str(&self, key: &str, value: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_meta(&self, key: &str) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM meta WHERE key = ?", params![key])?;
+        Ok(())
+    }
+
+    /// Every `meta` row whose key starts with `prefix`, as `(key, value)`.
+    pub fn meta_with_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?1) = ?2")?;
+        let rows = stmt.query_map(params![prefix.len() as i64, prefix], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn set_meta_i64(&self, key: &str, value: i64) -> Result<()> {
         self.conn().execute(
             "INSERT INTO meta (key, value) VALUES (?, ?)
@@ -2185,6 +2240,7 @@ fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
         span_id: row.get(14)?,
         event_ts: row.get(15)?,
         resolution_kind: row.get(16)?,
+        dispatch_args: None,
     })
 }
 

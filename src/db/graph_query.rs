@@ -7,64 +7,338 @@ use std::collections::{HashMap, HashSet};
 /// Max interface -> interface hops followed by dispatch.
 const MAX_IFACE_CHAIN_DEPTH: i64 = 5;
 
-/// `FROM` clause of the one interface-dispatch query (issue #122), shared
-/// by [`Db::dispatch_pairs`] and `dead_symbols`: yields one row per
-/// `(im.id = interface method, cm.id = implementing method)` -- `cm`'s class
-/// `c` IMPLEMENTS the interface `i`, and `im` is `i`'s method with the same
-/// name (same qualname tail as `cm`, whatever the separator). The parent of
-/// `cm` is `qualname` minus `<sep><name>`, tried for 1- and 2-char
-/// separators (`.` / `::`). Callers append their own `WHERE`/`JOIN`s.
+/// Closed generic arguments an explicit impl names (`C.IA<int>.Run` ->
+/// `int`); `None` for an implicit impl or an open one (issue #185).
+pub fn closed_impl_args<'a>(qualname: &'a str, name: &str) -> Option<&'a str> {
+    let head = qualname.strip_suffix(name)?.strip_suffix('.')?;
+    type_args(head)
+}
+
+/// `N1.IA<int>` -> `int`: the type arguments of a receiver type / identity.
+pub fn type_args(text: &str) -> Option<&str> {
+    let open = text.find('<')?;
+    let close = text.rfind('>')?;
+    (close > open + 1).then(|| &text[open + 1..close])
+}
+
+/// Whether a call through a receiver typed with `call_args` reaches an impl
+/// closed over `impl_args`: an open/unknown side pairs with everything.
+pub fn dispatch_compatible(call_args: Option<&str>, impl_args: Option<&str>) -> bool {
+    match (call_args, impl_args) {
+        (Some(c), Some(i)) => c == i,
+        _ => true,
+    }
+}
+
+/// The receiver-type arguments each node of a downstream traversal was
+/// entered with (issue #185), so a dispatch edge to a closed explicit impl
+/// only follows a call whose receiver has the same ones. A node reached
+/// several times keeps every distinct set, and one arrival without
+/// arguments (or with a plain edge) makes it open to every closure.
+#[derive(Debug, Default)]
+pub struct EntryArgs(HashMap<i64, Option<Vec<String>>>);
+
+impl EntryArgs {
+    /// Note an arrival at `node` through `edge`. `true` when that widens what
+    /// the node reaches, so it must be (re-)expanded even if already visited.
+    pub fn record(&mut self, node: i64, edge: &Edge, db: &Db) -> Result<bool> {
+        let args = edge.call_args(db)?;
+        Ok(match (self.0.get_mut(&node), args) {
+            (None, args) => {
+                self.0.insert(node, args.map(|a| vec![a]));
+                true
+            }
+            (Some(None), _) => false,
+            (Some(entry), None) => {
+                *entry = None;
+                true
+            }
+            (Some(Some(seen)), Some(a)) => {
+                let new = !seen.contains(&a);
+                if new {
+                    seen.push(a);
+                }
+                new
+            }
+        })
+    }
+
+    /// Whether `edge`, expanded from `node`, may be followed.
+    pub fn allows(&self, node: i64, edge: &Edge) -> bool {
+        let Some(impl_args) = edge.dispatch_args.as_deref() else {
+            return true;
+        };
+        match self.0.get(&node) {
+            Some(Some(seen)) => seen.iter().any(|a| a == impl_args),
+            _ => true,
+        }
+    }
+}
+
+impl Edge {
+    /// The closed generic arguments of this CALLS edge's receiver type.
+    pub fn call_args(&self, db: &Db) -> Result<Option<String>> {
+        if self.kind != "CALLS" || self.id <= 0 {
+            return Ok(None);
+        }
+        let types = db.call_receiver_types(&[self.id])?;
+        Ok(types
+            .get(&self.id)
+            .and_then(|t| type_args(t))
+            .map(str::to_string))
+    }
+}
+
+/// SQL: the closed generic arguments of an explicit impl `m` (the text
+/// between the first `<` and the `>` ending its identity segment), else NULL.
+fn explicit_args(m: &str, c: &str) -> String {
+    let head = format!("substr({m}.qualname, 1, length({m}.qualname) - length({m}.name) - 1)");
+    format!(
+        "(CASE WHEN {explicit} AND substr({head}, -1) = '>' AND instr({head}, '<') > 0
+               THEN substr({head}, instr({head}, '<') + 1, length({head}) - instr({head}, '<') - 1) END)",
+        explicit = explicit_impl(m, c)
+    )
+}
+
+/// SQL: the CALLS edge `ce` reaches the member `cm` of class `c` given its
+/// closed generic arguments (see [`dispatch_compatible`]).
+pub(super) fn call_reaches_impl_sql(ce: &str) -> String {
+    format!(
+        "({ce}.receiver_type IS NULL OR instr({ce}.receiver_type, '<') = 0
+          OR {impl_args} IS NULL
+          OR substr({ce}.receiver_type, instr({ce}.receiver_type, '<') + 1,
+                    length({ce}.receiver_type) - instr({ce}.receiver_type, '<') - 1)
+             = {impl_args})",
+        impl_args = explicit_args("cm", "c")
+    )
+}
+
+/// `member` (alias `m`) declared on class `c` as an explicit interface
+/// implementation (`C.<Iface>.<name>`, issue #181): its qualname is the
+/// class's, a `.`, an identity segment, `.` and the member's own name.
+fn explicit_impl(m: &str, c: &str) -> String {
+    format!(
+        "(length({m}.qualname) >= length({c}.qualname) + length({m}.name) + 3
+          AND substr({m}.qualname, 1, length({c}.qualname) + 1) = {c}.qualname || '.'
+          AND substr({m}.qualname, -(length({m}.name) + 1)) = '.' || {m}.name)"
+    )
+}
+
+/// The interface name an explicit impl `m` on `c` names, as written and
+/// without generic arguments (`C.N1.IA<int>.Run` -> `N1.IA`, issue #185).
+fn explicit_base(m: &str, c: &str) -> String {
+    let spec = format!(
+        "substr({m}.qualname, length({c}.qualname) + 2,
+                length({m}.qualname) - length({c}.qualname) - length({m}.name) - 2)"
+    );
+    format!(
+        "(CASE WHEN instr({spec}, '<') > 0 THEN substr({spec}, 1, instr({spec}, '<') - 1) ELSE {spec} END)"
+    )
+}
+
+/// Whether interface `i` is the one the written name `base` (from an
+/// explicit impl on class `c`) denotes: `i`'s qualname is `base` or ends in
+/// `.base`, unless `c` lists a *different* interface under that very text
+/// in its base list (`class C : IA, N2.IA` -- the short `IA` is the first).
+fn names_interface(base: &str, i: &str, c: &str, gv: i64) -> String {
+    format!(
+        "(({i}.qualname = {base} OR substr({i}.qualname, -(length({base}) + 1)) = '.' || {base})
+          AND NOT EXISTS (SELECT 1 FROM edges e2
+                           WHERE e2.source_symbol_id = {c}.id AND e2.kind = 'IMPLEMENTS'
+                             AND e2.graph_version = {gv} AND e2.target_qualname = {base}
+                             AND e2.target_symbol_id <> {i}.id))"
+    )
+}
+
+/// What a dispatch query is about, so the ancestor recursion starts from the
+/// few classes involved instead of every `IMPLEMENTS` edge in the repo.
+#[derive(Debug, Clone)]
+pub(super) enum DispatchSeed {
+    /// Every class (`dead_symbols` runs one correlated probe per symbol).
+    All,
+    /// Implementing members: only their containing classes are expanded.
+    Impls(String),
+    /// Base members: the containing interfaces / classes, their implementors
+    /// (a reverse closure) and those classes' ancestors are expanded.
+    Bases(String),
+}
+
+impl DispatchSeed {
+    /// `id, id, ..` list of the queried members.
+    pub(super) fn impls(ids: &[i64]) -> Self {
+        Self::Impls(id_list(ids))
+    }
+
+    pub(super) fn bases(ids: &[i64]) -> Self {
+        Self::Bases(id_list(ids))
+    }
+
+    /// Containers of the members in `list`: qualname minus `<sep><name>` or
+    /// the CONTAINS parent (see `dispatch_pairs_from`).
+    fn containers(list: &str, gv: i64) -> String {
+        let name = "length(m.name)";
+        format!(
+            "SELECT k.id FROM symbols m JOIN symbols k ON k.graph_version = {gv}
+                 AND k.qualname IN (substr(m.qualname, 1, length(m.qualname) - {name} - 1),
+                                    substr(m.qualname, 1, length(m.qualname) - {name} - 2))
+              WHERE m.id IN ({list})
+             UNION
+             SELECT ce.source_symbol_id FROM edges ce
+              WHERE ce.target_symbol_id IN ({list}) AND ce.kind = 'CONTAINS'
+                AND ce.graph_version = {gv}"
+        )
+    }
+
+    /// `(extra CTE before anc, extra filter on anc's first step)`.
+    fn ctes(&self, gv: i64) -> (String, String) {
+        match self {
+            Self::All => (String::new(), String::new()),
+            Self::Impls(list) => (
+                String::new(),
+                format!("AND source_symbol_id IN ({})", Self::containers(list, gv)),
+            ),
+            Self::Bases(list) => (
+                format!(
+                    "rel(id, d) AS (
+                         SELECT id, 0 FROM ({seeds})
+                         UNION
+                         SELECT e.source_symbol_id, rel.d + 1
+                           FROM rel JOIN edges e ON e.target_symbol_id = rel.id
+                                                AND +e.kind IN ('EXTENDS', 'IMPLEMENTS')
+                                                AND e.graph_version = {gv}
+                          WHERE rel.d <= {MAX_IFACE_CHAIN_DEPTH}),",
+                    seeds = Self::containers(list, gv)
+                ),
+                "AND source_symbol_id IN (SELECT id FROM rel)".to_string(),
+            ),
+        }
+    }
+}
+
+fn id_list(ids: &[i64]) -> String {
+    ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// `FROM` clause of the one dispatch query (issues #122, #185), shared by
+/// [`Db::dispatch_pairs`] and `dead_symbols`: yields one row per
+/// `(im.id = base member, cm.id = implementing member)` -- `cm`'s class `c`
+/// IMPLEMENTS the interface (or EXTENDS the base class) `i`, and `im` is
+/// `i`'s member of the same kind and name. `cm` is a method, property or
+/// event. `c` is `cm`'s container: its qualname minus `<sep><name>` for 1-
+/// and 2-char separators (`.` / `::`), or its CONTAINS parent (an explicit
+/// impl's qualname carries an identity segment, so no fixed offset works).
+/// An explicit impl pairs only with the interface its identity names; an
+/// implicit one with every other one; through a base *class* only an
+/// `override` pairs. Callers append their own `WHERE`/`JOIN`s.
 /// `graph_version` is inlined (an `i64`, so injection-safe) so callers can
 /// mix it into queries with their own positional parameters.
-pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
+pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> String {
     let gv = graph_version;
-    // Every interface a class reaches: its direct IMPLEMENTS targets, then
-    // interface -> interface EXTENDS/IMPLEMENTS hops (issue #173), depth-
-    // bounded (cycle-safe: `UNION` dedups and `d` caps the recursion).
+    let (rel_cte, anc_filter) = seed.ctes(gv);
+    // Every type a class reaches: its direct IMPLEMENTS/EXTENDS targets,
+    // then interface -> interface and class -> base hops (issues #173,
+    // #185), depth-bounded (cycle-safe: `UNION` dedups and `d` caps the
+    // recursion). `ov` marks paths through a base class, whose members
+    // only an `override` implements.
     let ancestors = format!(
-        "WITH RECURSIVE anc(cid, iid, d) AS (
-             SELECT source_symbol_id, target_symbol_id, 1 FROM edges
-              WHERE kind = 'IMPLEMENTS' AND graph_version = {gv}
-                AND target_symbol_id IS NOT NULL
+        "WITH RECURSIVE {rel_cte} anc(cid, iid, d, ov) AS (
+             SELECT source_symbol_id, target_symbol_id, 1, kind = 'EXTENDS' FROM edges
+              WHERE kind IN ('IMPLEMENTS', 'EXTENDS') AND graph_version = {gv}
+                AND target_symbol_id IS NOT NULL {anc_filter}
              UNION
-             SELECT anc.cid, e.target_symbol_id, anc.d + 1
+             SELECT anc.cid, e.target_symbol_id, anc.d + 1, anc.ov
                FROM anc JOIN edges e ON e.source_symbol_id = anc.iid
-                                    AND e.kind IN ('EXTENDS', 'IMPLEMENTS')
+                                    -- `+` keeps the planner on idx_edges_source: with
+                                    -- `kind IN (..)` it scanned every IMPLEMENTS edge per row
+                                    AND +e.kind IN ('EXTENDS', 'IMPLEMENTS')
                                     AND e.graph_version = {gv}
                                     AND e.target_symbol_id IS NOT NULL
               WHERE anc.d <= {MAX_IFACE_CHAIN_DEPTH})
-         SELECT cid, iid FROM anc"
+         SELECT cid, iid, ov FROM anc"
     );
-    // Qualname of an explicit impl of `i`'s method on class `c`
-    // (`C.<Iface>.<name>`, issue #181), and the `cm` -> `c` parent offsets:
-    // 1 / 2 chars are the `.` / `::` separators; the third also strips the
-    // interface segment of an explicit impl.
-    let explicit = "c.qualname || '.' || i.name || '.' || cm.name";
     let parent = "substr(cm.qualname, 1, length(cm.qualname) - length(cm.name)";
+    let cm_explicit = explicit_impl("cm", "c");
+    let cm_names_i = names_interface(&explicit_base("cm", "c"), "i", "c", gv);
+    let x_names_i = names_interface(&explicit_base("x", "c"), "i", "c", gv);
+    let x_explicit = explicit_impl("x", "c");
+    let x_args = explicit_args("x", "c");
+    // An explicit twin of `i`'s member on `c` covering the closed arguments
+    // `edge_args` a base-list entry `IA<..>` declared (NULL: any twin does).
+    let twin_covers = |edge_args: &str| {
+        format!(
+            "EXISTS (SELECT 1 FROM symbols x
+                      WHERE x.graph_version = {gv} AND +x.kind = cm.kind AND +x.name = cm.name
+                        AND x.qualname > c.qualname || '.' AND x.qualname < c.qualname || '/'
+                        AND {x_explicit} AND i.kind = 'interface' AND {x_names_i}
+                        AND ({edge_args} IS NULL OR {x_args} IS NULL OR {x_args} = {edge_args}))"
+        )
+    };
+    let twin_any = twin_covers("NULL");
+    let twin_per_entry = twin_covers("de.detail");
+    // Excluded once every closure of `i` the class lists is covered by an
+    // explicit twin (`class C : IA<int>, IA<string>` with only
+    // `IA<string>.Run` explicit still serves `IA<int>` implicitly).
+    let twin_excludes = format!(
+        "CASE WHEN EXISTS (SELECT 1 FROM edges de WHERE de.source_symbol_id = c.id
+                              AND de.target_symbol_id = i.id AND de.kind = 'IMPLEMENTS'
+                              AND de.graph_version = {gv})
+              THEN NOT EXISTS (SELECT 1 FROM edges de WHERE de.source_symbol_id = c.id
+                                  AND de.target_symbol_id = i.id AND de.kind = 'IMPLEMENTS'
+                                  AND de.graph_version = {gv} AND NOT {twin_per_entry})
+              ELSE {twin_any} END"
+    );
+    let c_is_parent = format!(
+        "(c.qualname IN (
+              {parent} - 1),
+              {parent} - 2))
+          OR c.id IN (SELECT ce.source_symbol_id FROM edges ce
+                       WHERE ce.target_symbol_id = cm.id AND ce.kind = 'CONTAINS'
+                         AND ce.graph_version = {gv}))"
+    );
+    // Queried by base member: start from the (few) implementing classes and
+    // walk to their members by qualname range, in this order (`CROSS JOIN`
+    // pins it); otherwise start from the queried member `cm`.
+    let head = if matches!(seed, DispatchSeed::Bases(_)) {
+        format!(
+            "FROM ({ancestors}) a
+             CROSS JOIN symbols c ON c.id = a.cid AND c.graph_version = {gv}
+             CROSS JOIN symbols i ON i.id = a.iid
+             CROSS JOIN symbols cm INDEXED BY idx_symbols_qualname ON cm.graph_version = {gv}
+                                  AND cm.qualname > c.qualname AND cm.qualname < c.qualname || '~'
+                                  AND {c_is_parent}"
+        )
+    } else {
+        format!(
+            "FROM symbols cm
+             JOIN symbols c ON c.graph_version = {gv} AND {c_is_parent}
+             JOIN ({ancestors}) a ON a.cid = c.id
+             JOIN symbols i ON i.id = a.iid"
+        )
+    };
+    let join = if matches!(seed, DispatchSeed::Bases(_)) {
+        "CROSS JOIN"
+    } else {
+        "JOIN"
+    };
     format!(
-        "FROM symbols cm
-         JOIN symbols c ON c.graph_version = {gv}
-                       AND c.qualname IN (
-                           {parent} - 1),
-                           {parent} - 2),
-                           {parent} - length(i.name) - 2))
-         JOIN ({ancestors}) a ON a.cid = c.id
-         JOIN symbols i ON i.id = a.iid
+        "{head}
          -- One indexed `im.qualname = <expr>` equality: an explicit impl pairs
          -- only with the interface it names, an implicit one keeps the tail.
-         JOIN symbols im ON im.qualname = CASE WHEN cm.qualname = {explicit}
+         {join} symbols im ON im.qualname = CASE WHEN {cm_explicit}
                                                THEN i.qualname || '.' || cm.name
                                                ELSE i.qualname || substr(cm.qualname, length(c.qualname) + 1) END
-                        AND im.name = cm.name AND im.kind = 'method' AND im.graph_version = {gv}
+                        AND +im.name = +cm.name AND +im.kind = +cm.kind AND im.graph_version = {gv}
          JOIN files fc ON fc.id = cm.file_id
                       AND (fc.deleted_version IS NULL OR fc.deleted_version > {gv})
          JOIN files fi ON fi.id = im.file_id
                       AND (fi.deleted_version IS NULL OR fi.deleted_version > {gv})
-         WHERE cm.kind = 'method' AND cm.graph_version = {gv}
-           -- an implicit impl is not paired with an interface that has an explicit twin
-           AND (cm.qualname = {explicit} OR NOT EXISTS (
-                SELECT 1 FROM symbols x
-                 WHERE x.graph_version = {gv} AND x.kind = 'method' AND x.qualname = {explicit}))"
+         WHERE cm.kind IN ('method', 'property', 'event') AND cm.graph_version = {gv}
+           AND CASE WHEN {cm_explicit}
+                    THEN i.kind = 'interface' AND {cm_names_i}
+                    ELSE (a.ov = 0 OR (' ' || COALESCE(cm.visibility, '') || ' ') LIKE '% override %')
+                         -- an implicit impl is not paired with an interface whose closures all have explicit twins
+                         AND NOT ({twin_excludes})
+               END"
     )
 }
 
@@ -74,22 +348,32 @@ impl Db {
     /// method, so the implementing method looks uncalled. Returns every
     /// `(interface_method_id, impl_method_id)` pair where either side is in
     /// `ids`, via class IMPLEMENTS edges + same method name. Language-
-    /// agnostic. Follows interface inheritance chains; deliberately not
-    /// handled: EXTENDS'd virtual/abstract methods.
+    /// agnostic. Follows interface inheritance chains and, for C#, an
+    /// `override` reached through EXTENDS (issue #185).
     pub fn dispatch_pairs(&self, ids: &[i64], graph_version: i64) -> Result<Vec<(i64, i64)>> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
         let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT DISTINCT im.id, cm.id {} AND (cm.id IN ({list}) OR im.id IN ({list}))
-             ORDER BY im.id, cm.id",
-            dispatch_pairs_from(graph_version)
-        );
+        // One statement per side: an `OR` across `cm.id` / `im.id` would
+        // defeat the rowid lookup and scan every symbol.
         let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let mut pairs = Vec::new();
+        for (side, seed) in [
+            ("cm", DispatchSeed::impls(ids)),
+            ("im", DispatchSeed::bases(ids)),
+        ] {
+            let from = dispatch_pairs_from(graph_version, &seed);
+            let sql = format!("SELECT DISTINCT im.id, cm.id {from} AND {side}.id IN ({list})");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+            for row in rows {
+                pairs.push(row?);
+            }
+        }
+        pairs.sort_unstable();
+        pairs.dedup();
+        Ok(pairs)
     }
 
     /// [`Db::dispatch_pairs`] for one method, split by side.
@@ -143,11 +427,16 @@ impl Db {
                     .map(|s| s.file_path)
                     .unwrap_or_default())
             };
-            let make = |file_path: String| Edge {
+            let imp_sym = self.get_symbol_by_id(imp)?;
+            let closed = imp_sym
+                .as_ref()
+                .and_then(|s| closed_impl_args(&s.qualname, &s.name))
+                .map(str::to_string);
+            let make = |file_path: String, source: i64| Edge {
                 id: 0,
                 file_path,
                 kind: "CALLS".to_string(),
-                source_symbol_id: Some(iface),
+                source_symbol_id: Some(source),
                 target_symbol_id: Some(imp),
                 target_qualname: None,
                 detail: Some("interface dispatch".to_string()),
@@ -161,12 +450,43 @@ impl Db {
                 trace_id: None,
                 span_id: None,
                 event_ts: None,
+                dispatch_args: closed.clone(),
             };
             if ids.contains(&iface) {
-                map.entry(iface).or_default().push(make(peer_file(imp)?));
+                map.entry(iface)
+                    .or_default()
+                    .push(make(peer_file(imp)?, iface));
             }
-            if ids.contains(&imp) {
-                map.entry(imp).or_default().push(make(peer_file(iface)?));
+            if !ids.contains(&imp) {
+                continue;
+            }
+            let Some(args) = closed.clone() else {
+                map.entry(imp)
+                    .or_default()
+                    .push(make(peer_file(iface)?, iface));
+                continue;
+            };
+            // A closed explicit impl is reached by the calls whose receiver
+            // type matches its arguments, not by every call to the
+            // interface method: link those callers straight to it.
+            let callers = self.edges_for_symbol(iface, languages, graph_version)?;
+            let recv =
+                self.call_receiver_types(&callers.iter().map(|e| e.id).collect::<Vec<_>>())?;
+            let mut seen = HashSet::new();
+            for e in callers {
+                let Some(src) = e.source_symbol_id else {
+                    continue;
+                };
+                let call_args = recv.get(&e.id).and_then(|t| type_args(t));
+                if e.kind == "CALLS"
+                    && e.target_symbol_id == Some(iface)
+                    && dispatch_compatible(call_args, Some(&args))
+                    && seen.insert(src)
+                {
+                    map.entry(imp)
+                        .or_default()
+                        .push(make(e.file_path.clone(), src));
+                }
             }
         }
         Ok(map)
@@ -194,6 +514,28 @@ impl Db {
             );
         }
         Ok(out)
+    }
+
+    /// Stored `receiver_type` of the given edges that carry generic
+    /// arguments (`IA<int>`); the value dispatch matches against closed
+    /// explicit impls.
+    pub fn call_receiver_types(&self, edge_ids: &[i64]) -> Result<HashMap<i64, String>> {
+        let ids: Vec<String> = edge_ids
+            .iter()
+            .filter(|id| **id > 0)
+            .map(i64::to_string)
+            .collect();
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, receiver_type FROM edges
+             WHERE id IN ({}) AND receiver_type LIKE '%<%'",
+            ids.join(",")
+        ))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
     }
 
     /// Single-symbol form of [`Db::edges_for_symbols_with_dispatch`].

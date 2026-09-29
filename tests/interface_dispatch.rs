@@ -452,3 +452,309 @@ fn explain_symbol_marks_dispatch_callers_and_callees_via_interface() {
     );
     assert!(!via(&find(&r["callers"], CALLER)), "callers: {r}");
 }
+
+fn downstream(repo: &std::path::Path, db: &std::path::Path, start: &str) -> Vec<String> {
+    let r = call(
+        repo,
+        db,
+        "trace_flow",
+        json!({"start_qualname": start, "direction": "downstream"}),
+    );
+    names(&r["trace"])
+}
+
+fn index(fixture: &str) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let (tmp, repo, db) = common::setup_repo(fixture);
+    let mut indexer = Indexer::new(repo.clone(), db.clone()).unwrap();
+    indexer.reindex().unwrap();
+    (tmp, repo, db)
+}
+
+/// Issue #185: `IA<int>.Run` and `IA<string>.Run` are distinct symbols and
+/// each dispatches from the interface method (and only from its own one).
+#[test]
+fn explicit_impls_of_closed_generics_are_distinct_and_dispatch() {
+    let (_tmp, repo, db) = index("cs_dispatch_generic");
+    let int_run = "Shop.C.IA<int>.Run";
+    let str_run = "Shop.C.IA<string>.Run";
+    for q in [int_run, str_run] {
+        let r = call(&repo, &db, "explain_symbol", json!({"qualname": q}));
+        assert_eq!(r["symbol"]["qualname"], q, "{r}");
+    }
+    // Callers are matched by the receiver's closed type arguments; an open
+    // `IA<T>` receiver reaches every closure.
+    let callers = |q: &str| {
+        let r = call(&repo, &db, "explain_symbol", json!({"qualname": q}));
+        let mut v = names(&r["callers"]);
+        v.sort();
+        v
+    };
+    assert_eq!(
+        callers(int_run),
+        [
+            "Shop.Caller.Go",
+            "Shop.CastCaller.Go",
+            "Shop.OpenCaller.Go",
+            "Shop.TwoArgs.Go",
+            "Shop.TwoArgsRev.Go"
+        ]
+    );
+    assert_eq!(
+        callers(str_run),
+        [
+            "Shop.OpenCaller.Go",
+            "Shop.StrCaller.Go",
+            "Shop.TwoArgs.Go",
+            "Shop.TwoArgsRev.Go"
+        ]
+    );
+    // One method calling through two closed receivers reaches both impls,
+    // whichever call comes first.
+    for go in ["Shop.TwoArgs.Go", "Shop.TwoArgsRev.Go"] {
+        let d = downstream(&repo, &db, go);
+        assert!(d.contains(&int_run.to_string()), "{go}: {d:?}");
+        assert!(d.contains(&str_run.to_string()), "{go}: {d:?}");
+        let impact = call(
+            &repo,
+            &db,
+            "analyze_impact",
+            json!({"qualname": go, "direction": "downstream"}),
+        )
+        .to_string();
+        assert!(
+            impact.contains(int_run) && impact.contains(str_run),
+            "{go}: {impact}"
+        );
+    }
+    let d = downstream(&repo, &db, "Shop.StrCaller.Go");
+    assert!(d.contains(&str_run.to_string()), "{d:?}");
+    assert!(!d.contains(&int_run.to_string()), "{d:?}");
+    let d = downstream(&repo, &db, "Shop.Caller.Go");
+    assert!(d.contains(&int_run.to_string()), "{d:?}");
+    assert!(!d.contains(&str_run.to_string()), "{d:?}");
+    let up = |q: &str| {
+        let r = call(
+            &repo,
+            &db,
+            "trace_flow",
+            json!({"start_qualname": q, "direction": "upstream"}),
+        );
+        names(&r["trace"])
+    };
+    let u = up(str_run);
+    assert!(u.contains(&"Shop.StrCaller.Go".to_string()), "{u:?}");
+    assert!(!u.contains(&"Shop.Caller.Go".to_string()), "{u:?}");
+    let impact = call(
+        &repo,
+        &db,
+        "analyze_impact",
+        json!({"qualname": "Shop.StrCaller.Go", "direction": "downstream"}),
+    )
+    .to_string();
+    assert!(
+        impact.contains(str_run) && !impact.contains(int_run),
+        "{impact}"
+    );
+    // A closed impl no matching call reaches is dead.
+    let r = call(&repo, &db, "dead_symbols", json!({"limit": 200}));
+    let dead = names(&r["dead_symbols"]);
+    assert!(
+        dead.contains(&"Shop.Z.IB<string>.Run".to_string()),
+        "{dead:?}"
+    );
+    assert!(!dead.contains(&int_run.to_string()), "{dead:?}");
+    assert!(!dead.contains(&str_run.to_string()), "{dead:?}");
+
+    let a = downstream(&repo, &db, "Shop.IA.Run");
+    for q in [int_run, str_run, "Shop.E.IA<int>.Run"] {
+        assert!(a.contains(&q.to_string()), "IA: {a:?}");
+    }
+    assert!(!a.contains(&"Shop.E.Run".to_string()), "IA: {a:?}");
+    let b = downstream(&repo, &db, "Shop.IB.Run");
+    assert!(b.contains(&"Shop.E.Run".to_string()), "IB: {b:?}");
+    assert!(!b.contains(&"Shop.E.IA<int>.Run".to_string()), "IB: {b:?}");
+    assert!(!b.contains(&int_run.to_string()), "IB: {b:?}");
+}
+
+/// Issue #185: same-named interfaces in two namespaces resolve through the
+/// class's namespace/usings, and explicit impls pair with the named one.
+#[test]
+fn same_named_interfaces_resolve_by_scope_and_pair_explicit_impls() {
+    let (_tmp, repo, db) = index("cs_dispatch_ns_scope");
+    let implementors = |iface: &str| {
+        let r = call(&repo, &db, "explain_symbol", json!({"qualname": iface}));
+        let mut v = names(&r["implements"]);
+        v.sort();
+        v
+    };
+    assert_eq!(
+        implementors("N1.IA"),
+        ["App.C", "App.H", "App.OnlyN1"],
+        "N1.IA"
+    );
+    // `N2.Local : IA` binds to its own namespace's IA, not the `using N1`.
+    assert_eq!(
+        implementors("N2.IA"),
+        ["App.C", "App.H", "N2.Local"],
+        "N2.IA"
+    );
+
+    let n1 = downstream(&repo, &db, "N1.IA.Run");
+    let n2 = downstream(&repo, &db, "N2.IA.Run");
+    // C: implicit Run serves N1.IA (its explicit twin serves N2.IA).
+    assert!(n1.contains(&"App.C.Run".to_string()), "N1: {n1:?}");
+    assert!(!n1.contains(&"App.C.N2.IA.Run".to_string()), "N1: {n1:?}");
+    assert!(n2.contains(&"App.C.N2.IA.Run".to_string()), "N2: {n2:?}");
+    assert!(!n2.contains(&"App.C.Run".to_string()), "N2: {n2:?}");
+    // H: a short `IA.Run` (via using) is N1's, `N2.IA.Run` is N2's.
+    assert!(n1.contains(&"App.H.IA.Run".to_string()), "N1: {n1:?}");
+    assert!(!n1.contains(&"App.H.N2.IA.Run".to_string()), "N1: {n1:?}");
+    assert!(n2.contains(&"App.H.N2.IA.Run".to_string()), "N2: {n2:?}");
+    assert!(!n2.contains(&"App.H.IA.Run".to_string()), "N2: {n2:?}");
+    let callers = |q: &str| {
+        let r = call(&repo, &db, "explain_symbol", json!({"qualname": q}));
+        names(&r["callers"])
+    };
+    assert_eq!(callers("N1.IA.Run"), ["App.ViaN1.Go"]);
+    assert_eq!(callers("N2.IA.Run"), ["App.ViaN2.Go"]);
+    let only = callers("App.OnlyN1.Run");
+    assert!(only.contains(&"App.ViaN1.Go".to_string()), "{only:?}");
+    assert!(!only.contains(&"App.ViaN2.Go".to_string()), "{only:?}");
+    assert!(n1.contains(&"App.OnlyN1.Run".to_string()), "N1: {n1:?}");
+    assert!(!n2.contains(&"App.OnlyN1.Run".to_string()), "N2: {n2:?}");
+    assert!(n2.contains(&"N2.Local.Run".to_string()), "N2: {n2:?}");
+    assert!(!n1.contains(&"N2.Local.Run".to_string()), "N1: {n1:?}");
+}
+
+/// Issue #185: explicit property/event impls are distinct symbols and
+/// dispatch like methods.
+#[test]
+fn explicit_property_and_event_impls_dispatch() {
+    let (_tmp, repo, db) = index("cs_dispatch_members");
+    let a_p = downstream(&repo, &db, "Shop.IA.P");
+    assert!(a_p.contains(&"Shop.C.IA.P".to_string()), "IA.P: {a_p:?}");
+    assert!(a_p.contains(&"Shop.D.P".to_string()), "IA.P: {a_p:?}");
+    assert!(!a_p.contains(&"Shop.C.P".to_string()), "IA.P: {a_p:?}");
+    let b_p = downstream(&repo, &db, "Shop.IB.P");
+    assert!(b_p.contains(&"Shop.C.P".to_string()), "IB.P: {b_p:?}");
+    assert!(!b_p.contains(&"Shop.C.IA.P".to_string()), "IB.P: {b_p:?}");
+    let ev = downstream(&repo, &db, "Shop.IA.Changed");
+    assert!(ev.contains(&"Shop.C.IA.Changed".to_string()), "{ev:?}");
+    assert!(ev.contains(&"Shop.D.Changed".to_string()), "{ev:?}");
+}
+
+/// Issue #185: a call through a base-class member reaches every override
+/// down the EXTENDS chain, but not a `new` hiding member.
+#[test]
+fn base_class_dispatch_reaches_override_chain() {
+    let (_tmp, repo, db) = index("cs_dispatch_override");
+    let m = downstream(&repo, &db, "Shop.Base.M");
+    for q in ["Shop.Derived.M", "Shop.Mid.M", "Shop.Leaf.M"] {
+        assert!(m.contains(&q.to_string()), "M: {m:?}");
+    }
+    let v = downstream(&repo, &db, "Shop.Base.V");
+    assert!(v.contains(&"Shop.Derived.V".to_string()), "V: {v:?}");
+    let n = downstream(&repo, &db, "Shop.Base.N");
+    assert!(!n.contains(&"Shop.Derived.N".to_string()), "N: {n:?}");
+
+    let r = call(
+        &repo,
+        &db,
+        "explain_symbol",
+        json!({"qualname": "Shop.Leaf.M"}),
+    );
+    assert!(
+        names(&r["callers"]).contains(&"Shop.Caller.Go".to_string()),
+        "{r}"
+    );
+    // Properties and events override too.
+    for (base, derived) in [
+        ("Shop.Base.P", "Shop.Derived.P"),
+        ("Shop.Base.E", "Shop.Derived.E"),
+    ] {
+        let t = downstream(&repo, &db, base);
+        assert!(t.contains(&derived.to_string()), "{base}: {t:?}");
+    }
+    let r = call(&repo, &db, "dead_symbols", json!({"limit": 100}));
+    let dead = names(&r["dead_symbols"]);
+    // Override is tracked per overload: only the `new` overload is dead.
+    let dead_ov = dead.iter().filter(|q| *q == "Shop.Derived.Ov").count();
+    assert_eq!(dead_ov, 1, "{dead:?}");
+    assert!(!dead.contains(&"Shop.Derived.V".to_string()), "{dead:?}");
+    assert!(dead.contains(&"Shop.Derived.N".to_string()), "{dead:?}");
+}
+
+/// Issue #185: a bare `IA` receiver resolves like C# does -- enclosing
+/// namespace first, then the single imported one; two imports stay ambiguous.
+#[test]
+fn bare_interface_receiver_resolves_by_enclosing_namespace_then_usings() {
+    let (_tmp, repo, db) = index("cs_dispatch_bare_scope");
+    let callers = |q: &str| {
+        let r = call(&repo, &db, "explain_symbol", json!({"qualname": q}));
+        names(&r["callers"])
+    };
+    // `using N1` only -> N1; enclosing namespace N2 beats `using N1` -> N2.
+    assert_eq!(callers("N1.IA.Run"), ["App.A.Go"]);
+    assert_eq!(callers("N2.IA.Run"), ["N2.B.Go"]);
+    // Both imported is a C# compile error: never guessed.
+    for q in ["N1.IA.Run", "N2.IA.Run"] {
+        assert!(!callers(q).contains(&"App2.D.Go".to_string()), "{q}");
+    }
+}
+
+/// Issue #185: type arguments compare canonically -- built-in aliases,
+/// `System.` prefixes, nullable annotations, spacing and nested generics.
+#[test]
+fn closed_generic_args_compare_after_normalisation() {
+    let (_tmp, repo, db) = index("cs_dispatch_normalized");
+    let callers = |q: &str| {
+        let r = call(&repo, &db, "explain_symbol", json!({"qualname": q}));
+        assert_eq!(r["symbol"]["qualname"], q, "{r}");
+        names(&r["callers"])
+    };
+    assert_eq!(callers("Shop.C.IA<int>.Run"), ["Shop.CInt.Go"]);
+    assert_eq!(callers("Shop.C.IA<List<int>>.Run"), ["Shop.CList.Go"]);
+    let mut strings = callers("Shop.C.IA<string>.Run");
+    strings.sort();
+    assert_eq!(
+        strings,
+        ["Shop.CNullableString.Go", "Shop.CSystemString.Go"]
+    );
+}
+
+/// Issue #185: an implicit impl is only excluded for the closures an
+/// explicit twin covers.
+#[test]
+fn implicit_impl_still_serves_closures_without_an_explicit_twin() {
+    let (_tmp, repo, db) = index("cs_dispatch_twin");
+    let a = downstream(&repo, &db, "Shop.IA.Run");
+    // C: implicit Run serves IA<int>; IA<string> has its explicit twin.
+    assert!(a.contains(&"Shop.C.Run".to_string()), "{a:?}");
+    assert!(a.contains(&"Shop.C.IA<string>.Run".to_string()), "{a:?}");
+    // D: both closures explicit, so its implicit Run serves nothing.
+    assert!(a.contains(&"Shop.D.IA<int>.Run".to_string()), "{a:?}");
+    assert!(!a.contains(&"Shop.D.Run".to_string()), "{a:?}");
+}
+
+/// Issue #185: C# scope forms -- dotted and file-scoped namespaces, `global
+/// using`, `using` aliases and nested types.
+#[test]
+fn scope_forms_resolve_same_named_interfaces() {
+    let (_tmp, repo, db) = index("cs_dispatch_scope_forms");
+    let explain = |q: &str, key: &str| {
+        let r = call(&repo, &db, "explain_symbol", json!({"qualname": q}));
+        let mut v = names(&r[key]);
+        v.sort();
+        v
+    };
+    assert_eq!(explain("A.B.IX", "implements"), ["A.B.C.DotImpl"]);
+    assert_eq!(explain("F1.IX", "implements"), ["F1.FImpl"]);
+    assert_eq!(explain("Z.IX", "implements"), ["G.GImpl"]);
+    assert_eq!(explain("K.Outer.IX", "implements"), ["K.Outer.Impl"]);
+    assert_eq!(explain("F1.IX.Run", "callers"), ["F1.FCaller.Go"]);
+    assert_eq!(
+        explain("Z.IX.Run", "callers"),
+        ["G.GCaller.Go", "H.HCaller.Go"]
+    );
+    assert_eq!(explain("K.Outer.IX.Run", "callers"), ["K.Outer.Go"]);
+}
