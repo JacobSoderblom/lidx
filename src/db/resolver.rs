@@ -585,7 +585,7 @@ const HIERARCHY_SQL: &str = "SELECT target_symbol_id, target_qualname
 /// Every symbol sharing `target_qualname`, for `collapse_exact_candidates`
 /// to judge (issue #77's ambiguity rule) — deliberately no `LIMIT`, since
 /// that judgment needs to see every candidate, not just the first two.
-const EXACT_SQL: &str = "SELECT id, file_id, kind FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC";
+const EXACT_SQL: &str = "SELECT s.id, s.file_id, s.kind, f.path FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.qualname = ? AND s.graph_version = ? ORDER BY s.id ASC";
 
 /// Suffix round of `resolve_import`: params are (trailing name,
 /// `.{candidate}`, graph_version). `substr(.., -n)` is an exact tail comparison,
@@ -723,11 +723,16 @@ impl<'c> Resolver<'c> {
         }
 
         if let Some(qn) = r.target_qualname
-            && let Some(id) = self.exact(qn, symbol_map)?
+            && let Some(id) = self.exact(qn, symbol_map, r.source_file_path)?
         {
             return Ok(resolved(id, ResolutionKind::Exact));
         }
-        if let Some(id) = self.resolve_import(r.import_candidates, symbol_map, r.source_lang)? {
+        if let Some(id) = self.resolve_import(
+            r.import_candidates,
+            symbol_map,
+            r.source_lang,
+            r.source_file_path,
+        )? {
             return Ok(resolved(id, ResolutionKind::Import));
         }
 
@@ -815,12 +820,17 @@ impl<'c> Resolver<'c> {
     /// same kind) collapses to the lowest id, anything else refuses rather
     /// than guess — issue #77's ambiguity rule, so incremental and fresh
     /// always agree on an ambiguous name.
-    fn exact(&mut self, qualname: &str, symbol_map: &HashMap<String, i64>) -> Result<Option<i64>> {
+    fn exact(
+        &mut self,
+        qualname: &str,
+        symbol_map: &HashMap<String, i64>,
+        caller_file: &str,
+    ) -> Result<Option<i64>> {
         if let Some(&id) = symbol_map.get(qualname) {
             return Ok(Some(id));
         }
         let gv = self.graph_version;
-        let candidates = query_exact_candidates(&mut self.exact, qualname, gv)?;
+        let candidates = query_exact_candidates(&mut self.exact, qualname, gv, caller_file)?;
         let resolved = collapse_exact_candidates(&candidates);
         if resolved.is_none() && candidates.len() > 1 {
             self.saw_ambiguous = true;
@@ -1125,8 +1135,9 @@ impl<'c> Resolver<'c> {
     }
 
     /// Whether a foreign-looking Rust path's second-to-last segment is a
-    /// unique repo type. Never true for a `std`/`core`/`alloc` root. Leaves
-    /// the ambiguity/privacy flags of the enclosing `resolve` untouched.
+    /// unique repo type. Never true for a `std`/`core`/`alloc` root. A type
+    /// name matching 2+ repo types leaves `saw_ambiguous` set, so `resolve`
+    /// reports `Unresolved(Ambiguous)` rather than stubbing it external.
     fn rust_path_names_repo_type(&mut self, path: &str, file_path: &str) -> Result<bool> {
         let mut segments = path.rsplit("::").skip(1);
         let (Some(type_name), root) = (segments.next(), path.split("::").next()) else {
@@ -1135,9 +1146,8 @@ impl<'c> Resolver<'c> {
         if matches!(root, Some("std" | "core" | "alloc")) {
             return Ok(false);
         }
-        let (ambiguous, private) = (self.saw_ambiguous, self.saw_private);
+        let private = self.saw_private;
         let found = self.resolve_type_symbol(type_name, "rust", file_path)?;
-        self.saw_ambiguous = ambiguous;
         self.saw_private = private;
         Ok(found.is_some())
     }
@@ -1286,6 +1296,7 @@ impl<'c> Resolver<'c> {
         candidates: &[String],
         symbol_map: &HashMap<String, i64>,
         source_lang: &str,
+        caller_file: &str,
     ) -> Result<Option<i64>> {
         let rounds: &[bool] = if profile_for(source_lang).import_suffix_matching {
             &[true, false]
@@ -1296,7 +1307,7 @@ impl<'c> Resolver<'c> {
             let mut found: Option<i64> = None;
             for candidate in candidates {
                 let id = if exact_round {
-                    self.exact(candidate, symbol_map)?
+                    self.exact(candidate, symbol_map, caller_file)?
                 } else {
                     let name = qualname_trailing_name(candidate);
                     let suffix = format!(".{candidate}");
@@ -1754,11 +1765,26 @@ fn query_exact_candidates(
     stmt: &mut Statement<'_>,
     qualname: &str,
     graph_version: i64,
+    caller_file: &str,
 ) -> Result<Vec<(i64, i64, String)>> {
     let rows = stmt.query_map(params![qualname, graph_version], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get::<_, String>(3)?,
+        ))
     })?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let mut candidates = Vec::new();
+    for row in rows {
+        let (id, file_id, kind, path) = row?;
+        // Issue #102: fixture symbols are never targets from outside them.
+        if is_fixture_path(&path) && !is_fixture_path(caller_file) {
+            continue;
+        }
+        candidates.push((id, file_id, kind));
+    }
+    Ok(candidates)
 }
 
 impl Db {
@@ -3430,7 +3456,7 @@ mod tests {
     /// type segment doesn't count as a repo type, so the trailing name
     /// never binds to a same-named repo symbol.
     #[test]
-    fn rust_foreign_path_with_ambiguous_type_segment_never_binds() {
+    fn rust_foreign_path_with_ambiguous_type_segment_stays_unresolved() {
         let conn = test_conn();
         let a = insert_file(&conn, "src/a.rs", "rust");
         let b = insert_file(&conn, "src/b.rs", "rust");
@@ -3442,15 +3468,55 @@ mod tests {
         let map = std::collections::HashMap::new();
         let r = reference("Widget::build", "CALLS", "rust", "src/init.rs", None, false);
         let resolution = resolver.resolve(&r, &map).unwrap();
-        assert!(
-            !matches!(
-                resolution,
-                Resolution::Resolved {
-                    kind: ResolutionKind::BareName | ResolutionKind::TwoSegment,
-                    ..
-                }
-            ),
-            "{resolution:?}"
+        assert_eq!(
+            resolution,
+            Resolution::Unresolved(UnresolvedReason::Ambiguous)
         );
+    }
+
+    /// Issue #102: a qualname that exists only under `tests/fixtures/` is
+    /// never an exact-tier target for a reference from `src/`, but is one
+    /// from within fixtures.
+    #[test]
+    fn exact_tier_ignores_fixture_symbols_from_outside_fixtures() {
+        let conn = test_conn();
+        let f = insert_file(&conn, "tests/fixtures/golden/rust/src/helper.rs", "rust");
+        insert_symbol(
+            &conn,
+            f,
+            "function",
+            "helper",
+            "crate::helper::helper",
+            None,
+        );
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let map = std::collections::HashMap::new();
+        let r = reference(
+            "crate::helper::helper",
+            "CALLS",
+            "rust",
+            "src/init.rs",
+            None,
+            false,
+        );
+        assert!(matches!(
+            resolver.resolve(&r, &map).unwrap(),
+            Resolution::Unresolved(_)
+        ));
+        let r = reference(
+            "crate::helper::helper",
+            "CALLS",
+            "rust",
+            "tests/fixtures/golden/rust/src/caller.rs",
+            None,
+            false,
+        );
+        assert!(matches!(
+            resolver.resolve(&r, &map).unwrap(),
+            Resolution::Resolved {
+                kind: ResolutionKind::Exact,
+                ..
+            }
+        ));
     }
 }
