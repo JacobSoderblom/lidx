@@ -1430,6 +1430,11 @@ impl Db {
             let mut exact_lookup_stmt = tx.prepare(
                 "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
             )?;
+            let mut span_lookup_stmt = tx.prepare(
+                "SELECT id FROM symbols
+                 WHERE file_id = ? AND qualname = ? AND start_byte = ? AND graph_version = ?
+                 LIMIT 1",
+            )?;
             // Issue #78: one row per `Unresolved` outcome, so
             // `Db::retry_unresolved_references` can retry it later without
             // rescanning every NULL-target edge.
@@ -1448,15 +1453,37 @@ impl Db {
                 .unwrap_or_else(|_| ("unknown".to_string(), String::new()));
 
             for edge in edges {
-                let source_id = resolve_symbol_id(
-                    &edge.source_qualname,
-                    symbol_map,
-                    &mut exact_lookup_stmt,
-                    graph_version,
-                )?;
+                // An overload-pinned source is the symbol at that span.
+                let pinned = match (&edge.source_qualname, edge.source_start_byte) {
+                    (Some(qualname), Some(start_byte)) => span_lookup_stmt
+                        .query_row(
+                            params![file_id, qualname, start_byte, graph_version],
+                            |row| row.get(0),
+                        )
+                        .optional()?,
+                    _ => None,
+                };
+                let source_id = match pinned {
+                    Some(id) => Some(id),
+                    None => resolve_symbol_id(
+                        &edge.source_qualname,
+                        symbol_map,
+                        &mut exact_lookup_stmt,
+                        graph_version,
+                    )?,
+                };
                 let extracted_column = edge.receiver_type.as_column();
                 let extracted_receiver_type = extracted_column.as_deref();
                 let call_shape = edge.call_shape.map(|shape| shape.encode());
+                let pinned_target = match (&edge.target_qualname, edge.target_start_byte) {
+                    (Some(qualname), Some(start_byte)) => span_lookup_stmt
+                        .query_row(
+                            params![file_id, qualname, start_byte, graph_version],
+                            |row| row.get(0),
+                        )
+                        .optional()?,
+                    _ => None,
+                };
                 let resolution = resolver.resolve(
                     &resolver::Reference {
                         target_qualname: edge.target_qualname.as_deref(),
@@ -1471,6 +1498,13 @@ impl Db {
                     },
                     symbol_map,
                 )?;
+                let resolution = match pinned_target {
+                    Some(target_id) => resolver::Resolution::Resolved {
+                        target_id,
+                        kind: resolver::ResolutionKind::Exact,
+                    },
+                    None => resolution,
+                };
 
                 // Issue #79: `is_bridge_edge_kind`'s kind is always written,
                 // resolved or not -- see its doc for why that's not one
@@ -1483,13 +1517,22 @@ impl Db {
                 // no placeholder edge at all, only the `unresolved_references`
                 // row below.
                 let is_bridge = crate::indexer::channel::is_bridge_edge_kind(&edge.kind);
+                let stored_target = match resolution.target_id() {
+                    Some(id) => resolver::bound_target_qualname(
+                        &tx,
+                        extracted_receiver_type,
+                        edge.target_qualname.as_deref(),
+                        id,
+                    )?,
+                    None => edge.target_qualname.clone(),
+                };
                 let edge_id = if resolution.target_id().is_some() || is_bridge {
                     insert_stmt.execute(params![
                         file_id,
                         source_id,
                         resolution.target_id(),
                         &edge.kind,
-                        edge.target_qualname.as_deref(),
+                        stored_target.as_deref(),
                         edge.detail.as_deref(),
                         edge.evidence_snippet.as_deref(),
                         edge.evidence_start_line,
@@ -2237,6 +2280,8 @@ mod tests {
             import_candidates: Vec::new(),
             bare_call: false,
             call_shape: None,
+            source_start_byte: None,
+            target_start_byte: None,
         }
     }
 
@@ -3720,6 +3765,8 @@ mod tests {
             import_candidates: Vec::new(),
             bare_call: false,
             call_shape: None,
+            source_start_byte: None,
+            target_start_byte: None,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4121,6 +4168,8 @@ mod tests {
             import_candidates: Vec::new(),
             bare_call: false,
             call_shape: None,
+            source_start_byte: None,
+            target_start_byte: None,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4170,6 +4219,8 @@ mod tests {
                 import_candidates: Vec::new(),
                 bare_call: false,
                 call_shape: None,
+                source_start_byte: None,
+                target_start_byte: None,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CHANNEL_SUBSCRIBE".to_string(),
@@ -4187,6 +4238,8 @@ mod tests {
                 import_candidates: Vec::new(),
                 bare_call: false,
                 call_shape: None,
+                source_start_byte: None,
+                target_start_byte: None,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted
@@ -4395,6 +4448,8 @@ mod tests {
             import_candidates: Vec::new(),
             bare_call: false,
             call_shape: None,
+            source_start_byte: None,
+            target_start_byte: None,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4455,6 +4510,8 @@ mod tests {
                 import_candidates: Vec::new(),
                 bare_call: false,
                 call_shape: None,
+                source_start_byte: None,
+                target_start_byte: None,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CONFIG_BIND".to_string(),
@@ -4472,6 +4529,8 @@ mod tests {
                 import_candidates: Vec::new(),
                 bare_call: false,
                 call_shape: None,
+                source_start_byte: None,
+                target_start_byte: None,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted

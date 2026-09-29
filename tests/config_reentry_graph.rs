@@ -57,6 +57,8 @@ fn edge(kind: &str, src: &str, target: &str) -> EdgeInput {
         import_candidates: Vec::new(),
         bare_call: false,
         call_shape: None,
+        source_start_byte: None,
+        target_start_byte: None,
     }
 }
 

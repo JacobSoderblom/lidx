@@ -1,11 +1,12 @@
 use crate::db::resolver::{
-    Declaration, DeclarationIndex, LanguageProfile, RpcCallEdge, ScopeImports, VisibilityRule,
+    Declaration, DeclarationIndex, DeclarationQuery, LanguageProfile, RpcCallEdge, ScopeImports,
+    VisibilityRule,
 };
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    CallShape, DeferredBase, DeferredReturn, EdgeInput, ExtractedFile, MAX_DEFERRED_DEPTH,
-    ReceiverType, SymbolInput,
+    CallShape, DeferredArgument, DeferredBase, DeferredReturn, EdgeInput, ExtractedFile,
+    MAX_DEFERRED_DEPTH, ReceiverType, SymbolInput,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -93,6 +94,9 @@ struct Context {
     /// base class, only implements interfaces, or the first base-list
     /// entry isn't cheaply classifiable.
     base_type: LocalType,
+    /// The enclosing class's first base type, generic arguments stripped: what `: base(..)` constructs, known
+    /// even when the type is generic or lives in another file.
+    base_class_name: Option<String>,
     /// This file's `using` directives, collected once in `extract()` before
     /// the main walk — see `ImportContext` / `collect_import_context`. Set
     /// once and inherited unchanged through every `ctx.clone()` (unlike
@@ -345,6 +349,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             class_attr_types: Rc::new(HashMap::new()),
             class_attr_raw: Rc::new(HashMap::new()),
             base_type: LocalType::Other,
+            base_class_name: None,
             imports: Rc::new(collect_import_context(root, source)),
             extension_registry: Rc::clone(&self.extension_registry),
             method_returns: Rc::new(MethodReturns::collect(root, source)),
@@ -479,7 +484,12 @@ fn walk_compilation_unit(node: Node<'_>, ctx: &Context, source: &str, output: &m
 }
 
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    if node.kind() == "invocation_expression" || node.kind() == "object_creation_expression" {
+    if matches!(
+        node.kind(),
+        "invocation_expression"
+            | "object_creation_expression"
+            | "implicit_object_creation_expression"
+    ) {
         handle_call(node, ctx, source, output);
     }
     // Configuration["KEY"] — element_access_expression
@@ -533,6 +543,14 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         }
         "property_declaration" => {
             handle_property(node, ctx, source, output);
+            return;
+        }
+        "event_declaration" => {
+            handle_event(node, ctx, source, output);
+            return;
+        }
+        "event_field_declaration" => {
+            handle_event_field(node, ctx, source, output);
             return;
         }
         "field_declaration" => {
@@ -672,6 +690,7 @@ fn handle_type(
     next_ctx.grpc_service = grpc_service_info.map(|(service, _)| service);
     next_ctx.grpc_package_candidates = grpc_package_candidates;
     next_ctx.base_type = resolvable_base_type(node, source, type_kind);
+    next_ctx.base_class_name = base_class_name(node, source, type_kind);
     // Top-level-statement locals aren't visible inside a type.
     next_ctx.local_types = Rc::new(HashMap::new());
     next_ctx.assigns = Rc::new(ScopeAssigns::default());
@@ -722,6 +741,21 @@ fn resolvable_base_type(node: Node<'_>, source: &str, type_kind: TypeKind) -> Lo
     LocalType::Other
 }
 
+fn base_class_name(node: Node<'_>, source: &str, type_kind: TypeKind) -> Option<String> {
+    if !matches!(type_kind, TypeKind::Class | TypeKind::Record) {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let list = node
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "base_list")?;
+    let first = base_list_types(list, source).into_iter().next()?;
+    let name = strip_type_args(&first);
+    // An interface-looking first entry is kept: `IISManager` may be a class,
+    // and the resolver refuses a target that turns out to be an interface.
+    (!name.is_empty()).then_some(name)
+}
+
 fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     let Some(name_node) = node.child_by_field_name("name") else {
         return;
@@ -744,6 +778,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     if has_modifier(node, source, "static") {
         output.static_qualnames.push(qualname.clone());
     }
+    let first_edge = output.edges.len();
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -772,10 +807,11 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         output.edges.push(edge);
     }
     record_extension_method(node, ctx, source, &name, &qualname);
+    walk_parameter_defaults(node, &qualname, ctx, source, output);
     if let Some(body) = node.child_by_field_name("body") {
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
-        next_ctx.current_scope = qualname;
+        next_ctx.current_scope = qualname.clone();
         next_ctx.route_groups = collect_route_groups(body, source);
         let mut grpc_clients = ctx.grpc_clients.clone();
         grpc_clients.extend(collect_grpc_clients(body, source, &ctx.method_returns));
@@ -784,6 +820,54 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         next_ctx.local_types = Rc::new(local_types);
         next_ctx.assigns = Rc::new(assigns);
         walk_node(body, &next_ctx, source, output);
+    }
+    pin_edge_sources(&mut output.edges[first_edge..], &qualname, start_byte);
+}
+
+/// Walk the default-value expressions of a method/constructor's parameters
+/// (`Widget w = new()`), attributing their calls to the method itself.
+fn walk_parameter_defaults(
+    node: Node<'_>,
+    scope: &str,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let Some(params) = node.child_by_field_name("parameters") else {
+        return;
+    };
+    let mut next_ctx = ctx.clone();
+    next_ctx.current_scope = scope.to_string();
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        if param.kind() != "parameter" {
+            continue;
+        }
+        let skipped: Vec<_> = ["type", "name"]
+            .iter()
+            .filter_map(|f| param.child_by_field_name(f))
+            .collect();
+        let mut inner = param.walk();
+        for child in param.named_children(&mut inner) {
+            if !skipped.contains(&child) && child.kind() != "attribute_list" {
+                walk_node(child, &next_ctx, source, output);
+            }
+        }
+    }
+}
+
+/// Pin the edges emitted from (and the CONTAINS edge to) the overload at
+/// `start_byte` to it: several
+/// C# overloads share one qualname, so the qualname alone can't say which
+/// symbol an edge belongs to.
+fn pin_edge_sources(edges: &mut [EdgeInput], qualname: &str, start_byte: i64) {
+    for edge in edges {
+        if edge.source_qualname.as_deref() == Some(qualname) {
+            edge.source_start_byte = Some(start_byte);
+        }
+        if edge.kind == "CONTAINS" && edge.target_qualname.as_deref() == Some(qualname) {
+            edge.target_start_byte = Some(start_byte);
+        }
     }
 }
 
@@ -820,12 +904,20 @@ fn simple_interface_name(text: &str) -> Option<String> {
 }
 
 fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    let qualname = build_qualname(ctx, ".ctor");
+    // A static constructor is a distinct symbol (`T..cctor`): `new T(..)`
+    // never runs it, so it must not share the instance constructors' name.
+    let name = if has_modifier(node, source, "static") {
+        ".cctor"
+    } else {
+        ".ctor"
+    };
+    let qualname = build_qualname(ctx, name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = method_signature(node, source);
+    let first_edge = output.edges.len();
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
-        name: ".ctor".to_string(),
+        name: name.to_string(),
         qualname: qualname.clone(),
         start_line,
         start_col,
@@ -867,15 +959,27 @@ fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
         }
     }
 
+    let mut next_ctx = ctx.clone();
+    next_ctx.fn_depth += 1;
+    next_ctx.current_scope = qualname.clone();
+    let (local_types, assigns) = infer_local_types(node, source, ctx);
+    next_ctx.local_types = Rc::new(local_types);
+    next_ctx.assigns = Rc::new(assigns);
+    walk_parameter_defaults(node, &qualname, ctx, source, output);
+    let mut cursor = node.walk();
+    if let Some(init) = node
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "constructor_initializer")
+    {
+        output
+            .edges
+            .extend(constructor_initializer_edge(init, &qualname, ctx, source));
+        walk_node(init, &next_ctx, source, output);
+    }
     if let Some(body) = node.child_by_field_name("body") {
-        let mut next_ctx = ctx.clone();
-        next_ctx.fn_depth += 1;
-        next_ctx.current_scope = qualname;
-        let (local_types, assigns) = infer_local_types(node, source, ctx);
-        next_ctx.local_types = Rc::new(local_types);
-        next_ctx.assigns = Rc::new(assigns);
         walk_node(body, &next_ctx, source, output);
     }
+    pin_edge_sources(&mut output.edges[first_edge..], &qualname, start_byte);
 }
 
 fn handle_property(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -904,11 +1008,197 @@ fn handle_property(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
         source_qualname: Some(container_qualname(ctx)),
+        target_qualname: Some(qualname.clone()),
+        detail: None,
+        evidence_snippet: None,
+        ..Default::default()
+    });
+    walk_initializer(node, &qualname, ctx, source, output);
+    walk_accessors(node, &qualname, ctx, source, output);
+}
+
+/// `event T Name { add {} remove {} }` / `event T IA.Name { ... }`.
+fn handle_event(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let name = node_text(name_node, source);
+    if name.is_empty() {
+        return;
+    }
+    let qualname = match explicit_interface_name(node, source) {
+        Some(iface) => build_qualname(ctx, &format!("{iface}.{name}")),
+        None => build_qualname(ctx, &name),
+    };
+    push_event(node, ctx, output, name, qualname.clone());
+    walk_accessors(node, &qualname, ctx, source, output);
+}
+
+/// Field-like `event EventHandler Changed, Other;`.
+fn handle_event_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let mut cursor = node.walk();
+    for decl in node.named_children(&mut cursor) {
+        if decl.kind() != "variable_declaration" {
+            continue;
+        }
+        let mut inner = decl.walk();
+        for child in decl.named_children(&mut inner) {
+            let Some(name_node) = (child.kind() == "variable_declarator")
+                .then(|| child.child_by_field_name("name"))
+                .flatten()
+            else {
+                continue;
+            };
+            let name = node_text(name_node, source);
+            if name.is_empty() {
+                continue;
+            }
+            let qualname = build_qualname(ctx, &name);
+            push_event(child, ctx, output, name, qualname);
+        }
+    }
+}
+
+fn push_event(
+    node: Node<'_>,
+    ctx: &Context,
+    output: &mut ExtractedFile,
+    name: String,
+    qualname: String,
+) {
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    output.symbols.push(SymbolInput {
+        kind: "event".to_string(),
+        name,
+        qualname: qualname.clone(),
+        start_line,
+        start_col,
+        end_line,
+        end_col,
+        start_byte,
+        end_byte,
+        signature: None,
+        docstring: None,
+    });
+    output.edges.push(EdgeInput {
+        kind: "CONTAINS".to_string(),
+        source_qualname: Some(container_qualname(ctx)),
         target_qualname: Some(qualname),
         detail: None,
         evidence_snippet: None,
         ..Default::default()
     });
+}
+
+/// Walk a property/event's accessor bodies (`get`/`set`/`init`/`add`/
+/// `remove`), attributing their calls to the member itself.
+fn walk_accessors(
+    node: Node<'_>,
+    scope: &str,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let Some(list) = node.child_by_field_name("accessors") else {
+        return;
+    };
+    let mut cursor = list.walk();
+    for accessor in list.named_children(&mut cursor) {
+        if accessor.kind() != "accessor_declaration" {
+            continue;
+        }
+        let mut next_ctx = ctx.clone();
+        next_ctx.fn_depth += 1;
+        next_ctx.current_scope = scope.to_string();
+        let (local_types, assigns) = infer_local_types(accessor, source, ctx);
+        next_ctx.local_types = Rc::new(local_types);
+        next_ctx.assigns = Rc::new(assigns);
+        let mut inner = accessor.walk();
+        for child in accessor.named_children(&mut inner) {
+            walk_node(child, &next_ctx, source, output);
+        }
+    }
+}
+
+/// The `base(..)` / `this(..)` a constructor delegates to, as a CALLS edge
+/// to the target type (the resolver picks the constructor by arity, as for
+/// `new T(..)`). `None` when the base type isn't resolvable from this file.
+fn constructor_initializer_edge(
+    init: Node<'_>,
+    ctor_qualname: &str,
+    ctx: &Context,
+    source: &str,
+) -> Option<EdgeInput> {
+    let text = node_text(init, source);
+    let is_this = text
+        .trim_start_matches(':')
+        .trim_start()
+        .starts_with("this");
+    let target = if is_this {
+        container_qualname(ctx)
+    } else {
+        // Qualified like `new Base()`'s target, so a same-named file module
+        // (`Base.cs` -> module `Base`) never wins the exact tier.
+        resolve_call_target(ctx.base_class_name.as_ref()?, ctx)?
+    };
+    if target.is_empty() {
+        return None;
+    }
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(init);
+    // A `base` type is named the way it is in source: qualify it through this
+    // file's `using`s and namespace so a same-named type elsewhere refuses
+    // rather than wins.
+    let import_candidates = match (is_this, ctx.base_class_name.as_deref()) {
+        (false, Some(base)) if !base.contains('.') => import_qualified_candidates(base, "", ctx)
+            .into_iter()
+            .map(|c| c.trim_end_matches('.').to_string())
+            .collect(),
+        _ => Vec::new(),
+    };
+    Some(EdgeInput {
+        kind: "CALLS".to_string(),
+        source_qualname: Some(ctor_qualname.to_string()),
+        target_qualname: Some(target),
+        import_candidates,
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        call_shape: Some(call_shape(init)),
+        ..Default::default()
+    })
+}
+
+/// Walk every expression of a field/property initializer (`= new T()`,
+/// `= Make(..)`, `=> expr`, lambdas), attributing its calls to the member
+/// itself. `node` is the property declaration or a field's declarator; the
+/// initializer is every named child other than the name/type/accessors.
+fn walk_initializer(
+    node: Node<'_>,
+    scope: &str,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut next_ctx = ctx.clone();
+    next_ctx.current_scope = scope.to_string();
+    let skipped: Vec<_> = ["name", "type", "accessors"]
+        .iter()
+        .filter_map(|f| node.child_by_field_name(f))
+        .collect();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if skipped.contains(&child)
+            || matches!(
+                child.kind(),
+                "modifier" | "attribute_list" | "accessor_list"
+            )
+        {
+            continue;
+        }
+        walk_node(child, &next_ctx, source, output);
+    }
 }
 
 fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -957,11 +1247,12 @@ fn handle_variable_declaration(
         output.edges.push(EdgeInput {
             kind: "CONTAINS".to_string(),
             source_qualname: Some(container_qualname(ctx)),
-            target_qualname: Some(qualname),
+            target_qualname: Some(qualname.clone()),
             detail: None,
             evidence_snippet: None,
             ..Default::default()
         });
+        walk_initializer(child, &qualname, ctx, source, output);
     }
 }
 
@@ -1040,24 +1331,55 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = config_bind_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
-    let Some(target_node) = call_target_node(node) else {
+    // Target-typed `new(..)` has no type node: the declared type it is
+    // assigned to (issue #186) names the constructed type instead.
+    let implicit_type = (node.kind() == "implicit_object_creation_expression")
+        .then(|| target_typed_new_type(node, ctx, source));
+    let target_node = call_target_node(node);
+    if matches!(implicit_type, Some(None))
+        && let Some((marker, callee)) = deferred_argument_marker(node, ctx, source)
+    {
+        let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+        output.edges.push(EdgeInput {
+            kind: "CALLS".to_string(),
+            source_qualname: Some(ctx.current_scope.clone()),
+            // The callee's name keeps the edge retryable; the resolver binds
+            // the constructor of the callee's parameter type instead.
+            target_qualname: Some(callee),
+            evidence_snippet: util::edge_evidence_snippet(
+                source, start_byte, end_byte, start_line, end_line,
+            ),
+            receiver_type: marker,
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            call_shape: Some(call_shape(node)),
+            ..Default::default()
+        });
         return;
-    };
+    }
+    if target_node.is_none() && !matches!(implicit_type, Some(Some(_))) {
+        return;
+    }
     // ponytail: `new List<T>()` keeps its type args (and so stays
     // unresolved): stripped to `List`, a BCL generic type falls to the
     // bare-name tier and binds a same-named repo *method* (51 edges to a
     // gRPC `List` rpc on dpb, for 3 genuine repo generic classes gained).
     // Upgrade path: a constructor-only kind filter (class/struct/record)
     // in the fuzzy tiers, then strip here too.
-    let raw = if node.kind() == "object_creation_expression" {
-        node_text(target_node, source)
-    } else {
-        call_target_text(target_node, source)
+    let raw = match (implicit_type.flatten(), target_node) {
+        (Some(declared), _) => declared,
+        (None, Some(target)) if node.kind() == "object_creation_expression" => {
+            node_text(target, source)
+        }
+        (None, Some(target)) => call_target_text(target, source),
+        (None, None) => return,
     };
     if raw.is_empty() {
         return;
     }
-    let receiver_type = infer_receiver_type(target_node, source, ctx);
+    let receiver_type = target_node.map_or(ReceiverType::NotTracked, |target| {
+        infer_receiver_type(target, source, ctx)
+    });
     // Import-aware qualification only makes sense for a call whose receiver
     // isn't already gated by receiver-type inference (a tracked local/field
     // is never a type name) — see `import_qualified_candidates`'s doc.
@@ -1083,7 +1405,8 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // `extension_method_candidates`'s doc for why this needs its own
     // (cross-file, accumulated) evidence source rather than reusing
     // `import_qualified_candidates`.
-    let extension_candidates = call_target_parts(target_node, source)
+    let extension_candidates = target_node
+        .and_then(|target| call_target_parts(target, source))
         .filter(|parts| parts.receiver.is_some())
         .map(|parts| {
             // `call_target_parts` keeps `<T>` for the CONFIG_BIND/HTTP
@@ -1106,7 +1429,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let mut target = resolve_call_target(&raw, ctx);
     if target.is_none()
         && let ReceiverType::Deferred(call) = &mut receiver_type
-        && let Some(parts) = call_target_parts(target_node, source)
+        && let Some(parts) = target_node.and_then(|target| call_target_parts(target, source))
     {
         // `a.B().C()`: no printable receiver, so the target is just `C`,
         // bound through the deferred receiver type alone.
@@ -1145,23 +1468,250 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         //   unlike a free function call in Python/Go/Rust/TS, it always
         //   has a receiver, just not a written one (issue #75 follow-up,
         //   finding C).
-        bare_call: node.kind() != "object_creation_expression"
-            && target_node.kind() == "identifier"
+        bare_call: node.kind() == "invocation_expression"
+            && target_node.is_some_and(|target| target.kind() == "identifier")
             && ctx.type_stack.is_empty(),
-        call_shape: Some(CallShape {
-            arg_count: node
-                .child_by_field_name("arguments")
-                .map(|args| {
-                    let mut cursor = args.walk();
-                    args.named_children(&mut cursor)
-                        .filter(|c| c.kind() == "argument")
-                        .count() as u32
-                })
-                .unwrap_or(0),
-            is_new: node.kind() == "object_creation_expression",
-        }),
+        call_shape: Some(call_shape(node)),
         ..Default::default()
     });
+}
+
+/// The argument count / object-creation marker of a call or `new` node.
+fn call_shape(node: Node<'_>) -> CallShape {
+    // A target-typed `new(..)` carries its `argument_list` unnamed.
+    let arg_count = node
+        .child_by_field_name("arguments")
+        .or_else(|| {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor)
+                .find(|c| c.kind() == "argument_list")
+        })
+        .map(|args| {
+            let mut cursor = args.walk();
+            args.named_children(&mut cursor)
+                .filter(|c| c.kind() == "argument")
+                .count() as u32
+        })
+        .unwrap_or(0);
+    CallShape {
+        arg_count,
+        is_new: node.kind() != "invocation_expression",
+    }
+}
+
+/// `@arg:` marker for a target-typed `new(..)` passed as a call argument
+/// (`Foo(new())`, `recv.M(1, x: new(2))`): the resolver finishes it from the
+/// callee's declared parameter type (`ReceiverType::deferred_argument`).
+/// `None` when the callee can't be named from this file alone.
+fn deferred_argument_marker(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+) -> Option<(ReceiverType, String)> {
+    let arg = node.parent().filter(|p| p.kind() == "argument")?;
+    let list = arg.parent().filter(|p| p.kind() == "argument_list")?;
+    let call = list.parent()?;
+    let mut cursor = list.walk();
+    let args: Vec<Node<'_>> = list
+        .named_children(&mut cursor)
+        .filter(|c| c.kind() == "argument")
+        .collect();
+    let index = args.iter().position(|a| *a == arg)?;
+    let name = arg
+        .child_by_field_name("name")
+        .map(|n| node_text(n, source));
+    let container = container_qualname(ctx);
+    let callee = match call.kind() {
+        "invocation_expression" => {
+            let function = call.child_by_field_name("function")?;
+            let method = |n: Node<'_>| {
+                let text = node_text(n, source);
+                let bare = text.split('<').next().unwrap_or(&text).to_string();
+                (!bare.is_empty()).then_some(bare)
+            };
+            match function.kind() {
+                "identifier" | "generic_name" if !container.is_empty() => {
+                    format!("{container}.{}", method(function)?)
+                }
+                "member_access_expression" => {
+                    let method = method(function.child_by_field_name("name")?)?;
+                    let receiver = function.child_by_field_name("expression")?;
+                    if receiver.kind() == "this" {
+                        if container.is_empty() {
+                            return None;
+                        }
+                        format!("{container}.{method}")
+                    } else {
+                        match infer_receiver_type(function, source, ctx) {
+                            ReceiverType::Known(ty) => format!("{ty}.{method}"),
+                            // A bare type name (`Helper.Make(new())`).
+                            ReceiverType::NotTracked
+                                if receiver.kind() == "identifier"
+                                    && node_text(receiver, source)
+                                        .starts_with(|c: char| c.is_ascii_uppercase()) =>
+                            {
+                                format!("{}.{method}", node_text(receiver, source))
+                            }
+                            _ => return None,
+                        }
+                    }
+                }
+                _ => return None,
+            }
+        }
+        "constructor_initializer" => {
+            let text = node_text(call, source);
+            if text
+                .trim_start_matches(':')
+                .trim_start()
+                .starts_with("this")
+            {
+                format!("{container}..ctor")
+            } else {
+                format!("{}..ctor", ctx.base_class_name.as_ref()?)
+            }
+        }
+        "object_creation_expression" => {
+            let ty = node_text(call.child_by_field_name("type")?, source);
+            if ty.is_empty() || !is_simple_call_target(&ty) {
+                return None;
+            }
+            format!("{ty}..ctor")
+        }
+        _ => return None,
+    };
+    let marker = ReceiverType::DeferredArgument(DeferredArgument {
+        index,
+        name,
+        arg_count: args.len(),
+        callee: callee.clone(),
+    });
+    Some((marker, callee))
+}
+
+/// The constructed type of a target-typed `new(..)`: the declared type of the
+/// field/local/property/parameter it initialises or is assigned to, or of the
+/// method/accessor it is returned from. `None` for `var`, builtin or generic
+/// types (`classify_annotation` yields no `Known` name) and every context
+/// where no declared type is in reach.
+fn target_typed_new_type(node: Node<'_>, ctx: &Context, source: &str) -> Option<String> {
+    let mut child = node;
+    let mut parent = node.parent()?;
+    // Wrappers that pass the target type through to the `new(..)` inside:
+    // both `?:` branches and the right of `??`.
+    loop {
+        let passes_through = match parent.kind() {
+            "parenthesized_expression" | "equals_value_clause" => true,
+            "conditional_expression" => parent.child_by_field_name("condition") != Some(child),
+            "binary_expression" => {
+                parent.child_by_field_name("right") == Some(child)
+                    && parent
+                        .child_by_field_name("operator")
+                        .is_some_and(|op| node_text(op, source) == "??")
+            }
+            _ => false,
+        };
+        if !passes_through {
+            break;
+        }
+        child = parent;
+        parent = parent.parent()?;
+    }
+    let declared = match parent.kind() {
+        "variable_declarator" => parent
+            .parent()
+            .filter(|decl| decl.kind() == "variable_declaration")?
+            .child_by_field_name("type")
+            .map(|t| node_text(t, source)),
+        "property_declaration" | "parameter" => parent
+            .child_by_field_name("type")
+            .map(|t| node_text(t, source)),
+        "assignment_expression" => {
+            let left = parent.child_by_field_name("left")?;
+            if parent.child_by_field_name("right") != Some(child) {
+                return None;
+            }
+            let name = match left.kind() {
+                "identifier" => node_text(left, source),
+                "member_access_expression"
+                    if left.child_by_field_name("expression").map(|e| e.kind()) == Some("this") =>
+                {
+                    node_text(left.child_by_field_name("name")?, source)
+                }
+                _ => return None,
+            };
+            let local = if left.kind() == "identifier" {
+                ctx.local_types.get(&name)
+            } else {
+                None
+            };
+            return match local.or_else(|| ctx.class_attr_types.get(&name)) {
+                Some(LocalType::Known(ty)) => Some(ty.clone()),
+                _ => None,
+            };
+        }
+        "return_statement" | "arrow_expression_clause" => enclosing_return_type(parent, source),
+        k if is_lambda_node(k) => lambda_return_type(parent, source),
+        _ => None,
+    }?;
+    match classify_annotation(&declared) {
+        LocalType::Known(_) => Some(declared.trim().trim_end_matches('?').trim().to_string()),
+        _ => None,
+    }
+}
+
+/// Declared return type of the method, local function, property accessor or
+/// lambda a `return` statement / expression body belongs to, with an async
+/// `Task<T>` / `ValueTask<T>` unwrapped to `T` (and a non-async one refused:
+/// there `new()` would construct the task itself).
+fn enclosing_return_type(from: Node<'_>, source: &str) -> Option<String> {
+    let mut current = from.parent();
+    while let Some(node) = current {
+        match node.kind() {
+            "method_declaration" | "local_function_statement" => {
+                let declared = node
+                    .child_by_field_name("returns")
+                    .or_else(|| node.child_by_field_name("type"))
+                    .map(|t| node_text(t, source))?;
+                return unwrap_return(&declared, has_modifier(node, source, "async"));
+            }
+            "property_declaration" | "indexer_declaration" => {
+                return node
+                    .child_by_field_name("type")
+                    .map(|t| node_text(t, source));
+            }
+            k if is_lambda_node(k) => return lambda_return_type(node, source),
+            _ => current = node.parent(),
+        }
+    }
+    None
+}
+
+/// The return type a lambda's declared delegate type gives it: the last type
+/// argument of `Func<..>` on the declaration the lambda initialises, with
+/// async unwrapping as for a method. Any other delegate type is unknown.
+fn lambda_return_type(lambda: Node<'_>, source: &str) -> Option<String> {
+    let mut parent = lambda.parent()?;
+    if parent.kind() == "equals_value_clause" {
+        parent = parent.parent()?;
+    }
+    if parent.kind() != "variable_declarator" {
+        return None;
+    }
+    let delegate = node_text(
+        parent
+            .parent()
+            .filter(|decl| decl.kind() == "variable_declaration")?
+            .child_by_field_name("type")?,
+        source,
+    );
+    let inner = delegate
+        .trim()
+        .strip_prefix("Func<")
+        .and_then(|rest| rest.strip_suffix('>'))?;
+    let ret = split_respecting_brackets(inner).pop()?;
+    let is_async = node_text(lambda, source).trim_start().starts_with("async");
+    unwrap_return(ret.trim(), is_async)
 }
 
 fn config_read_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
@@ -4400,12 +4950,49 @@ fn unwrap_return(ret: &str, awaited: bool) -> Option<String> {
 /// `LanguageProfile::deferred_receiver`: the type a deferred call returns
 /// (`""` when it can't be told, so the call binds nothing).
 fn resolve_deferred(column: &str, index: &dyn DeclarationIndex) -> Result<Option<Option<String>>> {
+    if let Some(arg) = DeferredArgument::parse(column) {
+        return Ok(Some(Some(argument_type(&arg, index)?.unwrap_or_default())));
+    }
     let Some(call) = DeferredReturn::parse(column) else {
         return Ok(None);
     };
     Ok(Some(Some(
         receiver_type(&call, index, 0)?.unwrap_or_default(),
     )))
+}
+
+/// The repo type a `new(..)` argument constructs: the declared type of the
+/// parameter it is passed for, shared by every arity-admitted overload of the
+/// callee (differing or unreadable parameters -> `None`, never a guess) and
+/// naming a repo type (which rules out a type parameter).
+fn argument_type(arg: &DeferredArgument, index: &dyn DeclarationIndex) -> Result<Option<String>> {
+    let (ty, method) = match arg.callee.strip_suffix("..ctor") {
+        Some(ty) => (ty, ".ctor"),
+        None => match arg.callee.rsplit_once('.') {
+            Some(split) => split,
+            None => return Ok(None),
+        },
+    };
+    let mut found: Option<String> = None;
+    for decl in index.declarations(DeclarationQuery::Member { ty, method })? {
+        let Some(sig) = decl.signature.as_deref() else {
+            return Ok(None);
+        };
+        if !crate::db::resolver::admits_arg_count(arg.arg_count, sig) {
+            continue;
+        }
+        let Some(param) = parameter_type_from_signature(sig, arg.index, arg.name.as_deref()) else {
+            return Ok(None);
+        };
+        match &found {
+            Some(prev) if *prev != param => return Ok(None),
+            _ => found = Some(param),
+        }
+    }
+    let Some(param) = found else {
+        return Ok(None);
+    };
+    Ok(index.is_repo_type(&param)?.then_some(param))
 }
 
 /// The repo type `call` returns: the return type shared by every method it
@@ -4537,6 +5124,44 @@ fn grpc_edges(
 fn receiver_from_signature(signature: &str, awaited: bool) -> Option<String> {
     let ret = unwrap_return(signature.rsplit_once(" -> ")?.1, awaited)?;
     match classify_annotation(&ret) {
+        LocalType::Known(name) => Some(name),
+        _ => None,
+    }
+}
+
+/// The (non-builtin) type name of the parameter at `index`, or named `name`,
+/// in an indexed signature `(params) -> Ret`. `None` for `params`, `this`,
+/// `ref`/`out`/`in` parameters, a missing parameter, or a non-plain type.
+fn parameter_type_from_signature(
+    signature: &str,
+    index: usize,
+    name: Option<&str>,
+) -> Option<String> {
+    let params = crate::db::resolver::parameter_list(signature.strip_prefix('(')?)?;
+    let parsed: Vec<(String, String)> = crate::db::resolver::split_top_level(params)
+        .into_iter()
+        .filter(|p| !p.trim().is_empty())
+        .map(|param| {
+            let param = param.trim();
+            let head = crate::db::resolver::top_level_chars(param)
+                .find(|&(_, c)| c == '=')
+                .map_or(param, |(at, _)| &param[..at])
+                .trim();
+            let (ty, pname) = head.rsplit_once(char::is_whitespace).unwrap_or((head, ""));
+            (ty.trim().to_string(), pname.trim().to_string())
+        })
+        .collect();
+    let (ty, _) = match name {
+        Some(name) => parsed.iter().find(|(_, pname)| pname == name)?,
+        None => parsed.get(index)?,
+    };
+    if ["params ", "this ", "ref ", "out ", "in "]
+        .iter()
+        .any(|m| ty.starts_with(m))
+    {
+        return None;
+    }
+    match classify_annotation(ty) {
         LocalType::Known(name) => Some(name),
         _ => None,
     }

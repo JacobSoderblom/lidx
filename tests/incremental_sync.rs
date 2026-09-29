@@ -1546,3 +1546,141 @@ fn sync_of_tsconfig_change_keeps_next_reindex_from_redoing_js_files() {
     let stats = indexer.reindex().unwrap();
     assert_eq!(stats.indexed, 0, "{stats:?}");
 }
+
+const ARG_TYPES: &str = "namespace App { public class A { public A(int x) { } } \
+public class B { public B(int x) { } public B(int x, int y) { } } }\n";
+const ARG_CALLER: &str = "namespace App { public class Caller { \
+public void Run(Sink sink) { sink.Take(new(1)); } } }\n";
+
+fn arg_sink(param: &str) -> String {
+    format!("namespace App {{ public class Sink {{ public void Take({param} p) {{ }} }} }}\n")
+}
+
+/// The constructor `Caller.Run`'s target-typed `new(1)` argument is bound to.
+fn arg_ctor_target(indexer: &Indexer) -> Option<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    golden::snapshot_edges(indexer.db(), gv)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "CALLS" && e.source_qualname == "App.Caller.Run")
+        .and_then(|e| e.target_qualname)
+}
+
+fn assert_arg_matches_fresh(indexer: &Indexer, sink: Option<&str>) {
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let leaked: i64 = indexer
+        .db()
+        .read_conn()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE target_symbol_id IS NOT NULL
+             AND target_qualname LIKE '@%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leaked, 0, "a bound edge kept a placeholder target_qualname");
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let sink_src = sink.map(arg_sink);
+    let mut files = vec![("Types.cs", ARG_TYPES), ("Caller.cs", ARG_CALLER)];
+    if let Some(src) = &sink_src {
+        files.push(("Sink.cs", src));
+    }
+    let (_t, fresh) = common::index_files(&files);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// A target-typed `new(..)` argument hangs on the callee's parameter type:
+/// editing `Sink.Take` alone must retarget (or unbind) it, and adding the
+/// callee later must resolve it, exactly as a fresh reindex would.
+#[test]
+fn csharp_deferred_argument_follows_callee_parameter_edits() {
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "deferred-arg",
+        &[("Types.cs", ARG_TYPES), ("Caller.cs", ARG_CALLER)],
+    );
+    assert_eq!(arg_ctor_target(&indexer), None);
+
+    common::write_files(&root, &[("Sink.cs", &arg_sink("A"))]);
+    indexer.sync_rel_paths(&["Sink.cs".to_string()]).unwrap();
+    assert_eq!(arg_ctor_target(&indexer).as_deref(), Some("App.A..ctor"));
+    assert_arg_matches_fresh(&indexer, Some("A"));
+
+    common::write_files(&root, &[("Sink.cs", &arg_sink("B"))]);
+    indexer.sync_rel_paths(&["Sink.cs".to_string()]).unwrap();
+    assert_eq!(arg_ctor_target(&indexer).as_deref(), Some("App.B..ctor"));
+    assert_arg_matches_fresh(&indexer, Some("B"));
+
+    // A builtin parameter type is untracked: the edge must unbind.
+    common::write_files(&root, &[("Sink.cs", &arg_sink("int"))]);
+    indexer.sync_rel_paths(&["Sink.cs".to_string()]).unwrap();
+    assert_eq!(arg_ctor_target(&indexer), None);
+    assert_arg_matches_fresh(&indexer, Some("int"));
+}
+
+const BASE_DERIVED: &str = "namespace App { public class D : Base<int> { \
+public D() : base(1) { } public D(string s) : base(1, 2) { } } }\n";
+const BASE_TYPE: &str = "namespace App { public class Base<T> { public Base(int x) { } \
+public Base(int x, int y) { } } }\n";
+
+/// `(source signature, target signature)` of every `D..ctor` -> `Base..ctor` edge.
+fn base_ctor_edges(indexer: &Indexer) -> Vec<(String, String)> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.signature, t.signature FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind = 'CALLS' AND s.qualname = 'App.D..ctor'
+               AND t.qualname = 'App.Base..ctor' AND e.graph_version = ?
+             ORDER BY s.signature",
+        )
+        .unwrap();
+    stmt.query_map([gv], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+/// `: base(args)` on a generic base declared in another file: unresolved
+/// until the base is indexed, then bound per overload by arity, and still
+/// bound to the right overload after unrelated syncs -- as a fresh reindex.
+#[test]
+fn csharp_base_initializer_binds_when_the_base_file_is_added_later() {
+    let (_tmp, root, mut indexer) = indexed_tree("base-init", &[("D.cs", BASE_DERIVED)]);
+    assert!(base_ctor_edges(&indexer).is_empty());
+
+    common::write_files(&root, &[("Base.cs", BASE_TYPE)]);
+    indexer.sync_rel_paths(&["Base.cs".to_string()]).unwrap();
+    let expected = vec![
+        ("(string s)".to_string(), "(int x, int y)".to_string()),
+        ("()".to_string(), "(int x)".to_string()),
+    ];
+    let mut got = base_ctor_edges(&indexer);
+    got.sort_by(|a, b| a.0.len().cmp(&b.0.len()));
+    let mut want = expected.clone();
+    want.sort_by(|a, b| a.0.len().cmp(&b.0.len()));
+    assert_eq!(got, want);
+
+    // Unrelated edit: carried-forward edges keep their overload.
+    common::write_files(
+        &root,
+        &[("Other.cs", "namespace App { public class Other { } }\n")],
+    );
+    indexer.sync_rel_paths(&["Other.cs".to_string()]).unwrap();
+    let mut got = base_ctor_edges(&indexer);
+    got.sort_by(|a, b| a.0.len().cmp(&b.0.len()));
+    assert_eq!(got, want);
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_t, fresh) = common::index_files(&[
+        ("D.cs", BASE_DERIVED),
+        ("Base.cs", BASE_TYPE),
+        ("Other.cs", "namespace App { public class Other { } }\n"),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

@@ -53,6 +53,9 @@ pub enum ReceiverType {
     Deferred(DeferredReturn),
     /// A Rust receiver traced to a declaration in another file.
     RustDeferred(RustDeferred),
+    /// A target-typed `new(..)` passed as a call argument: constructs the
+    /// callee's declared parameter type (never a receiver type itself).
+    DeferredArgument(DeferredArgument),
 }
 
 /// "The (optionally awaited) return value of `base.method(..)`".
@@ -82,6 +85,55 @@ pub enum DeferredBase {
 /// Column-text prefix of a serialised `DeferredReturn`. `@` can't start a
 /// type name.
 pub const DEFERRED_RETURN_PREFIX: &str = "@ret:";
+
+/// "The parameter at `index` (or named `name`) of the `arg_count`-argument
+/// call to `callee`": the type a target-typed `new(..)` argument constructs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredArgument {
+    /// Zero-based position of the argument in the call.
+    pub index: usize,
+    /// The argument's name for a named argument (`x: new()`).
+    pub name: Option<String>,
+    /// How many arguments the call passes, for overload selection.
+    pub arg_count: usize,
+    /// `Type.Method` or a qualified method name, as spelled at the call site.
+    pub callee: String,
+}
+
+/// Every deferred marker (`@ret:`, `@arg:`) starts with this; `@` can't start
+/// a type name.
+pub const DEFERRED_MARKER_PREFIX: &str = "@";
+
+/// Column-text prefix of a serialised `DeferredArgument`.
+pub const DEFERRED_ARG_PREFIX: &str = "@arg:";
+
+impl DeferredArgument {
+    /// The `edges.receiver_type` column text.
+    pub fn encode(&self) -> String {
+        format!(
+            "{DEFERRED_ARG_PREFIX}{}:{}:{}:{}",
+            self.index,
+            self.name.as_deref().unwrap_or(""),
+            self.arg_count,
+            self.callee
+        )
+    }
+
+    /// Inverse of `encode`.
+    pub fn parse(column: &str) -> Option<Self> {
+        let rest = column.strip_prefix(DEFERRED_ARG_PREFIX)?;
+        let mut parts = rest.splitn(4, ':');
+        let index = parts.next()?.parse().ok()?;
+        let name = parts.next().filter(|n| !n.is_empty()).map(str::to_string);
+        let arg_count = parts.next()?.parse().ok()?;
+        Some(Self {
+            index,
+            name,
+            arg_count,
+            callee: parts.next()?.to_string(),
+        })
+    }
+}
 
 /// `edges.call_shape` value on an `RPC_CALL` edge that the resolver derived
 /// from a deferred receiver (`Db::rederive_deferred_rpc_calls`).
@@ -292,6 +344,18 @@ impl RustDeferred {
 }
 
 impl ReceiverType {
+    /// `DeferredArgument::parse` on column text.
+    pub fn parse_deferred_argument(column: &str) -> Option<DeferredArgument> {
+        DeferredArgument::parse(column)
+    }
+
+    /// Whether an `edges.receiver_type` column value is any deferred marker
+    /// (`@ret:` / `@arg:`; `@` can't start a type name), which the resolver
+    /// re-judges whenever a callee changes.
+    pub fn is_deferred_column(column: &str) -> bool {
+        column.starts_with(DEFERRED_MARKER_PREFIX)
+    }
+
     /// `Deferred` for "the (optionally awaited) return value of
     /// `type_name.method`".
     pub fn deferred_return(
@@ -325,6 +389,7 @@ impl ReceiverType {
             ReceiverType::Known(ty) => Some(Cow::Borrowed(ty.as_str())),
             ReceiverType::Deferred(call) => Some(Cow::Owned(call.encode())),
             ReceiverType::RustDeferred(pending) => Some(Cow::Owned(pending.encode())),
+            ReceiverType::DeferredArgument(arg) => Some(Cow::Owned(arg.encode())),
         }
     }
 }
@@ -367,6 +432,12 @@ impl CallShape {
 pub struct EdgeInput {
     pub kind: String,
     pub source_qualname: Option<String>,
+    /// Start byte of the source symbol, for a source whose qualname is
+    /// shared by several symbols (C# overloads): the edge's source is then
+    /// the symbol at this span, not "whichever has the qualname".
+    pub source_start_byte: Option<i64>,
+    /// Same for the *target* of a `CONTAINS` edge to an overload.
+    pub target_start_byte: Option<i64>,
     pub target_qualname: Option<String>,
     pub detail: Option<String>,
     pub evidence_snippet: Option<String>,

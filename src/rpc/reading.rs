@@ -660,12 +660,93 @@ fn build_symbol_entry(
     Ok(entry)
 }
 
+/// The C# overload set behind `qn`: every non-external symbol sharing that
+/// exact qualname, when there are several and all are C# methods. Empty
+/// otherwise -- other languages' duplicate qualnames (Python property
+/// setters, `@overload`, TS overload signatures) keep the single-symbol shape.
+fn csharp_overloads(indexer: &Indexer, qn: &str, graph_version: i64) -> Result<Vec<Symbol>> {
+    let overloads: Vec<Symbol> = indexer
+        .db()
+        .get_symbols_by_qualname(qn, graph_version)?
+        .into_iter()
+        .filter(|s| !s.is_external())
+        .collect();
+    let all_csharp_methods = overloads
+        .iter()
+        .all(|s| s.kind == "method" && s.file_path.ends_with(".cs"));
+    Ok(if overloads.len() > 1 && all_csharp_methods {
+        overloads
+    } else {
+        Vec::new()
+    })
+}
+
+/// The `overloaded` response object shared by the `qualname`, `qualnames` and
+/// `query` selectors: every overload's entry, bounded by `max_bytes` (the
+/// first entry is always kept).
+fn overload_response(
+    indexer: &Indexer,
+    qn: &str,
+    overloads: &[Symbol],
+    skeleton: bool,
+    context_lines: usize,
+    max_bytes: usize,
+    graph_version: i64,
+) -> Result<Value> {
+    let (entries, omitted) = overload_entries(
+        indexer,
+        overloads,
+        skeleton,
+        context_lines,
+        max_bytes,
+        graph_version,
+    )?;
+    Ok(json!({
+        "overloaded": true,
+        "qualname": qn,
+        "count": overloads.len(),
+        "overloads": entries,
+        "omitted": omitted,
+    }))
+}
+
+/// One `ReadSymbolEntry` per overload (the same entry a single symbol gets),
+/// bounded by `max_bytes` with the first always kept; the overloads that
+/// didn't fit come back as `qualname signature` strings.
+fn overload_entries(
+    indexer: &Indexer,
+    overloads: &[Symbol],
+    skeleton: bool,
+    context_lines: usize,
+    max_bytes: usize,
+    graph_version: i64,
+) -> Result<(Vec<ReadSymbolEntry>, Vec<String>)> {
+    let mut entries: Vec<ReadSymbolEntry> = Vec::new();
+    let mut omitted: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for symbol in overloads {
+        let entry = build_symbol_entry(indexer, symbol, skeleton, context_lines, graph_version)?;
+        let len = serde_json::to_string(&entry).map(|s| s.len()).unwrap_or(0);
+        if !entries.is_empty() && used + len > max_bytes {
+            omitted.push(format!(
+                "{}{}",
+                symbol.qualname,
+                symbol.signature.as_deref().unwrap_or_default()
+            ));
+            continue;
+        }
+        used += len;
+        entries.push(entry);
+    }
+    Ok((entries, omitted))
+}
+
 /// Assembles the `read_symbol` `qualnames` response object from its four
 /// parts, gating `not_found`/`errors` on non-empty the same way both the
 /// greedy pass and the exact-trim pass below need to -- one place so they
 /// can't drift.
 fn build_multi_response(
-    symbols: &[ReadSymbolEntry],
+    symbols: &[Value],
     omitted: &[String],
     not_found: &[String],
     errors: &[Value],
@@ -709,7 +790,7 @@ fn handle_read_symbol_multi(
     max_bytes: usize,
     graph_version: i64,
 ) -> Result<Value> {
-    let mut symbols: Vec<ReadSymbolEntry> = Vec::new();
+    let mut symbols: Vec<Value> = Vec::new();
     let mut omitted: Vec<String> = Vec::new();
     let mut not_found: Vec<String> = Vec::new();
     let mut errors: Vec<Value> = Vec::new();
@@ -722,36 +803,60 @@ fn handle_read_symbol_multi(
             omitted.push(qn.clone());
             continue;
         }
-        let found = indexer.db().get_symbol_by_qualname(qn, graph_version)?;
-        let symbol = match found {
-            Some(s) if !s.is_external() => s,
-            _ => {
-                not_found.push(qn.clone());
-                continue;
-            }
-        };
-        // A single qualname's file being missing/stale-beyond-repair
-        // shouldn't abort the whole batch -- record it and keep going so the
-        // rest of the request still resolves.
-        let entry =
-            match build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version) {
-                Ok(entry) => entry,
-                Err(err) => {
-                    errors.push(json!({"qualname": qn, "error": err.to_string()}));
+        // An overloaded C# qualname contributes one entry per overload.
+        let overloads = csharp_overloads(indexer, qn, graph_version)?;
+        let built: Result<Vec<Value>> = if overloads.is_empty() {
+            let found = indexer.db().get_symbol_by_qualname(qn, graph_version)?;
+            let symbol = match found {
+                Some(s) if !s.is_external() => s,
+                _ => {
+                    not_found.push(qn.clone());
                     continue;
                 }
             };
-
-        let entry_len = serde_json::to_string(&entry)
-            .map(|s| s.len())
-            .unwrap_or(usize::MAX);
+            // A single qualname's file being missing/stale-beyond-repair
+            // shouldn't abort the whole batch -- record it and keep going so
+            // the rest of the request still resolves.
+            build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version)
+                .and_then(|e| Ok(vec![serde_json::to_value(e)?]))
+        } else {
+            overload_entries(
+                indexer,
+                &overloads,
+                skeleton,
+                context_lines,
+                max_bytes,
+                graph_version,
+            )
+            .and_then(|(entries, _)| {
+                entries
+                    .into_iter()
+                    .map(|e| Ok(serde_json::to_value(e)?))
+                    .collect()
+            })
+        };
+        let new_entries = match built {
+            Ok(entries) => entries,
+            Err(err) => {
+                errors.push(json!({"qualname": qn, "error": err.to_string()}));
+                continue;
+            }
+        };
+        let entry_len = new_entries
+            .iter()
+            .map(|e| {
+                serde_json::to_string(e)
+                    .map(|s| s.len())
+                    .unwrap_or(usize::MAX)
+            })
+            .fold(0usize, usize::saturating_add);
         if running_symbol_bytes.saturating_add(entry_len) > max_bytes {
             omitted.push(qn.clone());
             budget_exhausted = true;
             continue;
         }
         running_symbol_bytes += entry_len;
-        symbols.push(entry);
+        symbols.extend(new_entries);
     }
 
     let mut response = build_multi_response(&symbols, &omitted, &not_found, &errors);
@@ -762,7 +867,10 @@ fn handle_read_symbol_multi(
             > max_bytes
     {
         let removed = symbols.pop().expect("just checked symbols is non-empty");
-        omitted.insert(0, removed.qualname);
+        omitted.insert(
+            0,
+            removed["qualname"].as_str().unwrap_or_default().to_string(),
+        );
         response = build_multi_response(&symbols, &omitted, &not_found, &errors);
     }
 
@@ -815,46 +923,22 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
 
     // An exact qualname shared by several symbols (overloads) returns all
     // of them, rather than silently whichever the lookup found first.
+    let max_bytes = params
+        .max_bytes
+        .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
+        .min(200_000);
     if let Some(qn) = &params.qualname {
-        let overloads: Vec<Symbol> = indexer
-            .db()
-            .get_symbols_by_qualname(qn, graph_version)?
-            .into_iter()
-            .filter(|s| !s.is_external())
-            .collect();
-        // C# only: other languages' duplicate qualnames (Python property
-        // setters, `@overload`, TS overload signatures) keep the single-
-        // symbol shape.
-        if overloads.len() > 1
-            && overloads
-                .iter()
-                .all(|s| s.kind == "method" && s.file_path.ends_with(".cs"))
-        {
-            let max_bytes = params
-                .max_bytes
-                .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
-                .min(200_000);
-            let mut entries: Vec<ReadSymbolEntry> = Vec::new();
-            let mut omitted = 0usize;
-            let mut used = 0usize;
-            for symbol in &overloads {
-                let entry =
-                    build_symbol_entry(indexer, symbol, skeleton, context_lines, graph_version)?;
-                let len = serde_json::to_string(&entry).map(|s| s.len()).unwrap_or(0);
-                if !entries.is_empty() && used + len > max_bytes {
-                    omitted += 1;
-                    continue;
-                }
-                used += len;
-                entries.push(entry);
-            }
-            return Ok(json!({
-                "overloaded": true,
-                "qualname": qn,
-                "count": overloads.len(),
-                "overloads": entries,
-                "omitted": omitted,
-            }));
+        let overloads = csharp_overloads(indexer, qn, graph_version)?;
+        if !overloads.is_empty() {
+            return overload_response(
+                indexer,
+                qn,
+                &overloads,
+                skeleton,
+                context_lines,
+                max_bytes,
+                graph_version,
+            );
         }
     }
 
@@ -920,6 +1004,20 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         );
     }
 
+    // A `query` that lands on an overloaded C# method reads all overloads.
+    let overloads = csharp_overloads(indexer, &symbol.qualname, graph_version)?;
+    if !overloads.is_empty() {
+        return overload_response(
+            indexer,
+            &symbol.qualname,
+            &overloads,
+            skeleton,
+            context_lines,
+            max_bytes,
+            graph_version,
+        );
+    }
+
     let entry = build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version)?;
 
     // A single symbol's response is otherwise uncapped (the outer generic
@@ -928,10 +1026,6 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
     // exempt from it anyway so it can honour its own `max_bytes`). Rather
     // than ever return a source cut mid-body, an over-budget response is
     // replaced by just its header fields plus `omitted: true`.
-    let max_bytes = params
-        .max_bytes
-        .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
-        .min(200_000);
     let entry_size = serde_json::to_string(&entry).map(|s| s.len()).unwrap_or(0);
     if entry_size > max_bytes {
         let stale = entry.stale;
