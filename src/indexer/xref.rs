@@ -81,6 +81,11 @@ fn collect_xref_edges(
     let mut edges_by_key: HashMap<(String, String), EdgeInput> = HashMap::new();
     let mut line_cache: HashMap<i64, Option<String>> = HashMap::new();
     for literal in literals {
+        if file.language == "python"
+            && (is_python_docstring(source, &literal) || is_in_python_comment(source, &literal))
+        {
+            continue;
+        }
         let Some(source_qualname) = lookup_source_qualname(
             db,
             &file.rel_path,
@@ -99,7 +104,8 @@ fn collect_xref_edges(
             literal.end_line,
         );
         for token in extract_tokens(&literal.text) {
-            let Some(match_info) = index.resolve_token(&token, &file.language) else {
+            let Some(match_info) = index.resolve_token(&token, &file.language, &file.rel_path)
+            else {
                 continue;
             };
             let key = (source_qualname.clone(), match_info.symbol.qualname.clone());
@@ -136,6 +142,49 @@ fn collect_xref_edges(
         }
     }
     Ok(edges_by_key.into_values().collect())
+}
+
+/// A triple-quoted literal that starts its own line right after a
+/// `def`/`class` header (or at the top of the file, past blank and `#` lines
+/// such as a shebang) is prose, not a reference. String prefixes are allowed.
+fn is_python_docstring(source: &str, literal: &StringLiteral) -> bool {
+    let start = literal.start_byte as usize;
+    let Some(before) = source.get(..start) else {
+        return false;
+    };
+    if !source[start..].starts_with("\"\"\"") && !source[start..].starts_with("'''") {
+        return false;
+    }
+    let before = before.trim_end_matches(|c| "rRfFbBuU".contains(c));
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    if !before[line_start..].trim().is_empty() {
+        return false;
+    }
+    let prev = before[..line_start]
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#'));
+    prev.is_none_or(|l| l.ends_with(':'))
+}
+
+/// True when the literal starts after a `#` that is not itself inside a string.
+fn is_in_python_comment(source: &str, literal: &StringLiteral) -> bool {
+    let start = literal.start_byte as usize;
+    let Some(before) = source.get(..start) else {
+        return false;
+    };
+    let line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
+    let (mut dq, mut sq) = (0, 0);
+    for ch in line.chars() {
+        match ch {
+            '"' => dq += 1,
+            '\'' => sq += 1,
+            '#' if dq % 2 == 0 && sq % 2 == 0 => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn collect_route_edges(
@@ -270,6 +319,7 @@ struct SymbolRef {
     name: String,
     qualname: String,
     language: String,
+    path: String,
 }
 
 struct SymbolRefIndex {
@@ -295,6 +345,7 @@ impl SymbolRefIndex {
                 name: record.name,
                 qualname: record.qualname,
                 language: record.language,
+                path: record.path,
             });
             let mut seen: HashSet<(String, KeyKind)> = HashSet::new();
             let symbol = &symbols[idx];
@@ -303,7 +354,12 @@ impl SymbolRefIndex {
         Self { symbols, by_key }
     }
 
-    fn resolve_token(&self, token: &str, source_language: &str) -> Option<XrefMatch<'_>> {
+    fn resolve_token(
+        &self,
+        token: &str,
+        source_language: &str,
+        source_path: &str,
+    ) -> Option<XrefMatch<'_>> {
         if !token_eligible(token) {
             return None;
         }
@@ -315,11 +371,16 @@ impl SymbolRefIndex {
             };
             for candidate in candidates {
                 let symbol = &self.symbols[candidate.idx];
-                if symbol.language == source_language {
-                    continue;
-                }
                 let score = score_match(token, candidate.kind, token_key.kind);
                 if score < XREF_MIN_CONFIDENCE {
+                    continue;
+                }
+                if symbol.language == source_language {
+                    // A same-language symbol in this very file wins over any
+                    // cross-language coincidence; elsewhere it is just skipped.
+                    if symbol.path == source_path {
+                        return None;
+                    }
                     continue;
                 }
                 match best {
@@ -943,7 +1004,97 @@ fn looks_like_uuid(segment: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_route_literal;
+    use super::*;
+
+    fn rec(id: i64, qualname: &str, language: &str, path: &str) -> SymbolRefRecord {
+        SymbolRefRecord {
+            id,
+            name: qualname.rsplit('.').next().unwrap().to_string(),
+            qualname: qualname.to_string(),
+            kind: "class".to_string(),
+            language: language.to_string(),
+            path: path.to_string(),
+        }
+    }
+
+    #[test]
+    fn same_file_same_language_match_suppresses_cross_language_xref() {
+        let index = SymbolRefIndex::from_records(vec![
+            rec(
+                1,
+                "broker._core.ReceivedMessage",
+                "python",
+                "broker/_core.py",
+            ),
+            rec(
+                2,
+                "Dpb.Common.Messaging.ReceivedMessage",
+                "csharp",
+                "Msg.cs",
+            ),
+        ]);
+        assert!(
+            index
+                .resolve_token("ReceivedMessage", "python", "broker/_core.py")
+                .is_none()
+        );
+        // Without a same-file symbol the cross-language match still works.
+        let index = SymbolRefIndex::from_records(vec![rec(
+            2,
+            "Dpb.Common.Messaging.ReceivedMessage",
+            "csharp",
+            "Msg.cs",
+        )]);
+        assert!(
+            index
+                .resolve_token("ReceivedMessage", "python", "broker/_core.py")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn same_language_homonym_in_other_file_keeps_cross_language_xref() {
+        let index = SymbolRefIndex::from_records(vec![
+            rec(1, "Other.WidgetRegistryEntry", "python", "other.py"),
+            rec(2, "Db.WidgetRegistryEntry", "sql", "db.sql"),
+        ]);
+        let hit = index
+            .resolve_token("WidgetRegistryEntry", "python", "app.py")
+            .unwrap();
+        assert_eq!(hit.symbol.qualname, "Db.WidgetRegistryEntry");
+    }
+
+    #[test]
+    fn python_docstrings_are_detected_but_sql_strings_are_not() {
+        let src = "def f():\n    \"\"\"Talks to DataProxy.\"\"\"\n    q = \"\"\"SELECT 1\"\"\"\n";
+        let lits = scan_string_literals(src);
+        assert_eq!(lits.len(), 2);
+        assert!(is_python_docstring(src, &lits[0]));
+        assert!(!is_python_docstring(src, &lits[1]));
+        let module = "\"\"\"Module doc.\"\"\"\nx = 1\n";
+        let lits = scan_string_literals(module);
+        assert!(is_python_docstring(module, &lits[0]));
+    }
+
+    #[test]
+    fn python_docstring_after_shebang_and_with_prefix() {
+        let src = "#!/usr/bin/env python\n# -*- coding: utf-8 -*-\n\nr\"\"\"Doc.\"\"\"\n";
+        let lits = scan_string_literals(src);
+        assert!(is_python_docstring(src, &lits[0]));
+        let src = "class A:\n    f\"\"\"Doc {x}.\"\"\"\n";
+        let lits = scan_string_literals(src);
+        assert!(is_python_docstring(src, &lits[0]));
+    }
+
+    #[test]
+    fn python_comment_literals_are_detected() {
+        let src = "x = 1  # see \"DataProxy\" here\ny = \"a#b\" + \"Real\"\n";
+        let lits = scan_string_literals(src);
+        assert_eq!(lits.len(), 3);
+        assert!(is_in_python_comment(src, &lits[0]));
+        assert!(!is_in_python_comment(src, &lits[1]));
+        assert!(!is_in_python_comment(src, &lits[2]));
+    }
 
     #[test]
     fn normalize_route_literal_handles_paths() {

@@ -61,7 +61,11 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
         if !edges.is_empty() {
             writeln!(out, "\n## Dependencies")?;
             for e in edges.iter().take(20) {
-                writeln!(out, "- {} → {} ({} calls, {} imports)", e.0, e.1, e.2, e.3)?;
+                writeln!(
+                    out,
+                    "- {} → {} ({} calls, {} imports, {} xrefs)",
+                    e.0, e.1, e.2, e.3, e.4
+                )?;
             }
         }
     }
