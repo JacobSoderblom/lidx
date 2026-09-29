@@ -92,19 +92,20 @@ struct Context {
 
 /// Local name bound by a top-level `import` → (module specifier, imported
 /// export name). The export name is `None` for a namespace import (`* as
-/// ns`); for a default import it is the local name itself.
-///
-/// ponytail: a default import is assumed to name the export it binds
-/// (`import formatName from './fmt'` ↔ `export default function
-/// formatName`). A default export declared under a different name, or an
-/// anonymous one, misses — and a missed import candidate refuses fuzzy
-/// resolution, so it stays unbound rather than guessed.
+/// ns`) and `"default"` for a default import (`import x from`, `import {
+/// default as x }`); `import_placeholder` marks the latter so
+/// `resolve_import_file_edges` can look up the target's actual default
+/// export name, falling back to the local name when it can't.
 type ImportBindings = HashMap<String, (String, Option<String>)>;
 
 /// Separates specifier from imported member in the placeholder candidates
 /// `handle_call` records; `resolve_import_file_edges` rewrites each into a
 /// real qualname once the specifier can be resolved against the repo.
 const IMPORT_PLACEHOLDER_SEP: char = '\0';
+
+/// Prefixes a placeholder member for a default import; the local name
+/// follows (`\u{1}api.get`).
+const DEFAULT_IMPORT_MARK: char = '\u{1}';
 
 /// Locally-inferred type of a name bound within a single function body (or
 /// module top level). Deliberately coarse — see
@@ -264,11 +265,11 @@ pub fn resolve_import_file_edges(
     // `Db::insert_edges` refuses fuzzy resolution for a call known to go
     // through an import.
     //
-    // ponytail: re-exports are not chased — `import { x } from '@/lib'`
-    // where `lib/index.ts` does `export * from './x'` yields candidate
-    // `lib.x`, misses, and stays unbound. Upgrade path: follow `export
-    // ... from` edges of the resolved file.
+    // Re-exports (`export { x } from`, `export * from`) and default exports
+    // are chased on disk (`chase_export`), so the candidate names the
+    // original declaration rather than the barrel.
     let mut resolved_specs: HashMap<String, Option<String>> = HashMap::new();
+    let mut export_cache: HashMap<String, Option<Rc<FileExports>>> = HashMap::new();
     for edge in edges.iter_mut() {
         for candidate in edge.import_candidates.iter_mut() {
             let Some((spec, member)) = candidate.split_once(IMPORT_PLACEHOLDER_SEP) else {
@@ -278,8 +279,11 @@ pub fn resolve_import_file_edges(
                 .entry(spec.to_string())
                 .or_insert_with(|| resolve_import_path(repo_root, file_rel_path, spec));
             *candidate = match dst {
-                Some(dst) => format!("{}.{member}", module_name_from_rel_path(dst)),
-                None => format!("{spec}:{member}"),
+                Some(dst) => {
+                    let (path, member) = chase_member(repo_root, dst, member, &mut export_cache);
+                    format!("{}.{member}", module_name_from_rel_path(&path))
+                }
+                None => format!("{spec}:{}", member.trim_start_matches(DEFAULT_IMPORT_MARK)),
             };
         }
     }
@@ -325,6 +329,163 @@ pub fn resolve_import_file_edges(
         });
     }
     edges.extend(resolved);
+}
+
+/// What a file exports, for chasing an import through barrels.
+#[derive(Default)]
+struct FileExports {
+    /// Local names exported under their own name.
+    names: HashSet<String>,
+    /// `export { a as b }`: exported `b` -> local `a`.
+    aliases: HashMap<String, String>,
+    /// Local name of the default export, when it is a named declaration.
+    default_local: Option<String>,
+    /// `export { orig as exported } from spec`: (exported, spec, orig).
+    reexports: Vec<(String, String, String)>,
+    /// `export * from spec`.
+    stars: Vec<String>,
+}
+
+fn scan_exports(repo_root: &Path, rel: &str) -> Option<FileExports> {
+    let source = std::fs::read_to_string(repo_root.join(rel)).ok()?;
+    let mut parser = Parser::new();
+    let language = match Path::new(rel).extension().and_then(|e| e.to_str()) {
+        Some("ts" | "mts" | "cts") => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+        Some("tsx") => tree_sitter_typescript::LANGUAGE_TSX,
+        _ => tree_sitter_javascript::LANGUAGE,
+    };
+    parser.set_language(&language.into()).ok()?;
+    let tree = parser.parse(&source, None)?;
+    let root = tree.root_node();
+    let mut ex = Exports::default();
+    let mut out = FileExports::default();
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        collect_exported_names(stmt, &source, &mut ex);
+        if !matches!(stmt.kind(), "export_statement" | "export_declaration") {
+            continue;
+        }
+        let spec = stmt
+            .child_by_field_name("source")
+            .and_then(|n| unquote_string_literal(&node_text(n, &source)));
+        let mut c = stmt.walk();
+        let is_default = stmt.children(&mut c).any(|ch| ch.kind() == "default");
+        if is_default {
+            let named = stmt
+                .child_by_field_name("declaration")
+                .and_then(|d| d.child_by_field_name("name"))
+                .or_else(|| {
+                    stmt.child_by_field_name("value")
+                        .filter(|v| v.kind() == "identifier")
+                });
+            if let Some(n) = named {
+                out.default_local = Some(node_text(n, &source));
+            }
+        }
+        let mut c = stmt.walk();
+        for child in stmt.children(&mut c) {
+            match child.kind() {
+                "*" => out.stars.extend(spec.clone()),
+                "export_clause" => {
+                    let mut sc = child.walk();
+                    for item in child.named_children(&mut sc) {
+                        let Some(name) = item.child_by_field_name("name") else {
+                            continue;
+                        };
+                        let orig = node_text(name, &source);
+                        let exported = item
+                            .child_by_field_name("alias")
+                            .map(|a| node_text(a, &source))
+                            .unwrap_or_else(|| orig.clone());
+                        match &spec {
+                            Some(spec) => out.reexports.push((exported, spec.clone(), orig)),
+                            None if exported == "default" => out.default_local = Some(orig),
+                            None => {
+                                out.aliases.insert(exported, orig);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out.names = ex.names;
+    Some(out)
+}
+
+/// Follows export `name` (`"default"` for the default export) of `path`
+/// through `export ... from` chains to the file and local name that declare
+/// it. `None` when nothing is found; `visited` makes cycles terminate.
+fn chase_export(
+    repo_root: &Path,
+    path: &str,
+    name: &str,
+    cache: &mut HashMap<String, Option<Rc<FileExports>>>,
+    visited: &mut HashSet<(String, String)>,
+) -> Option<(String, String)> {
+    if !visited.insert((path.to_string(), name.to_string())) {
+        return None;
+    }
+    let exports = cache
+        .entry(path.to_string())
+        .or_insert_with(|| scan_exports(repo_root, path).map(Rc::new))
+        .clone()?;
+    if name == "default"
+        && let Some(local) = &exports.default_local
+    {
+        return Some((path.to_string(), local.clone()));
+    }
+    let follow = |spec: &str, orig: &str, cache: &mut _, visited: &mut _| {
+        let dst = resolve_import_path(repo_root, path, spec)?;
+        chase_export(repo_root, &dst, orig, cache, visited)
+    };
+    for (exported, spec, orig) in &exports.reexports {
+        if exported == name
+            && let Some(hit) = follow(spec, orig, cache, visited)
+        {
+            return Some(hit);
+        }
+    }
+    if let Some(local) = exports.aliases.get(name) {
+        return Some((path.to_string(), local.clone()));
+    }
+    if name != "default" {
+        if exports.names.contains(name) {
+            return Some((path.to_string(), name.to_string()));
+        }
+        for spec in &exports.stars {
+            if let Some(hit) = follow(spec, name, cache, visited) {
+                return Some(hit);
+            }
+        }
+    }
+    None
+}
+
+/// Rewrites an import placeholder's `member` (`name[.rest]`, or a
+/// `DEFAULT_IMPORT_MARK`-prefixed `local[.rest]` for a default import)
+/// against `dst`, returning the declaring file and the plain member.
+/// Anything not found keeps `dst` and the imported/local name.
+fn chase_member(
+    repo_root: &Path,
+    dst: &str,
+    member: &str,
+    cache: &mut HashMap<String, Option<Rc<FileExports>>>,
+) -> (String, String) {
+    let (is_default, member) = match member.strip_prefix(DEFAULT_IMPORT_MARK) {
+        Some(m) => (true, m),
+        None => (false, member),
+    };
+    let (head, tail) = match member.split_once('.') {
+        Some((h, t)) => (h, format!(".{t}")),
+        None => (member, String::new()),
+    };
+    let lookup = if is_default { "default" } else { head };
+    match chase_export(repo_root, dst, lookup, cache, &mut HashSet::new()) {
+        Some((path, name)) => (path, format!("{name}{tail}")),
+        None => (dst.to_string(), member.to_string()),
+    }
 }
 
 /// Splits off any `?query`/`#hash` suffix and classifies whether `target`
@@ -795,7 +956,22 @@ fn mark_unexported_private(
         })
         .map(|s| s.qualname.clone())
         .collect();
+    // Members of an unexported top-level symbol are unreachable from other
+    // files too (issue #187).
+    let members: Vec<String> = output
+        .symbols
+        .iter()
+        .filter(|s| {
+            unexported.iter().any(|q| {
+                s.qualname
+                    .strip_prefix(q)
+                    .is_some_and(|r| r.starts_with('.'))
+            })
+        })
+        .map(|s| s.qualname.clone())
+        .collect();
     output.private_qualnames.extend(unexported);
+    output.private_qualnames.extend(members);
 }
 
 /// Whether any `require(..)` call appears (marks a CommonJS module).
@@ -1410,7 +1586,7 @@ fn collect_import_bindings(root: Node<'_>, source: &str) -> ImportBindings {
                 match part.kind() {
                     "identifier" => {
                         let local = node_text(part, source);
-                        bindings.insert(local.clone(), (spec.clone(), Some(local)));
+                        bindings.insert(local, (spec.clone(), Some("default".to_string())));
                     }
                     "namespace_import" => {
                         let mut ns_cursor = part.walk();
@@ -1461,6 +1637,10 @@ fn import_placeholder(raw: &str, ctx: &Context) -> Option<String> {
     }
     let (spec, imported) = ctx.import_bindings.get(root)?;
     let member = match (imported, rest) {
+        (Some(name), rest) if name == "default" => {
+            let tail = rest.map(|r| format!(".{r}")).unwrap_or_default();
+            format!("{DEFAULT_IMPORT_MARK}{root}{tail}")
+        }
         (Some(name), Some(rest)) => format!("{name}.{rest}"),
         (Some(name), None) => name.clone(),
         (None, Some(rest)) => rest.to_string(),
