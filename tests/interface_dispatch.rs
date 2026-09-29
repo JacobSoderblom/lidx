@@ -290,11 +290,62 @@ fn explicit_impls_of_closed_generics_are_distinct_and_dispatch() {
     for q in [int_run, str_run] {
         let r = call(&repo, &db, "explain_symbol", json!({"qualname": q}));
         assert_eq!(r["symbol"]["qualname"], q, "{r}");
-        assert!(
-            names(&r["callers"]).contains(&"Shop.Caller.Go".to_string()),
-            "{q} callers: {r}"
-        );
     }
+    // Callers are matched by the receiver's closed type arguments; an open
+    // `IA<T>` receiver reaches every closure.
+    let callers = |q: &str| {
+        let r = call(&repo, &db, "explain_symbol", json!({"qualname": q}));
+        let mut v = names(&r["callers"]);
+        v.sort();
+        v
+    };
+    assert_eq!(
+        callers(int_run),
+        ["Shop.Caller.Go", "Shop.CastCaller.Go", "Shop.OpenCaller.Go"]
+    );
+    assert_eq!(
+        callers(str_run),
+        ["Shop.OpenCaller.Go", "Shop.StrCaller.Go"]
+    );
+    let d = downstream(&repo, &db, "Shop.StrCaller.Go");
+    assert!(d.contains(&str_run.to_string()), "{d:?}");
+    assert!(!d.contains(&int_run.to_string()), "{d:?}");
+    let d = downstream(&repo, &db, "Shop.Caller.Go");
+    assert!(d.contains(&int_run.to_string()), "{d:?}");
+    assert!(!d.contains(&str_run.to_string()), "{d:?}");
+    let up = |q: &str| {
+        let r = call(
+            &repo,
+            &db,
+            "trace_flow",
+            json!({"start_qualname": q, "direction": "upstream"}),
+        );
+        names(&r["trace"])
+    };
+    let u = up(str_run);
+    assert!(u.contains(&"Shop.StrCaller.Go".to_string()), "{u:?}");
+    assert!(!u.contains(&"Shop.Caller.Go".to_string()), "{u:?}");
+    let impact = call(
+        &repo,
+        &db,
+        "analyze_impact",
+        json!({"qualname": "Shop.StrCaller.Go", "direction": "downstream"}),
+    )
+    .to_string();
+    assert!(
+        impact.contains(str_run) && !impact.contains(int_run),
+        "{impact}"
+    );
+    // A closed impl no matching call reaches is dead.
+    let r = call(&repo, &db, "dead_symbols", json!({"limit": 200}));
+    let dead = names(&r["dead_symbols"]);
+    assert!(
+        dead.contains(&"Shop.Z.IB<string>.Run".to_string()),
+        "{dead:?}"
+    );
+    assert!(!dead.contains(&int_run.to_string()), "{dead:?}");
+    assert!(!dead.contains(&str_run.to_string()), "{dead:?}");
+
     let a = downstream(&repo, &db, "Shop.IA.Run");
     for q in [int_run, str_run, "Shop.E.IA<int>.Run"] {
         assert!(a.contains(&q.to_string()), "IA: {a:?}");
@@ -341,6 +392,15 @@ fn same_named_interfaces_resolve_by_scope_and_pair_explicit_impls() {
     assert!(!n1.contains(&"App.H.N2.IA.Run".to_string()), "N1: {n1:?}");
     assert!(n2.contains(&"App.H.N2.IA.Run".to_string()), "N2: {n2:?}");
     assert!(!n2.contains(&"App.H.IA.Run".to_string()), "N2: {n2:?}");
+    let callers = |q: &str| {
+        let r = call(&repo, &db, "explain_symbol", json!({"qualname": q}));
+        names(&r["callers"])
+    };
+    assert_eq!(callers("N1.IA.Run"), ["App.ViaN1.Go"]);
+    assert_eq!(callers("N2.IA.Run"), ["App.ViaN2.Go"]);
+    let only = callers("App.OnlyN1.Run");
+    assert!(only.contains(&"App.ViaN1.Go".to_string()), "{only:?}");
+    assert!(!only.contains(&"App.ViaN2.Go".to_string()), "{only:?}");
     assert!(n1.contains(&"App.OnlyN1.Run".to_string()), "N1: {n1:?}");
     assert!(!n2.contains(&"App.OnlyN1.Run".to_string()), "N2: {n2:?}");
     assert!(n2.contains(&"N2.Local.Run".to_string()), "N2: {n2:?}");

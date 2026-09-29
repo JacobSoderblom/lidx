@@ -7,6 +7,58 @@ use std::collections::{HashMap, HashSet};
 /// Max interface -> interface hops followed by dispatch.
 const MAX_IFACE_CHAIN_DEPTH: i64 = 5;
 
+/// Closed generic arguments an explicit impl names (`C.IA<int>.Run` ->
+/// `int`); `None` for an implicit impl or an open one (issue #185).
+pub fn closed_impl_args<'a>(qualname: &'a str, name: &str) -> Option<&'a str> {
+    let head = qualname.strip_suffix(name)?.strip_suffix('.')?;
+    type_args(head)
+}
+
+/// `N1.IA<int>` -> `int`: the type arguments of a receiver type / identity.
+pub fn type_args(text: &str) -> Option<&str> {
+    let open = text.find('<')?;
+    let close = text.rfind('>')?;
+    (close > open + 1).then(|| &text[open + 1..close])
+}
+
+/// Whether a call through a receiver typed with `call_args` reaches an impl
+/// closed over `impl_args`: an open/unknown side pairs with everything.
+pub fn dispatch_compatible(call_args: Option<&str>, impl_args: Option<&str>) -> bool {
+    match (call_args, impl_args) {
+        (Some(c), Some(i)) => c == i,
+        _ => true,
+    }
+}
+
+/// Whether traversing `edge` from a node entered with receiver args
+/// `entry_args` is allowed: a synthetic dispatch edge to a closed impl
+/// (`detail` `interface dispatch<ARGS>`) only follows a matching call.
+pub fn dispatch_edge_reaches(edge: &Edge, entry_args: Option<&str>) -> bool {
+    if edge.resolution_kind.as_deref() != Some("interface_dispatch") {
+        return true;
+    }
+    let impl_args = edge
+        .detail
+        .as_deref()
+        .and_then(|d| d.strip_prefix("interface dispatch<"))
+        .and_then(|d| d.strip_suffix('>'));
+    dispatch_compatible(entry_args, impl_args)
+}
+
+/// SQL: the CALLS edge `ce` reaches the member `cm` of class `c` given its
+/// closed generic arguments (see [`dispatch_compatible`]).
+pub(super) fn call_reaches_impl_sql(ce: &str) -> String {
+    let head = "substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 1)";
+    format!(
+        "({ce}.receiver_type IS NULL OR instr({ce}.receiver_type, '<') = 0
+          OR NOT ({explicit} AND substr({head}, -1) = '>' AND instr({head}, '<') > 0)
+          OR substr({ce}.receiver_type, instr({ce}.receiver_type, '<') + 1,
+                    length({ce}.receiver_type) - instr({ce}.receiver_type, '<') - 1)
+             = substr({head}, instr({head}, '<') + 1, length({head}) - instr({head}, '<') - 1))",
+        explicit = explicit_impl("cm", "c")
+    )
+}
+
 /// `member` (alias `m`) declared on class `c` as an explicit interface
 /// implementation (`C.<Iface>.<name>`, issue #181): its qualname is the
 /// class's, a `.`, an identity segment, `.` and the member's own name.
@@ -200,14 +252,19 @@ impl Db {
                     .map(|s| s.file_path)
                     .unwrap_or_default())
             };
-            let make = |file_path: String| Edge {
+            let imp_sym = self.get_symbol_by_id(imp)?;
+            let closed = imp_sym
+                .as_ref()
+                .and_then(|s| closed_impl_args(&s.qualname, &s.name))
+                .map(str::to_string);
+            let make = |file_path: String, source: i64, detail: String| Edge {
                 id: 0,
                 file_path,
                 kind: "CALLS".to_string(),
-                source_symbol_id: Some(iface),
+                source_symbol_id: Some(source),
                 target_symbol_id: Some(imp),
                 target_qualname: None,
-                detail: Some("interface dispatch".to_string()),
+                detail: Some(detail),
                 evidence_snippet: None,
                 evidence_start_line: None,
                 evidence_end_line: None,
@@ -219,14 +276,81 @@ impl Db {
                 span_id: None,
                 event_ts: None,
             };
+            let detail = match &closed {
+                Some(args) => format!("interface dispatch<{args}>"),
+                None => "interface dispatch".to_string(),
+            };
             if ids.contains(&iface) {
-                map.entry(iface).or_default().push(make(peer_file(imp)?));
+                map.entry(iface)
+                    .or_default()
+                    .push(make(peer_file(imp)?, iface, detail.clone()));
             }
-            if ids.contains(&imp) {
-                map.entry(imp).or_default().push(make(peer_file(iface)?));
+            if !ids.contains(&imp) {
+                continue;
+            }
+            let Some(args) = closed else {
+                map.entry(imp)
+                    .or_default()
+                    .push(make(peer_file(iface)?, iface, detail));
+                continue;
+            };
+            // A closed explicit impl is reached by the calls whose receiver
+            // type matches its arguments, not by every call to the
+            // interface method: link those callers straight to it.
+            let callers = self.edges_for_symbol(iface, languages, graph_version)?;
+            let recv =
+                self.call_receiver_types(&callers.iter().map(|e| e.id).collect::<Vec<_>>())?;
+            let mut seen = HashSet::new();
+            for e in callers {
+                let Some(src) = e.source_symbol_id else {
+                    continue;
+                };
+                let call_args = recv.get(&e.id).and_then(|t| type_args(t));
+                if e.kind == "CALLS"
+                    && e.target_symbol_id == Some(iface)
+                    && dispatch_compatible(call_args, Some(&args))
+                    && seen.insert(src)
+                {
+                    map.entry(imp).or_default().push(make(
+                        e.file_path.clone(),
+                        src,
+                        detail.clone(),
+                    ));
+                }
             }
         }
         Ok(map)
+    }
+
+    /// Stored `receiver_type` of the given edges that carry generic
+    /// arguments (`IA<int>`); the value dispatch matches against closed
+    /// explicit impls.
+    pub fn call_receiver_types(&self, edge_ids: &[i64]) -> Result<HashMap<i64, String>> {
+        let ids: Vec<String> = edge_ids
+            .iter()
+            .filter(|id| **id > 0)
+            .map(i64::to_string)
+            .collect();
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, receiver_type FROM edges
+             WHERE id IN ({}) AND receiver_type LIKE '%<%'",
+            ids.join(",")
+        ))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+    }
+
+    /// The closed generic arguments of a CALLS edge's receiver type.
+    pub fn call_edge_args(&self, edge: &Edge) -> Option<String> {
+        if edge.kind != "CALLS" || edge.id <= 0 {
+            return None;
+        }
+        let types = self.call_receiver_types(&[edge.id]).ok()?;
+        type_args(types.get(&edge.id)?).map(str::to_string)
     }
 
     /// Single-symbol form of [`Db::edges_for_symbols_with_dispatch`].

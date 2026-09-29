@@ -32,6 +32,23 @@ namespace Shop
         }
     }
 
+    public class Z : IB<string>
+    {
+        void IB<string>.Run()
+        {
+        }
+    }
+
+    public class ZCaller
+    {
+        private readonly IB<int> _b;
+
+        public void Go()
+        {
+            _b.Run();
+        }
+    }
+
     public class Caller
     {
         private readonly IA<int> _a;
@@ -39,6 +56,33 @@ namespace Shop
         public void Go()
         {
             _a.Run();
+        }
+    }
+
+    public class StrCaller
+    {
+        public void Go(IA<string> s)
+        {
+            s.Run();
+        }
+    }
+
+    public class CastCaller
+    {
+        public void Go(C c)
+        {
+            var x = (IA<int>)c;
+            x.Run();
+        }
+    }
+
+    public class OpenCaller<T>
+    {
+        private readonly IA<T> _o;
+
+        public void Go()
+        {
+            _o.Run();
         }
     }
 }

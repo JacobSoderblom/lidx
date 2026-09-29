@@ -128,6 +128,9 @@ pub fn trace_flow(
     // once, after the BFS, against `HEURISTIC_RESOLUTION_KINDS` to decide
     // whether suggesting the exclude-heuristics retry is useful at all.
     let mut traversed_edge_ids: Vec<i64> = Vec::new();
+    // Closed generic args of the call each node was entered through (issue
+    // #185): a dispatch edge to a closed explicit impl only follows a match.
+    let mut entry_args: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
 
     while let Some((current_id, dist, prev_file)) = queue.pop_front() {
         // A node at `dist == max_hops` was already recorded as a hop when
@@ -180,10 +183,12 @@ pub fn trace_flow(
         let mut bridge_targets: Vec<BridgeTarget> = Vec::new();
         let allowed = scope.allowed(current_id, &edges);
 
+        let entered = entry_args.get(&current_id).cloned();
         for edge in &edges {
             if !config.allowed_kinds.contains(&edge.kind)
                 || !crate::model::xref_is_traversable(edge)
                 || !config_edge_allowed(edge, allowed.as_ref())
+                || !crate::db::dispatch_edge_reaches(edge, entered.as_deref())
             {
                 continue;
             }
@@ -237,6 +242,9 @@ pub fn trace_flow(
 
             if !visited.insert(next_id) {
                 continue;
+            }
+            if !is_upstream && let Some(args) = db.call_edge_args(edge) {
+                entry_args.insert(next_id, args);
             }
 
             if let Ok(Some(next_sym)) = db.get_symbol_by_id(next_id) {

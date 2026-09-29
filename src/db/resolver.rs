@@ -1295,7 +1295,20 @@ impl<'c> Resolver<'c> {
             Some("") => Ok(None),
 
             Some(known_type) => {
+                // C# interface receivers keep the qualifier and closed type
+                // arguments they were declared with (`N1.IA<int>`); the
+                // arguments only discriminate dispatch, never resolution.
+                let known_type = known_type.split('<').next().unwrap_or(known_type);
                 let method = qualname_trailing_name(target_qualname);
+                // A namespace-qualified receiver (`N1.IA`) binds to exactly
+                // that type's member: two same-named interfaces in other
+                // namespaces are not candidates.
+                if known_type.contains('.')
+                    && let Some(id) = self.qualified_member(known_type, method, caller.file_path)?
+                {
+                    return Ok(Some((id, ResolutionKind::ReceiverType)));
+                }
+                let known_type = known_type.rsplit('.').next().unwrap_or(known_type);
                 let seed = format!("{known_type}{}{method}", primary_separator(source_lang));
                 let Some((seg, dot, colons)) = two_segment_qualname_patterns(&seed) else {
                     return Ok(None);
@@ -1365,6 +1378,32 @@ impl<'c> Resolver<'c> {
                     .map(|id| (id, ResolutionKind::BareName)))
             }
         }
+    }
+
+    /// `{type_path}.{member}` written as a (possibly partially) qualified
+    /// receiver type: the exact qualname, else the single symbol whose
+    /// qualname ends with `.{type_path}.{member}` (the receiver's own
+    /// enclosing namespace prefix is not repeated). `None` when nothing or
+    /// several match.
+    fn qualified_member(
+        &mut self,
+        type_path: &str,
+        member: &str,
+        caller_file: &str,
+    ) -> Result<Option<i64>> {
+        let full = format!("{type_path}.{member}");
+        let gv = self.graph_version;
+        let exact = query_exact_candidates(&mut self.exact, &full, gv, caller_file)?;
+        if let Some(id) = collapse_exact_candidates(&exact) {
+            return Ok(Some(id));
+        }
+        let saw = self.saw_ambiguous;
+        let found = self.unique(
+            Lookup::ImportSuffix,
+            params![member, format!(".{full}"), gv],
+        )?;
+        self.saw_ambiguous = saw;
+        Ok(found)
     }
 
     /// Whether a foreign-looking Rust path's second-to-last segment is a

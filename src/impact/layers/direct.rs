@@ -312,6 +312,9 @@ pub fn analyze_direct_impact_scoped(
     // all. Bridge-crossed edges aren't tracked here (see `resolve_bridge_targets`);
     // this is a "was a heuristic edge traversed" signal, not an exhaustive audit.
     let mut traversed_edge_ids: Vec<i64> = Vec::new();
+    // Closed generic args of the call each node was entered through (issue
+    // #185), so a dispatch edge to a closed explicit impl only follows a match.
+    let mut entry_args: HashMap<i64, String> = HashMap::new();
 
     // BFS traversal with level-by-level batch queries
     while !queue.is_empty() {
@@ -363,8 +366,12 @@ pub fn analyze_direct_impact_scoped(
         let mut neighbor_ids = Vec::new();
         for current_id in &current_level {
             if let Some(edges) = edges_by_symbol.get(current_id) {
+                let entered = entry_args.get(current_id).map(String::as_str);
                 for edge in edges {
-                    if !edge_matches_filter(edge, kinds, include_tests) || excluded(edge) {
+                    if !edge_matches_filter(edge, kinds, include_tests)
+                        || excluded(edge)
+                        || !crate::db::dispatch_edge_reaches(edge, entered)
+                    {
                         continue;
                     }
                     if let Some(id) = resolve_next_id(edge, *current_id, direction)
@@ -393,10 +400,12 @@ pub fn analyze_direct_impact_scoped(
         for current_id in &current_level {
             if let Some(edges) = edges_by_symbol.get(current_id) {
                 let allowed = scope.allowed(*current_id, edges);
+                let entered = entry_args.get(current_id).cloned();
                 for edge in edges {
                     if !edge_matches_filter(edge, kinds, include_tests)
                         || excluded(edge)
                         || !config_edge_allowed(edge, allowed.as_ref())
+                        || !crate::db::dispatch_edge_reaches(edge, entered.as_deref())
                     {
                         continue;
                     }
@@ -422,6 +431,11 @@ pub fn analyze_direct_impact_scoped(
                     }
                     if !symbol_cache.contains_key(&next_id) {
                         continue;
+                    }
+                    if matches!(direction, TraversalDirection::Downstream)
+                        && let Some(args) = db.call_edge_args(edge)
+                    {
+                        entry_args.insert(next_id, args);
                     }
 
                     distance_map.insert(next_id, current_distance + 1);

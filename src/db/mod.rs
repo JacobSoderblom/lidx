@@ -17,7 +17,9 @@ use std::time::Duration;
 mod analytics;
 mod co_change;
 mod graph_query;
-pub use graph_query::DispatchPeers;
+pub use graph_query::{
+    DispatchPeers, closed_impl_args, dispatch_compatible, dispatch_edge_reaches, type_args,
+};
 mod migrations;
 mod overview;
 pub(crate) mod resolver;

@@ -753,7 +753,52 @@ fn explicit_interface_name(node: Node<'_>, source: &str) -> Option<String> {
     let spec = node
         .children(&mut cursor)
         .find(|c| c.kind() == "explicit_interface_specifier")?;
-    explicit_interface_identity(&node_text(spec, source))
+    let identity = explicit_interface_identity(&node_text(spec, source))?;
+    Some(strip_open_args(identity, node, source))
+}
+
+/// Type-parameter names declared by `node` or any enclosing declaration.
+fn enclosing_type_params(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut params = Vec::new();
+    let mut current = Some(node);
+    while let Some(n) = current {
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            if child.kind() != "type_parameter_list" {
+                continue;
+            }
+            let mut inner = child.walk();
+            for tp in child.named_children(&mut inner) {
+                if tp.kind() == "type_parameter" {
+                    params.push(
+                        node_text(tp, source)
+                            .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        current = n.parent();
+    }
+    params
+}
+
+/// `IA<T>` where `T` is a type parameter in scope at `node` is an *open*
+/// interface: drop the arguments (keeping the qualifier) so it pairs with
+/// every closed impl instead of a bogus `<T>` one.
+fn strip_open_args(identity: String, node: Node<'_>, source: &str) -> String {
+    let Some(open) = identity.find('<') else {
+        return identity;
+    };
+    let params = enclosing_type_params(node, source);
+    let mentions_param = identity[open..]
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|tok| params.iter().any(|p| p == tok));
+    if mentions_param {
+        identity[..open].to_string()
+    } else {
+        identity
+    }
 }
 
 /// `global::N.Outer<T>.IA<Dictionary<K, V>>.` -> `N.Outer.IA<Dictionary<K,V>>`:
@@ -3159,6 +3204,12 @@ fn handle_base_list(
     }
 }
 
+/// `N1.IA<int>` -> `IA`: a receiver type without qualifier or arguments.
+fn bare_type_name(ty: &str) -> &str {
+    let head = ty.split('<').next().unwrap_or(ty);
+    head.rsplit('.').next().unwrap_or(head)
+}
+
 /// Namespace-scoped guesses for a base-list type name, in C# lookup order
 /// (first hit wins in the resolver): an alias, then each enclosing
 /// namespace innermost first, then every `using` namespace.
@@ -3423,6 +3474,13 @@ const CS_BUILTIN_TYPES: &[&str] = &[
 ///   identifier/`this`/`base` (a call result, a cast, ...), → `Unresolved`
 ///   if the root is `this` or a tracked local, `NotTracked` otherwise.
 fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
+    match infer_receiver_type_raw(function_node, source, ctx) {
+        ReceiverType::Known(ty) => ReceiverType::Known(strip_open_args(ty, function_node, source)),
+        other => other,
+    }
+}
+
+fn infer_receiver_type_raw(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
     if function_node.kind() != "member_access_expression" {
         return ReceiverType::NotTracked;
     }
@@ -3870,7 +3928,7 @@ fn extension_method_candidates(
         }
         if let (ReceiverType::Known(call_ty), Some(entry_ty)) =
             (receiver_type, &entry.receiver_type)
-            && call_ty != entry_ty
+            && bare_type_name(call_ty) != entry_ty
         {
             continue;
         }
@@ -3891,11 +3949,20 @@ fn extension_method_candidates(
 fn classify_annotation(text: &str) -> LocalType {
     let text = text.trim();
     let text = text.strip_suffix('?').unwrap_or(text).trim();
-    // A generic *interface* type (`IRepo<Order>`) tracks as its bare name so
-    // calls through it dispatch (issue #173); other generics stay untracked
+    // An *interface* type keeps the qualifier and closed generic arguments
+    // it was written with (`N1.IA<int>`): dispatch (issues #173, #185) needs
+    // the namespace to pick between same-named interfaces and the arguments
+    // to pick a closed explicit impl. Other generics stay untracked
     // (`List<int>` must not bind to an unrelated project `List`).
-    if text.contains('<') && is_likely_interface_name(text.split('<').next().unwrap_or("")) {
-        return classify_annotation_raw(&strip_type_args(text));
+    let head = text.split('<').next().unwrap_or(text);
+    if is_likely_interface_name(head)
+        && matches!(
+            classify_annotation_raw(&strip_type_args(text)),
+            LocalType::Known(_)
+        )
+        && let Some(identity) = explicit_interface_identity(text)
+    {
+        return LocalType::Known(identity);
     }
     classify_annotation_raw(text)
 }
@@ -3931,6 +3998,25 @@ fn classify_type_name(name: &str) -> LocalType {
 /// ceiling, and matches this task's "`var` only when the initializer is a
 /// direct `new T()`" scope.
 fn classify_value_expr(value: Node<'_>, source: &str, method_returns: &MethodReturns) -> LocalType {
+    // `(IA<int>)c` / `c as IA<int>`: the local has the cast's static type.
+    match value.kind() {
+        "cast_expression" => {
+            if let Some(ty) = value.child_by_field_name("type") {
+                return classify_annotation(&node_text(ty, source));
+            }
+        }
+        "as_expression" => {
+            if let Some(ty) = value.child_by_field_name("right") {
+                return classify_annotation(&node_text(ty, source));
+            }
+        }
+        "parenthesized_expression" => {
+            if let Some(inner) = value.named_child(0) {
+                return classify_value_expr(inner, source, method_returns);
+            }
+        }
+        _ => {}
+    }
     if value.kind() == "object_creation_expression"
         && let Some(type_node) = value.child_by_field_name("type")
     {
@@ -3992,7 +4078,7 @@ fn resolve_pending_calls(
             continue;
         };
         let known = |t: Option<&LocalType>| match t {
-            Some(LocalType::Known(t)) => Some((t.clone(), false)),
+            Some(LocalType::Known(t)) => Some((bare_type_name(t).to_string(), false)),
             _ => None,
         };
         // (callee type, receiver spelled as a bare type name)
@@ -4141,7 +4227,7 @@ fn unwrap_return(ret: &str, awaited: bool) -> Option<String> {
 fn receiver_from_signature(signature: &str, awaited: bool) -> Option<String> {
     let ret = unwrap_return(signature.rsplit_once(" -> ")?.1, awaited)?;
     match classify_annotation(&ret) {
-        LocalType::Known(name) => Some(name),
+        LocalType::Known(name) => Some(bare_type_name(&name).to_string()),
         _ => None,
     }
 }

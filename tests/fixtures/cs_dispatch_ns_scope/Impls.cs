@@ -30,6 +30,26 @@ namespace App
         {
         }
     }
+
+    public class ViaN1
+    {
+        private readonly N1.IA _a;
+
+        public void Go()
+        {
+            _a.Run();
+        }
+    }
+
+    public class ViaN2
+    {
+        private readonly N2.IA _b;
+
+        public void Go()
+        {
+            _b.Run();
+        }
+    }
 }
 
 namespace N2
