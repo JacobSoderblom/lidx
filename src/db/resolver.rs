@@ -1465,19 +1465,26 @@ impl<'c> Resolver<'c> {
         }
         let mut found: Option<i64> = None;
         for candidate in candidates {
-            let Some((parent, _)) = candidate.rsplit_once('.') else {
-                continue;
-            };
-            let Some(id) = self.exact(parent, symbol_map, caller_file, false)? else {
-                continue;
-            };
-            let kind: Option<String> = self
-                .conn
-                .query_row("SELECT kind FROM symbols WHERE id = ?", [id], |r| r.get(0))
-                .optional()?;
-            if !matches!(kind.as_deref(), Some("const" | "variable")) {
-                continue;
+            // Walk up one segment at a time (`api.users.list` -> `api.users`
+            // -> `api`) until a symbol hits; only a const/variable binds, any
+            // other kind (class, module, ...) ends the walk unbound.
+            let mut rest = candidate.as_str();
+            let mut hit = None;
+            while let Some((parent, _)) = rest.rsplit_once('.') {
+                rest = parent;
+                let Some(id) = self.exact(parent, symbol_map, caller_file, false)? else {
+                    continue;
+                };
+                let kind: Option<String> = self
+                    .conn
+                    .query_row("SELECT kind FROM symbols WHERE id = ?", [id], |r| r.get(0))
+                    .optional()?;
+                if matches!(kind.as_deref(), Some("const" | "variable")) {
+                    hit = Some(id);
+                }
+                break;
             }
+            let Some(id) = hit else { continue };
             match found {
                 None => found = Some(id),
                 Some(existing) if existing == id => {}
