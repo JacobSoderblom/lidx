@@ -80,7 +80,18 @@ fn excludes_test_functions() {
 fn excludes_trait_impl_methods() {
     let names = rust_dead_qualnames();
     assert!(
-        !names.iter().any(|q| q.ends_with("on_acquire")),
+        !names
+            .iter()
+            .any(|q| q.ends_with("PoolCustomizer::on_acquire")),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn still_reports_inherent_methods_of_trait_implementors() {
+    let names = rust_dead_qualnames();
+    assert!(
+        names.iter().any(|q| q.ends_with("inherent_dead_method")),
         "{names:?}"
     );
 }

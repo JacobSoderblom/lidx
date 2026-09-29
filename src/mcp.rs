@@ -210,7 +210,7 @@ fn initialize_result(message: &Value) -> Value {
     \n\
     Edge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, \
     HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, \
-    XREF, MODULE_FILE, IMPORTS_FILE. Scope values: code, docs, tests, examples, all.",
+    USES, XREF, MODULE_FILE, IMPORTS_FILE. Scope values: code, docs, tests, examples, all.",
             other_methods = other_methods_list()
         ),
     })

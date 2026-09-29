@@ -72,6 +72,7 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
                 || sig_lower.contains("#[tokio::test]")
                 || sig_lower.contains("#[actix_rt::test]")
                 || sig_lower.contains("#[async_std::test]")
+                || sig_lower.contains("#[test_case]")
                 || sig_lower.contains("#[rstest]")
                 || sig_lower.contains("#[rstest::rstest]")
             {

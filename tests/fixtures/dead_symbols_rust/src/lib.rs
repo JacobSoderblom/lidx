@@ -40,6 +40,10 @@ impl Customizer for PoolCustomizer {
     fn on_acquire(&self) {}
 }
 
+impl PoolCustomizer {
+    pub fn inherent_dead_method(&self) {}
+}
+
 pub fn truly_dead_function() {}
 
 pub struct TrulyDeadStruct;

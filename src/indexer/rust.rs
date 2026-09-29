@@ -84,6 +84,8 @@ struct Context {
     /// `handle_function`'s use of it: it never records such a method as
     /// private (issue #75 follow-up, finding B).
     in_trait_scope: bool,
+    /// Set only inside an `impl Trait for Type` body (not a trait declaration).
+    in_trait_impl: bool,
 }
 
 pub struct RustExtractor {
@@ -133,9 +135,10 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             imports: Rc::new(collect_use_bindings(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
             in_trait_scope: false,
+            in_trait_impl: false,
         };
         walk_node(root, &ctx, source, &mut output);
-        collect_uses(root, &ctx, source, &mut output);
+        collect_uses(root, &ctx, source, &mut output, &mut HashSet::new());
         Ok(output)
     }
 
@@ -509,10 +512,7 @@ fn handle_function(
         ),
     };
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
-    let signature = mark_trait_method(
-        extract_signature(node, source, attributes),
-        ctx.in_trait_scope,
-    );
+    let signature = extract_signature(node, source, attributes);
     // A trait default method or trait-impl method has no `pub` to check —
     // it's exactly as visible as the trait itself (see
     // `Context::in_trait_scope`, issue #75 follow-up, finding B).
@@ -540,6 +540,16 @@ fn handle_function(
         evidence_snippet: None,
         ..Default::default()
     });
+    if ctx.in_trait_impl {
+        // Self-targeting marker: the method is reached through its trait
+        // (often external), so `dead_symbols` must not report it.
+        output.edges.push(EdgeInput {
+            kind: "TRAIT_IMPL_METHOD".to_string(),
+            source_qualname: Some(qualname.clone()),
+            target_qualname: Some(qualname.clone()),
+            ..Default::default()
+        });
+    }
     if let Some(edge) = grpc_impl_edge(node, ctx, source, &name, &qualname) {
         output.edges.push(edge);
     }
@@ -593,7 +603,7 @@ fn handle_function_signature(
     };
     let qualname = format!("{container}::{name}");
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
-    let signature = mark_trait_method(extract_signature(node, source, &[]), true);
+    let signature = extract_signature(node, source, &[]);
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -657,6 +667,7 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // directly — but an inherent impl's methods keep their own `pub`/
     // private status as normal. See `Context::in_trait_scope`.
     next_ctx.in_trait_scope = is_trait_impl;
+    next_ctx.in_trait_impl = is_trait_impl;
     walk_node(body, &next_ctx, source, output);
 }
 
@@ -1871,7 +1882,7 @@ fn has_pub_visibility(node: Node<'_>) -> bool {
 /// `signature` is the only place a Rust attribute reaches
 /// `test_detection::is_test_symbol` -- see `test_attribute_prefix` and
 /// issue #67 finding 1.
-const TEST_ATTRIBUTE_NAMES: &[&str] = &["test", "rstest"];
+const TEST_ATTRIBUTE_NAMES: &[&str] = &["test", "rstest", "test_case"];
 
 /// Renders any test-marking attribute in `attributes` (see
 /// `TEST_ATTRIBUTE_NAMES`) back out as `#[full_name]\n...` so
@@ -1893,27 +1904,55 @@ fn test_attribute_prefix(attributes: &[Node<'_>], source: &str) -> Option<String
     }
 }
 
-/// Prefixes `#[trait_method]\n` onto the signature of a trait declaration
-/// method or a trait-impl method, the same way `test_attribute_prefix` marks
-/// tests: `dead_symbols` can't see these are reached through the trait (often
-/// an external one, e.g. `r2d2::CustomizeConnection`), so it reads the marker.
-fn mark_trait_method(signature: Option<String>, in_trait_scope: bool) -> Option<String> {
-    if !in_trait_scope {
-        return signature;
-    }
-    Some(format!(
-        "{TRAIT_METHOD_MARKER}\n{}",
-        signature.unwrap_or_default()
-    ))
+/// Primitives and ubiquitous std types: never a repo symbol, so no `USES` edge.
+fn is_std_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Self"
+            | "str"
+            | "bool"
+            | "char"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+            | "String"
+            | "Vec"
+            | "Option"
+            | "Result"
+            | "Box"
+            | "Rc"
+            | "Arc"
+            | "HashMap"
+            | "HashSet"
+            | "Some"
+            | "None"
+            | "Ok"
+            | "Err"
+    )
 }
-
-const TRAIT_METHOD_MARKER: &str = "#[trait_method]";
 
 /// Emits `USES` edges for type references (field/param/return types, struct
 /// literals) and functions passed as values (`get_or_init(Config::from_env)`),
 /// none of which are calls. Sourced from the enclosing module: `dead_symbols`
 /// only needs to know the target is referenced somewhere.
-fn collect_uses(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn collect_uses(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+    seen: &mut HashSet<(String, String)>,
+) {
     let mut ctx = ctx.clone();
     if node.kind() == "mod_item"
         && let Some(name) = extract_name(node, source)
@@ -1936,8 +1975,9 @@ fn collect_uses(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         });
         if is_ref && !is_inner_path && !is_definition_name && !is_call_callee(node) {
             let raw = node_text(node, source);
-            if raw != "Self"
+            if !is_std_type_name(&raw)
                 && let Some(target) = resolve_call_target(&raw, &ctx)
+                && seen.insert((ctx.module.clone(), target.clone()))
             {
                 output.edges.push(EdgeInput {
                     kind: "USES".to_string(),
@@ -1950,7 +1990,7 @@ fn collect_uses(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         }
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            collect_uses(child, &ctx, source, output);
+            collect_uses(child, &ctx, source, output, seen);
         }
     }
 }
@@ -2145,6 +2185,75 @@ mod tests {
     use crate::indexer::extract::LanguageExtractor;
     use crate::indexer::http;
     use crate::indexer::proto;
+
+    const USES_SRC: &str = r#"
+pub struct Foo;
+pub trait T { fn req(&self); }
+impl T for Foo { fn req(&self) {} }
+impl Foo { pub fn inherent(&self) {} }
+pub fn a(x: Foo, y: Foo, n: u32, s: String, v: Vec<Foo>) -> Option<Foo> { None }
+#[test_case(1)]
+fn tc() {}
+"#;
+
+    #[test]
+    fn uses_edges_are_deduped_and_skip_primitives() {
+        let file = RustExtractor::new()
+            .unwrap()
+            .extract(USES_SRC, "crate")
+            .unwrap();
+        let uses: Vec<_> = file
+            .edges
+            .iter()
+            .filter(|e| e.kind == "USES")
+            .filter_map(|e| e.target_qualname.clone())
+            .collect();
+        assert_eq!(
+            uses.iter().filter(|t| *t == "crate::Foo").count(),
+            1,
+            "{uses:?}"
+        );
+        assert!(
+            !uses
+                .iter()
+                .any(|t| t.ends_with("::u32") || t.ends_with("::String")),
+            "{uses:?}"
+        );
+    }
+
+    #[test]
+    fn trait_impl_methods_are_marked_by_edge_not_signature() {
+        let file = RustExtractor::new()
+            .unwrap()
+            .extract(USES_SRC, "crate")
+            .unwrap();
+        for sym in &file.symbols {
+            let sig = sym.signature.clone().unwrap_or_default();
+            assert!(!sig.contains("trait_method"), "{}: {sig}", sym.qualname);
+        }
+        let marked: Vec<_> = file
+            .edges
+            .iter()
+            .filter(|e| e.kind == "TRAIT_IMPL_METHOD")
+            .filter_map(|e| e.source_qualname.clone())
+            .collect();
+        assert_eq!(marked, vec!["crate::Foo::req".to_string()], "{marked:?}");
+    }
+
+    #[test]
+    fn test_case_attribute_marks_test() {
+        let file = RustExtractor::new()
+            .unwrap()
+            .extract(USES_SRC, "crate")
+            .unwrap();
+        let tc = file.symbols.iter().find(|s| s.name == "tc").unwrap();
+        assert!(
+            tc.signature
+                .clone()
+                .unwrap_or_default()
+                .contains("test_case")
+        );
+    }
 
     #[test]
     fn extracts_route_attribute_and_reqwest_call() {

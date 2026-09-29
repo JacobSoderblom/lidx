@@ -509,11 +509,11 @@ impl Db {
                      AND COALESCE(s.signature, '') NOT LIKE '%#[test]%'
                      AND COALESCE(s.signature, '') NOT LIKE '%::test]%'
                      AND COALESCE(s.signature, '') NOT LIKE '%#[rstest]%'
-                     AND COALESCE(s.signature, '') NOT LIKE '#[trait_method]%'
+                     AND COALESCE(s.signature, '') NOT LIKE '%#[test_case]%'
                      AND NOT EXISTS (
                        SELECT 1 FROM edges e
                        WHERE e.target_symbol_id = s.id
-                         AND e.kind IN ('CALLS', 'IMPORTS', 'RPC_IMPL', 'IMPLEMENTS', 'EXTENDS', 'USES')
+                         AND e.kind IN ('CALLS', 'IMPORTS', 'RPC_IMPL', 'IMPLEMENTS', 'EXTENDS', 'USES', 'TRAIT_IMPL_METHOD')
                          AND e.graph_version = ?
                      )
                      AND NOT EXISTS (
