@@ -37,6 +37,11 @@ impl From<&str> for TraversalDirection {
 
 /// Determine the next symbol to visit based on edge direction
 fn next_symbol(edge: &Edge, current_id: i64, direction: TraversalDirection) -> Option<i64> {
+    // CONTAINS runs parent -> child. Walking it child -> parent would report a
+    // container as affected by a change to its member (issue #103).
+    if edge.kind == "CONTAINS" && edge.target_symbol_id == Some(current_id) {
+        return None;
+    }
     match direction {
         TraversalDirection::Upstream => {
             if edge.target_symbol_id == Some(current_id) {
@@ -144,7 +149,7 @@ fn resolve_bridge_targets(
     symbol_cache: &mut HashMap<i64, Symbol>,
     symbol_checked: &mut HashSet<i64>,
     distance_map: &mut HashMap<i64, usize>,
-    parent_map: &mut HashMap<i64, (i64, String, Option<String>)>,
+    parent_map: &mut HashMap<i64, (i64, String, Option<String>, bool)>,
     queue: &mut VecDeque<(i64, usize)>,
     current_distance: usize,
     limit: usize,
@@ -179,6 +184,7 @@ fn resolve_bridge_targets(
                     *source_id,
                     edge_kind.clone(),
                     bridged_edge.resolution_kind.clone(),
+                    false,
                 ));
                 queue.push_back((bridged_id, current_distance + 1));
                 if visited.len() >= limit {
@@ -243,7 +249,7 @@ pub fn analyze_direct_impact(
     }
 
     let mut truncated = false;
-    let mut parent_map: HashMap<i64, (i64, String, Option<String>)> = HashMap::new();
+    let mut parent_map: HashMap<i64, (i64, String, Option<String>, bool)> = HashMap::new();
     // Issue #81 (R5): every edge that actually contributed a newly-visited
     // symbol -- checked once, after the BFS, against `HEURISTIC_RESOLUTION_KINDS`
     // to decide whether suggesting the exclude-heuristics retry is useful at
@@ -357,6 +363,7 @@ pub fn analyze_direct_impact(
                         *current_id,
                         edge.kind.clone(),
                         edge.resolution_kind.clone(),
+                        edge.source_symbol_id == Some(next_id),
                     ));
                     queue.push_back((next_id, current_distance + 1));
                     traversed_edge_ids.push(edge.id);
@@ -416,7 +423,9 @@ pub fn analyze_direct_impact(
         // Resolution tier of the edge that first reached this symbol
         // (issue #62's AC), read off the same parent_map entry
         // reconstruct_path_steps walks later.
-        let resolution_kind = parent_map.get(&symbol_id).and_then(|(_, _, rk)| rk.clone());
+        let resolution_kind = parent_map
+            .get(&symbol_id)
+            .and_then(|(_, _, rk, _)| rk.clone());
 
         // Track evidence source
         evidence.insert(
@@ -801,5 +810,50 @@ mod tests {
             "resolved edge should still produce an affected symbol"
         );
         assert_eq!(result.impacts[0].0, callee_id);
+    }
+
+    /// Issue #103: changing a method does not "affect" its container, so
+    /// upstream traversal must not walk a CONTAINS edge child -> parent.
+    /// Downstream (parent -> child) still may.
+    #[test]
+    fn upstream_does_not_traverse_contains_to_parent() {
+        let (mut db, _temp) = test_db();
+        let file_id = db.upsert_file("src/lib.rs", "h1", "rust", 100, 0).unwrap();
+        let symbols = vec![
+            symbol("mod.Klass", "class", 1),
+            symbol("mod.Klass.method", "method", 2),
+        ];
+        let inserted = db
+            .insert_symbols(file_id, "src/lib.rs", &symbols, 1, None)
+            .unwrap();
+        let id_of = |qn: &str| inserted.iter().find(|s| s.qualname == qn).unwrap().id;
+        let mut edge = calls_edge("mod.Klass", "mod.Klass.method");
+        edge.kind = "CONTAINS".to_string();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(file_id, &[edge], &symbol_map, 1, None)
+            .unwrap();
+
+        let run = |seed: i64, direction| {
+            analyze_direct_impact(
+                &db,
+                &[seed],
+                3,
+                direction,
+                &HashSet::new(),
+                &[],
+                true,
+                100,
+                None,
+                1,
+            )
+            .unwrap()
+        };
+        let up = run(id_of("mod.Klass.method"), TraversalDirection::Upstream);
+        assert!(up.impacts.is_empty(), "got {:?}", up.impacts);
+        let down = run(id_of("mod.Klass"), TraversalDirection::Downstream);
+        assert_eq!(down.impacts.len(), 1);
     }
 }

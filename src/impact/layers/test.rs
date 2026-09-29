@@ -7,7 +7,9 @@
 //! 1. **Import Analysis** - Test imports production code (confidence: 0.9)
 //! 2. **Call Analysis** - Test calls production functions (confidence: 0.95)
 //! 3. **Naming Convention** - `test_foo()` tests `foo()` (confidence: 0.7)
-//! 4. **Directory Proximity** - Tests in `tests/` for files in `src/` (confidence: 0.5)
+//!
+//! Directory proximity is deliberately not a strategy: sharing path components
+//! with the seed is not evidence a test reaches it (issue #103).
 //!
 //! ## Usage
 //!
@@ -68,12 +70,6 @@ impl<'a> TestImpactLayer<'a> {
         // Strategy 3: Naming convention discovery
         let naming_tests = self.discover_naming_tests(seed_ids, graph_version)?;
         for (test_id, evidence) in naming_tests {
-            test_impacts.entry(test_id).or_default().push(evidence);
-        }
-
-        // Strategy 4: Directory proximity discovery
-        let proximity_tests = self.discover_proximity_tests(seed_ids, graph_version)?;
-        for (test_id, evidence) in proximity_tests {
             test_impacts.entry(test_id).or_default().push(evidence);
         }
 
@@ -321,74 +317,6 @@ impl<'a> TestImpactLayer<'a> {
         Ok(results)
     }
 
-    /// Strategy 4: Directory proximity heuristic
-    ///
-    /// Match test files to source files by directory structure
-    /// Example: `tests/auth/test_login.py` → all symbols in `src/auth/login.py`
-    /// Confidence: 0.5 (low - broad heuristic)
-    fn discover_proximity_tests(
-        &self,
-        seed_ids: &[i64],
-        graph_version: i64,
-    ) -> Result<Vec<(i64, ImpactSource)>> {
-        let mut results = Vec::new();
-        let mut seen = HashSet::new();
-
-        // Load seed symbols to get their file paths
-        let seeds = self.db.symbols_by_ids(seed_ids, None, graph_version)?;
-
-        for seed in &seeds {
-            // Extract directory from seed file path
-            // Example: src/auth/login.py → auth/login
-            let seed_path = &seed.file_path;
-            let seed_components = self.extract_path_components(seed_path);
-
-            // Find test symbols with similar path components
-            // Use find_symbols to search for "test" patterns
-            let seed_lang = Self::infer_language(seed_path);
-            if let Ok(test_candidates) = self.db.find_symbols("test", 1000, None, graph_version) {
-                for test in test_candidates {
-                    if seen.contains(&test.id) {
-                        continue;
-                    }
-
-                    if !is_test_symbol(&test) {
-                        continue;
-                    }
-
-                    // Skip tests from different languages to avoid cross-language false positives
-                    if let (Some(sl), Some(tl)) = (seed_lang, Self::infer_language(&test.file_path))
-                        && sl != tl
-                    {
-                        continue;
-                    }
-
-                    let test_components = self.extract_path_components(&test.file_path);
-
-                    // Check for overlap in path components — require >= 2 to avoid single-word matches
-                    let overlap = seed_components
-                        .iter()
-                        .filter(|c| test_components.contains(*c))
-                        .count();
-
-                    if overlap >= 2 {
-                        seen.insert(test.id);
-                        let test_type = classify_test_type(&test);
-                        results.push((
-                            test.id,
-                            ImpactSource::TestLink {
-                                strategy: "proximity".to_string(),
-                                test_type: test_type.to_string(),
-                            },
-                        ));
-                    }
-                }
-            }
-        }
-
-        Ok(results)
-    }
-
     /// Infer language from file extension for cross-language filtering
     fn infer_language(path: &str) -> Option<&'static str> {
         let ext = path.rsplit('.').next()?;
@@ -404,49 +332,6 @@ impl<'a> TestImpactLayer<'a> {
             _ => None,
         }
     }
-
-    /// Extract meaningful path components for proximity matching
-    ///
-    /// Example: `src/auth/login.py` → `["auth", "login"]`
-    fn extract_path_components(&self, path: &str) -> HashSet<String> {
-        let mut components = HashSet::new();
-
-        // Split by / or \
-        let parts: Vec<&str> = path.split(&['/', '\\'][..]).collect();
-
-        for part in parts {
-            let lower = part.to_lowercase();
-
-            // Skip common directories
-            if lower == "src"
-                || lower == "lib"
-                || lower == "tests"
-                || lower == "test"
-                || lower.is_empty()
-            {
-                continue;
-            }
-
-            // Remove file extension
-            let name = if let Some(dot_pos) = part.rfind('.') {
-                &part[..dot_pos]
-            } else {
-                part
-            };
-
-            // Remove test_ prefix for matching
-            let clean_name = name
-                .trim_start_matches("test_")
-                .trim_end_matches("_test")
-                .to_lowercase();
-
-            if !clean_name.is_empty() {
-                components.insert(clean_name);
-            }
-        }
-
-        components
-    }
 }
 
 #[cfg(test)]
@@ -454,28 +339,87 @@ mod tests {
     use super::*;
     use crate::db::Db;
 
+    fn sym(qualname: &str, kind: &str, line: i64) -> crate::indexer::extract::SymbolInput {
+        crate::indexer::extract::SymbolInput {
+            kind: kind.to_string(),
+            name: qualname.rsplit('.').next().unwrap().to_string(),
+            qualname: qualname.to_string(),
+            start_line: line,
+            start_col: 0,
+            end_line: line + 3,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 10,
+            signature: None,
+            docstring: None,
+        }
+    }
+
+    /// Issue #103: a test that merely shares path components with the seed
+    /// (same package layout) but never reaches it through the graph must
+    /// not be listed; a test that calls the seed must be.
     #[test]
-    fn test_extract_path_components() {
-        // Create a temporary database for testing
-        let temp_dir = std::env::temp_dir();
-        let db_path = temp_dir.join("test_impact_layer.db");
-        let _ = std::fs::remove_file(&db_path); // Clean up if exists
+    fn only_tests_reaching_the_seed_through_the_graph_are_listed() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut db = Db::new(&temp.path().join("t.db")).unwrap();
+        let src = db
+            .upsert_file("pkg/core/mod.py", "h1", "python", 10, 0)
+            .unwrap();
+        let seed_syms = db
+            .insert_symbols(
+                src,
+                "pkg/core/mod.py",
+                &[sym("pkg.core.mod.run", "function", 1)],
+                1,
+                None,
+            )
+            .unwrap();
+        let tst = db
+            .upsert_file("tests/pkg/core/test_mod.py", "h2", "python", 10, 0)
+            .unwrap();
+        let test_syms = db
+            .insert_symbols(
+                tst,
+                "tests/pkg/core/test_mod.py",
+                &[
+                    sym("tests.test_mod.test_run_calls", "function", 1),
+                    sym("tests.test_mod.test_unrelated", "function", 10),
+                ],
+                1,
+                None,
+            )
+            .unwrap();
+        let map: HashMap<String, i64> = test_syms
+            .iter()
+            .chain(seed_syms.iter())
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        let edge = crate::indexer::extract::EdgeInput {
+            kind: "CALLS".to_string(),
+            source_qualname: Some("tests.test_mod.test_run_calls".to_string()),
+            target_qualname: Some("pkg.core.mod.run".to_string()),
+            detail: None,
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            confidence: Some(1.0),
+            trace_id: None,
+            span_id: None,
+            event_ts: None,
+            receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
+            import_candidates: Vec::new(),
+            bare_call: false,
+        };
+        db.insert_edges(tst, &[edge], &map, 1, None).unwrap();
 
-        let db = Db::new(&db_path).unwrap();
-        let layer = TestImpactLayer { db: &db };
-
-        let components = layer.extract_path_components("src/auth/login.py");
-        assert!(components.contains("auth"));
-        assert!(components.contains("login"));
-        assert!(!components.contains("src"));
-
-        let components = layer.extract_path_components("tests/test_auth/test_login.py");
-        assert!(components.contains("auth"));
-        assert!(components.contains("login"));
-        assert!(!components.contains("tests"));
-        assert!(!components.contains("test"));
-
-        // Cleanup
-        let _ = std::fs::remove_file(&db_path);
+        let layer = TestImpactLayer::new(&db);
+        let result = layer.analyze(&[seed_syms[0].id], &[], 1).unwrap();
+        let ids: Vec<i64> = result.impacts.iter().map(|(id, _)| *id).collect();
+        let called = test_syms
+            .iter()
+            .find(|s| s.name == "test_run_calls")
+            .unwrap()
+            .id;
+        assert_eq!(ids, vec![called], "got {ids:?}");
     }
 }

@@ -130,8 +130,9 @@ pub struct LayerResult {
     /// Whether this layer was truncated
     pub truncated: bool,
     /// Parent tracking for path reconstruction: child_id -> (parent_id,
-    /// edge_kind, resolution_kind of the traversed edge)
-    pub parent_map: HashMap<i64, (i64, String, Option<String>)>,
+    /// edge_kind, resolution_kind of the traversed edge, whether the edge was
+    /// walked against its direction, i.e. the parent is the edge's target)
+    pub parent_map: HashMap<i64, (i64, String, Option<String>, bool)>,
     /// Issue #81 (R5): whether this layer traversed at least one edge with a
     /// heuristic (`bare_name`/`two_segment`) resolution kind. Only the direct
     /// layer (`analyze_direct_impact`) computes this meaningfully; every

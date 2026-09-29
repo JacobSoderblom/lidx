@@ -348,7 +348,12 @@ fn analyze_impact_path_steps_expose_resolution_kind_import_tier() {
     let steps = entry["path"]["steps"]
         .as_array()
         .expect("expected path.steps on the affected entry");
-    let step = find_step(steps, "downstream.use_entry");
+    // Issue #103: steps read caller -> callee even for an upstream walk.
+    let step = steps
+        .iter()
+        .find(|s| s["from_symbol"] == "downstream.use_entry")
+        .unwrap_or_else(|| panic!("expected a step from downstream.use_entry, got {steps:?}"));
+    assert_eq!(step["to_symbol"], "caller.entry");
     assert_eq!(
         step["resolution_kind"], "import",
         "downstream.use_entry's call to caller.entry binds import: {step}"
