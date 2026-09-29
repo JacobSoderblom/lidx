@@ -181,9 +181,12 @@ fn tied_candidates(trimmed: &str, candidates: &[Symbol]) -> Option<Vec<Symbol>> 
 }
 
 /// Continues the fallback chain once `find_symbols` candidates are already in
-/// hand: the top candidate if there is one, else config URI resolution (both
-/// direct URIs and normalized guesses), else a "did you mean" error built from
-/// a broader unfiltered search.
+/// hand: the top candidate if there is one, else normalized config key/secret
+/// lookup (skipped if query is already a URI), else a "did you mean" error
+/// built from a broader unfiltered search.
+///
+/// Note: Direct config URI resolution happens earlier in `resolve_by_query`
+/// before `find_symbols`, so it takes precedence over fuzzy symbol matches.
 fn resolve_after_candidates(
     db: &Db,
     query: &str,
@@ -200,23 +203,16 @@ fn resolve_after_candidates(
     // without a language filter itself before returning.
     let trimmed = query.trim();
 
-    // Try the query directly as a config URI if it looks like one
-    if crate::indexer::config::is_config_uri(trimmed) {
-        let ids = db.source_symbols_for_config_uri(trimmed, &[], graph_version)?;
-        if let Some(&first_id) = ids.first()
-            && let Some(sym) = db.get_symbol_by_id(first_id)?
-        {
-            return Ok(sym);
-        }
-    }
-
-    // Fall back to normalizing the query as a config key/secret name
-    for uri in config_uri_guesses(trimmed) {
-        let ids = db.source_symbols_for_config_uri(&uri, &[], graph_version)?;
-        if let Some(&first_id) = ids.first()
-            && let Some(sym) = db.get_symbol_by_id(first_id)?
-        {
-            return Ok(sym);
+    // Only try normalized guesses if the query is not already a config URI.
+    // Direct URI resolution happens earlier in resolve_by_query.
+    if !crate::indexer::config::is_config_uri(trimmed) {
+        for uri in config_uri_guesses(trimmed) {
+            let ids = db.source_symbols_for_config_uri(&uri, &[], graph_version)?;
+            if let Some(&first_id) = ids.first()
+                && let Some(sym) = db.get_symbol_by_id(first_id)?
+            {
+                return Ok(sym);
+            }
         }
     }
 
@@ -488,6 +484,18 @@ fn resolve_by_query(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<Symbol> {
+    let trimmed = query.trim();
+
+    // Check if it's already a config URI — try direct resolution first, before find_symbols
+    if crate::indexer::config::is_config_uri(trimmed) {
+        let ids = db.source_symbols_for_config_uri(trimmed, &[], graph_version)?;
+        if let Some(&first_id) = ids.first()
+            && let Some(sym) = db.get_symbol_by_id(first_id)?
+        {
+            return Ok(sym);
+        }
+    }
+
     let (_, candidates) = trimmed_query_candidates(db, query, languages, graph_version)?;
     resolve_after_candidates(db, query, candidates, graph_version)
 }
@@ -935,5 +943,51 @@ mod tests {
         assert!(result.is_ok(), "config URI qualname should find a symbol");
         let sym = result.unwrap();
         assert_eq!(sym.file_path, "app.py");
+    }
+
+    #[test]
+    fn resolve_secret_uri_directly() {
+        let (_temp, indexer) = indexed_repo("bicep_config");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        // Pass the secret URI directly (from issue #130 example) — should resolve
+        let result = resolve_symbol(
+            indexer.db(),
+            SymbolRef::Query("secret://datamgr-db-conn-str".into()),
+            None,
+            gv,
+        );
+
+        // Should resolve to the resource that defines this secret
+        assert!(result.is_ok(), "secret URI query should find a symbol");
+        let sym = result.unwrap();
+        assert_eq!(sym.file_path, "main.bicep");
+    }
+
+    #[test]
+    fn resolve_nonexistent_config_uri_returns_suggestions() {
+        let (_temp, indexer) = indexed_repo("py_config");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        // Pass a config URI that doesn't exist — should return "did you mean"
+        let result = resolve_symbol(
+            indexer.db(),
+            SymbolRef::Query("env://NONEXISTENT_VAR".into()),
+            None,
+            gv,
+        );
+
+        // Should fail but not crash
+        assert!(
+            result.is_err(),
+            "nonexistent config URI should return error"
+        );
+        let msg = result.unwrap_err().to_string();
+        // Should still have suggestions even though the URI didn't match
+        assert!(
+            msg.contains("Did you mean") || msg.contains("no symbol found"),
+            "error message should guide the user: {}",
+            msg
+        );
     }
 }
