@@ -1184,3 +1184,151 @@ fn csharp_deferred_receiver_resolves_when_callee_is_added_later() {
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+// Issue #187: JS/TS import candidates are chased through re-export barrels
+// and default exports at extraction time, so editing/adding/deleting only
+// the barrel or target must re-extract the (hash-unchanged) importers.
+
+const TS_CALLER: &str =
+    "import { foo } from './lib';\nexport function go() {\n  return foo();\n}\n";
+
+fn ts_calls(indexer: &Indexer) -> Vec<(String, Option<String>)> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    golden::snapshot_edges(indexer.db(), gv)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "CALLS" && e.source_qualname == "use.go")
+        .map(|e| (e.source_qualname, e.target_qualname))
+        .collect()
+}
+
+/// Incremental sync of `synced` after `edit` must equal a fresh reindex of
+/// `final_files`; returns the incremental indexer for extra assertions.
+fn ts_incremental_matches_fresh(
+    label: &str,
+    initial: &[(&str, &str)],
+    edit: impl FnOnce(&std::path::Path),
+    synced: &[&str],
+    final_files: &[(&str, &str)],
+) -> (tempfile::TempDir, Indexer) {
+    let (tmp, repo_root, mut indexer) = indexed_tree(label, initial);
+    edit(&repo_root);
+    let rels: Vec<String> = synced.iter().map(|s| s.to_string()).collect();
+    indexer.sync_rel_paths(&rels).unwrap();
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(final_files);
+    common::assert_matches_fresh(&snapshot, &fresh);
+    (tmp, indexer)
+}
+
+fn target_of(indexer: &Indexer) -> Option<String> {
+    ts_calls(indexer).into_iter().next().and_then(|(_, t)| t)
+}
+
+const FOO_A: (&str, &str) = ("lib/a.ts", "export function foo() {}\n");
+const FOO_B: (&str, &str) = ("lib/b.ts", "export function foo() {}\n");
+
+#[test]
+fn incremental_barrel_edit_reextracts_unchanged_importer() {
+    let barrel_v2 = "export { foo } from './b';\n";
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-barrel-edit",
+        &[
+            FOO_A,
+            FOO_B,
+            ("lib/index.ts", "export { foo } from './a';\n"),
+            ("use.ts", TS_CALLER),
+        ],
+        |root| common::write_files(root, &[("lib/index.ts", barrel_v2)]),
+        &["lib/index.ts"],
+        &[
+            FOO_A,
+            FOO_B,
+            ("lib/index.ts", barrel_v2),
+            ("use.ts", TS_CALLER),
+        ],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/b.foo"));
+}
+
+#[test]
+fn incremental_default_export_rename_reextracts_unchanged_importer() {
+    let caller = "import api from './api';\nexport function go() {\n  return api.get();\n}\n";
+    let v1 = "const apiClient = { get() { return 1; } };\nexport default apiClient;\n";
+    let v2 = "const renamedClient = { get() { return 1; } };\nexport default renamedClient;\n";
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-default-rename",
+        &[("api.ts", v1), ("use.ts", caller)],
+        |root| common::write_files(root, &[("api.ts", v2)]),
+        &["api.ts"],
+        &[("api.ts", v2), ("use.ts", caller)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("api.renamedClient"));
+}
+
+#[test]
+fn incremental_barrel_repointed_to_new_file_reextracts_importer() {
+    let barrel_v2 = "export { foo } from './c';\n";
+    let c = ("lib/c.ts", "export function foo() {}\n");
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-barrel-repoint",
+        &[
+            FOO_A,
+            ("lib/index.ts", "export { foo } from './a';\n"),
+            ("use.ts", TS_CALLER),
+        ],
+        |root| {
+            common::write_files(root, &[c, ("lib/index.ts", barrel_v2)]);
+        },
+        &["lib/c.ts", "lib/index.ts"],
+        &[FOO_A, c, ("lib/index.ts", barrel_v2), ("use.ts", TS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/c.foo"));
+}
+
+#[test]
+fn incremental_added_barrel_target_reextracts_importer_through_barrel() {
+    let barrel = ("lib/index.ts", "export * from './x';\n");
+    let x = ("lib/x.ts", "export function foo() {}\n");
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-target-added",
+        &[barrel, ("use.ts", TS_CALLER)],
+        |root| common::write_files(root, &[x]),
+        &["lib/x.ts"],
+        &[barrel, x, ("use.ts", TS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/x.foo"));
+}
+
+#[test]
+fn incremental_deleted_barrel_target_reextracts_importer_through_barrel() {
+    let barrel = ("lib/index.ts", "export * from './x';\n");
+    let x = ("lib/x.ts", "export function foo() {}\n");
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-target-deleted",
+        &[barrel, x, ("use.ts", TS_CALLER)],
+        |root| std::fs::remove_file(root.join("lib/x.ts")).unwrap(),
+        &["lib/x.ts"],
+        &[barrel, ("use.ts", TS_CALLER)],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("lib/x.foo"));
+}
+
+#[test]
+fn full_reindex_reextracts_importer_of_edited_barrel() {
+    let barrel_v2 = "export { foo } from './b';\n";
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "ts-reindex-barrel",
+        &[
+            FOO_A,
+            FOO_B,
+            ("lib/index.ts", "export { foo } from './a';\n"),
+            ("use.ts", TS_CALLER),
+        ],
+    );
+    common::write_files(&root, &[("lib/index.ts", barrel_v2)]);
+    indexer.reindex().unwrap();
+    assert_eq!(target_of(&indexer).as_deref(), Some("lib/b.foo"));
+}

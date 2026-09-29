@@ -303,3 +303,58 @@ fn unexported_class_members_are_not_cross_file_fallback_candidates() {
     ]);
     assert!(t.contains(&"shown.Shown.openMethod".to_string()), "{t:?}");
 }
+
+#[test]
+fn star_reexport_collision_stays_unbound() {
+    let t = single_call_target(&[
+        (
+            "lib/a.ts",
+            "export function foo() {}\nexport function onlyA() {}\n",
+        ),
+        ("lib/b.ts", "export function foo() {}\n"),
+        (
+            "lib/index.ts",
+            "export * from './a';\nexport * from './b';\n",
+        ),
+        (
+            "use.ts",
+            "import { foo, onlyA } from './lib';\nexport function go() {\n  foo();\n  onlyA();\n}\n",
+        ),
+    ]);
+    assert!(t.contains(&"lib/a.onlyA".to_string()), "{t:?}");
+    assert!(
+        !t.iter().any(|q| q == "lib/a.foo" || q == "lib/b.foo"),
+        "{t:?}"
+    );
+}
+
+#[test]
+fn bare_default_reexport_binds_to_original_default() {
+    let t = single_call_target(&[
+        ("lib/w.ts", "export default function Widget() {}\n"),
+        ("lib/index.ts", "export { default } from './w';\n"),
+        ("use.ts", &caller("./lib", "Other", "Other()")),
+    ]);
+    assert_eq!(t, vec!["lib/w.Widget".to_string()]);
+}
+
+#[test]
+fn type_only_reexport_binds_to_original() {
+    let t = single_call_target(&[
+        ("lib/a.ts", "export function foo() {}\n"),
+        ("lib/index.ts", "export type { foo } from './a';\n"),
+        ("use.ts", &caller("./lib", "{ foo }", "foo()")),
+    ]);
+    assert_eq!(t, vec!["lib/a.foo".to_string()]);
+}
+
+#[test]
+fn directory_import_resolves_through_index_tsx_and_index_js() {
+    for (idx, file) in [("index.tsx", "lib/index.tsx"), ("index.js", "lib/index.js")] {
+        let t = single_call_target(&[
+            (file, "export function foo() {}\n"),
+            ("use.ts", &caller("./lib", "{ foo }", "foo()")),
+        ]);
+        assert_eq!(t, vec!["lib.foo".to_string()], "{idx}");
+    }
+}

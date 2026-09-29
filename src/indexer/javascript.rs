@@ -269,7 +269,6 @@ pub fn resolve_import_file_edges(
     // are chased on disk (`chase_export`), so the candidate names the
     // original declaration rather than the barrel.
     let mut resolved_specs: HashMap<String, Option<String>> = HashMap::new();
-    let mut export_cache: HashMap<String, Option<Rc<FileExports>>> = HashMap::new();
     for edge in edges.iter_mut() {
         for candidate in edge.import_candidates.iter_mut() {
             let Some((spec, member)) = candidate.split_once(IMPORT_PLACEHOLDER_SEP) else {
@@ -280,7 +279,8 @@ pub fn resolve_import_file_edges(
                 .or_insert_with(|| resolve_import_path(repo_root, file_rel_path, spec));
             *candidate = match dst {
                 Some(dst) => {
-                    let (path, member) = chase_member(repo_root, dst, member, &mut export_cache);
+                    let (path, member) = EXPORT_CACHE
+                        .with(|c| chase_member(repo_root, dst, member, &mut c.borrow_mut()));
                     format!("{}.{member}", module_name_from_rel_path(&path))
                 }
                 None => format!("{spec}:{}", member.trim_start_matches(DEFAULT_IMPORT_MARK)),
@@ -331,6 +331,31 @@ pub fn resolve_import_file_edges(
     edges.extend(resolved);
 }
 
+/// Name of the default export in `chase_export` lookups.
+const DEFAULT_EXPORT: &str = "default";
+
+type ExportCache = HashMap<String, Option<Rc<FileExports>>>;
+
+thread_local! {
+    /// Parsed export tables shared by every `resolve_import_file_edges` call
+    /// in one sync/reindex batch, so a barrel is parsed once per batch. The
+    /// indexer clears it at each batch boundary (`clear_export_cache`).
+    static EXPORT_CACHE: std::cell::RefCell<ExportCache> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Drops the per-batch export cache; called by the indexer at the start and
+/// end of every sync/reindex so no stale barrel survives a file edit.
+pub fn clear_export_cache() {
+    EXPORT_CACHE.with(|c| c.borrow_mut().clear());
+}
+
+/// Whether `rel_path` is a JS/TS source file (by extension).
+pub fn is_js_ts_path(rel_path: &str) -> bool {
+    JS_TS_EXTENSIONS
+        .iter()
+        .any(|ext| rel_path.ends_with(&format!(".{ext}")))
+}
+
 /// What a file exports, for chasing an import through barrels.
 #[derive(Default)]
 struct FileExports {
@@ -347,7 +372,7 @@ struct FileExports {
 }
 
 fn scan_exports(repo_root: &Path, rel: &str) -> Option<FileExports> {
-    let source = std::fs::read_to_string(repo_root.join(rel)).ok()?;
+    let source = util::read_to_string(&repo_root.join(rel)).ok()?;
     let mut parser = Parser::new();
     let language = match Path::new(rel).extension().and_then(|e| e.to_str()) {
         Some("ts" | "mts" | "cts") => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
@@ -399,7 +424,7 @@ fn scan_exports(repo_root: &Path, rel: &str) -> Option<FileExports> {
                             .unwrap_or_else(|| orig.clone());
                         match &spec {
                             Some(spec) => out.reexports.push((exported, spec.clone(), orig)),
-                            None if exported == "default" => out.default_local = Some(orig),
+                            None if exported == DEFAULT_EXPORT => out.default_local = Some(orig),
                             None => {
                                 out.aliases.insert(exported, orig);
                             }
@@ -421,17 +446,30 @@ fn chase_export(
     repo_root: &Path,
     path: &str,
     name: &str,
-    cache: &mut HashMap<String, Option<Rc<FileExports>>>,
+    cache: &mut ExportCache,
     visited: &mut HashSet<(String, String)>,
 ) -> Option<(String, String)> {
-    if !visited.insert((path.to_string(), name.to_string())) {
+    let key = (path.to_string(), name.to_string());
+    if !visited.insert(key.clone()) {
         return None;
     }
+    let hit = chase_export_inner(repo_root, path, name, cache, visited);
+    visited.remove(&key);
+    hit
+}
+
+fn chase_export_inner(
+    repo_root: &Path,
+    path: &str,
+    name: &str,
+    cache: &mut ExportCache,
+    visited: &mut HashSet<(String, String)>,
+) -> Option<(String, String)> {
     let exports = cache
         .entry(path.to_string())
         .or_insert_with(|| scan_exports(repo_root, path).map(Rc::new))
         .clone()?;
-    if name == "default"
+    if name == DEFAULT_EXPORT
         && let Some(local) = &exports.default_local
     {
         return Some((path.to_string(), local.clone()));
@@ -450,17 +488,26 @@ fn chase_export(
     if let Some(local) = exports.aliases.get(name) {
         return Some((path.to_string(), local.clone()));
     }
-    if name != "default" {
-        if exports.names.contains(name) {
-            return Some((path.to_string(), name.to_string()));
-        }
-        for spec in &exports.stars {
-            if let Some(hit) = follow(spec, name, cache, visited) {
-                return Some(hit);
-            }
+    if name == DEFAULT_EXPORT {
+        return None;
+    }
+    if exports.names.contains(name) {
+        return Some((path.to_string(), name.to_string()));
+    }
+    // `export *` sources: two that both provide `name` collide, and a
+    // colliding name is exported by neither.
+    let mut found: Option<(String, String)> = None;
+    for spec in &exports.stars {
+        let Some(hit) = follow(spec, name, cache, visited) else {
+            continue;
+        };
+        match &found {
+            None => found = Some(hit),
+            Some(prev) if *prev == hit => {}
+            Some(_) => return None,
         }
     }
-    None
+    found
 }
 
 /// Rewrites an import placeholder's `member` (`name[.rest]`, or a
@@ -471,7 +518,7 @@ fn chase_member(
     repo_root: &Path,
     dst: &str,
     member: &str,
-    cache: &mut HashMap<String, Option<Rc<FileExports>>>,
+    cache: &mut ExportCache,
 ) -> (String, String) {
     let (is_default, member) = match member.strip_prefix(DEFAULT_IMPORT_MARK) {
         Some(m) => (true, m),
@@ -481,7 +528,7 @@ fn chase_member(
         Some((h, t)) => (h, format!(".{t}")),
         None => (member, String::new()),
     };
-    let lookup = if is_default { "default" } else { head };
+    let lookup = if is_default { DEFAULT_EXPORT } else { head };
     match chase_export(repo_root, dst, lookup, cache, &mut HashSet::new()) {
         Some((path, name)) => (path, format!("{name}{tail}")),
         None => (dst.to_string(), member.to_string()),
@@ -1586,7 +1633,7 @@ fn collect_import_bindings(root: Node<'_>, source: &str) -> ImportBindings {
                 match part.kind() {
                     "identifier" => {
                         let local = node_text(part, source);
-                        bindings.insert(local, (spec.clone(), Some("default".to_string())));
+                        bindings.insert(local, (spec.clone(), Some(DEFAULT_EXPORT.to_string())));
                     }
                     "namespace_import" => {
                         let mut ns_cursor = part.walk();
@@ -1637,7 +1684,7 @@ fn import_placeholder(raw: &str, ctx: &Context) -> Option<String> {
     }
     let (spec, imported) = ctx.import_bindings.get(root)?;
     let member = match (imported, rest) {
-        (Some(name), rest) if name == "default" => {
+        (Some(name), rest) if name == DEFAULT_EXPORT => {
             let tail = rest.map(|r| format!(".{r}")).unwrap_or_default();
             format!("{DEFAULT_IMPORT_MARK}{root}{tail}")
         }
