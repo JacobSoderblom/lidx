@@ -693,10 +693,28 @@ fn explicit_interface_name(node: Node<'_>, source: &str) -> Option<String> {
     let spec = node
         .children(&mut cursor)
         .find(|c| c.kind() == "explicit_interface_specifier")?;
-    let text = node_text(spec, source);
-    let text = text.trim().trim_end_matches('.');
-    let text = text.split('<').next().unwrap_or(text);
-    let last = text.rsplit('.').next().unwrap_or(text).trim();
+    simple_interface_name(&node_text(spec, source))
+}
+
+/// `N.IA<T>.` / `Outer<T>.IA.` / `IA<Dictionary<K,V>>.` -> `IA`: drops
+/// generic arguments by bracket depth, then takes the last identifier.
+fn simple_interface_name(text: &str) -> Option<String> {
+    let mut depth = 0usize;
+    let mut plain = String::new();
+    for ch in text.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => plain.push(ch),
+            _ => {}
+        }
+    }
+    let last = plain
+        .trim()
+        .trim_end_matches('.')
+        .rsplit('.')
+        .next()?
+        .trim();
     (!last.is_empty()).then(|| last.to_string())
 }
 
@@ -4184,6 +4202,15 @@ fn collect_class_level_grpc_client_fields(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn simple_interface_name_strips_generics_by_depth() {
+        use super::simple_interface_name as f;
+        assert_eq!(f("Outer<T>.IA.").as_deref(), Some("IA"));
+        assert_eq!(f("N.IA<T>.").as_deref(), Some("IA"));
+        assert_eq!(f("IA<Dictionary<K,V>>.").as_deref(), Some("IA"));
+        assert_eq!(f("IA.").as_deref(), Some("IA"));
+    }
+
     use super::*;
     use crate::indexer::extract::LanguageExtractor;
     use crate::indexer::http;

@@ -547,6 +547,7 @@ const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.ki
        -- Issue #181: a C# explicit interface impl `C.IA.Run` has no parent
        -- symbol `C.IA`; it is only reachable through the interface, so it is
        -- never a name-fallback candidate (it would make `IA.Run` ambiguous).
+       -- Kept inline (not in LanguageProfile): a SQL-side existence check.
        AND (f.language != 'csharp' OR s.kind != 'method' OR EXISTS (
             SELECT 1 FROM symbols p
              WHERE p.graph_version = s.graph_version

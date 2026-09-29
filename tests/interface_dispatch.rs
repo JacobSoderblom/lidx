@@ -232,3 +232,33 @@ fn explicit_impl_has_distinct_identity_and_pairs_only_with_named_interface() {
     assert!(b.contains(&implicit.to_string()), "IB: {b:?}");
     assert!(!b.contains(&explicit.to_string()), "IB: {b:?}");
 }
+
+/// Issue #181: explicit impl for IA plus one implicit `Run` serving IB and IC.
+#[test]
+fn implicit_impl_pairs_with_remaining_interfaces_only() {
+    let (_tmp, repo, db) = common::setup_repo("cs_explicit_impl_three");
+    let mut indexer = Indexer::new(repo.clone(), db.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    let down = |iface: &str| {
+        let r = call(
+            &repo,
+            &db,
+            "trace_flow",
+            json!({"start_qualname": iface, "direction": "downstream"}),
+        );
+        names(&r["trace"])
+    };
+    let explicit = "Shop.D.IA.Run".to_string();
+    let implicit = "Shop.D.Run".to_string();
+    let a = down("Shop.IA.Run");
+    assert!(a.contains(&explicit) && !a.contains(&implicit), "{a:?}");
+    for iface in ["Shop.IB.Run", "Shop.IC.Run"] {
+        let t = down(iface);
+        assert!(
+            t.contains(&implicit) && !t.contains(&explicit),
+            "{iface}: {t:?}"
+        );
+    }
+}
