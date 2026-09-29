@@ -322,8 +322,8 @@ pub(crate) struct LanguageProfile {
     /// Whether `resolve_import`, when no candidate hits, retries each with
     /// its last segment stripped (`mod.x.m` -> `mod.x`), so a member call on
     /// an imported binding whose members aren't indexed (a JS/TS object
-    /// literal) binds to the binding itself. A module-kind parent never
-    /// counts (issue #113).
+    /// literal) binds to the binding itself. Only a `const`/`variable`
+    /// parent counts, never a class/module (issue #113).
     pub import_member_fallback: bool,
     /// How the guarded name-fallback tier (`Resolver::same_lang_lookup`,
     /// tier 5 only — see the module doc) decides whether a same-language,
@@ -1350,7 +1350,7 @@ impl<'c> Resolver<'c> {
                 .conn
                 .query_row("SELECT kind FROM symbols WHERE id = ?", [id], |r| r.get(0))
                 .optional()?;
-            if kind.as_deref() == Some("module") {
+            if !matches!(kind.as_deref(), Some("const" | "variable")) {
                 continue;
             }
             match found {
