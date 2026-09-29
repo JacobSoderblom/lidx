@@ -73,6 +73,7 @@ pub struct CallShape {
 }
 
 impl CallShape {
+    /// The `call_shape` column text: `"<n>"` or `"new:<n>"`.
     pub fn encode(self) -> String {
         if self.is_new {
             format!("new:{}", self.arg_count)
@@ -81,6 +82,7 @@ impl CallShape {
         }
     }
 
+    /// Inverse of `encode`; `None` for text that isn't a valid shape.
     pub fn decode(raw: &str) -> Option<Self> {
         let (is_new, count) = match raw.strip_prefix("new:") {
             Some(rest) => (true, rest),

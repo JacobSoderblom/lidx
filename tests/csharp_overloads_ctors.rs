@@ -37,6 +37,28 @@ namespace App
 
     public class Plain { }
 
+    public enum SpecificationKind { S }
+    public enum PublicationStatus { P }
+
+    public static class DbExt
+    {
+        public static string ToDatabaseValue(this SpecificationKind kind) { return "s"; }
+        public static string ToDatabaseValue(this PublicationStatus status) { return "p"; }
+    }
+
+    public record Rec(int A)
+    {
+        public Rec(string s) : this(0) { }
+    }
+
+    public class Opt
+    {
+        public string Fmt() { return ""; }
+        public string Fmt(string f, params object[] args) { return f; }
+        public int Pad() { return 0; }
+        public int Pad(int a, int b = 0) { return a; }
+    }
+
     public class Caller
     {
         public void CallOne(Svc svc) { svc.Add(1); }
@@ -45,6 +67,12 @@ namespace App
         public void CallExt(Kind kind) { kind.ToDb(); }
         public void CallExtPad(Kind kind) { kind.ToDb(5); }
         public void MakeWidget() { var w = new Widget(1); }
+        public void ExtSpec(SpecificationKind kind) { kind.ToDatabaseValue(); }
+        public void ExtStatus(PublicationStatus status) { status.ToDatabaseValue(); }
+        public void MakeRec() { var r = new Rec(5); }
+        public void FmtNone(Opt o) { o.Fmt(); }
+        public void FmtParams(Opt o) { o.Fmt("x", 1, 2); }
+        public void PadOptional(Opt o) { o.Pad(1); }
         public void MakePlain() { var p = new Plain(); }
         public void MakeDefault() { var w = new Widget(); }
     }
@@ -180,5 +208,35 @@ fn read_symbol_on_overloaded_qualname_returns_every_overload() {
     let text = result.to_string();
     assert!(text.contains("int a, int b"), "{text}");
     assert!(text.contains("Add(int a)"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn same_arity_extension_overloads_are_told_apart_by_receiver_type() {
+    let (dir, indexer, gv) = setup();
+    let (_, sig) = only_target(&indexer, gv, "App.Caller.ExtSpec");
+    assert!(sig.unwrap().contains("SpecificationKind"));
+    let (_, sig) = only_target(&indexer, gv, "App.Caller.ExtStatus");
+    assert!(sig.unwrap().contains("PublicationStatus"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn record_with_primary_constructor_binds_new_to_the_type() {
+    let (dir, indexer, gv) = setup();
+    let (qn, _) = only_target(&indexer, gv, "App.Caller.MakeRec");
+    assert_eq!(qn, "App.Rec");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn params_and_optional_parameters_widen_the_admitted_arity() {
+    let (dir, indexer, gv) = setup();
+    let (_, sig) = only_target(&indexer, gv, "App.Caller.FmtNone");
+    assert!(!sig.unwrap().contains("params"));
+    let (_, sig) = only_target(&indexer, gv, "App.Caller.FmtParams");
+    assert!(sig.unwrap().contains("params"));
+    let (_, sig) = only_target(&indexer, gv, "App.Caller.PadOptional");
+    assert!(sig.unwrap().contains("int b = 0"));
     let _ = std::fs::remove_dir_all(&dir);
 }

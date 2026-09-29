@@ -680,6 +680,9 @@ pub(crate) struct Resolver<'c> {
     /// several same-qualname candidates would otherwise collapse or
     /// refuse: see `arity_admits`.
     arity: Option<Arity>,
+    /// Simple name of the current call's known receiver type, if any --
+    /// narrows same-arity extension-method overloads.
+    call_receiver: Option<String>,
     /// Lazily resolved `files.id` of the single synthetic external
     /// pseudo-file every stub symbol belongs to (issue #80) -- see
     /// `external_file_id`. `None` until the first stub of this `Resolver`
@@ -703,6 +706,7 @@ impl<'c> Resolver<'c> {
             saw_ambiguous: false,
             saw_private: false,
             arity: None,
+            call_receiver: None,
             external_file_id: None,
         })
     }
@@ -722,6 +726,10 @@ impl<'c> Resolver<'c> {
             }),
             _ => None,
         };
+        self.call_receiver = r
+            .receiver_type
+            .filter(|ty| !ty.is_empty())
+            .map(|ty| simple_type_name(ty).to_string());
         let resolution = self.resolve_tiers(r, symbol_map)?;
         // Issue #124: `new T(...)` names the class, but the call runs one of
         // its constructors -- bind that when exactly one matches by arity.
@@ -747,11 +755,15 @@ impl<'c> Resolver<'c> {
         shape: CallShape,
         caller_file: &str,
     ) -> Result<Option<i64>> {
-        let (qualname, kind): (String, String) = self
+        let (qualname, kind, signature): (String, String, Option<String>) = self
             .conn
-            .prepare_cached("SELECT qualname, kind FROM symbols WHERE id = ?")?
-            .query_row(params![class_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        if !matches!(kind.as_str(), "class" | "struct" | "record") {
+            .prepare_cached("SELECT qualname, kind, signature FROM symbols WHERE id = ?")?
+            .query_row(params![class_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+        // A type's own signature is its primary-constructor parameter list
+        // (`record R(int A)`), which `..ctor` symbols don't cover.
+        if !matches!(kind.as_str(), "class" | "struct" | "record") || signature.is_some() {
             return Ok(None);
         }
         let gv = self.graph_version;
@@ -761,13 +773,10 @@ impl<'c> Resolver<'c> {
             value_receiver: false,
         });
         let candidates = query_exact_candidates(&mut self.exact, &ctor_qualname, gv, caller_file)?;
-        let mut admitted = candidates
+        let admitted = candidates
             .iter()
             .filter(|c| c.kind == "method" && arity_admits(arity, &c.kind, c.signature.as_deref()));
-        Ok(match (admitted.next(), admitted.next()) {
-            (Some(only), None) => Some(only.id),
-            _ => None,
-        })
+        Ok(exactly_one(admitted).map(|c| c.id))
     }
 
     fn resolve_tiers(
@@ -904,17 +913,27 @@ impl<'c> Resolver<'c> {
         // Issue #123: an overload set is told apart by the call's arity, and
         // never collapsed to "the lowest id" -- 2+ admitted overloads refuse.
         if self.arity.is_some() && candidates.len() > 1 {
-            let mut admitted = candidates
+            let mut admitted: Vec<&ExactCandidate> = candidates
                 .iter()
-                .filter(|c| arity_admits(self.arity, &c.kind, c.signature.as_deref()));
-            return Ok(match (admitted.next(), admitted.next()) {
-                (Some(only), None) => Some(only.id),
-                (Some(_), Some(_)) => {
-                    self.saw_ambiguous = true;
-                    None
-                }
-                _ => None,
-            });
+                .filter(|c| arity_admits(self.arity, &c.kind, c.signature.as_deref()))
+                .collect();
+            // Same-arity extension overloads (`ToDb(this A)` / `ToDb(this
+            // B)`) are told apart by the call receiver's known type.
+            if admitted.len() > 1
+                && let Some(receiver) = self.call_receiver.as_deref()
+                && let Some(only) = exactly_one(admitted.iter().filter(|c| {
+                    c.signature
+                        .as_deref()
+                        .and_then(extension_receiver_type)
+                        .is_some_and(|ty| ty == receiver)
+                }))
+            {
+                admitted = vec![*only];
+            }
+            if admitted.len() > 1 {
+                self.saw_ambiguous = true;
+            }
+            return Ok(exactly_one(admitted.into_iter()).map(|c| c.id));
         }
         let resolved = collapse_exact_candidates(&candidates);
         if resolved.is_none() && candidates.len() > 1 {
@@ -1904,59 +1923,75 @@ fn arity_admits(arity: Option<Arity>, kind: &str, signature: Option<&str>) -> bo
     }
 }
 
+/// The characters of `s` outside any `()`/`<>`/`[]`/`{}` nesting, with their
+/// byte offsets. A closer with nothing open is yielded (it ends the
+/// enclosing list), as is an opener itself.
+fn top_level_chars(s: &str) -> impl Iterator<Item = (usize, char)> + '_ {
+    let mut depth = 0usize;
+    s.char_indices().filter(move |&(_, c)| {
+        let at_top = depth == 0;
+        match c {
+            '(' | '<' | '[' | '{' => depth += 1,
+            ')' | '>' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        at_top
+    })
+}
+
 /// The text between a signature's opening `(` (already stripped) and its
 /// matching `)`.
 fn parameter_list(rest: &str) -> Option<&str> {
-    let mut depth = 1usize;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '(' | '<' | '[' | '{' => depth += 1,
-            ')' | '>' | ']' | '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&rest[..i]);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    let (end, _) = top_level_chars(rest).find(|&(_, c)| c == ')')?;
+    Some(&rest[..end])
 }
 
 fn split_top_level(params: &str) -> Vec<&str> {
     let mut parts = Vec::new();
-    let (mut depth, mut start) = (0usize, 0usize);
-    for (i, c) in params.char_indices() {
-        match c {
-            '(' | '<' | '[' | '{' => depth += 1,
-            ')' | '>' | ']' | '}' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                parts.push(&params[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
+    let mut start = 0;
+    for (i, _) in top_level_chars(params).filter(|&(_, c)| c == ',') {
+        parts.push(&params[start..i]);
+        start = i + 1;
     }
     parts.push(&params[start..]);
     parts
 }
 
 fn has_top_level_default(param: &str) -> bool {
-    let mut depth = 0usize;
-    for c in param.chars() {
-        match c {
-            '(' | '<' | '[' | '{' => depth += 1,
-            ')' | '>' | ']' | '}' => depth = depth.saturating_sub(1),
-            '=' if depth == 0 => return true,
-            _ => {}
-        }
-    }
-    false
+    top_level_chars(param).any(|(_, c)| c == '=')
+}
+
+/// The simple type name (no namespace, generics or `?`) of an extension
+/// method signature's `this` parameter, e.g. `(this Ns.Kind? k) -> string`
+/// gives `Kind`. `None` for a signature that isn't an extension method's.
+fn extension_receiver_type(signature: &str) -> Option<&str> {
+    let params = parameter_list(signature.strip_prefix('(')?)?;
+    let first = split_top_level(params).into_iter().next()?;
+    let (ty, _name) = first
+        .trim()
+        .strip_prefix("this ")?
+        .trim()
+        .rsplit_once(' ')?;
+    Some(simple_type_name(ty))
+}
+
+/// `Ns.List<int>?` -> `List`.
+fn simple_type_name(ty: &str) -> &str {
+    let ty = ty.trim().trim_end_matches('?');
+    let ty = ty.split('<').next().unwrap_or(ty);
+    ty.rsplit('.').next().unwrap_or(ty).trim()
+}
+
+/// `Some(only)` when `items` yields exactly one item.
+fn exactly_one<T>(mut items: impl Iterator<Item = T>) -> Option<T> {
+    let first = items.next()?;
+    items.next().is_none().then_some(first)
 }
 
 /// Runs `EXACT_SQL` (or an equivalent prepared statement) for `qualname`,
-/// collecting every `(id, file_id, kind)` candidate row for
-/// `collapse_exact_candidates` to judge.
+/// collecting every `ExactCandidate` row (fixture-path rows from outside
+/// fixtures dropped) for `collapse_exact_candidates` or the arity filter
+/// to judge.
 fn query_exact_candidates(
     stmt: &mut Statement<'_>,
     qualname: &str,

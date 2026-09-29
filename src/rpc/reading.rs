@@ -821,7 +821,14 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
             .into_iter()
             .filter(|s| !s.is_external())
             .collect();
-        if overloads.len() > 1 {
+        // C# only: other languages' duplicate qualnames (Python property
+        // setters, `@overload`, TS overload signatures) keep the single-
+        // symbol shape.
+        if overloads.len() > 1
+            && overloads
+                .iter()
+                .all(|s| s.kind == "method" && s.file_path.ends_with(".cs"))
+        {
             let max_bytes = params
                 .max_bytes
                 .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
