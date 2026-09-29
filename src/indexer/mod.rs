@@ -8,6 +8,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// Bump whenever extractor output changes (anything under `src/indexer/`), so
+/// existing indexes re-extract unchanged files instead of hash-skipping them.
+/// Enforced by `tests/extractor_version.rs`.
+pub const EXTRACTOR_VERSION: i64 = 1;
+const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
+
 pub mod batch;
 pub mod bicep;
 pub mod channel;
@@ -339,6 +345,10 @@ impl Indexer {
             existing_map.insert(record.path.clone(), record);
         }
 
+        // A stale extractor version means unchanged files must be re-extracted.
+        let force_reextract =
+            self.db.get_meta_i64(EXTRACTOR_VERSION_KEY)? != Some(EXTRACTOR_VERSION);
+
         let mut seen = HashSet::new();
         let mut stats = IndexStats {
             scanned: scanned.len(),
@@ -364,6 +374,7 @@ impl Indexer {
 
             if let Some(existing_record) = existing_map.get(&file.rel_path)
                 && existing_record.hash == file.hash
+                && !force_reextract
             {
                 // Unchanged: skip the parse (tree-sitter + symbol extraction is the
                 // expensive part) and carry the file's rows forward further down.
@@ -625,6 +636,8 @@ impl Indexer {
         }
 
         stats.duration_ms = started.elapsed().as_millis() as u64;
+        self.db
+            .set_meta_i64(EXTRACTOR_VERSION_KEY, EXTRACTOR_VERSION)?;
         Ok(stats)
     }
 
