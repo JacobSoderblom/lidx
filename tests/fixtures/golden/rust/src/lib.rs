@@ -12,6 +12,7 @@ mod downstream;
 mod greeter;
 mod helper;
 mod nested_use;
+mod receiver_infer;
 mod other_module;
 mod reexport_use;
 mod scoped_glob;

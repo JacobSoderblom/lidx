@@ -1,7 +1,7 @@
 use crate::db::resolver::{ImportMissPolicy, LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
+use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::tree_helpers::{
@@ -87,6 +87,10 @@ struct Context {
     in_trait_scope: bool,
     /// Set only inside an `impl Trait for Type` body (not a trait declaration).
     in_trait_impl: Option<String>,
+    /// Current function's locals/params whose type is locally knowable
+    /// (`collect_local_types`); `None` value = bound more than once or
+    /// otherwise uninferable. Empty outside a function body.
+    local_types: Rc<HashMap<String, Option<String>>>,
 }
 
 pub struct RustExtractor {
@@ -168,6 +172,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             grpc_clients: HashMap::new(),
             imports: Rc::new(collect_use_bindings(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
+            local_types: Rc::new(HashMap::new()),
             in_trait_scope: false,
             in_trait_impl: None,
         };
@@ -495,6 +500,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     // A module is its own namespace, not a function body: no shadowed
     // names carry in, even for a `mod` declared inside a function.
     next_ctx.shadowed_names = Rc::new(HashSet::new());
+    next_ctx.local_types = Rc::new(HashMap::new());
     walk_node(body, &next_ctx, source, output);
 }
 
@@ -653,6 +659,14 @@ fn handle_function(
         let mut shadowed = HashSet::new();
         collect_shadowed_names(node, source, &mut shadowed);
         next_ctx.shadowed_names = Rc::new(shadowed);
+
+        let self_ty = ctx
+            .container_stack
+            .last()
+            .map(|c| c.rsplit("::").next().unwrap_or(c).to_string());
+        let mut local_types = HashMap::new();
+        collect_local_types(node, source, self_ty.as_deref(), &mut local_types);
+        next_ctx.local_types = Rc::new(local_types);
 
         walk_node(body, &next_ctx, source, output);
     }
@@ -830,8 +844,167 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         // (`self.foo()`, `Type::method()`, `obj.foo()`) — see
         // `EdgeInput::bare_call`'s doc.
         bare_call: function_node.kind() == "identifier",
+        receiver_type: infer_receiver_type(function_node, source, ctx),
         ..Default::default()
     });
+}
+
+/// `x.method()` where `x` is a plain local/param with a locally-inferred
+/// type -> `Known(T)`, so the resolver binds `T::method` instead of
+/// refusing an ambiguous bare name. Anything else stays `NotTracked`.
+fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
+    if function_node.kind() != "field_expression" {
+        return ReceiverType::NotTracked;
+    }
+    let Some(value) = function_node.child_by_field_name("value") else {
+        return ReceiverType::NotTracked;
+    };
+    if value.kind() != "identifier" {
+        return ReceiverType::NotTracked;
+    }
+    match ctx.local_types.get(&node_text(value, source)) {
+        Some(Some(ty)) => ReceiverType::Known(ty.clone()),
+        _ => ReceiverType::NotTracked,
+    }
+}
+
+/// Std wrappers whose method calls mostly dispatch to the wrapped type
+/// (auto-deref), so the outer name is not a usable receiver type.
+const TRANSPARENT_WRAPPERS: &[&str] = &[
+    "Arc", "Rc", "Box", "Cow", "Option", "Result", "Vec", "RefCell", "Cell", "Mutex", "RwLock",
+];
+
+/// Bare type name of a type node: peels `&`/`&mut`, generics and paths
+/// (`&mut crate::a::Resolver<'_>` -> `Resolver`). `None` for anything that
+/// is not a nominal, capitalised, non-wrapper type.
+fn type_node_name(node: Node<'_>, source: &str, self_ty: Option<&str>) -> Option<String> {
+    let mut current = node;
+    loop {
+        match current.kind() {
+            "reference_type" | "generic_type" => current = current.child_by_field_name("type")?,
+            "scoped_type_identifier" => current = current.child_by_field_name("name")?,
+            "type_identifier" => break,
+            _ => return None,
+        }
+    }
+    let name = node_text(current, source);
+    let name = if name == "Self" {
+        self_ty?.to_string()
+    } else {
+        name
+    };
+    let first = name.chars().next()?;
+    (first.is_uppercase() && !TRANSPARENT_WRAPPERS.contains(&name.as_str())).then_some(name)
+}
+
+/// Type of a `let` initializer: `T::new(..)`/`T::default()`/`T::with_*`/
+/// `T::from*` or `T { .. }`.
+fn value_type_name(value: Node<'_>, source: &str, self_ty: Option<&str>) -> Option<String> {
+    match value.kind() {
+        "struct_expression" => type_node_name(value.child_by_field_name("name")?, source, self_ty),
+        "call_expression" => {
+            let function = value.child_by_field_name("function")?;
+            if function.kind() != "scoped_identifier" {
+                return None;
+            }
+            let ctor = node_text(function.child_by_field_name("name")?, source);
+            if !(ctor == "new"
+                || ctor == "default"
+                || ctor.starts_with("with_")
+                || ctor.starts_with("from"))
+            {
+                return None;
+            }
+            let path = function.child_by_field_name("path")?;
+            let ty = match path.kind() {
+                "identifier" if node_text(path, source) == "Self" => self_ty?.to_string(),
+                "identifier" => node_text(path, source),
+                "scoped_identifier" => node_text(path.child_by_field_name("name")?, source),
+                _ => return None,
+            };
+            let first = ty.chars().next()?;
+            (first.is_uppercase() && !TRANSPARENT_WRAPPERS.contains(&ty.as_str())).then_some(ty)
+        }
+        _ => None,
+    }
+}
+
+/// Record `name -> type` for one binding; a second binding of the same
+/// name (shadowing, differing types) poisons it to `None`.
+fn record_local(out: &mut HashMap<String, Option<String>>, name: String, ty: Option<String>) {
+    match out.get(&name) {
+        Some(prev) if *prev != ty => {
+            out.insert(name, None);
+        }
+        _ => {
+            out.insert(name, ty);
+        }
+    }
+}
+
+/// Locally-knowable receiver types for one function: typed params
+/// (`x: T`, `&T`, `&mut T<'_>`) and `let x: T = ..` / `let x = T::new(..)` /
+/// `let x = T { .. }`. Closure params and `for` patterns poison their names.
+/// Nested `fn` items are skipped (they are collected on their own).
+fn collect_local_types(
+    node: Node<'_>,
+    source: &str,
+    self_ty: Option<&str>,
+    out: &mut HashMap<String, Option<String>>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_item" => continue,
+            "parameter" => {
+                if let Some(pat) = child.child_by_field_name("pattern")
+                    && pat.kind() == "identifier"
+                {
+                    let ty = child
+                        .child_by_field_name("type")
+                        .and_then(|t| type_node_name(t, source, self_ty));
+                    record_local(out, node_text(pat, source), ty);
+                }
+            }
+            "let_declaration" => {
+                if let Some(pat) = child.child_by_field_name("pattern")
+                    && pat.kind() == "identifier"
+                {
+                    let ty = child
+                        .child_by_field_name("type")
+                        .and_then(|t| type_node_name(t, source, self_ty))
+                        .or_else(|| {
+                            child
+                                .child_by_field_name("value")
+                                .and_then(|v| value_type_name(v, source, self_ty))
+                        });
+                    record_local(out, node_text(pat, source), ty);
+                }
+            }
+            "closure_parameters" => {
+                let mut c = child.walk();
+                for p in child.named_children(&mut c) {
+                    let id = if p.kind() == "parameter" {
+                        p.child_by_field_name("pattern")
+                    } else {
+                        Some(p)
+                    };
+                    if let Some(id) = id.filter(|n| n.kind() == "identifier") {
+                        record_local(out, node_text(id, source), None);
+                    }
+                }
+            }
+            "for_expression" => {
+                if let Some(pat) = child.child_by_field_name("pattern")
+                    && pat.kind() == "identifier"
+                {
+                    record_local(out, node_text(pat, source), None);
+                }
+            }
+            _ => {}
+        }
+        collect_local_types(child, source, self_ty, out);
+    }
 }
 
 /// Detect std::env::var("KEY"), env::var("KEY"), env::var_os("KEY"), dotenvy::var("KEY") → CONFIG_READ

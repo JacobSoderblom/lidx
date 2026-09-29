@@ -43,11 +43,11 @@ crate::caller::call_self_path CALLS crate::caller::local_util exact
 crate::greeter::Greeter::greet CALLS crate::greeter::Greeter::format exact
 
 # Receiver-typed call: `g: &Greeter`. LoudGreeter::greet is a decoy.
-crate::caller::call_receiver_typed CALLS crate::greeter::Greeter::greet  # xfail: Rust params carry no receiver type for method calls
+crate::caller::call_receiver_typed CALLS crate::greeter::Greeter::greet receiver_type
 
 # Trait default method: Dog implements Speak without overriding speak.
 # Cat::speak is a same-named decoy.
-crate::caller::call_inherited CALLS crate::animals::Speak::speak  # xfail: no receiver type, and impl Trait for Type is not walked for default methods
+crate::caller::call_inherited CALLS crate::animals::Speak::speak inherited
 
 # Ambiguous name: run exists in ambiguous_a and ambiguous_b; the use
 # statement picks ambiguous_a, so this is an import-tier match (a bare-name
@@ -223,3 +223,14 @@ crate::trait_default_visibility_caller::call_default_announce CALLS crate::trait
 # (a separate file) is a child module of `child_visibility_owner`. A
 # same-file-only check would wrongly refuse this. ---
 crate::child_visibility_owner::child_visibility_child::call_owner_secret CALLS crate::child_visibility_owner::owner_secret bare_name
+
+# --- Issue #108: receiver-type inference. Engine::resolve and
+# Cache::resolve collide on the bare name; the local's type decides. ---
+crate::receiver_infer::via_ctor_local CALLS crate::receiver_infer::Engine::new two_segment
+crate::receiver_infer::via_ctor_local CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_struct_literal CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_annotated_local CALLS crate::receiver_infer::make exact
+crate::receiver_infer::via_annotated_local CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_ref_param CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_mut_generic_param CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_unknown CALLS UNRESOLVED
