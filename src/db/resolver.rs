@@ -467,6 +467,19 @@ pub(crate) enum ImportMissPolicy {
     PythonRepoHeuristic,
 }
 
+/// A Rust call target that is a `::`-qualified path not rooted at `crate::`
+/// -- every repo qualname is `crate::`-rooted, so this is a path into `std`/
+/// `core`/`alloc`, a third-party crate, or a type outside the repo.
+fn is_foreign_rust_path(target_qualname: &str) -> bool {
+    target_qualname.contains("::") && !target_qualname.starts_with("crate::")
+}
+
+/// Whether `path` lives under a `tests/fixtures/` tree: test data indexed
+/// as part of the repo, never a legitimate call target for code outside it.
+fn is_fixture_path(path: &str) -> bool {
+    path.starts_with("tests/fixtures/") || path.contains("/tests/fixtures/")
+}
+
 /// Look up a language's resolution profile by its `files.language` value:
 /// the extractor-registered `PROFILE` for a language that has one, else
 /// `LanguageProfile::DEFAULT`. A language absent from the indexed repo is
@@ -895,7 +908,7 @@ impl<'c> Resolver<'c> {
         while let Some(row) = rows.next()? {
             let qualname: String = row.get(col_qualname)?;
             if !matches_name_case_sensitive(&qualname, name) {
-                continue;
+                return Ok(false);
             }
             if on_match(row)? {
                 real_match_count += 1;
@@ -977,6 +990,9 @@ impl<'c> Resolver<'c> {
             let file_path: String = row.get(3)?;
             // `SAME_LANG_SQL` already excludes `method`-kind rows when
             // `guard.exclude_method` — every row reaching here is kind-eligible.
+            if is_fixture_path(&file_path) && !is_fixture_path(caller.file_path) {
+                return Ok(false);
+            }
             kind_eligible += 1;
             let ok = !guard.enforce_visibility
                 || file_path == caller.file_path
@@ -1081,6 +1097,18 @@ impl<'c> Resolver<'c> {
                 {
                     return Ok(Some((id, ResolutionKind::TwoSegment)));
                 }
+                // A `::` path that isn't `crate::`-rooted (`std::fs::x`,
+                // `String::new`) names something outside this repo unless
+                // its type segment is a repo type (`Quiet::announce` where
+                // `Quiet` is local and inherits a default method). Its
+                // trailing name alone says nothing about a same-named
+                // crate symbol (issue #102).
+                if source_lang == "rust"
+                    && is_foreign_rust_path(target_qualname)
+                    && !self.rust_path_names_repo_type(target_qualname, caller.file_path)?
+                {
+                    return Ok(None);
+                }
                 let (name, dot, colons) = fuzzy_qualname_patterns(target_qualname);
                 Ok(self
                     .unique_by_pattern(
@@ -1094,6 +1122,24 @@ impl<'c> Resolver<'c> {
                     .map(|id| (id, ResolutionKind::BareName)))
             }
         }
+    }
+
+    /// Whether a foreign-looking Rust path's second-to-last segment is a
+    /// unique repo type. Never true for a `std`/`core`/`alloc` root. Leaves
+    /// the ambiguity/privacy flags of the enclosing `resolve` untouched.
+    fn rust_path_names_repo_type(&mut self, path: &str, file_path: &str) -> Result<bool> {
+        let mut segments = path.rsplit("::").skip(1);
+        let (Some(type_name), root) = (segments.next(), path.split("::").next()) else {
+            return Ok(false);
+        };
+        if matches!(root, Some("std" | "core" | "alloc")) {
+            return Ok(false);
+        }
+        let (ambiguous, private) = (self.saw_ambiguous, self.saw_private);
+        let found = self.resolve_type_symbol(type_name, "rust", file_path)?;
+        self.saw_ambiguous = ambiguous;
+        self.saw_private = private;
+        Ok(found.is_some())
     }
 
     /// Resolve a bare type name (a receiver's inferred type, or an
@@ -1323,7 +1369,7 @@ impl<'c> Resolver<'c> {
                 .split('.')
                 .any(|seg| seg.ends_with("_pb2") || seg.ends_with("_pb2_grpc"))
             {
-                continue;
+                return Ok(false);
             }
             let root = candidate.split('.').next().unwrap_or("");
             if root.is_empty() || self.repo_python_module.exists(params![root])? {
@@ -1359,7 +1405,7 @@ impl<'c> Resolver<'c> {
             // normal shot at (a bare or two-segment call is always
             // module-qualified with a `crate::` prefix before reaching
             // here, so this never second-guesses one of those).
-            "rust" => Ok(target_qualname.contains("::") && !target_qualname.starts_with("crate::")),
+            "rust" => Ok(is_foreign_rust_path(target_qualname)),
             // A real Go qualname is always `<dir>/<file-stem>.<name>` (see
             // `VisibilityRule::GoCapitalization`'s doc); a package-qualified
             // call keeps its literal `pkg.Name` call-site text with no `/`
@@ -2680,9 +2726,9 @@ fn two_segment_qualname_patterns(qn: &str) -> Option<(String, String, String)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ImportMissPolicy, LanguageProfile, Reference, Resolution, Resolver, UnresolvedReason,
-        VisibilityRule, fuzzy_qualname_patterns, package_dir, primary_separator, profile_for,
-        qualname_trailing_name, same_lang_patterns, two_segment_qualname_patterns,
+        ImportMissPolicy, LanguageProfile, Reference, Resolution, ResolutionKind, Resolver,
+        UnresolvedReason, VisibilityRule, fuzzy_qualname_patterns, package_dir, primary_separator,
+        profile_for, qualname_trailing_name, same_lang_patterns, two_segment_qualname_patterns,
     };
     use rusqlite::{Connection, params};
 
@@ -3250,6 +3296,116 @@ mod tests {
         );
         let resolution = resolver.resolve(&r, &symbol_map).unwrap();
 
+        assert!(
+            matches!(resolution, Resolution::Unresolved(_)),
+            "{resolution:?}"
+        );
+    }
+
+    /// Issue #102: a fully-qualified `std::` path never binds to a crate
+    /// symbol sharing its trailing name; it stubs as external.
+    #[test]
+    fn rust_std_path_never_binds_to_crate_symbol() {
+        let conn = test_conn();
+        let util = insert_file(&conn, "src/util.rs", "rust");
+        insert_symbol(
+            &conn,
+            util,
+            "function",
+            "read_to_string",
+            "crate::util::read_to_string",
+            None,
+        );
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let map = std::collections::HashMap::new();
+        for target in ["std::fs::read_to_string", "core::fmt::read_to_string"] {
+            let r = reference(target, "CALLS", "rust", "src/init.rs", None, false);
+            let resolution = resolver.resolve(&r, &map).unwrap();
+            assert!(
+                matches!(
+                    resolution,
+                    Resolution::Resolved {
+                        kind: ResolutionKind::External { .. },
+                        ..
+                    }
+                ),
+                "{target}: {resolution:?}"
+            );
+        }
+    }
+
+    /// Issue #102: `Type::assoc()` with `Type` not in the repo never binds
+    /// to another type's same-named associated fn.
+    #[test]
+    fn rust_foreign_type_assoc_never_binds_to_other_types_method() {
+        let conn = test_conn();
+        let f = insert_file(&conn, "src/db.rs", "rust");
+        insert_symbol(&conn, f, "method", "new", "crate::db::Db::new", None);
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let map = std::collections::HashMap::new();
+        let r = reference("String::new", "CALLS", "rust", "src/init.rs", None, false);
+        let resolution = resolver.resolve(&r, &map).unwrap();
+        assert!(
+            matches!(
+                resolution,
+                Resolution::Resolved {
+                    kind: ResolutionKind::External { .. },
+                    ..
+                }
+            ),
+            "{resolution:?}"
+        );
+    }
+
+    /// Issue #102: a tuple-variant constructor (`Ok(..)`) never binds by
+    /// bare name to a same-named (differing only in case) function.
+    #[test]
+    fn rust_variant_constructor_never_binds_by_bare_name() {
+        let conn = test_conn();
+        let f = insert_file(&conn, "src/shadowing.rs", "rust");
+        insert_symbol(&conn, f, "function", "ok", "crate::shadowing::ok", None);
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let map = std::collections::HashMap::new();
+        let r = reference(
+            "crate::db::resolver::Ok",
+            "CALLS",
+            "rust",
+            "src/db/resolver.rs",
+            None,
+            true,
+        );
+        let resolution = resolver.resolve(&r, &map).unwrap();
+        assert!(
+            matches!(resolution, Resolution::Unresolved(_)),
+            "{resolution:?}"
+        );
+    }
+
+    /// Issue #102: symbols under `tests/fixtures/` are never candidates for
+    /// a reference from outside them.
+    #[test]
+    fn fixture_symbols_are_never_candidates_for_src_references() {
+        let conn = test_conn();
+        let f = insert_file(&conn, "tests/fixtures/golden/rust/src/helper.rs", "rust");
+        insert_symbol(
+            &conn,
+            f,
+            "function",
+            "helper",
+            "crate::helper::helper",
+            None,
+        );
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let map = std::collections::HashMap::new();
+        let r = reference(
+            "crate::init::helper",
+            "CALLS",
+            "rust",
+            "src/init.rs",
+            None,
+            true,
+        );
+        let resolution = resolver.resolve(&r, &map).unwrap();
         assert!(
             matches!(resolution, Resolution::Unresolved(_)),
             "{resolution:?}"
