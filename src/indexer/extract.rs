@@ -45,9 +45,35 @@ pub enum ReceiverType {
     /// The receiver's type was inferred to be this name. Resolution must
     /// require the target method to belong to a matching type.
     Known(String),
+    /// The receiver is the return value of `Type.Method(..)`, whose
+    /// signature the extractor can't see (another file). Holds the encoded
+    /// column text (`ReceiverType::deferred_return`); the resolver swaps it
+    /// for `Known(return type)` -- or `Unresolved` -- once every symbol
+    /// exists. Persisted as-is so a later retry re-resolves it.
+    Deferred(String),
 }
 
+/// Column-text prefix of `ReceiverType::Deferred`. `@` can't start a type name.
+pub const DEFERRED_RETURN_PREFIX: &str = "@ret:";
+
 impl ReceiverType {
+    /// `Deferred` for "the (optionally awaited) return value of
+    /// `type_name.method`".
+    pub fn deferred_return(type_name: &str, method: &str, awaited: bool) -> Self {
+        Self::Deferred(format!(
+            "{DEFERRED_RETURN_PREFIX}{}:{type_name}.{method}",
+            u8::from(awaited)
+        ))
+    }
+
+    /// Inverse of `deferred_return` on column text: `(awaited, type, method)`.
+    pub fn parse_deferred_return(column: &str) -> Option<(bool, &str, &str)> {
+        let rest = column.strip_prefix(DEFERRED_RETURN_PREFIX)?;
+        let (awaited, callee) = rest.split_once(':')?;
+        let (ty, method) = callee.rsplit_once('.')?;
+        Some((awaited == "1", ty, method))
+    }
+
     /// Encode as the `edges.receiver_type` column value: `None` = not
     /// tracked (legacy resolution tiers apply), `Some("")` = tracked but
     /// unresolved/builtin (must not bind, no lookup attempted at all),
@@ -56,7 +82,7 @@ impl ReceiverType {
         match self {
             ReceiverType::NotTracked => None,
             ReceiverType::Unresolved => Some(""),
-            ReceiverType::Known(ty) => Some(ty.as_str()),
+            ReceiverType::Known(ty) | ReceiverType::Deferred(ty) => Some(ty.as_str()),
         }
     }
 }

@@ -59,7 +59,8 @@
 
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
-use crate::indexer::extract::CallShape;
+use crate::indexer::csharp::receiver_from_signature;
+use crate::indexer::extract::{CallShape, ReceiverType};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
 use std::collections::HashMap;
@@ -726,6 +727,24 @@ impl<'c> Resolver<'c> {
         r: &Reference<'_>,
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
+        // A deferred receiver (`ReceiverType::Deferred`) becomes the callee's
+        // declared return type, or `""` (unresolved) -- never a guess.
+        let deferred;
+        let patched;
+        let r = match r
+            .receiver_type
+            .and_then(ReceiverType::parse_deferred_return)
+        {
+            Some((awaited, ty, method)) => {
+                deferred = self.deferred_receiver(ty, method, awaited)?;
+                patched = Reference {
+                    receiver_type: Some(&deferred),
+                    ..*r
+                };
+                &patched
+            }
+            None => r,
+        };
         self.arity = match r.call_shape {
             Some(shape) if !shape.is_new => Some(Arity {
                 args: shape.arg_count as usize,
@@ -750,6 +769,36 @@ impl<'c> Resolver<'c> {
             });
         }
         Ok(resolution)
+    }
+
+    /// The receiver type of `ty.method(..)`'s return value: the indexed C#
+    /// return type shared by every method named `method` on a type named
+    /// `ty` (overloads, same-named types in other namespaces), else `""`.
+    fn deferred_receiver(&self, ty: &str, method: &str, awaited: bool) -> Result<String> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT s.signature FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.name = ?1 AND s.kind = 'method' AND f.language = 'csharp'
+               AND (s.qualname = ?2 OR substr(s.qualname, -length(?3)) = ?3)
+               AND s.graph_version = ?4
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?4)",
+        )?;
+        let suffix = format!(".{ty}.{method}");
+        let qualname = format!("{ty}.{method}");
+        let rows = stmt.query_map(
+            params![method, qualname, suffix, self.graph_version],
+            |row| row.get::<_, Option<String>>(0),
+        )?;
+        let mut found: Option<String> = None;
+        for sig in rows {
+            let Some(ret) = sig?.and_then(|sig| receiver_from_signature(&sig, awaited)) else {
+                return Ok(String::new());
+            };
+            match &found {
+                Some(prev) if *prev != ret => return Ok(String::new()),
+                _ => found = Some(ret),
+            }
+        }
+        Ok(found.unwrap_or_default())
     }
 
     /// The single constructor of class-like symbol `class_id` (its
