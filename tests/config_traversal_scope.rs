@@ -239,3 +239,50 @@ fn env_bridge_is_scoped_to_consuming_deployment() {
         "bridged into another service: {f:?}"
     );
 }
+
+#[test]
+fn default_kinds_downstream_from_secret_uri_does_not_fan_out() {
+    let repo = repo();
+    let r = call(
+        &repo,
+        "analyze_impact",
+        r#"{"qualname":"secret://datamgr-db-conn-str","direction":"downstream","max_depth":5}"#,
+    );
+    let f = files(&r["affected"]);
+    assert!(f.iter().any(|p| p.contains("Dpb.DataMgr")), "{r}");
+    assert!(
+        !f.iter()
+            .any(|p| p.contains("Dpb.DataProxy") || p.contains("dataproxy")),
+        "leaked other service: {f:?}"
+    );
+    assert!(!r.to_string().to_lowercase().contains("othersecret"), "{r}");
+}
+
+#[test]
+fn upstream_chain_from_reader_reaches_bicep_secret() {
+    let repo = repo();
+    for direction in ["upstream", "both"] {
+        let r = call(
+            &repo,
+            "analyze_impact",
+            &format!(
+                r#"{{"qualname":"Dpb.DataMgr.Startup.Configure","direction":"{direction}","max_depth":5}}"#
+            ),
+        );
+        let f = files(&r["affected"]);
+        assert!(
+            f.iter().any(|p| p == "infra/main.bicep"),
+            "{direction}: chain reader -> env -> container -> secret -> bicep severed: {f:?}"
+        );
+        assert!(!r.to_string().to_lowercase().contains("othersecret"), "{r}");
+    }
+    let r = call(
+        &repo,
+        "trace_flow",
+        r#"{"start_qualname":"Dpb.DataMgr.Startup.Configure","direction":"upstream","max_hops":6}"#,
+    );
+    assert!(
+        files(&r["trace"]).iter().any(|p| p == "infra/main.bicep"),
+        "{r}"
+    );
+}
