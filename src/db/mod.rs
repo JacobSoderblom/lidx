@@ -2059,6 +2059,43 @@ impl Db {
         Ok(value.and_then(|v| v.parse::<i64>().ok()))
     }
 
+    /// Text value of a `meta` row.
+    pub fn get_meta_str(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .read_conn()?
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_meta_str(&self, key: &str, value: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_meta(&self, key: &str) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM meta WHERE key = ?", params![key])?;
+        Ok(())
+    }
+
+    /// Every `meta` row whose key starts with `prefix`, as `(key, value)`.
+    pub fn meta_with_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?1) = ?2")?;
+        let rows = stmt.query_map(params![prefix.len() as i64, prefix], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn set_meta_i64(&self, key: &str, value: i64) -> Result<()> {
         self.conn().execute(
             "INSERT INTO meta (key, value) VALUES (?, ?)

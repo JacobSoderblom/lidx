@@ -577,6 +577,9 @@ use std::path::Path;
 pub trait LanguageExtractor {
     fn module_name_from_rel_path(&self, rel_path: &str) -> String;
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile>;
+    /// Project-wide directives (C# `global using`) the next `extract` call
+    /// applies on top of the file's own; default: none.
+    fn set_project_globals(&mut self, _globals: &[String]) {}
     fn resolve_imports(
         &self,
         _repo_root: &Path,

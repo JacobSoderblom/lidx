@@ -18,6 +18,7 @@ pub mod batch;
 pub mod bicep;
 pub mod channel;
 pub mod config;
+mod cs_globals;
 pub mod csharp;
 pub mod differ;
 pub mod extract;
@@ -55,6 +56,10 @@ pub struct Indexer {
     graph_version: i64,
     commit_sha: Option<String>,
     extractors: HashMap<String, Box<dyn extract::LanguageExtractor>>,
+    /// C# `global using` entries per project, and project directory per
+    /// directory; built lazily, dropped whenever `cs_globals::prepare` runs.
+    cs_globals: Option<HashMap<String, Vec<String>>>,
+    cs_projects: HashMap<PathBuf, String>,
 }
 
 /// `Indexer::index_scanned_file_symbols`'s result: one file's extracted
@@ -123,6 +128,8 @@ impl Indexer {
             graph_version,
             commit_sha,
             extractors,
+            cs_globals: None,
+            cs_projects: HashMap::new(),
         })
     }
 
@@ -247,7 +254,28 @@ impl Indexer {
             .filter_map(|p| crate::util::normalize_rel_path(&self.repo_root, p).ok())
             .collect();
         let js_stale = self.js_stale();
-        let stale_js_files = js_stale.stale_js_files(&batch_rels, self.graph_version)?;
+        let mut stale_js_files = js_stale.stale_js_files(&batch_rels, self.graph_version)?;
+        // ... and C# files whose project's `global using`s changed.
+        let graph_version = self.graph_version;
+        let live_csharp = |db: &Db| -> Result<Vec<String>> {
+            Ok(db
+                .list_files(graph_version)?
+                .into_iter()
+                .map(|f| f.path)
+                .filter(|p| cs_globals::is_csharp_path(p))
+                .collect())
+        };
+        let stale_cs = {
+            let db = &self.db;
+            let cs = cs_globals::CsGlobals {
+                db,
+                repo_root: &self.repo_root,
+            };
+            cs.prepare(&batch_rels, || live_csharp(db))?
+        };
+        self.cs_globals = None;
+        self.cs_projects.clear();
+        stale_js_files.extend(stale_cs);
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
         all_paths.extend(stale_js_files.iter().map(|rel| self.repo_root.join(rel)));
         for path in &all_paths {
@@ -410,6 +438,20 @@ impl Indexer {
         if self.db.get_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY)? != Some(config_fingerprint) {
             stale_js_files.extend(js_paths);
         }
+
+        // ... and C# files whose project's `global using`s changed.
+        let scanned_csharp: Vec<String> = scanned
+            .iter()
+            .filter(|f| cs_globals::is_csharp_path(&f.rel_path))
+            .map(|f| f.rel_path.clone())
+            .collect();
+        // A stale extractor version re-records every file's directives.
+        let cs_changed = if force_reextract {
+            scanned_csharp.clone()
+        } else {
+            changed_paths.clone()
+        };
+        stale_js_files.extend(self.stale_csharp_files(&cs_changed, || Ok(scanned_csharp))?);
 
         let mut seen = HashSet::new();
         let mut stats = IndexStats {
@@ -847,6 +889,23 @@ impl Indexer {
         Ok((symbols.len(), edges_count))
     }
 
+    /// Refresh the recorded C# `global using`s for `changed` paths and return
+    /// the hash-unchanged C# files of every project they affect (see
+    /// `cs_globals`). `all_csharp` lists every live C# path.
+    fn stale_csharp_files(
+        &mut self,
+        changed: &[String],
+        all_csharp: impl FnOnce() -> Result<Vec<String>>,
+    ) -> Result<HashSet<String>> {
+        self.cs_globals = None;
+        self.cs_projects.clear();
+        cs_globals::CsGlobals {
+            db: &self.db,
+            repo_root: &self.repo_root,
+        }
+        .prepare(changed, all_csharp)
+    }
+
     fn js_stale(&self) -> js_stale::JsStale<'_> {
         js_stale::JsStale {
             db: &self.db,
@@ -860,6 +919,32 @@ impl Indexer {
             .get_mut(file.language.as_str())
             .ok_or_else(|| anyhow!("skip {}: unknown language {}", file.rel_path, file.language))?;
         let module_name = extractor.module_name_from_rel_path(&file.rel_path);
+        if file.language == "csharp" {
+            if self.cs_globals.is_none() {
+                self.cs_globals = Some(
+                    cs_globals::CsGlobals {
+                        db: &self.db,
+                        repo_root: &self.repo_root,
+                    }
+                    .by_project()?,
+                );
+            }
+            let project =
+                cs_globals::project_dir(&self.repo_root, &file.rel_path, &mut self.cs_projects);
+            let globals = self
+                .cs_globals
+                .as_ref()
+                .and_then(|m| m.get(&project))
+                .cloned()
+                .unwrap_or_default();
+            // (re-borrowed: `self.cs_globals` above needed `&mut self`)
+            let extractor = self.extractors.get_mut("csharp").unwrap();
+            extractor.set_project_globals(&globals);
+        }
+        let extractor = self
+            .extractors
+            .get_mut(file.language.as_str())
+            .ok_or_else(|| anyhow!("skip {}: unknown language {}", file.rel_path, file.language))?;
         let mut extracted = extractor
             .extract(source, &module_name)
             .map_err(|err| anyhow!("extract error {} ({module_name}): {err}", file.rel_path))?;

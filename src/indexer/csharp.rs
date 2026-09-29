@@ -292,6 +292,41 @@ pub struct CSharpExtractor {
     /// `Cell` rather than storing the result directly because
     /// `resolve_imports` only gets `&self`.
     grpc_prescan_done: std::cell::Cell<bool>,
+    /// `global using` directives of the file's whole project (see
+    /// `cs_globals`), applied to every file's imports. Set per file by
+    /// `set_project_globals`.
+    project_globals: Vec<String>,
+}
+
+/// The `global using` directives in `source`, one entry per directive: the
+/// namespace, or `Alias=Target` for an alias. Line-based (a cheap pre-pass
+/// over changed files); `global using static` is skipped like `using static`.
+pub fn scan_global_usings(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("global") else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix("using") else {
+            continue;
+        };
+        if !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let rest = rest.split("//").next().unwrap_or(rest);
+        let rest = rest.split(';').next().unwrap_or(rest).trim();
+        if rest.is_empty() || rest.starts_with("static ") {
+            continue;
+        }
+        let entry: String = match rest.split_once('=') {
+            Some((alias, target)) => format!("{}={}", alias.trim(), target.trim()),
+            None => rest.to_string(),
+        };
+        if !out.contains(&entry) {
+            out.push(entry);
+        }
+    }
+    out
 }
 
 impl CSharpExtractor {
@@ -304,6 +339,7 @@ impl CSharpExtractor {
             extension_registry: Rc::new(RefCell::new(HashMap::new())),
             grpc_client_fields: Rc::new(RefCell::new(HashMap::new())),
             grpc_prescan_done: std::cell::Cell::new(false),
+            project_globals: Vec::new(),
         })
     }
 }
@@ -311,6 +347,10 @@ impl CSharpExtractor {
 impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
     fn module_name_from_rel_path(&self, rel_path: &str) -> String {
         module_name_from_rel_path(rel_path)
+    }
+
+    fn set_project_globals(&mut self, globals: &[String]) {
+        self.project_globals = globals.to_vec();
     }
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
@@ -350,7 +390,11 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             class_attr_raw: Rc::new(HashMap::new()),
             base_type: LocalType::Other,
             base_class_name: None,
-            imports: Rc::new(collect_import_context(root, source)),
+            imports: Rc::new({
+                let mut imports = collect_import_context(root, source);
+                imports.apply_globals(&self.project_globals);
+                imports
+            }),
             extension_registry: Rc::clone(&self.extension_registry),
             method_returns: Rc::new(MethodReturns::collect(root, source)),
         };
@@ -4300,6 +4344,24 @@ struct ImportContext {
     aliases: HashMap<String, String>,
 }
 
+impl ImportContext {
+    /// Add the project's `global using` entries (see `scan_global_usings`)
+    /// that the file does not already have.
+    fn apply_globals(&mut self, globals: &[String]) {
+        for entry in globals {
+            match entry.split_once('=') {
+                Some((alias, target)) => {
+                    self.aliases
+                        .entry(alias.to_string())
+                        .or_insert_with(|| target.to_string());
+                }
+                None if !self.namespaces.contains(entry) => self.namespaces.push(entry.clone()),
+                None => {}
+            }
+        }
+    }
+}
+
 /// Walk the whole file once, before the main symbol/edge walk, collecting
 /// every `using_directive` node into an `ImportContext`. Import directives
 /// don't nest meaningfully in real C# (block-scoped `using`s inside a
@@ -6024,6 +6086,15 @@ fn collect_class_level_grpc_client_fields(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scan_global_usings_reads_namespaces_and_aliases() {
+        let source = "global using N1;\nglobal using  Alias = N2.Type ; // c\nglobal using static X.Y;\nusing Local;\nnamespace A {}\n";
+        assert_eq!(
+            scan_global_usings(source),
+            ["N1".to_string(), "Alias=N2.Type".to_string()]
+        );
+    }
+
     #[test]
     fn normalize_type_args_canonicalises_aliases_nullables_and_nesting() {
         use super::normalize_type_args as n;
