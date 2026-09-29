@@ -499,7 +499,10 @@ impl Db {
         paths: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<Symbol>> {
-        let sql = "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
+        // Issue #122: impl methods called only through their interface are live.
+        let dispatch_from = super::graph_query::dispatch_pairs_from(graph_version);
+        let gv = graph_version;
+        let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                           s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                           s.graph_version, s.commit_sha, s.stable_id
                    FROM symbols s
@@ -531,6 +534,15 @@ impl Db {
                          AND e.kind IN ('HTTP_ROUTE', 'RPC_IMPL', 'CHANNEL_SUBSCRIBE')
                          AND e.graph_version = ?
                      )
+                     AND NOT EXISTS (
+                       SELECT 1 {dispatch_from}
+                         AND cm.id = s.id
+                         AND EXISTS (
+                           SELECT 1 FROM edges ce
+                           WHERE ce.target_symbol_id = im.id AND ce.kind = 'CALLS'
+                             AND ce.graph_version = {gv}
+                         )
+                     )
                      AND NOT (s.kind IN ('method', 'function') AND (
                        EXISTS (
                          SELECT 1 FROM edges e
@@ -544,9 +556,9 @@ impl Db {
                            AND ur.edge_kind = 'IMPLEMENTS'
                            AND ur.graph_version = ?
                        )
-                     ))";
+                     ))");
 
-        let mut full_sql = String::from(sql);
+        let mut full_sql = sql;
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![
             &graph_version,
             &graph_version,

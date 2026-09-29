@@ -250,8 +250,162 @@ pub fn find_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> 
         .split_whitespace()
         .max_by_key(|t| t.len())
         .unwrap_or(trimmed);
-    db.find_symbols(suggestion_query, 10, None, graph_version)
-        .unwrap_or_default()
+    let exact = db
+        .find_symbols(suggestion_query, 10, None, graph_version)
+        .unwrap_or_default();
+    if !exact.is_empty() {
+        return exact;
+    }
+    fuzzy_candidates(db, suggestion_query, graph_version)
+}
+
+/// Max rows the fuzzy prefilter pulls from SQL before scoring in Rust.
+const FUZZY_SCAN_CAP: usize = 500;
+const FUZZY_RESULTS: usize = 5;
+/// Cap on query tokens used for the SQL prefilter (bounds bound-variable count).
+const FUZZY_MAX_QUERY_TOKENS: usize = 8;
+/// Minimum combined score for a candidate to be suggested.
+const FUZZY_MIN_SCORE: f64 = 0.45;
+/// A single query token matching a candidate token at least this well admits it.
+const FUZZY_MIN_TOKEN_MATCH: f64 = 0.4;
+/// Weight of token overlap vs. last-segment Levenshtein similarity.
+const FUZZY_OVERLAP_WEIGHT: f64 = 0.6;
+const FUZZY_EDIT_WEIGHT: f64 = 0.4;
+
+/// Levenshtein distance (two-row DP) between two strings, by `char`.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != *cb);
+            cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// Lowercased alphanumeric tokens of an identifier, split on non-alphanumerics
+/// and camelCase boundaries: `resolveNullTarget` / `resolve_null_target` ->
+/// `[resolve, null, target]`.
+fn name_tokens(s: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    let mut prev_lower = false;
+    for c in s.chars() {
+        if !c.is_alphanumeric() {
+            if !cur.is_empty() {
+                tokens.push(std::mem::take(&mut cur));
+            }
+            prev_lower = false;
+            continue;
+        }
+        if c.is_uppercase() && prev_lower && !cur.is_empty() {
+            tokens.push(std::mem::take(&mut cur));
+        }
+        prev_lower = c.is_lowercase() || c.is_numeric();
+        cur.extend(c.to_lowercase());
+    }
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
+    tokens
+}
+
+/// How well query token `q` matches candidate token `c`, in `0.0..=1.0`.
+fn token_match(q: &str, c: &str) -> f64 {
+    if q == c {
+        return 1.0;
+    }
+    let (ql, cl) = (q.chars().count(), c.chars().count());
+    let dist = levenshtein(q, c);
+    if ql.min(cl) >= 4 && dist <= 1 {
+        0.8
+    } else if ql.min(cl) >= 6 && dist <= 2 {
+        0.6
+    } else if ql.min(cl) >= 3 && (c.starts_with(q) || q.starts_with(c)) {
+        0.5
+    } else if ql.min(cl) >= 5 && (c.contains(q) || q.contains(c)) {
+        // e.g. `resolve` inside `unresolved`
+        0.4
+    } else {
+        0.0
+    }
+}
+
+/// Score a candidate symbol against a query: token overlap (weighted 0.6) plus
+/// Levenshtein similarity of the last name segments (0.4). Returns `None`
+/// when no query token matches at all.
+fn fuzzy_score(query_tokens: &[String], query_last: &str, sym: &Symbol) -> Option<f64> {
+    let mut best = 0.0f64;
+    let cand_tokens = name_tokens(&sym.name);
+    let overlap: f64 = query_tokens
+        .iter()
+        .map(|q| {
+            let m = cand_tokens
+                .iter()
+                .map(|c| token_match(q, c))
+                .fold(0.0, f64::max);
+            best = best.max(m);
+            m
+        })
+        .sum::<f64>()
+        / query_tokens.len() as f64;
+    if overlap <= 0.0 {
+        return None;
+    }
+    let cand_last = sym.name.to_lowercase();
+    let max_len = query_last.chars().count().max(cand_last.chars().count());
+    let sim = 1.0 - levenshtein(query_last, &cand_last) as f64 / max_len.max(1) as f64;
+    let score = FUZZY_OVERLAP_WEIGHT * overlap + FUZZY_EDIT_WEIGHT * sim;
+    // A single strong token match (e.g. `resolve` inside `unresolved`) is
+    // enough to suggest, even when the rest of the name differs.
+    (score >= FUZZY_MIN_SCORE || best >= FUZZY_MIN_TOKEN_MATCH).then_some(score)
+}
+
+/// Typo / retired-name suggestions: prefilter symbols by SQL LIKE on the
+/// query's tokens (bounded by `FUZZY_SCAN_CAP`), then rank in Rust by token
+/// overlap and Levenshtein distance on the last name segment.
+fn fuzzy_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
+    let mut query_tokens = name_tokens(query);
+    query_tokens.truncate(FUZZY_MAX_QUERY_TOKENS);
+    if query_tokens.is_empty() {
+        return Vec::new();
+    }
+    // Full tokens plus a 4-char prefix of longer ones, so a typo late in a
+    // token ("targt") still reaches its intended symbol.
+    let mut patterns: Vec<String> = Vec::new();
+    for t in query_tokens.iter().filter(|t| t.chars().count() >= 3) {
+        patterns.push(t.clone());
+        if t.chars().count() > 5 {
+            patterns.push(t.chars().take(4).collect());
+        }
+    }
+    patterns.sort();
+    patterns.dedup();
+    let rows = db
+        .fuzzy_symbol_rows(&patterns, FUZZY_SCAN_CAP, graph_version)
+        .unwrap_or_default();
+    let query_last = query
+        .rsplit(['.', '/', ':'])
+        .find(|seg| !seg.is_empty())
+        .unwrap_or(query)
+        .to_lowercase();
+    let mut scored: Vec<(f64, Symbol)> = rows
+        .into_iter()
+        .filter_map(|sym| fuzzy_score(&query_tokens, &query_last, &sym).map(|score| (score, sym)))
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then_with(|| a.1.qualname.len().cmp(&b.1.qualname.len()))
+    });
+    scored
+        .into_iter()
+        .take(FUZZY_RESULTS)
+        .map(|(_, sym)| sym)
+        .collect()
 }
 
 /// The longest whitespace-delimited token in `trimmed`, used as the always-
@@ -362,9 +516,15 @@ pub fn build_resolution_recovery_payload(
     // a name, cannot resolve to a different, shorter-qualname symbol that
     // happens to share the same bare name.
     for sym in candidates {
+        // read_symbol has no id param; it retries by exact qualname.
+        let retry_params = if method == "read_symbol" {
+            retry_params_for_qualname(method, &sym.qualname, base_params)
+        } else {
+            retry_params_for_id(method, sym.id, base_params)
+        };
         next_hops.push(json!({
             "method": method,
-            "params": retry_params_for_id(method, sym.id, base_params),
+            "params": retry_params,
             "description": format!(
                 "Retry {} with near-match '{}' (id={})",
                 method, sym.qualname, sym.id
@@ -464,18 +624,33 @@ pub fn resolve_or_recovery(
 ) -> Result<std::result::Result<Symbol, Value>> {
     match resolve_symbol(db, reference, languages, graph_version) {
         Ok(sym) => Ok(Ok(sym)),
-        Err(e) => match e.downcast_ref::<SymbolNotFound>() {
-            Some(not_found) => Ok(Err(build_resolution_recovery_payload(
-                db,
-                &not_found.query,
-                &not_found.candidates,
-                graph_version,
-                method,
-                base_params,
-            ))),
+        Err(e) => match recovery_from_error(db, &e, graph_version, method, base_params) {
+            Some(payload) => Ok(Err(payload)),
             None => Err(e),
         },
     }
+}
+
+/// If `err` is a "symbol not found" from the query/qualname resolution chain,
+/// build the structured recovery payload for it; `None` for any other error.
+/// Lets handlers that resolve through a different entry point (e.g.
+/// `resolve_symbol_with_candidates`) share the same recovery.
+pub fn recovery_from_error(
+    db: &Db,
+    err: &anyhow::Error,
+    graph_version: i64,
+    method: &str,
+    base_params: &Value,
+) -> Option<Value> {
+    let not_found = err.downcast_ref::<SymbolNotFound>()?;
+    Some(build_resolution_recovery_payload(
+        db,
+        &not_found.query,
+        &not_found.candidates,
+        graph_version,
+        method,
+        base_params,
+    ))
 }
 
 fn resolve_by_query(
@@ -989,5 +1164,112 @@ mod tests {
             "error message should guide the user: {}",
             msg
         );
+    }
+
+    #[test]
+    fn levenshtein_and_tokens() {
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+        assert_eq!(levenshtein("", "abc"), 3);
+        assert_eq!(
+            name_tokens("resolveNullTarget_edges"),
+            vec!["resolve", "null", "target", "edges"]
+        );
+    }
+
+    fn recovery_for(method: &str, params: Value) -> Value {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+        let query = params["query"].as_str().unwrap().to_string();
+        match resolve_or_recovery(
+            indexer.db(),
+            SymbolRef::Query(query),
+            None,
+            gv,
+            method,
+            &params,
+        )
+        .unwrap()
+        {
+            Err(p) => p,
+            Ok(sym) => panic!("unexpectedly resolved to {}", sym.qualname),
+        }
+    }
+
+    fn suggestion_names(payload: &Value) -> Vec<String> {
+        payload["suggestions"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s["qualname"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn typo_query_suggests_near_names() {
+        for method in ["trace_flow", "analyze_impact", "explain_symbol"] {
+            let payload = recovery_for(method, json!({"query": "make_greter"}));
+            let names = suggestion_names(&payload);
+            assert!(
+                names.iter().any(|n| n.ends_with("make_greeter")),
+                "{method}: {names:?}"
+            );
+            let hops = payload["next_hops"].as_array().unwrap();
+            assert!(hops.iter().any(|h| h["method"] == "search"));
+        }
+    }
+
+    #[test]
+    fn retired_name_suggests_token_overlap() {
+        // No `build_greeter` exists; `make_greeter` shares the `greeter` token.
+        let payload = recovery_for("read_symbol", json!({"query": "build_greeter"}));
+        let names = suggestion_names(&payload);
+        assert!(
+            names.iter().any(|n| n.ends_with("make_greeter")),
+            "{names:?}"
+        );
+        let hops = payload["next_hops"].as_array().unwrap();
+        assert!(
+            hops.iter()
+                .any(|h| h["method"] == "read_symbol" && h["params"]["qualname"].is_string())
+        );
+    }
+
+    #[test]
+    fn unrelated_query_gets_no_fuzzy_suggestions() {
+        let payload = recovery_for("trace_flow", json!({"query": "zzqxjvw"}));
+        assert!(suggestion_names(&payload).is_empty());
+        assert!(
+            payload["next_hops"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|h| h["method"] == "search")
+        );
+    }
+
+    #[test]
+    fn issue_example_suggests_unresolved_helpers() {
+        let temp = TempRepo::new("py_mvp");
+        std::fs::write(
+            temp.repo_root.join("pkg").join("repair.py"),
+            "def retry_unresolved_references():\n    pass\n\n\ndef repair_unresolved():\n    pass\n",
+        )
+        .unwrap();
+        let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+        indexer.reindex().unwrap();
+        let gv = indexer.db().current_graph_version().unwrap();
+        for q in ["resolve_nul_target", "resolve_null_target_edges"] {
+            let names: Vec<String> = find_candidates(indexer.db(), q, gv)
+                .into_iter()
+                .map(|s| s.name)
+                .collect();
+            assert!(
+                names.contains(&"retry_unresolved_references".to_string())
+                    && names.contains(&"repair_unresolved".to_string()),
+                "{q}: {names:?}"
+            );
+        }
     }
 }

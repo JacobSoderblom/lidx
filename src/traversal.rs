@@ -1,5 +1,6 @@
 use crate::db::Db;
 use crate::indexer::channel::{boundary_type_for_kind, bridge_complement};
+use crate::indexer::config::{BridgeTarget, ConfigScope, config_edge_allowed, prefer_same_service};
 use crate::indexer::scan::language_for_path;
 use crate::model::{Edge, Symbol, TraceHop};
 use anyhow::Result;
@@ -29,6 +30,10 @@ pub struct TraceConfig {
     /// always traversable regardless of this list. Empty by default:
     /// unchanged behaviour.
     pub exclude_resolution_kinds: Vec<String>,
+    /// Config URI (`secret://...`/`env://...`) the seeds were resolved from,
+    /// if any (issue #131). Seed nodes then only follow config edges
+    /// carrying that URI; see `ConfigScope`.
+    pub seed_config_uri: Option<String>,
 }
 
 impl Default for TraceConfig {
@@ -59,6 +64,7 @@ impl Default for TraceConfig {
             trace_offset: 0,
             compact: false,
             exclude_resolution_kinds: Vec::new(),
+            seed_config_uri: None,
         }
     }
 }
@@ -106,6 +112,9 @@ pub fn trace_flow(
     let mut visited = HashSet::new();
     let mut queue: VecDeque<(i64, usize, String)> = VecDeque::new();
 
+    // Config URI each node was entered through (issue #131): it then only
+    // continues along config edges carrying that URI.
+    let mut scope = ConfigScope::new(&seeds, config.seed_config_uri.as_deref());
     for &sid in &seeds {
         visited.insert(sid);
         queue.push_back((sid, 0, start_sym.file_path.clone()));
@@ -150,6 +159,7 @@ pub fn trace_flow(
                         candidate,
                         is_upstream,
                         config,
+                        &scope,
                         languages,
                         graph_version,
                     )? {
@@ -165,13 +175,15 @@ pub fn trace_flow(
             break;
         }
 
-        let edges = db.edges_for_symbol(current_id, languages, graph_version)?;
+        let edges = db.edges_for_symbol_with_dispatch(current_id, languages, graph_version)?;
 
-        let mut bridge_targets: Vec<(String, String)> = Vec::new();
+        let mut bridge_targets: Vec<BridgeTarget> = Vec::new();
+        let allowed = scope.allowed(current_id, &edges);
 
         for edge in &edges {
             if !config.allowed_kinds.contains(&edge.kind)
                 || !crate::model::xref_is_traversable(edge)
+                || !config_edge_allowed(edge, allowed.as_ref())
             {
                 continue;
             }
@@ -201,7 +213,12 @@ pub fn trace_flow(
             if let Some(ref tq) = edge.target_qualname
                 && bridge_complement(&edge.kind).is_some()
             {
-                bridge_targets.push((tq.clone(), edge.kind.clone()));
+                bridge_targets.push(BridgeTarget {
+                    uri: tq.clone(),
+                    edge_kind: edge.kind.clone(),
+                    origin_path: edge.file_path.clone(),
+                    source_id: current_id,
+                });
             }
 
             // `next_id` is None when the write path left this edge's
@@ -253,7 +270,13 @@ pub fn trace_flow(
         }
 
         if !reached_target && !truncated {
-            for (tq, edge_kind) in &bridge_targets {
+            for BridgeTarget {
+                uri: tq,
+                edge_kind,
+                origin_path,
+                ..
+            } in &bridge_targets
+            {
                 if let Some(complement_kinds) = bridge_complement(edge_kind) {
                     let bridged = db
                         .edges_by_target_qualname_and_kinds(
@@ -264,13 +287,14 @@ pub fn trace_flow(
                         )
                         .unwrap_or_default();
                     let b_type = boundary_type_for_kind(edge_kind);
-                    for bridged_edge in &bridged {
+                    for bridged_edge in prefer_same_service(tq, origin_path, &bridged) {
                         let Some(bridged_id) = bridged_edge.source_symbol_id else {
                             continue;
                         };
                         if !visited.insert(bridged_id) {
                             continue;
                         }
+                        scope.record_bridge(bridged_id, edge_kind, tq);
                         if let Ok(Some(bridged_sym)) = db.get_symbol_by_id(bridged_id) {
                             let prev_lang = detect_language(&prev_file);
                             let next_lang = detect_language(&bridged_sym.file_path);
@@ -388,12 +412,17 @@ fn has_further_edges(
     id: i64,
     is_upstream: bool,
     config: &TraceConfig,
+    scope: &ConfigScope,
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<bool> {
-    let edges = db.edges_for_symbol(id, languages, graph_version)?;
+    let edges = db.edges_for_symbol_with_dispatch(id, languages, graph_version)?;
+    let allowed = scope.allowed(id, &edges);
     for edge in &edges {
-        if !config.allowed_kinds.contains(&edge.kind) || !crate::model::xref_is_traversable(edge) {
+        if !config.allowed_kinds.contains(&edge.kind)
+            || !crate::model::xref_is_traversable(edge)
+            || !config_edge_allowed(edge, allowed.as_ref())
+        {
             continue;
         }
         if crate::model::is_resolution_excluded(
@@ -1736,6 +1765,7 @@ mod null_target_regression_tests {
             receiver_type: ReceiverType::NotTracked,
             import_candidates: Vec::new(),
             bare_call: false,
+            call_shape: None,
         }
     }
 

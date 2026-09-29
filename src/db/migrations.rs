@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -495,6 +495,21 @@ pub fn migrate(conn: &Connection) -> Result<()> {
              ON symbols(graph_version, qualname) WHERE kind = 'external'",
             [],
         )?;
+    }
+
+    if existing < 21 {
+        // Issues #123/#124: `call_shape` mirrors `EdgeInput::call_shape`
+        // (`"<n>"` / `"new:<n>"`, NULL = no arity signal), on the edge and
+        // on the unresolved-reference store's shadow row so a retry
+        // re-judges an overloaded call by the same arity.
+        for table in ["edges", "unresolved_references"] {
+            if !has_column(conn, table, "call_shape")? {
+                conn.execute(
+                    &format!("ALTER TABLE {table} ADD COLUMN call_shape TEXT"),
+                    [],
+                )?;
+            }
+        }
     }
 
     if existing < SCHEMA_VERSION {
