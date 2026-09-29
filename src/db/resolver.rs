@@ -918,15 +918,12 @@ impl<'c> Resolver<'c> {
         let mut rows = self.any_lang.query(query_params)?;
         let mut matched: Option<i64> = None;
         let is_ambiguous = Self::check_case_sensitive_matches(&mut rows, name, 1, |row| {
-            if matched.is_none() {
-                matched = Some(row.get(0)?);
-                Ok(true)
-            } else {
-                Ok(true) // signal ambiguity
-            }
+            matched = Some(row.get(0)?);
+            Ok(true)
         })?;
         if is_ambiguous {
             self.saw_ambiguous = true;
+            return Ok(None);
         }
         Ok(matched)
     }
@@ -3229,6 +3226,32 @@ mod tests {
         assert_eq!(
             resolution,
             Resolution::Unresolved(UnresolvedReason::NoCandidates),
+            "{resolution:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_any_lang_fallback_refuses_two_candidates() {
+        let conn = test_conn();
+        let py_file = insert_file(&conn, "svc/mod.py", "python");
+        insert_symbol(&conn, py_file, "function", "Handler", "svc.Handler", None);
+        let go_file = insert_file(&conn, "other/mod.go", "go");
+        insert_symbol(&conn, go_file, "function", "Handler", "other.Handler", None);
+
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let symbol_map = std::collections::HashMap::new();
+        let r = reference(
+            "crate::caller::Handler",
+            "RPC_CALL",
+            "rust",
+            "caller.rs",
+            None,
+            true,
+        );
+        let resolution = resolver.resolve(&r, &symbol_map).unwrap();
+
+        assert!(
+            matches!(resolution, Resolution::Unresolved(_)),
             "{resolution:?}"
         );
     }
