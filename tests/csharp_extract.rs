@@ -1024,7 +1024,7 @@ public class ConnectionManager {
     );
     assert_eq!(
         call.receiver_type,
-        ReceiverType::Known("IDbConnection".to_string()),
+        ReceiverType::Known("Acme.App,Acme;|IDbConnection".to_string()),
         "the field's type must still resolve correctly from inside the lambda"
     );
 }

@@ -352,13 +352,22 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         // interface method; count them as callers of the implementing method.
         let mut target_ids = target_ids;
         let mut via_interface_ids = std::collections::HashSet::new();
-        for (iface, imp) in indexer
-            .db()
-            .dispatch_pairs(&target_ids.clone(), ctx.graph_version)?
-        {
-            if target_ids.contains(&imp) && !target_ids.contains(&iface) {
-                target_ids.push(iface);
+        // Closed generic args of the impls each dispatch-only interface
+        // method stands in for (issue #185): a call typed `IA<int>` is not a
+        // caller of the `IA<string>` explicit impl.
+        let own_ids = target_ids.clone();
+        let mut via_impl_args: std::collections::HashMap<i64, Vec<Option<String>>> =
+            std::collections::HashMap::new();
+        for (iface, imp) in indexer.db().dispatch_pairs(&own_ids, ctx.graph_version)? {
+            if own_ids.contains(&imp) && !own_ids.contains(&iface) {
+                if !target_ids.contains(&iface) {
+                    target_ids.push(iface);
+                }
                 via_interface_ids.insert(iface);
+                let args = indexer.db().get_symbol_by_id(imp)?.and_then(|s| {
+                    crate::db::closed_impl_args(&s.qualname, &s.name).map(String::from)
+                });
+                via_impl_args.entry(iface).or_default().push(args);
             }
         }
 
@@ -374,8 +383,25 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 )?
             };
 
+            let receivers = match via_impl_args.get(target_id) {
+                Some(_) => indexer
+                    .db()
+                    .call_receiver_types(&target_edges.iter().map(|e| e.id).collect::<Vec<_>>())?,
+                None => Default::default(),
+            };
             // Collect resolved callers
             for edge in &target_edges {
+                if let Some(impls) = via_impl_args.get(target_id) {
+                    let call_args = receivers
+                        .get(&edge.id)
+                        .and_then(|t| crate::db::type_args(t));
+                    if !impls
+                        .iter()
+                        .any(|args| crate::db::dispatch_compatible(call_args, args.as_deref()))
+                    {
+                        continue;
+                    }
+                }
                 if edge.kind == "CALLS"
                     && !edge.is_synthetic()
                     && edge.target_symbol_id == Some(*target_id)

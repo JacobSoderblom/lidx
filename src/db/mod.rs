@@ -17,7 +17,7 @@ use std::time::Duration;
 mod analytics;
 mod co_change;
 mod graph_query;
-pub use graph_query::DispatchPeers;
+pub use graph_query::{DispatchPeers, EntryArgs, closed_impl_args, dispatch_compatible, type_args};
 mod migrations;
 mod overview;
 pub(crate) mod resolver;
@@ -1567,8 +1567,12 @@ impl Db {
         graph_version: i64,
         private_qualnames: &[String],
         static_qualnames: &[String],
+        override_symbols: &[(String, i64)],
     ) -> Result<()> {
-        if private_qualnames.is_empty() && static_qualnames.is_empty() {
+        if private_qualnames.is_empty()
+            && static_qualnames.is_empty()
+            && override_symbols.is_empty()
+        {
             self.conn().execute(
                 "UPDATE symbols SET visibility = NULL
                  WHERE file_id = ? AND graph_version = ? AND visibility IS NOT NULL",
@@ -1579,11 +1583,21 @@ impl Db {
         // `visibility` is a space-separated modifier list: `private`, `static`.
         let private_ph = vec!["?"; private_qualnames.len()].join(",");
         let static_ph = vec!["?"; static_qualnames.len()].join(",");
+        // Overloads share a qualname, so an override is keyed by its line too.
+        let override_test = if override_symbols.is_empty() {
+            "0".to_string()
+        } else {
+            format!(
+                "(qualname, start_line) IN (VALUES {})",
+                vec!["(?,?)"; override_symbols.len()].join(",")
+            )
+        };
         let sql = format!(
             "UPDATE symbols
                 SET visibility = NULLIF(TRIM(
                     CASE WHEN qualname IN ({private_ph}) THEN 'private' ELSE '' END
-                    || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END), '')
+                    || CASE WHEN qualname IN ({static_ph}) THEN ' static' ELSE '' END
+                    || CASE WHEN {override_test} THEN ' override' ELSE '' END), '')
              WHERE file_id = ? AND graph_version = ?"
         );
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = private_qualnames
@@ -1591,6 +1605,10 @@ impl Db {
             .chain(static_qualnames)
             .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
+        for (qualname, line) in override_symbols {
+            params.push(Box::new(qualname.clone()));
+            params.push(Box::new(*line));
+        }
         params.push(Box::new(file_id));
         params.push(Box::new(graph_version));
         self.conn().execute(
@@ -2142,6 +2160,7 @@ fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
         span_id: row.get(14)?,
         event_ts: row.get(15)?,
         resolution_kind: row.get(16)?,
+        dispatch_args: None,
     })
 }
 

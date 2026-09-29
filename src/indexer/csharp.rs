@@ -5,7 +5,7 @@ use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
     CallShape, DeferredBase, DeferredReturn, EdgeInput, ExtractedFile, MAX_DEFERRED_DEPTH,
-    ReceiverType, SymbolInput,
+    ReceiverType, SymbolInput, TypeScope,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -539,6 +539,14 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             handle_field(node, ctx, source, output);
             return;
         }
+        "event_declaration" => {
+            handle_event(node, ctx, source, output);
+            return;
+        }
+        "event_field_declaration" => {
+            handle_event_field(node, ctx, source, output);
+            return;
+        }
         "using_directive" => {
             handle_using(node, ctx, source, output);
             return;
@@ -648,7 +656,7 @@ fn handle_type(
     });
 
     if type_kind != TypeKind::Enum {
-        handle_base_list(node, &qualname, source, output, type_kind);
+        handle_base_list(node, &qualname, source, output, type_kind, ctx);
     }
 
     let grpc_service_info = grpc_service_from_bases(node, source);
@@ -744,6 +752,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     if has_modifier(node, source, "static") {
         output.static_qualnames.push(qualname.clone());
     }
+    if has_modifier(node, source, "override") {
+        output.override_symbols.push((qualname.clone(), start_line));
+    }
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -787,36 +798,154 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     }
 }
 
-/// Simple name of the interface in an `explicit_interface_specifier`
-/// (`N.IA<T>.` -> `IA`), or `None` for an ordinary method.
+/// Identity segment of an `explicit_interface_specifier` (`void N1.IA<int>.Run()`
+/// -> `N1.IA<int>`), or `None` for an ordinary member. The member's qualname
+/// is `Class.<identity>.Name`, so closed generics and same-named interfaces
+/// from different namespaces never collide.
 fn explicit_interface_name(node: Node<'_>, source: &str) -> Option<String> {
     let mut cursor = node.walk();
     let spec = node
         .children(&mut cursor)
         .find(|c| c.kind() == "explicit_interface_specifier")?;
-    simple_interface_name(&node_text(spec, source))
+    let identity = explicit_interface_identity(&node_text(spec, source))?;
+    Some(strip_open_args(identity, node, source))
 }
 
-/// `N.IA<T>.` / `Outer<T>.IA.` / `IA<Dictionary<K,V>>.` -> `IA`: drops
-/// generic arguments by bracket depth, then takes the last identifier.
-fn simple_interface_name(text: &str) -> Option<String> {
+/// Type-parameter names declared by `node` or any enclosing declaration.
+fn enclosing_type_params(node: Node<'_>, source: &str) -> Vec<String> {
+    let mut params = Vec::new();
+    let mut current = Some(node);
+    while let Some(n) = current {
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            if child.kind() != "type_parameter_list" {
+                continue;
+            }
+            let mut inner = child.walk();
+            for tp in child.named_children(&mut inner) {
+                if tp.kind() == "type_parameter" {
+                    params.push(
+                        node_text(tp, source)
+                            .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        current = n.parent();
+    }
+    params
+}
+
+/// `IA<T>` where `T` is a type parameter in scope at `node` is an *open*
+/// interface: drop the arguments (keeping the qualifier) so it pairs with
+/// every closed impl instead of a bogus `<T>` one.
+fn strip_open_args(identity: String, node: Node<'_>, source: &str) -> String {
+    let Some(open) = identity.find('<') else {
+        return identity;
+    };
+    let params = enclosing_type_params(node, source);
+    let mentions_param = identity[open..]
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|tok| params.iter().any(|p| p == tok));
+    if mentions_param {
+        identity[..open].to_string()
+    } else {
+        identity
+    }
+}
+
+/// `global::N.Outer<T>.IA<Dictionary<K, V>>.` -> `N.Outer.IA<Dictionary<K,V>>`:
+/// whitespace and `global::` dropped, generic arguments kept only on the
+/// last segment (the interface itself), so the text before the first `<`
+/// is the interface's namespace-qualified name as written.
+fn explicit_interface_identity(text: &str) -> Option<String> {
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let compact = compact.trim_end_matches('.');
+    let compact = compact.strip_prefix("global::").unwrap_or(compact);
     let mut depth = 0usize;
-    let mut plain = String::new();
-    for ch in text.chars() {
+    let mut last_dot = None;
+    for (i, ch) in compact.char_indices() {
         match ch {
             '<' => depth += 1,
             '>' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => plain.push(ch),
+            '.' if depth == 0 => last_dot = Some(i),
             _ => {}
         }
     }
-    let last = plain
-        .trim()
-        .trim_end_matches('.')
-        .rsplit('.')
-        .next()?
-        .trim();
-    (!last.is_empty()).then(|| last.to_string())
+    let (head, last) = match last_dot {
+        Some(i) => (&compact[..i], &compact[i + 1..]),
+        None => ("", compact),
+    };
+    if last.is_empty() {
+        return None;
+    }
+    let last = match (last.find('<'), last.rfind('>')) {
+        (Some(open), Some(close)) if close > open => format!(
+            "{}<{}>",
+            &last[..open],
+            normalize_type_args(&last[open + 1..close])
+        ),
+        _ => last.to_string(),
+    };
+    if head.is_empty() {
+        Some(last)
+    } else {
+        Some(format!("{}.{last}", strip_type_args(head)))
+    }
+}
+
+/// One canonical spelling of a generic argument list, so `int`/`Int32`,
+/// `System.String`/`string`/`string?`, spacing and nested generics compare
+/// equal (`Dictionary<string, List<Int32>>` -> `Dictionary<string,List<int>>`).
+/// A `?` is kept only where it means `Nullable<T>` (value types); on the
+/// reference types `string`/`object` it is an annotation and is dropped.
+fn normalize_type_args(text: &str) -> String {
+    const ALIASES: &[(&str, &str)] = &[
+        ("SByte", "sbyte"),
+        ("Byte", "byte"),
+        ("Int16", "short"),
+        ("UInt16", "ushort"),
+        ("Int32", "int"),
+        ("UInt32", "uint"),
+        ("Int64", "long"),
+        ("UInt64", "ulong"),
+        ("Single", "float"),
+        ("Double", "double"),
+        ("Decimal", "decimal"),
+        ("Boolean", "bool"),
+        ("Char", "char"),
+        ("String", "string"),
+        ("Object", "object"),
+    ];
+    let compact: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut out = String::with_capacity(compact.len());
+    let mut i = 0;
+    while i < compact.len() {
+        if !(compact[i].is_alphanumeric() || compact[i] == '_' || compact[i] == '.') {
+            out.push(compact[i]);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < compact.len()
+            && (compact[i].is_alphanumeric() || compact[i] == '_' || compact[i] == '.')
+        {
+            i += 1;
+        }
+        let token: String = compact[start..i].iter().collect();
+        let token = token.strip_prefix("global::").unwrap_or(&token);
+        let bare = token.strip_prefix("System.").unwrap_or(token);
+        let name = ALIASES
+            .iter()
+            .find(|(long, _)| *long == bare)
+            .map_or(token, |(_, short)| *short);
+        out.push_str(name);
+        if matches!(name, "string" | "object") && compact.get(i) == Some(&'?') {
+            i += 1;
+        }
+    }
+    out
 }
 
 fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -886,11 +1015,95 @@ fn handle_property(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     if name.is_empty() {
         return;
     }
-    let qualname = build_qualname(ctx, &name);
+    let qualname = match explicit_interface_name(node, source) {
+        Some(iface) => build_qualname(ctx, &format!("{iface}.{name}")),
+        None => build_qualname(ctx, &name),
+    };
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    if has_modifier(node, source, "override") {
+        output.override_symbols.push((qualname.clone(), start_line));
+    }
     output.symbols.push(SymbolInput {
         kind: "property".to_string(),
         name: name.clone(),
+        qualname: qualname.clone(),
+        start_line,
+        start_col,
+        end_line,
+        end_col,
+        start_byte,
+        end_byte,
+        signature: None,
+        docstring: None,
+    });
+    output.edges.push(EdgeInput {
+        kind: "CONTAINS".to_string(),
+        source_qualname: Some(container_qualname(ctx)),
+        target_qualname: Some(qualname),
+        detail: None,
+        evidence_snippet: None,
+        ..Default::default()
+    });
+}
+
+/// `event T Name { add {} remove {} }` / `event T IA.Name { ... }`.
+fn handle_event(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let name = node_text(name_node, source);
+    if name.is_empty() {
+        return;
+    }
+    let qualname = match explicit_interface_name(node, source) {
+        Some(iface) => build_qualname(ctx, &format!("{iface}.{name}")),
+        None => build_qualname(ctx, &name),
+    };
+    let is_override = has_modifier(node, source, "override");
+    push_event(node, ctx, output, name, qualname, is_override);
+}
+
+/// Field-like `event EventHandler Changed, Other;`.
+fn handle_event_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let mut cursor = node.walk();
+    for decl in node.named_children(&mut cursor) {
+        if decl.kind() != "variable_declaration" {
+            continue;
+        }
+        let mut inner = decl.walk();
+        for child in decl.named_children(&mut inner) {
+            let Some(name_node) = (child.kind() == "variable_declarator")
+                .then(|| child.child_by_field_name("name"))
+                .flatten()
+            else {
+                continue;
+            };
+            let name = node_text(name_node, source);
+            if name.is_empty() {
+                continue;
+            }
+            let qualname = build_qualname(ctx, &name);
+            let is_override = has_modifier(node, source, "override");
+            push_event(child, ctx, output, name, qualname, is_override);
+        }
+    }
+}
+
+fn push_event(
+    node: Node<'_>,
+    ctx: &Context,
+    output: &mut ExtractedFile,
+    name: String,
+    qualname: String,
+    is_override: bool,
+) {
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    if is_override {
+        output.override_symbols.push((qualname.clone(), start_line));
+    }
+    output.symbols.push(SymbolInput {
+        kind: "event".to_string(),
+        name,
         qualname: qualname.clone(),
         start_line,
         start_col,
@@ -3055,6 +3268,7 @@ fn handle_base_list(
     source: &str,
     output: &mut ExtractedFile,
     kind: TypeKind,
+    ctx: &Context,
 ) {
     let mut cursor = node.walk();
     let mut bases = Vec::new();
@@ -3062,11 +3276,10 @@ fn handle_base_list(
         if child.kind() != "base_list" {
             continue;
         }
-        bases.extend(
-            base_list_types(child, source)
-                .into_iter()
-                .map(|b| strip_type_args(&b)),
-        );
+        bases.extend(base_list_types(child, source).into_iter().map(|b| {
+            let args = closed_args(&b, node, source);
+            (strip_type_args(&b), args)
+        }));
     }
     if bases.is_empty() {
         return;
@@ -3074,7 +3287,7 @@ fn handle_base_list(
     match kind {
         TypeKind::Class | TypeKind::Record => {
             let mut iter = bases.into_iter();
-            if let Some(base) = iter.next() {
+            if let Some((base, args)) = iter.next() {
                 // C# convention: interfaces start with I + uppercase letter.
                 // If the first base looks like an interface, emit IMPLEMENTS.
                 let edge_kind = if is_likely_interface_name(&base) {
@@ -3085,47 +3298,155 @@ fn handle_base_list(
                 output.edges.push(EdgeInput {
                     kind: edge_kind.to_string(),
                     source_qualname: Some(qualname.to_string()),
+                    import_candidates: type_ref_candidates(&base, ctx),
                     target_qualname: Some(base),
-                    detail: None,
+                    detail: args,
                     evidence_snippet: None,
                     ..Default::default()
                 });
             }
-            for iface in iter {
+            for (iface, args) in iter {
                 output.edges.push(EdgeInput {
                     kind: "IMPLEMENTS".to_string(),
                     source_qualname: Some(qualname.to_string()),
+                    import_candidates: type_ref_candidates(&iface, ctx),
                     target_qualname: Some(iface),
-                    detail: None,
+                    detail: args,
                     evidence_snippet: None,
                     ..Default::default()
                 });
             }
         }
         TypeKind::Interface => {
-            for iface in bases {
+            for (iface, args) in bases {
                 output.edges.push(EdgeInput {
                     kind: "EXTENDS".to_string(),
                     source_qualname: Some(qualname.to_string()),
+                    import_candidates: type_ref_candidates(&iface, ctx),
                     target_qualname: Some(iface),
-                    detail: None,
+                    detail: args,
                     evidence_snippet: None,
                     ..Default::default()
                 });
             }
         }
         TypeKind::Struct | TypeKind::Enum => {
-            for iface in bases {
+            for (iface, args) in bases {
                 output.edges.push(EdgeInput {
                     kind: "IMPLEMENTS".to_string(),
                     source_qualname: Some(qualname.to_string()),
+                    import_candidates: type_ref_candidates(&iface, ctx),
                     target_qualname: Some(iface),
-                    detail: None,
+                    detail: args,
                     evidence_snippet: None,
                     ..Default::default()
                 });
             }
         }
+    }
+}
+
+/// Attach the lookup scope to an unqualified interface receiver type (see
+/// [`TypeScope`]); qualified names need none, and an alias is expanded.
+fn with_type_scope(ty: String, ctx: &Context) -> String {
+    let ty = expand_type_alias(ty, ctx);
+    let head = ty.split('<').next().unwrap_or(&ty);
+    if head.contains('.') || !is_likely_interface_name(head) {
+        return ty;
+    }
+    let enclosing = enclosing_scopes(ctx);
+    let usings = using_scopes(ctx, &enclosing);
+    TypeScope { enclosing, usings }.encode(&ty)
+}
+
+/// `N1.IA<int>` -> `IA`: a receiver type without qualifier or arguments.
+fn bare_type_name(ty: &str) -> &str {
+    let ty = ty.rsplit('|').next().unwrap_or(ty);
+    let head = ty.split('<').next().unwrap_or(ty);
+    head.rsplit('.').next().unwrap_or(head)
+}
+
+/// Normalised closed type arguments of a base-list entry (`IA<Int32>` ->
+/// `int`); `None` for a non-generic or open (`IA<T>`) one.
+fn closed_args(text: &str, node: Node<'_>, source: &str) -> Option<String> {
+    let identity = strip_open_args(explicit_interface_identity(text)?, node, source);
+    let open = identity.find('<')?;
+    let close = identity.rfind('>')?;
+    (close > open + 1).then(|| identity[open + 1..close].to_string())
+}
+
+/// Enclosing namespaces of the current position, innermost first
+/// (`A.B.C` -> `A.B.C`, `A.B`, `A`).
+fn enclosing_namespaces(ctx: &Context) -> Vec<String> {
+    let full = ctx.namespace_stack.join(".");
+    let mut out = Vec::new();
+    let mut ns = full.as_str();
+    while !ns.is_empty() {
+        out.push(ns.to_string());
+        ns = ns.rsplit_once('.').map_or("", |(parent, _)| parent);
+    }
+    out
+}
+
+/// Scopes a type name is looked up in before the global namespace: the
+/// enclosing types (their nested types), then the enclosing namespaces,
+/// innermost first.
+fn enclosing_scopes(ctx: &Context) -> Vec<String> {
+    let namespaces = enclosing_namespaces(ctx);
+    let base = namespaces.first().cloned().unwrap_or_default();
+    let mut out = Vec::new();
+    for depth in (1..=ctx.type_stack.len()).rev() {
+        let types = ctx.type_stack[..depth].join(".");
+        out.push(if base.is_empty() {
+            types
+        } else {
+            format!("{base}.{types}")
+        });
+    }
+    out.extend(namespaces);
+    out
+}
+
+/// `using` namespaces not already an enclosing scope, in order.
+fn using_scopes(ctx: &Context, enclosing: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for ns in &ctx.imports.namespaces {
+        if !enclosing.contains(ns) && !out.contains(ns) {
+            out.push(ns.clone());
+        }
+    }
+    out
+}
+
+/// Lookup guesses for a base-list type name in C# order (first hit wins in
+/// the resolver): an alias, else `{scope}.{name}` for each enclosing scope,
+/// then `name` itself (the global namespace), then each `using` namespace.
+fn type_ref_candidates(name: &str, ctx: &Context) -> Vec<String> {
+    let first = name.split('.').next().unwrap_or(name);
+    if let Some(fqn) = ctx.imports.aliases.get(first) {
+        return vec![format!("{fqn}{}", &name[first.len()..])];
+    }
+    let enclosing = enclosing_scopes(ctx);
+    let mut out: Vec<String> = enclosing.iter().map(|s| format!("{s}.{name}")).collect();
+    out.push(name.to_string());
+    for ns in using_scopes(ctx, &enclosing) {
+        let c = format!("{ns}.{name}");
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The receiver type with a `using` alias in its first segment expanded
+/// (`X.IA` with `using X = N1;` -> `N1.IA`; `A` with `using A = N1.IA;`).
+fn expand_type_alias(ty: String, ctx: &Context) -> String {
+    let head_end = ty.find('<').unwrap_or(ty.len());
+    let head = &ty[..head_end];
+    let first = head.split('.').next().unwrap_or(head);
+    match ctx.imports.aliases.get(first) {
+        Some(fqn) => format!("{fqn}{}", &ty[first.len()..]),
+        None => ty,
     }
 }
 
@@ -3367,6 +3688,16 @@ const CS_BUILTIN_TYPES: &[&str] = &[
 ///   identifier/`this`/`base` (a cast, ...), → `Unresolved`
 ///   if the root is `this` or a tracked local, `NotTracked` otherwise.
 fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
+    match infer_receiver_type_raw(function_node, source, ctx) {
+        ReceiverType::Known(ty) => {
+            let ty = strip_open_args(ty, function_node, source);
+            ReceiverType::Known(with_type_scope(ty, ctx))
+        }
+        other => other,
+    }
+}
+
+fn infer_receiver_type_raw(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
     if function_node.kind() != "member_access_expression" {
         return ReceiverType::NotTracked;
     }
@@ -3840,7 +4171,7 @@ fn extension_method_candidates(
         }
         if let (ReceiverType::Known(call_ty), Some(entry_ty)) =
             (receiver_type, &entry.receiver_type)
-            && call_ty != entry_ty
+            && bare_type_name(call_ty) != entry_ty
         {
             continue;
         }
@@ -3861,11 +4192,20 @@ fn extension_method_candidates(
 fn classify_annotation(text: &str) -> LocalType {
     let text = text.trim();
     let text = text.strip_suffix('?').unwrap_or(text).trim();
-    // A generic *interface* type (`IRepo<Order>`) tracks as its bare name so
-    // calls through it dispatch (issue #173); other generics stay untracked
+    // An *interface* type keeps the qualifier and closed generic arguments
+    // it was written with (`N1.IA<int>`): dispatch (issues #173, #185) needs
+    // the namespace to pick between same-named interfaces and the arguments
+    // to pick a closed explicit impl. Other generics stay untracked
     // (`List<int>` must not bind to an unrelated project `List`).
-    if text.contains('<') && is_likely_interface_name(text.split('<').next().unwrap_or("")) {
-        return classify_annotation_raw(&strip_type_args(text));
+    let head = text.split('<').next().unwrap_or(text);
+    if is_likely_interface_name(head)
+        && matches!(
+            classify_annotation_raw(&strip_type_args(text)),
+            LocalType::Known(_)
+        )
+        && let Some(identity) = explicit_interface_identity(text)
+    {
+        return LocalType::Known(identity);
     }
     classify_annotation_raw(text)
 }
@@ -3901,6 +4241,25 @@ fn classify_type_name(name: &str) -> LocalType {
 /// ceiling, and matches this task's "`var` only when the initializer is a
 /// direct `new T()`" scope.
 fn classify_value_expr(value: Node<'_>, source: &str, method_returns: &MethodReturns) -> LocalType {
+    // `(IA<int>)c` / `c as IA<int>`: the local has the cast's static type.
+    match value.kind() {
+        "cast_expression" => {
+            if let Some(ty) = value.child_by_field_name("type") {
+                return classify_annotation(&node_text(ty, source));
+            }
+        }
+        "as_expression" => {
+            if let Some(ty) = value.child_by_field_name("right") {
+                return classify_annotation(&node_text(ty, source));
+            }
+        }
+        "parenthesized_expression" => {
+            if let Some(inner) = value.named_child(0) {
+                return classify_value_expr(inner, source, method_returns);
+            }
+        }
+        _ => {}
+    }
     if value.kind() == "object_creation_expression"
         && let Some(type_node) = value.child_by_field_name("type")
     {
@@ -4047,7 +4406,7 @@ fn type_at<'a>(
 fn call_marker(call: &PendingCall, names: &Names<'_>, env: &ThisEnv) -> Option<DeferredReturn> {
     let inner = |ty: &LocalType| match ty {
         LocalType::Known(t) => Some(DeferredReturn::on_type(
-            t,
+            bare_type_name(t),
             &call.method,
             call.awaited,
             false,
@@ -4537,7 +4896,7 @@ fn grpc_edges(
 fn receiver_from_signature(signature: &str, awaited: bool) -> Option<String> {
     let ret = unwrap_return(signature.rsplit_once(" -> ")?.1, awaited)?;
     match classify_annotation(&ret) {
-        LocalType::Known(name) => Some(name),
+        LocalType::Known(name) => Some(bare_type_name(&name).to_string()),
         _ => None,
     }
 }
@@ -5121,11 +5480,16 @@ fn collect_class_level_grpc_client_fields(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn simple_interface_name_strips_generics_by_depth() {
-        use super::simple_interface_name as f;
-        assert_eq!(f("Outer<T>.IA.").as_deref(), Some("IA"));
-        assert_eq!(f("N.IA<T>.").as_deref(), Some("IA"));
-        assert_eq!(f("IA<Dictionary<K,V>>.").as_deref(), Some("IA"));
+    fn explicit_interface_identity_keeps_closed_generics_and_namespace() {
+        use super::explicit_interface_identity as f;
+        assert_eq!(f("Outer<T>.IA.").as_deref(), Some("Outer.IA"));
+        assert_eq!(f("N.IA<T>.").as_deref(), Some("N.IA<T>"));
+        assert_eq!(f("IA<int>.").as_deref(), Some("IA<int>"));
+        assert_eq!(
+            f("IA<Dictionary<K, V>>.").as_deref(),
+            Some("IA<Dictionary<K,V>>")
+        );
+        assert_eq!(f("global::N1.IA.").as_deref(), Some("N1.IA"));
         assert_eq!(f("IA.").as_deref(), Some("IA"));
     }
 
@@ -5608,6 +5972,55 @@ fullyQualified.GetBlobContainerClient(containerId);
         assert!(!is_likely_interface_name("Integer"));
         // "I" alone or "Iota" (lowercase after I) are not interfaces
         assert!(!is_likely_interface_name("I"));
+    }
+
+    #[test]
+    fn explicit_impls_of_members_get_distinct_identities() {
+        let source = r#"
+using N2;
+namespace Acme {
+public class C : IA<int>, IA<string>, N1.IB, N2.IB {
+    void IA<int>.Run() {}
+    void IA<string>.Run() {}
+    void N1.IB.Go() {}
+    void N2.IB.Go() {}
+    int N1.IB.P { get; }
+    event System.EventHandler N1.IB.Changed { add {} remove {} }
+    public event System.EventHandler Other;
+    public override void Base() {}
+}
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let sym = |kind: &str| {
+            file.symbols
+                .iter()
+                .filter(|s| s.kind == kind)
+                .map(|s| s.qualname.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sym("method"),
+            [
+                "Acme.C.IA<int>.Run",
+                "Acme.C.IA<string>.Run",
+                "Acme.C.N1.IB.Go",
+                "Acme.C.N2.IB.Go",
+                "Acme.C.Base"
+            ]
+        );
+        assert_eq!(sym("property"), ["Acme.C.N1.IB.P"]);
+        assert_eq!(sym("event"), ["Acme.C.N1.IB.Changed", "Acme.C.Other"]);
+        assert_eq!(file.override_symbols.len(), 1);
+        assert_eq!(file.override_symbols[0].0, "Acme.C.Base");
+        // Base-list edges carry scope-ordered namespace guesses.
+        let edge = file
+            .edges
+            .iter()
+            .find(|e| e.kind == "IMPLEMENTS" && e.target_qualname.as_deref() == Some("IA"))
+            .unwrap();
+        assert_eq!(edge.import_candidates, ["Acme.IA", "N2.IA"]);
     }
 
     #[test]

@@ -224,6 +224,9 @@ pub fn trace_flow(
     // once, after the BFS, against `HEURISTIC_RESOLUTION_KINDS` to decide
     // whether suggesting the exclude-heuristics retry is useful at all.
     let mut traversed_edge_ids: Vec<i64> = Vec::new();
+    // Receiver type arguments each node was entered with (issue #185): a
+    // dispatch edge to a closed explicit impl only follows a matching call.
+    let mut entry_args = crate::db::EntryArgs::default();
 
     while let Some(QueueItem {
         id: current_id,
@@ -293,6 +296,7 @@ pub fn trace_flow(
             if !config.allowed_kinds.contains(&edge.kind)
                 || !crate::model::xref_is_traversable(edge)
                 || !config_edge_allowed(edge, allowed.as_ref())
+                || !entry_args.allows(current_id, edge)
             {
                 continue;
             }
@@ -344,7 +348,18 @@ pub fn trace_flow(
                 continue;
             };
 
+            let widened = !is_upstream && entry_args.record(next_id, edge, db)?;
             let Some(admission) = scope.admit_plain(next_id) else {
+                // Reached again through a call with other type arguments:
+                // expand it again so those closed impls are reached too.
+                if widened && let Ok(Some(sym)) = db.get_symbol_by_id(next_id) {
+                    queue.push_back(QueueItem {
+                        id: next_id,
+                        dist: dist + 1,
+                        prev_file: sym.file_path.clone(),
+                        entry: Entry::Unscoped,
+                    });
+                }
                 let key = tie_key(&current_qn, edge);
                 if retie(
                     &mut trace,
@@ -871,6 +886,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         }
     }
 
@@ -1108,6 +1124,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         };
 
         let context = extract_protocol_context(&rpc_impl_edge);
@@ -1136,6 +1153,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         };
 
         let context = extract_protocol_context(&call_edge);
@@ -1165,6 +1183,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         };
 
         let ctx = extract_protocol_context(&edge).unwrap();
@@ -1195,6 +1214,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         };
 
         let ctx = extract_protocol_context(&edge).unwrap();
@@ -1225,6 +1245,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         };
 
         let ctx = extract_protocol_context(&edge).unwrap();
@@ -1253,6 +1274,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         };
 
         assert!(extract_protocol_context(&edge).is_none());
@@ -1278,6 +1300,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         };
 
         assert!(
@@ -1824,6 +1847,7 @@ mod tsx_normalization_tests {
             trace_id: None,
             span_id: None,
             event_ts: None,
+            dispatch_args: None,
         }
     }
 

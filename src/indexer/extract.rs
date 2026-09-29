@@ -329,6 +329,53 @@ impl ReceiverType {
     }
 }
 
+/// Where an unqualified C# receiver type name is looked up, in C# order:
+/// enclosing scopes (nested types, then namespaces) innermost first, then
+/// the global namespace, then `using` namespaces. Persisted in front of the
+/// type name in the `receiver_type` column as `enclosing,..;usings,..|Type`;
+/// [`TypeScope::encode`] and [`TypeScope::decode`] are the only readers and
+/// writers of that format.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TypeScope {
+    pub enclosing: Vec<String>,
+    pub usings: Vec<String>,
+}
+
+impl TypeScope {
+    /// `ty` with this scope in front (`ty` alone for an empty scope).
+    pub fn encode(&self, ty: &str) -> String {
+        if self.enclosing.is_empty() && self.usings.is_empty() {
+            return ty.to_string();
+        }
+        format!(
+            "{};{}|{ty}",
+            self.enclosing.join(","),
+            self.usings.join(",")
+        )
+    }
+
+    /// Inverse of [`TypeScope::encode`]: the scope and the bare type text.
+    pub fn decode(column: &str) -> (TypeScope, &str) {
+        let Some((scope, ty)) = column.split_once('|') else {
+            return (TypeScope::default(), column);
+        };
+        let (enclosing, usings) = scope.split_once(';').unwrap_or((scope, ""));
+        let list = |s: &str| {
+            s.split(',')
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        (
+            TypeScope {
+                enclosing: list(enclosing),
+                usings: list(usings),
+            },
+            ty,
+        )
+    }
+}
+
 /// A call site's argument shape, so the resolver can pick between
 /// same-qualname overloads (C# issue #123) and, for `new T(...)`, between
 /// the class and its constructor (issue #124). Persisted in the
@@ -447,6 +494,10 @@ pub struct ExtractedFile {
     /// `javascript::export_surface_hash`), stored so a later sync can tell a
     /// body-only edit from one that changes what importers resolve.
     pub export_surface: Option<i64>,
+    /// `(qualname, start_line)` of each member declared `override` (C#),
+    /// per overload. Recorded into `symbols.visibility` as `override`;
+    /// dispatch only pairs a base-class member with an override.
+    pub override_symbols: Vec<(String, i64)>,
 }
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use anyhow::Result;

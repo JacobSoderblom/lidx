@@ -289,6 +289,11 @@ pub struct Edge {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<String>,
     pub event_ts: Option<i64>,
+    /// Synthetic interface-dispatch edges to a closed generic explicit impl
+    /// (`C.IA<int>.Run`) carry its type arguments: only a call whose
+    /// receiver has the same ones reaches it.
+    #[serde(skip)]
+    pub dispatch_args: Option<String>,
 }
 
 impl Edge {
