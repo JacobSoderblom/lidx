@@ -153,6 +153,26 @@ fn bridge_hop_is_reversed(edge_kind: &str) -> bool {
     )
 }
 
+/// Every config URI `id`'s own config edges carry (see `traversal`).
+fn config_uris(
+    db: &Db,
+    id: i64,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> std::collections::BTreeSet<String> {
+    db.edges_for_symbol(id, languages, graph_version)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| {
+            matches!(
+                e.kind.as_str(),
+                "CONFIG_SOURCE" | "CONFIG_READ" | "CONFIG_BIND"
+            )
+        })
+        .filter_map(|e| e.target_qualname)
+        .collect()
+}
+
 /// One BFS frontier entry: a node to expand under `entry`.
 struct QueueItem {
     id: i64,
@@ -195,9 +215,12 @@ fn resolve_bridge_targets(
                 let Some(bridged_id) = bridged_edge.source_symbol_id else {
                     continue;
                 };
-                let Some(admission) = scope.admit_bridge(visited, bridged_id, edge_kind, tq) else {
+                let Some(admission) = scope.admit_bridge(bridged_id, edge_kind, tq, || {
+                    config_uris(db, bridged_id, languages, graph_version)
+                }) else {
                     continue;
                 };
+                visited.insert(bridged_id);
                 cache_symbols(
                     db,
                     symbol_cache,
@@ -231,7 +254,7 @@ fn resolve_bridge_targets(
                         }
                     }
                 }
-                if !symbol_cache[&bridged_id].is_external() {
+                if admission.expand && !symbol_cache[&bridged_id].is_external() {
                     queue.push_back(QueueItem {
                         id: bridged_id,
                         distance: current_distance + 1,
@@ -459,9 +482,10 @@ pub fn analyze_direct_impact_scoped(
                         continue;
                     };
 
-                    let Some(admission) = scope.admit_plain(&mut visited, next_id) else {
+                    let Some(admission) = scope.admit_plain(next_id) else {
                         continue;
                     };
+                    visited.insert(next_id);
                     if !symbol_cache.contains_key(&next_id) {
                         continue;
                     }
@@ -475,7 +499,7 @@ pub fn analyze_direct_impact_scoped(
                     ));
                     // An external stub is a leaf: its other callers are
                     // unrelated to this impact set (issue #175).
-                    if !symbol_cache[&next_id].is_external() {
+                    if admission.expand && !symbol_cache[&next_id].is_external() {
                         queue.push_back(QueueItem {
                             id: next_id,
                             distance: current_distance + 1,

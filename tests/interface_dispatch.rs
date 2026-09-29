@@ -403,3 +403,52 @@ fn tests_through_interface_are_marked_via_interface() {
     assert!(has("call_via_interface"), "{evidence:?}");
     assert!(!has("call"), "{evidence:?}");
 }
+
+/// explain_symbol marks refs that exist only through interface dispatch:
+/// the interface-typed caller of an implementation, and the implementations
+/// an interface method dispatches to (issue #188).
+#[test]
+fn explain_symbol_marks_dispatch_callers_and_callees_via_interface() {
+    let (_tmp, repo, db) = common::setup_repo("cs_interface_dispatch");
+    let mut indexer = Indexer::new(repo.clone(), db.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    let find = |refs: &Value, qn: &str| -> Value {
+        refs.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["symbol"]["qualname"] == qn)
+            .cloned()
+            .unwrap_or_else(|| panic!("{qn} missing in {refs}"))
+    };
+    let via = |r: &Value| r["via_interface"].as_bool().unwrap_or(false);
+
+    // Caller of the implementation: reached only through the interface.
+    let r = call(
+        &repo,
+        &db,
+        "explain_symbol",
+        json!({"qualname": IMPL_M, "sections": ["callers"]}),
+    );
+    assert!(via(&find(&r["callers"], CALLER)), "callers: {r}");
+
+    // Callee of the interface method: the implementation.
+    let r = call(
+        &repo,
+        &db,
+        "explain_symbol",
+        json!({"qualname": IFACE_M, "sections": ["callees"]}),
+    );
+    assert!(via(&find(&r["callees"], IMPL_M)), "callees: {r}");
+
+    // A direct caller is not marked: Coordinator.Delete calls the interface
+    // method itself.
+    let r = call(
+        &repo,
+        &db,
+        "explain_symbol",
+        json!({"qualname": IFACE_M, "sections": ["callers"]}),
+    );
+    assert!(!via(&find(&r["callers"], CALLER)), "callers: {r}");
+}

@@ -189,8 +189,12 @@ fn analyze_impact_from_secret_uri_stays_on_that_secret() {
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|a| a["qualname"].as_str().map(str::to_string))
+            .filter_map(|a| a["symbol"]["qualname"].as_str().map(str::to_string))
             .collect();
+        assert!(
+            !bicep_names.is_empty(),
+            "{direction}: no affected symbols, the leak check would be vacuous: {r}"
+        );
         assert!(
             !bicep_names
                 .iter()

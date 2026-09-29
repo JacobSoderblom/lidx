@@ -113,45 +113,46 @@ fn impact_names(g: &Graph, r: &lidx::impact::types::LayerResult) -> BTreeSet<Str
     r.impacts.iter().map(|(i, _)| by_id[i].clone()).collect()
 }
 
-/// X is reached under env://A (bridge) and unscoped (plain CALLS), and its
-/// env://B edge is only followed unscoped. Whichever arrives first, Z is
-/// reached and both traversals agree.
-fn order_graphs() -> (Graph, Graph) {
+fn hops_json(r: &lidx::traversal::TraceResult) -> Vec<String> {
+    r.hops
+        .iter()
+        .map(|h| serde_json::to_string(h).unwrap())
+        .collect()
+}
+
+/// X is reached under env://A (bridge, level 1), unscoped (plain CALLS,
+/// levels 1 and 2), and its env://B edge is only followed unscoped. The
+/// edges are written forward and reversed (bridge/plain arrival order flips
+/// at every level): hops and impact sets must come out identical.
+#[test]
+fn edge_order_does_not_change_hops_or_reached_nodes() {
     let names = ["S", "M", "X", "Z"];
-    let common = [
+    let edges = [
+        ("CONFIG_READ", "S", "env://A"),
+        ("CALLS", "S", "X"),
+        ("CALLS", "S", "M"),
+        ("CALLS", "M", "X"),
         ("CONFIG_SOURCE", "X", "env://A"),
         ("CONFIG_SOURCE", "X", "env://B"),
         ("CONFIG_READ", "Z", "env://B"),
     ];
-    // Bridge reaches X at level 1; the plain CALLS reaches it at level 2.
-    let mut bridge_first = vec![
-        ("CONFIG_READ", "S", "env://A"),
-        ("CALLS", "S", "M"),
-        ("CALLS", "M", "X"),
-    ];
-    bridge_first.extend(common);
-    // Plain CALLS reaches X at level 1; the bridge only at level 2.
-    let mut plain_first = vec![
-        ("CALLS", "S", "X"),
-        ("CALLS", "S", "M"),
-        ("CONFIG_READ", "M", "env://A"),
-    ];
-    plain_first.extend(common);
-    (graph(&names, &bridge_first), graph(&names, &plain_first))
-}
+    let mut reversed = edges;
+    reversed.reverse();
+    let fwd = graph(&names, &edges);
+    let rev = graph(&names, &reversed);
 
-#[test]
-fn either_arrival_order_reaches_the_same_nodes() {
-    let (bridge_first, plain_first) = order_graphs();
-    let expected: BTreeSet<String> = ["M", "X", "Z"].iter().map(|s| s.to_string()).collect();
+    let (tf, tr) = (trace(&fwd, "S"), trace(&rev, "S"));
+    assert_eq!(hops_json(&tf), hops_json(&tr));
+    assert_eq!(
+        hop_names(&tf),
+        ["M", "X", "Z"].iter().map(|s| s.to_string()).collect()
+    );
+    // X is reported once per scope: unscoped, env://A (from S), env://B (from Z).
+    assert_eq!(tf.hops.iter().filter(|h| h.symbol.name == "X").count(), 3);
 
-    assert_eq!(hop_names(&trace(&bridge_first, "S")), expected);
-    assert_eq!(hop_names(&trace(&plain_first, "S")), expected);
-
-    let a = impact(&bridge_first, "S");
-    let b = impact(&plain_first, "S");
-    assert_eq!(impact_names(&bridge_first, &a), expected);
-    assert_eq!(impact_names(&plain_first, &b), expected);
+    let (a, b) = (impact(&fwd, "S"), impact(&rev, "S"));
+    assert_eq!(impact_names(&fwd, &a), impact_names(&rev, &b));
+    assert!(impact_names(&fwd, &a).contains("Z"));
     assert!(!a.truncated && !b.truncated);
 }
 
@@ -188,27 +189,36 @@ fn reentry_keeps_min_distance_and_records_both_paths() {
     assert_eq!(t.hops.iter().filter(|h| h.symbol.name == "X").count(), 2);
 }
 
-fn fan_in_graph(uris: usize, reversed: bool) -> Graph {
-    let names = ["S", "X"];
-    let mut uri_list: Vec<String> = (0..uris).map(|i| format!("env://U{i}")).collect();
+/// X has 10 config URIs. S bridges in on U9..U2 first (level 1); the lower
+/// U0 and U1 only arrive later, via M (level 2). The cap keeps the 8 lowest
+/// URIs whatever the arrival order, so U8 and U9 are refused and U0/U1 kept.
+fn fan_in_graph(reversed: bool) -> Graph {
+    let mut edges: Vec<(&str, &str, String)> = Vec::new();
+    for i in 0..10 {
+        edges.push(("CONFIG_SOURCE", "X", format!("env://U{i}")));
+    }
+    for i in 2..10 {
+        edges.push(("CONFIG_READ", "S", format!("env://U{i}")));
+    }
+    for i in 0..2 {
+        edges.push(("CONFIG_READ", "M", format!("env://U{i}")));
+    }
+    edges.push(("CALLS", "S", "M".to_string()));
     if reversed {
-        uri_list.reverse();
+        edges.reverse();
     }
-    let mut edges: Vec<(&str, &str, &str)> = Vec::new();
-    for u in &uri_list {
-        edges.push(("CONFIG_READ", "S", u));
-        edges.push(("CONFIG_SOURCE", "X", u));
-    }
-    graph(&names, &edges)
+    let refs: Vec<(&str, &str, &str)> =
+        edges.iter().map(|(k, s, t)| (*k, *s, t.as_str())).collect();
+    graph(&["S", "M", "X"], &refs)
 }
 
-/// Hitting the per-node URI cap is reported, and the URIs that survive are
-/// the sorted-first ones whatever order the edges were written in.
+/// Hitting the per-node URI cap is reported, and which URIs survive does not
+/// depend on arrival order.
 #[test]
-fn reentry_cap_is_reported_as_truncation_and_sorted() {
+fn reentry_cap_is_reported_and_independent_of_arrival_order() {
     let expected: BTreeSet<String> = (0..8).map(|i| format!("env://U{i}")).collect();
     for reversed in [false, true] {
-        let g = fan_in_graph(10, reversed);
+        let g = fan_in_graph(reversed);
         let t = trace(&g, "S");
         assert!(t.truncated, "cap must set truncated");
         assert!(
@@ -221,7 +231,7 @@ fn reentry_cap_is_reported_as_truncation_and_sorted() {
         let survivors: BTreeSet<String> = t
             .hops
             .iter()
-            .filter(|h| h.symbol.name == "X")
+            .filter(|h| h.symbol.name == "X" && h.protocol_context.is_some())
             .map(|h| {
                 h.protocol_context.as_ref().unwrap()["config_uri"]
                     .as_str()
@@ -237,7 +247,13 @@ fn reentry_cap_is_reported_as_truncation_and_sorted() {
     }
 
     // Under the cap: no truncation.
-    let g = fan_in_graph(3, false);
+    let g = graph(
+        &["S", "X"],
+        &[
+            ("CONFIG_READ", "S", "env://U0"),
+            ("CONFIG_SOURCE", "X", "env://U0"),
+        ],
+    );
     let t = trace(&g, "S");
     assert!(!t.truncated && t.truncation_reason.is_none());
     let r = impact(&g, "S");
