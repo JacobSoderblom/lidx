@@ -351,6 +351,68 @@ pub(crate) struct LanguageProfile {
     pub deferred_rpc: Option<DeferredRpcFn>,
 }
 
+/// A method symbol a deferred call may reach.
+pub(crate) struct MethodRow {
+    signature: Option<String>,
+    visibility: Option<String>,
+    file_id: i64,
+    qualname: String,
+}
+
+/// The namespaces and aliases in scope where a method is declared, as JSON
+/// `{"namespaces": [...], "aliases": {...}}` fields: its file's `using`s
+/// (`IMPORTS` edges, bound or still in the unresolved store) plus the
+/// namespaces enclosing its type.
+fn declaring_imports(
+    conn: &Connection,
+    file_id: i64,
+    qualname: &str,
+    graph_version: i64,
+) -> Result<(Vec<String>, HashMap<String, String>)> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT target_qualname, detail FROM edges
+         WHERE kind = 'IMPORTS' AND file_id = ?1 AND graph_version = ?2
+         UNION ALL
+         SELECT reference_name, detail FROM unresolved_references
+         WHERE edge_kind = 'IMPORTS' AND file_id = ?1 AND graph_version = ?2
+         ORDER BY 1, 2",
+    )?;
+    let rows = stmt.query_map(params![file_id, graph_version], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, Option<String>>(1)?,
+        ))
+    })?;
+    let mut namespaces = Vec::new();
+    let mut aliases = HashMap::new();
+    for row in rows {
+        let (target, detail) = row?;
+        let alias = detail
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+            .and_then(|d| {
+                Some((
+                    d.get("alias")?.as_str()?.to_string(),
+                    d.get("target")?.as_str()?.to_string(),
+                ))
+            });
+        match (alias, target) {
+            (Some((alias, target)), _) => {
+                aliases.insert(alias, target);
+            }
+            (None, Some(target)) => namespaces.push(target),
+            _ => {}
+        }
+    }
+    // `App.Clients.Create` sits in `App.Clients` (or a class of that name in
+    // `App`): every enclosing namespace is in scope.
+    let mut scope = qualname.rsplit_once('.').map(|(t, _)| t);
+    while let Some((prefix, _)) = scope.and_then(|t| t.rsplit_once('.')) {
+        namespaces.push(prefix.to_string());
+        scope = Some(prefix);
+    }
+    Ok((namespaces, aliases))
+}
+
 /// `LanguageProfile::deferred_rpc`: `(target_qualname, detail)` per edge.
 pub type DeferredRpcFn =
     fn(signature: &str, awaited: bool, site: &str) -> Option<Vec<(String, String)>>;
@@ -821,7 +883,12 @@ impl<'c> Resolver<'c> {
         let Some(return_receiver) = profile_for(lang).return_receiver else {
             return Ok(String::new());
         };
-        let Some(ret) = self.deferred_lookup(call, lang, file_path, depth, return_receiver)? else {
+        let Some(ret) = self.deferred_lookup(call, lang, file_path, depth, |row, awaited| {
+            row.signature
+                .as_deref()
+                .and_then(|sig| return_receiver(sig, awaited))
+        })?
+        else {
             return Ok(String::new());
         };
         let is_repo_type: bool = self.conn.query_row(
@@ -845,7 +912,7 @@ impl<'c> Resolver<'c> {
         lang: &str,
         file_path: &str,
         depth: usize,
-        map: impl Fn(&str, bool) -> Option<T>,
+        map: impl Fn(&MethodRow, bool) -> Option<T>,
     ) -> Result<Option<T>> {
         // A nested marker is the receiver's own deferred call (`a.B().C()`).
         let ty = match ReceiverType::parse_deferred_return(call.type_name) {
@@ -860,13 +927,12 @@ impl<'c> Resolver<'c> {
             }
         };
         let mut found: Option<T> = None;
-        for (sig, visibility) in self.inherited_method_rows(&ty, call.method, lang)? {
-            let is_static = visibility
+        for row in self.inherited_method_rows(&ty, call.method, lang)? {
+            let is_static = row
+                .visibility
                 .as_deref()
                 .is_some_and(|v| v.split_whitespace().any(|m| m == "static"));
-            let Some(value) = sig
-                .and_then(|sig| map(&sig, call.awaited))
-                .filter(|_| is_static || !call.static_only)
+            let Some(value) = map(&row, call.awaited).filter(|_| is_static || !call.static_only)
             else {
                 return Ok(None);
             };
@@ -878,16 +944,10 @@ impl<'c> Resolver<'c> {
         Ok(found)
     }
 
-    /// `(signature, visibility)` of the methods named `method` on a type
-    /// named `ty`.
-    fn method_rows(
-        &self,
-        ty: &str,
-        method: &str,
-        lang: &str,
-    ) -> Result<Vec<(Option<String>, Option<String>)>> {
+    /// The methods named `method` on a type named `ty`.
+    fn method_rows(&self, ty: &str, method: &str, lang: &str) -> Result<Vec<MethodRow>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT s.signature, s.visibility FROM symbols s JOIN files f ON s.file_id = f.id
+            "SELECT s.signature, s.visibility, s.file_id, s.qualname FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE s.name = ?1 AND s.kind = 'method' AND f.language = ?5
                AND (s.qualname = ?2 OR substr(s.qualname, -length(?3)) = ?3)
                AND s.graph_version = ?4
@@ -897,7 +957,14 @@ impl<'c> Resolver<'c> {
         let qualname = format!("{ty}.{method}");
         let rows = stmt.query_map(
             params![method, qualname, suffix, self.graph_version, lang],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| {
+                Ok(MethodRow {
+                    signature: row.get(0)?,
+                    visibility: row.get(1)?,
+                    file_id: row.get(2)?,
+                    qualname: row.get(3)?,
+                })
+            },
         )?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -923,7 +990,7 @@ impl<'c> Resolver<'c> {
         ty: &str,
         method: &str,
         lang: &str,
-    ) -> Result<Vec<(Option<String>, Option<String>)>> {
+    ) -> Result<Vec<MethodRow>> {
         let own = self.method_rows(ty, method, lang)?;
         if !own.is_empty() {
             return Ok(own);
@@ -2899,6 +2966,7 @@ impl Db {
         };
         let mut written = 0;
         {
+            let conn: &Connection = &tx;
             let mut resolver = Resolver::new(&tx, graph_version)?;
             let mut insert_edge = tx.prepare(
                 "INSERT INTO edges
@@ -2916,8 +2984,22 @@ impl Db {
                     continue;
                 };
                 let calls = resolver
-                    .deferred_lookup(&call, &site.lang, &site.path, 0, |sig, awaited| {
-                        hook(sig, awaited, &site.detail)
+                    .deferred_lookup(&call, &site.lang, &site.path, 0, |row, awaited| {
+                        let (namespaces, aliases) =
+                            declaring_imports(conn, row.file_id, &row.qualname, graph_version)
+                                .ok()?;
+                        let rpc = serde_json::from_str::<serde_json::Value>(&site.detail)
+                            .ok()?
+                            .get(DEFERRED_RPC_KEY)?
+                            .get("rpc")?
+                            .clone();
+                        let site = serde_json::json!({
+                            "rpc": rpc,
+                            "namespaces": namespaces,
+                            "aliases": aliases,
+                        })
+                        .to_string();
+                        hook(row.signature.as_deref()?, awaited, &site)
                     })?
                     .unwrap_or_default();
                 for (target_qualname, detail) in calls {

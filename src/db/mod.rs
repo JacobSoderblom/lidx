@@ -331,6 +331,30 @@ impl Db {
     /// - `delete_edges_for_file()` + `insert_edges()` for edges
     pub fn delete_symbols_edges_for_file(&self, file_id: i64, graph_version: i64) -> Result<()> {
         self.delete_edges_for_file(file_id, graph_version)?;
+        // A namespace declared by several files is one symbol per file, and
+        // other files' edges bind to whichever a fresh index saw first. Hand
+        // such edges to a surviving declaration before this file's copy goes,
+        // or they'd be nulled and diverge from a fresh reindex.
+        for column in ["source_symbol_id", "target_symbol_id"] {
+            self.conn().execute(
+                &format!(
+                    "UPDATE edges SET {column} = (
+                        SELECT MIN(o.id) FROM symbols o JOIN symbols d
+                          ON d.qualname = o.qualname AND d.kind = o.kind
+                         AND d.graph_version = o.graph_version
+                        WHERE d.id = edges.{column} AND o.file_id != d.file_id)
+                     WHERE graph_version = ?2 AND {column} IN (
+                        SELECT id FROM symbols
+                        WHERE file_id = ?1 AND graph_version = ?2 AND kind = 'namespace')
+                       AND EXISTS (
+                        SELECT 1 FROM symbols o JOIN symbols d
+                          ON d.qualname = o.qualname AND d.kind = o.kind
+                         AND d.graph_version = o.graph_version
+                        WHERE d.id = edges.{column} AND o.file_id != d.file_id)"
+                ),
+                params![file_id, graph_version],
+            )?;
+        }
         // Deleting these symbols nulls any other file's edge that still
         // references one of them via `edges`' `ON DELETE SET NULL` foreign
         // key (issue #76) -- no manual nulling needed here.

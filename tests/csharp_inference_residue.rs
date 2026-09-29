@@ -323,15 +323,96 @@ fn chained_callee_added_later_resolves() {
     assert_matches_fresh(&indexer, &all_files());
 }
 
+const ASSIGNER: &str = r#"
+namespace App
+{
+    public class Assigner : Base
+    {
+        private Other _f;
+        private Other _g;
+        public void Plain(Repo repo) { var x = repo.Wrong(); x = repo.Open(); x.Write(); }
+        public void BeforeAfter(Repo repo) { var x = repo.Wrong(); x.Write(); x = repo.Open(); x.Write(); }
+        public void BaseAssign(Repo repo) { var x = repo.Wrong(); x = base.Inherited(); x.Write(); }
+        public void BareAssign(Repo repo) { var x = repo.Wrong(); x = Inherited(); x.Write(); }
+        public void ViaCall(Repo repo) { var a = repo.Wrong(); a = repo.Nested(); var b = a.Open(); b.Write(); }
+        public void Field(Repo repo) { _f = repo.Open(); _f.Write(); }
+        public void ThisField(Repo repo) { this._g = repo.Open(); this._g.Write(); }
+        public void InBranch(Repo repo, bool c) { var x = repo.Wrong(); if (c) { x = repo.Open(); x.Write(); } }
+        public void AfterBranch(Repo repo, bool c) { var x = repo.Wrong(); if (c) { x = repo.Open(); } x.Write(); }
+        public void Embedded(Repo repo, bool c) { var x = repo.Wrong(); if (c) x = repo.Open(); x.Write(); }
+        public void InLoop(Repo repo, bool c) { var x = repo.Wrong(); while (c) { x.Write(); x = repo.Open(); } }
+        public void Dominated(Repo repo, bool c) { var x = repo.Wrong(); if (c) { x = repo.Open(); } x = repo.Nested().Open(); x.Write(); }
+        public void Unknown(Repo repo) { var x = repo.Open(); x = repo.Missing(); x.Write(); }
+    }
+}
+"#;
+
+fn assign_files(repo: &str) -> Vec<(&'static str, &str)> {
+    let mut files = all_files();
+    files.retain(|(p, _)| *p != "Repo.cs");
+    files.push(("Repo.cs", repo));
+    files.push(("Assigner.cs", ASSIGNER));
+    files
+}
+
+#[test]
+fn plain_assignments_update_the_tracked_type_flow_sensitively() {
+    let (_tmp, _root, indexer) = indexed(&assign_files(REPO));
+    let store = vec!["App.StoreBase.Write".to_string()];
+    for name in [
+        "Plain",
+        "BaseAssign",
+        "BareAssign",
+        "ViaCall",
+        "Field",
+        "ThisField",
+        "InBranch",
+        "Dominated",
+    ] {
+        assert_eq!(
+            write_targets(&indexer, &format!("App.Assigner.{name}")),
+            store,
+            "{name}"
+        );
+    }
+    let mut both = write_targets(&indexer, "App.Assigner.BeforeAfter");
+    both.sort();
+    assert_eq!(both, ["App.Other.Write", "App.StoreBase.Write"]);
+    // Ambiguous after a branch, an embedded statement or a loop: untracked
+    // (`InLoop`'s first call is in the loop the assignment sits in).
+    // A callee the resolver can't type leaves it untracked too (`Unknown`).
+    for name in ["AfterBranch", "Embedded", "InLoop", "Unknown"] {
+        assert!(
+            write_targets(&indexer, &format!("App.Assigner.{name}")).is_empty(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn assignment_types_follow_callee_edits_incrementally() {
+    let (_tmp, root, mut indexer) = indexed(&assign_files(REPO));
+    let repo = REPO.replace("Store Open()", "Other Open()");
+    common::write_files(&root, &[("Repo.cs", &repo)]);
+    indexer.sync_rel_paths(&["Repo.cs".into()]).unwrap();
+    assert_eq!(
+        write_targets(&indexer, "App.Assigner.Plain"),
+        vec!["App.Other.Write".to_string()]
+    );
+    assert_matches_fresh(&indexer, &assign_files(&repo));
+}
+
 // ---- gRPC clients returned by a factory in another file -----------------
 
 const FACTORY: &str = r#"
 using Acme.Protos;
+using Alias = Acme.Aliased;
 using System.Threading.Tasks;
 namespace App
 {
     public static class Clients
     {
+        public static Alias.Greeter.GreeterClient CreateAliased() { return null; }
         public static Greeter.GreeterClient CreateClient(string address) { return null; }
         public static async Task<Greeter.GreeterClient> CreateAsync() { return null; }
         public static Store Plain() { return null; }
@@ -352,7 +433,7 @@ namespace App
 "#;
 
 const RPC_CALLER: &str = r#"
-using Acme.Protos;
+using Caller.Only;
 using System.Threading.Tasks;
 namespace App
 {
@@ -362,6 +443,7 @@ namespace App
         public async Task Async() { var c = await Clients.CreateAsync(); await c.SayHelloAsync(null); }
         public void Chained() { Clients.CreateClient("x").SayBye(null); }
         public void Inherited() { var c = Connect(); c.SayHello(null); }
+        public void Aliased() { var c = Clients.CreateAliased(); c.SayHello(null); }
         public void NotAClient() { var c = Clients.Plain(); c.SayHello(null); }
     }
 }
@@ -405,6 +487,17 @@ fn factory_returned_grpc_clients_produce_rpc_call_edges() {
     assert!(rpc_calls(&indexer, "App.Greeting.Chained").contains(&say_bye.to_string()));
     assert!(rpc_calls(&indexer, "App.Greeting.Inherited").contains(&say_hello.to_string()));
     assert!(rpc_calls(&indexer, "App.Greeting.NotAClient").is_empty());
+    // Packages come from the factory's file (its usings and aliases), not
+    // the caller's, which only imports `Caller.Only`.
+    assert!(
+        rpc_calls(&indexer, "App.Greeting.Aliased")
+            .contains(&"/acme.aliased.greeter/sayhello".to_string())
+    );
+    for caller in ["Static", "Async", "Chained", "Inherited", "Aliased"] {
+        for target in rpc_calls(&indexer, &format!("App.Greeting.{caller}")) {
+            assert!(!target.contains("caller.only"), "{caller}: {target}");
+        }
+    }
 }
 
 #[test]
@@ -456,6 +549,18 @@ fn factory_edits_move_rpc_call_edges_incrementally() {
         ("Types.cs", TYPES),
         ("Factory.cs", FACTORY),
         ("ClientBase.cs", base.as_str()),
+        ("Greeting.cs", caller.as_str()),
+    ];
+    assert_matches_fresh(&indexer, &files);
+
+    // Deleting the base class file (one of several declaring `namespace App`)
+    // unbinds the inherited factory.
+    std::fs::remove_file(root.join("ClientBase.cs")).unwrap();
+    indexer.sync_rel_paths(&["ClientBase.cs".into()]).unwrap();
+    assert!(rpc_calls(&indexer, "App.Greeting.Inherited").is_empty());
+    let files = vec![
+        ("Types.cs", TYPES),
+        ("Factory.cs", FACTORY),
         ("Greeting.cs", caller.as_str()),
     ];
     assert_matches_fresh(&indexer, &files);

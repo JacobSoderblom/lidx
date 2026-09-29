@@ -74,6 +74,9 @@ struct Context {
     /// entry; never merged across methods. See
     /// `python::infer_receiver_type` for the mechanism this mirrors.
     local_types: Rc<HashMap<String, LocalType>>,
+    /// Plain assignments (`x = M()`) to a local or field within the current
+    /// method body; see `type_at`.
+    assigns: Rc<ScopeAssigns>,
     /// Type-annotated fields and properties of the *directly* enclosing
     /// type, read once when entering its body — see
     /// `collect_class_level_attr_types`. Used only to resolve a single-hop
@@ -218,6 +221,8 @@ enum LocalType {
 /// `recv.Method(..)` awaiting `resolve_pending_calls`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingCall {
+    /// Where the call starts, for `type_at` lookups of its receiver.
+    pos: usize,
     recv: PendingRecv,
     method: String,
     awaited: bool,
@@ -334,6 +339,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             // method/constructor body), so this starts and stays empty
             // outside of `handle_method`/`handle_constructor`.
             local_types: Rc::new(HashMap::new()),
+            assigns: Rc::new(ScopeAssigns::default()),
             class_attr_types: Rc::new(HashMap::new()),
             class_attr_raw: Rc::new(HashMap::new()),
             base_type: LocalType::Other,
@@ -457,7 +463,9 @@ fn walk_compilation_unit(node: Node<'_>, ctx: &Context, source: &str, output: &m
     }
     next_ctx.route_groups = collect_global_route_groups(node, source);
     next_ctx.grpc_clients = collect_global_grpc_clients(node, source, &ctx.method_returns);
-    next_ctx.local_types = Rc::new(infer_global_local_types(node, source, ctx));
+    let (local_types, assigns) = infer_global_local_types(node, source, ctx);
+    next_ctx.local_types = Rc::new(local_types);
+    next_ctx.assigns = Rc::new(assigns);
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -664,6 +672,7 @@ fn handle_type(
     next_ctx.base_type = resolvable_base_type(node, source, type_kind);
     // Top-level-statement locals aren't visible inside a type.
     next_ctx.local_types = Rc::new(HashMap::new());
+    next_ctx.assigns = Rc::new(ScopeAssigns::default());
     if let Some(body) = node.child_by_field_name("body") {
         next_ctx.class_attr_types = Rc::new(collect_class_level_attr_types(body, source));
         next_ctx.class_attr_raw = Rc::new(collect_class_level_attr_type_texts(body, source));
@@ -769,7 +778,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         let mut grpc_clients = ctx.grpc_clients.clone();
         grpc_clients.extend(collect_grpc_clients(body, source, &ctx.method_returns));
         next_ctx.grpc_clients = grpc_clients;
-        next_ctx.local_types = Rc::new(infer_local_types(node, source, ctx));
+        let (local_types, assigns) = infer_local_types(node, source, ctx);
+        next_ctx.local_types = Rc::new(local_types);
+        next_ctx.assigns = Rc::new(assigns);
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -858,7 +869,9 @@ fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = qualname;
-        next_ctx.local_types = Rc::new(infer_local_types(node, source, ctx));
+        let (local_types, assigns) = infer_local_types(node, source, ctx);
+        next_ctx.local_types = Rc::new(local_types);
+        next_ctx.assigns = Rc::new(assigns);
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -980,13 +993,22 @@ fn handle_using(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
     let Some(target) = target else {
         return;
     };
+    // An alias's target text is the alias itself; keep what it names for the
+    // resolver (see `using_context`).
+    let mut aliased = ImportContext::default();
+    record_using_directive(node, source, &mut aliased);
+    let detail = aliased
+        .aliases
+        .into_iter()
+        .next()
+        .map(|(alias, target)| json!({ "alias": alias, "target": target }).to_string());
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     output.edges.push(EdgeInput {
         kind: "IMPORTS".to_string(),
         source_qualname: Some(base_qualname(ctx)),
         target_qualname: Some(target),
-        detail: None,
+        detail,
         evidence_snippet: snippet,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
@@ -1091,7 +1113,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         // The callee may return a generated gRPC client (see
         // `DEFERRED_RPC_KEY`): keep what the resolver needs to derive the
         // `RPC_CALL` edges.
-        ReceiverType::Deferred(_) => deferred_rpc_detail(target_node, &raw, ctx, source),
+        ReceiverType::Deferred(_) => deferred_rpc_detail(target_node, &raw, source),
         _ if target.is_some() => None,
         _ => Some(raw),
     };
@@ -3368,7 +3390,14 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
                 .child_by_field_name("name")
                 .map(|n| node_text(n, source));
             return attr_name
-                .and_then(|name| ctx.class_attr_types.get(&name))
+                .and_then(|name| {
+                    type_at(
+                        &name,
+                        function_node.start_byte(),
+                        ctx.class_attr_types.get(&name),
+                        &ctx.assigns.attrs,
+                    )
+                })
                 .map_or(ReceiverType::Unresolved, LocalType::receiver);
         }
         // ponytail: deeper chains (`this.a.b.Method()`) would need real
@@ -3387,6 +3416,7 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         let names = Names {
             locals: &ctx.local_types,
             class_attrs: &ctx.class_attr_types,
+            assigns: &ctx.assigns,
         };
         return pending_call(root, source, 0)
             .and_then(|call| call_marker(&call, &names, &ThisEnv::from_ctx(ctx)))
@@ -3407,15 +3437,18 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     // `class_attr_types` — reusing the exact same field/property map
     // `this.field.Method()` already consults, just from an additional call
     // site.
+    let pos = function_node.start_byte();
     if let Some(local) = ctx.local_types.get(&root_name) {
         if hops == 0 {
-            return local.receiver();
+            return type_at(&root_name, pos, Some(local), &ctx.assigns.locals)
+                .map_or(ReceiverType::Unresolved, LocalType::receiver);
         }
         return ReceiverType::Unresolved;
     }
     if let Some(attr) = ctx.class_attr_types.get(&root_name) {
         if hops == 0 {
-            return attr.receiver();
+            return type_at(&root_name, pos, Some(attr), &ctx.assigns.attrs)
+                .map_or(ReceiverType::Unresolved, LocalType::receiver);
         }
         return ReceiverType::Unresolved;
     }
@@ -3920,6 +3953,7 @@ fn pending_call(value: Node<'_>, source: &str, depth: usize) -> Option<PendingCa
     let method = node_text(name, source);
     let method = method.split('<').next().unwrap_or(&method).to_string();
     Some(PendingCall {
+        pos: value.start_byte(),
         recv,
         method,
         awaited,
@@ -3939,6 +3973,67 @@ fn peel_parens(mut node: Node<'_>) -> Node<'_> {
 struct Names<'a> {
     locals: &'a HashMap<String, LocalType>,
     class_attrs: &'a HashMap<String, LocalType>,
+    assigns: &'a ScopeAssigns,
+}
+
+impl Names<'_> {
+    /// What `name` (a local or field; `this.field` when `this_field`) holds at
+    /// byte `pos`.
+    fn type_at(&self, name: &str, pos: usize, this_field: bool) -> Option<&LocalType> {
+        if !this_field && self.locals.contains_key(name) {
+            return type_at(name, pos, self.locals.get(name), &self.assigns.locals);
+        }
+        type_at(name, pos, self.class_attrs.get(name), &self.assigns.attrs)
+    }
+}
+
+/// One plain assignment `name = value` that may change `name`'s type.
+#[derive(Debug, Clone)]
+struct Assign {
+    /// End of the assignment: it holds from here on.
+    pos: usize,
+    /// Byte range of the block the assignment always runs in; a call
+    /// outside it (after a branch) can't rely on it.
+    region: (usize, usize),
+    /// Loops around the assignment: a call earlier in one sees it too.
+    loops: Vec<(usize, usize)>,
+    ty: LocalType,
+}
+
+type Assigns = HashMap<String, Vec<Assign>>;
+
+#[derive(Debug, Default)]
+struct ScopeAssigns {
+    locals: Assigns,
+    attrs: Assigns,
+}
+
+static UNTRACKED: LocalType = LocalType::Other;
+
+/// The type of `name` at byte `pos`: its latest assignment before `pos` when
+/// that always runs before it, `base` (the declaration) when there is none,
+/// and untracked when a branch or loop makes it ambiguous.
+fn type_at<'a>(
+    name: &str,
+    pos: usize,
+    base: Option<&'a LocalType>,
+    assigns: &'a Assigns,
+) -> Option<&'a LocalType> {
+    let Some(events) = assigns.get(name) else {
+        return base;
+    };
+    let in_range = |(start, end): (usize, usize)| start <= pos && pos < end;
+    if events
+        .iter()
+        .any(|ev| ev.pos > pos && ev.loops.iter().any(|l| in_range(*l)))
+    {
+        return Some(&UNTRACKED);
+    }
+    match events.iter().rev().find(|ev| ev.pos <= pos) {
+        None => base,
+        Some(ev) if in_range(ev.region) => Some(&ev.ty),
+        Some(_) => Some(&UNTRACKED),
+    }
 }
 
 /// The `Deferred` marker for `call`: its receiver a bound `Known` type, a
@@ -3951,11 +4046,8 @@ fn call_marker(call: &PendingCall, names: &Names<'_>, env: &ThisEnv) -> Option<S
     let (ty, static_only) = match &call.recv {
         PendingRecv::Name(name) => {
             let bound = match name.strip_prefix("this.") {
-                Some(field) => names.class_attrs.get(field),
-                None => names
-                    .locals
-                    .get(name.as_str())
-                    .or_else(|| names.class_attrs.get(name.as_str())),
+                Some(field) => names.type_at(field, call.pos, true),
+                None => names.type_at(name, call.pos, false),
             };
             match bound {
                 Some(LocalType::Known(t)) => (t.clone(), false),
@@ -3986,39 +4078,60 @@ fn call_marker(call: &PendingCall, names: &Names<'_>, env: &ThisEnv) -> Option<S
     }
 }
 
-/// Finish every pending call binding as a `Deferred` marker for the
-/// resolver (or `Other` when its receiver's type is unknown). A pending call
-/// on another pending local (`var a = F(); var b = a.G();`) waits for that
-/// one, a round at a time, up to `MAX_DEFERRED_DEPTH` deep.
+/// Finish every pending call binding -- declarations and assignments -- as a
+/// `Deferred` marker for the resolver (or `Other` when its receiver's type
+/// is unknown). A pending call on another pending name (`var a = F(); var b =
+/// a.G();`) waits for that one, a round at a time, up to `MAX_DEFERRED_DEPTH`
+/// deep. An assignment that ends up `Other` is dropped: the variable's
+/// declared type stands.
 fn resolve_pending_calls(
     locals: &mut HashMap<String, LocalType>,
     class_attr_types: &HashMap<String, LocalType>,
+    assigns: &mut ScopeAssigns,
     env: &ThisEnv,
 ) {
+    let pending = |ty: &LocalType| matches!(ty, LocalType::Call(_));
     for _ in 0..=MAX_DEFERRED_DEPTH {
-        let snapshot = locals.clone();
+        let snapshot_locals = locals.clone();
+        let snapshot_assigns = ScopeAssigns {
+            locals: assigns.locals.clone(),
+            attrs: assigns.attrs.clone(),
+        };
         let names = Names {
-            locals: &snapshot,
+            locals: &snapshot_locals,
             class_attrs: class_attr_types,
+            assigns: &snapshot_assigns,
         };
         let mut progressed = false;
-        for ty in locals.values_mut() {
-            let LocalType::Call(call) = ty else {
-                continue;
+        let mut finish = |ty: &mut LocalType| {
+            let LocalType::Call(call) = &*ty else {
+                return;
             };
             let waits = {
-                let mut root = &*call;
+                let mut root = call;
                 while let PendingRecv::Call(inner) = &root.recv {
                     root = inner;
                 }
                 matches!(&root.recv, PendingRecv::Name(n)
-                    if matches!(snapshot.get(n.as_str()), Some(LocalType::Call(_))))
+                    if names.type_at(n.strip_prefix("this.").unwrap_or(n), root.pos, n.starts_with("this."))
+                        .is_some_and(pending))
             };
             if waits {
-                continue;
+                return;
             }
             *ty = call_marker(call, &names, env).map_or(LocalType::Other, LocalType::Deferred);
             progressed = true;
+        };
+        for ty in locals.values_mut() {
+            finish(ty);
+        }
+        for ev in assigns
+            .locals
+            .values_mut()
+            .chain(assigns.attrs.values_mut())
+            .flatten()
+        {
+            finish(&mut ev.ty);
         }
         if !progressed {
             break;
@@ -4026,10 +4139,117 @@ fn resolve_pending_calls(
     }
     // Still pending: an unresolvable cycle or a chain past the depth cap.
     for ty in locals.values_mut() {
-        if matches!(ty, LocalType::Call(_)) {
+        if pending(ty) {
             *ty = LocalType::Other;
         }
     }
+    for events in assigns
+        .locals
+        .values_mut()
+        .chain(assigns.attrs.values_mut())
+    {
+        events.retain(|ev| !matches!(ev.ty, LocalType::Other | LocalType::Call(_)));
+    }
+}
+
+/// Every plain assignment `x = value` / `this.x = value` in `body` whose
+/// value's type is known, keyed by name, sorted by position: to a local
+/// declared in `locals`, else to a field.
+fn collect_assignments(
+    body: Node<'_>,
+    source: &str,
+    method_returns: &MethodReturns,
+    locals: &HashMap<String, LocalType>,
+) -> ScopeAssigns {
+    fn walk(
+        node: Node<'_>,
+        source: &str,
+        returns: &MethodReturns,
+        locals: &HashMap<String, LocalType>,
+        loops: &mut Vec<(usize, usize)>,
+        out: &mut ScopeAssigns,
+    ) {
+        let is_loop = matches!(
+            node.kind(),
+            "for_statement" | "foreach_statement" | "while_statement" | "do_statement"
+        );
+        if is_loop {
+            loops.push((node.start_byte(), node.end_byte()));
+        }
+        if node.kind() == "assignment_expression"
+            && let (Some(left), Some(right), Some(op)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+                node.child_by_field_name("operator"),
+            )
+            && node_text(op, source) == "="
+        {
+            let target = match left.kind() {
+                "identifier" => {
+                    let name = node_text(left, source);
+                    let assigns = if locals.contains_key(&name) {
+                        &mut out.locals
+                    } else {
+                        &mut out.attrs
+                    };
+                    Some((name, assigns))
+                }
+                "member_access_expression"
+                    if left.child_by_field_name("expression").map(|e| e.kind()) == Some("this") =>
+                {
+                    left.child_by_field_name("name")
+                        .map(|n| (node_text(n, source), &mut out.attrs))
+                }
+                _ => None,
+            };
+            let ty = classify_value_expr(right, source, returns);
+            if let Some((name, assigns)) = target
+                && matches!(ty, LocalType::Known(_) | LocalType::Call(_))
+            {
+                // Always runs before what follows in its block only as a
+                // whole statement of that block; anything else (a branch's
+                // lone statement, a condition, a lambda body) just poisons.
+                let stmt = node.parent().filter(|p| p.kind() == "expression_statement");
+                let region = match stmt.and_then(|s| s.parent()) {
+                    Some(block)
+                        if matches!(
+                            block.kind(),
+                            "block" | "switch_section" | "global_statement" | "compilation_unit"
+                        ) =>
+                    {
+                        (block.start_byte(), block.end_byte())
+                    }
+                    _ => (node.start_byte(), node.end_byte()),
+                };
+                assigns.entry(name).or_default().push(Assign {
+                    pos: node.end_byte(),
+                    region,
+                    loops: loops.clone(),
+                    ty,
+                });
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk(child, source, returns, locals, loops, out);
+        }
+        if is_loop {
+            loops.pop();
+        }
+    }
+    let mut out = ScopeAssigns::default();
+    walk(
+        body,
+        source,
+        method_returns,
+        locals,
+        &mut Vec::new(),
+        &mut out,
+    );
+    for events in out.locals.values_mut().chain(out.attrs.values_mut()) {
+        events.sort_by_key(|ev| ev.pos);
+    }
+    out
 }
 
 /// Declared return types (raw text) of every method / local function in a
@@ -4143,31 +4363,24 @@ fn unwrap_return(ret: &str, awaited: bool) -> Option<String> {
 }
 
 /// The detail JSON of a call through a deferred receiver; see `DEFERRED_RPC_KEY`.
-fn deferred_rpc_detail(
-    target_node: Node<'_>,
-    raw: &str,
-    ctx: &Context,
-    source: &str,
-) -> Option<String> {
+fn deferred_rpc_detail(target_node: Node<'_>, raw: &str, source: &str) -> Option<String> {
     let name = call_target_parts(target_node, source)?.name;
     let rpc = normalize_grpc_method_name(name.split('<').next().unwrap_or(&name))?;
     Some(
         json!({
             "call": raw,
-            DEFERRED_RPC_KEY: {
-                "rpc": rpc,
-                "namespaces": ctx.imports.namespaces,
-                "aliases": ctx.imports.aliases,
-            },
+            DEFERRED_RPC_KEY: { "rpc": rpc },
         })
         .to_string(),
     )
 }
 
-/// The `RPC_CALL` edges (`(target_qualname, detail)`) of a call site (`site`
-/// is its `DEFERRED_RPC_KEY` detail) whose receiver is the return value of a
-/// callee with this indexed `signature`: one per candidate package when that
-/// return type is a generated gRPC client, else `None`.
+/// The `RPC_CALL` edges (`(target_qualname, detail)`) of a call site whose
+/// receiver is the return value of a callee with this indexed `signature`:
+/// one per candidate package when that return type is a generated gRPC
+/// client, else `None`. `site` is JSON `{rpc, namespaces, aliases}`, the
+/// imports being those of the callee's file, where the client type is
+/// written (see `Db::rederive_deferred_rpc_calls`).
 fn grpc_calls_from_signature(
     signature: &str,
     awaited: bool,
@@ -4176,7 +4389,7 @@ fn grpc_calls_from_signature(
     let ret = unwrap_return(signature.rsplit_once(" -> ")?.1, awaited)?;
     let service_and_prefix = split_client_service_and_prefix(ret.trim())?;
     let payload: serde_json::Value = serde_json::from_str(site).ok()?;
-    let site = payload.get(DEFERRED_RPC_KEY)?;
+    let site = &payload;
     let imports = ImportContext {
         namespaces: serde_json::from_value(site.get("namespaces")?.clone()).ok()?,
         aliases: serde_json::from_value(site.get("aliases")?.clone()).ok()?,
@@ -4253,7 +4466,7 @@ fn infer_local_types(
     function_node: Node<'_>,
     source: &str,
     ctx: &Context,
-) -> HashMap<String, LocalType> {
+) -> (HashMap<String, LocalType>, ScopeAssigns) {
     let method_returns = &*ctx.method_returns;
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
     let mut raw = RawTypes {
@@ -4287,8 +4500,17 @@ fn infer_local_types(
         collect_statement_bindings(body, source, method_returns, &mut raw, &mut bindings);
     }
     let mut locals = bindings_to_local_types(bindings);
-    resolve_pending_calls(&mut locals, &ctx.class_attr_types, &ThisEnv::from_ctx(ctx));
-    locals
+    let mut assigns = function_node
+        .child_by_field_name("body")
+        .map(|body| collect_assignments(body, source, method_returns, &locals))
+        .unwrap_or_default();
+    resolve_pending_calls(
+        &mut locals,
+        &ctx.class_attr_types,
+        &mut assigns,
+        &ThisEnv::from_ctx(ctx),
+    );
+    (locals, assigns)
 }
 
 /// `infer_local_types` for a compilation unit's top-level statements, which
@@ -4297,7 +4519,7 @@ fn infer_global_local_types(
     root: Node<'_>,
     source: &str,
     ctx: &Context,
-) -> HashMap<String, LocalType> {
+) -> (HashMap<String, LocalType>, ScopeAssigns) {
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
     let mut raw = RawTypes {
         locals: HashMap::new(),
@@ -4310,8 +4532,28 @@ fn infer_global_local_types(
         }
     }
     let mut locals = bindings_to_local_types(bindings);
-    resolve_pending_calls(&mut locals, &ctx.class_attr_types, &ThisEnv::default());
-    locals
+    let mut assigns = ScopeAssigns::default();
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        if child.kind() == "global_statement" {
+            let found = collect_assignments(child, source, &ctx.method_returns, &locals);
+            for (from, to) in [
+                (found.locals, &mut assigns.locals),
+                (found.attrs, &mut assigns.attrs),
+            ] {
+                for (name, events) in from {
+                    to.entry(name).or_default().extend(events);
+                }
+            }
+        }
+    }
+    resolve_pending_calls(
+        &mut locals,
+        &ctx.class_attr_types,
+        &mut assigns,
+        &ThisEnv::default(),
+    );
+    (locals, assigns)
 }
 
 /// Declared type text of names bound in the current method (`None` once a
