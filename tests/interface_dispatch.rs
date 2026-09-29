@@ -453,3 +453,21 @@ fn base_class_dispatch_reaches_override_chain() {
     assert!(!dead.contains(&"Shop.Derived.V".to_string()), "{dead:?}");
     assert!(dead.contains(&"Shop.Derived.N".to_string()), "{dead:?}");
 }
+
+/// Issue #185: a bare `IA` receiver resolves like C# does -- enclosing
+/// namespace first, then the single imported one; two imports stay ambiguous.
+#[test]
+fn bare_interface_receiver_resolves_by_enclosing_namespace_then_usings() {
+    let (_tmp, repo, db) = index("cs_dispatch_bare_scope");
+    let callers = |q: &str| {
+        let r = call(&repo, &db, "explain_symbol", json!({"qualname": q}));
+        names(&r["callers"])
+    };
+    // `using N1` only -> N1; enclosing namespace N2 beats `using N1` -> N2.
+    assert_eq!(callers("N1.IA.Run"), ["App.A.Go"]);
+    assert_eq!(callers("N2.IA.Run"), ["N2.B.Go"]);
+    // Both imported is a C# compile error: never guessed.
+    for q in ["N1.IA.Run", "N2.IA.Run"] {
+        assert!(!callers(q).contains(&"App2.D.Go".to_string()), "{q}");
+    }
+}

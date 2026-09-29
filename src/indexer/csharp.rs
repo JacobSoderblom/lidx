@@ -3204,8 +3204,37 @@ fn handle_base_list(
     }
 }
 
+/// Prefix an unqualified interface receiver type with the scope its name is
+/// looked up in, `enclosing,namespaces;usings,namespaces|IA<int>` (C# order:
+/// enclosing namespaces innermost first, then usings), so the resolver can
+/// tell same-named interfaces apart. Qualified names need no scope.
+fn with_type_scope(ty: String, ctx: &Context) -> String {
+    let head = ty.split('<').next().unwrap_or(&ty);
+    if head.contains('.') || !is_likely_interface_name(head) {
+        return ty;
+    }
+    let mut enclosing: Vec<String> = Vec::new();
+    let full = ctx.namespace_stack.join(".");
+    let mut ns = full.as_str();
+    while !ns.is_empty() {
+        enclosing.push(ns.to_string());
+        ns = ns.rsplit_once('.').map_or("", |(parent, _)| parent);
+    }
+    let mut usings: Vec<&str> = Vec::new();
+    for ns in &ctx.imports.namespaces {
+        if !enclosing.iter().any(|e| e == ns) && !usings.contains(&ns.as_str()) {
+            usings.push(ns);
+        }
+    }
+    if enclosing.is_empty() && usings.is_empty() {
+        return ty;
+    }
+    format!("{};{}|{ty}", enclosing.join(","), usings.join(","))
+}
+
 /// `N1.IA<int>` -> `IA`: a receiver type without qualifier or arguments.
 fn bare_type_name(ty: &str) -> &str {
+    let ty = ty.rsplit('|').next().unwrap_or(ty);
     let head = ty.split('<').next().unwrap_or(ty);
     head.rsplit('.').next().unwrap_or(head)
 }
@@ -3475,7 +3504,10 @@ const CS_BUILTIN_TYPES: &[&str] = &[
 ///   if the root is `this` or a tracked local, `NotTracked` otherwise.
 fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
     match infer_receiver_type_raw(function_node, source, ctx) {
-        ReceiverType::Known(ty) => ReceiverType::Known(strip_open_args(ty, function_node, source)),
+        ReceiverType::Known(ty) => {
+            let ty = strip_open_args(ty, function_node, source);
+            ReceiverType::Known(with_type_scope(ty, ctx))
+        }
         other => other,
     }
 }

@@ -1298,8 +1298,12 @@ impl<'c> Resolver<'c> {
                 // C# interface receivers keep the qualifier and closed type
                 // arguments they were declared with (`N1.IA<int>`); the
                 // arguments only discriminate dispatch, never resolution.
+                let (scope, known_type) = known_type.split_once('|').unwrap_or(("", known_type));
                 let known_type = known_type.split('<').next().unwrap_or(known_type);
                 let method = qualname_trailing_name(target_qualname);
+                if let Some(id) = self.scoped_member(scope, known_type, method, caller.file_path)? {
+                    return Ok(Some((id, ResolutionKind::ReceiverType)));
+                }
                 // A namespace-qualified receiver (`N1.IA`) binds to exactly
                 // that type's member: two same-named interfaces in other
                 // namespaces are not candidates.
@@ -1378,6 +1382,45 @@ impl<'c> Resolver<'c> {
                     .map(|id| (id, ResolutionKind::BareName)))
             }
         }
+    }
+
+    /// An unqualified receiver type looked up like C# does: `scope` is
+    /// `enclosing,..;usings,..` (see the C# extractor's `with_type_scope`).
+    /// The first enclosing namespace declaring `{ns}.{ty}.{member}` wins; else
+    /// exactly one `using` namespace must (two is a compile error in C#, so
+    /// stays ambiguous). `None` falls through to the name-based lookup.
+    fn scoped_member(
+        &mut self,
+        scope: &str,
+        ty: &str,
+        member: &str,
+        caller_file: &str,
+    ) -> Result<Option<i64>> {
+        let Some((enclosing, usings)) = scope.split_once(';') else {
+            return Ok(None);
+        };
+        let gv = self.graph_version;
+        let lookup = |this: &mut Self, ns: &str| -> Result<Option<i64>> {
+            let full = format!("{ns}.{ty}.{member}");
+            let hits = query_exact_candidates(&mut this.exact, &full, gv, caller_file)?;
+            Ok(collapse_exact_candidates(&hits))
+        };
+        for ns in enclosing.split(',').filter(|n| !n.is_empty()) {
+            if let Some(id) = lookup(self, ns)? {
+                return Ok(Some(id));
+            }
+        }
+        let mut found = None;
+        for ns in usings.split(',').filter(|n| !n.is_empty()) {
+            if let Some(id) = lookup(self, ns)? {
+                if found.is_some_and(|f| f != id) {
+                    self.saw_ambiguous = true;
+                    return Ok(None);
+                }
+                found = Some(id);
+            }
+        }
+        Ok(found)
     }
 
     /// `{type_path}.{member}` written as a (possibly partially) qualified
@@ -2172,6 +2215,7 @@ fn extension_receiver_type(signature: &str) -> Option<&str> {
 
 /// `Ns.List<int>?` -> `List`.
 fn simple_type_name(ty: &str) -> &str {
+    let ty = ty.rsplit('|').next().unwrap_or(ty);
     let ty = ty.trim().trim_end_matches('?');
     let ty = ty.split('<').next().unwrap_or(ty);
     ty.rsplit('.').next().unwrap_or(ty).trim()
