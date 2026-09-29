@@ -302,7 +302,8 @@ pub fn analyze_direct_impact(
         }
 
         // Batch fetch edges for all symbols at this level
-        let edges_by_symbol = db.edges_for_symbols(&current_level, languages, graph_version)?;
+        let edges_by_symbol =
+            db.edges_for_symbols_with_dispatch(&current_level, languages, graph_version)?;
 
         // Issue #81: an edge with no resolution kind (a Bridge Edge kind) is
         // always traversable, since bridging is governed separately below.
