@@ -51,6 +51,7 @@ impl SectionBudget {
 }
 
 pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let raw_params = params.clone();
     let params: ExplainSymbolParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
 
@@ -140,12 +141,17 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     } else {
         anyhow::bail!("explain_symbol requires id, qualname, or query");
     };
-    let symbol = crate::resolve::resolve_symbol(
+    let symbol = match crate::resolve::resolve_or_recovery(
         indexer.db(),
         sym_ref,
         ctx.languages.as_deref(),
         ctx.graph_version,
-    )?;
+        "explain_symbol",
+        &raw_params,
+    )? {
+        Ok(sym) => sym,
+        Err(payload) => return Ok(payload),
+    };
 
     // 2. Budget allocation: percentages below are shares of max_bytes (30%
     // source, 20% callers, 20% callees, 10% tests, 10% implements) - FIX #4.
