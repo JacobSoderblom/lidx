@@ -492,6 +492,24 @@ impl Db {
         Ok(results)
     }
 
+    fn called_via_interface(&self, method_id: i64, graph_version: i64) -> Result<bool> {
+        let peers = self.dispatch_peers(method_id, graph_version)?;
+        if peers.interface_methods.is_empty() {
+            return Ok(false);
+        }
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT 1 FROM edges WHERE target_symbol_id = ? AND kind = 'CALLS'
+               AND graph_version = ? LIMIT 1",
+        )?;
+        for id in peers.interface_methods {
+            if stmt.exists(rusqlite::params![id, graph_version])? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn dead_symbols(
         &self,
         limit: usize,
@@ -576,16 +594,25 @@ impl Db {
         let mut path_params = Vec::new();
         append_path_filters(&mut full_sql, &mut params, &mut path_params, paths, "f");
 
-        full_sql.push_str(" ORDER BY s.qualname LIMIT ?");
-        let limit = limit as i64;
-        params.push(&limit);
+        // No SQL LIMIT: the interface-dispatch filter below runs after the
+        // query, so limiting first could drop live symbols and starve results.
+        full_sql.push_str(" ORDER BY s.qualname");
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&full_sql)?;
         let rows = stmt.query_map(&*params, symbol_from_row)?;
         let mut results = Vec::new();
         for row in rows {
-            results.push(row?);
+            let sym = row?;
+            // Issue #122: an impl method called only through its interface
+            // has no CALLS edge of its own -- its interface method does.
+            if sym.kind == "method" && self.called_via_interface(sym.id, graph_version)? {
+                continue;
+            }
+            if results.len() >= limit {
+                break;
+            }
+            results.push(sym);
         }
         Ok(results)
     }

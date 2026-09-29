@@ -165,7 +165,8 @@ pub fn trace_flow(
             break;
         }
 
-        let edges = db.edges_for_symbol(current_id, languages, graph_version)?;
+        let mut edges = db.edges_for_symbol(current_id, languages, graph_version)?;
+        edges.extend(db.dispatch_edges(current_id, graph_version)?);
 
         let mut bridge_targets: Vec<(String, String)> = Vec::new();
 
@@ -391,7 +392,8 @@ fn has_further_edges(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<bool> {
-    let edges = db.edges_for_symbol(id, languages, graph_version)?;
+    let mut edges = db.edges_for_symbol(id, languages, graph_version)?;
+    edges.extend(db.dispatch_edges(id, graph_version)?);
     for edge in &edges {
         if !config.allowed_kinds.contains(&edge.kind) || !crate::model::xref_is_traversable(edge) {
             continue;

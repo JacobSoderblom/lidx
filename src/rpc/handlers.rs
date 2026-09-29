@@ -195,6 +195,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let has_callers = wants_callers
         && (symbol.kind == "class"
             || !incoming_cross.is_empty()
+            || !indexer
+                .db()
+                .dispatch_peers(symbol.id, ctx.graph_version)?
+                .interface_methods
+                .is_empty()
             || edges
                 .iter()
                 .any(|e| e.kind == "CALLS" && e.target_symbol_id == Some(symbol.id)));
@@ -211,12 +216,18 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             || edges
                 .iter()
                 .any(|e| e.kind == "CALLS" && e.target_symbol_id == Some(symbol.id)));
+    let has_direct_implements = edges.iter().any(|e| {
+        matches!(e.kind.as_str(), "EXTENDS" | "IMPLEMENTS" | "INHERITS")
+            && e.target_symbol_id.is_some()
+            && (e.source_symbol_id == Some(symbol.id)
+                || (e.kind == "IMPLEMENTS" && e.target_symbol_id == Some(symbol.id)))
+    });
     let has_implements = wants_implements
-        && edges.iter().any(|e| {
-            matches!(e.kind.as_str(), "EXTENDS" | "IMPLEMENTS" | "INHERITS")
-                && e.source_symbol_id == Some(symbol.id)
-                && e.target_symbol_id.is_some()
-        });
+        && (has_direct_implements
+            || !indexer
+                .db()
+                .implementing_types(symbol.id, ctx.graph_version)?
+                .is_empty());
 
     const SOURCE_PCT: usize = 30;
     const CALLERS_PCT: usize = 20;
@@ -330,6 +341,20 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         } else {
             vec![symbol.id]
         };
+        // Issue #122: calls through an interface-typed receiver bind to the
+        // interface method; count them as callers of the implementing method.
+        let mut target_ids = target_ids;
+        for id in target_ids.clone() {
+            for peer in indexer
+                .db()
+                .dispatch_peers(id, ctx.graph_version)?
+                .interface_methods
+            {
+                if !target_ids.contains(&peer) {
+                    target_ids.push(peer);
+                }
+            }
+        }
 
         for target_id in &target_ids {
             // Get edges for this target
@@ -679,12 +704,43 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         let mut impl_syms = Vec::new();
         let mut impl_total = 0usize;
         let mut still_adding = true;
+        // Outgoing supertypes, plus (issue #122) implementors of an
+        // interface: incoming IMPLEMENTS edges name the implementing type.
+        let mut related: Vec<i64> = Vec::new();
         for edge in &edges {
-            if (edge.kind == "EXTENDS" || edge.kind == "IMPLEMENTS" || edge.kind == "INHERITS")
-                && edge.source_symbol_id == Some(symbol.id)
-                && let Some(target_id) = edge.target_symbol_id
-                && let Ok(Some(impl_sym)) = indexer.db().get_symbol_by_id(target_id)
+            if !matches!(edge.kind.as_str(), "EXTENDS" | "IMPLEMENTS" | "INHERITS") {
+                continue;
+            }
+            let other = if edge.source_symbol_id == Some(symbol.id) {
+                edge.target_symbol_id
+            } else if edge.kind == "IMPLEMENTS" && edge.target_symbol_id == Some(symbol.id) {
+                edge.source_symbol_id
+            } else {
+                None
+            };
+            if let Some(id) = other
+                && !related.contains(&id)
             {
+                related.push(id);
+            }
+        }
+        // The implements edge of an interface may be bound to a same-named
+        // module symbol, so ask the shared type lookup as well.
+        if matches!(
+            symbol.kind.as_str(),
+            "interface" | "class" | "struct" | "trait"
+        ) {
+            for id in indexer
+                .db()
+                .implementing_types(symbol.id, ctx.graph_version)?
+            {
+                if !related.contains(&id) {
+                    related.push(id);
+                }
+            }
+        }
+        for target_id in related {
+            if let Ok(Some(impl_sym)) = indexer.db().get_symbol_by_id(target_id) {
                 impl_total += 1;
                 if !still_adding {
                     continue;
