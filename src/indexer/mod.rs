@@ -858,6 +858,32 @@ impl Indexer {
                 javascript::is_js_ts_path(p) && std::path::Path::new(p).starts_with(dir)
             }));
         }
+        // A changed JSON file may be a base config some tsconfig `extends`
+        // (any depth): re-extract files whose owning config's chain has it.
+        let changed_json: HashSet<&str> = changed
+            .iter()
+            .filter(|p| p.ends_with(".json"))
+            .map(String::as_str)
+            .collect();
+        if !changed_json.is_empty() {
+            let conn = self.db.read_conn()?;
+            let mut stmt = conn.prepare("SELECT path FROM files")?;
+            let paths = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut chains: HashMap<PathBuf, Vec<String>> = HashMap::new();
+            for path in paths.iter().filter(|p| javascript::is_js_ts_path(p)) {
+                let Some(dir) = javascript::find_owning_tsconfig_dir(&self.repo_root, path) else {
+                    continue;
+                };
+                let chain = chains.entry(dir.clone()).or_insert_with(|| {
+                    javascript::config_chain(&self.repo_root, &dir.join("tsconfig.json"))
+                });
+                if chain.iter().any(|c| changed_json.contains(c.as_str())) {
+                    result.insert(path.clone());
+                }
+            }
+        }
         let mut frontier: Vec<String> = changed
             .iter()
             .filter(|p| javascript::is_js_ts_path(p))
@@ -933,6 +959,32 @@ impl Indexer {
                     data.push(0);
                 }
             }
+        }
+        // Configs the owning tsconfigs extend (base configs are edited too).
+        let mut chain_files: std::collections::BTreeSet<String> = Default::default();
+        let mut owners: std::collections::BTreeSet<PathBuf> = Default::default();
+        for file in scanned
+            .iter()
+            .filter(|f| javascript::is_js_ts_path(&f.rel_path))
+        {
+            let Some(dir) = javascript::find_owning_tsconfig_dir(&self.repo_root, &file.rel_path)
+            else {
+                continue;
+            };
+            if owners.insert(dir.clone()) {
+                chain_files.extend(javascript::config_chain(
+                    &self.repo_root,
+                    &dir.join("tsconfig.json"),
+                ));
+            }
+        }
+        for rel in &chain_files {
+            data.extend_from_slice(rel.as_bytes());
+            data.push(0);
+            if let Ok(bytes) = std::fs::read(self.repo_root.join(rel)) {
+                data.extend_from_slice(&bytes);
+            }
+            data.push(0);
         }
         let hex = scan::hash_bytes(&data);
         i64::from_str_radix(&hex[..15], 16).unwrap_or(0)

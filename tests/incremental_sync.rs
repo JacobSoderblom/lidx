@@ -1387,3 +1387,62 @@ fn incremental_alias_import_of_missing_file_resolves_once_file_added() {
     );
     assert_eq!(target_of(&idx).as_deref(), Some("lib/foo.foo"));
 }
+
+const BASE_ALIAS_CFG: (&str, &str) = ("tsconfig.json", "{\"extends\":\"./tsconfig.base.json\"}");
+
+#[test]
+fn incremental_base_config_edit_reextracts_alias_importer() {
+    let base_v1 = "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"nope/*\"]}}}";
+    let base_v2 = "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"./*\"]}}}";
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-base-config-edit",
+        &[
+            ("tsconfig.base.json", base_v1),
+            BASE_ALIAS_CFG,
+            LIB_FOO,
+            ("use.ts", ALIAS_CALLER),
+        ],
+        |root| common::write_files(root, &[("tsconfig.base.json", base_v2)]),
+        &["tsconfig.base.json"],
+        &[
+            ("tsconfig.base.json", base_v2),
+            BASE_ALIAS_CFG,
+            LIB_FOO,
+            ("use.ts", ALIAS_CALLER),
+        ],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn incremental_base_config_deleted_reextracts_alias_importer() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-base-config-deleted",
+        &[
+            ("tsconfig.base.json", ALIAS_TSCONFIG.1),
+            BASE_ALIAS_CFG,
+            LIB_FOO,
+            ("use.ts", ALIAS_CALLER),
+        ],
+        |root| std::fs::remove_file(root.join("tsconfig.base.json")).unwrap(),
+        &["tsconfig.base.json"],
+        &[BASE_ALIAS_CFG, LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn full_reindex_reextracts_alias_importer_after_base_config_edit() {
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "ts-reindex-base-config",
+        &[
+            ("tsconfig.base.json", "{}"),
+            BASE_ALIAS_CFG,
+            LIB_FOO,
+            ("use.ts", ALIAS_CALLER),
+        ],
+    );
+    common::write_files(&root, &[("tsconfig.base.json", ALIAS_TSCONFIG.1)]);
+    indexer.reindex().unwrap();
+    assert_eq!(target_of(&indexer).as_deref(), Some("lib/foo.foo"));
+}

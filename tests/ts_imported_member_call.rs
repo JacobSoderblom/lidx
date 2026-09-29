@@ -358,3 +358,103 @@ fn directory_import_resolves_through_index_tsx_and_index_js() {
         assert_eq!(t, vec!["lib.foo".to_string()], "{idx}");
     }
 }
+
+// tsconfig `extends` (relative, array, package-style, override, cycle).
+
+const ALIAS_USE: (&str, &str) = (
+    "src/use.ts",
+    "import { foo } from '@/foo';\nexport function go() {\n  return foo();\n}\n",
+);
+const FOO_LIB: (&str, &str) = ("lib/foo.ts", "export function foo() {}\n");
+const BASE_PATHS: &str =
+    "{\"compilerOptions\":{\"baseUrl\":\".\",\"paths\":{\"@/*\":[\"lib/*\"]}}}";
+
+fn alias_target(files: &[(&str, &str)]) -> Vec<String> {
+    call_targets(files, "src/use.go")
+}
+
+#[test]
+fn alias_defined_only_in_relative_base_config_resolves() {
+    for extends in ["./tsconfig.base.json", "./tsconfig.base"] {
+        let cfg = format!("{{\"extends\":\"{extends}\"}}");
+        let t = alias_target(&[
+            ("tsconfig.base.json", BASE_PATHS),
+            ("tsconfig.json", &cfg),
+            FOO_LIB,
+            ALIAS_USE,
+        ]);
+        assert_eq!(t, vec!["lib/foo.foo".to_string()], "{extends}");
+    }
+}
+
+#[test]
+fn base_config_base_url_resolves_against_declaring_config() {
+    // baseUrl "." in configs/base.json is configs/, so `@/*` -> configs/lib/*.
+    let t = alias_target(&[
+        (
+            "configs/base.json",
+            "{\"compilerOptions\":{\"baseUrl\":\".\",\"paths\":{\"@/*\":[\"lib/*\"]}}}",
+        ),
+        ("tsconfig.json", "{\"extends\":\"./configs/base.json\"}"),
+        ("configs/lib/foo.ts", "export function foo() {}\n"),
+        FOO_LIB,
+        ALIAS_USE,
+    ]);
+    assert_eq!(t, vec!["configs/lib/foo.foo".to_string()]);
+}
+
+#[test]
+fn extends_array_later_entries_and_child_paths_override() {
+    let t = alias_target(&[
+        (
+            "a.json",
+            "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"nope/*\"]}}}",
+        ),
+        ("b.json", BASE_PATHS),
+        ("tsconfig.json", "{\"extends\":[\"./a.json\",\"./b.json\"]}"),
+        FOO_LIB,
+        ALIAS_USE,
+    ]);
+    assert_eq!(t, vec!["lib/foo.foo".to_string()]);
+    // A child's own `paths` replaces the parent's wholesale.
+    let t = alias_target(&[
+        ("base.json", BASE_PATHS),
+        (
+            "tsconfig.json",
+            "{\"extends\":\"./base.json\",\"compilerOptions\":{\"paths\":{\"@/*\":[\"other/*\"]}}}",
+        ),
+        ("other/foo.ts", "export function foo() {}\n"),
+        FOO_LIB,
+        ALIAS_USE,
+    ]);
+    assert_eq!(t, vec!["other/foo.foo".to_string()]);
+}
+
+#[test]
+fn package_style_extends_resolves_through_node_modules() {
+    let t = alias_target(&[
+        // `paths` resolve against the declaring config's own directory.
+        (
+            "node_modules/@shared/tsconfig/tsconfig.json",
+            "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"../../../lib/*\"]}}}",
+        ),
+        (
+            "tsconfig.json",
+            "{\"extends\":\"@shared/tsconfig/tsconfig.json\"}",
+        ),
+        FOO_LIB,
+        ALIAS_USE,
+    ]);
+    assert_eq!(t, vec!["lib/foo.foo".to_string()]);
+}
+
+#[test]
+fn cyclic_extends_terminates() {
+    let t = alias_target(&[
+        ("a.json", "{\"extends\":\"./tsconfig.json\"}"),
+        ("tsconfig.json", "{\"extends\":\"./a.json\"}"),
+        FOO_LIB,
+        ALIAS_USE,
+    ]);
+    assert!(!t.contains(&"lib/foo.foo".to_string()), "{t:?}");
+}

@@ -696,6 +696,11 @@ fn resolve_tsconfig_alias(
             };
             let mut rel = aliases.base_dir.clone();
             rel.push(mapped_tail);
+            // Collapse `..` (a base config's `../../lib/*`) so the resolved
+            // path names the same module as a direct import of that file.
+            let Some(rel) = relative_import_target("", &util::normalize_path(&rel)) else {
+                continue;
+            };
             if let Some(resolved) = probe_module_candidates(repo_root, &rel) {
                 return Some((resolved, true));
             }
@@ -720,7 +725,7 @@ pub fn is_js_config_path(rel_path: &str) -> bool {
 /// rather than global: a file under `node/dpb-app/` finds
 /// `node/dpb-app/tsconfig.json` before it ever sees
 /// `node/datacatalog-ui/tsconfig.json`, even though both define `@/*`.
-fn find_owning_tsconfig_dir(repo_root: &Path, file_rel_path: &str) -> Option<PathBuf> {
+pub fn find_owning_tsconfig_dir(repo_root: &Path, file_rel_path: &str) -> Option<PathBuf> {
     let start_dir = Path::new(file_rel_path)
         .parent()
         .unwrap_or_else(|| Path::new(""));
@@ -742,46 +747,152 @@ struct TsconfigAliases {
     entries: Vec<(String, Vec<String>)>,
 }
 
-// ponytail: a tsconfig that `extends` another one (relative path or, like
-// `@docusaurus/tsconfig`, a package) is read for its own `compilerOptions`
-// only — an extended `paths`/`baseUrl` isn't inherited. Ceiling: an alias
-// defined solely in a base config the project extends resolves nothing
-// here. Neither `node/datacatalog-ui/tsconfig.json` nor
-// `node/dpb-app/tsconfig.json` (the two configs this fix targets) extend
-// anything, so this doesn't affect either. Follow the (relative-path-only)
-// `extends` chain here if a project that needs it is reported.
-fn load_tsconfig_aliases(repo_root: &Path, config_dir: &Path) -> Option<TsconfigAliases> {
-    let raw = util::read_to_string(&repo_root.join(config_dir).join("tsconfig.json")).ok()?;
-    let cleaned = strip_jsonc(&raw);
-    let value: serde_json::Value = serde_json::from_str(&cleaned).ok()?;
-    let compiler_options = value.get("compilerOptions")?;
-    let paths = compiler_options.get("paths")?.as_object()?;
-    if paths.is_empty() {
+/// `compilerOptions.paths` as (pattern, targets) pairs.
+type PathsEntries = Vec<(String, Vec<String>)>;
+
+/// The `baseUrl`/`paths` a tsconfig ends up with after following its
+/// `extends` chain: the nearest declaring config wins for each (a child's
+/// `paths` replaces its parent's wholesale, as in TypeScript), and a
+/// `baseUrl` is resolved against the config that declared it.
+#[derive(Default)]
+struct EffectiveOptions {
+    base_url: Option<PathBuf>,
+    /// `paths` entries plus the directory of the config that declared them
+    /// (their base when no `baseUrl` is set anywhere).
+    paths: Option<(PathBuf, PathsEntries)>,
+}
+
+fn read_tsconfig(repo_root: &Path, config_rel: &Path) -> Option<serde_json::Value> {
+    let raw = util::read_to_string(&repo_root.join(config_rel)).ok()?;
+    serde_json::from_str(&strip_jsonc(&raw)).ok()
+}
+
+/// `extends` entries of a parsed tsconfig: a string, or (TS 5) an array.
+fn extends_specs(value: &serde_json::Value) -> Vec<String> {
+    match value.get("extends") {
+        Some(serde_json::Value::String(s)) => vec![s.clone()],
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Repo-relative path of the config an `extends` spec names. A relative
+/// spec always yields a path (even for a missing file, so a later-added
+/// base still shows up in `config_chain`); a package-style spec
+/// (`@tsconfig/node18/tsconfig.json`) is looked up under each ancestor's
+/// `node_modules` and yields `None` unless found.
+fn resolve_extends(repo_root: &Path, config_rel: &Path, spec: &str) -> Option<PathBuf> {
+    let config_dir = config_rel.parent().unwrap_or_else(|| Path::new(""));
+    let probe = |base: PathBuf| -> Option<PathBuf> {
+        let plain = repo_root.join(&base);
+        if plain.is_file() {
+            return Some(base);
+        }
+        let with_json = PathBuf::from(format!("{}.json", util::normalize_path(&base)));
+        if repo_root.join(&with_json).is_file() {
+            return Some(with_json);
+        }
+        let index = base.join("tsconfig.json");
+        repo_root.join(&index).is_file().then_some(index)
+    };
+    if spec.starts_with("./") || spec.starts_with("../") {
+        let rel = relative_import_target(&util::normalize_path(config_rel), spec)?;
+        let fallback = PathBuf::from(format!("{}.json", util::normalize_path(&rel)));
+        return Some(probe(rel.clone()).unwrap_or(if spec.ends_with(".json") {
+            rel
+        } else {
+            fallback
+        }));
+    }
+    if spec.starts_with('/') || spec.is_empty() {
         return None;
     }
-    let base_url = compiler_options
-        .get("baseUrl")
-        .and_then(|v| v.as_str())
-        .unwrap_or(".");
-    let base_dir = config_dir.join(base_url);
+    config_dir
+        .ancestors()
+        .find_map(|dir| probe(dir.join("node_modules").join(spec)))
+}
 
-    let mut entries: Vec<(String, Vec<String>)> = Vec::new();
-    for (pattern, targets_value) in paths {
-        let Some(targets_array) = targets_value.as_array() else {
-            continue;
-        };
-        let targets: Vec<String> = targets_array
-            .iter()
-            .filter_map(|t| t.as_str().map(|s| s.to_string()))
-            .collect();
-        if targets.is_empty() {
-            continue;
+/// Every config file `config_rel` depends on: itself plus its `extends`
+/// chain, transitively and cycle-safe.
+pub fn config_chain(repo_root: &Path, config_rel: &Path) -> Vec<String> {
+    fn walk(repo_root: &Path, config_rel: &Path, seen: &mut Vec<String>) {
+        let key = util::normalize_path(config_rel);
+        if seen.contains(&key) {
+            return;
         }
-        entries.push((pattern.clone(), targets));
+        seen.push(key);
+        let Some(value) = read_tsconfig(repo_root, config_rel) else {
+            return;
+        };
+        for spec in extends_specs(&value) {
+            if let Some(parent) = resolve_extends(repo_root, config_rel, &spec) {
+                walk(repo_root, &parent, seen);
+            }
+        }
     }
+    let mut seen = Vec::new();
+    walk(repo_root, config_rel, &mut seen);
+    seen
+}
+
+fn effective_options(
+    repo_root: &Path,
+    config_rel: &Path,
+    visiting: &mut HashSet<PathBuf>,
+) -> EffectiveOptions {
+    let mut out = EffectiveOptions::default();
+    if !visiting.insert(config_rel.to_path_buf()) {
+        return out;
+    }
+    if let Some(value) = read_tsconfig(repo_root, config_rel) {
+        let dir = config_rel.parent().unwrap_or_else(|| Path::new(""));
+        for spec in extends_specs(&value) {
+            if let Some(parent) = resolve_extends(repo_root, config_rel, &spec) {
+                let inherited = effective_options(repo_root, &parent, visiting);
+                out.base_url = inherited.base_url.or(out.base_url);
+                out.paths = inherited.paths.or(out.paths);
+            }
+        }
+        if let Some(compiler_options) = value.get("compilerOptions") {
+            if let Some(base_url) = compiler_options.get("baseUrl").and_then(|v| v.as_str()) {
+                out.base_url = Some(dir.join(base_url));
+            }
+            if let Some(paths) = compiler_options.get("paths").and_then(|v| v.as_object()) {
+                let mut entries: Vec<(String, Vec<String>)> = Vec::new();
+                for (pattern, targets_value) in paths {
+                    let Some(targets_array) = targets_value.as_array() else {
+                        continue;
+                    };
+                    let targets: Vec<String> = targets_array
+                        .iter()
+                        .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                        .collect();
+                    if !targets.is_empty() {
+                        entries.push((pattern.clone(), targets));
+                    }
+                }
+                out.paths = Some((dir.to_path_buf(), entries));
+            }
+        }
+    }
+    visiting.remove(config_rel);
+    out
+}
+
+fn load_tsconfig_aliases(repo_root: &Path, config_dir: &Path) -> Option<TsconfigAliases> {
+    let effective = effective_options(
+        repo_root,
+        &config_dir.join("tsconfig.json"),
+        &mut HashSet::new(),
+    );
+    let (paths_dir, mut entries) = effective.paths?;
     if entries.is_empty() {
         return None;
     }
+    let base_dir = effective.base_url.unwrap_or(paths_dir);
     // TypeScript tries the pattern with the longest non-wildcard prefix
     // first when more than one pattern could match the same specifier.
     entries.sort_by(|(a, _), (b, _)| {
