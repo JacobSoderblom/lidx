@@ -2894,7 +2894,11 @@ fn handle_base_list(
         if child.kind() != "base_list" {
             continue;
         }
-        bases.extend(base_list_types(child, source));
+        bases.extend(
+            base_list_types(child, source)
+                .into_iter()
+                .map(|b| strip_type_args(&b)),
+        );
     }
     if bases.is_empty() {
         return;
@@ -2955,6 +2959,22 @@ fn handle_base_list(
             }
         }
     }
+}
+
+/// `IRepo<Order>` -> `IRepo`; `A<B>.C<D>` -> `A.C`. Type arguments never
+/// take part in qualname resolution.
+fn strip_type_args(name: &str) -> String {
+    let mut depth = 0usize;
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' if depth > 0 => depth -= 1,
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out.trim().to_string()
 }
 
 fn base_list_types(node: Node<'_>, source: &str) -> Vec<String> {
@@ -3502,7 +3522,7 @@ fn record_extension_method(
     }
     let receiver_type = first_param
         .child_by_field_name("type")
-        .map(|t| classify_annotation(&node_text(t, source)))
+        .map(|t| classify_annotation_raw(&node_text(t, source)))
         .and_then(|ty| match ty {
             LocalType::Known(name) => Some(name),
             LocalType::Other => None,
@@ -3628,6 +3648,21 @@ fn extension_method_candidates(
 /// `EventStore?` still resolves to `EventStore` while `int?` still
 /// collapses to `Other` via the builtin check.
 fn classify_annotation(text: &str) -> LocalType {
+    let text = text.trim();
+    let text = text.strip_suffix('?').unwrap_or(text).trim();
+    // A generic *interface* type (`IRepo<Order>`) tracks as its bare name so
+    // calls through it dispatch (issue #173); other generics stay untracked
+    // (`List<int>` must not bind to an unrelated project `List`).
+    if text.contains('<') && is_likely_interface_name(text.split('<').next().unwrap_or("")) {
+        return classify_annotation_raw(&strip_type_args(text));
+    }
+    classify_annotation_raw(text)
+}
+
+/// `classify_annotation` without generic-interface stripping: any generic
+/// is `Other`. Used for extension-method receivers, whose applicability
+/// check must not see a bare `IEnumerable` for `IEnumerable<T>`.
+fn classify_annotation_raw(text: &str) -> LocalType {
     let text = text.trim();
     let text = text.strip_suffix('?').unwrap_or(text).trim();
     if text.is_empty() {
@@ -4720,6 +4755,47 @@ public class MyService : BaseService, IMyService {
         assert_eq!(result[0].1, "IOptions");
         assert_eq!(result[1].0, "CacheOptions");
         assert_eq!(result[1].1, "IOptionsMonitor");
+    }
+
+    #[test]
+    fn strip_type_args_handles_nesting_and_qualification() {
+        assert_eq!(strip_type_args("IRepo<Dictionary<K,V>>"), "IRepo");
+        assert_eq!(strip_type_args("Ns.IRepo<T>"), "Ns.IRepo");
+        assert_eq!(strip_type_args("Base<T>"), "Base");
+        assert_eq!(strip_type_args("IPlain"), "IPlain");
+    }
+
+    /// An extension on a generic interface receiver (`this IRepo<T>`)
+    /// must stay applicable when the call receiver is a derived interface:
+    /// the generic-interface stripping used for dispatch must not leak into
+    /// the extension-receiver path.
+    #[test]
+    fn generic_interface_extension_receiver_keeps_candidates() {
+        let source = r#"
+namespace Acme;
+public static class Ext {
+    public static int Total<T>(this IRepo<T> xs) => 0;
+}
+public class User {
+    private readonly IMyList _list;
+    public void Run() {
+        _list.Total();
+    }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let call = file
+            .edges
+            .iter()
+            .find(|e| {
+                e.kind == "CALLS"
+                    && e.evidence_snippet
+                        .as_deref()
+                        .is_some_and(|s| s.starts_with("_list.Total"))
+            })
+            .expect("CALLS edge");
+        assert!(!call.import_candidates.is_empty(), "{call:?}");
     }
 
     /// Explicit generic type arguments (`_sql.QueryAsync<long>(...)`) used

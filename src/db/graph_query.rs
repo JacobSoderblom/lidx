@@ -4,6 +4,9 @@ use anyhow::Result;
 use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
 
+/// Max interface -> interface hops followed by dispatch.
+const MAX_IFACE_CHAIN_DEPTH: i64 = 5;
+
 /// `FROM` clause of the one interface-dispatch query (issue #122), shared
 /// by [`Db::dispatch_pairs`] and `dead_symbols`: yields one row per
 /// `(im.id = interface method, cm.id = implementing method)` -- `cm`'s class
@@ -15,15 +18,31 @@ use std::collections::{HashMap, HashSet};
 /// mix it into queries with their own positional parameters.
 pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
     let gv = graph_version;
+    // Every interface a class reaches: its direct IMPLEMENTS targets, then
+    // interface -> interface EXTENDS/IMPLEMENTS hops (issue #173), depth-
+    // bounded (cycle-safe: `UNION` dedups and `d` caps the recursion).
+    let ancestors = format!(
+        "WITH RECURSIVE anc(cid, iid, d) AS (
+             SELECT source_symbol_id, target_symbol_id, 1 FROM edges
+              WHERE kind = 'IMPLEMENTS' AND graph_version = {gv}
+                AND target_symbol_id IS NOT NULL
+             UNION
+             SELECT anc.cid, e.target_symbol_id, anc.d + 1
+               FROM anc JOIN edges e ON e.source_symbol_id = anc.iid
+                                    AND e.kind IN ('EXTENDS', 'IMPLEMENTS')
+                                    AND e.graph_version = {gv}
+                                    AND e.target_symbol_id IS NOT NULL
+              WHERE anc.d <= {MAX_IFACE_CHAIN_DEPTH})
+         SELECT cid, iid FROM anc"
+    );
     format!(
         "FROM symbols cm
          JOIN symbols c ON c.graph_version = {gv}
                        AND c.qualname IN (
                            substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 1),
                            substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 2))
-         JOIN edges e ON e.source_symbol_id = c.id AND e.kind = 'IMPLEMENTS'
-                     AND e.graph_version = {gv}
-         JOIN symbols i ON i.id = e.target_symbol_id
+         JOIN ({ancestors}) a ON a.cid = c.id
+         JOIN symbols i ON i.id = a.iid
          JOIN symbols im ON im.qualname = i.qualname || substr(cm.qualname, length(c.qualname) + 1)
                         AND im.name = cm.name AND im.kind = 'method' AND im.graph_version = {gv}
          JOIN files fc ON fc.id = cm.file_id
@@ -40,8 +59,8 @@ impl Db {
     /// method, so the implementing method looks uncalled. Returns every
     /// `(interface_method_id, impl_method_id)` pair where either side is in
     /// `ids`, via class IMPLEMENTS edges + same method name. Language-
-    /// agnostic. Deliberately not handled: interface inheritance chains,
-    /// EXTENDS'd virtual/abstract methods, generics, explicit interface impls.
+    /// agnostic. Follows interface inheritance chains; deliberately not
+    /// handled: EXTENDS'd virtual/abstract methods.
     pub fn dispatch_pairs(&self, ids: &[i64], graph_version: i64) -> Result<Vec<(i64, i64)>> {
         if ids.is_empty() {
             return Ok(Vec::new());

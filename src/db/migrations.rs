@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 21;
+pub const SCHEMA_VERSION: i64 = 22;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -510,6 +510,16 @@ pub fn migrate(conn: &Connection) -> Result<()> {
                 )?;
             }
         }
+    }
+
+    if existing < 22 {
+        // Issue #173: interface dispatch walks IMPLEMENTS/EXTENDS edges
+        // (recursive CTE in `graph_query::dispatch_pairs_from`); this keeps
+        // that walk off a full `edges` scan.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_edges_kind_source ON edges(kind, source_symbol_id)",
+            [],
+        )?;
     }
 
     if existing < SCHEMA_VERSION {
