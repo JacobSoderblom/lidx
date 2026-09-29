@@ -352,6 +352,34 @@ export class K {
 }
 
 #[test]
+fn top_level_destructuring_emits_one_symbol_per_binding() {
+    let source = r#"
+const { a, b: c } = x;
+const [d, e] = y;
+export const { f } = z;
+const { g = 1, h: { i }, ...r } = w;
+const [j, [k], ...l] = v;
+function fn() {
+    const { p, q: s } = o;
+    const [t] = o;
+}
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/mod").unwrap();
+    let names: Vec<_> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+    for good in ["a", "c", "d", "e", "f", "g", "i", "r", "j", "k", "l"] {
+        assert!(names.contains(&good), "{good} missing: {names:?}");
+    }
+    for bad in ["b", "h", "p", "q", "s", "t"] {
+        assert!(!names.contains(&bad), "{bad} leaked: {names:?}");
+    }
+    assert!(
+        names.iter().all(|n| !n.contains(['{', '[', ' '])),
+        "{names:?}"
+    );
+}
+
+#[test]
 fn loop_switch_locals_are_not_symbols_but_namespace_members_are() {
     let source = r#"
 for (let i = 0; i < 3; i++) {}

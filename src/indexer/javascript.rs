@@ -2863,37 +2863,68 @@ fn handle_variable_declaration(
         let Some(name_node) = child.child_by_field_name("name") else {
             continue;
         };
-        // Destructuring patterns (`{ a, b }` / `[a, b]`) are not symbols.
-        if name_node.kind() != "identifier" {
-            continue;
+        // A destructuring pattern yields one symbol per bound identifier,
+        // never one named by the pattern text.
+        let mut names = Vec::new();
+        collect_binding_names(name_node, source, &mut names);
+        for name in names {
+            let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
+            let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(child);
+            output.symbols.push(SymbolInput {
+                kind: kind.to_string(),
+                name,
+                qualname: qualname.clone(),
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+                start_byte,
+                end_byte,
+                signature: None,
+                docstring: None,
+            });
+            output.edges.push(EdgeInput {
+                kind: "CONTAINS".to_string(),
+                source_qualname: Some(ctx.module.clone()),
+                target_qualname: Some(qualname),
+                detail: None,
+                evidence_snippet: None,
+                ..Default::default()
+            });
         }
-        let name = node_text(name_node, source);
-        if name.is_empty() {
-            continue;
+    }
+}
+
+/// Collects the identifiers a binding pattern introduces: plain identifiers,
+/// shorthand (`{ a }`), renames (`{ b: c }` -> `c`), defaults, rest and
+/// nested object/array patterns.
+fn collect_binding_names(node: Node<'_>, source: &str, out: &mut Vec<String>) {
+    match node.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => {
+            let name = node_text(node, source);
+            if !name.is_empty() {
+                out.push(name);
+            }
         }
-        let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
-        let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(child);
-        output.symbols.push(SymbolInput {
-            kind: kind.to_string(),
-            name: name.clone(),
-            qualname: qualname.clone(),
-            start_line,
-            start_col,
-            end_line,
-            end_col,
-            start_byte,
-            end_byte,
-            signature: None,
-            docstring: None,
-        });
-        output.edges.push(EdgeInput {
-            kind: "CONTAINS".to_string(),
-            source_qualname: Some(ctx.module.clone()),
-            target_qualname: Some(qualname),
-            detail: None,
-            evidence_snippet: None,
-            ..Default::default()
-        });
+        // `{ k: pattern }` binds only the value side.
+        "pair_pattern" => {
+            if let Some(value) = node.child_by_field_name("value") {
+                collect_binding_names(value, source, out);
+            }
+        }
+        // `{ a = 1 }` / `[a = 1]` bind only the left side.
+        "object_assignment_pattern" | "assignment_pattern" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                collect_binding_names(left, source, out);
+            }
+        }
+        "object_pattern" | "array_pattern" | "rest_pattern" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect_binding_names(child, source, out);
+            }
+        }
+        _ => {}
     }
 }
 

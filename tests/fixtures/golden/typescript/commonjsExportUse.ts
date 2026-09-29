@@ -1,4 +1,4 @@
-const { helperOne } = require("./commonjsExportOwner");
+const owner = require("./commonjsExportOwner");
 
 // Bare call: `require` isn't recognized as an import binding (only ES
 // `import` statements are), so this reaches the bare-name fallback with
