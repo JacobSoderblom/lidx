@@ -804,12 +804,21 @@ fn grpc_service_from_client_initializer(node: Node<'_>, source: &str) -> Option<
             _ => break,
         }
     }
-    if current.kind() != "new_expression" && current.kind() != "call_expression" {
+    // Only register gRPC clients created via `new` expressions whose constructor
+    // ends with "Client" or "Service" (e.g., `new FooServiceClient(..)`,
+    // `new proto.pkg.GreeterClient(..)`). Plain function calls like
+    // `await jobScheduling.listJobs()` must not register as clients (#115).
+    if current.kind() != "new_expression" {
         return None;
     }
     let target_node = call_target_node(current)?;
     let raw = node_text(target_node, source);
-    grpc_service_from_path(&raw)
+    let service = grpc_service_from_path(&raw)?;
+    // Only accept if the service name (last part after stripping "Client"/"Service")
+    // actually came from a "Client" or "Service" suffix. If neither suffix was found,
+    // reject it (the name alone is not enough to declare a gRPC client).
+    let (_, stripped) = strip_grpc_service_token(&service.service);
+    if stripped { Some(service) } else { None }
 }
 
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -1639,7 +1648,8 @@ fn grpc_service_from_receiver(receiver: &str, ctx: &Context) -> Option<GrpcServi
     {
         return Some(service.clone());
     }
-    grpc_service_from_path(receiver)
+    // No pattern-based inference; only lookup explicitly-registered clients (#115).
+    None
 }
 
 fn grpc_service_from_raw_path(raw_path: &str) -> Option<(GrpcService, String)> {
