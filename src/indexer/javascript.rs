@@ -3044,6 +3044,59 @@ const JS_TS_BUILTIN_TYPES: &[&str] = &[
     "Buffer",
 ];
 
+/// Global JS/TS *runtime* constructors/functions a bare `Name(...)`/`new
+/// Name(...)` call can never mean a repo symbol for (issue #110: `new
+/// Error(...)` must not fuzzy-bind to an unrelated same-named `error`
+/// elsewhere). Deliberately a separate, smaller list than
+/// `JS_TS_BUILTIN_TYPES`: that one also carries TypeScript type-only names
+/// (`Record`, `Pick`, `Omit`, ...) with no runtime existence at all, which
+/// a repo could plausibly also declare as its own same-named runtime
+/// function/class (`export function pick(...)` or, now that resolution is
+/// case-sensitive, even `class Pick`) — gating call resolution on those
+/// would risk a false "never binds" for a real repo symbol. Every name
+/// here is instead a real global `new`/call target with no legitimate
+/// same-named repo meaning.
+const JS_TS_GLOBAL_CALLABLES: &[&str] = &[
+    "Error",
+    "TypeError",
+    "RangeError",
+    "SyntaxError",
+    "ReferenceError",
+    "EvalError",
+    "URIError",
+    "Array",
+    "Object",
+    "String",
+    "Number",
+    "Boolean",
+    "Function",
+    "Date",
+    "RegExp",
+    "Promise",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "Symbol",
+    "BigInt",
+    "Proxy",
+];
+
+/// Whether `name` is a `JS_TS_GLOBAL_CALLABLES` entry not shadowed in
+/// `ctx` — by a top-level `import` binding of that name, or by a
+/// function-local variable/parameter (`ctx.local_types`). A same-named
+/// symbol declared elsewhere at module scope in *this* file is not
+/// checked here: `Resolver::resolve`'s exact-qualname tier already runs
+/// before `receiver_type` is even consulted, so a genuine local
+/// `class Error {}` still resolves through that tier regardless of what
+/// this function returns — this only ever gates the *fuzzy* fallback
+/// tiers (see `infer_receiver_type`'s doc).
+fn is_unshadowed_global_callable(name: &str, ctx: &Context) -> bool {
+    JS_TS_GLOBAL_CALLABLES.contains(&name)
+        && !ctx.import_bindings.contains_key(name)
+        && !ctx.local_types.contains_key(name)
+}
+
 /// Infer the receiver type of a call's callee expression (`function_node`),
 /// mirroring `python::infer_receiver_type` with `this` standing in for
 /// `self`/`cls`. Only gates resolution; never changes `target_qualname`
@@ -3051,6 +3104,10 @@ const JS_TS_BUILTIN_TYPES: &[&str] = &[
 /// receiver's literal text for evidence).
 ///
 /// Rules, in order:
+/// - A bare identifier naming a JS/TS runtime global (`new Error(...)`,
+///   `Symbol(...)`, ...) not shadowed by an import or a local — see
+///   `JS_TS_GLOBAL_CALLABLES` — → `Unresolved`: never a repo symbol,
+///   whatever else in the index happens to share its name (issue #110).
 /// - Not a member access at all (`helper()`) → `NotTracked` (bare call,
 ///   nothing to gate).
 /// - `super.method()` (any depth) → `NotTracked`: `resolve_call_target`
@@ -3069,6 +3126,12 @@ const JS_TS_BUILTIN_TYPES: &[&str] = &[
 ///   ...), → `Unresolved` if the root is `this` or a tracked local,
 ///   `NotTracked` otherwise.
 fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
+    if function_node.kind() == "identifier" {
+        let name = node_text(function_node, source);
+        if is_unshadowed_global_callable(&name, ctx) {
+            return ReceiverType::Unresolved;
+        }
+    }
     if function_node.kind() != "member_expression"
         && function_node.kind() != "optional_member_expression"
     {
@@ -3491,7 +3554,7 @@ mod tests {
         JavascriptExtractor, grpc_service_from_path, match_alias_pattern, strip_jsonc,
         substitute_alias_target,
     };
-    use crate::indexer::extract::LanguageExtractor;
+    use crate::indexer::extract::{LanguageExtractor, ReceiverType};
     use crate::indexer::http;
     use crate::indexer::proto;
 
@@ -3760,6 +3823,60 @@ init();
         assert_eq!(call_source(&file, "step"), "srv.gen");
         assert_eq!(call_source(&file, "transform"), "srv.arrow");
         assert_eq!(call_source(&file, "init"), "srv");
+    }
+
+    /// Issue #110: `new Error(...)` must never fuzzy-bind to an unrelated
+    /// same-named symbol elsewhere in the index. Gated at extraction
+    /// (`ReceiverType::Unresolved` -- "tracked but unresolved/builtin: no
+    /// lookup attempted at all", same signal a builtin-typed receiver
+    /// already gets), one call-graph layer before the DB resolver's own
+    /// case-sensitivity fix (`db::resolver`) even gets a say.
+    #[test]
+    fn new_error_call_is_gated_from_fuzzy_resolution() {
+        let source = r#"
+function handler() {
+    throw new Error('boom');
+}
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "index").unwrap();
+        let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].receiver_type, ReceiverType::Unresolved);
+    }
+
+    /// Same gate, a bare (non-`new`) call -- `Error(...)` without `new` is
+    /// valid JS/TS and constructs an `Error` too.
+    #[test]
+    fn bare_error_call_is_gated_from_fuzzy_resolution() {
+        let source = r#"
+function handler() {
+    return Error('boom');
+}
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "index").unwrap();
+        let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].receiver_type, ReceiverType::Unresolved);
+    }
+
+    /// The gate only fires for an *unshadowed* global name -- a repo
+    /// import binding under the same name (however unusual) must resolve
+    /// normally instead (see `is_unshadowed_global_callable`).
+    #[test]
+    fn import_shadowed_global_name_is_not_gated() {
+        let source = r#"
+import { Map } from './my-map';
+function handler() {
+    return new Map();
+}
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "index").unwrap();
+        let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].receiver_type, ReceiverType::NotTracked);
     }
 }
 

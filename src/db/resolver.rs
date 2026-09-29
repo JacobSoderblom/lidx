@@ -500,6 +500,17 @@ fn profile_for(lang: &str) -> LanguageProfile {
 /// was the real unambiguous match, or bind to a decoy instead of refusing
 /// as ambiguous). The language `CASE` must agree with
 /// `resolution_language_family`.
+///
+/// `LIKE` is SQLite's only substring/suffix operator, but it's
+/// case-insensitive for ASCII (no `PRAGMA case_sensitive_like` is set) —
+/// `s.qualname LIKE '%.Error'` also matches a same-named lowercase
+/// `error`. Rewriting these as `GLOB` would fix that, but `GLOB`'s
+/// `*`/`?`/`[...]` wildcards would then need escaping for any qualname
+/// segment that happens to contain one (e.g. a SQL extractor's bracketed
+/// `[Schema].[Table]` identifiers). Simpler and safer: keep `LIKE` as a
+/// cheap, case-insensitive pre-filter here, and re-check every row's
+/// actual `qualname` case-sensitively in Rust (`matches_name_case_sensitive`)
+/// before counting it as a candidate — issue #110.
 const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path
      FROM symbols s
      JOIN files f ON s.file_id = f.id
@@ -510,15 +521,20 @@ const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path
        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
        AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = ?";
 
-/// Cross-language fuzzy candidates, for Bridge Edge kinds only.
-const ANY_LANG_SQL: &str = "SELECT s.id
+/// Cross-language fuzzy candidates, for Bridge Edge kinds only. Same
+/// case-insensitive-`LIKE` caveat as `SAME_LANG_SQL` (issue #110): selects
+/// `s.qualname` too, so `Resolver::any_lang_lookup` can re-check each row
+/// case-sensitively. Deliberately no `LIMIT`, same reasoning as
+/// `SAME_LANG_SQL`'s doc — a case-sensitive re-check after the fetch means
+/// a `LIMIT` could truncate the set before a real match past the cutoff is
+/// ever seen.
+const ANY_LANG_SQL: &str = "SELECT s.id, s.qualname
      FROM symbols s
      JOIN files f ON s.file_id = f.id
      WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
        AND s.graph_version = ?
-       AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-     LIMIT 2";
+       AND (f.deleted_version IS NULL OR f.deleted_version > ?)";
 
 /// A type's recorded EXTENDS/IMPLEMENTS/INHERITS edges, for
 /// `resolve_via_inheritance` -- unioned across both shapes issue #79 leaves
@@ -582,11 +598,11 @@ const MODULE_EXACT_SQL: &str =
 /// Which prepared candidate query `Resolver::unique` runs. `Exact` has its
 /// own dedicated method (`Resolver::exact`) instead, since its ambiguity
 /// rule needs more than "at most one row" (see `collapse_exact_candidates`);
-/// `SameLang` likewise has `same_lang_lookup`, for its per-row visibility
-/// filtering.
+/// `SameLang`/`AnyLang` likewise have their own dedicated methods
+/// (`same_lang_lookup`/`any_lang_lookup`), for their per-row visibility /
+/// case-sensitivity filtering.
 #[derive(Clone, Copy)]
 enum Lookup {
-    AnyLang,
     ImportSuffix,
     Module,
 }
@@ -811,7 +827,6 @@ impl<'c> Resolver<'c> {
     /// a bigger threshold.
     fn unique(&mut self, lookup: Lookup, query_params: &[&dyn ToSql]) -> Result<Option<i64>> {
         let stmt = match lookup {
-            Lookup::AnyLang => &mut self.any_lang,
             Lookup::ImportSuffix => &mut self.import_suffix,
             Lookup::Module => &mut self.module_exact,
         };
@@ -854,15 +869,37 @@ impl<'c> Resolver<'c> {
             guard,
             source_lang,
             caller,
+            name,
         )?;
         if same.is_some() || !is_bridge_edge_kind(edge_kind) {
             return Ok(same);
         }
         let (dot_pattern, colons_pattern) = any_lang_patterns;
-        self.unique(
-            Lookup::AnyLang,
-            params![name, dot_pattern, colons_pattern, gv, gv],
-        )
+        self.any_lang_lookup(params![name, dot_pattern, colons_pattern, gv, gv], name)
+    }
+
+    /// The any-language round of the guarded name-fallback tier (Bridge
+    /// Edge kinds only — see `unique_by_pattern`'s doc): same
+    /// case-sensitive re-check as `same_lang_lookup` (issue #110), just
+    /// without a `VisibilityRule` — a cross-language bridge match has no
+    /// per-language visibility contract to apply. Consumes the result
+    /// lazily, same early-exit-on-second-match shape as `same_lang_lookup`
+    /// (see `ANY_LANG_SQL`'s doc for why it carries no `LIMIT`).
+    fn any_lang_lookup(&mut self, query_params: &[&dyn ToSql], name: &str) -> Result<Option<i64>> {
+        let mut rows = self.any_lang.query(query_params)?;
+        let mut matched: Option<i64> = None;
+        while let Some(row) = rows.next()? {
+            let qualname: String = row.get(1)?;
+            if !matches_name_case_sensitive(&qualname, name) {
+                continue;
+            }
+            if matched.is_some() {
+                self.saw_ambiguous = true;
+                return Ok(None);
+            }
+            matched = Some(row.get(0)?);
+        }
+        Ok(matched)
     }
 
     /// Same-language candidate lookup shared by tier 4
@@ -871,8 +908,11 @@ impl<'c> Resolver<'c> {
     /// `guard`) — see the module doc. Runs `SAME_LANG_SQL` (which already
     /// excludes `method`-kind rows in the query itself when
     /// `guard.exclude_method`, not as a post-filter — see that constant's
-    /// doc for why), applies `guard.enforce_visibility`'s `VisibilityRule`
-    /// per row, and requires exactly one survivor.
+    /// doc for why), re-checks each row's `qualname` case-sensitively
+    /// against `name` (`SAME_LANG_SQL`'s `LIKE` clauses alone would let it
+    /// through case-insensitively — issue #110), applies
+    /// `guard.enforce_visibility`'s `VisibilityRule` per row, and requires
+    /// exactly one survivor.
     ///
     /// Consumes the result lazily and stops as soon as a *second* visible
     /// candidate is found — correctness doesn't need to see the rest once
@@ -888,13 +928,17 @@ impl<'c> Resolver<'c> {
     /// file. When nothing survives filtering but at least one same-name
     /// row existed, that's specifically a privacy refusal (`saw_private`),
     /// not a plain miss — `resolve` reports `Unresolved(Private)` for it,
-    /// distinct from `NoCandidates`/`Ambiguous`.
+    /// distinct from `NoCandidates`/`Ambiguous`. A row that only matched
+    /// `SAME_LANG_SQL`'s `LIKE` clauses case-insensitively (never the
+    /// case-sensitive re-check) doesn't count toward either outcome — it
+    /// was never really a name match.
     fn same_lang_lookup(
         &mut self,
         query_params: &[&dyn ToSql],
         guard: FallbackGuard,
         source_lang: &str,
         caller: CallerContext<'_>,
+        name: &str,
     ) -> Result<Option<i64>> {
         let visibility_rule = profile_for(source_lang).visibility;
         let mut rows = self.same_lang.query(query_params)?;
@@ -905,6 +949,9 @@ impl<'c> Resolver<'c> {
             let visibility: Option<String> = row.get(1)?;
             let qualname: String = row.get(2)?;
             let file_path: String = row.get(3)?;
+            if !matches_name_case_sensitive(&qualname, name) {
+                continue;
+            }
             // `SAME_LANG_SQL` already excludes `method`-kind rows when
             // `guard.exclude_method` — every row reaching here is kind-eligible.
             kind_eligible += 1;
@@ -1045,6 +1092,7 @@ impl<'c> Resolver<'c> {
                 file_path: source_file_path,
                 qualname: None,
             },
+            name,
         )
     }
 
@@ -2543,6 +2591,25 @@ fn same_lang_patterns(name: &str, profile: &LanguageProfile) -> (String, String)
     (format!("%{first}{name}"), format!("%{second}{name}"))
 }
 
+/// Case-sensitive re-check for a `SAME_LANG_SQL`/`ANY_LANG_SQL` candidate
+/// row (issue #110): SQLite's `LIKE` is case-insensitive for ASCII, so
+/// those queries' `WHERE (qualname = ? OR qualname LIKE ? OR qualname LIKE
+/// ?)` clause alone would let e.g. `Error` match a same-named lowercase
+/// `error`. Every `LIKE` pattern this module ever builds
+/// (`same_lang_patterns`, `fuzzy_qualname_patterns`, `unique_by_pattern`'s
+/// `any_lang_patterns`) is one of exactly two shapes — an exact-qualname
+/// match, or a qualname ending in `.name`/`::name` (the only two
+/// separators `last_qualname_separator` ever recognizes) — so re-deriving
+/// that same match here, where `==`/`ends_with` are always byte-exact
+/// regardless of what characters `name` contains, needs no wildcard
+/// escaping the way a `GLOB` rewrite of the same pattern would.
+fn matches_name_case_sensitive(qualname: &str, name: &str) -> bool {
+    qualname == name
+        || qualname
+            .strip_suffix(name)
+            .is_some_and(|prefix| prefix.ends_with('.') || prefix.ends_with("::"))
+}
+
 /// Index right after the last qualname separator (`.` or `::`) in `s`, or
 /// `None` when `s` has none.
 fn last_qualname_separator(s: &str) -> Option<usize> {
@@ -2589,8 +2656,9 @@ fn two_segment_qualname_patterns(qn: &str) -> Option<(String, String, String)> {
 mod tests {
     use super::{
         ImportMissPolicy, LanguageProfile, Reference, Resolution, Resolver, UnresolvedReason,
-        VisibilityRule, fuzzy_qualname_patterns, package_dir, primary_separator, profile_for,
-        qualname_trailing_name, same_lang_patterns, two_segment_qualname_patterns,
+        VisibilityRule, fuzzy_qualname_patterns, matches_name_case_sensitive, package_dir,
+        primary_separator, profile_for, qualname_trailing_name, same_lang_patterns,
+        two_segment_qualname_patterns,
     };
     use rusqlite::{Connection, params};
 
@@ -3030,6 +3098,75 @@ mod tests {
         assert_eq!(
             resolution,
             Resolution::Unresolved(UnresolvedReason::Ambiguous),
+            "{resolution:?}"
+        );
+    }
+
+    #[test]
+    fn matches_name_case_sensitive_rejects_a_different_case_suffix() {
+        // SQLite `LIKE` is case-insensitive for ASCII, so `error` would
+        // pass `qualname LIKE '%.Error'` — the Rust-side re-check must not
+        // repeat that mistake (issue #110).
+        assert!(!matches_name_case_sensitive("pkg.schemas.error", "Error"));
+        assert!(!matches_name_case_sensitive(
+            "crate::schemas::error",
+            "Error"
+        ));
+        // Same case, still matches.
+        assert!(matches_name_case_sensitive("pkg.schemas.Error", "Error"));
+        assert!(matches_name_case_sensitive("Error", "Error"));
+        // A same-case substring with no separator boundary must not match
+        // (mirrors `fuzzy_qualname_patterns`' anchoring: `process` must
+        // never match `reprocess`).
+        assert!(!matches_name_case_sensitive("pkg.newError", "Error"));
+    }
+
+    /// Issue #110: `SAME_LANG_SQL`'s `LIKE` clauses are case-insensitive
+    /// for ASCII, so `new Error()` (bare call, target `caller.Error`) must
+    /// not fuzzy-bind to an unrelated, differently-cased `error` function
+    /// elsewhere in the index.
+    #[test]
+    fn resolve_guarded_fallback_is_case_sensitive() {
+        let conn = test_conn();
+        let file = insert_file(&conn, "pkg/schemas.py", "python");
+        insert_symbol(&conn, file, "function", "error", "pkg.schemas.error", None);
+
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let symbol_map = std::collections::HashMap::new();
+        let r = reference("caller.Error", "CALLS", "python", "caller.py", None, true);
+        let resolution = resolver.resolve(&r, &symbol_map).unwrap();
+
+        assert_eq!(
+            resolution,
+            Resolution::Unresolved(UnresolvedReason::NoCandidates),
+            "{resolution:?}"
+        );
+    }
+
+    /// Same bug, `ANY_LANG_SQL`'s round (Bridge Edge kinds only): a
+    /// same-name, different-case candidate in another language must not
+    /// bind either.
+    #[test]
+    fn resolve_any_lang_fallback_is_case_sensitive() {
+        let conn = test_conn();
+        let py_file = insert_file(&conn, "svc/mod.py", "python");
+        insert_symbol(&conn, py_file, "function", "handler", "svc.handler", None);
+
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let symbol_map = std::collections::HashMap::new();
+        let r = reference(
+            "crate::caller::Handler",
+            "RPC_CALL",
+            "rust",
+            "caller.rs",
+            None,
+            true,
+        );
+        let resolution = resolver.resolve(&r, &symbol_map).unwrap();
+
+        assert_eq!(
+            resolution,
+            Resolution::Unresolved(UnresolvedReason::NoCandidates),
             "{resolution:?}"
         );
     }
