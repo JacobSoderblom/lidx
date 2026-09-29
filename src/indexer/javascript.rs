@@ -818,6 +818,11 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     {
         output.edges.push(edge);
     }
+    if (node.kind() == "jsx_element" || node.kind() == "jsx_self_closing_element")
+        && let Some(edge) = jsx_component_call_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
+    }
     if node.kind() == "call_expression" || node.kind() == "new_expression" {
         // `handle_call` returns `true` when it has already fully walked a
         // callback argument itself with adjusted context (currently just
@@ -2427,12 +2432,20 @@ fn object_property_methods(node: &Node<'_>, source: &str) -> Vec<String> {
     methods
 }
 
+/// Returns the opening tag node for a JSX element or self-closing element.
+/// A `jsx_element` node's opening tag is its `open_tag` field (see
+/// both grammars' `node-types.json`) — a self-closing element has no
+/// separate opening tag node, it *is* the opening tag.
+fn jsx_opening_tag(node: Node<'_>) -> Option<Node<'_>> {
+    match node.kind() {
+        "jsx_element" => node.child_by_field_name("open_tag"),
+        "jsx_self_closing_element" => Some(node),
+        _ => None,
+    }
+}
+
 fn jsx_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let opening = match node.kind() {
-        "jsx_element" => node.child_by_field_name("opening_element")?,
-        "jsx_self_closing_element" => node,
-        _ => return None,
-    };
+    let opening = jsx_opening_tag(node)?;
     let name_node = opening.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     if name != "Route" {
@@ -2465,6 +2478,58 @@ fn jsx_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
         evidence_snippet: None,
         evidence_start_line: Some(span(node).0),
         evidence_end_line: Some(span(node).2),
+        ..Default::default()
+    })
+}
+
+/// `<Foo />` / `<Foo ...>...</Foo>` / `<ns.Foo>` — a capitalized JSX tag
+/// name is a reference to an in-scope component, never a literal DOM tag
+/// string (React's own convention: a lowercase name always compiles to a
+/// string, an uppercase or dotted one always compiles to the referenced
+/// value — see https://react.dev/learn/your-first-component). Before this,
+/// `walk_node` only fed a `jsx_element`/`jsx_self_closing_element` node to
+/// `jsx_route_edge` (react-router `<Route>` detection only), so every other
+/// JSX usage was invisible to the graph and every component came back with
+/// 0 callers (issue #111). Emits a CALLS edge through the same
+/// `resolve_call_target`/`import_placeholder` path `handle_call` uses for
+/// an ordinary call, so a rendered component resolves through imports
+/// exactly like a function call does. Lowercase intrinsic tags (`<div>`)
+/// and the `<ns:Foo>` XML-namespace form return `None`.
+fn jsx_component_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let opening = jsx_opening_tag(node)?;
+    let name_node = opening.child_by_field_name("name")?;
+    // Only a bare identifier (`Foo`) or a dotted member access
+    // (`ns.Foo`, aliased by the grammar to `member_expression`) is a
+    // component reference; `jsx_namespace_name` (`<svg:rect>`) is a
+    // literal namespaced tag, not an expression.
+    if name_node.kind() != "identifier" && name_node.kind() != "member_expression" {
+        return None;
+    }
+    let raw = node_text(name_node, source);
+    let last_segment = raw.rsplit('.').next().unwrap_or(raw.as_str());
+    if !last_segment
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_uppercase())
+    {
+        return None;
+    }
+    let target = resolve_call_target(&raw, ctx);
+    let import_candidates = import_placeholder(&raw, ctx).into_iter().collect();
+    let detail = if target.is_some() { None } else { Some(raw) };
+    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+    let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+    Some(EdgeInput {
+        kind: "CALLS".to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: target,
+        detail,
+        evidence_snippet: snippet,
+        receiver_type: infer_receiver_type(name_node, source, ctx),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        import_candidates,
+        bare_call: name_node.kind() == "identifier",
         ..Default::default()
     })
 }
@@ -3044,6 +3109,70 @@ const JS_TS_BUILTIN_TYPES: &[&str] = &[
     "Buffer",
 ];
 
+/// Global JS/TS *runtime* constructors/functions a bare `Name(...)`/`new
+/// Name(...)` call can never mean a repo symbol for (issue #110: `new
+/// Error(...)` must not fuzzy-bind to an unrelated same-named `error`
+/// elsewhere). Deliberately a separate, smaller list than
+/// `JS_TS_BUILTIN_TYPES`: that one also carries TypeScript type-only names
+/// (`Record`, `Pick`, `Omit`, ...) with no runtime existence at all, which
+/// a repo could plausibly also declare as its own same-named runtime
+/// function/class (`export function pick(...)` or, now that resolution is
+/// case-sensitive, even `class Pick`) — gating call resolution on those
+/// would risk a false "never binds" for a real repo symbol. Every name
+/// here is instead a real global `new`/call target with no legitimate
+/// same-named repo meaning.
+const JS_TS_GLOBAL_CALLABLES: &[&str] = &[
+    "Error",
+    "TypeError",
+    "RangeError",
+    "SyntaxError",
+    "ReferenceError",
+    "EvalError",
+    "URIError",
+    "Array",
+    "Object",
+    "String",
+    "Number",
+    "Boolean",
+    "Function",
+    "Date",
+    "RegExp",
+    "Promise",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "Symbol",
+    "BigInt",
+    "Proxy",
+    "URL",
+    "URLSearchParams",
+    "Request",
+    "Response",
+    "Headers",
+    "FormData",
+    "Blob",
+    "AbortController",
+    "TextEncoder",
+    "TextDecoder",
+    "WeakRef",
+];
+
+/// Whether `name` is a `JS_TS_GLOBAL_CALLABLES` entry not shadowed in
+/// `ctx` — by a top-level `import` binding of that name, or by a
+/// function-local variable/parameter (`ctx.local_types`). A same-named
+/// symbol declared elsewhere at module scope in *this* file is not
+/// checked here: `Resolver::resolve`'s exact-qualname tier already runs
+/// before `receiver_type` is even consulted, so a genuine local
+/// `class Error {}` still resolves through that tier regardless of what
+/// this function returns — this only ever gates the *fuzzy* fallback
+/// tiers (see `infer_receiver_type`'s doc).
+fn is_unshadowed_global_callable(name: &str, ctx: &Context) -> bool {
+    JS_TS_GLOBAL_CALLABLES.contains(&name)
+        && !ctx.import_bindings.contains_key(name)
+        && !ctx.local_types.contains_key(name)
+}
+
 /// Infer the receiver type of a call's callee expression (`function_node`),
 /// mirroring `python::infer_receiver_type` with `this` standing in for
 /// `self`/`cls`. Only gates resolution; never changes `target_qualname`
@@ -3051,6 +3180,10 @@ const JS_TS_BUILTIN_TYPES: &[&str] = &[
 /// receiver's literal text for evidence).
 ///
 /// Rules, in order:
+/// - A bare identifier naming a JS/TS runtime global (`new Error(...)`,
+///   `Symbol(...)`, ...) not shadowed by an import or a local — see
+///   `JS_TS_GLOBAL_CALLABLES` — → `Unresolved`: never a repo symbol,
+///   whatever else in the index happens to share its name (issue #110).
 /// - Not a member access at all (`helper()`) → `NotTracked` (bare call,
 ///   nothing to gate).
 /// - `super.method()` (any depth) → `NotTracked`: `resolve_call_target`
@@ -3069,6 +3202,12 @@ const JS_TS_BUILTIN_TYPES: &[&str] = &[
 ///   ...), → `Unresolved` if the root is `this` or a tracked local,
 ///   `NotTracked` otherwise.
 fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
+    if function_node.kind() == "identifier" {
+        let name = node_text(function_node, source);
+        if is_unshadowed_global_callable(&name, ctx) {
+            return ReceiverType::Unresolved;
+        }
+    }
     if function_node.kind() != "member_expression"
         && function_node.kind() != "optional_member_expression"
     {
@@ -3491,7 +3630,7 @@ mod tests {
         JavascriptExtractor, grpc_service_from_path, match_alias_pattern, strip_jsonc,
         substitute_alias_target,
     };
-    use crate::indexer::extract::LanguageExtractor;
+    use crate::indexer::extract::{LanguageExtractor, ReceiverType};
     use crate::indexer::http;
     use crate::indexer::proto;
 
@@ -3760,6 +3899,80 @@ init();
         assert_eq!(call_source(&file, "step"), "srv.gen");
         assert_eq!(call_source(&file, "transform"), "srv.arrow");
         assert_eq!(call_source(&file, "init"), "srv");
+    }
+
+    /// Issue #110: `new Error(...)` must never fuzzy-bind to an unrelated
+    /// same-named symbol elsewhere in the index. Gated at extraction
+    /// (`ReceiverType::Unresolved` -- "tracked but unresolved/builtin: no
+    /// lookup attempted at all", same signal a builtin-typed receiver
+    /// already gets), one call-graph layer before the DB resolver's own
+    /// case-sensitivity fix (`db::resolver`) even gets a say.
+    #[test]
+    fn new_error_call_is_gated_from_fuzzy_resolution() {
+        let source = r#"
+function handler() {
+    throw new Error('boom');
+}
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "index").unwrap();
+        let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].receiver_type, ReceiverType::Unresolved);
+    }
+
+    /// Same gate, a bare (non-`new`) call -- `Error(...)` without `new` is
+    /// valid JS/TS and constructs an `Error` too.
+    #[test]
+    fn bare_error_call_is_gated_from_fuzzy_resolution() {
+        let source = r#"
+function handler() {
+    return Error('boom');
+}
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "index").unwrap();
+        let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].receiver_type, ReceiverType::Unresolved);
+    }
+
+    /// The gate only fires for an *unshadowed* global name -- a repo
+    /// import binding under the same name (however unusual) must resolve
+    /// normally instead (see `is_unshadowed_global_callable`).
+    #[test]
+    fn import_shadowed_global_name_is_not_gated() {
+        let source = r#"
+import { Map } from './my-map';
+function handler() {
+    return new Map();
+}
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "index").unwrap();
+        let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].receiver_type, ReceiverType::NotTracked);
+    }
+
+    /// New global `URL` constructor is gated from fuzzy resolution.
+    #[test]
+    fn new_url_constructor_is_gated() {
+        let source = r#"
+function fetchFile(path) {
+    const url = new URL(path, 'https://example.com');
+    return url.href;
+}
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "index").unwrap();
+        let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.receiver_type == ReceiverType::Unresolved),
+            "new URL(...) should be gated: {calls:?}"
+        );
     }
 }
 

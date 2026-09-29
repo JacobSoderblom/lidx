@@ -1783,10 +1783,18 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
 /// the wrong real route the way an over-eager CALLS edge could.
 /// Deduplicates identical targets (e.g. two candidate packages that
 /// normalize the same way).
+///
+/// Only `public override` methods qualify (#125): a generated
+/// `*ServiceBase` class's actual RPC methods are always `public override`,
+/// so a `private`/`private static` helper living in the same class —
+/// however plausible its name — must never get an RPC_IMPL edge.
 fn grpc_impl_edge(node: Node<'_>, ctx: &Context, source: &str, rpc_name: &str) -> Vec<EdgeInput> {
     let Some(service) = ctx.grpc_service.as_deref() else {
         return Vec::new();
     };
+    if !has_modifier(node, source, "public") || !has_modifier(node, source, "override") {
+        return Vec::new();
+    }
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     let source_qualname = build_qualname(ctx, rpc_name);
@@ -4106,6 +4114,58 @@ namespace Dpb.DataMgr.Catalog.Grpc {
             !impls.iter().any(|edge| edge.target_qualname.as_deref()
                 == Some("/dpb.datamgr.catalog.grpc.inventoryservice/getinventory")),
             "must not key the route off the impl class's own CLR namespace"
+        );
+    }
+
+    #[test]
+    fn grpc_impl_requires_public_override() {
+        // Regression for #125: a private helper (including private static)
+        // declared alongside a real RPC method in a `*ServiceBase` subclass
+        // must not get an RPC_IMPL edge -- only `public override` methods
+        // are actual gRPC method implementations; everything else is just a
+        // helper that happens to live in the same class.
+        let source = r#"
+using Inventory.V1;
+
+namespace Dpb.DataMgr.Catalog.Grpc {
+  internal class InventoryServiceImpl : InventoryService.InventoryServiceBase {
+    public override Task<GetInventoryResponse> GetInventory(
+        GetInventoryRequest request, ServerCallContext context) {
+      return MapStatus(request);
+    }
+
+    private Task<GetInventoryResponse> MapStatus(GetInventoryRequest request) {
+      return null;
+    }
+
+    private static string ToRpcException(string message) {
+      return message;
+    }
+  }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let impls = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_IMPL_KIND)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            impls.len(),
+            1,
+            "only the public override method should get an RPC_IMPL edge, got {:?}",
+            impls.iter().map(|e| &e.source_qualname).collect::<Vec<_>>()
+        );
+        assert!(impls.iter().any(|edge| edge.target_qualname.as_deref()
+            == Some("/inventory.v1.inventoryservice/getinventory")));
+        assert!(
+            !impls.iter().any(|edge| edge
+                .source_qualname
+                .as_deref()
+                .is_some_and(|q| q.ends_with("MapStatus") || q.ends_with("ToRpcException"))),
+            "private helpers must not get RPC_IMPL edges, got {:?}",
+            impls.iter().map(|e| &e.source_qualname).collect::<Vec<_>>()
         );
     }
 

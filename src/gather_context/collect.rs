@@ -79,6 +79,18 @@ impl<'a> ContentCollector<'a> {
         self.max_bytes.saturating_sub(self.total_bytes)
     }
 
+    /// Check if the given size fits in the remaining budget. If not, mark
+    /// truncation and return false. Used to enforce whole-items-only semantics
+    /// (issue #104): never emit a byte-sliced fragment.
+    fn check_fits(&mut self, size: usize) -> bool {
+        if size > self.remaining() {
+            self.truncated = true;
+            false
+        } else {
+            true
+        }
+    }
+
     /// Try to add symbol content. Returns true if added.
     pub(super) fn try_add_symbol(
         &mut self,
@@ -89,6 +101,13 @@ impl<'a> ContentCollector<'a> {
         match_loc: Option<MatchLocation>,
     ) -> Result<bool> {
         if !self.dedup.mark_if_new(&symbol.file_path, start, end) {
+            return Ok(false);
+        }
+        // Whole items only: never emit a byte-sliced fragment (issue #104).
+        // If the full region can't fit in what's left of the budget, drop
+        // the item instead of truncating it mid-token.
+        let size = (end - start).max(0) as usize;
+        if !self.check_fits(size) {
             return Ok(false);
         }
         if let Some(item) = read_symbol_content(
@@ -121,6 +140,13 @@ impl<'a> ContentCollector<'a> {
         match_loc: Option<MatchLocation>,
     ) -> Result<bool> {
         if !self.dedup.mark_if_new(path, start_byte, end_byte) {
+            return Ok(false);
+        }
+        // Whole items only: never emit a byte-sliced fragment (issue #104).
+        // If the full region can't fit in what's left of the budget, drop
+        // the item instead of truncating it mid-token.
+        let size = (end_byte - start_byte).max(0) as usize;
+        if !self.check_fits(size) {
             return Ok(false);
         }
         if let Some(item) = read_file_region(
@@ -220,6 +246,55 @@ pub(super) fn collect_content(
     }
 }
 
+/// Process search-seed matches: they must win the budget over unrelated subgraph
+/// expansion, and be tagged distinctly as the actual search hit rather than a
+/// generic "related" item (issue #104).
+///
+/// Calls the provided callback for each symbol found. The callback receives
+/// the collector mutably so it can decide how to add the symbol.
+fn add_search_seed_matches<F>(
+    db: &Db,
+    resolved: &[(usize, ResolvedSeed)],
+    match_locations: &HashMap<i64, MatchLocation>,
+    collector: &mut ContentCollector,
+    mut add_symbol_fn: F,
+) -> Result<()>
+where
+    F: FnMut(&mut ContentCollector, &Symbol, &ItemSource, Option<MatchLocation>) -> Result<()>,
+{
+    for (seed_idx, resolved_seed) in resolved {
+        if collector.over_budget() {
+            collector.mark_truncated();
+            break;
+        }
+        let ResolvedSeed::SearchResults { symbol_ids, .. } = resolved_seed else {
+            continue;
+        };
+        for (symbol_id, _score) in symbol_ids {
+            if collector.over_budget() {
+                collector.mark_truncated();
+                break;
+            }
+            let Some(symbol) = db.get_symbol_by_id(*symbol_id)? else {
+                continue;
+            };
+            let source = ItemSource {
+                source_type: SourceType::Search,
+                seed_index: Some(*seed_idx),
+                relationship: None,
+                distance: Some(0),
+            };
+            add_symbol_fn(
+                collector,
+                &symbol,
+                &source,
+                match_locations.get(&symbol.id).cloned(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Collect content using file strategy (original behavior)
 fn collect_content_file_strategy(
     db: &Db,
@@ -278,6 +353,24 @@ fn collect_content_file_strategy(
             ResolvedSeed::SearchResults { .. } => {}
         }
     }
+
+    // Process search-seed matches next
+    add_search_seed_matches(
+        db,
+        resolved,
+        match_locations,
+        &mut c,
+        |collector, symbol, source, match_loc| {
+            collector.try_add_symbol(
+                symbol,
+                symbol.start_byte,
+                symbol.end_byte,
+                source.clone(),
+                match_loc,
+            )?;
+            Ok(())
+        },
+    )?;
 
     // Process related symbols
     if config.include_snippets {
@@ -423,6 +516,25 @@ fn collect_content_symbol_strategy(
             ResolvedSeed::SearchResults { .. } => {}
         }
     }
+
+    // Process search-seed matches next at Tier 0 (full source body)
+    add_search_seed_matches(
+        db,
+        resolved,
+        match_locations,
+        &mut c,
+        |collector, symbol, source, match_loc| {
+            let file_content = file_cache
+                .entry(symbol.file_path.clone())
+                .or_insert_with(|| {
+                    let abs_path = repo_root.join(&symbol.file_path);
+                    std::fs::read_to_string(&abs_path).unwrap_or_default()
+                });
+            let content = format_tier0(repo_root, symbol, file_content)?;
+            collector.try_add_formatted(symbol, content, source.clone(), match_loc);
+            Ok(())
+        },
+    )?;
 
     // Process related symbols at Tier 1/2
     if config.include_snippets && !c.over_budget() {

@@ -3,7 +3,7 @@
 //! nested `Symbol` (see `tests/explain_symbol_payload_trim.rs`), but that
 //! fix was hard-coded to `explain_symbol` alone. `trace_flow`'s `start` and
 //! every `trace[].symbol`, and `analyze_diff`'s `changed_symbols[].symbol`
-//! and `downstream[].symbol`, still repeat both fields on every entry even
+//! and `upstream[].symbol`, still repeat both fields on every entry even
 //! though they're constant for the whole response. These seam-A checks pin
 //! the same hoist for both methods through the shared dispatch-boundary
 //! mechanism (`rpc::handle_method`) rather than a second hard-coded strip.
@@ -121,15 +121,15 @@ fn analyze_diff_hoists_graph_version_once_and_strips_nested_symbols() {
         );
     }
 
-    let downstream = result["downstream"].as_array().expect("downstream array");
+    let upstream = result["upstream"].as_array().expect("upstream array");
     assert!(
-        !downstream.is_empty(),
-        "expected caller.wrapper to show up downstream of target.target: {result:?}"
+        !upstream.is_empty(),
+        "expected caller.wrapper to show up upstream of target.target: {result:?}"
     );
-    for d in downstream {
+    for d in upstream {
         assert!(
             d["symbol"].get("graph_version").is_none(),
-            "a downstream entry must not repeat graph_version: {d:?}"
+            "an upstream entry must not repeat graph_version: {d:?}"
         );
     }
 }
