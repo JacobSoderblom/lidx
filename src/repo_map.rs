@@ -42,11 +42,12 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
         } else {
             m.languages.join(",")
         };
-        // `m.path` (from `module_summary`/`module_prefix`) already carries
-        // a trailing separator -- see the "Dependencies" section below,
-        // which relies on the same contract -- so it is not added again
-        // here. Issue #134: doing so produced doubled separators like
-        // "py//" for any module below the repo root.
+        // `m.path` (from `module_summary`/`module_prefix`) always carries a
+        // trailing separator, including "./" for root-level files -- see
+        // the "Dependencies" and "Key Symbols" sections below, which rely
+        // on the same contract -- so it is not added again here. Issue
+        // #134: doing so produced doubled separators like "py//" for any
+        // module below the repo root.
         writeln!(
             out,
             "- **{}** ({} files, {} symbols, {})",
@@ -89,7 +90,11 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
                 break;
             }
             if let Some(syms) = by_module.get(&module) {
-                writeln!(out, "\n### {}/", module)?;
+                // `module` (from `top_fan_in_by_module`, now backed by the
+                // same `module_prefix()` as `module_summary`) already
+                // carries a trailing separator -- see the "## Modules"
+                // comment above -- so it is not added again here.
+                writeln!(out, "\n### {}", module)?;
                 for (sym, count) in syms.iter().take(5) {
                     let line = format!(
                         "- {} **{}** `{}` (fan-in: {})\n",
@@ -280,6 +285,79 @@ mod tests {
         assert_eq!(
             helper_occurrences, 1,
             "expected `helper` to appear once under the `pkg` module:\n{}",
+            result.text
+        );
+    }
+
+    // Issue #134 follow-up: the "## Modules" section (via `module_summary`)
+    // and "## Key Symbols" section (via `top_fan_in_by_module`) used to
+    // disagree on module identity for root-level files (no `/` in their
+    // path): "## Modules" grouped them under "." while "## Key Symbols"
+    // grouped them under their own bare filename plus an appended "/",
+    // e.g. "### main.rs/" -- a bogus pseudo-directory unrelated to the
+    // "## Modules" entry. Both sections must now agree: root-level files
+    // group under "./" in both places, with no doubled or missing
+    // separators.
+    #[test]
+    fn root_level_module_matches_between_modules_and_key_symbols_sections() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+
+        let fid_main = db.upsert_file("main.rs", "h1", "rust", 10, 0).unwrap();
+        let fid_other = db.upsert_file("other.rs", "h2", "rust", 10, 0).unwrap();
+
+        let ins_main = db
+            .insert_symbols(
+                fid_main,
+                "main.rs",
+                &[make_symbol("main.run", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let ins_other = db
+            .insert_symbols(
+                fid_other,
+                "other.rs",
+                &[make_symbol("other.caller", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+
+        let mut sym_map = HashMap::new();
+        sym_map.insert("main.run".to_string(), ins_main[0].id);
+        sym_map.insert("other.caller".to_string(), ins_other[0].id);
+        db.insert_edges(
+            fid_other,
+            &[make_edge("CALLS", "other.caller", "main.run")],
+            &sym_map,
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let result = build_repo_map(&db, &default_config(gv)).unwrap();
+
+        assert!(
+            !result.text.contains("//"),
+            "module paths should not contain a doubled separator:\n{}",
+            result.text
+        );
+        assert!(
+            !result.text.contains("main.rs/"),
+            "root-level file should not be rendered as a pseudo-directory:\n{}",
+            result.text
+        );
+        assert!(
+            result.text.contains("**./**"),
+            "expected the \"## Modules\" section to label the root module \"./\":\n{}",
+            result.text
+        );
+        assert!(
+            result.text.contains("### ./"),
+            "expected the \"## Key Symbols\" section to label the root module \"./\", \
+             matching \"## Modules\":\n{}",
             result.text
         );
     }

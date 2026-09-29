@@ -1,9 +1,22 @@
-use super::{
-    Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row,
-    symbol_from_row_offset,
-};
+use super::overview::module_prefix;
+use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row};
 use crate::model::{DuplicateGroup, Edge, Symbol, SymbolComplexity, SymbolCoupling};
 use anyhow::Result;
+
+// Issue #134 follow-up: module identity used to be computed twice in
+// `top_fan_in_by_module` -- once here via a raw-SQL "first path segment"
+// `CASE` (no trailing separator, and the bare filename for a root-level
+// file), and separately in `module_summary` via `module_prefix()`
+// (configurable depth, and always a trailing separator, `"./"` for
+// root-level files). The two disagreed for root-level files in particular:
+// this method used to group `main.rs` under module `"main.rs"` while
+// `module_summary` grouped it under `"./"`, so the repo map's
+// "## Modules" and "## Key Symbols" sections showed different module
+// identities for the same files. Grouping now happens in Rust with the
+// same `module_prefix()` `module_summary` uses, at the same depth (1) that
+// `repo_map::build_repo_map` passes to `module_summary` -- its only
+// caller -- so both sections always agree on what a "module" is.
+const KEY_SYMBOLS_MODULE_DEPTH: usize = 1;
 
 impl Db {
     pub fn call_edge_count(
@@ -233,11 +246,6 @@ impl Db {
     ) -> Result<Vec<(String, Symbol, i64)>> {
         let mut sql = String::from(
             "SELECT
-                CASE
-                    WHEN INSTR(f.path, '/') > 0
-                    THEN SUBSTR(f.path, 1, INSTR(f.path, '/') - 1)
-                    ELSE f.path
-                END as module,
                 s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                 s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                 s.graph_version, s.commit_sha, s.stable_id,
@@ -272,22 +280,26 @@ impl Db {
         append_path_filters(&mut sql, &mut params, &mut path_params, paths, "f");
         sql.push_str(" GROUP BY s.id");
         sql.push_str(" HAVING fan_in > 0");
-        sql.push_str(" ORDER BY module, fan_in DESC");
+        // Ordered by `fan_in` alone (not per-module) since grouping now
+        // happens after the query, in Rust -- see the module-identity note
+        // above. A global sort by `fan_in DESC` still leaves every
+        // per-module subsequence in `fan_in DESC` order below.
+        sql.push_str(" ORDER BY fan_in DESC, s.id");
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(&*params, |row| {
-            let module: String = row.get(0)?;
-            let symbol = symbol_from_row_offset(row, 1)?;
-            let fan_in: i64 = row.get(17)?;
-            Ok((module, symbol, fan_in))
+            let symbol = symbol_from_row(row)?;
+            let fan_in: i64 = row.get(16)?;
+            Ok((symbol, fan_in))
         })?;
 
         // Collect and group by module, limiting per module
         let mut by_module: std::collections::HashMap<String, Vec<(Symbol, i64)>> =
             std::collections::HashMap::new();
         for row in rows {
-            let (module, symbol, fan_in) = row?;
+            let (symbol, fan_in) = row?;
+            let module = module_prefix(&symbol.file_path, KEY_SYMBOLS_MODULE_DEPTH);
             by_module.entry(module).or_default().push((symbol, fan_in));
         }
 
@@ -926,11 +938,72 @@ mod tests {
         let results = db.top_fan_in_by_module(10, None, None, gv).unwrap();
         let helper_count = results
             .iter()
-            .filter(|(module, sym, _)| module == "pkg" && sym.name == "helper")
+            .filter(|(module, sym, _)| module == "pkg/" && sym.name == "helper")
             .count();
         assert_eq!(
             helper_count, 1,
             "expected `helper` to be deduplicated within the `pkg` module, got: {:?}",
+            results
+        );
+    }
+
+    // Issue #134 follow-up: `top_fan_in_by_module` used to group a
+    // root-level file (no `/` in its path) under its bare filename (e.g.
+    // `"main.rs"`), while `module_summary` -- via `module_prefix()` --
+    // grouped it under `"./"`. This left the repo map's "## Modules" and
+    // "## Key Symbols" sections disagreeing on root-level module identity.
+    // Both now go through `module_prefix()`, so they must agree.
+    #[test]
+    fn top_fan_in_by_module_groups_root_level_file_as_dot_slash() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+
+        let fid_main = db.upsert_file("main.rs", "h1", "rust", 10, 0).unwrap();
+        let fid_other = db.upsert_file("other.rs", "h2", "rust", 10, 0).unwrap();
+
+        let ins_main = db
+            .insert_symbols(
+                fid_main,
+                "main.rs",
+                &[make_symbol("main.run", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let ins_other = db
+            .insert_symbols(
+                fid_other,
+                "other.rs",
+                &[make_symbol("other.caller", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+
+        let mut sym_map = HashMap::new();
+        sym_map.insert("main.run".to_string(), ins_main[0].id);
+        sym_map.insert("other.caller".to_string(), ins_other[0].id);
+        db.insert_edges(
+            fid_other,
+            &[make_edge("CALLS", "other.caller", "main.run")],
+            &sym_map,
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let results = db.top_fan_in_by_module(10, None, None, gv).unwrap();
+        let run_entry = results.iter().find(|(_, sym, _)| sym.name == "run");
+        assert_eq!(
+            run_entry.map(|(module, ..)| module.as_str()),
+            Some("./"),
+            "expected root-level file to group under the same \"./\" module \
+             `module_summary` uses, got: {:?}",
+            results
+        );
+        assert!(
+            !results.iter().any(|(module, ..)| module == "main.rs"),
+            "root-level file should not be grouped under its bare filename, got: {:?}",
             results
         );
     }
