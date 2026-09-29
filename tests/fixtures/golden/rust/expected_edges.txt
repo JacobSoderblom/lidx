@@ -271,3 +271,36 @@ crate::receiver_infer::via_arm_scoping CALLS crate::receiver_infer::Cache::resol
 crate::receiver_infer::via_no_leak CALLS crate::receiver_infer::Engine::resolve receiver_type
 crate::receiver_infer::via_no_leak CALLS crate::receiver_infer::Cache::resolve receiver_type
 crate::receiver_infer::via_mismatched_pattern CALLS UNRESOLVED
+
+# --- Issue #189 review: same-file return types, self scrutinees, or/@/let-else,
+# defaulted generics, and receiver types deferred to another file's declaration. ---
+crate::receiver_infer_remote::remote_field CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer_remote::remote_method CALLS crate::receiver_infer::Engine::duplicate receiver_type
+crate::receiver_infer_remote::remote_method CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer_remote::remote_ok_of_ctor CALLS crate::receiver_infer::Engine::from_parts two_segment
+crate::receiver_infer_remote::remote_ok_of_ctor CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer_remote::remote_some_of_free_fn CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer_remote::remote_some_of_free_fn CALLS crate::receiver_infer::make_cache import
+crate::receiver_infer_remote::remote_struct_pattern CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer_remote::remote_struct_pattern CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer_remote::remote_unknown CALLS UNRESOLVED
+crate::receiver_infer_remote::remote_variants CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer_remote::remote_variants CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::Queue::drain_all CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer::Queue::drain_all CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::Queue::drain_all CALLS UNRESOLVED
+crate::receiver_infer::Slot::resolve_deref CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::Slot::resolve_self CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer::Slot::resolve_self CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_at_binding CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_at_binding CALLS UNRESOLVED
+crate::receiver_infer::via_default_generic CALLS UNRESOLVED
+crate::receiver_infer::via_let_else CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_ok_of_ctor CALLS crate::receiver_infer::Engine::from_parts two_segment
+crate::receiver_infer::via_ok_of_ctor CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_or_pattern CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_or_pattern_disagree CALLS UNRESOLVED
+crate::receiver_infer::via_result_local CALLS crate::receiver_infer::Engine::from_parts two_segment
+crate::receiver_infer::via_result_local CALLS UNRESOLVED
+crate::receiver_infer::via_some_of_free_fn CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer::via_some_of_free_fn CALLS crate::receiver_infer::make_cache exact

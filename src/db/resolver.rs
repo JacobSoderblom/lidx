@@ -59,7 +59,9 @@
 
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
-use crate::indexer::extract::{CallShape, DEFERRED_RETURN_PREFIX, DeferredReturn, ReceiverType};
+use crate::indexer::extract::{
+    CallShape, DEFERRED_RETURN_PREFIX, DeferredReturn, ReceiverType, RustDeferred,
+};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
 use std::collections::HashMap;
@@ -340,7 +342,15 @@ pub(crate) struct LanguageProfile {
     /// signature and whether the call was awaited (`ReceiverType::Deferred`).
     /// `None` for a language that never defers a receiver.
     pub return_receiver: Option<fn(signature: &str, awaited: bool) -> Option<String>>,
+    /// Rust deferred receivers (`RustDeferred`): the receiver type named by a
+    /// declaration's indexed signature after the marker's projection steps,
+    /// as `(kind, symbol qualname, symbol signature, field, steps)`.
+    pub project_deferred: Option<ProjectDeferred>,
 }
+
+/// See `LanguageProfile::project_deferred`.
+pub type ProjectDeferred =
+    fn(kind: &str, qualname: &str, signature: &str, field: &str, steps: &str) -> Option<String>;
 
 impl LanguageProfile {
     /// Dot-separated, no relative-import syntax, import-tier miss refuses
@@ -355,6 +365,7 @@ impl LanguageProfile {
         import_member_fallback: false,
         visibility: VisibilityRule::None,
         return_receiver: None,
+        project_deferred: None,
     };
 }
 
@@ -751,6 +762,21 @@ impl<'c> Resolver<'c> {
         // declared return type, or `""` (unresolved) -- never a guess.
         let deferred;
         let patched;
+        let patched_rust;
+        // Rust markers fall back to an untracked receiver, not `""`: a miss
+        // must not turn a name-tier edge into a refusal.
+        let rust_deferred: Option<String>;
+        let r = match r.receiver_type.and_then(RustDeferred::parse) {
+            Some(call) => {
+                rust_deferred = self.rust_deferred_receiver(&call)?;
+                patched_rust = Reference {
+                    receiver_type: rust_deferred.as_deref(),
+                    ..*r
+                };
+                &patched_rust
+            }
+            None => r,
+        };
         let r = match r
             .receiver_type
             .and_then(ReceiverType::parse_deferred_return)
@@ -789,6 +815,66 @@ impl<'c> Resolver<'c> {
             });
         }
         Ok(resolution)
+    }
+
+    /// Receiver type of a Rust deferred marker: the type every matching
+    /// declaration yields after the marker's steps (`project_deferred`),
+    /// naming a repo type; else the marker's fallback, else `None` (untracked).
+    fn rust_deferred_receiver(&self, call: &RustDeferred<'_>) -> Result<Option<String>> {
+        let fallback = (!call.fallback.is_empty()).then(|| call.fallback.to_string());
+        let Some(project) = profile_for("rust").project_deferred else {
+            return Ok(fallback);
+        };
+        let (filter, args): (&str, Vec<String>) = match call.kind {
+            "fn" => (
+                "s.kind IN ('function', 'method') AND s.qualname = ?1",
+                call.a.split(';').map(str::to_string).collect(),
+            ),
+            "mth" => (
+                "s.kind = 'method' AND (s.qualname = ?1 OR substr(s.qualname, -length(?1) - 2) = '::' || ?1)",
+                vec![format!("{}::{}", call.a, call.b)],
+            ),
+            "fld" => (
+                "s.kind IN ('struct', 'enum') AND s.name = ?1",
+                vec![call.a.to_string()],
+            ),
+            _ => return Ok(fallback),
+        };
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT s.qualname, s.signature FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE {filter} AND f.language = 'rust' AND s.graph_version = ?2
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?2)"
+        ))?;
+        let mut found: Option<String> = None;
+        for arg in &args {
+            let rows = stmt.query_map(params![arg, self.graph_version], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?;
+            for row in rows {
+                let (qualname, signature) = row?;
+                let ty = signature
+                    .and_then(|sig| project(call.kind, &qualname, &sig, call.b, call.steps));
+                let Some(ty) = ty else {
+                    return Ok(fallback);
+                };
+                match &found {
+                    Some(prev) if *prev != ty => return Ok(fallback),
+                    _ => found = Some(ty),
+                }
+            }
+        }
+        let Some(ty) = found else {
+            return Ok(fallback);
+        };
+        let is_repo_type: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.name = ?1 AND s.kind IN ('struct', 'enum')
+               AND f.language = 'rust' AND s.graph_version = ?2
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?2))",
+            params![ty, self.graph_version],
+            |row| row.get(0),
+        )?;
+        Ok(if is_repo_type { Some(ty) } else { fallback })
     }
 
     /// The receiver type of `ty.method(..)`'s return value: the return type

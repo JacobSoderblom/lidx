@@ -15,6 +15,11 @@ impl Engine {
     pub fn resolve(&self) -> u32 {
         1
     }
+
+    /// Returns another `Engine`; called from `receiver_infer_remote.rs`.
+    pub fn duplicate(&self) -> Self {
+        Engine {}
+    }
 }
 
 pub struct Cache;
@@ -201,4 +206,113 @@ pub fn via_mismatched_pattern(opt: Option<Engine>) -> u32 {
         Ok(x) => x.resolve(),
         _ => 0,
     }
+}
+
+/// Issue #189 review: same-file return types. `from_parts` returns
+/// `Result<Self, ()>`, `make_cache` an `Option<Cache>`.
+pub fn make_cache() -> Option<Cache> {
+    None
+}
+
+/// `Ok(e)` of a same-file `Result`-returning constructor.
+pub fn via_ok_of_ctor() -> u32 {
+    if let Ok(e) = Engine::from_parts() {
+        return e.resolve();
+    }
+    0
+}
+
+/// `from_parts` returns a `Result`, so the local is not an `Engine`.
+pub fn via_result_local() -> u32 {
+    let e = Engine::from_parts();
+    e.resolve()
+}
+
+/// `Some(c)` of a same-file free fn.
+pub fn via_some_of_free_fn() -> u32 {
+    if let Some(c) = make_cache() {
+        return c.resolve();
+    }
+    0
+}
+
+impl Slot {
+    /// `match self` with `Self::` variant patterns.
+    pub fn resolve_self(&self) -> u32 {
+        match self {
+            Self::Full(e) => e.resolve(),
+            Self::Named { cache } => cache.resolve(),
+            Self::Empty => 0,
+        }
+    }
+
+    /// `match *self`.
+    pub fn resolve_deref(&self) -> u32 {
+        match *self {
+            Slot::Full(ref e) => e.resolve(),
+            _ => 0,
+        }
+    }
+}
+
+pub struct Queue {
+    pub jobs: std::collections::VecDeque<Engine>,
+    pub head: Option<Cache>,
+}
+
+impl Queue {
+    /// `self.q.pop_front()` and `if let Some(x) = self.field`.
+    pub fn drain_all(&mut self) -> u32 {
+        let mut n = 0;
+        while let Some(e) = self.jobs.pop_front() {
+            n += e.resolve();
+        }
+        if let Some(c) = self.head.take() {
+            n += c.resolve();
+        }
+        n
+    }
+}
+
+/// Both alternatives bind the same type.
+pub fn via_or_pattern(r: Result<Engine, Engine>) -> u32 {
+    match r {
+        Ok(v) | Err(v) => v.resolve(),
+    }
+}
+
+/// Alternatives bind different types: poisoned.
+pub fn via_or_pattern_disagree(r: Result<Engine, Cache>) -> u32 {
+    match r {
+        Ok(v) | Err(v) => v.resolve(),
+    }
+}
+
+/// `n @ Some(_)` binds the whole `Option<Engine>`.
+pub fn via_at_binding(opt: Option<Engine>) -> u32 {
+    match opt {
+        n @ Some(_) => {
+            let e = n.unwrap();
+            e.resolve()
+        }
+        None => 0,
+    }
+}
+
+/// `let ... else`.
+pub fn via_let_else(opt: Option<Engine>) -> u32 {
+    let Some(e) = opt else {
+        return 0;
+    };
+    e.resolve()
+}
+
+/// A defaulted generic `<T = Engine>` is still a generic: nothing knowable.
+pub struct Holder<T = Engine> {
+    pub item: T,
+}
+
+pub fn via_default_generic(h: Holder) -> u32 {
+    let Holder { item } = h;
+    item.resolve()
 }

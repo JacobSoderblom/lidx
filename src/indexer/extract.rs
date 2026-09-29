@@ -64,6 +64,42 @@ pub struct DeferredReturn<'a> {
 /// Column-text prefix of `ReceiverType::Deferred`. `@` can't start a type name.
 pub const DEFERRED_RETURN_PREFIX: &str = "@ret:";
 
+/// Column-text prefix of a Rust deferred receiver (`@ret:` family, so the
+/// resolver's `LIKE '@ret:%'` retry scans cover it). Rust markers carry a
+/// declaration source plus projection steps instead of `Type.method`.
+pub const RUST_DEFERRED_PREFIX: &str = "@ret:r:";
+
+/// A parsed Rust deferred-receiver marker:
+/// `@ret:r:<kind>|<a>|<b>|<steps>|<fallback>`.
+///
+/// - `fn`: `a` = `;`-joined candidate qualnames of the callee.
+/// - `mth`: `a` = receiver type, `b` = method name.
+/// - `fld`: `a` = struct/enum name, `b` = field (`f`, `0`, `Variant::f`).
+///
+/// `steps` (`,`-joined) are projections applied to the declared type;
+/// `fallback` is the receiver type used when the declaration can't be found.
+pub struct RustDeferred<'a> {
+    pub kind: &'a str,
+    pub a: &'a str,
+    pub b: &'a str,
+    pub steps: &'a str,
+    pub fallback: &'a str,
+}
+
+impl RustDeferred<'_> {
+    pub fn parse(column: &str) -> Option<RustDeferred<'_>> {
+        let rest = column.strip_prefix(RUST_DEFERRED_PREFIX)?;
+        let mut parts = rest.splitn(5, '|');
+        Some(RustDeferred {
+            kind: parts.next()?,
+            a: parts.next()?,
+            b: parts.next()?,
+            steps: parts.next()?,
+            fallback: parts.next()?,
+        })
+    }
+}
+
 impl ReceiverType {
     /// `Deferred` for "the (optionally awaited) return value of
     /// `type_name.method`".
