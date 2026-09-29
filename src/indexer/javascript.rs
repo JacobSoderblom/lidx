@@ -66,6 +66,9 @@ struct Context {
     current_scope: String,
     route_prefix: Option<String>,
     router_aliases: Vec<String>,
+    /// Same-file `const api = axios.create({ baseURL })` instances: name to
+    /// the normalized static base path, when there is one.
+    axios_instances: Rc<HashMap<String, Option<String>>>,
     grpc_clients: HashMap<String, GrpcService>,
     /// Types of locally-bound names (parameters + `const`/`let`/`var`
     /// declarations) within the *current* function body only — see
@@ -1197,9 +1200,9 @@ fn extract_with_parser(
     if let Some(edge) = next_page_route_edge(module_name) {
         output.edges.push(edge);
     }
-    if let Some(edge) = next_api_route_edge(module_name) {
-        output.edges.push(edge);
-    }
+    output
+        .edges
+        .extend(next_api_route_edges(module_name, root, source));
     let grpc_clients = collect_grpc_clients(root, source);
     let ctx = Context {
         module: module_name.to_string(),
@@ -1208,6 +1211,7 @@ fn extract_with_parser(
         current_scope: module_name.to_string(),
         route_prefix: None,
         router_aliases: Vec::new(),
+        axios_instances: Rc::new(collect_axios_instances(root, source)),
         grpc_clients,
         local_types: Rc::new(infer_module_level_types(root, source)),
         class_attr_types: Rc::new(HashMap::new()),
@@ -2058,7 +2062,7 @@ fn process_env_destructuring_edges(node: Node<'_>, ctx: &Context, source: &str) 
 
 fn http_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
     let mut edges = Vec::new();
-    if is_http_client_call(node, source) {
+    if is_http_client_call(node, ctx, source) {
         return edges;
     }
     if let Some(edge) = express_direct_route_edge(node, ctx, source) {
@@ -2897,7 +2901,7 @@ fn fetch_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeIn
     let args = call_arguments(node);
     let raw_path = args
         .first()
-        .and_then(|arg| extract_string_literal(*arg, source))?;
+        .and_then(|arg| http_url_argument(*arg, source))?;
     let normalized = http::normalize_path(&raw_path)?;
     let method = args
         .get(1)
@@ -2920,15 +2924,14 @@ fn fetch_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeIn
 fn axios_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
     let target_node = call_target_node(node)?;
     let args = call_arguments(node);
-    if is_axios_identifier(target_node, source) {
-        let config = args.first()?;
-        let raw_path = object_property_string(config, "url", source)?;
-        let normalized = http::normalize_path(&raw_path)?;
-        let method = object_property_string(config, "method", source)
-            .and_then(|raw| http::normalize_method(&raw))
-            .unwrap_or_else(|| "GET".to_string());
+    let build = |raw_path: String, base: Option<&String>, method: String| -> Option<EdgeInput> {
+        let full = match base {
+            Some(base) if !raw_path.contains("://") => http::join_paths(base, &raw_path),
+            _ => raw_path.clone(),
+        };
+        let normalized = http::normalize_path(&full)?;
         let detail = http::build_call_detail(&method, &normalized, &raw_path, "axios");
-        return Some(EdgeInput {
+        Some(EdgeInput {
             kind: http::HTTP_CALL_KIND.to_string(),
             source_qualname: Some(ctx.current_scope.clone()),
             target_qualname: Some(normalized),
@@ -2937,38 +2940,91 @@ fn axios_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeIn
             evidence_start_line: Some(span(node).0),
             evidence_end_line: Some(span(node).2),
             ..Default::default()
-        });
+        })
+    };
+    let config_method = |config: &Node<'_>| {
+        object_property_string(config, "method", source)
+            .and_then(|raw| http::normalize_method(&raw))
+            .unwrap_or_else(|| "GET".to_string())
+    };
+    let instance = axios_instance_of(target_node, ctx, source);
+    let base = instance.and_then(|b| b.as_ref());
+    if is_axios_identifier(target_node, source)
+        || (target_node.kind() == "identifier" && instance.is_some())
+    {
+        let config = args.first()?;
+        let raw_path = object_property_url(config, "url", source)?;
+        return build(raw_path, base, config_method(config));
     }
     let (receiver, method_name) = member_receiver_and_method(target_node, source)?;
-    if receiver != "axios" {
+    if receiver != "axios" && instance.is_none() {
         return None;
+    }
+    if instance.is_some() && method_name == "request" {
+        let config = args.first()?;
+        let raw_path = object_property_url(config, "url", source)?;
+        return build(raw_path, base, config_method(config));
     }
     if !HTTP_METHOD_NAMES.contains(&method_name.as_str()) {
         return None;
     }
     let raw_path = args
         .first()
-        .and_then(|arg| extract_string_literal(*arg, source))?;
-    let normalized = http::normalize_path(&raw_path)?;
-    let method = http::normalize_method(&method_name)?;
-    let detail = http::build_call_detail(&method, &normalized, &raw_path, "axios");
-    Some(EdgeInput {
-        kind: http::HTTP_CALL_KIND.to_string(),
-        source_qualname: Some(ctx.current_scope.clone()),
-        target_qualname: Some(normalized),
-        detail: Some(detail),
-        evidence_snippet: None,
-        evidence_start_line: Some(span(node).0),
-        evidence_end_line: Some(span(node).2),
-        ..Default::default()
-    })
+        .and_then(|arg| http_url_argument(*arg, source))?;
+    build(raw_path, base, http::normalize_method(&method_name)?)
 }
 
-fn is_http_client_call(node: Node<'_>, source: &str) -> bool {
+fn is_http_client_call(node: Node<'_>, ctx: &Context, source: &str) -> bool {
     let Some(target_node) = call_target_node(node) else {
         return false;
     };
-    is_fetch_callee(target_node, source) || is_axios_callee(target_node, source)
+    is_fetch_callee(target_node, source)
+        || is_axios_callee(target_node, source)
+        || axios_instance_of(target_node, ctx, source).is_some()
+}
+
+/// The `axios.create` instance a callee (`api(...)` or `api.get`) refers to,
+/// with its static base path.
+fn axios_instance_of<'c>(
+    node: Node<'_>,
+    ctx: &'c Context,
+    source: &str,
+) -> Option<&'c Option<String>> {
+    if node.kind() == "identifier" {
+        return ctx.axios_instances.get(&node_text(node, source));
+    }
+    let (receiver, _) = member_receiver_and_method(node, source)?;
+    ctx.axios_instances.get(&receiver)
+}
+
+/// Every `const|let|var name = axios.create({...})` in the file.
+fn collect_axios_instances(root: Node<'_>, source: &str) -> HashMap<String, Option<String>> {
+    fn walk(node: Node<'_>, source: &str, out: &mut HashMap<String, Option<String>>) {
+        if node.kind() == "variable_declarator"
+            && let (Some(name), Some(value)) = (
+                node.child_by_field_name("name"),
+                node.child_by_field_name("value"),
+            )
+            && name.kind() == "identifier"
+            && value.kind() == "call_expression"
+            && let Some(callee) = call_target_node(value)
+            && member_receiver_and_method(callee, source)
+                .is_some_and(|(recv, method)| recv == "axios" && method == "create")
+        {
+            let base = call_arguments(value)
+                .first()
+                .and_then(|config| object_property_url(config, "baseURL", source))
+                .and_then(|raw| http::normalize_path(&raw));
+            out.insert(node_text(name, source), base);
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk(child, source, out);
+        }
+    }
+    let mut out = HashMap::new();
+    walk(root, source, &mut out);
+    out
 }
 
 fn is_fetch_callee(node: Node<'_>, source: &str) -> bool {
@@ -3098,6 +3154,13 @@ fn object_property_string(node: &Node<'_>, key: &str, source: &str) -> Option<St
         }
     }
     None
+}
+
+/// Like `object_property_string`, but a template-literal value yields its
+/// static URL path (see `template_url_path`).
+fn object_property_url(node: &Node<'_>, key: &str, source: &str) -> Option<String> {
+    let value = object_property_node(node, key, source)?;
+    http_url_argument(value, source)
 }
 
 fn object_property_methods(node: &Node<'_>, source: &str) -> Vec<String> {
@@ -3233,7 +3296,11 @@ fn jsx_component_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Optio
 }
 
 fn next_page_route_edge(module_name: &str) -> Option<EdgeInput> {
-    let raw = next_route_from_module(module_name, false)?;
+    let route = NextRoute::locate(module_name)?;
+    if route.router == NextRouter::App && route.leaf() != Some("page") {
+        return None;
+    }
+    let raw = route.url_path(false)?;
     let normalized = http::normalize_path(&raw)?;
     Some(EdgeInput {
         kind: http::PAGE_ROUTE_KIND.to_string(),
@@ -3247,84 +3314,308 @@ fn next_page_route_edge(module_name: &str) -> Option<EdgeInput> {
     })
 }
 
-fn next_api_route_edge(module_name: &str) -> Option<EdgeInput> {
-    let raw = next_route_from_module(module_name, true)?;
-    let normalized = http::normalize_path(&raw)?;
-    let detail = http::build_route_detail(http::HTTP_ANY, &normalized, &raw, "nextjs");
-    Some(EdgeInput {
-        kind: http::HTTP_ROUTE_KIND.to_string(),
-        source_qualname: Some(module_name.to_string()),
-        target_qualname: Some(normalized),
-        detail: Some(detail),
-        evidence_snippet: None,
-        evidence_start_line: None,
-        evidence_end_line: None,
-        ..Default::default()
-    })
+/// HTTP_ROUTE edges for Next.js API endpoints: one per exported HTTP-method
+/// handler for App Router `route.*` files (HTTP_ANY when none are found), and a
+/// single HTTP_ANY edge for Pages Router `pages/api/**`.
+fn next_api_route_edges(module_name: &str, root: Node<'_>, source: &str) -> Vec<EdgeInput> {
+    let Some(route) = NextRoute::locate(module_name) else {
+        return Vec::new();
+    };
+    let methods = match route.router {
+        NextRouter::App => {
+            if route.leaf() != Some("route") {
+                return Vec::new();
+            }
+            let mut methods = next_exported_methods(root, source);
+            if methods.is_empty() {
+                methods.push(http::HTTP_ANY.to_string());
+            }
+            methods
+        }
+        NextRouter::Pages => {
+            if route.dirs.first() != Some(&"api") {
+                return Vec::new();
+            }
+            vec![http::HTTP_ANY.to_string()]
+        }
+    };
+    let Some(raw) = route.url_path(true) else {
+        return Vec::new();
+    };
+    // normalize_path rejects "/" (no alpha chars), but `app/route.ts` is a real route.
+    let Some(normalized) = http::normalize_path(&raw).or_else(|| (raw == "/").then(|| raw.clone()))
+    else {
+        return Vec::new();
+    };
+    methods
+        .into_iter()
+        .map(|method| EdgeInput {
+            kind: http::HTTP_ROUTE_KIND.to_string(),
+            source_qualname: Some(module_name.to_string()),
+            target_qualname: Some(normalized.clone()),
+            detail: Some(http::build_route_detail(
+                &method,
+                &normalized,
+                &raw,
+                "nextjs",
+            )),
+            evidence_snippet: None,
+            evidence_start_line: None,
+            evidence_end_line: None,
+            ..Default::default()
+        })
+        .collect()
 }
 
-fn next_route_from_module(module_name: &str, api_only: bool) -> Option<String> {
-    let parts: Vec<&str> = module_name.split('/').collect();
-    if parts.is_empty() {
-        return None;
+/// HTTP method names exported from a route module: `export function GET`,
+/// `export const GET = ...`, `export { handler as GET }`.
+fn next_exported_methods(root: Node<'_>, source: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        if stmt.kind() != "export_statement" {
+            continue;
+        }
+        if let Some(decl) = stmt.child_by_field_name("declaration") {
+            match decl.kind() {
+                "function_declaration" | "generator_function_declaration" => {
+                    if let Some(name) = decl.child_by_field_name("name") {
+                        names.push(node_text(name, source));
+                    }
+                }
+                "lexical_declaration" | "variable_declaration" => {
+                    let mut dc = decl.walk();
+                    for declarator in decl.named_children(&mut dc) {
+                        if let Some(name) = declarator.child_by_field_name("name")
+                            && name.kind() == "identifier"
+                        {
+                            names.push(node_text(name, source));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        let mut sc = stmt.walk();
+        for child in stmt.named_children(&mut sc) {
+            if child.kind() != "export_clause" {
+                continue;
+            }
+            let mut ec = child.walk();
+            for spec in child.named_children(&mut ec) {
+                if let Some(name) = spec
+                    .child_by_field_name("alias")
+                    .or_else(|| spec.child_by_field_name("name"))
+                {
+                    names.push(node_text(name, source));
+                }
+            }
+        }
     }
-    let is_pages = parts.first() == Some(&"pages");
-    let is_app = parts.first() == Some(&"app");
-    if !is_pages && !is_app {
-        return None;
+    let mut methods: Vec<String> = Vec::new();
+    for name in names {
+        // App Router handlers are exported in upper case.
+        if http::normalize_method(&name).as_deref() == Some(name.as_str())
+            && name != http::HTTP_ANY
+            && !methods.contains(&name)
+        {
+            methods.push(name);
+        }
     }
-    let mut segments = parts[1..].to_vec();
-    if api_only {
-        if segments.first() != Some(&"api") {
+    methods
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NextRouter {
+    App,
+    Pages,
+}
+
+/// A module inside a Next.js `app/` or `pages/` tree. `dirs` are the path
+/// segments below the router root, including the leaf (`page` / `route` for
+/// the App Router).
+struct NextRoute<'a> {
+    router: NextRouter,
+    dirs: Vec<&'a str>,
+}
+
+impl<'a> NextRoute<'a> {
+    /// Locates the router root inside a module path such as
+    /// `web/src/app/api/tables/route`. A root segment counts only when it is
+    /// first, directly under `src`, or within two levels of the repo root with
+    /// no `src` above it, so `src/features/pages/list` is not a route.
+    fn locate(module_name: &'a str) -> Option<Self> {
+        let parts: Vec<&str> = module_name.split('/').collect();
+        let is_root =
+            |i: usize| i == 0 || parts[i - 1] == "src" || (i <= 2 && !parts[..i].contains(&"src"));
+        let find = |name: &str| {
+            (0..parts.len())
+                .rev()
+                .find(|&i| parts[i] == name && is_root(i))
+        };
+        if matches!(parts.last(), Some(&"page") | Some(&"route"))
+            && let Some(idx) = find("app").filter(|idx| idx + 1 < parts.len())
+        {
+            return Some(Self {
+                router: NextRouter::App,
+                dirs: parts[idx + 1..].to_vec(),
+            });
+        }
+        let idx = find("pages")?;
+        // `pages/index.tsx` has module name `pages`; only accept that shape at a
+        // conventional root so `utils/pages.ts` is not read as the index route.
+        if idx + 1 == parts.len() && idx != 0 && parts[idx - 1] != "src" {
             return None;
         }
-        segments.remove(0);
-        if let Some(last) = segments.last()
-            && *last == "route"
-        {
+        let dirs = parts[idx + 1..].to_vec();
+        if dirs.last().is_some_and(|leaf| leaf.starts_with('_')) {
+            return None;
+        }
+        Some(Self {
+            router: NextRouter::Pages,
+            dirs,
+        })
+    }
+
+    fn leaf(&self) -> Option<&'a str> {
+        self.dirs.last().copied()
+    }
+
+    /// The served URL path. Route groups `(x)` and parallel slots `@x` do not
+    /// appear in the URL; `_private` App Router folders are not routable.
+    /// Non-API routes never live under `api`.
+    fn url_path(&self, api: bool) -> Option<String> {
+        let mut segments = self.dirs.clone();
+        if self.router == NextRouter::App {
             segments.pop();
         }
-    } else {
-        if segments.first() == Some(&"api") {
+        if !api && segments.first() == Some(&"api") {
             return None;
         }
-        if is_app {
-            if let Some(last) = segments.last()
-                && *last != "page"
-            {
+        let mut out = String::new();
+        for seg in segments {
+            if seg.is_empty() || seg.starts_with('(') || seg.starts_with('@') || seg == "index" {
+                continue;
+            }
+            if self.router == NextRouter::App && seg.starts_with('_') {
                 return None;
             }
-            segments.pop();
+            out.push('/');
+            if seg.starts_with('[') && seg.ends_with(']') {
+                out.push(':');
+                out.push_str(
+                    seg.trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .trim_start_matches("..."),
+                );
+            } else {
+                out.push_str(seg);
+            }
         }
-    }
-    let mut out = String::from("/");
-    let mut first = true;
-    for seg in segments {
-        if seg.is_empty() || seg.starts_with('(') {
-            continue;
-        }
-        if seg == "index" {
-            continue;
-        }
-        if !first {
+        if out.is_empty() {
             out.push('/');
         }
-        first = false;
-        let normalized = seg
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .trim_start_matches("...");
-        if seg.starts_with('[') && seg.ends_with(']') {
-            out.push(':');
-            out.push_str(normalized);
-        } else {
-            out.push_str(seg);
+        Some(out)
+    }
+}
+
+/// URL argument of an HTTP client call: a plain string literal, or the static
+/// path of a template literal.
+fn http_url_argument(node: Node<'_>, source: &str) -> Option<String> {
+    if node.kind() == "template_string" {
+        return template_url_path(&node_text(node, source));
+    }
+    extract_string_literal(node, source)
+}
+
+enum TemplatePiece {
+    Text(String),
+    Substitution,
+}
+
+/// Static path of a template-literal URL such as `${BASE}/api/t/${id}?x=${y}`.
+/// A leading `${...}` base URL is dropped, substitutions between path
+/// separators become param segments, a substitution glued to path text ends
+/// the path, and `?query` / `#fragment` are cut. `None` without a static path.
+fn template_url_path(text: &str) -> Option<String> {
+    use TemplatePiece::{Substitution, Text};
+    let inner = text.trim().strip_prefix('`')?.strip_suffix('`')?;
+    let mut pieces: Vec<TemplatePiece> = Vec::new();
+    let mut rest = inner;
+    while !rest.is_empty() {
+        let Some(start) = rest.find("${") else {
+            pieces.push(Text(rest.to_string()));
+            break;
+        };
+        if start > 0 {
+            pieces.push(Text(rest[..start].to_string()));
         }
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, ch) in rest[start + 2..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' if depth == 0 => {
+                    end = Some(start + 2 + i + 1);
+                    break;
+                }
+                '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        pieces.push(Substitution);
+        rest = &rest[end?..];
+    }
+    let mut iter = pieces.into_iter().peekable();
+    let mut out = String::new();
+    // Drop a leading base URL substitution, or `https://${host}`.
+    match iter.peek() {
+        Some(Substitution) => {
+            iter.next();
+        }
+        Some(Text(first)) if first.ends_with("://") => {
+            iter.next();
+            if matches!(iter.peek(), Some(Substitution)) {
+                iter.next();
+                // Host remainder, e.g. `:3000/api/x`; keep from the first slash.
+                match iter.next() {
+                    Some(Text(text)) => out.push_str(&text[text.find('/')?..]),
+                    _ => return None,
+                }
+            } else {
+                return None;
+            }
+        }
+        _ => {}
     }
     if out.is_empty() {
-        out.push('/');
+        match iter.peek() {
+            Some(Text(text)) if text.starts_with('/') || text.contains("://") => {}
+            _ => return None,
+        }
     }
-    Some(out)
+    let mut prev_text = false;
+    for piece in iter {
+        match piece {
+            Substitution => {
+                if prev_text && !out.ends_with('/') {
+                    break;
+                }
+                out.push_str("${}");
+                prev_text = false;
+            }
+            Text(text) => {
+                prev_text = true;
+                if let Some(cut) = text.find(['?', '#']) {
+                    out.push_str(&text[..cut]);
+                    break;
+                }
+                out.push_str(&text);
+            }
+        }
+    }
+    http::normalize_path(&out)
 }
 
 fn call_target_node(node: Node<'_>) -> Option<Node<'_>> {
@@ -4441,6 +4732,201 @@ fetch("/api/users/123", { method: "POST" });
                 .iter()
                 .any(|edge| edge.target_qualname.as_deref() == Some("/api/users/{}"))
         );
+    }
+
+    fn ts_edges(source: &str, module: &str, kind: &str) -> Vec<(String, String)> {
+        let mut extractor = super::TypescriptExtractor::new().unwrap();
+        let file = extractor.extract(source, module).unwrap();
+        file.edges
+            .iter()
+            .filter(|e| e.kind == kind)
+            .map(|e| {
+                let detail: serde_json::Value =
+                    serde_json::from_str(e.detail.as_deref().unwrap_or("{}")).unwrap();
+                (
+                    detail["method"].as_str().unwrap_or("").to_string(),
+                    e.target_qualname.clone().unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn next_app_route_emits_one_route_per_exported_method() {
+        let source = r#"
+export async function GET(req: Request) { return Response.json([]); }
+export const POST = async (req: Request) => Response.json({});
+const h = () => new Response();
+export { h as DELETE };
+export function helper() {}
+"#;
+        let routes = ts_edges(
+            source,
+            "web/src/app/api/tables/route",
+            http::HTTP_ROUTE_KIND,
+        );
+        assert_eq!(
+            routes,
+            vec![
+                ("GET".to_string(), "/api/tables".to_string()),
+                ("POST".to_string(), "/api/tables".to_string()),
+                ("DELETE".to_string(), "/api/tables".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn next_app_route_outside_api_and_with_groups_and_params() {
+        let source = "export function GET() { return new Response(); }";
+        let routes = ts_edges(
+            source,
+            "apps/web/app/(admin)/@modal/users/[id]/[...rest]/route",
+            http::HTTP_ROUTE_KIND,
+        );
+        assert_eq!(
+            routes,
+            vec![("GET".to_string(), "/users/{}/{}".to_string())]
+        );
+        assert!(ts_edges(source, "app/_private/x/route", http::HTTP_ROUTE_KIND).is_empty());
+    }
+
+    #[test]
+    fn next_app_route_without_method_exports_falls_back_to_any() {
+        let routes = ts_edges(
+            "export const dynamic = 'force-dynamic';",
+            "app/health/route",
+            http::HTTP_ROUTE_KIND,
+        );
+        assert_eq!(routes, vec![("ANY".to_string(), "/health".to_string())]);
+    }
+
+    #[test]
+    fn next_pages_api_keeps_any_and_api_prefix() {
+        let routes = ts_edges(
+            "export default function handler() {}",
+            "src/pages/api/users/[id]",
+            http::HTTP_ROUTE_KIND,
+        );
+        assert_eq!(
+            routes,
+            vec![("ANY".to_string(), "/api/users/{}".to_string())]
+        );
+        assert!(
+            ts_edges(
+                "export default function P() {}",
+                "utils/pages",
+                http::PAGE_ROUTE_KIND
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            ts_edges(
+                "export default function P() {}",
+                "web/app/(x)/dash/page",
+                http::PAGE_ROUTE_KIND
+            )
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn template_literal_urls_produce_http_calls() {
+        let source = r#"
+async function load(n: number, id: string) {
+  await fetch(`${BASE}/api/tables?limit=${n}`);
+  await fetch(`${process.env.API_URL}/api/tables/${id}/columns#x`, { method: "POST" });
+  await fetch(`/api/static`);
+  await fetch(`${BASE}/api/things${suffix}`);
+  await fetch(`${BASE}`);
+  await fetch(`${a}${b}/api/x`);
+  await axios.get(`https://example.com/api/v1/items/${id}?q=1`);
+}
+"#;
+        let calls = ts_edges(source, "client", http::HTTP_CALL_KIND);
+        assert_eq!(
+            calls,
+            vec![
+                ("GET".to_string(), "/api/tables".to_string()),
+                ("POST".to_string(), "/api/tables/{}/columns".to_string()),
+                ("GET".to_string(), "/api/static".to_string()),
+                ("GET".to_string(), "/api/things".to_string()),
+                ("GET".to_string(), "/api/v1/items/{}".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn axios_config_object_accepts_template_url() {
+        let source = r#"
+async function go() {
+  await axios({ url: `${BASE}/api/tables`, method: "POST" });
+}
+"#;
+        assert_eq!(
+            ts_edges(source, "client", http::HTTP_CALL_KIND),
+            vec![("POST".to_string(), "/api/tables".to_string())]
+        );
+    }
+
+    #[test]
+    fn next_root_must_be_conventional() {
+        for module in ["src/features/pages/list", "src/components/app/route"] {
+            let src = "export function GET() {}";
+            assert!(
+                ts_edges(src, module, http::PAGE_ROUTE_KIND).is_empty(),
+                "{module}"
+            );
+            assert!(
+                ts_edges(src, module, http::HTTP_ROUTE_KIND).is_empty(),
+                "{module}"
+            );
+        }
+        for (module, kind, path) in [
+            ("web/pages/list", http::PAGE_ROUTE_KIND, "/list"),
+            ("apps/web/pages/list", http::PAGE_ROUTE_KIND, "/list"),
+            (
+                "apps/web/src/app/api/x/route",
+                http::HTTP_ROUTE_KIND,
+                "/api/x",
+            ),
+        ] {
+            let got = ts_edges("export function GET() {}", module, kind);
+            assert_eq!(got.len(), 1, "{module}");
+            assert_eq!(got[0].1, path);
+        }
+    }
+
+    #[test]
+    fn axios_instances_produce_http_calls_with_base_url() {
+        let source = r#"
+const api = axios.create({ baseURL: "/api" });
+export const other = axios.create({ baseURL: `${HOST}/v2` });
+let bare = axios.create();
+async function go(id: string) {
+  await api.get("/tables");
+  await api.post(`/tables/${id}`, {});
+  await api.request({ url: "/tables", method: "DELETE" });
+  await other.get("/things");
+  await bare.get(`/api/plain`);
+  await api({ url: "/direct" });
+  await unknown.get("/nope");
+}
+"#;
+        assert_eq!(
+            ts_edges(source, "client", http::HTTP_CALL_KIND),
+            vec![
+                ("GET".to_string(), "/api/tables".to_string()),
+                ("POST".to_string(), "/api/tables/{}".to_string()),
+                ("DELETE".to_string(), "/api/tables".to_string()),
+                ("GET".to_string(), "/v2/things".to_string()),
+                ("GET".to_string(), "/api/plain".to_string()),
+                ("GET".to_string(), "/api/direct".to_string()),
+            ]
+        );
+        // `api` is also an Express router receiver name; an axios instance must not
+        // be read as a route definition.
+        assert!(ts_edges(source, "client", http::HTTP_ROUTE_KIND).is_empty());
     }
 
     #[test]
