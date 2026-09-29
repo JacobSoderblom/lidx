@@ -777,6 +777,7 @@ fn handle_read_symbol_multi(
 /// `handle_read_symbol_multi`). `skeleton` and `context_lines` apply to
 /// either mode (see `build_symbol_entry`).
 pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let raw_params = params.clone();
     let params: ReadSymbolParams = serde_json::from_value(params)?;
     let selectors_given = [
         params.qualname.is_some(),
@@ -871,8 +872,26 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         Some(qn) => crate::resolve::SymbolRef::Qualname(qn.clone()),
         None => crate::resolve::SymbolRef::Query(params.query.clone().unwrap_or_default()),
     };
-    let resolution =
-        crate::resolve::resolve_symbol_with_candidates(indexer.db(), sym_ref, None, graph_version)?;
+    let resolution = match crate::resolve::resolve_symbol_with_candidates(
+        indexer.db(),
+        sym_ref,
+        None,
+        graph_version,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return match crate::resolve::recovery_from_error(
+                indexer.db(),
+                &e,
+                graph_version,
+                "read_symbol",
+                &raw_params,
+            ) {
+                Some(payload) => Ok(payload),
+                None => Err(e),
+            };
+        }
+    };
 
     let symbol = match resolution {
         crate::resolve::QueryResolution::Ambiguous(candidates) => {
