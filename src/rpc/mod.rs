@@ -186,11 +186,13 @@ struct GatherContextParams {
     depth: Option<usize>,
     /// Maximum nodes in subgraph (default: 50)
     max_nodes: Option<usize>,
-    /// Include file content for symbols (default: true)
+    /// Include full bodies for related symbols (default: true). When false, related symbols
+    /// are still expanded but returned as signature stubs; seed bodies are always returned.
     include_snippets: Option<bool>,
     /// Include related symbols via call graph (default: true)
     include_related: Option<bool>,
-    /// If true, return metadata and item skeletons without content
+    /// If true, run the full collection but return items with empty content; `estimated_bytes`
+    /// is the total a real run would return (`total_bytes` is 0)
     dry_run: Option<bool>,
     /// Content strategy: "symbol" (symbol bodies only) or "file" (full files)
     /// Defaults to "symbol" when all seeds are symbol/id seeds, "file" otherwise

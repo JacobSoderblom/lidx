@@ -605,7 +605,7 @@ pub struct GatherContextResult {
     pub budget_bytes: usize,
     /// Whether budget was exhausted before all seeds processed
     pub truncated: bool,
-    /// Estimated total bytes (populated in dry_run mode)
+    /// Estimated total bytes (populated in dry_run mode): the total a real run would return
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_bytes: Option<usize>,
     /// Processing metadata

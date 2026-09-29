@@ -78,12 +78,8 @@ pub fn gather_context(
         }
     }
 
-    // Expand via subgraph to find related symbols (skip in dry_run mode)
-    let related_symbols = if config.dry_run {
-        Vec::new()
-    } else {
-        expand_via_subgraph(db, &symbol_ids, config)?
-    };
+    // Expand via subgraph to find related symbols
+    let related_symbols = expand_via_subgraph(db, &symbol_ids, config)?;
     let symbols_resolved = symbol_ids.len();
 
     // Related items must be graph-connected neighbors, not seeds echoed

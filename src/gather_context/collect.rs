@@ -212,6 +212,76 @@ impl<'a> ContentCollector<'a> {
     }
 }
 
+/// Add related symbols to the collector. `stubs_only` emits signature stubs instead of bodies.
+/// With `skip_covered_files`, symbols whose file already has an item are skipped.
+fn add_related(
+    c: &mut ContentCollector,
+    symbols: &[&Symbol],
+    match_locations: &HashMap<i64, MatchLocation>,
+    labels: &HashMap<i64, &'static str>,
+    stubs_only: bool,
+    skip_covered_files: bool,
+) -> Result<()> {
+    for symbol in symbols {
+        if c.over_budget() {
+            c.mark_truncated();
+            break;
+        }
+        if skip_covered_files && c.items.iter().any(|i| i.path == symbol.file_path) {
+            continue;
+        }
+        let source = ItemSource {
+            source_type: SourceType::Subgraph,
+            seed_index: None,
+            relationship: Some(labels.get(&symbol.id).unwrap_or(&"related").to_string()),
+            distance: None,
+        };
+        let match_loc = match_locations.get(&symbol.id).cloned();
+        if stubs_only {
+            c.try_add_formatted(symbol, format_tier2(symbol), source, match_loc);
+        } else {
+            c.try_add_symbol(
+                symbol,
+                symbol.start_byte,
+                symbol.end_byte,
+                source,
+                match_loc,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Label CALLS neighbours of the seed symbols by edge direction ("caller" or "callee").
+fn direction_labels(
+    db: &Db,
+    resolved: &[(usize, ResolvedSeed)],
+    config: &GatherConfig,
+) -> Result<HashMap<i64, &'static str>> {
+    let mut labels = HashMap::new();
+    for (_, r) in resolved {
+        let ResolvedSeed::Symbol { symbol, .. } = r else {
+            continue;
+        };
+        let edges =
+            db.edges_for_symbol(symbol.id, config.languages.as_deref(), config.graph_version)?;
+        for e in edges.iter().filter(|e| e.kind == "CALLS") {
+            if e.source_symbol_id == Some(symbol.id) {
+                labels.extend(e.target_symbol_id.map(|id| (id, "callee")));
+            } else if e.target_symbol_id == Some(symbol.id) {
+                labels.extend(e.source_symbol_id.map(|id| (id, "caller")));
+            }
+        }
+    }
+    Ok(labels)
+}
+
+/// Split related symbols into (graph-connected symbols, module stubs). Module stubs span a whole
+/// file, so they are added last and must never claim a file before real symbols do.
+fn split_modules(related: &[Symbol]) -> (Vec<&Symbol>, Vec<&Symbol>) {
+    related.iter().partition(|s| s.kind != "module")
+}
+
 /// Collect content for resolved seeds within byte budget
 pub(super) fn collect_content(
     db: &Db,
@@ -221,12 +291,7 @@ pub(super) fn collect_content(
     match_locations: &HashMap<i64, MatchLocation>,
     config: &GatherConfig,
 ) -> Result<(Vec<ContextItem>, usize, bool, usize, usize)> {
-    if config.dry_run {
-        return collect_content_dry_run(resolved, related_symbols, match_locations, config);
-    }
-
-    // Dispatch based on strategy
-    match config.strategy.as_deref() {
+    let mut collected = match config.strategy.as_deref() {
         Some("symbol") => collect_content_symbol_strategy(
             db,
             repo_root,
@@ -243,7 +308,17 @@ pub(super) fn collect_content(
             match_locations,
             config,
         ),
+    }?;
+
+    // dry_run runs the real collection so the estimate matches, then drops the content.
+    if config.dry_run {
+        collected.4 = collected.1;
+        collected.1 = 0;
+        for item in &mut collected.0 {
+            item.content.clear();
+        }
     }
+    Ok(collected)
 }
 
 /// Process search-seed matches: they must win the budget over unrelated subgraph
@@ -372,28 +447,17 @@ fn collect_content_file_strategy(
         },
     )?;
 
-    // Process related symbols
-    if config.include_snippets {
-        for symbol in related_symbols {
-            if c.over_budget() {
-                c.mark_truncated();
-                break;
-            }
-            let source = ItemSource {
-                source_type: SourceType::Subgraph,
-                seed_index: None,
-                relationship: Some("related".to_string()),
-                distance: None,
-            };
-            c.try_add_symbol(
-                symbol,
-                symbol.start_byte,
-                symbol.end_byte,
-                source,
-                match_locations.get(&symbol.id).cloned(),
-            )?;
-        }
-    }
+    // Process related symbols (module stubs are added after cross-file expansion)
+    let (graph_related, module_stubs) = split_modules(related_symbols);
+    let labels = direction_labels(db, resolved, config)?;
+    add_related(
+        &mut c,
+        &graph_related,
+        match_locations,
+        &labels,
+        !config.include_snippets,
+        false,
+    )?;
 
     // Secondary expansion: if budget underutilized, fetch callers from other files
     if c.total_bytes < (config.max_bytes * 60 / 100) && config.include_related {
@@ -402,7 +466,9 @@ fn collect_content_file_strategy(
         for item in &c.items {
             if let Some(symbol) = &item.symbol {
                 current_symbol_ids.insert(symbol.id);
-                current_file_paths.insert(symbol.file_path.clone());
+                if symbol.kind != "module" {
+                    current_file_paths.insert(symbol.file_path.clone());
+                }
             }
         }
 
@@ -448,9 +514,22 @@ fn collect_content_file_strategy(
                 relationship: Some("caller".to_string()),
                 distance: Some(1),
             };
-            c.try_add_symbol(&caller, caller.start_byte, caller.end_byte, source, None)?;
+            if config.include_snippets {
+                c.try_add_symbol(&caller, caller.start_byte, caller.end_byte, source, None)?;
+            } else {
+                c.try_add_formatted(&caller, format_tier2(&caller), source, None);
+            }
         }
     }
+
+    add_related(
+        &mut c,
+        &module_stubs,
+        match_locations,
+        &labels,
+        !config.include_snippets,
+        true,
+    )?;
 
     Ok(c.finish())
 }
@@ -536,8 +615,8 @@ fn collect_content_symbol_strategy(
         },
     )?;
 
-    // Process related symbols at Tier 1/2
-    if config.include_snippets && !c.over_budget() {
+    // Process related symbols at Tier 1/2 (module stubs are added last)
+    if !c.over_budget() {
         let seed_symbol_ids: HashSet<i64> = resolved
             .iter()
             .filter_map(|(_, r)| match r {
@@ -546,25 +625,16 @@ fn collect_content_symbol_strategy(
             })
             .collect();
 
-        for symbol in related_symbols {
-            if c.over_budget() {
-                c.mark_truncated();
-                break;
-            }
-            let content = format_tier2(symbol);
-            let source = ItemSource {
-                source_type: SourceType::Subgraph,
-                seed_index: None,
-                relationship: Some("related".to_string()),
-                distance: None,
-            };
-            c.try_add_formatted(
-                symbol,
-                content,
-                source,
-                match_locations.get(&symbol.id).cloned(),
-            );
-        }
+        let (graph_related, module_stubs) = split_modules(related_symbols);
+        let labels = direction_labels(db, resolved, config)?;
+        add_related(
+            &mut c,
+            &graph_related,
+            match_locations,
+            &labels,
+            true,
+            false,
+        )?;
 
         // Cross-file expansion via CALLS edges (up to 30% of remaining budget)
         if config.include_related && !c.over_budget() {
@@ -574,7 +644,9 @@ fn collect_content_symbol_strategy(
             let current_file_paths: HashSet<String> = c
                 .items
                 .iter()
-                .filter_map(|item| item.symbol.as_ref().map(|s| s.file_path.clone()))
+                .filter_map(|item| item.symbol.as_ref())
+                .filter(|s| s.kind != "module")
+                .map(|s| s.file_path.clone())
                 .collect();
 
             for seed_id in &seed_symbol_ids {
@@ -591,12 +663,12 @@ fn collect_content_symbol_strategy(
                         break;
                     }
                     if edge.kind == "CALLS" {
-                        let target_id = if edge.source_symbol_id == Some(*seed_id) {
-                            edge.target_symbol_id
+                        let (target_id, relationship) = if edge.source_symbol_id == Some(*seed_id) {
+                            (edge.target_symbol_id, "callee")
                         } else if edge.target_symbol_id == Some(*seed_id) {
-                            edge.source_symbol_id
+                            (edge.source_symbol_id, "caller")
                         } else {
-                            None
+                            (None, "")
                         };
                         if let Some(tid) = target_id
                             && let Some(target_symbol) = db.get_symbol_by_id(tid)?
@@ -606,7 +678,7 @@ fn collect_content_symbol_strategy(
                             let source = ItemSource {
                                 source_type: SourceType::Subgraph,
                                 seed_index: None,
-                                relationship: Some("caller".to_string()),
+                                relationship: Some(relationship.to_string()),
                                 distance: Some(1),
                             };
                             if content.len() <= cross_file_budget - cross_file_bytes
@@ -624,122 +696,11 @@ fn collect_content_symbol_strategy(
                 }
             }
         }
+
+        add_related(&mut c, &module_stubs, match_locations, &labels, true, true)?;
     }
 
     Ok(c.finish())
-}
-
-/// Collect content metadata in dry_run mode (no file reads)
-pub(super) fn collect_content_dry_run(
-    resolved: &[(usize, ResolvedSeed)],
-    related_symbols: &[Symbol],
-    match_locations: &HashMap<i64, MatchLocation>,
-    config: &GatherConfig,
-) -> Result<(Vec<ContextItem>, usize, bool, usize, usize)> {
-    let mut items = Vec::new();
-    let mut estimated_bytes = 0usize;
-    let mut dedup = DeduplicationTracker::new();
-
-    // Process direct seeds
-    for (seed_idx, resolved_seed) in resolved {
-        match resolved_seed {
-            ResolvedSeed::Symbol {
-                symbol,
-                content_region,
-            } => {
-                if let Some((start, end)) = content_region
-                    && dedup.mark_if_new(&symbol.file_path, *start, *end)
-                {
-                    let est_size = (end - start) as usize;
-                    estimated_bytes += est_size;
-                    let source = ItemSource {
-                        source_type: SourceType::DirectSeed,
-                        seed_index: Some(*seed_idx),
-                        relationship: None,
-                        distance: Some(0),
-                    };
-                    let match_loc = match_locations.get(&symbol.id).cloned();
-                    items.push(ContextItem {
-                        source,
-                        path: symbol.file_path.clone(),
-                        start_line: Some(symbol.start_line),
-                        end_line: Some(symbol.end_line),
-                        start_byte: *start,
-                        end_byte: *end,
-                        content: String::new(), // Empty in dry_run
-                        symbol: Some(symbol.clone()),
-                        score: None,
-                        match_location: match_loc,
-                    });
-                }
-            }
-            ResolvedSeed::FileRegion {
-                path,
-                start_byte,
-                end_byte,
-                start_line,
-                end_line,
-            } => {
-                if dedup.mark_if_new(path, *start_byte, *end_byte) {
-                    let est_size = (end_byte - start_byte) as usize;
-                    estimated_bytes += est_size;
-                    let source = ItemSource {
-                        source_type: SourceType::DirectSeed,
-                        seed_index: Some(*seed_idx),
-                        relationship: None,
-                        distance: Some(0),
-                    };
-                    items.push(ContextItem {
-                        source,
-                        path: path.clone(),
-                        start_line: *start_line,
-                        end_line: *end_line,
-                        start_byte: *start_byte,
-                        end_byte: *end_byte,
-                        content: String::new(), // Empty in dry_run
-                        symbol: None,
-                        score: None,
-                        match_location: None,
-                    });
-                }
-            }
-            ResolvedSeed::SearchResults { .. } => {
-                // Search results are processed via related_symbols below
-            }
-        }
-    }
-
-    // Process related symbols (from subgraph expansion and search results)
-    if config.include_snippets {
-        for symbol in related_symbols {
-            if dedup.mark_if_new(&symbol.file_path, symbol.start_byte, symbol.end_byte) {
-                let est_size = (symbol.end_byte - symbol.start_byte) as usize;
-                estimated_bytes += est_size;
-                let source = ItemSource {
-                    source_type: SourceType::Subgraph,
-                    seed_index: None,
-                    relationship: Some("related".to_string()),
-                    distance: None,
-                };
-                let match_loc = match_locations.get(&symbol.id).cloned();
-                items.push(ContextItem {
-                    source,
-                    path: symbol.file_path.clone(),
-                    start_line: Some(symbol.start_line),
-                    end_line: Some(symbol.end_line),
-                    start_byte: symbol.start_byte,
-                    end_byte: symbol.end_byte,
-                    content: String::new(), // Empty in dry_run
-                    symbol: Some(symbol.clone()),
-                    score: None,
-                    match_location: match_loc,
-                });
-            }
-        }
-    }
-
-    // In dry_run, truncated is always false since we're not actually reading
-    Ok((items, 0, false, dedup.dedup_count(), estimated_bytes))
 }
 
 #[cfg(test)]
