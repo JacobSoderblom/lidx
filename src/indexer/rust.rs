@@ -90,9 +90,12 @@ struct Context {
     /// Set only inside an `impl Trait for Type` body (not a trait declaration).
     in_trait_impl: Option<String>,
     /// Current function's locals/params whose type is locally knowable
-    /// (`collect_local_types`); `None` value = bound more than once or
-    /// otherwise uninferable. Empty outside a function body.
-    local_types: Rc<HashMap<String, Option<String>>>,
+    /// (`collect_local_types`), scoped to the block/arm that binds them.
+    /// Empty outside a function body.
+    local_types: Rc<Locals>,
+    /// Same-file struct / enum-variant field types (`collect_adts`), used to
+    /// type struct and tuple-struct patterns.
+    adts: Rc<Adts>,
 }
 
 pub struct RustExtractor {
@@ -175,6 +178,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             imports: Rc::new(collect_use_bindings(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
+            adts: Rc::new(collect_adts(root, source)),
             in_trait_scope: false,
             in_trait_impl: None,
         };
@@ -671,6 +675,7 @@ fn handle_function(
             source,
             self_ty: self_ty.as_deref(),
             generics: collect_generic_names(node, source),
+            adts: &ctx.adts,
         };
         collect_local_types(node, &env, &mut local_types);
         next_ctx.local_types = Rc::new(local_types);
@@ -869,8 +874,12 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     if value.kind() != "identifier" {
         return ReceiverType::NotTracked;
     }
-    match ctx.local_types.get(&node_text(value, source)) {
-        Some(Some(ty)) => ReceiverType::Known(ty.clone()),
+    match lookup_local(
+        &ctx.local_types,
+        &node_text(value, source),
+        value.start_byte(),
+    ) {
+        Ty::Named(ty) => ReceiverType::Known(ty),
         _ => ReceiverType::NotTracked,
     }
 }
@@ -881,6 +890,65 @@ const TRANSPARENT_WRAPPERS: &[&str] = &[
     "Arc", "Rc", "Box", "Cow", "Option", "Result", "Vec", "RefCell", "Cell", "Mutex", "RwLock",
 ];
 
+/// Locally-inferred type of a value. `Unknown` is the "never wrong" escape
+/// hatch: anything not provable from the current function or same-file item
+/// declarations. Only `Named` can become a receiver type.
+#[derive(Clone, Debug, PartialEq)]
+enum Ty {
+    Unknown,
+    Named(String),
+    Option(Box<Ty>),
+    Result(Box<Ty>, Box<Ty>),
+    Tuple(Vec<Ty>),
+    /// `Vec<T>`, `VecDeque<T>`, `[T]`, `[T; N]`.
+    Seq(Box<Ty>),
+    /// An iterator whose item type is known.
+    Iter(Box<Ty>),
+}
+
+/// `Type` (struct) or `Enum::Variant` -> field types by name (`"0"`, `"1"`
+/// for tuple fields). `None` when the key is declared more than once.
+type Adts = HashMap<String, Option<Vec<(String, Ty)>>>;
+
+/// One binding of a name, visible in `start..end` (byte offsets).
+struct Binding {
+    start: usize,
+    end: usize,
+    ty: Ty,
+}
+type Locals = HashMap<String, Vec<Binding>>;
+type Scope = (usize, usize);
+
+/// Type visible for `name` at byte `pos`: the innermost (latest-starting)
+/// binding whose scope contains `pos`. Same-start bindings that disagree
+/// (or-pattern alternatives) are `Unknown`.
+fn lookup_local(locals: &Locals, name: &str, pos: usize) -> Ty {
+    let mut best: Option<(usize, Ty)> = None;
+    for b in locals.get(name).into_iter().flatten() {
+        if b.start > pos || pos >= b.end {
+            continue;
+        }
+        match &mut best {
+            Some((start, ty)) if *start == b.start => {
+                if *ty != b.ty {
+                    *ty = Ty::Unknown;
+                }
+            }
+            Some((start, _)) if *start > b.start => {}
+            _ => best = Some((b.start, b.ty.clone())),
+        }
+    }
+    best.map_or(Ty::Unknown, |(_, ty)| ty)
+}
+
+fn record_local(out: &mut Locals, name: String, ty: Ty, scope: Scope) {
+    out.entry(name).or_default().push(Binding {
+        start: scope.0,
+        end: scope.1,
+        ty,
+    });
+}
+
 /// What `collect_local_types` needs to turn a type name into a receiver type.
 struct TypeEnv<'a> {
     source: &'a str,
@@ -888,6 +956,7 @@ struct TypeEnv<'a> {
     /// Generic parameter names of the enclosing fn and impl/trait: a
     /// receiver of type `T` says nothing about which type declares the method.
     generics: HashSet<String>,
+    adts: &'a Adts,
 }
 
 impl TypeEnv<'_> {
@@ -922,57 +991,420 @@ impl TypeEnv<'_> {
         self.usable(node_text(current, self.source))
     }
 
-    /// Type of a `let` initializer: `T::new(..)`/`T::default()`/`T::with_*`/
-    /// `T::from*`, or `T { .. }`, optionally followed by `?`, `.unwrap()` or
-    /// `.expect(..)`.
-    fn value_type(&self, value: Node<'_>) -> Option<String> {
-        let mut value = value;
-        loop {
-            match value.kind() {
-                "try_expression" => value = value.named_child(0)?,
-                "call_expression" => {
-                    let function = value.child_by_field_name("function")?;
-                    if function.kind() == "field_expression" {
-                        let field = node_text(function.child_by_field_name("field")?, self.source);
-                        if field != "unwrap" && field != "expect" {
-                            return None;
-                        }
-                        value = function.child_by_field_name("value")?;
-                    } else {
-                        break;
-                    }
-                }
-                _ => break,
+    /// Structured type of a type node (`Option<T>`, `Result<T, E>`, tuples,
+    /// sequences, iterators of known item type); anything else is `Named`
+    /// via `type_name` or `Unknown`.
+    fn ty(&self, node: Node<'_>) -> Ty {
+        match node.kind() {
+            "reference_type" => node
+                .child_by_field_name("type")
+                .map_or(Ty::Unknown, |t| self.ty(t)),
+            "tuple_type" => {
+                let mut cursor = node.walk();
+                Ty::Tuple(
+                    node.named_children(&mut cursor)
+                        .map(|c| self.ty(c))
+                        .collect(),
+                )
             }
+            "array_type" => node
+                .child_by_field_name("element")
+                .map_or(Ty::Unknown, |t| Ty::Seq(Box::new(self.ty(t)))),
+            "abstract_type" => node
+                .child_by_field_name("trait")
+                .and_then(|t| self.iterator_item(t))
+                .map_or(Ty::Unknown, |t| Ty::Iter(Box::new(t))),
+            "generic_type" => {
+                let name = node
+                    .child_by_field_name("type")
+                    .and_then(|t| match t.kind() {
+                        "type_identifier" => Some(node_text(t, self.source)),
+                        "scoped_type_identifier" => t
+                            .child_by_field_name("name")
+                            .map(|n| node_text(n, self.source)),
+                        _ => None,
+                    });
+                let mut args = Vec::new();
+                if let Some(list) = node.child_by_field_name("type_arguments") {
+                    let mut cursor = list.walk();
+                    args.extend(
+                        list.named_children(&mut cursor)
+                            .filter(|c| c.kind() != "lifetime"),
+                    );
+                }
+                let arg = |i: usize| args.get(i).map_or(Ty::Unknown, |a| self.ty(*a));
+                match (name.as_deref(), args.len()) {
+                    (Some("Option"), 1) => Ty::Option(Box::new(arg(0))),
+                    (Some("Result"), 1) => Ty::Result(Box::new(arg(0)), Box::new(Ty::Unknown)),
+                    (Some("Result"), 2) => Ty::Result(Box::new(arg(0)), Box::new(arg(1))),
+                    (Some("Vec" | "VecDeque"), 1) => Ty::Seq(Box::new(arg(0))),
+                    (Some("IntoIter" | "Iter" | "IterMut" | "Drain"), 1) => {
+                        Ty::Iter(Box::new(arg(0)))
+                    }
+                    _ => self.type_name(node).map_or(Ty::Unknown, Ty::Named),
+                }
+            }
+            _ => self.type_name(node).map_or(Ty::Unknown, Ty::Named),
         }
+    }
+
+    /// `Iterator<Item = T>` -> `T`.
+    fn iterator_item(&self, node: Node<'_>) -> Option<Ty> {
+        if node.kind() != "generic_type" {
+            return None;
+        }
+        let list = node.child_by_field_name("type_arguments")?;
+        let mut cursor = list.walk();
+        let binding = list.named_children(&mut cursor).find(|c| {
+            c.kind() == "type_binding"
+                && c.child_by_field_name("name")
+                    .is_some_and(|n| node_text(n, self.source) == "Item")
+        })?;
+        Some(self.ty(binding.child_by_field_name("type")?))
+    }
+
+    /// Type of an expression: `T::new(..)`/`T::default()`/`T::with_*`/
+    /// `T::from*`, `T { .. }`, `Some(..)`/`Ok(..)`/`Err(..)`, tuples, locals
+    /// with a known type, and `?`/`.unwrap()`/`.expect(..)`/`.next()`/
+    /// `.iter()`-style method chains over those.
+    fn expr_ty(&self, value: Node<'_>, locals: &Locals) -> Ty {
+        self.expr_ty_opt(value, locals).unwrap_or(Ty::Unknown)
+    }
+
+    fn expr_ty_opt(&self, value: Node<'_>, locals: &Locals) -> Option<Ty> {
         match value.kind() {
-            "struct_expression" => self.type_name(value.child_by_field_name("name")?),
+            "parenthesized_expression" | "reference_expression" => {
+                let inner = value
+                    .child_by_field_name("value")
+                    .or_else(|| value.named_child(0))?;
+                self.expr_ty_opt(inner, locals)
+            }
+            "identifier" => Some(lookup_local(
+                locals,
+                &node_text(value, self.source),
+                value.start_byte(),
+            )),
+            "try_expression" => {
+                let inner = self.expr_ty_opt(value.named_child(0)?, locals)?;
+                Some(match inner {
+                    Ty::Option(t) | Ty::Result(t, _) => *t,
+                    Ty::Named(n) => Ty::Named(n),
+                    _ => Ty::Unknown,
+                })
+            }
+            "tuple_expression" => {
+                let mut cursor = value.walk();
+                Some(Ty::Tuple(
+                    value
+                        .named_children(&mut cursor)
+                        .map(|c| self.expr_ty(c, locals))
+                        .collect(),
+                ))
+            }
+            "struct_expression" => {
+                let name = self.type_name(value.child_by_field_name("name")?)?;
+                Some(Ty::Named(name))
+            }
             "call_expression" => {
                 let function = value.child_by_field_name("function")?;
-                if function.kind() != "scoped_identifier" {
-                    return None;
-                }
-                let ctor = node_text(function.child_by_field_name("name")?, self.source);
-                if !(ctor == "new"
-                    || ctor == "default"
-                    || ctor.starts_with("with_")
-                    || ctor.starts_with("from"))
-                {
-                    return None;
-                }
-                let path = function.child_by_field_name("path")?;
-                let ty = match path.kind() {
-                    "identifier" => node_text(path, self.source),
-                    "scoped_identifier" => {
-                        node_text(path.child_by_field_name("name")?, self.source)
+                match function.kind() {
+                    "field_expression" => {
+                        let recv =
+                            self.expr_ty_opt(function.child_by_field_name("value")?, locals)?;
+                        let method = node_text(function.child_by_field_name("field")?, self.source);
+                        Some(method_ty(recv, &method))
                     }
-                    _ => return None,
-                };
-                self.usable(ty)
+                    "identifier" => {
+                        let args = call_arguments(value);
+                        let [arg] = args.as_slice() else {
+                            return None;
+                        };
+                        let inner = Box::new(self.expr_ty(*arg, locals));
+                        match node_text(function, self.source).as_str() {
+                            "Some" => Some(Ty::Option(inner)),
+                            "Ok" => Some(Ty::Result(inner, Box::new(Ty::Unknown))),
+                            "Err" => Some(Ty::Result(Box::new(Ty::Unknown), inner)),
+                            _ => None,
+                        }
+                    }
+                    "scoped_identifier" => {
+                        let ctor = node_text(function.child_by_field_name("name")?, self.source);
+                        if !(ctor == "new"
+                            || ctor == "default"
+                            || ctor.starts_with("with_")
+                            || ctor.starts_with("from"))
+                        {
+                            return None;
+                        }
+                        let path = function.child_by_field_name("path")?;
+                        let ty = match path.kind() {
+                            "identifier" => node_text(path, self.source),
+                            "scoped_identifier" => {
+                                node_text(path.child_by_field_name("name")?, self.source)
+                            }
+                            _ => return None,
+                        };
+                        self.usable(ty).map(Ty::Named)
+                    }
+                    _ => None,
+                }
             }
             _ => None,
         }
     }
+
+    /// Bind every name in `pat` (matched against a value of type `ty`) over
+    /// `scope`. A shape that does not line up with `ty` binds `Unknown`.
+    fn bind(&self, pat: Node<'_>, ty: &Ty, scope: Scope, out: &mut Locals) {
+        let source = self.source;
+        match pat.kind() {
+            "identifier" => {
+                let name = node_text(pat, source);
+                // Uppercase idents are consts / unit variants, not bindings.
+                let ty = if name.chars().next().is_some_and(char::is_uppercase) {
+                    Ty::Unknown
+                } else {
+                    ty.clone()
+                };
+                record_local(out, name, ty, scope);
+            }
+            "shorthand_field_identifier" => {
+                record_local(out, node_text(pat, source), ty.clone(), scope)
+            }
+            "mut_pattern" | "ref_pattern" | "reference_pattern" => {
+                let mut cursor = pat.walk();
+                for c in pat.named_children(&mut cursor) {
+                    if c.kind() != "mutable_specifier" {
+                        self.bind(c, ty, scope, out);
+                    }
+                }
+            }
+            "captured_pattern" => {
+                let mut cursor = pat.walk();
+                for c in pat.named_children(&mut cursor) {
+                    self.bind(c, ty, scope, out);
+                }
+            }
+            "or_pattern" => {
+                let mut cursor = pat.walk();
+                for c in pat.named_children(&mut cursor) {
+                    self.bind(c, ty, scope, out);
+                }
+            }
+            "tuple_pattern" => {
+                let mut cursor = pat.walk();
+                let elems: Vec<_> = pat.named_children(&mut cursor).collect();
+                let has_rest = elems.iter().any(|e| e.kind() == "remaining_field_pattern");
+                match ty {
+                    Ty::Tuple(tys) if !has_rest && tys.len() == elems.len() => {
+                        for (e, t) in elems.iter().zip(tys) {
+                            self.bind(*e, t, scope, out);
+                        }
+                    }
+                    _ => self.bind_all(pat, scope, out),
+                }
+            }
+            "tuple_struct_pattern" => {
+                let type_node = pat.child_by_field_name("type");
+                let mut cursor = pat.walk();
+                let elems: Vec<_> = pat
+                    .named_children(&mut cursor)
+                    .filter(|c| Some(*c) != type_node)
+                    .collect();
+                let name = type_node.map(|t| node_text(t, source));
+                let mut one = |t: &Ty| {
+                    if let [e] = elems.as_slice() {
+                        self.bind(*e, t, scope, out);
+                        true
+                    } else {
+                        false
+                    }
+                };
+                let done = match (name.as_deref(), ty) {
+                    (Some("Some"), Ty::Option(t)) => one(t),
+                    (Some("Ok"), Ty::Result(t, _)) => one(t),
+                    (Some("Err"), Ty::Result(_, e)) => one(e),
+                    _ => false,
+                };
+                if done {
+                    return;
+                }
+                let fields = type_node
+                    .and_then(|t| self.adt_key(t, ty))
+                    .and_then(|k| self.adts.get(&k))
+                    .and_then(|f| f.as_ref());
+                let has_rest = elems.iter().any(|e| e.kind() == "remaining_field_pattern");
+                match fields {
+                    Some(fields) if !has_rest && fields.len() == elems.len() => {
+                        for (e, (_, t)) in elems.iter().zip(fields) {
+                            self.bind(*e, t, scope, out);
+                        }
+                    }
+                    _ => {
+                        for e in elems {
+                            self.bind(e, &Ty::Unknown, scope, out);
+                        }
+                    }
+                }
+            }
+            "struct_pattern" => {
+                let type_node = pat.child_by_field_name("type");
+                let fields = type_node
+                    .and_then(|t| self.adt_key(t, ty))
+                    .and_then(|k| self.adts.get(&k))
+                    .and_then(|f| f.as_ref());
+                let mut cursor = pat.walk();
+                for fp in pat.named_children(&mut cursor) {
+                    if fp.kind() != "field_pattern" {
+                        continue;
+                    }
+                    let Some(name_node) = fp.child_by_field_name("name") else {
+                        continue;
+                    };
+                    let field_ty = fields
+                        .and_then(|f| {
+                            let n = node_text(name_node, source);
+                            f.iter().find(|(k, _)| *k == n).map(|(_, t)| t)
+                        })
+                        .unwrap_or(&Ty::Unknown);
+                    match fp.child_by_field_name("pattern") {
+                        Some(inner) => self.bind(inner, field_ty, scope, out),
+                        None => {
+                            record_local(out, node_text(name_node, source), field_ty.clone(), scope)
+                        }
+                    }
+                }
+            }
+            "remaining_field_pattern" | "_" => {}
+            _ => self.bind_all(pat, scope, out),
+        }
+    }
+
+    /// Poison every name under `pat` (shapes we do not type).
+    fn bind_all(&self, pat: Node<'_>, scope: Scope, out: &mut Locals) {
+        let mut cursor = pat.walk();
+        for c in pat.named_children(&mut cursor) {
+            self.bind(c, &Ty::Unknown, scope, out);
+        }
+    }
+
+    /// `adts` key for a pattern path matched against a `Named` scrutinee:
+    /// `Type` (struct) or `Type::Variant` (enum), `Self` resolved.
+    fn adt_key(&self, path: Node<'_>, scrutinee: &Ty) -> Option<String> {
+        let Ty::Named(n) = scrutinee else {
+            return None;
+        };
+        let resolve = |s: String| {
+            if s == "Self" {
+                self.self_ty.map(str::to_string)
+            } else {
+                Some(s)
+            }
+        };
+        match path.kind() {
+            "identifier" | "type_identifier" => {
+                (resolve(node_text(path, self.source))? == *n).then(|| n.clone())
+            }
+            "scoped_identifier" | "scoped_type_identifier" => {
+                let head = path.child_by_field_name("path")?;
+                let head = match head.kind() {
+                    "identifier" | "type_identifier" => head,
+                    "scoped_identifier" | "scoped_type_identifier" => {
+                        head.child_by_field_name("name")?
+                    }
+                    _ => return None,
+                };
+                let variant = node_text(path.child_by_field_name("name")?, self.source);
+                (resolve(node_text(head, self.source))? == *n).then(|| format!("{n}::{variant}"))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Result type of `recv.method()` for the few std methods whose result type
+/// follows from the receiver type; everything else is `Unknown`.
+fn method_ty(recv: Ty, method: &str) -> Ty {
+    match (recv, method) {
+        (Ty::Option(t) | Ty::Result(t, _), "unwrap" | "expect") => *t,
+        (Ty::Named(n), "unwrap" | "expect") => Ty::Named(n),
+        (Ty::Result(t, _), "ok") => Ty::Option(t),
+        (Ty::Result(_, e), "err") => Ty::Option(e),
+        (t @ (Ty::Option(_) | Ty::Result(..)), "as_ref" | "as_mut" | "clone") => t,
+        (t @ Ty::Option(_), "take" | "cloned" | "copied") => t,
+        (Ty::Seq(t), "iter" | "into_iter" | "iter_mut" | "drain") => Ty::Iter(t),
+        (t @ Ty::Iter(_), "into_iter" | "by_ref") => t,
+        (Ty::Iter(t), "next" | "next_back" | "last") => Ty::Option(t),
+        (Ty::Seq(t), "pop" | "pop_front" | "pop_back" | "first" | "last") => Ty::Option(t),
+        _ => Ty::Unknown,
+    }
+}
+
+/// Struct and enum-variant field types declared in this file.
+fn collect_adts(root: Node<'_>, source: &str) -> Adts {
+    fn fields_of(env: &TypeEnv<'_>, body: Option<Node<'_>>) -> Vec<(String, Ty)> {
+        let Some(body) = body else {
+            return Vec::new();
+        };
+        let mut cursor = body.walk();
+        match body.kind() {
+            "field_declaration_list" => body
+                .named_children(&mut cursor)
+                .filter(|f| f.kind() == "field_declaration")
+                .filter_map(|f| {
+                    let name = node_text(f.child_by_field_name("name")?, env.source);
+                    Some((name, env.ty(f.child_by_field_name("type")?)))
+                })
+                .collect(),
+            "ordered_field_declaration_list" => body
+                .children_by_field_name("type", &mut cursor)
+                .enumerate()
+                .map(|(i, t)| (i.to_string(), env.ty(t)))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+    fn walk(node: Node<'_>, source: &str, empty: &Adts, out: &mut Adts) {
+        let kind = node.kind();
+        if matches!(kind, "struct_item" | "enum_item")
+            && let Some(name) = node.child_by_field_name("name")
+        {
+            let name = node_text(name, source);
+            let env = TypeEnv {
+                source,
+                self_ty: Some(&name),
+                generics: collect_generic_names(node, source),
+                adts: empty,
+            };
+            let mut entries = Vec::new();
+            if kind == "struct_item" {
+                entries.push((
+                    name.clone(),
+                    fields_of(&env, node.child_by_field_name("body")),
+                ));
+            } else if let Some(list) = node.child_by_field_name("body") {
+                let mut cursor = list.walk();
+                for v in list.named_children(&mut cursor) {
+                    if let Some(vn) = v.child_by_field_name("name") {
+                        let key = format!("{name}::{}", node_text(vn, source));
+                        entries.push((key, fields_of(&env, v.child_by_field_name("body"))));
+                    }
+                }
+            }
+            for (key, fields) in entries {
+                let dup = out.contains_key(&key);
+                out.insert(key, if dup { None } else { Some(fields) });
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, source, empty, out);
+        }
+    }
+    let empty = Adts::new();
+    let mut out = Adts::new();
+    walk(root, source, &empty, &mut out);
+    out
 }
 
 /// Generic parameter names of `node` and its enclosing impl/trait items.
@@ -986,6 +1418,7 @@ fn collect_generic_names(node: Node<'_>, source: &str) -> HashSet<String> {
                 let id = match p.kind() {
                     "type_identifier" => Some(p),
                     "constrained_type_parameter" => p.child_by_field_name("left"),
+                    "type_parameter" | "optional_type_parameter" => p.child_by_field_name("name"),
                     _ => None,
                 };
                 if let Some(id) = id {
@@ -998,83 +1431,108 @@ fn collect_generic_names(node: Node<'_>, source: &str) -> HashSet<String> {
     out
 }
 
-/// Record `name -> type` for one binding; a second binding of the same
-/// name (shadowing, differing types) poisons it to `None`.
-fn record_local(out: &mut HashMap<String, Option<String>>, name: String, ty: Option<String>) {
-    match out.get(&name) {
-        Some(prev) if *prev != ty => {
-            out.insert(name, None);
+/// End of the block an `if let`/`while let` condition guards: the
+/// consequence/body of the nearest `if`/`while` whose condition holds it.
+fn let_scope_end(cond: Node<'_>) -> Option<usize> {
+    let mut current = cond.parent();
+    while let Some(n) = current {
+        if matches!(n.kind(), "if_expression" | "while_expression") {
+            let block = n
+                .child_by_field_name("consequence")
+                .or_else(|| n.child_by_field_name("body"))?;
+            return Some(block.end_byte());
         }
-        _ => {
-            out.insert(name, ty);
-        }
+        current = n.parent();
     }
+    None
 }
 
-/// `x` or `mut x` -> the identifier node.
-fn simple_binding(pat: Node<'_>) -> Option<Node<'_>> {
-    match pat.kind() {
-        "identifier" => Some(pat),
-        "mut_pattern" => {
-            let mut cursor = pat.walk();
-            pat.named_children(&mut cursor)
-                .find(|c| c.kind() == "identifier")
-        }
-        _ => None,
-    }
-}
-
-/// Poison every name a pattern binds (tuple/struct/match/`if let`/closure
-/// shapes we do not type), so a shadowed name never keeps a stale type.
-fn poison_pattern(pat: Node<'_>, source: &str, out: &mut HashMap<String, Option<String>>) {
-    if matches!(pat.kind(), "identifier" | "shorthand_field_identifier") {
-        record_local(out, node_text(pat, source), None);
-    }
-    let mut cursor = pat.walk();
-    for child in pat.children(&mut cursor) {
-        poison_pattern(child, source, out);
-    }
-}
-
-/// Locally-knowable receiver types for one function: typed params
-/// (`x: T`, `&T`, `&mut T<'_>`) and `let [mut] x: T = ..` /
-/// `let x = T::new(..)` / `let x = T { .. }`. Every other binding shape
-/// poisons the names it binds. Nested `fn` items are collected on their own.
-fn collect_local_types(
-    node: Node<'_>,
-    env: &TypeEnv<'_>,
-    out: &mut HashMap<String, Option<String>>,
-) {
-    let source = env.source;
+/// Locally-knowable receiver types for one function, scoped: typed params
+/// (`x: T`, `&T`, `&mut T<'_>`), `let` bindings (annotated, `T::new(..)`,
+/// `T { .. }`, or a known-typed scrutinee), `if let`/`while let`/`match`/
+/// `for` pattern bindings (typed when the scrutinee type is known, else
+/// poisoned) and closure params. Nested `fn` items are collected on their own.
+fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
             "function_item" => continue,
-            "parameter" | "let_declaration" => {
-                if let Some(pat) = child.child_by_field_name("pattern") {
-                    match simple_binding(pat) {
-                        Some(id) => {
-                            let ty = child
-                                .child_by_field_name("type")
-                                .and_then(|t| env.type_name(t))
-                                .or_else(|| {
-                                    child
-                                        .child_by_field_name("value")
-                                        .and_then(|v| env.value_type(v))
-                                });
-                            record_local(out, node_text(id, source), ty);
-                        }
-                        None => poison_pattern(pat, source, out),
+            "parameter" => {
+                if let (Some(pat), Some(owner)) = (
+                    child.child_by_field_name("pattern"),
+                    child.parent().and_then(|p| p.parent()),
+                ) {
+                    let ty = child.child_by_field_name("type").map(|t| env.ty(t));
+                    let scope = (owner.start_byte(), owner.end_byte());
+                    env.bind(pat, &ty.unwrap_or(Ty::Unknown), scope, out);
+                }
+            }
+            "let_declaration" => {
+                if let (Some(pat), Some(block)) =
+                    (child.child_by_field_name("pattern"), child.parent())
+                {
+                    let mut ty = child
+                        .child_by_field_name("type")
+                        .map_or(Ty::Unknown, |t| env.ty(t));
+                    if ty == Ty::Unknown
+                        && let Some(v) = child.child_by_field_name("value")
+                    {
+                        ty = env.expr_ty(v, out);
+                    }
+                    env.bind(pat, &ty, (child.end_byte(), block.end_byte()), out);
+                }
+            }
+            "let_condition" => {
+                if let (Some(pat), Some(value), Some(end)) = (
+                    child.child_by_field_name("pattern"),
+                    child.child_by_field_name("value"),
+                    let_scope_end(child),
+                ) {
+                    let ty = env.expr_ty(value, out);
+                    env.bind(pat, &ty, (value.end_byte(), end), out);
+                }
+            }
+            "for_expression" => {
+                if let (Some(pat), Some(value), Some(body)) = (
+                    child.child_by_field_name("pattern"),
+                    child.child_by_field_name("value"),
+                    child.child_by_field_name("body"),
+                ) {
+                    let ty = match env.expr_ty(value, out) {
+                        Ty::Seq(t) | Ty::Iter(t) => *t,
+                        _ => Ty::Unknown,
+                    };
+                    env.bind(pat, &ty, (value.end_byte(), body.end_byte()), out);
+                }
+            }
+            "match_arm" => {
+                let scrutinee = child
+                    .parent()
+                    .and_then(|block| block.parent())
+                    .and_then(|m| m.child_by_field_name("value"));
+                if let Some(mp) = child.child_by_field_name("pattern") {
+                    let ty = scrutinee.map_or(Ty::Unknown, |v| env.expr_ty(v, out));
+                    let guard = mp.child_by_field_name("condition");
+                    let mut c = mp.walk();
+                    let scope = (child.start_byte(), child.end_byte());
+                    for p in mp.named_children(&mut c).filter(|p| Some(*p) != guard) {
+                        env.bind(p, &ty, scope, out);
                     }
                 }
             }
-            "for_expression" | "let_condition" => {
-                // Only the `pattern` field binds; the rest is walked below.
-                if let Some(pat) = child.child_by_field_name("pattern") {
-                    poison_pattern(pat, source, out);
+            "closure_expression" => {
+                if let Some(params) = child.child_by_field_name("parameters") {
+                    let scope = (child.start_byte(), child.end_byte());
+                    let mut c = params.walk();
+                    // Typed `|e: T|` params are handled as `parameter` below.
+                    for p in params
+                        .named_children(&mut c)
+                        .filter(|p| p.kind() != "parameter")
+                    {
+                        env.bind(p, &Ty::Unknown, scope, out);
+                    }
                 }
             }
-            "match_pattern" | "closure_parameters" => poison_pattern(child, source, out),
             _ => {}
         }
         collect_local_types(child, env, out);

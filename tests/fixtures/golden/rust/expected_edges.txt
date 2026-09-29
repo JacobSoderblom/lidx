@@ -247,3 +247,27 @@ crate::receiver_infer::via_shadowed_by_tuple CALLS UNRESOLVED
 crate::receiver_infer::Engine::from_parts CALLS UNRESOLVED
 crate::receiver_infer::via_unwrap CALLS UNRESOLVED
 crate::receiver_infer::via_try CALLS UNRESOLVED
+
+# --- Issue #189: pattern bindings (if let / while let / match / let patterns).
+# Typed when the scrutinee type is known, poisoned otherwise, scoped to the
+# block/arm that binds them. ---
+crate::receiver_infer::via_if_let CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_while_let CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_while_let CALLS UNRESOLVED
+crate::receiver_infer::via_while_let_pop CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer::via_while_let_pop CALLS UNRESOLVED
+crate::receiver_infer::via_match_option CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_match_result CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_match_result CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer::via_tuple_pattern CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_tuple_pattern CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer::via_struct_pattern CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_struct_pattern CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer::via_enum_variants CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_enum_variants CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer::via_unknown_scrutinee CALLS UNRESOLVED
+crate::receiver_infer::via_arm_scoping CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_arm_scoping CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer::via_no_leak CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_no_leak CALLS crate::receiver_infer::Cache::resolve receiver_type
+crate::receiver_infer::via_mismatched_pattern CALLS UNRESOLVED
