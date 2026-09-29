@@ -5,72 +5,21 @@
 /// dropping `direction`, `max_bytes`, `exclude_resolution_kinds`,
 /// `languages`, and `end_qualname`, and leaving a `query`-started trace with
 /// no start param at all in the continuation.
+mod common;
+
 use lidx::indexer::Indexer;
 use lidx::rpc;
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn fixture_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join(name)
-}
-
-fn temp_repo_dir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-    dir.push(format!("lidx-trace-continuation-{label}-{nanos}-{counter}"));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn copy_dir(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        let target = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir(&path, &target);
-        } else {
-            std::fs::copy(&path, &target).unwrap();
-        }
-    }
-}
-
-struct TempRepo {
-    pub repo_root: PathBuf,
-    pub db_path: PathBuf,
-}
-
-impl Drop for TempRepo {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.repo_root);
-    }
-}
-
-impl TempRepo {
-    fn new(fixture: &str) -> Self {
-        let src = fixture_path(fixture);
-        let repo_root = temp_repo_dir(fixture);
-        copy_dir(&src, &repo_root);
-        let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
-        Self { repo_root, db_path }
-    }
-}
-
-fn call_and_get_result(temp: &TempRepo, method: &str, params: &str) -> Value {
+fn call_and_get_result(
+    repo_root: &std::path::Path,
+    db_path: &std::path::Path,
+    method: &str,
+    params: &str,
+) -> Value {
     let raw = rpc::call(
-        temp.repo_root.clone(),
-        temp.db_path.clone(),
+        repo_root.to_path_buf(),
+        db_path.to_path_buf(),
         method.to_string(),
         params,
         "1",
@@ -94,8 +43,8 @@ fn call_and_get_result(temp: &TempRepo, method: &str, params: &str) -> Value {
 /// at all) -- and override only `trace_offset`.
 #[test]
 fn continuation_hop_echoes_every_original_param() {
-    let temp = TempRepo::new("py_mvp");
-    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    let (_tmp, repo_root, db_path) = common::setup_repo("py_mvp");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer.reindex().unwrap();
     drop(indexer);
 
@@ -116,7 +65,7 @@ fn continuation_hop_echoes_every_original_param() {
         "end_qualname": "pkg.utils.Helper.__init__",
     });
 
-    let result = call_and_get_result(&temp, "trace_flow", &original.to_string());
+    let result = call_and_get_result(&repo_root, &db_path, "trace_flow", &original.to_string());
     assert_eq!(
         result["truncated"],
         json!(true),
@@ -161,7 +110,7 @@ fn continuation_hop_echoes_every_original_param() {
     // The continuation hop must actually be followable: since the start was
     // `query`-only, the continuation must still resolve a start symbol.
     let followed_params = serde_json::to_string(&continue_hop["params"]).unwrap();
-    let followed = call_and_get_result(&temp, "trace_flow", &followed_params);
+    let followed = call_and_get_result(&repo_root, &db_path, "trace_flow", &followed_params);
     assert!(
         followed.get("error").is_none(),
         "following the continuation hop must not error, got: {followed}"
