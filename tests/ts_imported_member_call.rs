@@ -155,5 +155,17 @@ fn deep_member_chain_on_imported_class_stays_unbound() {
             "import { Foo } from './c';\nexport function go() {\n  return Foo.a.b();\n}\n",
         ),
     ]);
-    assert!(!t.iter().any(|q| q == "c.Foo"), "{t:?}");
+    assert_eq!(t, vec!["ext:Foo.a.b".to_string()]);
+}
+
+#[test]
+fn namespace_import_deep_chain_does_not_bind_to_module() {
+    let t = single_call_target(&[
+        ("lib/api.ts", "export const a = { b() {} };\n"),
+        (
+            "use.ts",
+            "import * as ns from './lib/api';\nexport function go() {\n  return ns.a.b();\n}\n",
+        ),
+    ]);
+    assert_eq!(t, vec!["lib/api.a".to_string()]);
 }
