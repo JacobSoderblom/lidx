@@ -19,11 +19,10 @@ use tree_sitter::{Node, Parser};
 /// JavaScript/TypeScript's resolution profile: the shared default, plus a
 /// recorded-visibility rule — `handle_method` records `visibility =
 /// "private"` for an explicit `private` accessibility modifier or a
-/// `#`-prefixed class field (see `is_private_member`). Top-level
-/// functions are never recorded private: not being directly wrapped in an
-/// `export` statement doesn't mean unreachable from another file
-/// (CommonJS `module.exports`, a separate `export { name }`, re-exports —
-/// issue #75 follow-up, finding E). Registered for "javascript",
+/// `#`-prefixed class field (see `is_private_member`), and
+/// `mark_unexported_private` records a top-level symbol private unless the
+/// file exports it (ESM `export`, `export { a }`, CommonJS
+/// `module.exports`/`exports.x` — issue #151). Registered for "javascript",
 /// "typescript" and "tsx" alike (`db::resolver::profile_for`) since they
 /// share one resolution family.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
@@ -748,7 +747,147 @@ fn extract_with_parser(
         import_bindings: Rc::new(collect_import_bindings(root, source)),
     };
     walk_node(root, &ctx, source, &mut output);
+    mark_unexported_private(root, source, module_name, &mut output);
     Ok(output)
+}
+
+/// Records every top-level symbol that is not exported (ESM `export`,
+/// `export { a, b as c }`, CommonJS `module.exports`/`exports.x`) as
+/// private, so the resolver's name-fallback tiers skip it for callers in
+/// other files (issue #151). Same-file resolution is unaffected.
+fn mark_unexported_private(
+    root: Node<'_>,
+    source: &str,
+    module_name: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut exported = std::collections::HashSet::new();
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        collect_exported_names(stmt, source, &mut exported);
+    }
+    let unexported: Vec<String> = output
+        .symbols
+        .iter()
+        .filter(|s| {
+            s.kind != "module"
+                && s.qualname == build_qualname(module_name, &[], &s.name)
+                && !exported.contains(&s.name)
+        })
+        .map(|s| s.qualname.clone())
+        .collect();
+    output.private_qualnames.extend(unexported);
+}
+
+/// Local names a top-level statement exports, if it is an export at all.
+fn collect_exported_names(
+    stmt: Node<'_>,
+    source: &str,
+    out: &mut std::collections::HashSet<String>,
+) {
+    match stmt.kind() {
+        "export_statement" | "export_declaration" => {
+            if let Some(decl) = stmt.child_by_field_name("declaration") {
+                declared_names(decl, source, out);
+            }
+            if let Some(value) = stmt.child_by_field_name("value")
+                && value.kind() == "identifier"
+            {
+                out.insert(node_text(value, source));
+            }
+            // `export { a, b as c }` (a `from` re-export names no local symbol).
+            if stmt.child_by_field_name("source").is_none() {
+                let mut cursor = stmt.walk();
+                for clause in stmt.named_children(&mut cursor) {
+                    if clause.kind() != "export_clause" {
+                        continue;
+                    }
+                    let mut c = clause.walk();
+                    for spec in clause.named_children(&mut c) {
+                        if let Some(name) = spec.child_by_field_name("name") {
+                            out.insert(node_text(name, source));
+                        }
+                    }
+                }
+            }
+        }
+        "expression_statement" => {
+            let Some(assign) = stmt.named_child(0) else {
+                return;
+            };
+            if assign.kind() != "assignment_expression" {
+                return;
+            }
+            let (Some(left), Some(right)) = (
+                assign.child_by_field_name("left"),
+                assign.child_by_field_name("right"),
+            ) else {
+                return;
+            };
+            let left = node_text(left, source);
+            let is_module_exports = left == "module.exports";
+            if !is_module_exports
+                && !left.starts_with("exports.")
+                && !left.starts_with("module.exports.")
+            {
+                return;
+            }
+            match right.kind() {
+                "identifier" => {
+                    out.insert(node_text(right, source));
+                }
+                "object" if is_module_exports => {
+                    let mut cursor = right.walk();
+                    for member in right.named_children(&mut cursor) {
+                        match member.kind() {
+                            "shorthand_property_identifier" => {
+                                out.insert(node_text(member, source));
+                            }
+                            "pair" => {
+                                if let Some(v) = member.child_by_field_name("value")
+                                    && v.kind() == "identifier"
+                                {
+                                    out.insert(node_text(v, source));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Names bound by the declaration inside an `export` statement.
+fn declared_names(decl: Node<'_>, source: &str, out: &mut std::collections::HashSet<String>) {
+    match decl.kind() {
+        "lexical_declaration" | "variable_declaration" => {
+            let mut cursor = decl.walk();
+            for d in decl.named_children(&mut cursor) {
+                if d.kind() == "variable_declarator"
+                    && let Some(name) = d.child_by_field_name("name")
+                {
+                    let mut names = Vec::new();
+                    collect_binding_names(name, source, &mut names);
+                    out.extend(names);
+                }
+            }
+        }
+        "ambient_declaration" => {
+            let mut cursor = decl.walk();
+            for inner in decl.named_children(&mut cursor) {
+                declared_names(inner, source, out);
+            }
+        }
+        _ => {
+            if let Some(name) = decl.child_by_field_name("name") {
+                out.insert(node_text(name, source));
+            }
+        }
+    }
 }
 
 fn collect_grpc_clients(root: Node<'_>, source: &str) -> HashMap<String, GrpcService> {
@@ -2767,14 +2906,7 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = extract_signature(node, source);
-    // No export-based visibility mark here (issue #75 follow-up, finding
-    // E): "not directly `export`ed" isn't the same as "unreachable from
-    // another file" — CommonJS (`module.exports = { helperOne }`), a
-    // separate named export (`export { helperOne }`), and re-exports all
-    // make a plain top-level function reachable without it ever being
-    // wrapped in an `export` statement itself. Only an explicit
-    // TypeScript/JS access modifier is trustworthy enough to record (see
-    // `is_private_member`, used by `handle_method` below).
+    // Export-based privacy is applied after the walk (`mark_unexported_private`).
     output.symbols.push(SymbolInput {
         kind: "function".to_string(),
         name: name.clone(),
