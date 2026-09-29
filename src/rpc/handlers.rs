@@ -2404,10 +2404,11 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 break;
             }
 
-            let edges =
-                indexer
-                    .db()
-                    .edges_for_symbol(sym.id, languages.as_deref(), ctx.graph_version)?;
+            let edges = indexer.db().edges_for_symbol_with_dispatch(
+                sym.id,
+                languages.as_deref(),
+                ctx.graph_version,
+            )?;
 
             // Find callers via resolved edges
             for edge in &edges {
@@ -2449,12 +2450,35 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         for cs in &changed_symbols {
             let mut tests = Vec::new();
             let mut seen_test_ids = HashSet::new();
-            // Check resolved edges
-            let edges = indexer.db().edges_for_symbol(
+            // Check resolved edges; an interface-dispatch edge also brings in
+            // tests that call the interface method this one implements.
+            let mut edges = indexer.db().edges_for_symbol_with_dispatch(
                 cs.symbol.id,
                 languages.as_deref(),
                 ctx.graph_version,
             )?;
+            let peers: Vec<i64> = edges
+                .iter()
+                .filter(|e| {
+                    e.resolution_kind.as_deref() == Some("interface_dispatch")
+                        && e.target_symbol_id == Some(cs.symbol.id)
+                })
+                .filter_map(|e| e.source_symbol_id)
+                .collect();
+            for peer in peers {
+                for e in
+                    indexer
+                        .db()
+                        .edges_for_symbol(peer, languages.as_deref(), ctx.graph_version)?
+                {
+                    if e.target_symbol_id == Some(peer) {
+                        edges.push(crate::model::Edge {
+                            target_symbol_id: Some(cs.symbol.id),
+                            ..e
+                        });
+                    }
+                }
+            }
             for edge in &edges {
                 if edge.kind == "CALLS"
                     && edge.target_symbol_id == Some(cs.symbol.id)

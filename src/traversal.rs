@@ -110,14 +110,14 @@ pub fn trace_flow(
 
     let mut trace: Vec<TraceHop> = Vec::new();
     let mut visited = HashSet::new();
-    let mut queue: VecDeque<(i64, usize, String)> = VecDeque::new();
+    let mut queue: VecDeque<(i64, usize, String, Option<String>)> = VecDeque::new();
 
     // Config URI each node was entered through (issue #131): it then only
     // continues along config edges carrying that URI.
     let mut scope = ConfigScope::new(&seeds, config.seed_config_uri.as_deref());
     for &sid in &seeds {
         visited.insert(sid);
-        queue.push_back((sid, 0, start_sym.file_path.clone()));
+        queue.push_back((sid, 0, start_sym.file_path.clone(), scope.seed_entry()));
     }
 
     let mut used_bytes: usize = 0;
@@ -129,7 +129,7 @@ pub fn trace_flow(
     // whether suggesting the exclude-heuristics retry is useful at all.
     let mut traversed_edge_ids: Vec<i64> = Vec::new();
 
-    while let Some((current_id, dist, prev_file)) = queue.pop_front() {
+    while let Some((current_id, dist, prev_file, entry)) = queue.pop_front() {
         // A node at `dist == max_hops` was already recorded as a hop when
         // its parent expanded (below); it must not itself expand, or its
         // children would be recorded at `max_hops + 1`. BFS pops in
@@ -151,15 +151,15 @@ pub fn trace_flow(
         // most valuable affordances.
         if dist >= config.max_hops {
             if !truncated {
-                let ceiling_frontier =
-                    std::iter::once(current_id).chain(queue.iter().map(|(id, _, _)| *id));
-                for candidate in ceiling_frontier {
+                let ceiling_frontier = std::iter::once((current_id, entry.clone()))
+                    .chain(queue.iter().map(|(id, _, _, e)| (*id, e.clone())));
+                for (candidate, candidate_entry) in ceiling_frontier {
                     if has_further_edges(
                         db,
                         candidate,
                         is_upstream,
                         config,
-                        &scope,
+                        candidate_entry.as_deref(),
                         languages,
                         graph_version,
                     )? {
@@ -178,7 +178,7 @@ pub fn trace_flow(
         let edges = db.edges_for_symbol_with_dispatch(current_id, languages, graph_version)?;
 
         let mut bridge_targets: Vec<BridgeTarget> = Vec::new();
-        let allowed = scope.allowed(current_id, &edges);
+        let allowed = ConfigScope::allowed(entry.as_deref(), &edges);
 
         for edge in &edges {
             if !config.allowed_kinds.contains(&edge.kind)
@@ -268,12 +268,13 @@ pub fn trace_flow(
                 // An external stub is a leaf: its other callers are unrelated
                 // to this trace (issue #175), so never expand through it.
                 if !next_sym.is_external() {
-                    queue.push_back((next_id, dist + 1, next_sym.file_path.clone()));
+                    queue.push_back((next_id, dist + 1, next_sym.file_path.clone(), None));
                 }
             }
         }
 
         if !reached_target && !truncated {
+            bridge_targets.sort_by(|a, b| (&a.uri, &a.edge_kind).cmp(&(&b.uri, &b.edge_kind)));
             for BridgeTarget {
                 uri: tq,
                 edge_kind,
@@ -295,10 +296,12 @@ pub fn trace_flow(
                         let Some(bridged_id) = bridged_edge.source_symbol_id else {
                             continue;
                         };
-                        if !visited.insert(bridged_id) {
+                        let first_visit = visited.insert(bridged_id);
+                        let Some(bridged_entry) =
+                            scope.enter(bridged_id, edge_kind, tq, first_visit)
+                        else {
                             continue;
-                        }
-                        scope.record_bridge(bridged_id, edge_kind, tq);
+                        };
                         if let Ok(Some(bridged_sym)) = db.get_symbol_by_id(bridged_id) {
                             let prev_lang = detect_language(&prev_file);
                             let next_lang = detect_language(&bridged_sym.file_path);
@@ -335,7 +338,12 @@ pub fn trace_flow(
                                 reached_target = true;
                                 break;
                             }
-                            queue.push_back((bridged_id, dist + 1, bridged_sym.file_path.clone()));
+                            queue.push_back((
+                                bridged_id,
+                                dist + 1,
+                                bridged_sym.file_path.clone(),
+                                bridged_entry,
+                            ));
                         }
                     }
                     if reached_target || truncated {
@@ -416,12 +424,12 @@ fn has_further_edges(
     id: i64,
     is_upstream: bool,
     config: &TraceConfig,
-    scope: &ConfigScope,
+    entry: Option<&str>,
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<bool> {
     let edges = db.edges_for_symbol_with_dispatch(id, languages, graph_version)?;
-    let allowed = scope.allowed(id, &edges);
+    let allowed = ConfigScope::allowed(entry, &edges);
     for edge in &edges {
         if !config.allowed_kinds.contains(&edge.kind)
             || !crate::model::xref_is_traversable(edge)

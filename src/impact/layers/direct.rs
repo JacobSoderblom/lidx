@@ -163,7 +163,7 @@ fn resolve_bridge_targets(
     symbol_checked: &mut HashSet<i64>,
     distance_map: &mut HashMap<i64, usize>,
     parent_map: &mut HashMap<i64, (i64, String, Option<String>, bool)>,
-    queue: &mut VecDeque<(i64, usize)>,
+    queue: &mut VecDeque<(i64, usize, Option<String>)>,
     current_distance: usize,
     limit: usize,
     languages: Option<&[String]>,
@@ -184,10 +184,11 @@ fn resolve_bridge_targets(
                 let Some(bridged_id) = bridged_edge.source_symbol_id else {
                     continue;
                 };
-                if !visited.insert(bridged_id) {
+                let first_visit = visited.insert(bridged_id);
+                let Some(bridged_entry) = scope.enter(bridged_id, edge_kind, tq, first_visit)
+                else {
                     continue;
-                }
-                scope.record_bridge(bridged_id, edge_kind, tq);
+                };
                 cache_symbols(
                     db,
                     symbol_cache,
@@ -207,7 +208,7 @@ fn resolve_bridge_targets(
                     bridge_hop_is_reversed(edge_kind),
                 ));
                 if !symbol_cache[&bridged_id].is_external() {
-                    queue.push_back((bridged_id, current_distance + 1));
+                    queue.push_back((bridged_id, current_distance + 1, bridged_entry));
                 }
                 if visited.len() >= limit {
                     return Ok(true);
@@ -271,7 +272,7 @@ pub fn analyze_direct_impact_scoped(
     let timeout = Duration::from_secs(5);
 
     // Initialize BFS data structures
-    let mut queue: VecDeque<(i64, usize)> = VecDeque::new();
+    let mut queue: VecDeque<(i64, usize, Option<String>)> = VecDeque::new();
     let mut visited: HashSet<i64> = HashSet::new();
     let mut distance_map: HashMap<i64, usize> = HashMap::new();
     let mut symbol_cache: HashMap<i64, Symbol> = HashMap::new();
@@ -299,7 +300,7 @@ pub fn analyze_direct_impact_scoped(
     // Config URI each node was entered through (issue #131).
     let mut scope = ConfigScope::new(&valid_seeds, seed_config_uri);
     for &id in &valid_seeds {
-        queue.push_back((id, 0));
+        queue.push_back((id, 0, scope.seed_entry()));
         visited.insert(id);
         distance_map.insert(id, 0);
     }
@@ -331,13 +332,13 @@ pub fn analyze_direct_impact_scoped(
         let mut current_level = Vec::new();
         let mut current_distance = usize::MAX;
 
-        while let Some((id, distance)) = queue.front() {
+        while let Some((id, distance, entry)) = queue.front() {
             if current_distance == usize::MAX {
                 current_distance = *distance;
             } else if *distance != current_distance {
                 break;
             }
-            current_level.push(*id);
+            current_level.push((*id, entry.clone()));
             queue.pop_front();
         }
 
@@ -347,8 +348,14 @@ pub fn analyze_direct_impact_scoped(
         }
 
         // Batch fetch edges for all symbols at this level
+        let level_ids: Vec<i64> = current_level
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
         let edges_by_symbol =
-            db.edges_for_symbols_with_dispatch(&current_level, languages, graph_version)?;
+            db.edges_for_symbols_with_dispatch(&level_ids, languages, graph_version)?;
 
         // Issue #81: an edge with no resolution kind (a Bridge Edge kind) is
         // always traversable, since bridging is governed separately below.
@@ -361,7 +368,7 @@ pub fn analyze_direct_impact_scoped(
 
         // Collect all neighbor IDs for batch symbol loading
         let mut neighbor_ids = Vec::new();
-        for current_id in &current_level {
+        for (current_id, _) in &current_level {
             if let Some(edges) = edges_by_symbol.get(current_id) {
                 for edge in edges {
                     if !edge_matches_filter(edge, kinds, include_tests) || excluded(edge) {
@@ -390,9 +397,9 @@ pub fn analyze_direct_impact_scoped(
         let mut bridge_targets: Vec<BridgeTarget> = Vec::new();
 
         // Process edges and update BFS state
-        for current_id in &current_level {
+        for (current_id, entry) in &current_level {
             if let Some(edges) = edges_by_symbol.get(current_id) {
-                let allowed = scope.allowed(*current_id, edges);
+                let allowed = ConfigScope::allowed(entry.as_deref(), edges);
                 for edge in edges {
                     if !edge_matches_filter(edge, kinds, include_tests)
                         || excluded(edge)
@@ -434,7 +441,7 @@ pub fn analyze_direct_impact_scoped(
                     // An external stub is a leaf: its other callers are
                     // unrelated to this impact set (issue #175).
                     if !symbol_cache[&next_id].is_external() {
-                        queue.push_back((next_id, current_distance + 1));
+                        queue.push_back((next_id, current_distance + 1, None));
                     }
                     traversed_edge_ids.push(edge.id);
 
@@ -452,6 +459,7 @@ pub fn analyze_direct_impact_scoped(
 
         // Bridge pass: follow cross-service edges via bridge complements
         if !truncated {
+            bridge_targets.sort_by(|a, b| (&a.uri, &a.edge_kind).cmp(&(&b.uri, &b.edge_kind)));
             truncated = resolve_bridge_targets(
                 db,
                 &bridge_targets,

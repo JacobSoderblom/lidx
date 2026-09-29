@@ -262,3 +262,33 @@ fn implicit_impl_pairs_with_remaining_interfaces_only() {
         );
     }
 }
+
+/// Issue #188: analyze_diff and gather_context follow interface dispatch.
+#[test]
+fn analyze_diff_and_gather_context_follow_interface_dispatch() {
+    let (_tmp, repo, db) = common::setup_repo("cs_interface_dispatch");
+    let mut indexer = Indexer::new(repo.clone(), db.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    // Changing the impl file: the interface-typed caller is reachable
+    // through the interface method (depth 2).
+    let r = call(
+        &repo,
+        &db,
+        "analyze_diff",
+        json!({"paths": ["Publisher.cs"], "max_depth": 2}),
+    );
+    let upstream = names(&r["upstream"]);
+    assert!(upstream.contains(&IFACE_M.to_string()), "upstream: {r}");
+    assert!(upstream.contains(&CALLER.to_string()), "upstream: {r}");
+
+    // gather_context on the impl method pulls in the interface-typed caller.
+    let r = call(
+        &repo,
+        &db,
+        "gather_context",
+        json!({"seeds": [{"type": "symbol", "qualname": IMPL_M}], "max_bytes": 80000, "depth": 2}),
+    );
+    assert!(r.to_string().contains(CALLER), "gather: {r}");
+}

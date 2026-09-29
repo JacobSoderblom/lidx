@@ -95,7 +95,7 @@ pub fn build_config_bind_detail(
 // traversals use.
 
 use crate::model::Edge;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 fn is_config_kind(kind: &str) -> bool {
     matches!(
@@ -112,29 +112,59 @@ pub struct BridgeTarget {
     pub source_id: i64,
 }
 
-/// Which config URI each traversed node was entered through.
+/// Max distinct entry URIs a single node is re-expanded under.
+const MAX_ENTRIES_PER_NODE: usize = 8;
+
+/// Which config URIs each traversed node was entered through. A node is
+/// visited once per (node, entry URI): reached via two secrets it is expanded
+/// under each scope, bounded by `MAX_ENTRIES_PER_NODE`.
 #[derive(Default)]
 pub struct ConfigScope {
-    entered: HashMap<i64, String>,
+    entered: HashMap<i64, BTreeSet<String>>,
+    seed_uri: Option<String>,
 }
 
 impl ConfigScope {
     /// `seed_uri`: the config URI the seeds were resolved from, if any.
     pub fn new(seeds: &[i64], seed_uri: Option<&str>) -> Self {
-        let mut scope = Self::default();
+        let mut scope = Self {
+            seed_uri: seed_uri.map(str::to_string),
+            ..Self::default()
+        };
         if let Some(uri) = seed_uri {
             for &id in seeds {
-                scope.entered.insert(id, uri.to_string());
+                scope.entered.entry(id).or_default().insert(uri.to_string());
             }
         }
         scope
     }
 
-    /// Record that `id` was reached by bridging a `bridge_kind` edge on `uri`.
-    pub fn record_bridge(&mut self, id: i64, bridge_kind: &str, uri: &str) {
-        if is_config_kind(bridge_kind) {
-            self.entered.insert(id, uri.to_string());
+    /// Entry URI the seed nodes were entered through.
+    pub fn seed_entry(&self) -> Option<String> {
+        self.seed_uri.clone()
+    }
+
+    /// Decide whether to enqueue `id`, reached by bridging a `bridge_kind`
+    /// edge on `uri`. `first_visit`: `id` was never visited before. Returns
+    /// the entry URI to expand it under (`Some(None)` = unscoped), or None to
+    /// skip it. A config bridge re-enters an already-visited node when this
+    /// (node, URI) pair is new.
+    pub fn enter(
+        &mut self,
+        id: i64,
+        bridge_kind: &str,
+        uri: &str,
+        first_visit: bool,
+    ) -> Option<Option<String>> {
+        if !is_config_kind(bridge_kind) {
+            return first_visit.then_some(None);
         }
+        let set = self.entered.entry(id).or_default();
+        if set.contains(uri) || (!first_visit && set.len() >= MAX_ENTRIES_PER_NODE) {
+            return None;
+        }
+        set.insert(uri.to_string());
+        Some(Some(uri.to_string()))
     }
 
     /// URIs `id`'s config edges may follow, or None when it is unscoped.
@@ -142,9 +172,9 @@ impl ConfigScope {
     /// its own `secretKeyRef` CONFIG_SOURCE edges (`detail.secret` <-> env var
     /// and its `__` section prefixes), in both directions, so the chain
     /// code -> `env://X` -> container -> `secret://S` -> Bicep stays intact.
-    pub fn allowed(&self, id: i64, node_edges: &[Edge]) -> Option<HashSet<String>> {
-        let uri = self.entered.get(&id)?;
-        let mut allowed = HashSet::from([uri.clone()]);
+    pub fn allowed(entry: Option<&str>, node_edges: &[Edge]) -> Option<HashSet<String>> {
+        let uri = entry?;
+        let mut allowed = HashSet::from([uri.to_string()]);
         let entry_var = uri.strip_prefix("env://");
         for e in node_edges.iter().filter(|e| e.kind == CONFIG_SOURCE_KIND) {
             let Some(tq) = e.target_qualname.as_deref() else {
@@ -162,7 +192,7 @@ impl ConfigScope {
                 continue;
             };
             let secret_uri = format!("secret://{secret}");
-            let related = *uri == secret_uri
+            let related = uri == secret_uri
                 || entry_var.is_some_and(|x| {
                     var == x || var.strip_prefix(x).is_some_and(|r| r.starts_with("__"))
                 });
@@ -345,6 +375,34 @@ mod tests {
         assert_eq!(parsed["config_uri"], "env://FOO");
         assert_eq!(parsed["framework"], "dotnet");
         assert_eq!(parsed["role"], "reader");
+    }
+
+    #[test]
+    fn scope_reenters_per_uri_and_is_bounded() {
+        let mut s = ConfigScope::default();
+        assert_eq!(
+            s.enter(1, CONFIG_SOURCE_KIND, "env://A", true),
+            Some(Some("env://A".to_string()))
+        );
+        // Same node via another URI is re-entered; the same pair is not.
+        assert_eq!(
+            s.enter(1, CONFIG_SOURCE_KIND, "env://B", false),
+            Some(Some("env://B".to_string()))
+        );
+        assert_eq!(s.enter(1, CONFIG_SOURCE_KIND, "env://B", false), None);
+        // Non-config bridges stay visit-once.
+        assert_eq!(s.enter(2, "RPC_IMPL", "x", false), None);
+        assert_eq!(s.enter(2, "RPC_IMPL", "x", true), Some(None));
+        // Bounded.
+        let mut n = 0;
+        for i in 0..100 {
+            if s.enter(3, CONFIG_READ_KIND, &format!("env://U{i}"), i == 0)
+                .is_some()
+            {
+                n += 1;
+            }
+        }
+        assert_eq!(n, MAX_ENTRIES_PER_NODE);
     }
 
     #[test]
