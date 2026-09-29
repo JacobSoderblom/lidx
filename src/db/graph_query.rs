@@ -35,21 +35,36 @@ pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
               WHERE anc.d <= {MAX_IFACE_CHAIN_DEPTH})
          SELECT cid, iid FROM anc"
     );
+    // Qualname of an explicit impl of `i`'s method on class `c`
+    // (`C.<Iface>.<name>`, issue #181), and the `cm` -> `c` parent offsets:
+    // 1 / 2 chars are the `.` / `::` separators; the third also strips the
+    // interface segment of an explicit impl.
+    let explicit = "c.qualname || '.' || i.name || '.' || cm.name";
+    let parent = "substr(cm.qualname, 1, length(cm.qualname) - length(cm.name)";
     format!(
         "FROM symbols cm
          JOIN symbols c ON c.graph_version = {gv}
                        AND c.qualname IN (
-                           substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 1),
-                           substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 2))
+                           {parent} - 1),
+                           {parent} - 2),
+                           {parent} - length(i.name) - 2))
          JOIN ({ancestors}) a ON a.cid = c.id
          JOIN symbols i ON i.id = a.iid
-         JOIN symbols im ON im.qualname = i.qualname || substr(cm.qualname, length(c.qualname) + 1)
+         -- One indexed `im.qualname = <expr>` equality: an explicit impl pairs
+         -- only with the interface it names, an implicit one keeps the tail.
+         JOIN symbols im ON im.qualname = CASE WHEN cm.qualname = {explicit}
+                                               THEN i.qualname || '.' || cm.name
+                                               ELSE i.qualname || substr(cm.qualname, length(c.qualname) + 1) END
                         AND im.name = cm.name AND im.kind = 'method' AND im.graph_version = {gv}
          JOIN files fc ON fc.id = cm.file_id
                       AND (fc.deleted_version IS NULL OR fc.deleted_version > {gv})
          JOIN files fi ON fi.id = im.file_id
                       AND (fi.deleted_version IS NULL OR fi.deleted_version > {gv})
-         WHERE cm.kind = 'method' AND cm.graph_version = {gv}"
+         WHERE cm.kind = 'method' AND cm.graph_version = {gv}
+           -- an implicit impl is not paired with an interface that has an explicit twin
+           AND (cm.qualname = {explicit} OR NOT EXISTS (
+                SELECT 1 FROM symbols x
+                 WHERE x.graph_version = {gv} AND x.kind = 'method' AND x.qualname = {explicit}))"
     )
 }
 

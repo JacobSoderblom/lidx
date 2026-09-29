@@ -543,7 +543,15 @@ const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.ki
        AND (? = 0 OR s.kind != 'method')
        AND s.graph_version = ?
        AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-       AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = ?";
+       AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = ?
+       -- Issue #181: a C# explicit interface impl `C.IA.Run` has no parent
+       -- symbol `C.IA`; it is only reachable through the interface, so it is
+       -- never a name-fallback candidate (it would make `IA.Run` ambiguous).
+       -- Kept inline (not in LanguageProfile): a SQL-side existence check.
+       AND (f.language != 'csharp' OR s.kind != 'method' OR EXISTS (
+            SELECT 1 FROM symbols p
+             WHERE p.graph_version = s.graph_version
+               AND p.qualname = substr(s.qualname, 1, length(s.qualname) - length(s.name) - 1)))";
 
 /// Cross-language fuzzy candidates, for Bridge Edge kinds only. Same
 /// case-insensitive-`LIKE` caveat as `SAME_LANG_SQL` (issue #110): selects
