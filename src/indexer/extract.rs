@@ -61,6 +61,38 @@ impl ReceiverType {
     }
 }
 
+/// A call site's argument shape, so the resolver can pick between
+/// same-qualname overloads (C# issue #123) and, for `new T(...)`, between
+/// the class and its constructor (issue #124). Persisted in the
+/// `call_shape` column as `"<n>"` (a call with `n` arguments) or
+/// `"new:<n>"` (an object creation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallShape {
+    pub arg_count: u32,
+    pub is_new: bool,
+}
+
+impl CallShape {
+    pub fn encode(self) -> String {
+        if self.is_new {
+            format!("new:{}", self.arg_count)
+        } else {
+            self.arg_count.to_string()
+        }
+    }
+
+    pub fn decode(raw: &str) -> Option<Self> {
+        let (is_new, count) = match raw.strip_prefix("new:") {
+            Some(rest) => (true, rest),
+            None => (false, raw),
+        };
+        Some(Self {
+            arg_count: count.parse().ok()?,
+            is_new,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct EdgeInput {
     pub kind: String,
@@ -116,6 +148,9 @@ pub struct EdgeInput {
     /// when this is `true` *and* the edge kind is `CALLS`, so leaving it
     /// `false` elsewhere never over-restricts.
     pub bare_call: bool,
+    /// Argument count / object-creation marker; see `CallShape`. Only the
+    /// C# extractor sets it. `None` = no arity signal (resolve as before).
+    pub call_shape: Option<CallShape>,
 }
 
 #[derive(Debug, Default)]

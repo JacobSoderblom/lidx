@@ -129,6 +129,7 @@ struct CarriedUnresolvedRow {
     event_ts: Option<i64>,
     receiver_type: Option<String>,
     bare_call: bool,
+    call_shape: Option<String>,
 }
 
 impl Db {
@@ -463,7 +464,7 @@ impl Db {
                 (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
                  evidence_snippet, evidence_start_line, evidence_end_line, confidence,
                  graph_version, commit_sha, trace_id, span_id, event_ts,
-                 receiver_type, resolution_kind, import_candidates, bare_call)
+                 receiver_type, resolution_kind, import_candidates, bare_call, call_shape)
              SELECT
                 e.file_id,
                 (SELECT ns.id FROM symbols ns
@@ -473,7 +474,7 @@ impl Db {
                 e.kind, e.target_qualname, e.detail, e.evidence_snippet,
                 e.evidence_start_line, e.evidence_end_line, e.confidence,
                 ?, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
-                e.receiver_type, e.resolution_kind, e.import_candidates, e.bare_call
+                e.receiver_type, e.resolution_kind, e.import_candidates, e.bare_call, e.call_shape
              FROM edges e
              LEFT JOIN symbols src ON src.id = e.source_symbol_id
              LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id
@@ -622,14 +623,14 @@ impl Db {
                     (source_symbol_id, file_id, edge_kind, reference_name, name_tail, reason,
                      import_candidates, detail, evidence_snippet, evidence_start_line,
                      evidence_end_line, confidence, commit_sha, trace_id, span_id, event_ts,
-                     receiver_type, bare_call, graph_version)
+                     receiver_type, bare_call, call_shape, graph_version)
                  SELECT
                     (SELECT ns.id FROM symbols ns
                         WHERE ns.stable_id = os.stable_id AND ns.graph_version = ? LIMIT 1),
                     ur.file_id, ur.edge_kind, ur.reference_name, ur.name_tail, ur.reason,
                     ur.import_candidates, ur.detail, ur.evidence_snippet, ur.evidence_start_line,
                     ur.evidence_end_line, ur.confidence, ur.commit_sha, ur.trace_id, ur.span_id,
-                    ur.event_ts, ur.receiver_type, ur.bare_call, ?
+                    ur.event_ts, ur.receiver_type, ur.bare_call, ur.call_shape, ?
                  FROM unresolved_references ur
                  LEFT JOIN symbols os ON os.id = ur.source_symbol_id
                  WHERE ur.edge_id IS NULL AND ur.graph_version = ? AND ur.file_id IN ({placeholders})"
@@ -654,7 +655,7 @@ impl Db {
                         ur.reference_name, ur.name_tail, ur.reason, ur.import_candidates,
                         ur.detail, ur.evidence_snippet, ur.evidence_start_line,
                         ur.evidence_end_line, ur.confidence, ur.commit_sha, ur.trace_id,
-                        ur.span_id, ur.event_ts, ur.receiver_type, ur.bare_call
+                        ur.span_id, ur.event_ts, ur.receiver_type, ur.bare_call, ur.call_shape
                  FROM unresolved_references ur
                  WHERE ur.edge_id IS NOT NULL AND ur.graph_version = ?
                    AND ur.file_id IN ({placeholders})"
@@ -688,6 +689,7 @@ impl Db {
                             event_ts: row.get(16)?,
                             receiver_type: row.get(17)?,
                             bare_call: row.get(18)?,
+                            call_shape: row.get(19)?,
                         })
                     },
                 )?;
@@ -721,6 +723,7 @@ impl Db {
                     event_ts,
                     receiver_type,
                     bare_call,
+                    call_shape,
                 } = row;
                 // Not expected to miss (`old_edge_id` came straight from
                 // this same file set's edges), but skip rather than panic
@@ -754,6 +757,7 @@ impl Db {
                     event_ts,
                     receiver_type,
                     bare_call,
+                    call_shape,
                     to_version,
                 ])?;
             }
@@ -1396,8 +1400,8 @@ impl Db {
                 "INSERT INTO edges
                  (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail, evidence_snippet,
                   evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts,
-                  receiver_type, resolution_kind, import_candidates, bare_call)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  receiver_type, resolution_kind, import_candidates, bare_call, call_shape)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             let mut exact_lookup_stmt = tx.prepare(
                 "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
@@ -1427,6 +1431,7 @@ impl Db {
                     graph_version,
                 )?;
                 let extracted_receiver_type = edge.receiver_type.as_column();
+                let call_shape = edge.call_shape.map(|shape| shape.encode());
                 let resolution = resolver.resolve(
                     &resolver::Reference {
                         target_qualname: edge.target_qualname.as_deref(),
@@ -1437,6 +1442,7 @@ impl Db {
                         source_file_path: &source_file_path,
                         source_qualname: edge.source_qualname.as_deref(),
                         bare_call: edge.bare_call,
+                        call_shape: edge.call_shape,
                     },
                     symbol_map,
                 )?;
@@ -1473,6 +1479,7 @@ impl Db {
                         resolution.kind_column(),
                         resolver::encode_import_candidates(&edge.import_candidates),
                         edge.bare_call,
+                        call_shape.as_deref(),
                     ])?;
                     count += 1;
                     Some(tx.last_insert_rowid())
@@ -1507,6 +1514,7 @@ impl Db {
                         edge.event_ts,
                         resolution.stored_receiver_type(extracted_receiver_type),
                         edge.bare_call,
+                        call_shape.as_deref(),
                         graph_version,
                     ])?;
                 }
@@ -1659,6 +1667,32 @@ impl Db {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    /// Every symbol sharing `qualname` (an overload set, e.g. C# methods
+    /// with different parameter lists), in source order.
+    pub fn get_symbols_by_qualname(
+        &self,
+        qualname: &str,
+        graph_version: i64,
+    ) -> Result<Vec<Symbol>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
+                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
+                    s.graph_version, s.commit_sha, s.stable_id
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE s.qualname = ?
+               AND s.graph_version = ?
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+             ORDER BY f.path, s.start_line",
+        )?;
+        let rows = stmt.query_map(
+            params![qualname, graph_version, graph_version],
+            symbol_from_row,
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Get all symbols for a file by path
@@ -2171,6 +2205,7 @@ mod tests {
             receiver_type,
             import_candidates: Vec::new(),
             bare_call: false,
+            call_shape: None,
         }
     }
 
@@ -3653,6 +3688,7 @@ mod tests {
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             import_candidates: Vec::new(),
             bare_call: false,
+            call_shape: None,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4053,6 +4089,7 @@ mod tests {
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             import_candidates: Vec::new(),
             bare_call: false,
+            call_shape: None,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4101,6 +4138,7 @@ mod tests {
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
                 import_candidates: Vec::new(),
                 bare_call: false,
+                call_shape: None,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CHANNEL_SUBSCRIBE".to_string(),
@@ -4117,6 +4155,7 @@ mod tests {
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
                 import_candidates: Vec::new(),
                 bare_call: false,
+                call_shape: None,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted
@@ -4324,6 +4363,7 @@ mod tests {
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             import_candidates: Vec::new(),
             bare_call: false,
+            call_shape: None,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4383,6 +4423,7 @@ mod tests {
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
                 import_candidates: Vec::new(),
                 bare_call: false,
+                call_shape: None,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CONFIG_BIND".to_string(),
@@ -4399,6 +4440,7 @@ mod tests {
                 receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
                 import_candidates: Vec::new(),
                 bare_call: false,
+                call_shape: None,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted

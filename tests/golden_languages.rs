@@ -115,7 +115,8 @@ fn typescript_css_import_keeps_its_unresolved_imports_file_edge() {
 /// reach the exact tier directly (`Golden.App.Foo.Bar(1)`, mirroring the
 /// shared fixture's `CallNamespacePath` shape) must still collapse to one
 /// target on a full reindex, not go unresolved just because two symbols
-/// share the name.
+/// share the name. The overloads differ in arity: since #123 a call binds
+/// by arity, and same-arity overloads stay unresolved rather than collapse.
 #[test]
 fn csharp_static_overload_call_resolves_on_full_reindex() {
     let tmp = tempfile::tempdir().unwrap();
@@ -124,7 +125,7 @@ fn csharp_static_overload_call_resolves_on_full_reindex() {
         root.join("Foo.cs"),
         "namespace Golden.App\n{\n    public class Foo\n    {\n        \
          public static string Bar(int x) => \"int\";\n        \
-         public static string Bar(string x) => \"string\";\n    }\n}\n",
+         public static string Bar(int x, int y) => \"two\";\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(
@@ -146,6 +147,6 @@ fn csharp_static_overload_call_resolves_on_full_reindex() {
     assert_eq!(
         bound.and_then(|e| e.target_qualname.as_deref()),
         Some("Golden.App.Foo.Bar"),
-        "an overload set (same file, same kind) must collapse to one target: {snapshot:#?}"
+        "an overload set must bind the call by arity: {snapshot:#?}"
     );
 }

@@ -59,6 +59,7 @@
 
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
+use crate::indexer::extract::CallShape;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
 use std::collections::HashMap;
@@ -92,6 +93,9 @@ pub(crate) struct Reference<'a> {
     /// exclusion. Meaningless (ignored) for any `edge_kind` other than
     /// `CALLS`.
     pub bare_call: bool,
+    /// `EdgeInput::call_shape` -- arity for overload selection and the
+    /// `new T(...)` class-to-constructor refinement (issues #123/#124).
+    pub call_shape: Option<CallShape>,
 }
 
 /// How a resolved target was found. `as_str` is the `edges.resolution_kind`
@@ -524,7 +528,7 @@ fn profile_for(lang: &str) -> LanguageProfile {
 /// cheap, case-insensitive pre-filter here, and re-check every row's
 /// actual `qualname` case-sensitively in Rust (`matches_name_case_sensitive`)
 /// before counting it as a candidate — issue #110.
-const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path
+const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.kind, s.signature
      FROM symbols s
      JOIN files f ON s.file_id = f.id
      WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
@@ -585,7 +589,7 @@ const HIERARCHY_SQL: &str = "SELECT target_symbol_id, target_qualname
 /// Every symbol sharing `target_qualname`, for `collapse_exact_candidates`
 /// to judge (issue #77's ambiguity rule) — deliberately no `LIMIT`, since
 /// that judgment needs to see every candidate, not just the first two.
-const EXACT_SQL: &str = "SELECT s.id, s.file_id, s.kind, f.path FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.qualname = ? AND s.graph_version = ? ORDER BY s.id ASC";
+const EXACT_SQL: &str = "SELECT s.id, s.file_id, s.kind, f.path, s.signature FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.qualname = ? AND s.graph_version = ? ORDER BY s.id ASC";
 
 /// Suffix round of `resolve_import`: params are (trailing name,
 /// `.{candidate}`, graph_version). `substr(.., -n)` is an exact tail comparison,
@@ -671,6 +675,11 @@ pub(crate) struct Resolver<'c> {
     /// found same-language, same-kind candidate(s) by name but refused
     /// every one of them as not visible — see `VisibilityRule`.
     saw_private: bool,
+    /// The current reference's call arity (issue #123), set by `resolve`
+    /// for a C# call; `None` for everything else. Consulted wherever
+    /// several same-qualname candidates would otherwise collapse or
+    /// refuse: see `arity_admits`.
+    arity: Option<Arity>,
     /// Lazily resolved `files.id` of the single synthetic external
     /// pseudo-file every stub symbol belongs to (issue #80) -- see
     /// `external_file_id`. `None` until the first stub of this `Resolver`
@@ -693,6 +702,7 @@ impl<'c> Resolver<'c> {
             module_exact: conn.prepare(MODULE_EXACT_SQL)?,
             saw_ambiguous: false,
             saw_private: false,
+            arity: None,
             external_file_id: None,
         })
     }
@@ -701,6 +711,21 @@ impl<'c> Resolver<'c> {
     /// `symbol_map` holds symbols inserted in the current batch that the
     /// exact and import tiers consult before SQL.
     pub(crate) fn resolve(
+        &mut self,
+        r: &Reference<'_>,
+        symbol_map: &HashMap<String, i64>,
+    ) -> Result<Resolution> {
+        self.arity = match r.call_shape {
+            Some(shape) if !shape.is_new => Some(Arity {
+                args: shape.arg_count as usize,
+                value_receiver: r.receiver_type.is_some(),
+            }),
+            _ => None,
+        };
+        self.resolve_tiers(r, symbol_map)
+    }
+
+    fn resolve_tiers(
         &mut self,
         r: &Reference<'_>,
         symbol_map: &HashMap<String, i64>,
@@ -831,6 +856,21 @@ impl<'c> Resolver<'c> {
         }
         let gv = self.graph_version;
         let candidates = query_exact_candidates(&mut self.exact, qualname, gv, caller_file)?;
+        // Issue #123: an overload set is told apart by the call's arity, and
+        // never collapsed to "the lowest id" -- 2+ admitted overloads refuse.
+        if self.arity.is_some() && candidates.len() > 1 {
+            let mut admitted = candidates
+                .iter()
+                .filter(|c| arity_admits(self.arity, &c.kind, c.signature.as_deref()));
+            return Ok(match (admitted.next(), admitted.next()) {
+                (Some(only), None) => Some(only.id),
+                (Some(_), Some(_)) => {
+                    self.saw_ambiguous = true;
+                    None
+                }
+                _ => None,
+            });
+        }
         let resolved = collapse_exact_candidates(&candidates);
         if resolved.is_none() && candidates.len() > 1 {
             self.saw_ambiguous = true;
@@ -990,6 +1030,7 @@ impl<'c> Resolver<'c> {
         name: &str,
     ) -> Result<Option<i64>> {
         let visibility_rule = profile_for(source_lang).visibility;
+        let arity = self.arity;
         let mut rows = self.same_lang.query(query_params)?;
         let mut kind_eligible = 0usize;
         let mut visible: Vec<i64> = Vec::new();
@@ -998,6 +1039,12 @@ impl<'c> Resolver<'c> {
             let visibility: Option<String> = row.get(1)?;
             let qualname: String = row.get(2)?;
             let file_path: String = row.get(3)?;
+            let kind: String = row.get(4)?;
+            let signature: Option<String> = row.get(5)?;
+            // Issue #123: an overload of the wrong arity was never a candidate.
+            if !arity_admits(arity, &kind, signature.as_deref()) {
+                return Ok(false);
+            }
             // `SAME_LANG_SQL` already excludes `method`-kind rows when
             // `guard.exclude_method` — every row reaching here is kind-eligible.
             if is_fixture_path(&file_path) && !is_fixture_path(caller.file_path) {
@@ -1627,7 +1674,7 @@ fn resolved(target_id: i64, kind: ResolutionKind) -> Resolution {
 /// reference_name, name_tail, reason, import_candidates, detail,
 /// evidence_snippet, evidence_start_line, evidence_end_line, confidence,
 /// commit_sha, trace_id, span_id, event_ts, receiver_type, bare_call,
-/// graph_version. Used by `Db::insert_edges` (an edge's first resolution
+/// call_shape, graph_version. Used by `Db::insert_edges` (an edge's first resolution
 /// attempt), `reconcile_unresolved_reference_store` (an edge that went
 /// NULL-target with no row yet), and `Db::carry_forward_files` (carrying an
 /// already-unresolved reference into the new graph version).
@@ -1635,8 +1682,8 @@ pub(crate) const UNRESOLVED_REFERENCE_INSERT_SQL: &str = "INSERT INTO unresolved
      (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail,
       reason, import_candidates, detail, evidence_snippet, evidence_start_line,
       evidence_end_line, confidence, commit_sha, trace_id, span_id, event_ts,
-      receiver_type, bare_call, graph_version)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+      receiver_type, bare_call, call_shape, graph_version)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 /// Everything `Resolver::resolve` needs to re-judge one reference, shared by
 /// `NullTargetEdgeRow` (read straight from an edge with no store row yet)
@@ -1660,6 +1707,7 @@ struct ReferenceContext {
     receiver_type: Option<String>,
     import_candidates: Option<String>,
     bare_call: bool,
+    call_shape: Option<String>,
     source_lang: String,
     file_path: String,
     source_qualname: Option<String>,
@@ -1687,6 +1735,7 @@ impl ReferenceContext {
                 source_file_path: &self.file_path,
                 source_qualname: self.source_qualname.as_deref(),
                 bare_call: self.bare_call,
+                call_shape: self.call_shape.as_deref().and_then(CallShape::decode),
             },
             symbol_map,
         )
@@ -1715,7 +1764,9 @@ pub(crate) fn build_exact_symbol_map(symbols: &[crate::model::Symbol]) -> HashMa
     }
     let mut map = HashMap::with_capacity(by_qualname.len());
     for (qualname, candidates) in by_qualname {
-        if let Some(id) = same_kind_min(&candidates) {
+        // A shared qualname (overloads, issue #123) is left to the SQL
+        // fallback, where a call's arity can pick between them.
+        if let [(id, _)] = candidates[..] {
             map.insert(qualname.to_string(), id);
         }
     }
@@ -1743,19 +1794,119 @@ fn same_kind_min(candidates: &[(i64, &str)]) -> Option<i64> {
 /// already binds to. Any other shape (different files, or different kinds,
 /// e.g. `class g` + `def g`) is genuinely ambiguous: `None`, never a guess.
 /// Used by `Resolver::exact`'s SQL fallback.
-fn collapse_exact_candidates(candidates: &[(i64, i64, String)]) -> Option<i64> {
-    let (_, first_file, _) = candidates.first()?;
-    if !candidates
-        .iter()
-        .all(|(_, file_id, _)| file_id == first_file)
-    {
+fn collapse_exact_candidates(candidates: &[ExactCandidate]) -> Option<i64> {
+    let first_file = candidates.first()?.file_id;
+    if !candidates.iter().all(|c| c.file_id == first_file) {
         return None;
     }
-    let by_kind: Vec<(i64, &str)> = candidates
-        .iter()
-        .map(|(id, _, kind)| (*id, kind.as_str()))
-        .collect();
+    let by_kind: Vec<(i64, &str)> = candidates.iter().map(|c| (c.id, c.kind.as_str())).collect();
     same_kind_min(&by_kind)
+}
+
+/// One `EXACT_SQL` row.
+struct ExactCandidate {
+    id: i64,
+    file_id: i64,
+    kind: String,
+    signature: Option<String>,
+}
+
+/// A call's argument count, for choosing among same-qualname overloads.
+/// `value_receiver` is true when the call's receiver is a value rather than
+/// a type name or nothing (`kind.ToDb()`), which is the only form an
+/// extension method's `this` parameter is filled implicitly.
+#[derive(Clone, Copy)]
+struct Arity {
+    args: usize,
+    value_receiver: bool,
+}
+
+/// Whether a candidate symbol can take a call of `arity`. Always true when
+/// there's no arity signal, for a non-callable kind, or for a signature this
+/// can't read -- only a callable positively known not to fit is excluded.
+fn arity_admits(arity: Option<Arity>, kind: &str, signature: Option<&str>) -> bool {
+    let (Some(arity), true, Some(signature)) = (arity, kind == "method", signature) else {
+        return true;
+    };
+    let Some(params) = signature.strip_prefix('(').and_then(parameter_list) else {
+        return true;
+    };
+    let mut required = 0;
+    let mut max = Some(0usize);
+    let mut is_extension = false;
+    for (i, param) in split_top_level(params).into_iter().enumerate() {
+        let param = param.trim();
+        if param.is_empty() {
+            continue;
+        }
+        is_extension |= i == 0 && param.starts_with("this ");
+        if param.starts_with("params ") {
+            max = None;
+        } else if has_top_level_default(param) {
+            max = max.map(|m| m + 1);
+        } else {
+            required += 1;
+            max = max.map(|m| m + 1);
+        }
+    }
+    let fits = |n: usize| n >= required && max.is_none_or(|m| n <= m);
+    let direct = fits(arity.args);
+    let extension = is_extension && fits(arity.args + 1);
+    match (is_extension, arity.value_receiver) {
+        (true, true) => extension,
+        (true, false) => direct || extension,
+        _ => direct,
+    }
+}
+
+/// The text between a signature's opening `(` (already stripped) and its
+/// matching `)`.
+fn parameter_list(rest: &str) -> Option<&str> {
+    let mut depth = 1usize;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '(' | '<' | '[' | '{' => depth += 1,
+            ')' | '>' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&rest[..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level(params: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut depth, mut start) = (0usize, 0usize);
+    for (i, c) in params.char_indices() {
+        match c {
+            '(' | '<' | '[' | '{' => depth += 1,
+            ')' | '>' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&params[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&params[start..]);
+    parts
+}
+
+fn has_top_level_default(param: &str) -> bool {
+    let mut depth = 0usize;
+    for c in param.chars() {
+        match c {
+            '(' | '<' | '[' | '{' => depth += 1,
+            ')' | '>' | ']' | '}' => depth = depth.saturating_sub(1),
+            '=' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Runs `EXACT_SQL` (or an equivalent prepared statement) for `qualname`,
@@ -1766,23 +1917,26 @@ fn query_exact_candidates(
     qualname: &str,
     graph_version: i64,
     caller_file: &str,
-) -> Result<Vec<(i64, i64, String)>> {
+) -> Result<Vec<ExactCandidate>> {
     let rows = stmt.query_map(params![qualname, graph_version], |row| {
         Ok((
-            row.get(0)?,
-            row.get(1)?,
-            row.get(2)?,
+            ExactCandidate {
+                id: row.get(0)?,
+                file_id: row.get(1)?,
+                kind: row.get(2)?,
+                signature: row.get(4)?,
+            },
             row.get::<_, String>(3)?,
         ))
     })?;
     let mut candidates = Vec::new();
     for row in rows {
-        let (id, file_id, kind, path) = row?;
+        let (candidate, path) = row?;
         // Issue #102: fixture symbols are never targets from outside them.
         if is_fixture_path(&path) && !is_fixture_path(caller_file) {
             continue;
         }
-        candidates.push((id, file_id, kind));
+        candidates.push(candidate);
     }
     Ok(candidates)
 }
@@ -1886,7 +2040,7 @@ impl Db {
                         e.receiver_type, e.import_candidates, e.bare_call,
                         e.detail, e.evidence_snippet, e.evidence_start_line, e.evidence_end_line,
                         e.confidence, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
-                        COALESCE(f.language, 'unknown'), f.path, src.qualname
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname, e.call_shape
                  FROM edges e
                  JOIN files f ON f.id = e.file_id
                  LEFT JOIN symbols src ON src.id = e.source_symbol_id
@@ -1916,6 +2070,7 @@ impl Db {
                         receiver_type: row.get(5)?,
                         import_candidates: row.get(6)?,
                         bare_call: row.get(7)?,
+                        call_shape: row.get(20)?,
                         source_lang: row.get(17)?,
                         file_path: row.get(18)?,
                         source_qualname: row.get(19)?,
@@ -1994,6 +2149,7 @@ impl Db {
                             row.event_ts,
                             row.ctx.receiver_type.as_deref(),
                             row.ctx.bare_call,
+                            row.ctx.call_shape.as_deref(),
                             graph_version,
                         ])?;
                         reconciled += 1;
@@ -2120,7 +2276,7 @@ impl Db {
                         ur.receiver_type, ur.bare_call, ur.detail, ur.evidence_snippet,
                         ur.evidence_start_line, ur.evidence_end_line, ur.confidence,
                         ur.commit_sha, ur.trace_id, ur.span_id, ur.event_ts,
-                        COALESCE(f.language, 'unknown'), f.path, src.qualname
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname, ur.call_shape
                  FROM unresolved_references ur
                  JOIN files f ON f.id = ur.file_id
                  LEFT JOIN symbols src ON src.id = ur.source_symbol_id
@@ -2136,7 +2292,7 @@ impl Db {
                         ur.receiver_type, ur.bare_call, ur.detail, ur.evidence_snippet,
                         ur.evidence_start_line, ur.evidence_end_line, ur.confidence,
                         ur.commit_sha, ur.trace_id, ur.span_id, ur.event_ts,
-                        COALESCE(f.language, 'unknown'), f.path, src.qualname
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname, ur.call_shape
                  FROM unresolved_references ur
                  JOIN files f ON f.id = ur.file_id
                  LEFT JOIN symbols src ON src.id = ur.source_symbol_id
@@ -2172,6 +2328,7 @@ impl Db {
                             import_candidates: row.get(6)?,
                             receiver_type: row.get(7)?,
                             bare_call: row.get(8)?,
+                            call_shape: row.get(21)?,
                             source_lang: row.get(18)?,
                             file_path: row.get(19)?,
                             source_qualname: row.get(20)?,
@@ -2197,8 +2354,8 @@ impl Db {
                  (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
                   evidence_snippet, evidence_start_line, evidence_end_line, confidence,
                   graph_version, commit_sha, trace_id, span_id, event_ts, receiver_type,
-                  resolution_kind, import_candidates, bare_call)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  resolution_kind, import_candidates, bare_call, call_shape)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             let mut delete_store = tx.prepare("DELETE FROM unresolved_references WHERE id = ?")?;
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
@@ -2231,6 +2388,7 @@ impl Db {
                                 kind.as_str(),
                                 row.ctx.import_candidates.as_deref(),
                                 row.ctx.bare_call,
+                                row.ctx.call_shape.as_deref(),
                             ])?;
                         }
                     }
@@ -2297,7 +2455,7 @@ impl Db {
             let mut stmt = tx.prepare(
                 "SELECT e.id, e.target_symbol_id, e.kind, e.target_qualname,
                         e.receiver_type, e.import_candidates, e.bare_call,
-                        COALESCE(f.language, 'unknown'), f.path, src.qualname
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname, e.call_shape
                  FROM edges e
                  JOIN symbols stub ON stub.id = e.target_symbol_id
                  JOIN files f ON f.id = e.file_id
@@ -2317,6 +2475,7 @@ impl Db {
                         receiver_type: row.get(4)?,
                         import_candidates: row.get(5)?,
                         bare_call: row.get(6)?,
+                        call_shape: row.get(10)?,
                         source_lang: row.get(7)?,
                         file_path: row.get(8)?,
                         source_qualname: row.get(9)?,
@@ -2752,11 +2911,44 @@ fn two_segment_qualname_patterns(qn: &str) -> Option<(String, String, String)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ImportMissPolicy, LanguageProfile, Reference, Resolution, ResolutionKind, Resolver,
-        UnresolvedReason, VisibilityRule, fuzzy_qualname_patterns, package_dir, primary_separator,
-        profile_for, qualname_trailing_name, same_lang_patterns, two_segment_qualname_patterns,
+        Arity, ImportMissPolicy, LanguageProfile, Reference, Resolution, ResolutionKind, Resolver,
+        UnresolvedReason, VisibilityRule, arity_admits, fuzzy_qualname_patterns, package_dir,
+        primary_separator, profile_for, qualname_trailing_name, same_lang_patterns,
+        two_segment_qualname_patterns,
     };
     use rusqlite::{Connection, params};
+
+    fn arity(args: usize, value_receiver: bool) -> Option<Arity> {
+        Some(Arity {
+            args,
+            value_receiver,
+        })
+    }
+
+    #[test]
+    fn arity_admits_reads_parameter_counts_from_a_csharp_signature() {
+        let admits = |sig: &str, a| arity_admits(a, "method", Some(sig));
+        assert!(admits("(int a, int b) -> int", arity(2, false)));
+        assert!(!admits("(int a, int b) -> int", arity(1, false)));
+        assert!(admits("(Dictionary<string, int> a)", arity(1, false)));
+        assert!(admits("(int a, int b = 0)", arity(1, false)));
+        assert!(admits("(params int[] xs)", arity(5, false)));
+        assert!(admits("()", arity(0, false)));
+        // No arity signal, or nothing to compare: never excludes.
+        assert!(arity_admits(None, "method", Some("(int a)")));
+        assert!(arity_admits(arity(3, false), "class", None));
+    }
+
+    #[test]
+    fn arity_admits_counts_the_extension_receiver_only_for_a_value_receiver() {
+        let one = "(this Kind kind) -> string";
+        let two = "(this Kind kind, int pad) -> string";
+        assert!(arity_admits(arity(0, true), "method", Some(one)));
+        assert!(!arity_admits(arity(1, true), "method", Some(one)));
+        assert!(arity_admits(arity(1, true), "method", Some(two)));
+        // `KindExt.ToDb(kind)` -- a type receiver passes the receiver explicitly.
+        assert!(arity_admits(arity(1, false), "method", Some(one)));
+    }
 
     #[test]
     fn profile_for_registers_every_visibility_rule() {
@@ -3070,6 +3262,7 @@ mod tests {
             source_file_path,
             source_qualname,
             bare_call,
+            call_shape: None,
         }
     }
 

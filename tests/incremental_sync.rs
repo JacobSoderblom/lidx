@@ -845,7 +845,7 @@ fn incremental_add_overload_same_qualname_same_kind_still_resolves() {
 fn csharp_one_batch_edits_caller_and_moves_overload_target_across_files() {
     let foo_source = "namespace Golden.App\n{\n    public class Foo\n    {\n        \
          public static string Bar(int x) => \"int\";\n        \
-         public static string Bar(string x) => \"string\";\n    }\n}\n";
+         public static string Bar(int x, int y) => \"two\";\n    }\n}\n";
     let caller_before = "namespace Golden.App\n{\n    public class Caller\n    {\n        \
          public string Entry() => Golden.App.Foo.Bar(1);\n    }\n}\n";
     let caller_after = "namespace Golden.App\n{\n    public class Caller\n    {\n        \
