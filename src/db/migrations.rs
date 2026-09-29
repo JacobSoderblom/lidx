@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 23;
+pub const SCHEMA_VERSION: i64 = 24;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -539,6 +539,46 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    if existing < 24 {
+        // Typed deferred-resolution storage. `receiver_type` used to carry
+        // `@ret:` / `@ret:r:` / `@arg:` markers and the C# type scope
+        // (`enclosing;usings|Type`), and a derived RPC edge was tagged
+        // `call_shape = 'rpc:deferred'`. Each now has its own column; existing
+        // rows are converted in place.
+        for table in ["edges", "unresolved_references"] {
+            for column in ["receiver_scope", "deferred_kind", "deferred"] {
+                if !has_column(conn, table, column)? {
+                    conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"), [])?;
+                }
+            }
+        }
+        if !has_column(conn, "edges", "derived")? {
+            conn.execute(
+                "ALTER TABLE edges ADD COLUMN derived INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        conn.execute(
+            "UPDATE edges SET derived = 1, call_shape = NULL WHERE call_shape = 'rpc:deferred'",
+            [],
+        )?;
+        for table in ["edges", "unresolved_references"] {
+            legacy_receiver::convert_table(conn, table)?;
+        }
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_edges_deferred_sites;
+             DROP INDEX IF EXISTS idx_edges_derived_rpc;
+             DROP INDEX IF EXISTS idx_unresolved_deferred_sites;
+             CREATE INDEX IF NOT EXISTS idx_edges_deferred_sites
+                ON edges(graph_version, kind) WHERE deferred_kind IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS idx_edges_derived_rpc
+                ON edges(graph_version) WHERE derived = 1;
+             CREATE INDEX IF NOT EXISTS idx_unresolved_deferred_sites
+                ON unresolved_references(graph_version, edge_kind)
+                WHERE deferred_kind IS NOT NULL;",
+        )?;
+    }
+
     if existing < SCHEMA_VERSION {
         conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?)
@@ -832,6 +872,136 @@ fn migrate_unresolved_reference_store_v19(conn: &Connection) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+/// Reads the pre-migration-24 string encodings of the receiver columns (the
+/// `@ret:` / `@ret:r:` / `@arg:` markers and the `scope|Type` prefix) and
+/// rewrites them into the typed columns. Frozen: this is the only code that
+/// still understands those formats.
+mod legacy_receiver {
+    use crate::indexer::extract::{
+        DeferredArgument, DeferredBase, DeferredMarker, DeferredReturn, DeferredSource,
+        RustDeferred, Step,
+    };
+    use anyhow::Result;
+    use rusqlite::{Connection, params};
+
+    const RET: &str = "@ret:";
+    const RUST: &str = "@ret:r:";
+    const ARG: &str = "@arg:";
+
+    pub(super) fn convert_table(conn: &Connection, table: &str) -> Result<()> {
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT id, receiver_type FROM {table}
+                 WHERE receiver_type LIKE '@%' OR receiver_type LIKE '%|%'"
+            ))?;
+            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut update = conn.prepare(&format!(
+            "UPDATE {table} SET receiver_type = ?2, receiver_scope = ?3,
+                    deferred_kind = ?4, deferred = ?5 WHERE id = ?1"
+        ))?;
+        for (id, column) in rows {
+            if column.starts_with('@') {
+                // A marker that no longer parses can't be re-judged; leave
+                // the receiver untracked, as a fresh reindex would.
+                let (kind, payload) = match marker(&column).map(|m| m.encode()) {
+                    Some((kind, payload)) => (Some(kind), Some(payload)),
+                    None => (None, None),
+                };
+                update.execute(params![id, None::<String>, None::<String>, kind, payload])?;
+            } else if let Some((scope, ty)) = column.split_once('|') {
+                update.execute(params![id, ty, Some(scope), None::<String>, None::<String>])?;
+            }
+        }
+        Ok(())
+    }
+
+    fn marker(column: &str) -> Option<DeferredMarker> {
+        if let Some(rest) = column.strip_prefix(ARG) {
+            let mut parts = rest.splitn(4, ':');
+            let index = parts.next()?.parse().ok()?;
+            let name = parts.next().filter(|n| !n.is_empty()).map(str::to_string);
+            let arg_count = parts.next()?.parse().ok()?;
+            return Some(DeferredMarker::Argument(DeferredArgument {
+                index,
+                name,
+                arg_count,
+                callee: parts.next()?.to_string(),
+            }));
+        }
+        if column.starts_with(RUST) {
+            return rust(column).map(DeferredMarker::Rust);
+        }
+        ret(column).map(DeferredMarker::Return)
+    }
+
+    fn ret(column: &str) -> Option<DeferredReturn> {
+        let rest = column.strip_prefix(RET)?;
+        let (flags, callee) = rest.split_once(':')?;
+        if !flags.chars().all(|c| matches!(c, 'a' | 's' | 'n')) {
+            return None;
+        }
+        let (base, method) = callee.rsplit_once('.')?;
+        let base = if base.starts_with(RET) {
+            DeferredBase::Call(Box::new(ret(base)?))
+        } else {
+            DeferredBase::Type(base.to_string())
+        };
+        Some(DeferredReturn {
+            base,
+            method: method.to_string(),
+            awaited: flags.contains('a'),
+            static_only: flags.contains('s'),
+            name_only: flags.contains('n'),
+        })
+    }
+
+    fn step(text: &str) -> Option<Step> {
+        Some(match text {
+            "some" => Step::OptionSome,
+            "ok" => Step::ResultOk,
+            "err" => Step::ResultErr,
+            "elem" => Step::Elem,
+            "await" => Step::Await,
+            t if t.starts_with('t') => Step::Tuple(t[1..].parse().ok()?),
+            t => Step::Method(t.strip_prefix('.')?.to_string()),
+        })
+    }
+
+    fn rust(column: &str) -> Option<RustDeferred> {
+        let rest = column.strip_prefix(RUST)?;
+        let mut parts = rest.splitn(5, '|');
+        let (tag, x, y) = (parts.next()?, parts.next()?, parts.next()?);
+        let source = match tag {
+            "call" => DeferredSource::Call {
+                candidates: x.split(';').map(str::to_string).collect(),
+            },
+            "method" => DeferredSource::Method {
+                receiver_type: x.to_string(),
+                method: y.to_string(),
+            },
+            "field" => DeferredSource::Field {
+                owner: x.to_string(),
+                field: y.to_string(),
+            },
+            _ => return None,
+        };
+        let steps = parts
+            .next()?
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(step)
+            .collect::<Option<Vec<_>>>()?;
+        let fallback = parts.next()?;
+        Some(RustDeferred {
+            source,
+            steps,
+            fallback: (!fallback.is_empty()).then(|| fallback.to_string()),
+        })
+    }
 }
 
 fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -1220,6 +1390,99 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migration_24_moves_string_encoded_receivers_into_typed_columns() {
+        use crate::indexer::extract::{DeferredMarker, DeferredReturn, TypeScope};
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO files (id, path, hash, language, size, modified)
+             VALUES (1, 'a.cs', 'h', 'csharp', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let legacy = [
+            (1, "@ret:as:Repo.Create", Some("1")),
+            (2, "@arg:1:x:2:Helper.Make", Some("2")),
+            (3, "A.B;N1,N2|IStore<int>", Some("3")),
+            (4, "Plain", None),
+            (5, "", None),
+        ];
+        for (id, receiver, shape) in legacy {
+            conn.execute(
+                "INSERT INTO edges (id, file_id, kind, target_qualname, graph_version,
+                                    receiver_type, call_shape)
+                 VALUES (?, 1, 'CALLS', 'x', 1, ?, ?)",
+                params![id, receiver, shape],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO edges (id, file_id, kind, target_qualname, graph_version, call_shape)
+             VALUES (6, 1, 'RPC_CALL', 'y', 1, 'rpc:deferred')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE meta SET value = '23' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+
+        type Row = (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let row = |id: i64| -> Row {
+            conn.query_row(
+                "SELECT receiver_type, receiver_scope, deferred_kind, deferred
+                 FROM edges WHERE id = ?",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+        };
+        let (ty, scope, kind, payload) = row(1);
+        assert_eq!((ty, scope), (None, None));
+        assert_eq!(
+            DeferredMarker::decode(&kind.unwrap(), &payload.unwrap()),
+            Some(DeferredMarker::Return(DeferredReturn::on_type(
+                "Repo", "Create", true, true
+            )))
+        );
+        let (ty, _, kind, payload) = row(2);
+        assert_eq!(ty, None);
+        assert!(matches!(
+            DeferredMarker::decode(&kind.unwrap(), &payload.unwrap()),
+            Some(DeferredMarker::Argument(a)) if a.callee == "Helper.Make" && a.arg_count == 2
+        ));
+        let (ty, scope, kind, _) = row(3);
+        assert_eq!((ty.as_deref(), kind), (Some("IStore<int>"), None));
+        let scope = TypeScope::decode(scope.as_deref());
+        assert_eq!(
+            (scope.enclosing, scope.usings),
+            (
+                vec!["A.B".to_string()],
+                vec!["N1".to_string(), "N2".to_string()]
+            )
+        );
+        assert_eq!(row(4).0.as_deref(), Some("Plain"));
+        assert_eq!(row(5).0.as_deref(), Some(""));
+        let (derived, shape): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT derived, call_shape FROM edges WHERE id = 6",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((derived, shape), (1, None));
     }
 
     #[test]

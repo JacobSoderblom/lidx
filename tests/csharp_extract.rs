@@ -1,5 +1,5 @@
 use lidx::indexer::csharp::{CSharpExtractor, module_name_from_rel_path};
-use lidx::indexer::extract::{LanguageExtractor, ReceiverType, TypeScope};
+use lidx::indexer::extract::{LanguageExtractor, ReceiverType};
 
 #[test]
 fn module_name_from_path() {
@@ -1022,10 +1022,9 @@ public class ConnectionManager {
          attribute to the enclosing named method, not be dropped or attributed \
          to a synthetic lambda symbol"
     );
-    let ReceiverType::Known(column) = &call.receiver_type else {
+    let ReceiverType::Scoped { scope, ty } = &call.receiver_type else {
         panic!("the field's type must still resolve from inside the lambda: {call:?}");
     };
-    let (scope, ty) = TypeScope::decode(column);
     assert_eq!(ty, "IDbConnection");
     assert_eq!(
         scope.enclosing,

@@ -60,8 +60,7 @@
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
-    CallShape, DEFERRED_ARG_PREFIX, DEFERRED_MARKER_PREFIX, DEFERRED_RETURN_PREFIX,
-    DERIVED_RPC_SHAPE, ReceiverType, TypeScope,
+    CallShape, DEFERRED_KIND_ARGUMENT, DEFERRED_KIND_RETURN, DeferredMarker, TypeScope,
 };
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
@@ -74,8 +73,15 @@ pub(crate) struct Reference<'a> {
     pub target_qualname: Option<&'a str>,
     /// The Edge Kind (`CALLS`, `RPC_CALL`, ...); gates cross-language lookup.
     pub edge_kind: &'a str,
-    /// The `edges.receiver_type` column value (see `ReceiverType::as_column`).
+    /// The `edges.receiver_type` column value (see `ReceiverType::to_columns`):
+    /// a plain type name, `""` for tracked-but-unresolved, `None` for
+    /// untracked or deferred.
     pub receiver_type: Option<&'a str>,
+    /// The C# lookup scope of `receiver_type` (`edges.receiver_scope`).
+    pub receiver_scope: Option<&'a TypeScope>,
+    /// A deferred receiver still to be finished by the language's hook
+    /// (`edges.deferred_kind` / `deferred`).
+    pub deferred: Option<&'a DeferredMarker>,
     /// Import-qualified guesses for the target (see `EdgeInput::import_candidates`).
     pub import_candidates: &'a [String],
     /// `files.language` of the file the edge was found in.
@@ -274,7 +280,11 @@ impl Resolution {
     /// `Db::retry_external_stub_edges` re-runs the name tiers on it instead
     /// of forcing tier 3's short-circuit -- only a receiver actually known
     /// external should be stored as such.
-    pub(crate) fn stored_receiver_type(self, extracted: Option<&str>) -> Option<&str> {
+    pub(crate) fn stored_receiver_type(
+        self,
+        extracted: Option<&str>,
+        deferred: bool,
+    ) -> Option<&str> {
         match self {
             // A deferred receiver keeps its marker: it is re-judged whenever
             // its callee changes, so it must never be frozen to `""`.
@@ -284,7 +294,7 @@ impl Resolution {
                         via_language_fallback: false,
                     },
                 ..
-            } if !extracted.is_some_and(ReceiverType::is_deferred_column) => Some(""),
+            } if !deferred => Some(""),
             _ => extracted,
         }
     }
@@ -345,8 +355,8 @@ pub(crate) struct LanguageProfile {
     /// file); `None` when it is no client. See
     /// `Db::rederive_deferred_rpc_calls`.
     pub deferred_rpc: Option<DeferredRpcFn>,
-    /// Finishes a language's own deferred-receiver marker (an `@ret:`
-    /// column this language's extractor wrote) from the declarations it
+    /// Finishes a language's own deferred-receiver marker (a
+    /// `DeferredMarker` this language's extractor wrote) from the declarations it
     /// names. `None` for a language without one.
     pub deferred_receiver: Option<ResolveDeferred>,
 }
@@ -398,7 +408,7 @@ pub trait DeclarationIndex {
 /// language's marker. `Ok(Some(None))`: the receiver stays untracked.
 /// `Ok(Some(Some(ty)))`: the receiver's type (`""`: known not to bind).
 pub type ResolveDeferred =
-    fn(column: &str, index: &dyn DeclarationIndex) -> Result<Option<Option<String>>>;
+    fn(marker: &DeferredMarker, index: &dyn DeclarationIndex) -> Result<Option<Option<String>>>;
 
 /// One `RPC_CALL` edge `LanguageProfile::deferred_rpc` yields.
 pub struct RpcCallEdge {
@@ -407,9 +417,9 @@ pub struct RpcCallEdge {
 }
 
 /// `LanguageProfile::deferred_rpc`: the edges for a call of `method` through
-/// the deferred receiver in `column`; `Ok(None)` when it isn't a client.
+/// the deferred receiver `marker`; `Ok(None)` when it isn't a client.
 pub type DeferredRpcFn = fn(
-    column: &str,
+    marker: &DeferredMarker,
     method: &str,
     index: &dyn DeclarationIndex,
 ) -> Result<Option<Vec<RpcCallEdge>>>;
@@ -977,6 +987,8 @@ pub(crate) struct Resolver<'c> {
     /// Simple name of the current call's known receiver type, if any --
     /// narrows same-arity extension-method overloads.
     call_receiver: Option<String>,
+    /// Lookup scope of the current call's known receiver type (C#).
+    call_scope: TypeScope,
     /// Lazily resolved `files.id` of the single synthetic external
     /// pseudo-file every stub symbol belongs to (issue #80) -- see
     /// `external_file_id`. `None` until the first stub of this `Resolver`
@@ -1001,6 +1013,7 @@ impl<'c> Resolver<'c> {
             saw_private: false,
             arity: None,
             call_receiver: None,
+            call_scope: TypeScope::default(),
             external_file_id: None,
         })
     }
@@ -1015,13 +1028,10 @@ impl<'c> Resolver<'c> {
     ) -> Result<Resolution> {
         // A deferred argument (`new(..)` passed to a call) becomes the type of
         // the callee's parameter, then resolves as `new T(..)` would.
-        if let Some(column) = r
-            .receiver_type
-            .filter(|column| column.starts_with(DEFERRED_ARG_PREFIX))
-        {
+        if let Some(marker @ DeferredMarker::Argument(_)) = r.deferred {
             let ty = match profile_for(r.source_lang).deferred_receiver {
                 Some(hook) => hook(
-                    column,
+                    marker,
                     &LanguageIndex {
                         resolver: self,
                         lang: r.source_lang,
@@ -1034,6 +1044,8 @@ impl<'c> Resolver<'c> {
                     &Reference {
                         target_qualname: Some(&ty),
                         receiver_type: None,
+                        receiver_scope: None,
+                        deferred: None,
                         ..*r
                     },
                     symbol_map,
@@ -1047,17 +1059,14 @@ impl<'c> Resolver<'c> {
         // A language's own marker; `Some(None)` from its hook leaves the
         // receiver untracked rather than `""`, so no name-tier edge is lost.
         let hooked: Option<String>;
-        let name_only = r
-            .receiver_type
-            .and_then(ReceiverType::parse_deferred_return)
-            .is_some_and(|call| call.name_only);
+        let name_only = matches!(r.deferred, Some(DeferredMarker::Return(call)) if call.name_only);
         let r = match r
-            .receiver_type
-            .filter(|column| column.starts_with(DEFERRED_RETURN_PREFIX))
-            .and_then(|column| {
+            .deferred
+            .filter(|marker| !matches!(marker, DeferredMarker::Argument(_)))
+            .and_then(|marker| {
                 let hook = profile_for(r.source_lang).deferred_receiver?;
                 Some(hook(
-                    column,
+                    marker,
                     &LanguageIndex {
                         resolver: self,
                         lang: r.source_lang,
@@ -1069,6 +1078,8 @@ impl<'c> Resolver<'c> {
                     hooked = ty;
                     patched_hook = Reference {
                         receiver_type: hooked.as_deref(),
+                        receiver_scope: None,
+                        deferred: None,
                         ..*r
                     };
                     &patched_hook
@@ -1088,6 +1099,7 @@ impl<'c> Resolver<'c> {
             .receiver_type
             .filter(|ty| !ty.is_empty())
             .map(|ty| simple_type_name(ty).to_string());
+        self.call_scope = r.receiver_scope.cloned().unwrap_or_default();
         let resolution = if name_only {
             self.resolve_name_only(r)?
         } else {
@@ -1622,7 +1634,7 @@ impl<'c> Resolver<'c> {
                 // C# interface receivers keep the qualifier and closed type
                 // arguments they were declared with (`N1.IA<int>`); the
                 // arguments only discriminate dispatch, never resolution.
-                let (scope, known_type) = TypeScope::decode(known_type);
+                let scope = self.call_scope.clone();
                 let known_type = known_type.split('<').next().unwrap_or(known_type);
                 let method = qualname_trailing_name(target_qualname);
                 if let Some(id) =
@@ -2306,7 +2318,7 @@ fn resolved(target_id: i64, kind: ResolutionKind) -> Resolution {
 /// reference_name, name_tail, reason, import_candidates, detail,
 /// evidence_snippet, evidence_start_line, evidence_end_line, confidence,
 /// commit_sha, trace_id, span_id, event_ts, receiver_type, bare_call,
-/// call_shape, graph_version. Used by `Db::insert_edges` (an edge's first resolution
+/// call_shape, graph_version, receiver_scope, deferred_kind, deferred. Used by `Db::insert_edges` (an edge's first resolution
 /// attempt), `reconcile_unresolved_reference_store` (an edge that went
 /// NULL-target with no row yet), and `Db::carry_forward_files` (carrying an
 /// already-unresolved reference into the new graph version).
@@ -2314,8 +2326,9 @@ pub(crate) const UNRESOLVED_REFERENCE_INSERT_SQL: &str = "INSERT INTO unresolved
      (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail,
       reason, import_candidates, detail, evidence_snippet, evidence_start_line,
       evidence_end_line, confidence, commit_sha, trace_id, span_id, event_ts,
-      receiver_type, bare_call, call_shape, graph_version)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+      receiver_type, bare_call, call_shape, graph_version, receiver_scope, deferred_kind,
+      deferred)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 /// Everything `Resolver::resolve` needs to re-judge one reference, shared by
 /// `NullTargetEdgeRow` (read straight from an edge with no store row yet)
@@ -2337,6 +2350,9 @@ struct ReferenceContext {
     target_qualname: Option<String>,
     edge_kind: String,
     receiver_type: Option<String>,
+    receiver_scope: Option<String>,
+    deferred_kind: Option<String>,
+    deferred: Option<String>,
     import_candidates: Option<String>,
     bare_call: bool,
     call_shape: Option<String>,
@@ -2346,6 +2362,20 @@ struct ReferenceContext {
 }
 
 impl ReferenceContext {
+    /// The stored deferred marker, if any.
+    fn marker(&self) -> Option<DeferredMarker> {
+        DeferredMarker::decode(self.deferred_kind.as_deref()?, self.deferred.as_deref()?)
+    }
+
+    /// The callee text this reference keeps as its `target_qualname` while a
+    /// deferred-argument edge is unbound (`None` for any other reference).
+    fn deferred_callee(&self) -> Option<String> {
+        match self.marker()? {
+            DeferredMarker::Argument(arg) => Some(arg.callee),
+            _ => None,
+        }
+    }
+
     /// Rebuild this context's `Reference` and run it through `resolver`.
     fn resolve(
         &self,
@@ -2357,11 +2387,18 @@ impl ReferenceContext {
             .as_deref()
             .map(decode_import_candidates)
             .unwrap_or_default();
+        let marker = self.marker();
+        let scope = self
+            .receiver_scope
+            .as_deref()
+            .map(|column| TypeScope::decode(Some(column)));
         resolver.resolve(
             &Reference {
                 target_qualname: self.target_qualname.as_deref(),
                 edge_kind: &self.edge_kind,
                 receiver_type: self.receiver_type.as_deref(),
+                receiver_scope: scope.as_ref(),
+                deferred: marker.as_ref(),
                 import_candidates: &import_candidates,
                 source_lang: &self.source_lang,
                 source_file_path: &self.file_path,
@@ -2374,22 +2411,16 @@ impl ReferenceContext {
     }
 }
 
-/// The callee text a deferred-argument edge keeps as its `target_qualname`
-/// while unbound (`None` for any other edge).
-pub(crate) fn deferred_callee(receiver_type: Option<&str>) -> Option<String> {
-    ReceiverType::parse_deferred_argument(receiver_type?).map(|arg| arg.callee.to_string())
-}
-
 /// The `target_qualname` to store for an edge just bound to `target_id`: the
 /// bound symbol's qualname for a deferred-argument edge (whose own text is
 /// only its callee's name), else the extracted text unchanged.
 pub(crate) fn bound_target_qualname(
     conn: &Connection,
-    receiver_type: Option<&str>,
+    is_deferred_argument: bool,
     target_qualname: Option<&str>,
     target_id: i64,
 ) -> Result<Option<String>> {
-    if receiver_type.is_some_and(|r| r.starts_with(DEFERRED_ARG_PREFIX)) {
+    if is_deferred_argument {
         return Ok(conn
             .query_row(
                 "SELECT qualname FROM symbols WHERE id = ?",
@@ -2408,7 +2439,7 @@ pub(crate) fn bound_target_qualname(
 static UPDATE_EDGE_TARGET_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "UPDATE edges SET target_symbol_id = ?1, resolution_kind = ?2,
-           target_qualname = CASE WHEN receiver_type LIKE '{DEFERRED_ARG_PREFIX}%'
+           target_qualname = CASE WHEN deferred_kind = '{DEFERRED_KIND_ARGUMENT}'
              THEN COALESCE((SELECT qualname FROM symbols WHERE id = ?1), ?4)
              ELSE target_qualname END
          WHERE id = ?3"
@@ -2599,7 +2630,6 @@ fn extension_receiver_type(signature: &str) -> Option<&str> {
 
 /// `Ns.List<int>?` -> `List`.
 fn simple_type_name(ty: &str) -> &str {
-    let ty = ty.rsplit('|').next().unwrap_or(ty);
     let ty = ty.trim().trim_end_matches('?');
     let ty = ty.split('<').next().unwrap_or(ty);
     ty.rsplit('.').next().unwrap_or(ty).trim()
@@ -2743,7 +2773,8 @@ impl Db {
                         e.receiver_type, e.import_candidates, e.bare_call,
                         e.detail, e.evidence_snippet, e.evidence_start_line, e.evidence_end_line,
                         e.confidence, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
-                        COALESCE(f.language, 'unknown'), f.path, src.qualname, e.call_shape
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname, e.call_shape,
+                        e.receiver_scope, e.deferred_kind, e.deferred
                  FROM edges e
                  JOIN files f ON f.id = e.file_id
                  LEFT JOIN symbols src ON src.id = e.source_symbol_id
@@ -2771,6 +2802,9 @@ impl Db {
                         edge_kind: row.get(3)?,
                         target_qualname: row.get(4)?,
                         receiver_type: row.get(5)?,
+                        receiver_scope: row.get(21)?,
+                        deferred_kind: row.get(22)?,
+                        deferred: row.get(23)?,
                         import_candidates: row.get(6)?,
                         bare_call: row.get(7)?,
                         call_shape: row.get(20)?,
@@ -2806,7 +2840,7 @@ impl Db {
                             target_id,
                             kind.as_str(),
                             edge_id,
-                            deferred_callee(row.ctx.receiver_type.as_deref())
+                            row.ctx.deferred_callee()
                         ])?;
                         reconciled += 1;
                     }
@@ -2857,6 +2891,9 @@ impl Db {
                             row.ctx.bare_call,
                             row.ctx.call_shape.as_deref(),
                             graph_version,
+                            row.ctx.receiver_scope.as_deref(),
+                            row.ctx.deferred_kind.as_deref(),
+                            row.ctx.deferred.as_deref(),
                         ])?;
                         reconciled += 1;
                     }
@@ -2952,11 +2989,9 @@ impl Db {
         // A stored deferred-receiver row hangs on its callee's signature,
         // not on any symbol sharing its name, so it is always retried.
         let has_deferred_rows: bool = self.read_conn()?.query_row(
-            &format!(
-                "SELECT EXISTS(SELECT 1 FROM unresolved_references
+            "SELECT EXISTS(SELECT 1 FROM unresolved_references
                  WHERE graph_version = ? AND edge_kind = 'CALLS'
-                   AND receiver_type LIKE '{DEFERRED_MARKER_PREFIX}%')"
-            ),
+                   AND deferred_kind IS NOT NULL)",
             params![graph_version],
             |row| row.get(0),
         )?;
@@ -2991,13 +3026,14 @@ impl Db {
             // Issue #79: the store is self-contained now, so neither branch
             // joins back to `edges` at all -- every column comes straight
             // off `ur`.
-            let mut stmt = tx.prepare(&format!(
+            let mut stmt = tx.prepare(
                 "SELECT DISTINCT ur.id, ur.edge_id, ur.source_symbol_id, ur.file_id,
                         ur.edge_kind, ur.reference_name, ur.import_candidates,
                         ur.receiver_type, ur.bare_call, ur.detail, ur.evidence_snippet,
                         ur.evidence_start_line, ur.evidence_end_line, ur.confidence,
                         ur.commit_sha, ur.trace_id, ur.span_id, ur.event_ts,
-                        COALESCE(f.language, 'unknown'), f.path, src.qualname, ur.call_shape
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname, ur.call_shape,
+                        ur.receiver_scope, ur.deferred_kind, ur.deferred
                  FROM unresolved_references ur
                  JOIN files f ON f.id = ur.file_id
                  LEFT JOIN symbols src ON src.id = ur.source_symbol_id
@@ -3013,14 +3049,15 @@ impl Db {
                         ur.receiver_type, ur.bare_call, ur.detail, ur.evidence_snippet,
                         ur.evidence_start_line, ur.evidence_end_line, ur.confidence,
                         ur.commit_sha, ur.trace_id, ur.span_id, ur.event_ts,
-                        COALESCE(f.language, 'unknown'), f.path, src.qualname, ur.call_shape
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname, ur.call_shape,
+                        ur.receiver_scope, ur.deferred_kind, ur.deferred
                  FROM unresolved_references ur
                  JOIN files f ON f.id = ur.file_id
                  LEFT JOIN symbols src ON src.id = ur.source_symbol_id
                  WHERE ur.graph_version = ?1
                    AND ((?4 AND ur.receiver_type IS NOT NULL AND ur.receiver_type != '')
-                        OR ur.receiver_type LIKE '{DEFERRED_MARKER_PREFIX}%')"
-            ))?;
+                        OR ur.deferred_kind IS NOT NULL)",
+            )?;
             let rows = stmt.query_map(
                 params![
                     graph_version,
@@ -3048,6 +3085,9 @@ impl Db {
                             target_qualname: row.get(5)?,
                             import_candidates: row.get(6)?,
                             receiver_type: row.get(7)?,
+                            receiver_scope: row.get(22)?,
+                            deferred_kind: row.get(23)?,
+                            deferred: row.get(24)?,
                             bare_call: row.get(8)?,
                             call_shape: row.get(21)?,
                             source_lang: row.get(18)?,
@@ -3073,8 +3113,9 @@ impl Db {
                  (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
                   evidence_snippet, evidence_start_line, evidence_end_line, confidence,
                   graph_version, commit_sha, trace_id, span_id, event_ts, receiver_type,
-                  resolution_kind, import_candidates, bare_call, call_shape)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  resolution_kind, import_candidates, bare_call, call_shape, receiver_scope,
+                  deferred_kind, deferred)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             let mut delete_store = tx.prepare("DELETE FROM unresolved_references WHERE id = ?")?;
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
@@ -3088,7 +3129,7 @@ impl Db {
                                 target_id,
                                 kind.as_str(),
                                 edge_id,
-                                deferred_callee(row.ctx.receiver_type.as_deref())
+                                row.ctx.deferred_callee()
                             ])?;
                         }
                         None => {
@@ -3099,7 +3140,8 @@ impl Db {
                                 &row.ctx.edge_kind,
                                 bound_target_qualname(
                                     &tx,
-                                    row.ctx.receiver_type.as_deref(),
+                                    row.ctx.deferred_kind.as_deref()
+                                        == Some(DEFERRED_KIND_ARGUMENT),
                                     row.ctx.target_qualname.as_deref(),
                                     target_id,
                                 )?,
@@ -3118,6 +3160,9 @@ impl Db {
                                 row.ctx.import_candidates.as_deref(),
                                 row.ctx.bare_call,
                                 row.ctx.call_shape.as_deref(),
+                                row.ctx.receiver_scope.as_deref(),
+                                row.ctx.deferred_kind.as_deref(),
+                                row.ctx.deferred.as_deref(),
                             ])?;
                         }
                     }
@@ -3188,10 +3233,8 @@ impl Db {
         self.rejudge_bound_edges(
             graph_version,
             "",
-            &format!(
-                "AND e.target_symbol_id IS NOT NULL AND e.kind = 'CALLS'
-                 AND e.receiver_type LIKE '{DEFERRED_MARKER_PREFIX}%'"
-            ),
+            "AND e.target_symbol_id IS NOT NULL AND e.kind = 'CALLS'
+             AND e.deferred_kind IS NOT NULL",
         )
     }
 
@@ -3201,15 +3244,15 @@ impl Db {
     /// another file). The extractor can't see that return type, so the call
     /// site's `CALLS` edge (or its unresolved-store row) is re-read here and
     /// the edges derived from the callee's declaration. Last pass's derived
-    /// edges (`call_shape = DERIVED_RPC_SHAPE`) go first, so the outcome
+    /// edges (`derived = 1`) go first, so the outcome
     /// depends only on the current symbols and incremental sync equals a
     /// fresh reindex (issue #77). Returns how many edges it wrote.
     pub fn rederive_deferred_rpc_calls(&self, graph_version: i64) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
-            "DELETE FROM edges WHERE graph_version = ?1 AND call_shape = ?2",
-            params![graph_version, DERIVED_RPC_SHAPE],
+            "DELETE FROM edges WHERE graph_version = ?1 AND derived = 1",
+            params![graph_version],
         )?;
         let sites = load_deferred_call_sites(&tx, graph_version)?;
         let derived = {
@@ -3245,7 +3288,8 @@ impl Db {
             let mut stmt = tx.prepare(&format!(
                 "SELECT e.id, e.target_symbol_id, e.kind, e.target_qualname,
                         e.receiver_type, e.import_candidates, e.bare_call,
-                        COALESCE(f.language, 'unknown'), f.path, src.qualname, e.call_shape
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname, e.call_shape,
+                        e.receiver_scope, e.deferred_kind, e.deferred
                  FROM edges e
                  {extra_join}
                  JOIN files f ON f.id = e.file_id
@@ -3261,6 +3305,9 @@ impl Db {
                         edge_kind: row.get(2)?,
                         target_qualname: row.get(3)?,
                         receiver_type: row.get(4)?,
+                        receiver_scope: row.get(11)?,
+                        deferred_kind: row.get(12)?,
+                        deferred: row.get(13)?,
                         import_candidates: row.get(5)?,
                         bare_call: row.get(6)?,
                         call_shape: row.get(10)?,
@@ -3287,7 +3334,7 @@ impl Db {
                             target_id,
                             kind.as_str(),
                             row.edge_id,
-                            deferred_callee(row.ctx.receiver_type.as_deref())
+                            row.ctx.deferred_callee()
                         ])?;
                         total_resolved += 1;
                     }
@@ -3300,7 +3347,7 @@ impl Db {
                             None::<i64>,
                             None::<String>,
                             row.edge_id,
-                            deferred_callee(row.ctx.receiver_type.as_deref())
+                            row.ctx.deferred_callee()
                         ])?;
                         total_resolved += 1;
                     }
@@ -3558,8 +3605,9 @@ struct NullTargetEdgeRow {
 struct DeferredCallSite {
     file_id: i64,
     source_symbol_id: Option<i64>,
-    /// The `edges.receiver_type` column text.
-    marker: String,
+    /// The deferred receiver, and its stored payload (the cache key).
+    marker: Option<DeferredMarker>,
+    payload: String,
     /// The call's target text (`c.SayHello`).
     target: String,
     snippet: Option<String>,
@@ -3586,8 +3634,8 @@ struct DerivedRpcCall<'a> {
 }
 
 /// Every deferred `CALLS` site of `graph_version`, bound (`edges`) or not
-/// (`unresolved_references`). Both scans hit partial indexes on the marker
-/// prefix (migration 23).
+/// (`unresolved_references`). Both scans hit partial indexes on
+/// `deferred_kind` (migration 24).
 fn load_deferred_call_sites(
     conn: &Connection,
     graph_version: i64,
@@ -3598,21 +3646,23 @@ fn load_deferred_call_sites(
         ("unresolved_references", "edge_kind", "reference_name"),
     ] {
         let mut stmt = conn.prepare(&format!(
-            "SELECT t.file_id, t.source_symbol_id, t.receiver_type, t.{target_col},
+            "SELECT t.file_id, t.source_symbol_id, t.deferred, t.{target_col},
                     t.evidence_snippet, t.evidence_start_line, t.evidence_end_line,
                     t.confidence, t.commit_sha, t.trace_id, t.span_id, t.event_ts,
                     COALESCE(f.language, 'unknown'), f.path
              FROM {table} t JOIN files f ON f.id = t.file_id
              WHERE t.graph_version = ?1 AND t.{kind_col} = 'CALLS'
-               AND t.receiver_type LIKE '{DEFERRED_RETURN_PREFIX}%'
+               AND t.deferred_kind = '{DEFERRED_KIND_RETURN}'
                AND t.{target_col} IS NOT NULL
              ORDER BY t.id"
         ))?;
         let rows = stmt.query_map(params![graph_version], |row| {
+            let payload: String = row.get(2)?;
             Ok(DeferredCallSite {
                 file_id: row.get(0)?,
                 source_symbol_id: row.get(1)?,
-                marker: row.get(2)?,
+                marker: DeferredMarker::decode(DEFERRED_KIND_RETURN, &payload),
+                payload,
                 target: row.get(3)?,
                 snippet: row.get(4)?,
                 start_line: row.get(5)?,
@@ -3627,7 +3677,10 @@ fn load_deferred_call_sites(
             })
         })?;
         for row in rows {
-            sites.push(row?);
+            let site = row?;
+            if site.marker.is_some() {
+                sites.push(site);
+            }
         }
     }
     Ok(sites)
@@ -3643,17 +3696,18 @@ fn derive_rpc_calls<'a>(
     let mut cache: HashMap<RpcCacheKey<'_>, Vec<(String, String)>> = HashMap::new();
     let mut derived = Vec::new();
     for site in sites {
-        let Some(hook) = profile_for(&site.lang).deferred_rpc else {
+        let (Some(hook), Some(marker)) = (profile_for(&site.lang).deferred_rpc, &site.marker)
+        else {
             continue;
         };
         let method = qualname_trailing_name(&site.target);
-        let key = (site.marker.as_str(), method, site.lang.as_str());
+        let key = (site.payload.as_str(), method, site.lang.as_str());
         if let std::collections::hash_map::Entry::Vacant(slot) = cache.entry(key) {
             let index = LanguageIndex {
                 resolver,
                 lang: &site.lang,
             };
-            let edges = hook(&site.marker, method, &index)?.unwrap_or_default();
+            let edges = hook(marker, method, &index)?.unwrap_or_default();
             let edges = edges
                 .into_iter()
                 .map(|e| (e.target_qualname, e.detail))
@@ -3666,6 +3720,8 @@ fn derive_rpc_calls<'a>(
                     target_qualname: Some(target_qualname),
                     edge_kind: "RPC_CALL",
                     receiver_type: None,
+                    receiver_scope: None,
+                    deferred: None,
                     import_candidates: &[],
                     source_lang: &site.lang,
                     source_file_path: &site.path,
@@ -3698,8 +3754,8 @@ fn insert_derived_rpc_calls(
         "INSERT INTO edges
          (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
           evidence_snippet, evidence_start_line, evidence_end_line, confidence,
-          graph_version, commit_sha, trace_id, span_id, event_ts, resolution_kind, call_shape)
-         VALUES (?, ?, ?, 'RPC_CALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          graph_version, commit_sha, trace_id, span_id, event_ts, resolution_kind, derived)
+         VALUES (?, ?, ?, 'RPC_CALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
     )?;
     for d in derived {
         let site = d.site;
@@ -3719,7 +3775,6 @@ fn insert_derived_rpc_calls(
             site.span_id,
             site.event_ts,
             d.resolution_kind,
-            DERIVED_RPC_SHAPE,
         ])?;
     }
     Ok(derived.len())
@@ -4240,6 +4295,8 @@ mod tests {
             target_qualname: Some(target_qualname),
             edge_kind,
             receiver_type: None,
+            receiver_scope: None,
+            deferred: None,
             import_candidates: &[],
             source_lang,
             source_file_path,

@@ -5,8 +5,8 @@ use crate::db::resolver::{
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    CallShape, DeferredArgument, DeferredBase, DeferredReturn, EdgeInput, ExtractedFile,
-    MAX_DEFERRED_DEPTH, ReceiverType, SymbolInput, TypeScope,
+    CallShape, DeferredArgument, DeferredBase, DeferredMarker, DeferredReturn, EdgeInput,
+    ExtractedFile, MAX_DEFERRED_DEPTH, ReceiverType, SymbolInput, TypeScope,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -1676,7 +1676,7 @@ fn call_shape(node: Node<'_>) -> CallShape {
     }
 }
 
-/// `@arg:` marker for a target-typed `new(..)` passed as a call argument
+/// Deferred-argument marker for a target-typed `new(..)` passed as a call argument
 /// (`Foo(new())`, `recv.M(1, x: new(2))`): the resolver finishes it from the
 /// callee's declared parameter type (`ReceiverType::deferred_argument`).
 /// `None` when the callee can't be named from this file alone.
@@ -1720,7 +1720,9 @@ fn deferred_argument_marker(
                         format!("{container}.{method}")
                     } else {
                         match infer_receiver_type(function, source, ctx) {
-                            ReceiverType::Known(ty) => format!("{ty}.{method}"),
+                            ReceiverType::Known(ty) | ReceiverType::Scoped { ty, .. } => {
+                                format!("{ty}.{method}")
+                            }
                             // A bare type name (`Helper.Make(new())`).
                             ReceiverType::NotTracked
                                 if receiver.kind() == "identifier"
@@ -3862,20 +3864,23 @@ fn handle_base_list(
 
 /// Attach the lookup scope to an unqualified interface receiver type (see
 /// [`TypeScope`]); qualified names need none, and an alias is expanded.
-fn with_type_scope(ty: String, ctx: &Context) -> String {
+fn with_type_scope(ty: String, ctx: &Context) -> ReceiverType {
     let ty = expand_type_alias(ty, ctx);
     let head = ty.split('<').next().unwrap_or(&ty);
     if head.contains('.') || !is_likely_interface_name(head) {
-        return ty;
+        return ReceiverType::Known(ty);
     }
     let enclosing = enclosing_scopes(ctx);
     let usings = using_scopes(ctx, &enclosing);
-    TypeScope { enclosing, usings }.encode(&ty)
+    let scope = TypeScope { enclosing, usings };
+    if scope.encode().is_none() {
+        return ReceiverType::Known(ty);
+    }
+    ReceiverType::Scoped { scope, ty }
 }
 
 /// `N1.IA<int>` -> `IA`: a receiver type without qualifier or arguments.
 fn bare_type_name(ty: &str) -> &str {
-    let ty = ty.rsplit('|').next().unwrap_or(ty);
     let head = ty.split('<').next().unwrap_or(ty);
     head.rsplit('.').next().unwrap_or(head)
 }
@@ -4205,7 +4210,7 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     match infer_receiver_type_raw(function_node, source, ctx) {
         ReceiverType::Known(ty) => {
             let ty = strip_open_args(ty, function_node, source);
-            ReceiverType::Known(with_type_scope(ty, ctx))
+            with_type_scope(ty, ctx)
         }
         other => other,
     }
@@ -4701,8 +4706,10 @@ fn extension_method_candidates(
         if !namespace_in_scope(&entry.namespace, ctx) {
             continue;
         }
-        if let (ReceiverType::Known(call_ty), Some(entry_ty)) =
-            (receiver_type, &entry.receiver_type)
+        if let (
+            ReceiverType::Known(call_ty) | ReceiverType::Scoped { ty: call_ty, .. },
+            Some(entry_ty),
+        ) = (receiver_type, &entry.receiver_type)
             && bare_type_name(call_ty) != entry_ty
         {
             continue;
@@ -5290,16 +5297,19 @@ fn unwrap_return(ret: &str, awaited: bool) -> Option<String> {
 
 /// `LanguageProfile::deferred_receiver`: the type a deferred call returns
 /// (`""` when it can't be told, so the call binds nothing).
-fn resolve_deferred(column: &str, index: &dyn DeclarationIndex) -> Result<Option<Option<String>>> {
-    if let Some(arg) = DeferredArgument::parse(column) {
-        return Ok(Some(Some(argument_type(&arg, index)?.unwrap_or_default())));
+fn resolve_deferred(
+    marker: &DeferredMarker,
+    index: &dyn DeclarationIndex,
+) -> Result<Option<Option<String>>> {
+    match marker {
+        DeferredMarker::Argument(arg) => {
+            Ok(Some(Some(argument_type(arg, index)?.unwrap_or_default())))
+        }
+        DeferredMarker::Return(call) => Ok(Some(Some(
+            receiver_type(call, index, 0)?.unwrap_or_default(),
+        ))),
+        DeferredMarker::Rust(_) => Ok(None),
     }
-    let Some(call) = DeferredReturn::parse(column) else {
-        return Ok(None);
-    };
-    Ok(Some(Some(
-        receiver_type(&call, index, 0)?.unwrap_or_default(),
-    )))
 }
 
 /// The repo type a `new(..)` argument constructs: the declared type of the
@@ -5402,14 +5412,14 @@ fn reachable<T: PartialEq>(
 /// generated gRPC client -- one per candidate package, taken from the
 /// imports of the callee's file, where the client type is written.
 fn deferred_rpc_calls(
-    column: &str,
+    marker: &DeferredMarker,
     method: &str,
     index: &dyn DeclarationIndex,
 ) -> Result<Option<Vec<RpcCallEdge>>> {
-    let Some(call) = DeferredReturn::parse(column) else {
+    let DeferredMarker::Return(call) = marker else {
         return Ok(None);
     };
-    reachable(&call, index, 0, |decl, awaited| {
+    reachable(call, index, 0, |decl, awaited| {
         let Some(signature) = decl.signature.as_deref() else {
             return Ok(None);
         };

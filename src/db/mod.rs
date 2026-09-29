@@ -1,8 +1,6 @@
 use crate::config::Config;
 use crate::indexer::differ::SymbolDiff;
-#[cfg(test)]
-use crate::indexer::extract::ReceiverType;
-use crate::indexer::extract::{EdgeInput, SymbolInput};
+use crate::indexer::extract::{DeferredMarker, EdgeInput, ReceiverType, SymbolInput};
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use crate::model::{Edge, GraphVersion, Symbol};
 use anyhow::{Context, Result};
@@ -131,6 +129,9 @@ struct CarriedUnresolvedRow {
     receiver_type: Option<String>,
     bare_call: bool,
     call_shape: Option<String>,
+    receiver_scope: Option<String>,
+    deferred_kind: Option<String>,
+    deferred: Option<String>,
 }
 
 impl Db {
@@ -488,7 +489,8 @@ impl Db {
                 (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
                  evidence_snippet, evidence_start_line, evidence_end_line, confidence,
                  graph_version, commit_sha, trace_id, span_id, event_ts,
-                 receiver_type, resolution_kind, import_candidates, bare_call, call_shape)
+                 receiver_type, resolution_kind, import_candidates, bare_call, call_shape,
+                 receiver_scope, deferred_kind, deferred, derived)
              SELECT
                 e.file_id,
                 (SELECT ns.id FROM symbols ns
@@ -498,7 +500,8 @@ impl Db {
                 e.kind, e.target_qualname, e.detail, e.evidence_snippet,
                 e.evidence_start_line, e.evidence_end_line, e.confidence,
                 ?, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
-                e.receiver_type, e.resolution_kind, e.import_candidates, e.bare_call, e.call_shape
+                e.receiver_type, e.resolution_kind, e.import_candidates, e.bare_call, e.call_shape,
+                e.receiver_scope, e.deferred_kind, e.deferred, e.derived
              FROM edges e
              LEFT JOIN symbols src ON src.id = e.source_symbol_id
              LEFT JOIN symbols tgt ON tgt.id = e.target_symbol_id
@@ -647,14 +650,16 @@ impl Db {
                     (source_symbol_id, file_id, edge_kind, reference_name, name_tail, reason,
                      import_candidates, detail, evidence_snippet, evidence_start_line,
                      evidence_end_line, confidence, commit_sha, trace_id, span_id, event_ts,
-                     receiver_type, bare_call, call_shape, graph_version)
+                     receiver_type, bare_call, call_shape, graph_version, receiver_scope,
+                     deferred_kind, deferred)
                  SELECT
                     (SELECT ns.id FROM symbols ns
                         WHERE ns.stable_id = os.stable_id AND ns.graph_version = ? LIMIT 1),
                     ur.file_id, ur.edge_kind, ur.reference_name, ur.name_tail, ur.reason,
                     ur.import_candidates, ur.detail, ur.evidence_snippet, ur.evidence_start_line,
                     ur.evidence_end_line, ur.confidence, ur.commit_sha, ur.trace_id, ur.span_id,
-                    ur.event_ts, ur.receiver_type, ur.bare_call, ur.call_shape, ?
+                    ur.event_ts, ur.receiver_type, ur.bare_call, ur.call_shape, ?,
+                    ur.receiver_scope, ur.deferred_kind, ur.deferred
                  FROM unresolved_references ur
                  LEFT JOIN symbols os ON os.id = ur.source_symbol_id
                  WHERE ur.edge_id IS NULL AND ur.graph_version = ? AND ur.file_id IN ({placeholders})"
@@ -679,7 +684,8 @@ impl Db {
                         ur.reference_name, ur.name_tail, ur.reason, ur.import_candidates,
                         ur.detail, ur.evidence_snippet, ur.evidence_start_line,
                         ur.evidence_end_line, ur.confidence, ur.commit_sha, ur.trace_id,
-                        ur.span_id, ur.event_ts, ur.receiver_type, ur.bare_call, ur.call_shape
+                        ur.span_id, ur.event_ts, ur.receiver_type, ur.bare_call, ur.call_shape,
+                        ur.receiver_scope, ur.deferred_kind, ur.deferred
                  FROM unresolved_references ur
                  WHERE ur.edge_id IS NOT NULL AND ur.graph_version = ?
                    AND ur.file_id IN ({placeholders})"
@@ -714,6 +720,9 @@ impl Db {
                             receiver_type: row.get(17)?,
                             bare_call: row.get(18)?,
                             call_shape: row.get(19)?,
+                            receiver_scope: row.get(20)?,
+                            deferred_kind: row.get(21)?,
+                            deferred: row.get(22)?,
                         })
                     },
                 )?;
@@ -748,6 +757,9 @@ impl Db {
                     receiver_type,
                     bare_call,
                     call_shape,
+                    receiver_scope,
+                    deferred_kind,
+                    deferred,
                 } = row;
                 // Not expected to miss (`old_edge_id` came straight from
                 // this same file set's edges), but skip rather than panic
@@ -783,6 +795,9 @@ impl Db {
                     bare_call,
                     call_shape,
                     to_version,
+                    receiver_scope,
+                    deferred_kind,
+                    deferred,
                 ])?;
             }
         }
@@ -1424,8 +1439,9 @@ impl Db {
                 "INSERT INTO edges
                  (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail, evidence_snippet,
                   evidence_start_line, evidence_end_line, confidence, graph_version, commit_sha, trace_id, span_id, event_ts,
-                  receiver_type, resolution_kind, import_candidates, bare_call, call_shape)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  receiver_type, resolution_kind, import_candidates, bare_call, call_shape,
+                  receiver_scope, deferred_kind, deferred)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             let mut exact_lookup_stmt = tx.prepare(
                 "SELECT id FROM symbols WHERE qualname = ? AND graph_version = ? ORDER BY id ASC LIMIT 1",
@@ -1472,8 +1488,13 @@ impl Db {
                         graph_version,
                     )?,
                 };
-                let extracted_column = edge.receiver_type.as_column();
-                let extracted_receiver_type = extracted_column.as_deref();
+                let receiver = edge.receiver_type.to_columns();
+                let extracted_receiver_type = receiver.receiver_type.as_deref();
+                let marker = edge.receiver_type.deferred_marker();
+                let scope = match &edge.receiver_type {
+                    ReceiverType::Scoped { scope, .. } => Some(scope),
+                    _ => None,
+                };
                 let call_shape = edge.call_shape.map(|shape| shape.encode());
                 let pinned_target = match (&edge.target_qualname, edge.target_start_byte) {
                     (Some(qualname), Some(start_byte)) => span_lookup_stmt
@@ -1489,6 +1510,8 @@ impl Db {
                         target_qualname: edge.target_qualname.as_deref(),
                         edge_kind: &edge.kind,
                         receiver_type: extracted_receiver_type,
+                        receiver_scope: scope,
+                        deferred: marker.as_ref(),
                         import_candidates: &edge.import_candidates,
                         source_lang: &source_lang,
                         source_file_path: &source_file_path,
@@ -1520,7 +1543,7 @@ impl Db {
                 let stored_target = match resolution.target_id() {
                     Some(id) => resolver::bound_target_qualname(
                         &tx,
-                        extracted_receiver_type,
+                        matches!(marker, Some(DeferredMarker::Argument(_))),
                         edge.target_qualname.as_deref(),
                         id,
                     )?,
@@ -1543,11 +1566,14 @@ impl Db {
                         edge.trace_id.as_deref(),
                         edge.span_id.as_deref(),
                         edge.event_ts,
-                        resolution.stored_receiver_type(extracted_receiver_type),
+                        resolution.stored_receiver_type(extracted_receiver_type, marker.is_some()),
                         resolution.kind_column(),
                         resolver::encode_import_candidates(&edge.import_candidates),
                         edge.bare_call,
                         call_shape.as_deref(),
+                        receiver.receiver_scope.as_deref(),
+                        receiver.deferred_kind,
+                        receiver.deferred.as_deref(),
                     ])?;
                     count += 1;
                     Some(tx.last_insert_rowid())
@@ -1580,10 +1606,13 @@ impl Db {
                         edge.trace_id.as_deref(),
                         edge.span_id.as_deref(),
                         edge.event_ts,
-                        resolution.stored_receiver_type(extracted_receiver_type),
+                        resolution.stored_receiver_type(extracted_receiver_type, marker.is_some()),
                         edge.bare_call,
                         call_shape.as_deref(),
                         graph_version,
+                        receiver.receiver_scope.as_deref(),
+                        receiver.deferred_kind,
+                        receiver.deferred.as_deref(),
                     ])?;
                 }
             }
