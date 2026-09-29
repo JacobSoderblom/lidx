@@ -72,7 +72,7 @@ impl Db {
         sql.push_str(
             " ORDER BY \
              CASE WHEN LOWER(s.name) = ? THEN 0 ELSE 1 END, \
-             CASE WHEN s.kind IN ('class','function','method','struct','interface','enum','trait','service') THEN 0 \
+             CASE WHEN s.kind IN ('class','function','method','struct','interface','enum','trait','service','message') THEN 0 \
                   WHEN s.kind IN ('module','namespace','package') THEN 1 \
                   WHEN s.kind IN ('heading','section') THEN 3 \
                   ELSE 2 END, \
