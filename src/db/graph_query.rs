@@ -4,6 +4,163 @@ use anyhow::Result;
 use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
 
+/// `FROM` clause of the one interface-dispatch query (issue #122), shared
+/// by [`Db::dispatch_pairs`] and `dead_symbols`: yields one row per
+/// `(im.id = interface method, cm.id = implementing method)` -- `cm`'s class
+/// `c` IMPLEMENTS the interface `i`, and `im` is `i`'s method with the same
+/// name (same qualname tail as `cm`, whatever the separator). The parent of
+/// `cm` is `qualname` minus `<sep><name>`, tried for 1- and 2-char
+/// separators (`.` / `::`). Callers append their own `WHERE`/`JOIN`s.
+/// `graph_version` is inlined (an `i64`, so injection-safe) so callers can
+/// mix it into queries with their own positional parameters.
+pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
+    let gv = graph_version;
+    format!(
+        "FROM symbols cm
+         JOIN symbols c ON c.graph_version = {gv}
+                       AND c.qualname IN (
+                           substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 1),
+                           substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 2))
+         JOIN edges e ON e.source_symbol_id = c.id AND e.kind = 'IMPLEMENTS'
+                     AND e.graph_version = {gv}
+         JOIN symbols i ON i.id = e.target_symbol_id
+         JOIN symbols im ON im.qualname = i.qualname || substr(cm.qualname, length(c.qualname) + 1)
+                        AND im.name = cm.name AND im.kind = 'method' AND im.graph_version = {gv}
+         JOIN files fc ON fc.id = cm.file_id
+                      AND (fc.deleted_version IS NULL OR fc.deleted_version > {gv})
+         JOIN files fi ON fi.id = im.file_id
+                      AND (fi.deleted_version IS NULL OR fi.deleted_version > {gv})
+         WHERE cm.kind = 'method' AND cm.graph_version = {gv}"
+    )
+}
+
+impl Db {
+    /// The one lookup behind interface dispatch (issue #122): a call through
+    /// an interface-typed receiver only ever resolves to the *interface*
+    /// method, so the implementing method looks uncalled. Returns every
+    /// `(interface_method_id, impl_method_id)` pair where either side is in
+    /// `ids`, via class IMPLEMENTS edges + same method name. Language-
+    /// agnostic. Deliberately not handled: interface inheritance chains,
+    /// EXTENDS'd virtual/abstract methods, generics, explicit interface impls.
+    pub fn dispatch_pairs(&self, ids: &[i64], graph_version: i64) -> Result<Vec<(i64, i64)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT DISTINCT im.id, cm.id {} AND (cm.id IN ({list}) OR im.id IN ({list}))
+             ORDER BY im.id, cm.id",
+            dispatch_pairs_from(graph_version)
+        );
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// [`Db::dispatch_pairs`] for one method, split by side.
+    pub fn dispatch_peers(&self, symbol_id: i64, graph_version: i64) -> Result<DispatchPeers> {
+        let mut peers = DispatchPeers::default();
+        for (iface, imp) in self.dispatch_pairs(&[symbol_id], graph_version)? {
+            if imp == symbol_id {
+                peers.interface_methods.push(iface);
+            }
+            if iface == symbol_id {
+                peers.impl_methods.push(imp);
+            }
+        }
+        Ok(peers)
+    }
+
+    /// Types that IMPLEMENT `type_id` (incoming IMPLEMENTS edges).
+    pub fn implementing_types(&self, type_id: i64, graph_version: i64) -> Result<Vec<i64>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT source_symbol_id FROM edges
+             WHERE target_symbol_id = ?1 AND kind = 'IMPLEMENTS' AND graph_version = ?2
+               AND source_symbol_id IS NOT NULL
+             ORDER BY source_symbol_id",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![type_id, graph_version], |r| {
+            r.get::<_, i64>(0)
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// [`Db::edges_for_symbols`] plus, for every id, the synthetic
+    /// interface-dispatch edges around it: CALLS edges from an interface
+    /// method to each implementing method (`resolution_kind =
+    /// "interface_dispatch"`, id 0), listed under both endpoints. Downstream
+    /// from the interface method reaches the impls; upstream from an impl
+    /// reaches the interface method and, through its real edges, its
+    /// callers. Used by graph traversals (trace_flow, analyze_impact);
+    /// every other `edges_for_symbol(s)` caller keeps raw-edge semantics.
+    pub fn edges_for_symbols_with_dispatch(
+        &self,
+        ids: &[i64],
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<HashMap<i64, Vec<Edge>>> {
+        let mut map = self.edges_for_symbols(ids, languages, graph_version)?;
+        for (iface, imp) in self.dispatch_pairs(ids, graph_version)? {
+            let peer_file = |id: i64| -> Result<String> {
+                Ok(self
+                    .get_symbol_by_id(id)?
+                    .map(|s| s.file_path)
+                    .unwrap_or_default())
+            };
+            let make = |file_path: String| Edge {
+                id: 0,
+                file_path,
+                kind: "CALLS".to_string(),
+                source_symbol_id: Some(iface),
+                target_symbol_id: Some(imp),
+                target_qualname: None,
+                detail: Some("interface dispatch".to_string()),
+                evidence_snippet: None,
+                evidence_start_line: None,
+                evidence_end_line: None,
+                confidence: None,
+                resolution_kind: Some("interface_dispatch".to_string()),
+                graph_version,
+                commit_sha: None,
+                trace_id: None,
+                span_id: None,
+                event_ts: None,
+            };
+            if ids.contains(&iface) {
+                map.entry(iface).or_default().push(make(peer_file(imp)?));
+            }
+            if ids.contains(&imp) {
+                map.entry(imp).or_default().push(make(peer_file(iface)?));
+            }
+        }
+        Ok(map)
+    }
+
+    /// Single-symbol form of [`Db::edges_for_symbols_with_dispatch`].
+    pub fn edges_for_symbol_with_dispatch(
+        &self,
+        id: i64,
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<Vec<Edge>> {
+        Ok(self
+            .edges_for_symbols_with_dispatch(&[id], languages, graph_version)?
+            .remove(&id)
+            .unwrap_or_default())
+    }
+}
+
+/// Result of [`Db::dispatch_peers`].
+#[derive(Debug, Default, Clone)]
+pub struct DispatchPeers {
+    /// Same-named methods on interfaces the method's class implements.
+    pub interface_methods: Vec<i64>,
+    /// Same-named methods on classes implementing the method's interface.
+    pub impl_methods: Vec<i64>,
+}
+
 impl Db {
     pub fn find_symbols(
         &self,
@@ -90,6 +247,51 @@ impl Db {
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(&*param_refs, symbol_from_row)?;
 
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    /// Bounded candidate scan for fuzzy "did you mean": symbols whose
+    /// lowercased name contains any of `patterns` (plain alphanumeric tokens),
+    /// those matching the most patterns first, at most `cap` rows.
+    pub fn fuzzy_symbol_rows(
+        &self,
+        patterns: &[String],
+        cap: usize,
+        graph_version: i64,
+    ) -> Result<Vec<Symbol>> {
+        if patterns.is_empty() {
+            return Ok(Vec::new());
+        }
+        let likes: Vec<String> = patterns.iter().map(|p| format!("%{}%", p)).collect();
+        let cond = vec!["LOWER(s.name) LIKE ?"; likes.len()].join(" OR ");
+        let score = vec!["(LOWER(s.name) LIKE ?)"; likes.len()].join(" + ");
+        let sql = format!(
+            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
+                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
+                    s.graph_version, s.commit_sha, s.stable_id
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE ({cond})
+               AND s.kind NOT IN ('heading','section')
+               AND s.graph_version = ?
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+             ORDER BY ({score}) DESC, LENGTH(s.name), s.id
+             LIMIT ?"
+        );
+        let cap = cap as i64;
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        params.extend(likes.iter().map(|l| l as &dyn rusqlite::ToSql));
+        params.push(&graph_version);
+        params.push(&graph_version);
+        params.extend(likes.iter().map(|l| l as &dyn rusqlite::ToSql));
+        params.push(&cap);
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(&*params, symbol_from_row)?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);

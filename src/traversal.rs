@@ -175,7 +175,7 @@ pub fn trace_flow(
             break;
         }
 
-        let edges = db.edges_for_symbol(current_id, languages, graph_version)?;
+        let edges = db.edges_for_symbol_with_dispatch(current_id, languages, graph_version)?;
 
         let mut bridge_targets: Vec<BridgeTarget> = Vec::new();
         let allowed = scope.allowed(current_id, &edges);
@@ -416,7 +416,7 @@ fn has_further_edges(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<bool> {
-    let edges = db.edges_for_symbol(id, languages, graph_version)?;
+    let edges = db.edges_for_symbol_with_dispatch(id, languages, graph_version)?;
     let allowed = scope.allowed(id, &edges);
     for edge in &edges {
         if !config.allowed_kinds.contains(&edge.kind)
@@ -1765,6 +1765,7 @@ mod null_target_regression_tests {
             receiver_type: ReceiverType::NotTracked,
             import_candidates: Vec::new(),
             bare_call: false,
+            call_shape: None,
         }
     }
 

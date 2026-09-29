@@ -11,7 +11,7 @@ use crate::indexer::tree_helpers::{
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use tree_sitter::{Node, Parser};
@@ -19,14 +19,14 @@ use tree_sitter::{Node, Parser};
 /// JavaScript/TypeScript's resolution profile: the shared default, plus a
 /// recorded-visibility rule — `handle_method` records `visibility =
 /// "private"` for an explicit `private` accessibility modifier or a
-/// `#`-prefixed class field (see `is_private_member`). Top-level
-/// functions are never recorded private: not being directly wrapped in an
-/// `export` statement doesn't mean unreachable from another file
-/// (CommonJS `module.exports`, a separate `export { name }`, re-exports —
-/// issue #75 follow-up, finding E). Registered for "javascript",
+/// `#`-prefixed class field (see `is_private_member`), and
+/// `mark_unexported_private` records a top-level symbol private unless the
+/// file exports it (ESM `export`, `export { a }`, CommonJS
+/// `module.exports`/`exports.x` — issue #151). Registered for "javascript",
 /// "typescript" and "tsx" alike (`db::resolver::profile_for`) since they
 /// share one resolution family.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    import_member_fallback: true,
     visibility: VisibilityRule::Recorded,
     ..LanguageProfile::DEFAULT
 };
@@ -748,7 +748,212 @@ fn extract_with_parser(
         import_bindings: Rc::new(collect_import_bindings(root, source)),
     };
     walk_node(root, &ctx, source, &mut output);
+    mark_unexported_private(root, source, module_name, &mut output);
     Ok(output)
+}
+
+/// Exports found in a file: the local names exported, whether the file is a
+/// module at all (else it is a classic script whose top-level declarations
+/// are globals), and whether some export form could not be analysed.
+#[derive(Default)]
+struct Exports {
+    names: HashSet<String>,
+    is_module: bool,
+    opaque: bool,
+}
+
+/// Records every top-level symbol that is not exported (ESM `export`,
+/// `export { a, b as c }`, CommonJS `module.exports`/`exports.x`) as
+/// private, so the resolver's name-fallback tiers skip it for callers in
+/// other files (issue #151). Same-file resolution is unaffected. Nothing is
+/// marked for a classic script (no import/export/CommonJS at all) or for a
+/// file with an export form we cannot fully analyse.
+fn mark_unexported_private(
+    root: Node<'_>,
+    source: &str,
+    module_name: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut exports = Exports::default();
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        collect_exported_names(stmt, source, &mut exports);
+    }
+    if !exports.is_module && !uses_require(root, source) {
+        return;
+    }
+    if exports.opaque {
+        return;
+    }
+    let unexported: Vec<String> = output
+        .symbols
+        .iter()
+        .filter(|s| {
+            s.kind != "module"
+                && s.qualname == build_qualname(module_name, &[], &s.name)
+                && !exports.names.contains(&s.name)
+        })
+        .map(|s| s.qualname.clone())
+        .collect();
+    output.private_qualnames.extend(unexported);
+}
+
+/// Whether any `require(..)` call appears (marks a CommonJS module).
+fn uses_require(root: Node<'_>, source: &str) -> bool {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "call_expression"
+            && node
+                .child_by_field_name("function")
+                .is_some_and(|f| f.kind() == "identifier" && node_text(f, source) == "require")
+        {
+            return true;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
+    false
+}
+
+/// Names exported through an object literal (`{ a, b: c }`); a spread or
+/// computed member makes the export opaque.
+fn object_export_names(obj: Node<'_>, source: &str, ex: &mut Exports) {
+    let mut cursor = obj.walk();
+    for member in obj.named_children(&mut cursor) {
+        match member.kind() {
+            "shorthand_property_identifier" => {
+                ex.names.insert(node_text(member, source));
+            }
+            "pair" => {
+                if let Some(v) = member.child_by_field_name("value")
+                    && v.kind() == "identifier"
+                {
+                    ex.names.insert(node_text(v, source));
+                }
+            }
+            "method_definition" | "comment" => {}
+            _ => ex.opaque = true,
+        }
+    }
+}
+
+/// Handles one exported value expression (`module.exports = <v>`,
+/// `export default <v>`).
+fn exported_value(v: Node<'_>, source: &str, ex: &mut Exports) {
+    match v.kind() {
+        "identifier" => {
+            ex.names.insert(node_text(v, source));
+        }
+        "object" => object_export_names(v, source, ex),
+        "function_expression"
+        | "function"
+        | "arrow_function"
+        | "class"
+        | "class_declaration"
+        | "function_declaration"
+        | "generator_function"
+        | "string"
+        | "number" => {}
+        _ => ex.opaque = true,
+    }
+}
+
+/// Local names a top-level statement exports, if it is an export at all.
+fn collect_exported_names(stmt: Node<'_>, source: &str, ex: &mut Exports) {
+    match stmt.kind() {
+        "import_statement" | "import_declaration" => ex.is_module = true,
+        "export_statement" | "export_declaration" => {
+            ex.is_module = true;
+            if let Some(decl) = stmt.child_by_field_name("declaration") {
+                declared_names(decl, source, &mut ex.names);
+            }
+            if let Some(value) = stmt.child_by_field_name("value") {
+                exported_value(value, source, ex);
+            }
+            // `export = foo`
+            let mut cursor = stmt.walk();
+            for child in stmt.named_children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    ex.names.insert(node_text(child, source));
+                }
+            }
+            // `export { a, b as c }` (a `from` re-export names no local symbol).
+            if stmt.child_by_field_name("source").is_none() {
+                for clause in stmt.named_children(&mut cursor) {
+                    if clause.kind() != "export_clause" {
+                        continue;
+                    }
+                    let mut c = clause.walk();
+                    for spec in clause.named_children(&mut c) {
+                        if let Some(name) = spec.child_by_field_name("name") {
+                            ex.names.insert(node_text(name, source));
+                        }
+                    }
+                }
+            }
+        }
+        "expression_statement" => {
+            let Some(expr) = stmt.named_child(0) else {
+                return;
+            };
+            if expr.kind() == "call_expression" {
+                // `Object.assign(module.exports, ..)` and the like.
+                let text = node_text(expr, source);
+                if text.contains("module.exports") || text.contains("exports.") {
+                    ex.is_module = true;
+                    ex.opaque = true;
+                }
+                return;
+            }
+            if expr.kind() != "assignment_expression" {
+                return;
+            }
+            let (Some(left), Some(right)) = (
+                expr.child_by_field_name("left"),
+                expr.child_by_field_name("right"),
+            ) else {
+                return;
+            };
+            let left = node_text(left, source);
+            if left == "module.exports"
+                || left.starts_with("exports.")
+                || left.starts_with("module.exports.")
+            {
+                ex.is_module = true;
+                exported_value(right, source, ex);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Names bound by the declaration inside an `export` statement.
+fn declared_names(decl: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    match decl.kind() {
+        "lexical_declaration" | "variable_declaration" => {
+            let mut cursor = decl.walk();
+            for d in decl.named_children(&mut cursor) {
+                if d.kind() == "variable_declarator"
+                    && let Some(name) = d.child_by_field_name("name")
+                {
+                    let mut names = Vec::new();
+                    collect_binding_names(name, source, &mut names);
+                    out.extend(names);
+                }
+            }
+        }
+        "ambient_declaration" => {
+            let mut cursor = decl.walk();
+            for inner in decl.named_children(&mut cursor) {
+                declared_names(inner, source, out);
+            }
+        }
+        _ => {
+            if let Some(name) = decl.child_by_field_name("name") {
+                out.insert(node_text(name, source));
+            }
+        }
+    }
 }
 
 fn collect_grpc_clients(root: Node<'_>, source: &str) -> HashMap<String, GrpcService> {
@@ -804,7 +1009,10 @@ fn grpc_service_from_client_initializer(node: Node<'_>, source: &str) -> Option<
             _ => break,
         }
     }
-    if current.kind() != "new_expression" && current.kind() != "call_expression" {
+    // Only `new Ctor(..)` declares a client (`new FooServiceClient(..)`,
+    // `new proto.pkg.Greeter(..)`); a call result such as
+    // `await jobScheduling.listJobs()` is data, not a client (#115).
+    if current.kind() != "new_expression" {
         return None;
     }
     let target_node = call_target_node(current)?;
@@ -1639,7 +1847,8 @@ fn grpc_service_from_receiver(receiver: &str, ctx: &Context) -> Option<GrpcServi
     {
         return Some(service.clone());
     }
-    grpc_service_from_path(receiver)
+    // Only receivers registered from a `new` client constructor (#115).
+    None
 }
 
 fn grpc_service_from_raw_path(raw_path: &str) -> Option<(GrpcService, String)> {
@@ -2767,14 +2976,7 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = extract_signature(node, source);
-    // No export-based visibility mark here (issue #75 follow-up, finding
-    // E): "not directly `export`ed" isn't the same as "unreachable from
-    // another file" — CommonJS (`module.exports = { helperOne }`), a
-    // separate named export (`export { helperOne }`), and re-exports all
-    // make a plain top-level function reachable without it ever being
-    // wrapped in an `export` statement itself. Only an explicit
-    // TypeScript/JS access modifier is trustworthy enough to record (see
-    // `is_private_member`, used by `handle_method` below).
+    // Export-based privacy is applied after the walk (`mark_unexported_private`).
     output.symbols.push(SymbolInput {
         kind: "function".to_string(),
         name: name.clone(),

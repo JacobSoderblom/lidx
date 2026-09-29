@@ -982,3 +982,67 @@ export function Card() {
         "JSX component in .tsx file must resolve through imports like a function call"
     );
 }
+
+#[test]
+fn call_results_assigned_to_variables_do_not_become_grpc_clients() {
+    let source = r#"
+import { jobScheduling } from './api';
+import { client } from './client';
+
+async function processData() {
+    // Function call results should not be registered as gRPC clients
+    const jobs = await jobScheduling.listJobs({ filter: 'active' });
+    jobs.map(x => x.id);
+    jobs.filter(x => x.status === 'pending');
+    jobs.forEach(x => console.log(x));
+
+    // Same for non-grpc fetch
+    const response = await client.getCatalogItem({ id: '123' });
+    response.json();
+}
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let rpc_calls: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "RPC_CALL")
+        .collect();
+    assert!(
+        rpc_calls.is_empty(),
+        "Variables assigned from function call results must not become gRPC clients, got RPC_CALL edges: {:?}",
+        rpc_calls
+    );
+}
+
+#[test]
+fn explicit_grpc_client_still_emits_rpc_call() {
+    let source = r#"
+import { FooServiceClient } from './foo_grpc_pb';
+
+async function main() {
+    const client = new FooServiceClient('localhost:50051');
+    client.someMethod({ request: 'data' });
+}
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let rpc_calls: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "RPC_CALL")
+        .collect();
+    assert!(
+        !rpc_calls.is_empty(),
+        "Explicit gRPC client call must emit RPC_CALL edges, got no RPC_CALL edges"
+    );
+    let call = rpc_calls[0];
+    assert!(
+        call.target_qualname
+            .as_deref()
+            .map(|q| q.contains("somemethod"))
+            .unwrap_or(false),
+        "gRPC client call should resolve to the method, got: {:?}",
+        call.target_qualname
+    );
+}

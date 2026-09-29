@@ -777,6 +777,7 @@ fn handle_read_symbol_multi(
 /// `handle_read_symbol_multi`). `skeleton` and `context_lines` apply to
 /// either mode (see `build_symbol_entry`).
 pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let raw_params = params.clone();
     let params: ReadSymbolParams = serde_json::from_value(params)?;
     let selectors_given = [
         params.qualname.is_some(),
@@ -812,6 +813,51 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         );
     }
 
+    // An exact qualname shared by several symbols (overloads) returns all
+    // of them, rather than silently whichever the lookup found first.
+    if let Some(qn) = &params.qualname {
+        let overloads: Vec<Symbol> = indexer
+            .db()
+            .get_symbols_by_qualname(qn, graph_version)?
+            .into_iter()
+            .filter(|s| !s.is_external())
+            .collect();
+        // C# only: other languages' duplicate qualnames (Python property
+        // setters, `@overload`, TS overload signatures) keep the single-
+        // symbol shape.
+        if overloads.len() > 1
+            && overloads
+                .iter()
+                .all(|s| s.kind == "method" && s.file_path.ends_with(".cs"))
+        {
+            let max_bytes = params
+                .max_bytes
+                .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
+                .min(200_000);
+            let mut entries: Vec<ReadSymbolEntry> = Vec::new();
+            let mut omitted = 0usize;
+            let mut used = 0usize;
+            for symbol in &overloads {
+                let entry =
+                    build_symbol_entry(indexer, symbol, skeleton, context_lines, graph_version)?;
+                let len = serde_json::to_string(&entry).map(|s| s.len()).unwrap_or(0);
+                if !entries.is_empty() && used + len > max_bytes {
+                    omitted += 1;
+                    continue;
+                }
+                used += len;
+                entries.push(entry);
+            }
+            return Ok(json!({
+                "overloaded": true,
+                "qualname": qn,
+                "count": overloads.len(),
+                "overloads": entries,
+                "omitted": omitted,
+            }));
+        }
+    }
+
     // Resolves the same way `explain_symbol` does: an exact qualname hit
     // short-circuits, otherwise falls back to the fuzzy query path -- but via
     // `resolve_symbol_with_candidates` rather than `resolve_symbol`, so a tie
@@ -826,8 +872,26 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         Some(qn) => crate::resolve::SymbolRef::Qualname(qn.clone()),
         None => crate::resolve::SymbolRef::Query(params.query.clone().unwrap_or_default()),
     };
-    let resolution =
-        crate::resolve::resolve_symbol_with_candidates(indexer.db(), sym_ref, None, graph_version)?;
+    let resolution = match crate::resolve::resolve_symbol_with_candidates(
+        indexer.db(),
+        sym_ref,
+        None,
+        graph_version,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return match crate::resolve::recovery_from_error(
+                indexer.db(),
+                &e,
+                graph_version,
+                "read_symbol",
+                &raw_params,
+            ) {
+                Some(payload) => Ok(payload),
+                None => Err(e),
+            };
+        }
+    };
 
     let symbol = match resolution {
         crate::resolve::QueryResolution::Ambiguous(candidates) => {

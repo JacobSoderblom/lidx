@@ -409,6 +409,7 @@ mod tests {
             receiver_type: crate::indexer::extract::ReceiverType::NotTracked,
             import_candidates: Vec::new(),
             bare_call: false,
+            call_shape: None,
         };
         db.insert_edges(tst, &[edge], &map, 1, None).unwrap();
 

@@ -1,7 +1,7 @@
 use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
+use crate::indexer::extract::{CallShape, EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::scan;
@@ -974,6 +974,18 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         bare_call: node.kind() != "object_creation_expression"
             && target_node.kind() == "identifier"
             && ctx.type_stack.is_empty(),
+        call_shape: Some(CallShape {
+            arg_count: node
+                .child_by_field_name("arguments")
+                .map(|args| {
+                    let mut cursor = args.walk();
+                    args.named_children(&mut cursor)
+                        .filter(|c| c.kind() == "argument")
+                        .count() as u32
+                })
+                .unwrap_or(0),
+            is_new: node.kind() == "object_creation_expression",
+        }),
         ..Default::default()
     });
 }
