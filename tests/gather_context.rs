@@ -522,3 +522,93 @@ fn gather_context_handles_stale_multibyte_files() {
         assert!(value["result"]["items"].is_array(), "strategy={strategy}");
     }
 }
+
+fn expansion_repo() -> TempRepo {
+    let temp = TempRepo::new("py_mvp");
+    let root = &temp.repo_root;
+    std::fs::write(
+        root.join("seedmod.py"),
+        "from calleemod import helper\n\n\ndef seed(x):\n    return helper(x)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("calleemod.py"),
+        "def helper(x):\n    return x + 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("callermod.py"),
+        "from seedmod import seed\n\n\ndef caller():\n    return seed(1)\n",
+    )
+    .unwrap();
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    temp
+}
+
+fn gather(temp: &TempRepo, params: &str) -> serde_json::Value {
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "gather_context".to_string(),
+        params,
+        "1",
+    )
+    .unwrap();
+    serde_json::from_str::<serde_json::Value>(&response).unwrap()["result"].clone()
+}
+
+fn rel_of(result: &serde_json::Value, qualname: &str) -> Option<String> {
+    result["items"].as_array().unwrap().iter().find_map(|i| {
+        (i["symbol"]["qualname"] == qualname).then(|| {
+            i["source"]["relationship"]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        })
+    })
+}
+
+#[test]
+fn gather_context_no_snippets_still_expands() {
+    let temp = expansion_repo();
+    let r = gather(
+        &temp,
+        r#"{"seeds":[{"type":"symbol","qualname":"seedmod.seed"}],"include_snippets":false}"#,
+    );
+    assert!(rel_of(&r, "callermod.caller").is_some(), "{r}");
+    assert!(rel_of(&r, "calleemod.helper").is_some(), "{r}");
+}
+
+#[test]
+fn gather_context_dry_run_estimate_matches_real_run() {
+    let temp = expansion_repo();
+    let seeds = r#""seeds":[{"type":"symbol","qualname":"seedmod.seed"}]"#;
+    let dry = gather(&temp, &format!("{{{seeds},\"dry_run\":true}}"));
+    let real = gather(&temp, &format!("{{{seeds}}}"));
+    assert!(rel_of(&dry, "callermod.caller").is_some(), "{dry}");
+    assert_eq!(
+        dry["items"].as_array().unwrap().len(),
+        real["items"].as_array().unwrap().len(),
+        "dry {dry}\nreal {real}"
+    );
+}
+
+#[test]
+fn gather_context_relationship_reflects_edge_direction() {
+    let temp = expansion_repo();
+    let r = gather(
+        &temp,
+        r#"{"seeds":[{"type":"symbol","qualname":"seedmod.seed"}]}"#,
+    );
+    assert_eq!(
+        rel_of(&r, "callermod.caller").as_deref(),
+        Some("caller"),
+        "{r}"
+    );
+    assert_eq!(
+        rel_of(&r, "calleemod.helper").as_deref(),
+        Some("callee"),
+        "{r}"
+    );
+}
