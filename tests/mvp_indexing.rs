@@ -504,11 +504,22 @@ fn explain_symbol_bad_query_shows_suggestions() {
     )
     .unwrap();
     let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let error_msg = value["error"]["message"].as_str().unwrap_or("");
+    let result = &value["result"];
+    assert_eq!(result["resolved"], false, "got: {}", value);
     assert!(
-        error_msg.contains("not found") || error_msg.contains("no symbol"),
-        "bad query should return error, got: {}",
-        error_msg
+        result["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not found"),
+        "got: {}",
+        value
+    );
+    assert!(
+        result["next_hops"]
+            .as_array()
+            .is_some_and(|h| h.iter().any(|x| x["method"] == "search")),
+        "got: {}",
+        value
     );
 
     let _ = std::fs::remove_dir_all(&repo_root);

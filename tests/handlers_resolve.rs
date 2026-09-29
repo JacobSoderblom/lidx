@@ -142,18 +142,19 @@ fn explain_symbol_resolves_by_query() {
 }
 
 #[test]
-fn explain_symbol_query_not_found_returns_error() {
+fn explain_symbol_query_not_found_returns_recovery_payload() {
     let (temp, _indexer) = indexed_repo("py_mvp");
     let response = call_raw(
         &temp,
         "explain_symbol",
         r#"{"query":"xyzzy_does_not_exist_at_all"}"#,
     );
-    assert!(
-        response.get("error").is_some(),
-        "unresolvable query should return an error response: {:?}",
-        response
-    );
+    let result = response
+        .get("result")
+        .unwrap_or_else(|| panic!("expected a recovery result: {:?}", response));
+    assert_eq!(result["resolved"], false);
+    let hops = result["next_hops"].as_array().unwrap();
+    assert!(hops.iter().any(|h| h["method"] == "search"));
 }
 
 #[test]

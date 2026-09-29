@@ -254,6 +254,51 @@ impl Db {
         Ok(results)
     }
 
+    /// Bounded candidate scan for fuzzy "did you mean": symbols whose
+    /// lowercased name contains any of `patterns` (plain alphanumeric tokens),
+    /// those matching the most patterns first, at most `cap` rows.
+    pub fn fuzzy_symbol_rows(
+        &self,
+        patterns: &[String],
+        cap: usize,
+        graph_version: i64,
+    ) -> Result<Vec<Symbol>> {
+        if patterns.is_empty() {
+            return Ok(Vec::new());
+        }
+        let likes: Vec<String> = patterns.iter().map(|p| format!("%{}%", p)).collect();
+        let cond = vec!["LOWER(s.name) LIKE ?"; likes.len()].join(" OR ");
+        let score = vec!["(LOWER(s.name) LIKE ?)"; likes.len()].join(" + ");
+        let sql = format!(
+            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
+                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
+                    s.graph_version, s.commit_sha, s.stable_id
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE ({cond})
+               AND s.kind NOT IN ('heading','section')
+               AND s.graph_version = ?
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?)
+             ORDER BY ({score}) DESC, LENGTH(s.name), s.id
+             LIMIT ?"
+        );
+        let cap = cap as i64;
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        params.extend(likes.iter().map(|l| l as &dyn rusqlite::ToSql));
+        params.push(&graph_version);
+        params.push(&graph_version);
+        params.extend(likes.iter().map(|l| l as &dyn rusqlite::ToSql));
+        params.push(&cap);
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(&*params, symbol_from_row)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
     /// Search symbols where name starts with the given prefix.
     /// Used for fuzzy matching candidate retrieval.
     pub fn find_symbols_by_name_prefix(
