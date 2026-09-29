@@ -520,3 +520,103 @@ fn nested_crate_import_resolves_across_files() {
          `use crate::grpc::create_channel`, got: {edges:?}"
     );
 }
+
+const SYNC_PROTO: &str = "syntax = \"proto3\";\npackage sync.v1;\nmessage Req {}\nmessage Res {}\nservice SyncService {\n  rpc Sync (Req) returns (Res);\n}\n";
+
+const SYNC_SERVER_CS: &str = "public class SyncImpl : Sync.V1.SyncService.SyncServiceBase\n{\n    public override Task<Res> Sync(Req request, ServerCallContext context) { return null; }\n}\n";
+
+const PB_MODULE: &str = "mod pb {\n    pub mod sync {\n        pub mod v1 {\n            pub mod sync_service_client {\n                pub struct SyncServiceClient;\n            }\n        }\n    }\n}\n";
+
+/// Index a proto plus a Rust crate root (client behind `mod pb`), trace
+/// downstream from `crate::call_sync`, and return `(edge_kind, qualname)` per hop.
+fn trace_rust_grpc_client(client_use: &str) -> Vec<(String, String)> {
+    trace_rust_grpc("crate::call_sync", "downstream", client_use)
+}
+
+fn trace_rust_grpc(start: &str, direction: &str, client_use: &str) -> Vec<(String, String)> {
+    let lib = format!(
+        "{PB_MODULE}\n{client_use}\n\npub fn call_sync(ch: Channel) {{\n    let mut c = SyncServiceClient::new(ch);\n    c.sync(req);\n}}\n"
+    );
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-rust-grpc-bridge-")
+        .tempdir()
+        .unwrap();
+    common::write_files(
+        tmp.path(),
+        &[
+            ("protos/sync.proto", SYNC_PROTO),
+            ("src/lib.rs", lib.as_str()),
+            ("server/Impl.cs", SYNC_SERVER_CS),
+        ],
+    );
+    let repo_root = tmp.path().to_path_buf();
+    let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+    let raw = lidx::rpc::call(
+        repo_root,
+        db_path,
+        "trace_flow".to_string(),
+        &serde_json::json!({"start_qualname": start, "direction": direction, "max_hops": 4})
+            .to_string(),
+        "1",
+    )
+    .unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let mut result = envelope["result"].clone();
+    if result.get("data").is_some() && result.get("trace").is_none() {
+        result = result["data"].clone();
+    }
+    result["trace"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no trace in {envelope}"))
+        .iter()
+        .map(|h| {
+            (
+                h["edge_kind"].as_str().unwrap_or("").to_string(),
+                h["symbol"]["qualname"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn rust_grpc_client_in_user_module_bridges_to_proto_service() {
+    // The client lives behind a user-named `mod pb`, so its use-path package
+    // guess (`pb.sync.v1`) is not the proto package (`sync.v1`); the bridge
+    // must still form (issue #150).
+    let hops = trace_rust_grpc_client("use pb::sync::v1::sync_service_client::SyncServiceClient;");
+    assert!(
+        hops.iter()
+            .any(|(k, q)| k == "RPC_IMPL" && q.contains("SyncImpl.Sync")),
+        "expected bridged RPC_IMPL hop into the C# SyncService impl: {hops:?}"
+    );
+}
+
+#[test]
+fn csharp_grpc_impl_upstream_reaches_rust_client_caller() {
+    // Reverse direction: the Rust caller guessed `/pb.sync.v1.syncservice/sync`
+    // while the C# impl and proto say `/sync.v1.syncservice/sync`.
+    let hops = trace_rust_grpc(
+        "server/Impl.SyncImpl.Sync",
+        "upstream",
+        "use pb::sync::v1::sync_service_client::SyncServiceClient;",
+    );
+    assert!(
+        hops.iter().any(|(_, q)| q == "crate::call_sync"),
+        "expected upstream trace to reach the Rust caller: {hops:?}"
+    );
+}
+
+#[test]
+fn rust_grpc_client_via_glob_import_bridges_to_proto_service() {
+    // A glob import binds no name, so the client path carries no package at
+    // all: `/syncservice/sync` must still bind by service/method suffix.
+    let hops = trace_rust_grpc_client("use pb::sync::v1::sync_service_client::*;");
+    assert!(
+        hops.iter()
+            .any(|(k, q)| k == "RPC_IMPL" && q.contains("SyncImpl.Sync")),
+        "expected bridged RPC_IMPL hop into the C# SyncService impl: {hops:?}"
+    );
+}

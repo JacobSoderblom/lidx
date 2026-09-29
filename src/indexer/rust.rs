@@ -632,7 +632,7 @@ fn handle_function(
         let mut next_ctx = ctx.clone();
         next_ctx.current_scope = qualname;
         let mut grpc_clients = ctx.grpc_clients.clone();
-        grpc_clients.extend(collect_grpc_clients(body, source));
+        grpc_clients.extend(collect_grpc_clients(body, source, &ctx.imports));
         next_ctx.grpc_clients = grpc_clients;
 
         // Recomputed per function, never inherited.
@@ -1433,7 +1433,7 @@ fn grpc_service_for_receiver(receiver: Option<&str>, ctx: &Context) -> Option<Gr
             return Some(service.clone());
         }
     }
-    grpc_service_from_client_path(receiver)
+    grpc_service_from_client_path(receiver, &ctx.imports)
 }
 
 fn grpc_service_from_trait(trait_name: &str) -> Option<GrpcService> {
@@ -1460,11 +1460,27 @@ fn grpc_service_from_trait(trait_name: &str) -> Option<GrpcService> {
     })
 }
 
-fn grpc_service_from_client_path(path: &str) -> Option<GrpcService> {
+fn grpc_service_from_client_path(
+    path: &str,
+    imports: &HashMap<String, Vec<String>>,
+) -> Option<GrpcService> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return None;
     }
+    // Expand the leading segment through this scope's `use` bindings so
+    // `SyncServiceClient::new` recovers the package from
+    // `use crate::proto::sync::v1::sync_service_client::SyncServiceClient`.
+    let expanded;
+    let (first, rest) = trimmed.split_once("::").unwrap_or((trimmed, ""));
+    let trimmed = match imports.get(first).and_then(|targets| targets.first()) {
+        Some(target) if rest.is_empty() => target.as_str(),
+        Some(target) => {
+            expanded = format!("{target}::{rest}");
+            expanded.as_str()
+        }
+        None => trimmed,
+    };
     let parts: Vec<&str> = trimmed
         .split("::")
         .filter(|part| !part.is_empty())
@@ -1498,32 +1514,41 @@ fn grpc_package_from_parts(parts: &[&str]) -> Option<String> {
     }
 }
 
-fn collect_grpc_clients(node: Node<'_>, source: &str) -> HashMap<String, GrpcService> {
+fn collect_grpc_clients(
+    node: Node<'_>,
+    source: &str,
+    imports: &HashMap<String, Vec<String>>,
+) -> HashMap<String, GrpcService> {
     let mut clients = HashMap::new();
-    collect_grpc_clients_inner(node, source, &mut clients);
+    collect_grpc_clients_inner(node, source, imports, &mut clients);
     clients
 }
 
 fn collect_grpc_clients_inner(
     node: Node<'_>,
     source: &str,
+    imports: &HashMap<String, Vec<String>>,
     clients: &mut HashMap<String, GrpcService>,
 ) {
     if node.kind() == "function_item" || node.kind() == "impl_item" {
         return;
     }
     if (node.kind() == "let_declaration" || node.kind() == "let_statement")
-        && let Some((name, service)) = grpc_client_from_let(node, source)
+        && let Some((name, service)) = grpc_client_from_let(node, source, imports)
     {
         clients.insert(name, service);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_grpc_clients_inner(child, source, clients);
+        collect_grpc_clients_inner(child, source, imports, clients);
     }
 }
 
-fn grpc_client_from_let(node: Node<'_>, source: &str) -> Option<(String, GrpcService)> {
+fn grpc_client_from_let(
+    node: Node<'_>,
+    source: &str,
+    imports: &HashMap<String, Vec<String>>,
+) -> Option<(String, GrpcService)> {
     let pattern = node
         .child_by_field_name("pattern")
         .or_else(|| node.child_by_field_name("name"))?;
@@ -1531,24 +1556,28 @@ fn grpc_client_from_let(node: Node<'_>, source: &str) -> Option<(String, GrpcSer
     let service = node
         .child_by_field_name("value")
         .or_else(|| node.child_by_field_name("initializer"))
-        .and_then(|value| grpc_client_from_expr(value, source))
-        .or_else(|| grpc_client_from_expr(node, source))?;
+        .and_then(|value| grpc_client_from_expr(value, source, imports))
+        .or_else(|| grpc_client_from_expr(node, source, imports))?;
     Some((name, service))
 }
 
-fn grpc_client_from_expr(node: Node<'_>, source: &str) -> Option<GrpcService> {
+fn grpc_client_from_expr(
+    node: Node<'_>,
+    source: &str,
+    imports: &HashMap<String, Vec<String>>,
+) -> Option<GrpcService> {
     if node.kind() == "call_expression" {
         let function = node.child_by_field_name("function")?;
         let target = call_target_parts(function, source)?;
         if is_grpc_client_constructor(&target.name)
             && let Some(receiver) = target.receiver.as_deref()
         {
-            return grpc_service_from_client_path(receiver);
+            return grpc_service_from_client_path(receiver, imports);
         }
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        if let Some(service) = grpc_client_from_expr(child, source) {
+        if let Some(service) = grpc_client_from_expr(child, source, imports) {
             return Some(service);
         }
     }
@@ -2237,6 +2266,37 @@ fn main() {
             routes
                 .iter()
                 .any(|edge| edge.target_qualname.as_deref() == Some("/api/v1/users/{}"))
+        );
+    }
+
+    #[test]
+    fn tonic_client_package_recovered_from_use_import() {
+        let source = r#"
+use crate::proto::sync::v1::sync_service_client::SyncServiceClient;
+use crate::proto::sync::v1::health_client;
+
+async fn run(ch: Channel) {
+    let mut client = SyncServiceClient::new(ch);
+    client.sync(req).await.unwrap();
+    let mut h = health_client::HealthClient::new(ch2);
+    h.check(req).await.unwrap();
+}
+"#;
+        let mut extractor = RustExtractor::new().unwrap();
+        let file = extractor.extract(source, "crate").unwrap();
+        let targets: Vec<_> = file
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == proto::RPC_CALL_KIND)
+            .filter_map(|edge| edge.target_qualname.as_deref())
+            .collect();
+        assert!(
+            targets.contains(&"/proto.sync.v1.syncservice/sync"),
+            "{targets:?}"
+        );
+        assert!(
+            targets.contains(&"/proto.sync.v1.health/check"),
+            "{targets:?}"
         );
     }
 
