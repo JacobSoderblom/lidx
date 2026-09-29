@@ -7,6 +7,7 @@
 use crate::db::Db;
 use crate::impact::confidence::apply_distance_decay;
 use crate::impact::types::{ConfidenceScore, ImpactSource, LayerResult};
+use crate::indexer::config::{BridgeTarget, ConfigScope, config_edge_allowed, prefer_same_service};
 use crate::indexer::test_detection::is_test_file;
 use crate::model::{Edge, Symbol};
 use anyhow::Result;
@@ -155,7 +156,8 @@ fn bridge_hop_is_reversed(edge_kind: &str) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn resolve_bridge_targets(
     db: &Db,
-    bridge_targets: &[(String, String, i64)], // (qualname, edge_kind, source_symbol_id)
+    bridge_targets: &[BridgeTarget],
+    scope: &mut ConfigScope,
     visited: &mut HashSet<i64>,
     symbol_cache: &mut HashMap<i64, Symbol>,
     symbol_checked: &mut HashSet<i64>,
@@ -167,18 +169,25 @@ fn resolve_bridge_targets(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<bool> {
-    for (tq, edge_kind, source_id) in bridge_targets {
+    for BridgeTarget {
+        uri: tq,
+        edge_kind,
+        origin_path,
+        source_id,
+    } in bridge_targets
+    {
         if let Some(complement_kinds) = crate::indexer::channel::bridge_complement(edge_kind) {
             let bridged = db
                 .edges_by_target_qualname_and_kinds(tq, complement_kinds, languages, graph_version)
                 .unwrap_or_default();
-            for bridged_edge in &bridged {
+            for bridged_edge in prefer_same_service(tq, origin_path, &bridged) {
                 let Some(bridged_id) = bridged_edge.source_symbol_id else {
                     continue;
                 };
                 if !visited.insert(bridged_id) {
                     continue;
                 }
+                scope.record_bridge(bridged_id, edge_kind, tq);
                 cache_symbols(
                     db,
                     symbol_cache,
@@ -224,6 +233,38 @@ pub fn analyze_direct_impact(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<LayerResult> {
+    analyze_direct_impact_scoped(
+        db,
+        seed_ids,
+        max_depth,
+        direction,
+        kinds,
+        exclude_resolution_kinds,
+        include_tests,
+        limit,
+        languages,
+        graph_version,
+        None,
+    )
+}
+
+/// `analyze_direct_impact` for seeds resolved from a config URI
+/// (`seed_config_uri`, issue #131): seed nodes only follow config edges
+/// carrying that URI (see `ConfigScope`).
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_direct_impact_scoped(
+    db: &Db,
+    seed_ids: &[i64],
+    max_depth: usize,
+    direction: TraversalDirection,
+    kinds: &HashSet<String>,
+    exclude_resolution_kinds: &[String],
+    include_tests: bool,
+    limit: usize,
+    languages: Option<&[String]>,
+    graph_version: i64,
+    seed_config_uri: Option<&str>,
+) -> Result<LayerResult> {
     let start = Instant::now();
     let timeout = Duration::from_secs(5);
 
@@ -253,6 +294,8 @@ pub fn analyze_direct_impact(
         .collect();
 
     // Seed the queue
+    // Config URI each node was entered through (issue #131).
+    let mut scope = ConfigScope::new(&valid_seeds, seed_config_uri);
     for &id in &valid_seeds {
         queue.push_back((id, 0));
         visited.insert(id);
@@ -342,13 +385,17 @@ pub fn analyze_direct_impact(
         )?;
 
         // Collect bridgeable edges for cross-service traversal
-        let mut bridge_targets: Vec<(String, String, i64)> = Vec::new();
+        let mut bridge_targets: Vec<BridgeTarget> = Vec::new();
 
         // Process edges and update BFS state
         for current_id in &current_level {
             if let Some(edges) = edges_by_symbol.get(current_id) {
+                let allowed = scope.allowed(*current_id, edges);
                 for edge in edges {
-                    if !edge_matches_filter(edge, kinds, include_tests) || excluded(edge) {
+                    if !edge_matches_filter(edge, kinds, include_tests)
+                        || excluded(edge)
+                        || !config_edge_allowed(edge, allowed.as_ref())
+                    {
                         continue;
                     }
 
@@ -356,7 +403,12 @@ pub fn analyze_direct_impact(
                     if let Some(ref tq) = edge.target_qualname
                         && crate::indexer::channel::bridge_complement(&edge.kind).is_some()
                     {
-                        bridge_targets.push((tq.clone(), edge.kind.clone(), *current_id));
+                        bridge_targets.push(BridgeTarget {
+                            uri: tq.clone(),
+                            edge_kind: edge.kind.clone(),
+                            origin_path: edge.file_path.clone(),
+                            source_id: *current_id,
+                        });
                     }
 
                     let Some(next_id) = resolve_next_id(edge, *current_id, direction) else {
@@ -397,6 +449,7 @@ pub fn analyze_direct_impact(
             truncated = resolve_bridge_targets(
                 db,
                 &bridge_targets,
+                &mut scope,
                 &mut visited,
                 &mut symbol_cache,
                 &mut symbol_checked,

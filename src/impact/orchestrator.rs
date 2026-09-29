@@ -6,7 +6,7 @@
 use crate::db::Db;
 use crate::impact::confidence::fuse_evidence;
 use crate::impact::config::MultiLayerConfig;
-use crate::impact::layers::{HistoricalImpactLayer, TestImpactLayer, analyze_direct_impact};
+use crate::impact::layers::{HistoricalImpactLayer, TestImpactLayer, analyze_direct_impact_scoped};
 use crate::impact::types::{
     ImpactEntry, ImpactSource, ImpactSummary, LayerMetadata, LayerResult, LayerStats, PathStep,
     UnifiedImpactResult,
@@ -100,7 +100,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
                 let kinds = config.direct.kinds.iter().cloned().collect();
                 let languages = config.direct.languages.as_deref();
 
-                match analyze_direct_impact(
+                match analyze_direct_impact_scoped(
                     &db,
                     &seed_ids,
                     config.direct.max_depth,
@@ -111,6 +111,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
                     config.limit,
                     languages,
                     graph_version,
+                    config.direct.seed_config_uri.as_deref(),
                 ) {
                     Ok(result) => {
                         let mut meta = metadata.lock().unwrap();
@@ -574,7 +575,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
         let kinds = self.config.direct.kinds.iter().cloned().collect();
         let languages = self.config.direct.languages.as_deref();
 
-        analyze_direct_impact(
+        analyze_direct_impact_scoped(
             self.db,
             seed_ids,
             self.config.direct.max_depth,
@@ -585,6 +586,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
             self.config.limit,
             languages,
             graph_version,
+            self.config.direct.seed_config_uri.as_deref(),
         )
     }
 

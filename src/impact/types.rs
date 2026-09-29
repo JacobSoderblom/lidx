@@ -178,6 +178,8 @@ pub struct DirectConfig {
     pub exclude_resolution_kinds: Vec<String>,
     pub include_tests: bool,
     pub languages: Option<Vec<String>>,
+    /// Config URI the seeds were resolved from (issue #131), if any.
+    pub seed_config_uri: Option<String>,
 }
 
 impl Default for DirectConfig {
@@ -190,6 +192,7 @@ impl Default for DirectConfig {
             exclude_resolution_kinds: Vec::new(),
             include_tests: true,
             languages: None,
+            seed_config_uri: None,
         }
     }
 }
