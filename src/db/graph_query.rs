@@ -249,16 +249,19 @@ impl Db {
     ) -> Result<Vec<Edge>> {
         let is_rpc = kinds.iter().any(|k| matches!(*k, "RPC_CALL" | "RPC_IMPL"));
         if !is_rpc || !target_qualname.starts_with('/') {
-            return self.edges_by_exact_target(target_qualname, kinds, languages, graph_version);
+            return self.edges_by_exact_target(
+                target_qualname,
+                target_qualname,
+                kinds,
+                languages,
+                graph_version,
+            );
         }
         // Our own path may be a wrong guess: bind it to the one real route.
         let own = self.resolve_rpc_route(target_qualname, graph_version)?;
-        let mut edges = self.edges_by_exact_target(
-            own.as_deref().unwrap_or(target_qualname),
-            kinds,
-            languages,
-            graph_version,
-        )?;
+        let route = own.as_deref().unwrap_or(target_qualname);
+        let mut edges =
+            self.edges_by_exact_target(route, route, kinds, languages, graph_version)?;
         // The other side may be the wrong guess: pull in its edges whose
         // guessed path resolves to our route.
         if kinds.contains(&"RPC_CALL") && own.is_none() {
@@ -283,6 +286,7 @@ impl Db {
                 {
                     edges.extend(self.edges_by_exact_target(
                         &guess,
+                        target_qualname,
                         &["RPC_CALL"],
                         languages,
                         graph_version,
@@ -334,9 +338,12 @@ impl Db {
         })
     }
 
+    /// `route` is the RPC_ROUTE path that must back RPC edges (the target
+    /// itself, or the real route a guessed target resolved to).
     fn edges_by_exact_target(
         &self,
         target_qualname: &str,
+        route: &str,
         kinds: &[&str],
         languages: Option<&[String]>,
         graph_version: i64,
@@ -366,7 +373,7 @@ impl Db {
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                AND (e.kind NOT IN ('RPC_CALL', 'RPC_IMPL')
                     OR EXISTS (SELECT 1 FROM edges r
-                               WHERE r.target_qualname = e.target_qualname
+                               WHERE r.target_qualname = ?
                                  AND r.kind = 'RPC_ROUTE' AND r.graph_version = ?)
                     OR NOT EXISTS (SELECT 1 FROM edges r
                                    WHERE r.kind = 'RPC_ROUTE' AND r.graph_version = ?))"
@@ -383,6 +390,7 @@ impl Db {
         }
         params.push(&graph_version);
         params.push(&graph_version);
+        params.push(&route as &dyn rusqlite::ToSql);
         params.push(&graph_version);
         params.push(&graph_version);
         if let Some(languages) = languages

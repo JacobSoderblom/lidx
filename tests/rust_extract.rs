@@ -530,6 +530,10 @@ const PB_MODULE: &str = "mod pb {\n    pub mod sync {\n        pub mod v1 {\n   
 /// Index a proto plus a Rust crate root (client behind `mod pb`), trace
 /// downstream from `crate::call_sync`, and return `(edge_kind, qualname)` per hop.
 fn trace_rust_grpc_client(client_use: &str) -> Vec<(String, String)> {
+    trace_rust_grpc("crate::call_sync", "downstream", client_use)
+}
+
+fn trace_rust_grpc(start: &str, direction: &str, client_use: &str) -> Vec<(String, String)> {
     let lib = format!(
         "{PB_MODULE}\n{client_use}\n\npub fn call_sync(ch: Channel) {{\n    let mut c = SyncServiceClient::new(ch);\n    c.sync(req);\n}}\n"
     );
@@ -554,7 +558,8 @@ fn trace_rust_grpc_client(client_use: &str) -> Vec<(String, String)> {
         repo_root,
         db_path,
         "trace_flow".to_string(),
-        r#"{"start_qualname":"crate::call_sync","direction":"downstream","max_hops":4}"#,
+        &serde_json::json!({"start_qualname": start, "direction": direction, "max_hops": 4})
+            .to_string(),
         "1",
     )
     .unwrap();
@@ -586,6 +591,21 @@ fn rust_grpc_client_in_user_module_bridges_to_proto_service() {
         hops.iter()
             .any(|(k, q)| k == "RPC_IMPL" && q.contains("SyncImpl.Sync")),
         "expected bridged RPC_IMPL hop into the C# SyncService impl: {hops:?}"
+    );
+}
+
+#[test]
+fn csharp_grpc_impl_upstream_reaches_rust_client_caller() {
+    // Reverse direction: the Rust caller guessed `/pb.sync.v1.syncservice/sync`
+    // while the C# impl and proto say `/sync.v1.syncservice/sync`.
+    let hops = trace_rust_grpc(
+        "server/Impl.SyncImpl.Sync",
+        "upstream",
+        "use pb::sync::v1::sync_service_client::SyncServiceClient;",
+    );
+    assert!(
+        hops.iter().any(|(_, q)| q == "crate::call_sync"),
+        "expected upstream trace to reach the Rust caller: {hops:?}"
     );
 }
 
