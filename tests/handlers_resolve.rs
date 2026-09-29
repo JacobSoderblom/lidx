@@ -541,3 +541,87 @@ fn analyze_impact_missing_params_returns_error() {
         response
     );
 }
+
+// ---------------------------------------------------------------------------
+// Config URI resolution — explain_symbol / trace_flow with config URIs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn explain_symbol_resolves_config_uri_via_query() {
+    let (temp, _indexer) = indexed_repo("py_config");
+    // Pass a config URI directly via query parameter
+    let result = call(&temp, "explain_symbol", r#"{"query":"env://DATABASE_URL"}"#);
+    assert!(
+        result.get("symbol").is_some(),
+        "explain_symbol with config URI query should return symbol, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result["symbol"]["file_path"].as_str().unwrap(),
+        "app.py",
+        "config URI should resolve to app.py"
+    );
+}
+
+#[test]
+fn explain_symbol_resolves_config_uri_via_qualname() {
+    let (temp, _indexer) = indexed_repo("py_config");
+    // Pass a config URI directly via qualname parameter
+    let result = call(
+        &temp,
+        "explain_symbol",
+        r#"{"qualname":"env://DATABASE_URL"}"#,
+    );
+    assert!(
+        result.get("symbol").is_some(),
+        "explain_symbol with config URI qualname should return symbol, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result["symbol"]["file_path"].as_str().unwrap(),
+        "app.py",
+        "config URI should resolve to app.py"
+    );
+}
+
+#[test]
+fn trace_flow_resolves_config_uri_via_query() {
+    let (temp, _indexer) = indexed_repo("py_config");
+    // Pass a config URI directly via query parameter
+    let result = call(&temp, "trace_flow", r#"{"query":"env://DATABASE_URL"}"#);
+    // trace_flow should resolve the config URI and return a start symbol
+    let start = result.get("start");
+    assert!(
+        start.is_some(),
+        "trace_flow with config URI query should return start symbol, got: {:?}",
+        result
+    );
+    assert_eq!(
+        start.unwrap()["file_path"].as_str().unwrap(),
+        "app.py",
+        "config URI should resolve to app.py"
+    );
+}
+
+#[test]
+fn trace_flow_resolves_config_uri_via_start_qualname() {
+    let (temp, _indexer) = indexed_repo("py_config");
+    // Pass a config URI via start_qualname parameter (already supported)
+    let result = call(
+        &temp,
+        "trace_flow",
+        r#"{"start_qualname":"env://DATABASE_URL"}"#,
+    );
+    // trace_flow should resolve the config URI and return a start symbol
+    let start = result.get("start");
+    assert!(
+        start.is_some(),
+        "trace_flow with config URI start_qualname should return start symbol, got: {:?}",
+        result
+    );
+    assert_eq!(
+        start.unwrap()["file_path"].as_str().unwrap(),
+        "app.py",
+        "config URI should resolve to app.py"
+    );
+}

@@ -181,8 +181,9 @@ fn tied_candidates(trimmed: &str, candidates: &[Symbol]) -> Option<Vec<Symbol>> 
 }
 
 /// Continues the fallback chain once `find_symbols` candidates are already in
-/// hand: the top candidate if there is one, else the config-key lookup, else
-/// a "did you mean" error built from a broader unfiltered search.
+/// hand: the top candidate if there is one, else config URI resolution (both
+/// direct URIs and normalized guesses), else a "did you mean" error built from
+/// a broader unfiltered search.
 fn resolve_after_candidates(
     db: &Db,
     query: &str,
@@ -198,6 +199,18 @@ fn resolve_after_candidates(
     // `resolve_symbol_with_candidates` via `trimmed_query_candidates`) retries
     // without a language filter itself before returning.
     let trimmed = query.trim();
+
+    // Try the query directly as a config URI if it looks like one
+    if crate::indexer::config::is_config_uri(trimmed) {
+        let ids = db.source_symbols_for_config_uri(trimmed, &[], graph_version)?;
+        if let Some(&first_id) = ids.first()
+            && let Some(sym) = db.get_symbol_by_id(first_id)?
+        {
+            return Ok(sym);
+        }
+    }
+
+    // Fall back to normalizing the query as a config key/secret name
     for uri in config_uri_guesses(trimmed) {
         let ids = db.source_symbols_for_config_uri(&uri, &[], graph_version)?;
         if let Some(&first_id) = ids.first()
@@ -884,5 +897,43 @@ mod tests {
         for id in &seeds {
             assert!(seen.insert(id), "duplicate seed id: {}", id);
         }
+    }
+
+    #[test]
+    fn resolve_config_uri_directly() {
+        let (_temp, indexer) = indexed_repo("py_config");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        // Pass the config URI directly as a query — should resolve to a symbol
+        let result = resolve_symbol(
+            indexer.db(),
+            SymbolRef::Query("env://DATABASE_URL".into()),
+            None,
+            gv,
+        );
+
+        // Should resolve to the symbol that reads this env var
+        assert!(result.is_ok(), "config URI query should find a symbol");
+        let sym = result.unwrap();
+        assert_eq!(sym.file_path, "app.py");
+    }
+
+    #[test]
+    fn resolve_config_uri_qualname_directly() {
+        let (_temp, indexer) = indexed_repo("py_config");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        // Pass the config URI directly as a qualname — should resolve to a symbol
+        let result = resolve_symbol(
+            indexer.db(),
+            SymbolRef::Qualname("env://DATABASE_URL".into()),
+            None,
+            gv,
+        );
+
+        // Should resolve to the symbol that reads this env var
+        assert!(result.is_ok(), "config URI qualname should find a symbol");
+        let sym = result.unwrap();
+        assert_eq!(sym.file_path, "app.py");
     }
 }
