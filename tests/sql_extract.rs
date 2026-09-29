@@ -226,3 +226,107 @@ $$ LANGUAGE plpgsql;
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+fn tsql_symbols(source: &str) -> Vec<(String, String)> {
+    let mut extractor = SqlExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "mssql/m").unwrap();
+    extracted
+        .symbols
+        .iter()
+        .map(|s| (s.kind.clone(), s.qualname.clone()))
+        .collect()
+}
+
+#[test]
+fn tsql_create_procedure_variants_are_extracted() {
+    let source = "CREATE TABLE dpb.t1 (id int);\nGO\nCREATE OR ALTER PROCEDURE dpb.write_to_audit @a int, @b nvarchar(10)\nAS\nBEGIN\n    SET NOCOUNT ON;\n    INSERT INTO dpb.audit (id) VALUES (@a);\nEND\nGO\ncreate proc [dpb].[upsert_dataproduct] as select 1;\nGO\nCREATE PROCEDURE plain_proc AS SELECT 1;\n";
+    let syms = tsql_symbols(source);
+    for name in ["dpb.write_to_audit", "dpb.upsert_dataproduct", "plain_proc"] {
+        assert!(
+            syms.contains(&("procedure".to_string(), name.to_string())),
+            "missing {name}: {syms:?}"
+        );
+    }
+    assert!(syms.contains(&("table".to_string(), "dpb.t1".to_string())));
+}
+
+#[test]
+fn tsql_tables_after_merge_and_inside_if_begin_are_extracted() {
+    let source = "MERGE dpb.t1 AS t USING dpb.t2 AS s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.id = s.id;\nCREATE TABLE dpb.audit (id int);\nIF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'x')\nBEGIN\n    CREATE TABLE dpb.inside (id int);\nEND\nCREATE TABLE dpb.last (id int);\n";
+    let syms = tsql_symbols(source);
+    for name in ["dpb.audit", "dpb.inside", "dpb.last"] {
+        assert!(
+            syms.contains(&("table".to_string(), name.to_string())),
+            "missing {name}: {syms:?}"
+        );
+        assert_eq!(syms.iter().filter(|(_, q)| q == name).count(), 1);
+    }
+}
+
+#[test]
+fn tsql_fallback_skips_noise_and_duplicates() {
+    let source = "CREATE TABLE IF NOT EXISTS app.foo (id int);\n\
+CREATE TABLE #tmp (id int);\n\
+CREATE TABLE @tv (id int);\n\
+-- CREATE TABLE app.commented (id int);\n\
+/*\nCREATE TABLE app.blocked (id int);\n*/\n\
+CREATE FUNCTION app.f() RETURNS void AS $$\nBEGIN\n  CREATE TABLE app.indollar (id int);\nEND;\n$$ LANGUAGE plpgsql;\n";
+    let syms = tsql_symbols(source);
+    let quals: Vec<&str> = syms.iter().map(|(_, q)| q.as_str()).collect();
+    for bad in ["IF", "#tmp", "app.commented", "app.blocked", "app.indollar"] {
+        assert!(!quals.contains(&bad), "unexpected {bad}: {quals:?}");
+    }
+    let foos = quals
+        .iter()
+        .filter(|q| q.eq_ignore_ascii_case("app.foo"))
+        .count();
+    assert_eq!(foos, 1, "{quals:?}");
+}
+
+#[test]
+fn tsql_fallback_go_variants_tabs_and_temp_table_in_proc() {
+    let source = "CREATE\tPROCEDURE dbo.a AS\nBEGIN\nCREATE TABLE #t (id int);\nSELECT 1;\nEND\nGO 2\nCREATE PROC dbo.b AS SELECT 1;\ngo;\nCREATE PROC dbo.c AS SELECT 1;\n";
+    let mut extractor = SqlExtractor::new().unwrap();
+    let out = extractor.extract(source, "m").unwrap();
+    let a = out.symbols.iter().find(|s| s.qualname == "dbo.a").unwrap();
+    assert_eq!((a.start_line, a.end_line), (1, 5));
+    let b = out.symbols.iter().find(|s| s.qualname == "dbo.b").unwrap();
+    assert_eq!((b.start_line, b.end_line), (7, 7));
+    assert!(out.symbols.iter().any(|s| s.qualname == "dbo.c"));
+    assert!(!out.symbols.iter().any(|s| s.qualname == "#t"));
+}
+
+#[test]
+fn tsql_fallback_table_lines() {
+    let source = "MERGE x AS t USING y AS s ON t.i = s.i WHEN MATCHED THEN UPDATE SET t.i = s.i;\nCREATE TABLE dpb.audit (\n  id int\n);\n";
+    let mut extractor = SqlExtractor::new().unwrap();
+    let out = extractor.extract(source, "m").unwrap();
+    let t = out
+        .symbols
+        .iter()
+        .find(|s| s.qualname == "dpb.audit")
+        .unwrap();
+    assert_eq!((t.start_line, t.end_line), (2, 4));
+}
+
+#[test]
+fn tsql_fallback_multiline_create_and_spaced_names() {
+    let source = "CREATE OR ALTER\n-- note\n\nPROCEDURE\n    [dbo].[my proc]\n    @a int\nAS\nSELECT 1;\nGO\nCREATE\nTABLE\n[dbo].[my table] (\n  id int\n);\nCREATE\nPROC dbo.next AS SELECT 1;\n";
+    let mut extractor = SqlExtractor::new().unwrap();
+    let out = extractor.extract(source, "m").unwrap();
+    let p = out
+        .symbols
+        .iter()
+        .find(|s| s.qualname == "dbo.my proc")
+        .expect("proc");
+    assert_eq!(p.kind, "procedure");
+    assert_eq!(p.name, "my proc");
+    assert_eq!((p.start_line, p.end_line), (1, 8));
+    let t = out
+        .symbols
+        .iter()
+        .find(|s| s.qualname == "dbo.my table")
+        .expect("table");
+    assert_eq!((t.start_line, t.end_line), (10, 14));
+    assert!(out.symbols.iter().any(|s| s.qualname == "dbo.next"));
+}

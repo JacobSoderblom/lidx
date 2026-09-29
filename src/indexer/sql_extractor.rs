@@ -58,6 +58,11 @@ impl crate::indexer::extract::LanguageExtractor for SqlExtractor {
         // Post-walk: scan for DO blocks
         extract_do_blocks(source, module_name, &mut output);
 
+        // The Postgres grammar has no T-SQL support: procedures parse as ERROR
+        // nodes and one bad statement (MERGE, IF/BEGIN, GO) can swallow later
+        // CREATE TABLEs. Recover them with a line scan.
+        extract_tsql_fallback(source, module_name, &mut output);
+
         Ok(output)
     }
 }
@@ -651,6 +656,224 @@ fn extract_do_blocks(source: &str, module_name: &str, output: &mut ExtractedFile
 
         search_start = abs_idx + 2;
     }
+}
+
+/// Line-based recovery of `CREATE [OR ALTER] PROC[EDURE]` and `CREATE TABLE`
+/// statements the tree-sitter pass missed. Symbols whose qualname already
+/// exists are skipped, so this never duplicates the grammar-derived ones.
+fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut ExtractedFile) {
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        lines.push((offset, line));
+        offset += line.len();
+    }
+    // `GO`, `GO 5`, `go;` end a batch.
+    let is_go = |l: &str| {
+        let l = l.trim().trim_end_matches(';');
+        let mut w = l.split_whitespace();
+        w.next().is_some_and(|f| f.eq_ignore_ascii_case("go"))
+            && w.next().is_none_or(|n| n.parse::<u32>().is_ok())
+            && w.next().is_none()
+    };
+    let normalize = |q: &str| -> String {
+        q.chars()
+            .filter(|c| !matches!(c, '[' | ']' | '"'))
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    let mut in_block_comment = false;
+    let mut in_dollar = false;
+
+    for (i, &(line_start, line)) in lines.iter().enumerate() {
+        let skip = in_block_comment || in_dollar || line.trim_start().starts_with("--");
+        if line.contains("/*") || line.contains("*/") {
+            // Last marker on the line decides the state.
+            let open = line.rfind("/*");
+            let close = line.rfind("*/");
+            in_block_comment = match (open, close) {
+                (Some(o), Some(c)) => o > c,
+                (Some(_), None) => true,
+                _ => false,
+            };
+        }
+        if line.matches("$$").count() % 2 == 1 {
+            in_dollar = !in_dollar;
+        }
+        if skip {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        let Some((kind, raw)) = create_at(&lines, i) else {
+            continue;
+        };
+        if raw.starts_with(['#', '@']) {
+            continue;
+        }
+        let qualname: String = raw
+            .chars()
+            .filter(|c| !matches!(c, '[' | ']' | '"'))
+            .collect();
+        let norm = normalize(&qualname);
+        if qualname.is_empty()
+            || output
+                .symbols
+                .iter()
+                .any(|s| normalize(&s.qualname) == norm)
+        {
+            continue;
+        }
+        let name = qualname.rsplit('.').next().unwrap_or(&qualname).to_string();
+
+        let start_byte = line_start + (line.len() - trimmed.len());
+        // Tables end at their closing paren; procedures at the next `GO` or
+        // unindented CREATE.
+        let end_byte = if kind == "table" {
+            table_end(source, start_byte)
+        } else {
+            let stop = (i + 1..lines.len())
+                .find(|&j| {
+                    let l = lines[j].1;
+                    is_go(l)
+                        || l.starts_with(['c', 'C'])
+                            && create_at(&lines, j).is_some_and(|(_, n)| !n.starts_with(['#', '@']))
+                })
+                .map_or(source.len(), |j| lines[j].0);
+            start_byte + source[start_byte..stop].trim_end().len()
+        };
+        let pos = |byte: usize| {
+            let row = source[..byte].bytes().filter(|&b| b == b'\n').count();
+            let col = byte - source[..byte].rfind('\n').map_or(0, |n| n + 1);
+            (row as i64 + 1, col as i64 + 1)
+        };
+        let (start_line, start_col) = pos(start_byte);
+        let (end_line, end_col) = pos(end_byte);
+        output.symbols.push(SymbolInput {
+            kind: kind.to_string(),
+            name,
+            qualname: qualname.clone(),
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+            start_byte: start_byte as i64,
+            end_byte: end_byte as i64,
+            signature: None,
+            docstring: None,
+        });
+        output.edges.push(EdgeInput {
+            kind: "CONTAINS".to_string(),
+            source_qualname: Some(module_name.to_string()),
+            target_qualname: Some(qualname),
+            detail: None,
+            evidence_snippet: None,
+            ..Default::default()
+        });
+    }
+}
+
+/// Splits the next whitespace-delimited word off `s`.
+fn next_word<'a>(s: &mut &'a str) -> Option<&'a str> {
+    let t = s.trim_start();
+    if t.is_empty() {
+        return None;
+    }
+    let end = t.find(char::is_whitespace).unwrap_or(t.len());
+    let (word, rest) = t.split_at(end);
+    *s = rest;
+    Some(word)
+}
+
+/// Reads a possibly dotted object name from `s`, honouring `[...]` and
+/// `"..."` parts (which may contain spaces). Returns the raw text.
+fn parse_name(s: &str) -> String {
+    let s = s.trim_start();
+    let mut end = 0;
+    let mut close: Option<char> = None;
+    for (i, c) in s.char_indices() {
+        match close {
+            Some(q) => {
+                if c == q {
+                    close = None;
+                }
+            }
+            None => match c {
+                '[' => close = Some(']'),
+                '"' => close = Some('"'),
+                c if c.is_whitespace() || matches!(c, '(' | ';') => break,
+                _ => {}
+            },
+        }
+        end = i + c.len_utf8();
+    }
+    s[..end].to_string()
+}
+
+/// `CREATE ...` starting at line `i`, allowing the keywords and name to
+/// continue on following lines (blank and `--` lines are skipped).
+fn create_at(lines: &[(usize, &str)], i: usize) -> Option<(&'static str, String)> {
+    let text: String = lines[i..]
+        .iter()
+        .map(|&(_, l)| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with("--"))
+        .take(6)
+        .collect::<Vec<_>>()
+        .join("\n");
+    parse_create(&text)
+}
+
+/// Parses `CREATE [OR ALTER] {PROC|PROCEDURE|TABLE} [IF NOT EXISTS] <name>`,
+/// returning the symbol kind and the raw name.
+fn parse_create(text: &str) -> Option<(&'static str, String)> {
+    let mut rest = text;
+    if !next_word(&mut rest)?.eq_ignore_ascii_case("create") {
+        return None;
+    }
+    let mut word = next_word(&mut rest)?;
+    if word.eq_ignore_ascii_case("or") {
+        if !next_word(&mut rest)?.eq_ignore_ascii_case("alter") {
+            return None;
+        }
+        word = next_word(&mut rest)?;
+    }
+    let kind = if word.eq_ignore_ascii_case("proc") || word.eq_ignore_ascii_case("procedure") {
+        "procedure"
+    } else if word.eq_ignore_ascii_case("table") {
+        "table"
+    } else {
+        return None;
+    };
+    let mut name = parse_name(rest);
+    if kind == "table" && name.eq_ignore_ascii_case("if") {
+        next_word(&mut rest)?;
+        let not = next_word(&mut rest)?;
+        let exists = next_word(&mut rest)?;
+        if !(not.eq_ignore_ascii_case("not") && exists.eq_ignore_ascii_case("exists")) {
+            return None;
+        }
+        name = parse_name(rest);
+    }
+    Some((kind, name))
+}
+
+/// End byte of a `CREATE TABLE` statement: the paren matching the first `(`,
+/// or the end of the first line when there is none.
+fn table_end(source: &str, start: usize) -> usize {
+    let rest = &source[start..];
+    let mut depth = 0usize;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    return start + i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    start + rest.lines().next().map_or(0, |l| l.trim_end().len())
 }
 
 #[cfg(test)]
