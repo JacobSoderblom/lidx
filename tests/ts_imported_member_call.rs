@@ -130,3 +130,42 @@ fn local_instance_call_is_not_import_bound() {
     assert!(t.contains(&"c.Client.get".to_string()), "{t:?}");
     assert!(!t.iter().any(|q| q.starts_with("ext:")), "{t:?}");
 }
+
+#[test]
+fn deep_member_chain_on_imported_object_binds_to_object() {
+    let t = single_call_target(&[
+        (
+            "lib/api.ts",
+            "export const api = { users: { list() { return 1; } } };\n",
+        ),
+        (
+            "use.ts",
+            "import { api } from './lib/api';\nexport function go() {\n  return api.users.list();\n}\n",
+        ),
+    ]);
+    assert_eq!(t, vec!["lib/api.api".to_string()]);
+}
+
+#[test]
+fn deep_member_chain_on_imported_class_stays_unbound() {
+    let t = single_call_target(&[
+        ("c.ts", "export class Foo {}\n"),
+        (
+            "use.ts",
+            "import { Foo } from './c';\nexport function go() {\n  return Foo.a.b();\n}\n",
+        ),
+    ]);
+    assert_eq!(t, vec!["ext:Foo.a.b".to_string()]);
+}
+
+#[test]
+fn namespace_import_deep_chain_does_not_bind_to_module() {
+    let t = single_call_target(&[
+        ("lib/api.ts", "export const a = { b() {} };\n"),
+        (
+            "use.ts",
+            "import * as ns from './lib/api';\nexport function go() {\n  return ns.a.b();\n}\n",
+        ),
+    ]);
+    assert_eq!(t, vec!["lib/api.a".to_string()]);
+}

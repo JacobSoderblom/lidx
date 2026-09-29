@@ -90,13 +90,20 @@ impl Drop for Repo {
     }
 }
 
-fn repo() -> Repo {
-    let mut root = std::env::temp_dir();
+/// Unique per test: pid + counter + nanos, so parallel tests never share a dir.
+fn fresh_root(prefix: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    root.push(format!("lidx-config-scope-{nanos}"));
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}-{}-{n}-{nanos}", std::process::id()))
+}
+
+fn repo() -> Repo {
+    let root = fresh_root("lidx-config-scope");
     let files = [
         ("infra/main.bicep", BICEP.to_string()),
         ("infra/apps/datamgr/spc.yaml", SPC.to_string()),
@@ -285,4 +292,75 @@ fn upstream_chain_from_reader_reaches_bicep_secret() {
         files(&r["trace"]).iter().any(|p| p == "infra/main.bicep"),
         "{r}"
     );
+}
+
+#[test]
+fn default_kinds_upstream_and_both_from_secret_uri_do_not_fan_out() {
+    let repo = repo();
+    for direction in ["upstream", "both"] {
+        let r = call(
+            &repo,
+            "analyze_impact",
+            &format!(
+                r#"{{"qualname":"secret://datamgr-db-conn-str","direction":"{direction}","max_depth":5}}"#
+            ),
+        );
+        let f = files(&r["affected"]);
+        assert!(
+            !f.iter()
+                .any(|p| p.contains("Dpb.DataProxy") || p.contains("dataproxy")),
+            "{direction}: leaked other service via external stub: {f:?}"
+        );
+    }
+}
+
+fn hashlib_repo() -> Repo {
+    let root = fresh_root("lidx-ext-stub");
+    for (name, func) in [("a", "run_a"), ("b", "run_b")] {
+        let p = root.join(format!("{name}.py"));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(
+            p,
+            format!("import hashlib\n\n\ndef {func}():\n    return hashlib.sha256()\n"),
+        )
+        .unwrap();
+    }
+    let db = root.join(".lidx").join(".lidx.sqlite");
+    Indexer::new(root.clone(), db.clone())
+        .unwrap()
+        .reindex()
+        .unwrap();
+    Repo { root, db }
+}
+
+#[test]
+fn shared_external_api_does_not_connect_unrelated_callers() {
+    let repo = hashlib_repo();
+    let r = call(
+        &repo,
+        "analyze_impact",
+        r#"{"qualname":"a.run_a","direction":"both","max_depth":5}"#,
+    );
+    // The stub itself is listed as a leaf, so the test cannot pass vacuously.
+    assert!(r.to_string().contains("ext:hashlib.sha256"), "no stub: {r}");
+    assert!(!r.to_string().contains("run_b"), "{r}");
+    let r = call(
+        &repo,
+        "trace_flow",
+        r#"{"start_qualname":"a.run_a","direction":"both","max_hops":5}"#,
+    );
+    assert!(r.to_string().contains("ext:hashlib.sha256"), "no stub: {r}");
+    assert!(!r.to_string().contains("run_b"), "{r}");
+}
+
+#[test]
+fn external_stub_as_seed_still_lists_its_callers() {
+    let repo = hashlib_repo();
+    let r = call(
+        &repo,
+        "analyze_impact",
+        r#"{"qualname":"ext:hashlib.sha256","direction":"upstream","max_depth":5}"#,
+    );
+    let s = r.to_string();
+    assert!(s.contains("run_a") && s.contains("run_b"), "{r}");
 }
