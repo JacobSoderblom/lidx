@@ -7,7 +7,7 @@ use crate::indexer::config::{
 use crate::indexer::scan::language_for_path;
 use crate::model::{Edge, Symbol, TraceHop};
 use anyhow::Result;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Direction of a BFS trace through the symbol graph.
 #[derive(Debug, Clone)]
@@ -97,6 +97,10 @@ pub struct TraceResult {
 
 /// Every config URI `id`'s own config edges carry: the only URIs a config
 /// bridge can enter it on.
+fn is_config_edge_kind(kind: &str) -> bool {
+    matches!(kind, "CONFIG_SOURCE" | "CONFIG_READ" | "CONFIG_BIND")
+}
+
 fn config_uris(
     db: &Db,
     id: i64,
@@ -114,6 +118,55 @@ fn config_uris(
         })
         .filter_map(|e| e.target_qualname)
         .collect()
+}
+
+/// Content-based tie-break for two arrivals at the same (node, entry) pair
+/// and level: independent of edge ids and processing order.
+type TieKey = (String, String, Option<String>, Option<String>, String);
+
+fn tie_key(parent_qualname: &str, edge: &Edge) -> TieKey {
+    (
+        parent_qualname.to_string(),
+        edge.kind.clone(),
+        edge.evidence_snippet.clone(),
+        edge.detail.clone(),
+        edge.file_path.clone(),
+    )
+}
+
+/// Where a (node, entry) pair's hop sits in the trace, and the tie key of the
+/// arrival that produced it.
+struct HopSlot {
+    idx: usize,
+    dist: usize,
+    key: TieKey,
+}
+
+type HopSlots = HashMap<(i64, Entry), HopSlot>;
+
+/// A later arrival at an already-reported pair replaces its hop when it is
+/// at the same distance and has a smaller tie key, so the reported parent,
+/// edge kind and snippet do not depend on the order edges were processed.
+fn retie(
+    trace: &mut [TraceHop],
+    slots: &mut HopSlots,
+    pair: &(i64, Entry),
+    dist: usize,
+    key: TieKey,
+    build: impl FnOnce() -> Option<TraceHop>,
+) -> bool {
+    let Some(slot) = slots.get_mut(pair) else {
+        return false;
+    };
+    if slot.dist != dist || key >= slot.key {
+        return false;
+    }
+    let Some(hop) = build() else {
+        return false;
+    };
+    trace[slot.idx] = hop;
+    slot.key = key;
+    true
 }
 
 /// One BFS frontier entry: a node to expand under `entry`.
@@ -144,6 +197,7 @@ pub fn trace_flow(
 
     let mut trace: Vec<TraceHop> = Vec::new();
     let mut visited = HashSet::new();
+    let mut slots: HopSlots = HashMap::new();
     let mut queue: VecDeque<QueueItem> = VecDeque::new();
 
     // Config URI each node was entered through (issue #131): it then only
@@ -221,6 +275,10 @@ pub fn trace_flow(
         }
 
         let edges = db.edges_for_symbol_with_dispatch(current_id, languages, graph_version)?;
+        let current_qn = db
+            .get_symbol_by_id(current_id)?
+            .map(|s| s.qualname)
+            .unwrap_or_default();
 
         let mut bridge_targets: Vec<BridgeTarget> = Vec::new();
         let allowed = ConfigScope::allowed(&entry, &edges);
@@ -281,6 +339,26 @@ pub fn trace_flow(
             };
 
             let Some(admission) = scope.admit_plain(next_id) else {
+                let key = tie_key(&current_qn, edge);
+                if retie(
+                    &mut trace,
+                    &mut slots,
+                    &(next_id, Entry::Unscoped),
+                    dist + 1,
+                    key,
+                    || {
+                        let sym = db.get_symbol_by_id(next_id).ok()??;
+                        Some(build_hop(
+                            &sym,
+                            edge,
+                            dist + 1,
+                            &prev_file,
+                            config.include_snippets,
+                        ))
+                    },
+                ) {
+                    traversed_edge_ids.push(edge.id);
+                }
                 continue;
             };
 
@@ -297,6 +375,14 @@ pub fn trace_flow(
                 let hop_size = estimate_hop_size(&hop, config.compact);
                 let hop_idx = trace.len();
                 trace.push(hop);
+                slots.insert(
+                    (next_id, admission.entry.clone()),
+                    HopSlot {
+                        idx: hop_idx,
+                        dist: dist + 1,
+                        key: tie_key(&current_qn, edge),
+                    },
+                );
                 traversed_edge_ids.push(edge.id);
                 visited.insert(next_id);
                 if hop_idx >= config.trace_offset {
@@ -348,18 +434,11 @@ pub fn trace_flow(
                         let Some(bridged_id) = bridged_edge.source_symbol_id else {
                             continue;
                         };
-                        let Some(admission) = scope.admit_bridge(bridged_id, edge_kind, tq, || {
-                            config_uris(db, bridged_id, languages, graph_version)
-                        }) else {
-                            continue;
-                        };
-                        visited.insert(bridged_id);
-                        if let Ok(Some(bridged_sym)) = db.get_symbol_by_id(bridged_id) {
+                        let make_hop = |bridged_sym: &Symbol| {
                             let prev_lang = detect_language(&prev_file);
                             let next_lang = detect_language(&bridged_sym.file_path);
                             let b_detail = build_boundary_detail(b_type, &prev_lang, &next_lang);
-                            let p_context = extract_protocol_context(bridged_edge);
-                            let hop = TraceHop {
+                            TraceHop {
                                 symbol: bridged_sym.clone(),
                                 edge_kind: bridged_edge.kind.clone(),
                                 distance: dist + 1,
@@ -372,12 +451,44 @@ pub fn trace_flow(
                                 cross_language: true,
                                 boundary_type: Some(b_type.to_string()),
                                 boundary_detail: Some(b_detail),
-                                protocol_context: p_context,
+                                protocol_context: extract_protocol_context(bridged_edge),
                                 resolution_kind: bridged_edge.resolution_kind.clone(),
-                            };
+                            }
+                        };
+                        let Some(admission) = scope.admit_bridge(bridged_id, edge_kind, tq, || {
+                            config_uris(db, bridged_id, languages, graph_version)
+                        }) else {
+                            let pair = (
+                                bridged_id,
+                                if is_config_edge_kind(edge_kind) {
+                                    Entry::Uri(tq.clone())
+                                } else {
+                                    Entry::Unscoped
+                                },
+                            );
+                            let key = tie_key(&current_qn, bridged_edge);
+                            if retie(&mut trace, &mut slots, &pair, dist + 1, key, || {
+                                let sym = db.get_symbol_by_id(bridged_id).ok()??;
+                                Some(make_hop(&sym))
+                            }) {
+                                traversed_edge_ids.push(bridged_edge.id);
+                            }
+                            continue;
+                        };
+                        visited.insert(bridged_id);
+                        if let Ok(Some(bridged_sym)) = db.get_symbol_by_id(bridged_id) {
+                            let hop = make_hop(&bridged_sym);
                             let hop_size = estimate_hop_size(&hop, config.compact);
                             let hop_idx = trace.len();
                             trace.push(hop);
+                            slots.insert(
+                                (bridged_id, admission.entry.clone()),
+                                HopSlot {
+                                    idx: hop_idx,
+                                    dist: dist + 1,
+                                    key: tie_key(&current_qn, bridged_edge),
+                                },
+                            );
                             traversed_edge_ids.push(bridged_edge.id);
                             if hop_idx >= config.trace_offset {
                                 used_bytes += hop_size;

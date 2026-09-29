@@ -150,6 +150,35 @@ fn edge_order_does_not_change_hops_or_reached_nodes() {
     // X is reported once per scope: unscoped, env://A (from S), env://B (from Z).
     assert_eq!(tf.hops.iter().filter(|h| h.symbol.name == "X").count(), 3);
 
+    // Two parents at the same level reach the same (X, unscoped) pair with
+    // different edge kinds (CALLS vs a channel bridge): the hop content must
+    // not depend on which edge is processed first.
+    let tie_edges = [
+        ("CALLS", "S", "P1"),
+        ("CALLS", "S", "P2"),
+        ("CHANNEL_PUBLISH", "P2", "topic.t"),
+        ("CHANNEL_SUBSCRIBE", "X", "topic.t"),
+        ("CALLS", "P1", "X"),
+    ];
+    let mut tie_reversed = tie_edges;
+    tie_reversed.reverse();
+    let tie_names = ["S", "P1", "P2", "X"];
+    let (t1, t2) = (
+        trace(&graph(&tie_names, &tie_edges), "S"),
+        trace(&graph(&tie_names, &tie_reversed), "S"),
+    );
+    assert_eq!(hops_json(&t1), hops_json(&t2));
+    for t in [&t1, &t2] {
+        let x: Vec<&str> = t
+            .hops
+            .iter()
+            .filter(|h| h.symbol.name == "X")
+            .map(|h| h.edge_kind.as_str())
+            .collect();
+        // Parent P1 sorts before P2, so its CALLS edge is the reported one.
+        assert_eq!(x, vec!["CALLS"]);
+    }
+
     let (a, b) = (impact(&fwd, "S"), impact(&rev, "S"));
     assert_eq!(impact_names(&fwd, &a), impact_names(&rev, &b));
     assert!(impact_names(&fwd, &a).contains("Z"));
