@@ -1338,21 +1338,14 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     let mut next_hops: Vec<serde_json::Value> = Vec::new();
     if truncated {
         let next_offset = trace_offset + trace.len();
-        let mut continue_params = json!({
-            "max_hops": max_hops,
-            "include_snippets": include_snippets,
-            "trace_offset": next_offset,
-        });
-        if let Some(ref qn) = params.start_qualname {
-            continue_params["start_qualname"] = json!(qn);
-        } else if let Some(id) = params.start_id {
-            continue_params["start_id"] = json!(id);
-        }
-        if let Some(ref k) = params.kinds {
-            continue_params["kinds"] = json!(k);
-        }
-        if let Some(ref f) = params.format {
-            continue_params["format"] = json!(f);
+        // #119: echo every original param (direction, max_bytes,
+        // exclude_resolution_kinds, languages, end_qualname, query, ...) by
+        // cloning the raw request and overriding only trace_offset, rather
+        // than hand-picking a field subset that silently dropped params
+        // (and left a query-started trace with no start at all).
+        let mut continue_params = raw_params.clone();
+        if let Some(obj) = continue_params.as_object_mut() {
+            obj.insert("trace_offset".to_string(), json!(next_offset));
         }
         next_hops.push(json!({
             "method": "trace_flow",
