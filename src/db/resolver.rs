@@ -722,7 +722,52 @@ impl<'c> Resolver<'c> {
             }),
             _ => None,
         };
-        self.resolve_tiers(r, symbol_map)
+        let resolution = self.resolve_tiers(r, symbol_map)?;
+        // Issue #124: `new T(...)` names the class, but the call runs one of
+        // its constructors -- bind that when exactly one matches by arity.
+        if let (Some(shape), Resolution::Resolved { target_id, kind }) = (r.call_shape, resolution)
+            && shape.is_new
+            && let Some(ctor) = self.constructor_for(target_id, shape, r.source_file_path)?
+        {
+            return Ok(Resolution::Resolved {
+                target_id: ctor,
+                kind,
+            });
+        }
+        Ok(resolution)
+    }
+
+    /// The single constructor of class-like symbol `class_id` (its
+    /// `<qualname>..ctor` symbols) that admits `shape`'s argument count.
+    /// `None` -- keep the class -- when `class_id` isn't a type, declares no
+    /// constructor, or 0 / 2+ of them admit the call.
+    fn constructor_for(
+        &mut self,
+        class_id: i64,
+        shape: CallShape,
+        caller_file: &str,
+    ) -> Result<Option<i64>> {
+        let (qualname, kind): (String, String) = self
+            .conn
+            .prepare_cached("SELECT qualname, kind FROM symbols WHERE id = ?")?
+            .query_row(params![class_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        if !matches!(kind.as_str(), "class" | "struct" | "record") {
+            return Ok(None);
+        }
+        let gv = self.graph_version;
+        let ctor_qualname = format!("{qualname}..ctor");
+        let arity = Some(Arity {
+            args: shape.arg_count as usize,
+            value_receiver: false,
+        });
+        let candidates = query_exact_candidates(&mut self.exact, &ctor_qualname, gv, caller_file)?;
+        let mut admitted = candidates
+            .iter()
+            .filter(|c| c.kind == "method" && arity_admits(arity, &c.kind, c.signature.as_deref()));
+        Ok(match (admitted.next(), admitted.next()) {
+            (Some(only), None) => Some(only.id),
+            _ => None,
+        })
     }
 
     fn resolve_tiers(

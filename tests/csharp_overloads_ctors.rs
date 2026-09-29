@@ -135,6 +135,40 @@ fn same_arity_overloads_stay_unresolved() {
 }
 
 #[test]
+fn new_binds_to_matching_ctor() {
+    let (dir, indexer, gv) = setup();
+    let (qn, sig) = only_target(&indexer, gv, "App.Caller.MakeWidget");
+    assert_eq!(qn, "App.Widget..ctor");
+    assert!(sig.unwrap().contains("int size"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn new_without_declared_ctor_binds_to_class() {
+    let (dir, indexer, gv) = setup();
+    let (qn, _) = only_target(&indexer, gv, "App.Caller.MakePlain");
+    assert_eq!(qn, "App.Plain");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn dead_symbols_does_not_list_a_called_ctor() {
+    let (dir, mut indexer, _) = setup();
+    let result = rpc::handle_method(&mut indexer, "dead_symbols", serde_json::json!({})).unwrap();
+    let dead: Vec<String> = result["dead_symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["qualname"].as_str().map(String::from))
+        .collect();
+    assert!(
+        !dead.iter().any(|q| q == "App.Widget..ctor"),
+        "called ctor listed as dead: {dead:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn read_symbol_on_overloaded_qualname_returns_every_overload() {
     let (dir, mut indexer, _) = setup();
     let result = rpc::handle_method(
