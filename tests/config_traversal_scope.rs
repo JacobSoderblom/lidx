@@ -90,13 +90,20 @@ impl Drop for Repo {
     }
 }
 
-fn repo() -> Repo {
-    let mut root = std::env::temp_dir();
+/// Unique per test: pid + counter + nanos, so parallel tests never share a dir.
+fn fresh_root(prefix: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    root.push(format!("lidx-config-scope-{nanos}"));
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}-{}-{n}-{nanos}", std::process::id()))
+}
+
+fn repo() -> Repo {
+    let root = fresh_root("lidx-config-scope");
     let files = [
         ("infra/main.bicep", BICEP.to_string()),
         ("infra/apps/datamgr/spc.yaml", SPC.to_string()),
@@ -309,12 +316,7 @@ fn default_kinds_upstream_and_both_from_secret_uri_do_not_fan_out() {
 
 #[test]
 fn shared_external_api_does_not_connect_unrelated_callers() {
-    let mut root = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    root.push(format!("lidx-ext-stub-{nanos}"));
+    let root = fresh_root("lidx-ext-stub");
     for (name, cls) in [("A", "Alpha"), ("B", "Beta")] {
         let p = root.join(format!("src/{name}.cs"));
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
