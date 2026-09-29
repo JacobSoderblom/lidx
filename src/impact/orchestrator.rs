@@ -621,7 +621,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
         let mut any_truncated = false;
 
         // Merge parent maps from all layers (direct layer is primary)
-        let mut merged_parents: HashMap<i64, (i64, String, Option<String>)> = HashMap::new();
+        let mut merged_parents: HashMap<i64, (i64, String, Option<String>, bool)> = HashMap::new();
         for layer_result in &layer_results {
             any_truncated = any_truncated || layer_result.truncated;
 
@@ -755,7 +755,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
 fn reconstruct_path_steps(
     symbol_id: i64,
     seed_set: &HashSet<i64>,
-    parent_map: &HashMap<i64, (i64, String, Option<String>)>,
+    parent_map: &HashMap<i64, (i64, String, Option<String>, bool)>,
     symbol_map: &HashMap<i64, Symbol>,
 ) -> Vec<PathStep> {
     let mut steps = Vec::new();
@@ -765,7 +765,8 @@ fn reconstruct_path_steps(
         if seed_set.contains(&current) {
             break;
         }
-        let Some((parent_id, edge_kind, resolution_kind)) = parent_map.get(&current) else {
+        let Some((parent_id, edge_kind, resolution_kind, reversed)) = parent_map.get(&current)
+        else {
             break;
         };
         let from_qn = symbol_map
@@ -776,10 +777,16 @@ fn reconstruct_path_steps(
             .get(&current)
             .map(|s| s.qualname.clone())
             .unwrap_or_default();
+        // Always caller -> callee: an upstream walk traverses the edge backwards.
+        let (from_symbol, to_symbol) = if *reversed {
+            (to_qn, from_qn)
+        } else {
+            (from_qn, to_qn)
+        };
         steps.push(PathStep {
             edge_kind: edge_kind.clone(),
-            from_symbol: from_qn,
-            to_symbol: to_qn,
+            from_symbol,
+            to_symbol,
             resolution_kind: resolution_kind.clone(),
         });
         current = *parent_id;
@@ -819,5 +826,41 @@ mod tests {
         assert_eq!(config.direct.max_depth, 5);
         assert_eq!(config.min_confidence, 0.7);
         assert!(config.test.enabled);
+    }
+
+    /// Issue #103: path steps read caller -> callee even when the BFS walked
+    /// the edge backwards (upstream).
+    #[test]
+    fn reversed_traversal_steps_are_caller_to_callee() {
+        use super::reconstruct_path_steps;
+        use crate::model::Symbol;
+        use std::collections::{HashMap, HashSet};
+        let mk = |id: i64, qn: &str| Symbol {
+            id,
+            file_path: "a.rs".into(),
+            kind: "function".into(),
+            name: qn.into(),
+            qualname: qn.into(),
+            start_line: 1,
+            start_col: 0,
+            end_line: 2,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 1,
+            signature: None,
+            docstring: None,
+            graph_version: 1,
+            commit_sha: None,
+            stable_id: None,
+        };
+        let symbols: HashMap<i64, Symbol> = [(1, mk(1, "callee")), (2, mk(2, "caller"))]
+            .into_iter()
+            .collect();
+        // seed 1 (callee); caller 2 reached upstream, i.e. against the edge.
+        let parents = HashMap::from([(2, (1, "CALLS".to_string(), None, true))]);
+        let seeds = HashSet::from([1]);
+        let steps = reconstruct_path_steps(2, &seeds, &parents, &symbols);
+        assert_eq!(steps[0].from_symbol, "caller");
+        assert_eq!(steps[0].to_symbol, "callee");
     }
 }
