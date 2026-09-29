@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone)]
 pub struct SymbolInput {
     pub kind: String,
@@ -45,11 +47,14 @@ pub enum ReceiverType {
     /// The receiver's type was inferred to be this name. Resolution must
     /// require the target method to belong to a matching type.
     Known(String),
+    /// A `Known` C# type looked up through this scope (an unqualified
+    /// interface name), stored as `receiver_type` + `receiver_scope`.
+    Scoped { scope: TypeScope, ty: String },
     /// The receiver is the return value of `Type.Method(..)`, whose
     /// signature the extractor can't see (another file). The resolver swaps
     /// it for `Known(return type)` -- or `Unresolved` -- once every symbol
-    /// exists. Persisted as column text (`DeferredReturn::encode`) so a
-    /// later retry re-resolves it.
+    /// exists. Persisted as a [`DeferredMarker`] so a later retry
+    /// re-resolves it.
     Deferred(DeferredReturn),
     /// A Rust receiver traced to a declaration in another file.
     RustDeferred(RustDeferred),
@@ -59,7 +64,7 @@ pub enum ReceiverType {
 }
 
 /// "The (optionally awaited) return value of `base.method(..)`".
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeferredReturn {
     pub base: DeferredBase,
     pub method: String,
@@ -73,7 +78,7 @@ pub struct DeferredReturn {
     pub name_only: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeferredBase {
     /// A receiver of this type.
     Type(String),
@@ -82,13 +87,9 @@ pub enum DeferredBase {
     Call(Box<DeferredReturn>),
 }
 
-/// Column-text prefix of a serialised `DeferredReturn`. `@` can't start a
-/// type name.
-pub const DEFERRED_RETURN_PREFIX: &str = "@ret:";
-
 /// "The parameter at `index` (or named `name`) of the `arg_count`-argument
 /// call to `callee`": the type a target-typed `new(..)` argument constructs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeferredArgument {
     /// Zero-based position of the argument in the call.
     pub index: usize,
@@ -99,45 +100,6 @@ pub struct DeferredArgument {
     /// `Type.Method` or a qualified method name, as spelled at the call site.
     pub callee: String,
 }
-
-/// Every deferred marker (`@ret:`, `@arg:`) starts with this; `@` can't start
-/// a type name.
-pub const DEFERRED_MARKER_PREFIX: &str = "@";
-
-/// Column-text prefix of a serialised `DeferredArgument`.
-pub const DEFERRED_ARG_PREFIX: &str = "@arg:";
-
-impl DeferredArgument {
-    /// The `edges.receiver_type` column text.
-    pub fn encode(&self) -> String {
-        format!(
-            "{DEFERRED_ARG_PREFIX}{}:{}:{}:{}",
-            self.index,
-            self.name.as_deref().unwrap_or(""),
-            self.arg_count,
-            self.callee
-        )
-    }
-
-    /// Inverse of `encode`.
-    pub fn parse(column: &str) -> Option<Self> {
-        let rest = column.strip_prefix(DEFERRED_ARG_PREFIX)?;
-        let mut parts = rest.splitn(4, ':');
-        let index = parts.next()?.parse().ok()?;
-        let name = parts.next().filter(|n| !n.is_empty()).map(str::to_string);
-        let arg_count = parts.next()?.parse().ok()?;
-        Some(Self {
-            index,
-            name,
-            arg_count,
-            callee: parts.next()?.to_string(),
-        })
-    }
-}
-
-/// `edges.call_shape` value on an `RPC_CALL` edge that the resolver derived
-/// from a deferred receiver (`Db::rederive_deferred_rpc_calls`).
-pub const DERIVED_RPC_SHAPE: &str = "rpc:deferred";
 
 /// How many calls may nest in a `DeferredReturn` (`a.B().C()...`, `var b =
 /// a.G()`) before extraction or resolution gives up and leaves the receiver
@@ -172,52 +134,10 @@ impl DeferredReturn {
             DeferredBase::Call(inner) => 1 + inner.depth(),
         }
     }
-
-    /// The `edges.receiver_type` column text.
-    pub fn encode(&self) -> String {
-        let base = match &self.base {
-            DeferredBase::Type(ty) => ty.clone(),
-            DeferredBase::Call(inner) => inner.encode(),
-        };
-        format!(
-            "{DEFERRED_RETURN_PREFIX}{}{}{}:{base}.{}",
-            if self.awaited { "a" } else { "" },
-            if self.static_only { "s" } else { "" },
-            if self.name_only { "n" } else { "" },
-            self.method,
-        )
-    }
-
-    /// Inverse of `encode`.
-    pub fn parse(column: &str) -> Option<Self> {
-        let rest = column.strip_prefix(DEFERRED_RETURN_PREFIX)?;
-        let (flags, callee) = rest.split_once(':')?;
-        // Not another language's `@ret:` marker (Rust's is `@ret:r:`).
-        if !flags.chars().all(|c| matches!(c, 'a' | 's' | 'n')) {
-            return None;
-        }
-        let (base, method) = callee.rsplit_once('.')?;
-        let base = if base.starts_with(DEFERRED_RETURN_PREFIX) {
-            DeferredBase::Call(Box::new(Self::parse(base)?))
-        } else {
-            DeferredBase::Type(base.to_string())
-        };
-        Some(Self {
-            base,
-            method: method.to_string(),
-            awaited: flags.contains('a'),
-            static_only: flags.contains('s'),
-            name_only: flags.contains('n'),
-        })
-    }
 }
 
-/// Column-text prefix of a Rust deferred receiver (`@ret:` family, so the
-/// resolver's `LIKE '@ret:%'` retry scans cover it).
-pub const RUST_DEFERRED_PREFIX: &str = "@ret:r:";
-
 /// Where a Rust deferred receiver's declared type is read from.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeferredSource {
     /// Return type of a callee, one of these absolute qualnames.
     Call { candidates: Vec<String> },
@@ -232,7 +152,7 @@ pub enum DeferredSource {
 }
 
 /// One projection applied to a declared type to reach the receiver's type.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Step {
     /// `Some(x)` pattern: `Option<T>` -> `T`.
     OptionSome,
@@ -253,7 +173,7 @@ pub enum Step {
 /// A Rust receiver type the extractor could only trace to a declaration in
 /// another file, plus how to project it. Persisted in
 /// `edges.receiver_type` (`encode`/`decode`) and finished by the resolver.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustDeferred {
     pub source: DeferredSource,
     pub steps: Vec<Step>,
@@ -262,100 +182,62 @@ pub struct RustDeferred {
     pub fallback: Option<String>,
 }
 
-impl Step {
-    fn encode(&self) -> String {
+/// A deferred resolution the extractor could not finish in one file: the
+/// resolver completes it once every symbol exists and re-judges it whenever
+/// its callee changes. Stored in `edges` / `unresolved_references` as
+/// `deferred_kind` + `deferred` (JSON payload); [`DeferredMarker::encode`] and
+/// [`DeferredMarker::decode`] are the only writers and readers of that format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeferredMarker {
+    /// C#: the return value of a call in another file.
+    Return(DeferredReturn),
+    /// Rust: a receiver traced to a declaration in another file.
+    Rust(RustDeferred),
+    /// C#: a target-typed `new(..)` passed as a call argument.
+    Argument(DeferredArgument),
+}
+
+/// `deferred_kind` column values, one per [`DeferredMarker`] variant.
+pub const DEFERRED_KIND_RETURN: &str = "return";
+pub const DEFERRED_KIND_RUST: &str = "rust";
+pub const DEFERRED_KIND_ARGUMENT: &str = "argument";
+
+impl DeferredMarker {
+    /// `(deferred_kind, deferred)` column values.
+    pub fn encode(&self) -> (&'static str, String) {
+        // Invariant: these plain data types always serialise.
+        let json = |r: serde_json::Result<String>| r.unwrap_or_default();
         match self {
-            Step::OptionSome => "some".into(),
-            Step::ResultOk => "ok".into(),
-            Step::ResultErr => "err".into(),
-            Step::Tuple(i) => format!("t{i}"),
-            Step::Elem => "elem".into(),
-            Step::Method(m) => format!(".{m}"),
-            Step::Await => "await".into(),
+            Self::Return(m) => (DEFERRED_KIND_RETURN, json(serde_json::to_string(m))),
+            Self::Rust(m) => (DEFERRED_KIND_RUST, json(serde_json::to_string(m))),
+            Self::Argument(m) => (DEFERRED_KIND_ARGUMENT, json(serde_json::to_string(m))),
         }
     }
 
-    fn decode(text: &str) -> Option<Step> {
-        Some(match text {
-            "some" => Step::OptionSome,
-            "ok" => Step::ResultOk,
-            "err" => Step::ResultErr,
-            "elem" => Step::Elem,
-            "await" => Step::Await,
-            t if t.starts_with('t') => Step::Tuple(t[1..].parse().ok()?),
-            t => Step::Method(t.strip_prefix('.')?.to_string()),
-        })
+    /// Inverse of [`DeferredMarker::encode`]; `None` for an unknown kind or a
+    /// payload that does not parse.
+    pub fn decode(kind: &str, payload: &str) -> Option<Self> {
+        match kind {
+            DEFERRED_KIND_RETURN => serde_json::from_str(payload).ok().map(Self::Return),
+            DEFERRED_KIND_RUST => serde_json::from_str(payload).ok().map(Self::Rust),
+            DEFERRED_KIND_ARGUMENT => serde_json::from_str(payload).ok().map(Self::Argument),
+            _ => None,
+        }
     }
 }
 
-impl RustDeferred {
-    /// Column text: `@ret:r:<source>|<x>|<y>|<steps>|<fallback>` with
-    /// `call|<candidates ;-joined>|`, `method|<type>|<method>` or
-    /// `field|<owner>|<field>` as the source and `,`-joined steps.
-    pub fn encode(&self) -> String {
-        let (tag, x, y) = match &self.source {
-            DeferredSource::Call { candidates } => ("call", candidates.join(";"), String::new()),
-            DeferredSource::Method {
-                receiver_type,
-                method,
-            } => ("method", receiver_type.clone(), method.clone()),
-            DeferredSource::Field { owner, field } => ("field", owner.clone(), field.clone()),
-        };
-        let steps: Vec<String> = self.steps.iter().map(Step::encode).collect();
-        format!(
-            "{RUST_DEFERRED_PREFIX}{tag}|{x}|{y}|{}|{}",
-            steps.join(","),
-            self.fallback.as_deref().unwrap_or("")
-        )
-    }
-
-    /// Inverse of `encode`; `None` for any other column text.
-    pub fn decode(column: &str) -> Option<RustDeferred> {
-        let rest = column.strip_prefix(RUST_DEFERRED_PREFIX)?;
-        let mut parts = rest.splitn(5, '|');
-        let (tag, x, y) = (parts.next()?, parts.next()?, parts.next()?);
-        let source = match tag {
-            "call" => DeferredSource::Call {
-                candidates: x.split(';').map(str::to_string).collect(),
-            },
-            "method" => DeferredSource::Method {
-                receiver_type: x.to_string(),
-                method: y.to_string(),
-            },
-            "field" => DeferredSource::Field {
-                owner: x.to_string(),
-                field: y.to_string(),
-            },
-            _ => return None,
-        };
-        let steps = parts
-            .next()?
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(Step::decode)
-            .collect::<Option<Vec<_>>>()?;
-        let fallback = parts.next()?;
-        Some(RustDeferred {
-            source,
-            steps,
-            fallback: (!fallback.is_empty()).then(|| fallback.to_string()),
-        })
-    }
+/// The receiver columns of one edge / unresolved reference, as stored.
+/// `receiver_type` holds only a plain type name (`""` = tracked but
+/// unresolved); a deferred receiver has none until the resolver finishes it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ReceiverColumns {
+    pub receiver_type: Option<String>,
+    pub receiver_scope: Option<String>,
+    pub deferred_kind: Option<&'static str>,
+    pub deferred: Option<String>,
 }
 
 impl ReceiverType {
-    /// `DeferredArgument::parse` on column text.
-    pub fn parse_deferred_argument(column: &str) -> Option<DeferredArgument> {
-        DeferredArgument::parse(column)
-    }
-
-    /// Whether an `edges.receiver_type` column value is any deferred marker
-    /// (`@ret:` / `@arg:`; `@` can't start a type name), which the resolver
-    /// re-judges whenever a callee changes.
-    pub fn is_deferred_column(column: &str) -> bool {
-        column.starts_with(DEFERRED_MARKER_PREFIX)
-    }
-
     /// `Deferred` for "the (optionally awaited) return value of
     /// `type_name.method`".
     pub fn deferred_return(
@@ -372,34 +254,46 @@ impl ReceiverType {
         ))
     }
 
-    /// `DeferredReturn::parse` on column text.
-    pub fn parse_deferred_return(column: &str) -> Option<DeferredReturn> {
-        DeferredReturn::parse(column)
+    /// The deferred marker this receiver carries, if any.
+    pub fn deferred_marker(&self) -> Option<DeferredMarker> {
+        match self {
+            ReceiverType::Deferred(m) => Some(DeferredMarker::Return(m.clone())),
+            ReceiverType::RustDeferred(m) => Some(DeferredMarker::Rust(m.clone())),
+            ReceiverType::DeferredArgument(m) => Some(DeferredMarker::Argument(m.clone())),
+            _ => None,
+        }
     }
 
-    /// Encode as the `edges.receiver_type` column value: `None` = not
-    /// tracked (legacy resolution tiers apply), `Some("")` = tracked but
+    /// The columns to store: `receiver_type` `None` = not tracked (legacy
+    /// resolution tiers apply) or deferred, `Some("")` = tracked but
     /// unresolved/builtin (must not bind, no lookup attempted at all),
     /// `Some(ty)` = tracked with this inferred type name.
-    pub fn as_column(&self) -> Option<std::borrow::Cow<'_, str>> {
-        use std::borrow::Cow;
+    pub fn to_columns(&self) -> ReceiverColumns {
+        let mut columns = ReceiverColumns::default();
         match self {
-            ReceiverType::NotTracked => None,
-            ReceiverType::Unresolved => Some(Cow::Borrowed("")),
-            ReceiverType::Known(ty) => Some(Cow::Borrowed(ty.as_str())),
-            ReceiverType::Deferred(call) => Some(Cow::Owned(call.encode())),
-            ReceiverType::RustDeferred(pending) => Some(Cow::Owned(pending.encode())),
-            ReceiverType::DeferredArgument(arg) => Some(Cow::Owned(arg.encode())),
+            ReceiverType::NotTracked => {}
+            ReceiverType::Unresolved => columns.receiver_type = Some(String::new()),
+            ReceiverType::Known(ty) => columns.receiver_type = Some(ty.clone()),
+            ReceiverType::Scoped { scope, ty } => {
+                columns.receiver_type = Some(ty.clone());
+                columns.receiver_scope = scope.encode();
+            }
+            other => {
+                if let Some((kind, payload)) = other.deferred_marker().map(|m| m.encode()) {
+                    columns.deferred_kind = Some(kind);
+                    columns.deferred = Some(payload);
+                }
+            }
         }
+        columns
     }
 }
 
 /// Where an unqualified C# receiver type name is looked up, in C# order:
 /// enclosing scopes (nested types, then namespaces) innermost first, then
-/// the global namespace, then `using` namespaces. Persisted in front of the
-/// type name in the `receiver_type` column as `enclosing,..;usings,..|Type`;
-/// [`TypeScope::encode`] and [`TypeScope::decode`] are the only readers and
-/// writers of that format.
+/// the global namespace, then `using` namespaces. Stored in the
+/// `receiver_scope` column as `enclosing,..;usings,..`; [`TypeScope::encode`]
+/// and [`TypeScope::decode`] are the only writers and readers of that format.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TypeScope {
     pub enclosing: Vec<String>,
@@ -407,37 +301,34 @@ pub struct TypeScope {
 }
 
 impl TypeScope {
-    /// `ty` with this scope in front (`ty` alone for an empty scope).
-    pub fn encode(&self, ty: &str) -> String {
+    /// The `receiver_scope` column value; `None` for an empty scope.
+    pub fn encode(&self) -> Option<String> {
         if self.enclosing.is_empty() && self.usings.is_empty() {
-            return ty.to_string();
+            return None;
         }
-        format!(
-            "{};{}|{ty}",
+        Some(format!(
+            "{};{}",
             self.enclosing.join(","),
             self.usings.join(",")
-        )
+        ))
     }
 
-    /// Inverse of [`TypeScope::encode`]: the scope and the bare type text.
-    pub fn decode(column: &str) -> (TypeScope, &str) {
-        let Some((scope, ty)) = column.split_once('|') else {
-            return (TypeScope::default(), column);
+    /// Inverse of [`TypeScope::encode`] (`None` = empty scope).
+    pub fn decode(column: Option<&str>) -> TypeScope {
+        let Some(column) = column else {
+            return TypeScope::default();
         };
-        let (enclosing, usings) = scope.split_once(';').unwrap_or((scope, ""));
+        let (enclosing, usings) = column.split_once(';').unwrap_or((column, ""));
         let list = |s: &str| {
             s.split(',')
                 .filter(|n| !n.is_empty())
                 .map(str::to_string)
                 .collect()
         };
-        (
-            TypeScope {
-                enclosing: list(enclosing),
-                usings: list(usings),
-            },
-            ty,
-        )
+        TypeScope {
+            enclosing: list(enclosing),
+            usings: list(usings),
+        }
     }
 }
 
@@ -592,68 +483,94 @@ pub trait LanguageExtractor {
 }
 
 #[cfg(test)]
-mod rust_deferred_tests {
+mod tests {
     use super::*;
 
+    const PIN_RETURN: &str = r#"{"base":{"Call":{"base":{"Type":"Repo"},"method":"Create","awaited":true,"static_only":true,"name_only":false}},"method":"Load","awaited":false,"static_only":false,"name_only":false}"#;
+    const PIN_RUST: &str = r#"{"source":{"Method":{"receiver_type":"E","method":"m"}},"steps":[{"Tuple":1},{"Method":"u"}],"fallback":null}"#;
+    const PIN_ARG: &str = r#"{"index":1,"name":null,"arg_count":2,"callee":"H.M"}"#;
+
+    /// The stored JSON is a persisted format (migration 24 writes it): a
+    /// change here needs a new migration.
     #[test]
-    fn rust_deferred_round_trips_through_column_text() {
-        for source in [
-            DeferredSource::Call {
-                candidates: vec!["crate::a::f".into(), "crate::b::f".into()],
+    fn deferred_marker_json_shape_is_pinned() {
+        let ret = DeferredMarker::Return(DeferredReturn::on_call(
+            DeferredReturn::on_type("Repo", "Create", true, true),
+            "Load",
+            false,
+        ));
+        assert_eq!(ret.encode().0, "return");
+        assert_eq!(ret.encode().1, PIN_RETURN);
+        let rust = DeferredMarker::Rust(RustDeferred {
+            source: DeferredSource::Method {
+                receiver_type: "E".into(),
+                method: "m".into(),
             },
-            DeferredSource::Method {
-                receiver_type: "Engine".into(),
-                method: "build".into(),
-            },
-            DeferredSource::Field {
+            steps: vec![Step::Tuple(1), Step::Method("u".into())],
+            fallback: None,
+        });
+        assert_eq!(rust.encode().0, "rust");
+        assert_eq!(rust.encode().1, PIN_RUST);
+        let arg = DeferredMarker::Argument(DeferredArgument {
+            index: 1,
+            name: None,
+            arg_count: 2,
+            callee: "H.M".into(),
+        });
+        assert_eq!(arg.encode().0, "argument");
+        assert_eq!(arg.encode().1, PIN_ARG);
+    }
+
+    #[test]
+    fn deferred_markers_round_trip() {
+        let rust = RustDeferred {
+            source: DeferredSource::Field {
                 owner: "Slot".into(),
                 field: "Full::0".into(),
             },
-        ] {
-            for fallback in [None, Some("Engine".to_string())] {
-                let deferred = RustDeferred {
-                    source: source.clone(),
-                    steps: vec![
-                        Step::OptionSome,
-                        Step::ResultOk,
-                        Step::ResultErr,
-                        Step::Tuple(12),
-                        Step::Elem,
-                        Step::Method("unwrap".into()),
-                        Step::Await,
-                    ],
-                    fallback,
-                };
-                assert_eq!(RustDeferred::decode(&deferred.encode()), Some(deferred));
-            }
+            steps: vec![
+                Step::OptionSome,
+                Step::Tuple(12),
+                Step::Method("unwrap".into()),
+            ],
+            fallback: Some("Engine".into()),
+        };
+        let markers = [
+            DeferredMarker::Return(DeferredReturn::on_call(
+                DeferredReturn::on_type("Repo", "Create", true, true),
+                "Load",
+                false,
+            )),
+            DeferredMarker::Rust(rust),
+            DeferredMarker::Argument(DeferredArgument {
+                index: 1,
+                name: Some("x".into()),
+                arg_count: 2,
+                callee: "Helper.Make".into(),
+            }),
+        ];
+        for marker in markers {
+            let (kind, payload) = marker.encode();
+            assert_eq!(DeferredMarker::decode(kind, &payload), Some(marker));
         }
-        assert_eq!(RustDeferred::decode("@ret:s:x"), None);
+        assert_eq!(DeferredMarker::decode("bogus", "{}"), None);
     }
-}
-
-#[cfg(test)]
-mod type_scope_tests {
-    use super::TypeScope;
 
     #[test]
-    fn type_scope_round_trips_through_the_column_format() {
+    fn type_scope_round_trips() {
         let scope = TypeScope {
             enclosing: vec!["A.B.Outer".into(), "A.B".into(), "A".into()],
             usings: vec!["N1".into(), "N2".into()],
         };
-        let column = scope.encode("IA<int>");
-        assert_eq!(column, "A.B.Outer,A.B,A;N1,N2|IA<int>");
-        assert_eq!(TypeScope::decode(&column), (scope, "IA<int>"));
-        let empty = TypeScope::default();
-        assert_eq!(empty.encode("IA"), "IA");
-        assert_eq!(TypeScope::decode("IA"), (empty, "IA"));
+        assert_eq!(TypeScope::decode(scope.encode().as_deref()), scope);
+        assert_eq!(TypeScope::default().encode(), None);
         let only_usings = TypeScope {
             enclosing: vec![],
             usings: vec!["N1".into()],
         };
         assert_eq!(
-            TypeScope::decode(&only_usings.encode("IA")),
-            (only_usings, "IA")
+            TypeScope::decode(only_usings.encode().as_deref()),
+            only_usings
         );
     }
 }

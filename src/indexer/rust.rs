@@ -4,7 +4,8 @@ use crate::db::resolver::{
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    DeferredSource, EdgeInput, ExtractedFile, ReceiverType, RustDeferred, Step, SymbolInput,
+    DeferredMarker, DeferredSource, EdgeInput, ExtractedFile, ReceiverType, RustDeferred, Step,
+    SymbolInput,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -1665,10 +1666,10 @@ fn parse_declaration(src: &str) -> Option<tree_sitter::Tree> {
 /// (a `Result`, a future never awaited, a generic) leaves the receiver
 /// untracked, and only "no declaration found" keeps the marker's fallback.
 fn resolve_deferred(
-    column: &str,
+    marker: &DeferredMarker,
     index: &dyn DeclarationIndex,
 ) -> anyhow::Result<Option<Option<String>>> {
-    let Some(deferred) = RustDeferred::decode(column) else {
+    let DeferredMarker::Rust(deferred) = marker else {
         return Ok(None);
     };
     let declarations = match &deferred.source {
@@ -1688,14 +1689,14 @@ fn resolve_deferred(
         DeferredSource::Field { owner, .. } => index.declarations(DeclarationQuery::Type(owner))?,
     };
     if declarations.is_empty() {
-        return Ok(Some(deferred.fallback));
+        return Ok(Some(deferred.fallback.clone()));
     }
     let mut found: Option<String> = None;
     for declaration in &declarations {
         let Some(signature) = &declaration.signature else {
-            return Ok(Some(deferred.fallback));
+            return Ok(Some(deferred.fallback.clone()));
         };
-        let Some(ty) = declared_receiver_type(&deferred, &declaration.qualname, signature) else {
+        let Some(ty) = declared_receiver_type(deferred, &declaration.qualname, signature) else {
             return Ok(Some(None));
         };
         match &found {
@@ -3568,7 +3569,9 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
 mod tests {
     use super::RustExtractor;
     use crate::indexer::extract::LanguageExtractor;
-    use crate::indexer::extract::{DeferredSource, ReceiverType, RustDeferred, Step};
+    use crate::indexer::extract::{
+        DeferredMarker, DeferredSource, ReceiverType, RustDeferred, Step,
+    };
     use crate::indexer::http;
     use crate::indexer::proto;
 
@@ -3590,7 +3593,7 @@ fn tc() {}
             .filter(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("go"))
             .map(|e| match &e.receiver_type {
                 ReceiverType::Known(t) => t.clone(),
-                ReceiverType::RustDeferred(m) => m.encode(),
+                ReceiverType::RustDeferred(m) => DeferredMarker::Rust(m.clone()).encode().1,
                 _ => "-".to_string(),
             })
             .collect()

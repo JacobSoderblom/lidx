@@ -547,7 +547,17 @@ fn bound_edges_never_carry_a_placeholder_target_qualname() {
         ),
     ] {
         let out = rpc::handle_method(&mut indexer, method, params).unwrap();
-        assert!(!out.to_string().contains("@arg"), "{method}: {out}");
+        let text = out.to_string();
+        // No deferred payload or placeholder text leaks into RPC output.
+        for leaked in [
+            "\"deferred",
+            "deferred_kind",
+            "\"index\":",
+            "arg_count",
+            "..ctor\"@",
+        ] {
+            assert!(!text.contains(leaked), "{method} leaked {leaked}: {text}");
+        }
     }
     let conn = indexer.db().read_conn().unwrap();
     let bound: String = conn

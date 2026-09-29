@@ -1684,3 +1684,54 @@ fn csharp_base_initializer_binds_when_the_base_file_is_added_later() {
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+/// An unchanged C# caller whose receiver is an unqualified interface name
+/// (looked up through its enclosing namespace scope) is carried forward
+/// across a sync of an unrelated file and still resolves like a fresh index
+/// once the interface appears.
+#[test]
+fn csharp_scoped_interface_receiver_survives_carry_forward() {
+    const CALLER: &str = "namespace App {
+    public class Caller {
+        private IStore _store;
+        public void Go() { _store.Write(); }
+    }
+}
+";
+    const STORE: &str = "namespace App {
+    public interface IStore { void Write(); }
+}
+";
+    const OTHER: &str = "public class Other { public void M() { } }\n";
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "scoped-carry",
+        &[("Caller.cs", CALLER), ("Other.cs", OTHER)],
+    );
+    // Unrelated edit first: the caller is carried into the new graph version.
+    common::write_files(&root, &[("Other.cs", &format!("{OTHER}// edit\n"))]);
+    indexer.sync_rel_paths(&["Other.cs".to_string()]).unwrap();
+    // Then the interface appears.
+    common::write_files(&root, &[("Store.cs", STORE)]);
+    indexer.sync_rel_paths(&["Store.cs".to_string()]).unwrap();
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_t, fresh) = common::index_files(&[
+        ("Caller.cs", CALLER),
+        ("Other.cs", &format!("{OTHER}// edit\n")),
+        ("Store.cs", STORE),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+    let resolved: i64 = indexer
+        .db()
+        .read_conn()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM edges e JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.graph_version = ?1 AND e.kind = 'CALLS' AND t.qualname = 'App.IStore.Write'",
+            [gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(resolved, 1, "the scoped call binds to the interface member");
+}
