@@ -255,6 +255,26 @@ fn extract_docstring_fallback(source: &str) -> Option<String> {
     None
 }
 
+/// Span to index for a `class_definition`/`function_definition` symbol.
+///
+/// A decorated definition (`@staticmethod\ndef f(): ...`) parses as a
+/// `decorated_definition` node wrapping the decorator(s) followed by the
+/// definition node itself; the definition node's own span starts at the
+/// `class`/`def` keyword, skipping the decorators entirely, which is what
+/// `def`-only spans came from before this fix (issue #118: `read_symbol`
+/// on a decorated method silently dropped `@staticmethod` from the
+/// printed source). Walking up to a `decorated_definition` parent when one
+/// exists recovers the decorator(s) in the indexed span. The end position
+/// is unaffected either way -- a `decorated_definition`'s last child is
+/// always the definition node, so their end positions are identical.
+fn definition_span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
+    let span_node = node
+        .parent()
+        .filter(|p| p.kind() == "decorated_definition")
+        .unwrap_or(node);
+    span(span_node)
+}
+
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     if node.kind() == "decorated_definition" {
         handle_decorated_definition(node, ctx, source, output);
@@ -276,7 +296,8 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = node_text(name_node, source);
                 let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
-                let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+                let (start_line, start_col, end_line, end_col, start_byte, end_byte) =
+                    definition_span(node);
                 let docstring = node
                     .child_by_field_name("body")
                     .and_then(|body| extract_docstring(body, source));
@@ -349,7 +370,8 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             if let Some(name_node) = node.child_by_field_name("name") {
                 let name = node_text(name_node, source);
                 let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
-                let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+                let (start_line, start_col, end_line, end_col, start_byte, end_byte) =
+                    definition_span(node);
                 let signature = extract_signature(node, source);
                 let docstring = node
                     .child_by_field_name("body")
@@ -2415,5 +2437,72 @@ def helper():
         let top = calls_at_line(&file, 9);
         assert_eq!(top.len(), 1, "{top:?}");
         assert_eq!(top[0].receiver_type, ReceiverType::NotTracked);
+    }
+
+    #[test]
+    fn decorated_method_span_starts_at_decorator() {
+        // Issue #118: `read_symbol` sliced from `def`, so `@staticmethod`
+        // above a method was silently dropped and the printed signature
+        // looked like an instance method missing `self`.
+        let source = r#"
+class App:
+    @staticmethod
+    def resolve_target_platform():
+        return "linux"
+"#;
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let method = file
+            .symbols
+            .iter()
+            .find(|s| s.qualname == "module.App.resolve_target_platform")
+            .expect("method symbol");
+        assert_eq!(
+            method.start_line, 3,
+            "span should start at the `@staticmethod` decorator line, not `def`"
+        );
+    }
+
+    #[test]
+    fn decorated_class_span_starts_at_decorator() {
+        let source = r#"
+@dataclass
+class Point:
+    x: int
+    y: int
+"#;
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let class = file
+            .symbols
+            .iter()
+            .find(|s| s.qualname == "module.Point")
+            .expect("class symbol");
+        assert_eq!(
+            class.start_line, 2,
+            "span should start at the `@dataclass` decorator line, not `class`"
+        );
+    }
+
+    #[test]
+    fn multiple_decorators_span_starts_at_first() {
+        let source = r#"
+class App:
+    @cached_property
+    @some_other_decorator
+    def value(self):
+        return 1
+"#;
+        let mut extractor = PythonExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let method = file
+            .symbols
+            .iter()
+            .find(|s| s.qualname == "module.App.value")
+            .expect("method symbol");
+        assert_eq!(
+            method.start_line, 3,
+            "span should start at the first decorator when several are stacked"
+        );
     }
 }
