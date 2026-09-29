@@ -81,6 +81,9 @@ fn collect_xref_edges(
     let mut edges_by_key: HashMap<(String, String), EdgeInput> = HashMap::new();
     let mut line_cache: HashMap<i64, Option<String>> = HashMap::new();
     for literal in literals {
+        if file.language == "python" && is_python_docstring(source, &literal) {
+            continue;
+        }
         let Some(source_qualname) = lookup_source_qualname(
             db,
             &file.rel_path,
@@ -136,6 +139,26 @@ fn collect_xref_edges(
         }
     }
     Ok(edges_by_key.into_values().collect())
+}
+
+/// A triple-quoted literal that starts its own line right after a
+/// `def`/`class` header (or at the top of the file) is prose, not a reference.
+fn is_python_docstring(source: &str, literal: &StringLiteral) -> bool {
+    let start = literal.start_byte as usize;
+    let Some(before) = source.get(..start) else {
+        return false;
+    };
+    if !source[start..].starts_with("\"\"\"") && !source[start..].starts_with("'''") {
+        return false;
+    }
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    if !before[line_start..].trim().is_empty() {
+        return false;
+    }
+    match before[..line_start].trim_end().lines().last() {
+        None => true,
+        Some(prev) => prev.trim_end().ends_with(':'),
+    }
 }
 
 fn collect_route_edges(
@@ -315,12 +338,14 @@ impl SymbolRefIndex {
             };
             for candidate in candidates {
                 let symbol = &self.symbols[candidate.idx];
-                if symbol.language == source_language {
-                    continue;
-                }
                 let score = score_match(token, candidate.kind, token_key.kind);
                 if score < XREF_MIN_CONFIDENCE {
                     continue;
+                }
+                if symbol.language == source_language {
+                    // The token names something in the same language; that
+                    // reading wins over any cross-language coincidence.
+                    return None;
                 }
                 match best {
                     Some((best_idx, best_score, _)) => {
@@ -943,7 +968,45 @@ fn looks_like_uuid(segment: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_route_literal;
+    use super::*;
+
+    fn rec(id: i64, qualname: &str, language: &str) -> SymbolRefRecord {
+        SymbolRefRecord {
+            id,
+            name: qualname.rsplit('.').next().unwrap().to_string(),
+            qualname: qualname.to_string(),
+            kind: "class".to_string(),
+            language: language.to_string(),
+        }
+    }
+
+    #[test]
+    fn same_language_match_suppresses_cross_language_xref() {
+        let index = SymbolRefIndex::from_records(vec![
+            rec(1, "broker._core.ReceivedMessage", "python"),
+            rec(2, "Dpb.Common.Messaging.ReceivedMessage", "csharp"),
+        ]);
+        assert!(index.resolve_token("ReceivedMessage", "python").is_none());
+        // Without a same-language symbol the cross-language match still works.
+        let index = SymbolRefIndex::from_records(vec![rec(
+            2,
+            "Dpb.Common.Messaging.ReceivedMessage",
+            "csharp",
+        )]);
+        assert!(index.resolve_token("ReceivedMessage", "python").is_some());
+    }
+
+    #[test]
+    fn python_docstrings_are_detected_but_sql_strings_are_not() {
+        let src = "def f():\n    \"\"\"Talks to DataProxy.\"\"\"\n    q = \"\"\"SELECT 1\"\"\"\n";
+        let lits = scan_string_literals(src);
+        assert_eq!(lits.len(), 2);
+        assert!(is_python_docstring(src, &lits[0]));
+        assert!(!is_python_docstring(src, &lits[1]));
+        let module = "\"\"\"Module doc.\"\"\"\nx = 1\n";
+        let lits = scan_string_literals(module);
+        assert!(is_python_docstring(module, &lits[0]));
+    }
 
     #[test]
     fn normalize_route_literal_handles_paths() {

@@ -897,6 +897,7 @@ pub struct ModuleEdge {
     pub target_module: String,
     pub call_count: usize,
     pub import_count: usize,
+    pub xref_count: usize,
 }
 
 // find_tests_for types

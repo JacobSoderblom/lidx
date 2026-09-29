@@ -924,11 +924,12 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
                 .module_edges(depth, ctx.languages.as_deref(), ctx.graph_version)?;
         let module_edges: Vec<ModuleEdge> = edges
             .into_iter()
-            .map(|(src, dst, calls, imports)| ModuleEdge {
+            .map(|(src, dst, calls, imports, xrefs)| ModuleEdge {
                 source_module: src,
                 target_module: dst,
                 call_count: calls,
                 import_count: imports,
+                xref_count: xrefs,
             })
             .collect();
         result.insert("modules".to_string(), json!(modules));

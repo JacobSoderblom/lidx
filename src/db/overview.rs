@@ -8,6 +8,9 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+/// `(source_module, target_module, calls, imports, xrefs)`
+type ModuleEdgeCounts = (String, String, usize, usize, usize);
+
 impl Db {
     pub fn repo_overview(
         &self,
@@ -362,7 +365,7 @@ impl Db {
         depth: usize,
         languages: Option<&[String]>,
         graph_version: i64,
-    ) -> Result<Vec<(String, String, usize, usize)>> {
+    ) -> Result<Vec<ModuleEdgeCounts>> {
         let conn = self.read_conn()?;
 
         // Query all CALLS, IMPORTS, and XREF edges with source and target
@@ -409,7 +412,7 @@ impl Db {
             .collect();
 
         // Group by source module -> target module
-        let mut edge_map: HashMap<(String, String), (usize, usize)> = HashMap::new();
+        let mut edge_map: HashMap<(String, String), (usize, usize, usize)> = HashMap::new();
 
         for (kind, src_path, tgt_path_opt) in &rows {
             let src_module = module_prefix(src_path, depth);
@@ -421,10 +424,14 @@ impl Db {
                     continue;
                 }
 
-                let entry = edge_map.entry((src_module, tgt_module)).or_insert((0, 0));
+                let entry = edge_map
+                    .entry((src_module, tgt_module))
+                    .or_insert((0, 0, 0));
 
-                if kind == "CALLS" || kind == "XREF" {
+                if kind == "CALLS" {
                     entry.0 += 1;
+                } else if kind == "XREF" {
+                    entry.2 += 1;
                 } else if kind == "IMPORTS" {
                     entry.1 += 1;
                 }
@@ -433,9 +440,9 @@ impl Db {
 
         let mut result: Vec<_> = edge_map
             .into_iter()
-            .map(|((src, tgt), (calls, imports))| (src, tgt, calls, imports))
+            .map(|((src, tgt), (calls, imports, xrefs))| (src, tgt, calls, imports, xrefs))
             .collect();
-        result.sort_by_key(|x| std::cmp::Reverse(x.2 + x.3)); // Sort by total edge count desc
+        result.sort_by_key(|x| std::cmp::Reverse(x.2 + x.3 + x.4)); // Sort by total edge count desc
 
         Ok(result)
     }
@@ -1279,6 +1286,41 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].2, 1); // 1 call
         assert_eq!(result[0].3, 1); // 1 import
+    }
+
+    #[test]
+    fn module_edges_counts_xref_separately_from_calls() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+        let fid1 = db.upsert_file("src/a.rs", "h1", "rust", 100, 0).unwrap();
+        let fid2 = db.upsert_file("lib/b.rs", "h2", "rust", 100, 0).unwrap();
+        let ins1 = db
+            .insert_symbols(
+                fid1,
+                "src/a.rs",
+                &[make_symbol("a.f", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let ins2 = db
+            .insert_symbols(
+                fid2,
+                "lib/b.rs",
+                &[make_symbol("b.g", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let mut sym_map = HashMap::new();
+        sym_map.insert("a.f".to_string(), ins1[0].id);
+        sym_map.insert("b.g".to_string(), ins2[0].id);
+        db.insert_edges(fid1, &[make_edge("XREF", "a.f", "b.g")], &sym_map, gv, None)
+            .unwrap();
+        let result = db.module_edges(1, None, gv).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].2, 0); // calls
+        assert_eq!(result[0].4, 1); // xrefs
     }
 
     #[test]
