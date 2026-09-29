@@ -150,6 +150,75 @@ fn names_interface(base: &str, i: &str, c: &str, gv: i64) -> String {
     )
 }
 
+/// What a dispatch query is about, so the ancestor recursion starts from the
+/// few classes involved instead of every `IMPLEMENTS` edge in the repo.
+#[derive(Debug, Clone)]
+pub(super) enum DispatchSeed {
+    /// Every class (`dead_symbols` runs one correlated probe per symbol).
+    All,
+    /// Implementing members: only their containing classes are expanded.
+    Impls(String),
+    /// Base members: the containing interfaces / classes, their implementors
+    /// (a reverse closure) and those classes' ancestors are expanded.
+    Bases(String),
+}
+
+impl DispatchSeed {
+    /// `id, id, ..` list of the queried members.
+    pub(super) fn impls(ids: &[i64]) -> Self {
+        Self::Impls(id_list(ids))
+    }
+
+    pub(super) fn bases(ids: &[i64]) -> Self {
+        Self::Bases(id_list(ids))
+    }
+
+    /// Containers of the members in `list`: qualname minus `<sep><name>` or
+    /// the CONTAINS parent (see `dispatch_pairs_from`).
+    fn containers(list: &str, gv: i64) -> String {
+        let name = "length(m.name)";
+        format!(
+            "SELECT k.id FROM symbols m JOIN symbols k ON k.graph_version = {gv}
+                 AND k.qualname IN (substr(m.qualname, 1, length(m.qualname) - {name} - 1),
+                                    substr(m.qualname, 1, length(m.qualname) - {name} - 2))
+              WHERE m.id IN ({list})
+             UNION
+             SELECT ce.source_symbol_id FROM edges ce
+              WHERE ce.target_symbol_id IN ({list}) AND ce.kind = 'CONTAINS'
+                AND ce.graph_version = {gv}"
+        )
+    }
+
+    /// `(extra CTE before anc, extra filter on anc's first step)`.
+    fn ctes(&self, gv: i64) -> (String, String) {
+        match self {
+            Self::All => (String::new(), String::new()),
+            Self::Impls(list) => (
+                String::new(),
+                format!("AND source_symbol_id IN ({})", Self::containers(list, gv)),
+            ),
+            Self::Bases(list) => (
+                format!(
+                    "rel(id, d) AS (
+                         SELECT id, 0 FROM ({seeds})
+                         UNION
+                         SELECT e.source_symbol_id, rel.d + 1
+                           FROM rel JOIN edges e ON e.target_symbol_id = rel.id
+                                                AND +e.kind IN ('EXTENDS', 'IMPLEMENTS')
+                                                AND e.graph_version = {gv}
+                          WHERE rel.d <= {MAX_IFACE_CHAIN_DEPTH}),",
+                    seeds = Self::containers(list, gv)
+                ),
+                "AND source_symbol_id IN (SELECT id FROM rel)".to_string(),
+            ),
+        }
+    }
+}
+
+fn id_list(ids: &[i64]) -> String {
+    ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+}
+
 /// `FROM` clause of the one dispatch query (issues #122, #185), shared by
 /// [`Db::dispatch_pairs`] and `dead_symbols`: yields one row per
 /// `(im.id = base member, cm.id = implementing member)` -- `cm`'s class `c`
@@ -163,18 +232,19 @@ fn names_interface(base: &str, i: &str, c: &str, gv: i64) -> String {
 /// `override` pairs. Callers append their own `WHERE`/`JOIN`s.
 /// `graph_version` is inlined (an `i64`, so injection-safe) so callers can
 /// mix it into queries with their own positional parameters.
-pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
+pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> String {
     let gv = graph_version;
+    let (rel_cte, anc_filter) = seed.ctes(gv);
     // Every type a class reaches: its direct IMPLEMENTS/EXTENDS targets,
     // then interface -> interface and class -> base hops (issues #173,
     // #185), depth-bounded (cycle-safe: `UNION` dedups and `d` caps the
     // recursion). `ov` marks paths through a base class, whose members
     // only an `override` implements.
     let ancestors = format!(
-        "WITH RECURSIVE anc(cid, iid, d, ov) AS (
+        "WITH RECURSIVE {rel_cte} anc(cid, iid, d, ov) AS (
              SELECT source_symbol_id, target_symbol_id, 1, kind = 'EXTENDS' FROM edges
               WHERE kind IN ('IMPLEMENTS', 'EXTENDS') AND graph_version = {gv}
-                AND target_symbol_id IS NOT NULL
+                AND target_symbol_id IS NOT NULL {anc_filter}
              UNION
              SELECT anc.cid, e.target_symbol_id, anc.d + 1, anc.ov
                FROM anc JOIN edges e ON e.source_symbol_id = anc.iid
@@ -217,23 +287,47 @@ pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
                                   AND de.graph_version = {gv} AND NOT {twin_per_entry})
               ELSE {twin_any} END"
     );
+    let c_is_parent = format!(
+        "(c.qualname IN (
+              {parent} - 1),
+              {parent} - 2))
+          OR c.id IN (SELECT ce.source_symbol_id FROM edges ce
+                       WHERE ce.target_symbol_id = cm.id AND ce.kind = 'CONTAINS'
+                         AND ce.graph_version = {gv}))"
+    );
+    // Queried by base member: start from the (few) implementing classes and
+    // walk to their members by qualname range, in this order (`CROSS JOIN`
+    // pins it); otherwise start from the queried member `cm`.
+    let head = if matches!(seed, DispatchSeed::Bases(_)) {
+        format!(
+            "FROM ({ancestors}) a
+             CROSS JOIN symbols c ON c.id = a.cid AND c.graph_version = {gv}
+             CROSS JOIN symbols i ON i.id = a.iid
+             CROSS JOIN symbols cm INDEXED BY idx_symbols_qualname ON cm.graph_version = {gv}
+                                  AND cm.qualname > c.qualname AND cm.qualname < c.qualname || '~'
+                                  AND {c_is_parent}"
+        )
+    } else {
+        format!(
+            "FROM symbols cm
+             JOIN symbols c ON c.graph_version = {gv} AND {c_is_parent}
+             JOIN ({ancestors}) a ON a.cid = c.id
+             JOIN symbols i ON i.id = a.iid"
+        )
+    };
+    let join = if matches!(seed, DispatchSeed::Bases(_)) {
+        "CROSS JOIN"
+    } else {
+        "JOIN"
+    };
     format!(
-        "FROM symbols cm
-         JOIN symbols c ON c.graph_version = {gv}
-                       AND (c.qualname IN (
-                                {parent} - 1),
-                                {parent} - 2))
-                            OR c.id IN (SELECT ce.source_symbol_id FROM edges ce
-                                         WHERE ce.target_symbol_id = cm.id AND ce.kind = 'CONTAINS'
-                                           AND ce.graph_version = {gv}))
-         JOIN ({ancestors}) a ON a.cid = c.id
-         JOIN symbols i ON i.id = a.iid
+        "{head}
          -- One indexed `im.qualname = <expr>` equality: an explicit impl pairs
          -- only with the interface it names, an implicit one keeps the tail.
-         JOIN symbols im ON im.qualname = CASE WHEN {cm_explicit}
+         {join} symbols im ON im.qualname = CASE WHEN {cm_explicit}
                                                THEN i.qualname || '.' || cm.name
                                                ELSE i.qualname || substr(cm.qualname, length(c.qualname) + 1) END
-                        AND +im.name = cm.name AND +im.kind = cm.kind AND im.graph_version = {gv}
+                        AND +im.name = +cm.name AND +im.kind = +cm.kind AND im.graph_version = {gv}
          JOIN files fc ON fc.id = cm.file_id
                       AND (fc.deleted_version IS NULL OR fc.deleted_version > {gv})
          JOIN files fi ON fi.id = im.file_id
@@ -263,10 +357,13 @@ impl Db {
         let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
         // One statement per side: an `OR` across `cm.id` / `im.id` would
         // defeat the rowid lookup and scan every symbol.
-        let from = dispatch_pairs_from(graph_version);
         let conn = self.read_conn()?;
         let mut pairs = Vec::new();
-        for side in ["cm", "im"] {
+        for (side, seed) in [
+            ("cm", DispatchSeed::impls(ids)),
+            ("im", DispatchSeed::bases(ids)),
+        ] {
+            let from = dispatch_pairs_from(graph_version, &seed);
             let sql = format!("SELECT DISTINCT im.id, cm.id {from} AND {side}.id IN ({list})");
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;

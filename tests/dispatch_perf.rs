@@ -44,17 +44,37 @@ fn dispatch_queries_scale() {
     eprintln!("reindex: {:?}", t.elapsed());
     let gv = indexer.db().current_graph_version().unwrap();
 
-    let ids: Vec<i64> = (1..=50).collect();
-    let t = Instant::now();
-    let pairs = indexer.db().dispatch_pairs(&ids, gv).unwrap();
-    eprintln!(
-        "dispatch_pairs(50 ids): {:?} ({} pairs)",
-        t.elapsed(),
-        pairs.len()
-    );
-    let t = Instant::now();
-    let _ = indexer.db().dispatch_pairs(&[ids[0]], gv).unwrap();
-    eprintln!("dispatch_pairs(1 id): {:?}", t.elapsed());
+    // Real interface-method ids (the `im` side) and implementing-method ids
+    // (the `cm` side), 50 each.
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let ids = |like: &str| -> Vec<i64> {
+        conn.prepare(&format!(
+            "SELECT id FROM symbols WHERE kind = 'method' AND qualname {like} ORDER BY id LIMIT 50"
+        ))
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    };
+    let iface_ids = ids("LIKE 'Ns%.IThing%.Run'");
+    let impl_ids = ids("LIKE 'App%.Impl%.Ns%.IThing%.Run'");
+    for (label, ids) in [
+        ("interface methods", &iface_ids),
+        ("impl methods", &impl_ids),
+    ] {
+        let t = Instant::now();
+        let pairs = indexer.db().dispatch_pairs(ids, gv).unwrap();
+        let el = t.elapsed();
+        eprintln!(
+            "dispatch_pairs(50 {label}): {el:?} ({:?}/id, {} pairs)",
+            el / 50,
+            pairs.len()
+        );
+        let t = Instant::now();
+        let _ = indexer.db().dispatch_pairs(&ids[..1], gv).unwrap();
+        eprintln!("dispatch_pairs(1 {label}): {:?}", t.elapsed());
+    }
     drop(indexer);
 
     let t = Instant::now();

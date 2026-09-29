@@ -500,7 +500,10 @@ impl Db {
         graph_version: i64,
     ) -> Result<Vec<Symbol>> {
         // Issue #122: impl methods called only through their interface are live.
-        let dispatch_from = super::graph_query::dispatch_pairs_from(graph_version);
+        let dispatch_from = super::graph_query::dispatch_pairs_from(
+            graph_version,
+            &super::graph_query::DispatchSeed::All,
+        );
         let gv = graph_version;
         let call_reaches = super::graph_query::call_reaches_impl_sql("ce");
         let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
