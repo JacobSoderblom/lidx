@@ -286,3 +286,62 @@ fn upstream_chain_from_reader_reaches_bicep_secret() {
         "{r}"
     );
 }
+
+#[test]
+fn default_kinds_upstream_and_both_from_secret_uri_do_not_fan_out() {
+    let repo = repo();
+    for direction in ["upstream", "both"] {
+        let r = call(
+            &repo,
+            "analyze_impact",
+            &format!(
+                r#"{{"qualname":"secret://datamgr-db-conn-str","direction":"{direction}","max_depth":5}}"#
+            ),
+        );
+        let f = files(&r["affected"]);
+        assert!(
+            !f.iter()
+                .any(|p| p.contains("Dpb.DataProxy") || p.contains("dataproxy")),
+            "{direction}: leaked other service via external stub: {f:?}"
+        );
+    }
+}
+
+#[test]
+fn shared_external_api_does_not_connect_unrelated_callers() {
+    let mut root = std::env::temp_dir();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    root.push(format!("lidx-ext-stub-{nanos}"));
+    for (name, cls) in [("A", "Alpha"), ("B", "Beta")] {
+        let p = root.join(format!("src/{name}.cs"));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(
+            p,
+            format!(
+                "using System.Security.Cryptography;\nnamespace N;\npublic class {cls} {{\n    public void Run() {{ var h = SHA256.Create(); }}\n}}\n"
+            ),
+        )
+        .unwrap();
+    }
+    let db = root.join(".lidx").join(".lidx.sqlite");
+    Indexer::new(root.clone(), db.clone())
+        .unwrap()
+        .reindex()
+        .unwrap();
+    let repo = Repo { root, db };
+    let r = call(
+        &repo,
+        "analyze_impact",
+        r#"{"qualname":"N.Alpha.Run","direction":"upstream","max_depth":5}"#,
+    );
+    assert!(!r.to_string().contains("Beta"), "{r}");
+    let r = call(
+        &repo,
+        "trace_flow",
+        r#"{"start_qualname":"N.Alpha.Run","direction":"upstream","max_hops":5}"#,
+    );
+    assert!(!r.to_string().contains("Beta"), "{r}");
+}

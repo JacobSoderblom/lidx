@@ -429,7 +429,11 @@ pub fn analyze_direct_impact_scoped(
                         edge.resolution_kind.clone(),
                         edge.source_symbol_id == Some(next_id),
                     ));
-                    queue.push_back((next_id, current_distance + 1));
+                    // An external stub is a leaf: its other callers are
+                    // unrelated to this impact set (issue #175).
+                    if !symbol_cache[&next_id].is_external() {
+                        queue.push_back((next_id, current_distance + 1));
+                    }
                     traversed_edge_ids.push(edge.id);
 
                     if visited.len() >= limit {

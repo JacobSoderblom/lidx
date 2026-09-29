@@ -265,7 +265,11 @@ pub fn trace_flow(
                     break;
                 }
 
-                queue.push_back((next_id, dist + 1, next_sym.file_path.clone()));
+                // An external stub is a leaf: its other callers are unrelated
+                // to this trace (issue #175), so never expand through it.
+                if !next_sym.is_external() {
+                    queue.push_back((next_id, dist + 1, next_sym.file_path.clone()));
+                }
             }
         }
 
