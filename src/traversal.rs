@@ -1,10 +1,13 @@
 use crate::db::Db;
 use crate::indexer::channel::{boundary_type_for_kind, bridge_complement};
-use crate::indexer::config::{BridgeTarget, ConfigScope, config_edge_allowed, prefer_same_service};
+use crate::indexer::config::{
+    BridgeTarget, CAP_TRUNCATION_REASON, ConfigScope, Entry, config_edge_allowed,
+    prefer_same_service,
+};
 use crate::indexer::scan::language_for_path;
 use crate::model::{Edge, Symbol, TraceHop};
 use anyhow::Result;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Direction of a BFS trace through the symbol graph.
 #[derive(Debug, Clone)]
@@ -78,6 +81,8 @@ pub struct TraceResult {
     pub paths_found: usize,
     pub reached_target: bool,
     pub truncated: bool,
+    /// Why `truncated` is set when it is not a depth/byte limit.
+    pub truncation_reason: Option<String>,
     pub budget_bytes: usize,
     pub used_bytes: usize,
     /// Count of `unresolved_references` rows touching the traversed symbols
@@ -88,6 +93,88 @@ pub struct TraceResult {
     /// "retry excluding heuristics" next_hops suggestion in
     /// `handle_trace_flow`.
     pub traversed_heuristic_kind: bool,
+}
+
+/// Every config URI `id`'s own config edges carry: the only URIs a config
+/// bridge can enter it on.
+fn is_config_edge_kind(kind: &str) -> bool {
+    matches!(kind, "CONFIG_SOURCE" | "CONFIG_READ" | "CONFIG_BIND")
+}
+
+fn config_uris(
+    db: &Db,
+    id: i64,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> std::collections::BTreeSet<String> {
+    db.edges_for_symbol(id, languages, graph_version)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| {
+            matches!(
+                e.kind.as_str(),
+                "CONFIG_SOURCE" | "CONFIG_READ" | "CONFIG_BIND"
+            )
+        })
+        .filter_map(|e| e.target_qualname)
+        .collect()
+}
+
+/// Content-based tie-break for two arrivals at the same (node, entry) pair
+/// and level: independent of edge ids and processing order.
+type TieKey = (String, String, Option<String>, Option<String>, String);
+
+fn tie_key(parent_qualname: &str, edge: &Edge) -> TieKey {
+    (
+        parent_qualname.to_string(),
+        edge.kind.clone(),
+        edge.evidence_snippet.clone(),
+        edge.detail.clone(),
+        edge.file_path.clone(),
+    )
+}
+
+/// Where a (node, entry) pair's hop sits in the trace, and the tie key of the
+/// arrival that produced it.
+struct HopSlot {
+    idx: usize,
+    dist: usize,
+    key: TieKey,
+}
+
+type HopSlots = HashMap<(i64, Entry), HopSlot>;
+
+/// A later arrival at an already-reported pair replaces its hop when it is
+/// at the same distance and has a smaller tie key, so the reported parent,
+/// edge kind and snippet do not depend on the order edges were processed.
+fn retie(
+    trace: &mut [TraceHop],
+    slots: &mut HopSlots,
+    pair: &(i64, Entry),
+    dist: usize,
+    key: TieKey,
+    build: impl FnOnce() -> Option<TraceHop>,
+) -> bool {
+    let Some(slot) = slots.get_mut(pair) else {
+        return false;
+    };
+    if slot.dist != dist || key >= slot.key {
+        return false;
+    }
+    let Some(hop) = build() else {
+        return false;
+    };
+    trace[slot.idx] = hop;
+    slot.key = key;
+    true
+}
+
+/// One BFS frontier entry: a node to expand under `entry`.
+struct QueueItem {
+    id: i64,
+    dist: usize,
+    prev_file: String,
+    entry: Entry,
 }
 
 /// BFS traversal of the symbol graph from `seeds`, following edges in the
@@ -110,17 +197,26 @@ pub fn trace_flow(
 
     let mut trace: Vec<TraceHop> = Vec::new();
     let mut visited = HashSet::new();
-    let mut queue: VecDeque<(i64, usize, String)> = VecDeque::new();
+    let mut slots: HopSlots = HashMap::new();
+    let mut queue: VecDeque<QueueItem> = VecDeque::new();
 
     // Config URI each node was entered through (issue #131): it then only
     // continues along config edges carrying that URI.
     let mut scope = ConfigScope::new(&seeds, config.seed_config_uri.as_deref());
     for &sid in &seeds {
         visited.insert(sid);
-        queue.push_back((sid, 0, start_sym.file_path.clone()));
+        queue.push_back(QueueItem {
+            id: sid,
+            dist: 0,
+            prev_file: start_sym.file_path.clone(),
+            entry: scope.seed_entry(),
+        });
     }
 
-    let mut used_bytes: usize = 0;
+    // Byte budget is applied to the settled, canonically ordered hops (at
+    // level boundaries and once at the end), never per arrival, so a hop
+    // replaced by a same-level tie-break cannot change truncation.
+    let mut last_level: usize = 0;
     let mut truncated = false;
     let mut reached_target = false;
     let is_upstream = matches!(config.direction, TraceDirection::Upstream);
@@ -129,7 +225,13 @@ pub fn trace_flow(
     // whether suggesting the exclude-heuristics retry is useful at all.
     let mut traversed_edge_ids: Vec<i64> = Vec::new();
 
-    while let Some((current_id, dist, prev_file)) = queue.pop_front() {
+    while let Some(QueueItem {
+        id: current_id,
+        dist,
+        prev_file,
+        entry,
+    }) = queue.pop_front()
+    {
         // A node at `dist == max_hops` was already recorded as a hop when
         // its parent expanded (below); it must not itself expand, or its
         // children would be recorded at `max_hops + 1`. BFS pops in
@@ -151,15 +253,15 @@ pub fn trace_flow(
         // most valuable affordances.
         if dist >= config.max_hops {
             if !truncated {
-                let ceiling_frontier =
-                    std::iter::once(current_id).chain(queue.iter().map(|(id, _, _)| *id));
-                for candidate in ceiling_frontier {
+                let ceiling_frontier = std::iter::once((current_id, entry.clone()))
+                    .chain(queue.iter().map(|q| (q.id, q.entry.clone())));
+                for (candidate, candidate_entry) in ceiling_frontier {
                     if has_further_edges(
                         db,
                         candidate,
                         is_upstream,
                         config,
-                        &scope,
+                        &candidate_entry,
                         languages,
                         graph_version,
                     )? {
@@ -170,15 +272,22 @@ pub fn trace_flow(
             }
             break;
         }
-        if used_bytes >= config.max_bytes {
-            truncated = true;
-            break;
+        if dist > last_level {
+            last_level = dist;
+            if budget_exhausted(&trace, config) {
+                truncated = true;
+                break;
+            }
         }
 
         let edges = db.edges_for_symbol_with_dispatch(current_id, languages, graph_version)?;
+        let current_qn = db
+            .get_symbol_by_id(current_id)?
+            .map(|s| s.qualname)
+            .unwrap_or_default();
 
         let mut bridge_targets: Vec<BridgeTarget> = Vec::new();
-        let allowed = scope.allowed(current_id, &edges);
+        let allowed = ConfigScope::allowed(&entry, &edges);
 
         for edge in &edges {
             if !config.allowed_kinds.contains(&edge.kind)
@@ -235,11 +344,32 @@ pub fn trace_flow(
                 continue;
             };
 
-            if !visited.insert(next_id) {
+            let Some(admission) = scope.admit_plain(next_id) else {
+                let key = tie_key(&current_qn, edge);
+                if retie(
+                    &mut trace,
+                    &mut slots,
+                    &(next_id, Entry::Unscoped),
+                    dist + 1,
+                    key,
+                    || {
+                        let sym = db.get_symbol_by_id(next_id).ok()??;
+                        Some(build_hop(
+                            &sym,
+                            edge,
+                            dist + 1,
+                            &prev_file,
+                            config.include_snippets,
+                        ))
+                    },
+                ) {
+                    traversed_edge_ids.push(edge.id);
+                }
                 continue;
-            }
+            };
 
             if let Ok(Some(next_sym)) = db.get_symbol_by_id(next_id) {
+                // One hop per newly reached (node, entry) pair.
                 let hop = build_hop(
                     &next_sym,
                     edge,
@@ -248,18 +378,18 @@ pub fn trace_flow(
                     config.include_snippets,
                 );
 
-                let hop_size = estimate_hop_size(&hop, config.compact);
                 let hop_idx = trace.len();
                 trace.push(hop);
+                slots.insert(
+                    (next_id, admission.entry.clone()),
+                    HopSlot {
+                        idx: hop_idx,
+                        dist: dist + 1,
+                        key: tie_key(&current_qn, edge),
+                    },
+                );
                 traversed_edge_ids.push(edge.id);
-                if hop_idx >= config.trace_offset {
-                    used_bytes += hop_size;
-                    if used_bytes >= config.max_bytes {
-                        truncated = true;
-                        break;
-                    }
-                }
-
+                visited.insert(next_id);
                 if end_id == Some(next_id) {
                     reached_target = true;
                     break;
@@ -267,13 +397,19 @@ pub fn trace_flow(
 
                 // An external stub is a leaf: its other callers are unrelated
                 // to this trace (issue #175), so never expand through it.
-                if !next_sym.is_external() {
-                    queue.push_back((next_id, dist + 1, next_sym.file_path.clone()));
+                if admission.expand && !next_sym.is_external() {
+                    queue.push_back(QueueItem {
+                        id: next_id,
+                        dist: dist + 1,
+                        prev_file: next_sym.file_path.clone(),
+                        entry: admission.entry,
+                    });
                 }
             }
         }
 
         if !reached_target && !truncated {
+            bridge_targets.sort();
             for BridgeTarget {
                 uri: tq,
                 edge_kind,
@@ -295,16 +431,11 @@ pub fn trace_flow(
                         let Some(bridged_id) = bridged_edge.source_symbol_id else {
                             continue;
                         };
-                        if !visited.insert(bridged_id) {
-                            continue;
-                        }
-                        scope.record_bridge(bridged_id, edge_kind, tq);
-                        if let Ok(Some(bridged_sym)) = db.get_symbol_by_id(bridged_id) {
+                        let make_hop = |bridged_sym: &Symbol| {
                             let prev_lang = detect_language(&prev_file);
                             let next_lang = detect_language(&bridged_sym.file_path);
                             let b_detail = build_boundary_detail(b_type, &prev_lang, &next_lang);
-                            let p_context = extract_protocol_context(bridged_edge);
-                            let hop = TraceHop {
+                            TraceHop {
                                 symbol: bridged_sym.clone(),
                                 edge_kind: bridged_edge.kind.clone(),
                                 distance: dist + 1,
@@ -317,25 +448,56 @@ pub fn trace_flow(
                                 cross_language: true,
                                 boundary_type: Some(b_type.to_string()),
                                 boundary_detail: Some(b_detail),
-                                protocol_context: p_context,
+                                protocol_context: extract_protocol_context(bridged_edge),
                                 resolution_kind: bridged_edge.resolution_kind.clone(),
-                            };
-                            let hop_size = estimate_hop_size(&hop, config.compact);
+                            }
+                        };
+                        let Some(admission) = scope.admit_bridge(bridged_id, edge_kind, tq, || {
+                            config_uris(db, bridged_id, languages, graph_version)
+                        }) else {
+                            let pair = (
+                                bridged_id,
+                                if is_config_edge_kind(edge_kind) {
+                                    Entry::Uri(tq.clone())
+                                } else {
+                                    Entry::Unscoped
+                                },
+                            );
+                            let key = tie_key(&current_qn, bridged_edge);
+                            if retie(&mut trace, &mut slots, &pair, dist + 1, key, || {
+                                let sym = db.get_symbol_by_id(bridged_id).ok()??;
+                                Some(make_hop(&sym))
+                            }) {
+                                traversed_edge_ids.push(bridged_edge.id);
+                            }
+                            continue;
+                        };
+                        visited.insert(bridged_id);
+                        if let Ok(Some(bridged_sym)) = db.get_symbol_by_id(bridged_id) {
+                            let hop = make_hop(&bridged_sym);
                             let hop_idx = trace.len();
                             trace.push(hop);
+                            slots.insert(
+                                (bridged_id, admission.entry.clone()),
+                                HopSlot {
+                                    idx: hop_idx,
+                                    dist: dist + 1,
+                                    key: tie_key(&current_qn, bridged_edge),
+                                },
+                            );
                             traversed_edge_ids.push(bridged_edge.id);
-                            if hop_idx >= config.trace_offset {
-                                used_bytes += hop_size;
-                                if used_bytes >= config.max_bytes {
-                                    truncated = true;
-                                    break;
-                                }
-                            }
                             if end_id == Some(bridged_id) {
                                 reached_target = true;
                                 break;
                             }
-                            queue.push_back((bridged_id, dist + 1, bridged_sym.file_path.clone()));
+                            if admission.expand {
+                                queue.push_back(QueueItem {
+                                    id: bridged_id,
+                                    dist: dist + 1,
+                                    prev_file: bridged_sym.file_path.clone(),
+                                    entry: admission.entry,
+                                });
+                            }
                         }
                     }
                     if reached_target || truncated {
@@ -350,8 +512,23 @@ pub fn trace_flow(
         }
     }
 
-    trace.sort_by_key(|h| h.distance);
-    let trace: Vec<TraceHop> = trace.into_iter().skip(config.trace_offset).collect();
+    let truncation_reason = scope.capped().then(|| CAP_TRUNCATION_REASON.to_string());
+    truncated |= scope.capped();
+
+    // Canonical order: independent of the order edges were processed in.
+    trace.sort_by_cached_key(canonical_key);
+    let mut trace: Vec<TraceHop> = trace.into_iter().skip(config.trace_offset).collect();
+
+    // Apply the byte budget to the settled hops: keep hops up to and
+    // including the one that reaches it.
+    let mut used_bytes = 0usize;
+    if let Some(cut) = trace.iter().position(|h| {
+        used_bytes += estimate_hop_size(h, config.compact);
+        used_bytes >= config.max_bytes
+    }) {
+        trace.truncate(cut + 1);
+        truncated = true;
+    }
 
     let end_sym = if let Some(eid) = end_id {
         db.get_symbol_by_id(eid)?
@@ -395,6 +572,7 @@ pub fn trace_flow(
         paths_found,
         reached_target,
         truncated,
+        truncation_reason,
         budget_bytes: config.max_bytes,
         used_bytes,
         unresolved_reference_count,
@@ -416,12 +594,12 @@ fn has_further_edges(
     id: i64,
     is_upstream: bool,
     config: &TraceConfig,
-    scope: &ConfigScope,
+    entry: &Entry,
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<bool> {
     let edges = db.edges_for_symbol_with_dispatch(id, languages, graph_version)?;
-    let allowed = scope.allowed(id, &edges);
+    let allowed = ConfigScope::allowed(entry, &edges);
     for edge in &edges {
         if !config.allowed_kinds.contains(&edge.kind)
             || !crate::model::xref_is_traversable(edge)
@@ -629,6 +807,27 @@ fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
         }
         _ => None,
     }
+}
+
+fn canonical_key(h: &TraceHop) -> (usize, String, String, String) {
+    (
+        h.distance,
+        h.symbol.qualname.clone(),
+        h.edge_kind.clone(),
+        serde_json::to_string(h).unwrap_or_default(),
+    )
+}
+
+/// Whether the settled hops so far (after `trace_offset`, in canonical
+/// order) already reach the byte budget.
+fn budget_exhausted(trace: &[TraceHop], config: &TraceConfig) -> bool {
+    let mut sorted: Vec<&TraceHop> = trace.iter().collect();
+    sorted.sort_by_cached_key(|h| canonical_key(h));
+    let mut used = 0usize;
+    sorted.into_iter().skip(config.trace_offset).any(|h| {
+        used += estimate_hop_size(h, config.compact);
+        used >= config.max_bytes
+    })
 }
 
 fn estimate_hop_size(hop: &TraceHop, compact: bool) -> usize {

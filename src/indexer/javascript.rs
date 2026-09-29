@@ -92,19 +92,20 @@ struct Context {
 
 /// Local name bound by a top-level `import` → (module specifier, imported
 /// export name). The export name is `None` for a namespace import (`* as
-/// ns`); for a default import it is the local name itself.
-///
-/// ponytail: a default import is assumed to name the export it binds
-/// (`import formatName from './fmt'` ↔ `export default function
-/// formatName`). A default export declared under a different name, or an
-/// anonymous one, misses — and a missed import candidate refuses fuzzy
-/// resolution, so it stays unbound rather than guessed.
+/// ns`) and `"default"` for a default import (`import x from`, `import {
+/// default as x }`); `import_placeholder` marks the latter so
+/// `resolve_import_file_edges` can look up the target's actual default
+/// export name, falling back to the local name when it can't.
 type ImportBindings = HashMap<String, (String, Option<String>)>;
 
 /// Separates specifier from imported member in the placeholder candidates
 /// `handle_call` records; `resolve_import_file_edges` rewrites each into a
 /// real qualname once the specifier can be resolved against the repo.
 const IMPORT_PLACEHOLDER_SEP: char = '\0';
+
+/// Prefixes a placeholder member for a default import; the local name
+/// follows (`\u{1}api.get`).
+const DEFAULT_IMPORT_MARK: char = '\u{1}';
 
 /// Locally-inferred type of a name bound within a single function body (or
 /// module top level). Deliberately coarse — see
@@ -264,10 +265,9 @@ pub fn resolve_import_file_edges(
     // `Db::insert_edges` refuses fuzzy resolution for a call known to go
     // through an import.
     //
-    // ponytail: re-exports are not chased — `import { x } from '@/lib'`
-    // where `lib/index.ts` does `export * from './x'` yields candidate
-    // `lib.x`, misses, and stays unbound. Upgrade path: follow `export
-    // ... from` edges of the resolved file.
+    // Re-exports (`export { x } from`, `export * from`) and default exports
+    // are chased on disk (`chase_export`), so the candidate names the
+    // original declaration rather than the barrel.
     let mut resolved_specs: HashMap<String, Option<String>> = HashMap::new();
     for edge in edges.iter_mut() {
         for candidate in edge.import_candidates.iter_mut() {
@@ -278,8 +278,12 @@ pub fn resolve_import_file_edges(
                 .entry(spec.to_string())
                 .or_insert_with(|| resolve_import_path(repo_root, file_rel_path, spec));
             *candidate = match dst {
-                Some(dst) => format!("{}.{member}", module_name_from_rel_path(dst)),
-                None => format!("{spec}:{member}"),
+                Some(dst) => {
+                    let (path, member) = EXPORT_CACHE
+                        .with(|c| chase_member(repo_root, dst, member, &mut c.borrow_mut()));
+                    format!("{}.{member}", module_name_from_rel_path(&path))
+                }
+                None => format!("{spec}:{}", member.trim_start_matches(DEFAULT_IMPORT_MARK)),
             };
         }
     }
@@ -325,6 +329,325 @@ pub fn resolve_import_file_edges(
         });
     }
     edges.extend(resolved);
+}
+
+/// Name of the default export in `chase_export` lookups.
+const DEFAULT_EXPORT: &str = "default";
+
+type ExportCache = HashMap<String, Option<Rc<FileExports>>>;
+
+thread_local! {
+    /// Parsed export tables shared by every `resolve_import_file_edges` call
+    /// in one sync/reindex batch, so a barrel is parsed once per batch. The
+    /// indexer clears it at each batch boundary (`clear_export_cache`).
+    static EXPORT_CACHE: std::cell::RefCell<ExportCache> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Drops the per-batch export cache; called by the indexer at the start and
+/// end of every sync/reindex so no stale barrel survives a file edit.
+pub fn clear_export_cache() {
+    EXPORT_CACHE.with(|c| c.borrow_mut().clear());
+}
+
+/// Whether `rel_path` is a JS/TS source file (by extension).
+pub fn is_js_ts_path(rel_path: &str) -> bool {
+    JS_TS_EXTENSIONS
+        .iter()
+        .any(|ext| rel_path.ends_with(&format!(".{ext}")))
+}
+
+/// `export { orig as exported } from spec`.
+struct ReExport {
+    exported: String,
+    spec: String,
+    orig: String,
+}
+
+/// What a file exports, for chasing an import through barrels.
+#[derive(Default)]
+struct FileExports {
+    /// Local names exported under their own name.
+    names: HashSet<String>,
+    /// `export { a as b }`: exported `b` -> local `a`.
+    aliases: HashMap<String, String>,
+    /// Local name of the default export, when it is a named declaration.
+    default_local: Option<String>,
+    reexports: Vec<ReExport>,
+    /// `export * from spec`.
+    stars: Vec<String>,
+    /// `export * as ns from spec`: exported `ns` -> spec.
+    namespaces: HashMap<String, String>,
+    /// This file's own imports, so `import { Foo } from './foo'; export {
+    /// Foo }` chases on to `./foo`.
+    imports: ImportBindings,
+}
+
+impl FileExports {
+    /// Whether this file passes other modules' exports on (a barrel), so a
+    /// change in one of its imports can change what its importers resolve.
+    fn re_exports(&self) -> bool {
+        if !self.reexports.is_empty() || !self.stars.is_empty() || !self.namespaces.is_empty() {
+            return true;
+        }
+        self.default_local
+            .iter()
+            .chain(self.aliases.values())
+            .chain(self.names.iter())
+            .any(|local| self.imports.contains_key(local))
+    }
+
+    /// Stable text of everything `chase_export` reads, for `export_surface_hash`.
+    fn surface_text(&self) -> String {
+        fn sorted<T: Ord + std::fmt::Debug>(items: impl Iterator<Item = T>) -> String {
+            let mut v: Vec<T> = items.collect();
+            v.sort();
+            format!("{v:?}")
+        }
+        format!(
+            "{}|{}|{:?}|{}|{}|{}|{}",
+            sorted(self.names.iter()),
+            sorted(self.aliases.iter()),
+            self.default_local,
+            sorted(
+                self.reexports
+                    .iter()
+                    .map(|r| (&r.exported, &r.spec, &r.orig))
+            ),
+            sorted(self.stars.iter()),
+            sorted(self.namespaces.iter()),
+            sorted(self.imports.iter().map(|(k, (s, i))| (k, s, i))),
+        )
+    }
+}
+
+fn scan_exports(repo_root: &Path, rel: &str) -> Option<FileExports> {
+    let source = util::read_to_string(&repo_root.join(rel)).ok()?;
+    let mut parser = Parser::new();
+    let language = match Path::new(rel).extension().and_then(|e| e.to_str()) {
+        Some("ts" | "mts" | "cts") => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+        Some("tsx") => tree_sitter_typescript::LANGUAGE_TSX,
+        _ => tree_sitter_javascript::LANGUAGE,
+    };
+    parser.set_language(&language.into()).ok()?;
+    let tree = parser.parse(&source, None)?;
+    Some(exports_from_root(tree.root_node(), &source))
+}
+
+fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
+    let source = source.to_string();
+    let mut ex = Exports::default();
+    let mut out = FileExports {
+        imports: collect_import_bindings(root, &source),
+        ..Default::default()
+    };
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        collect_exported_names(stmt, &source, &mut ex);
+        if !matches!(stmt.kind(), "export_statement" | "export_declaration") {
+            continue;
+        }
+        let spec = stmt
+            .child_by_field_name("source")
+            .and_then(|n| unquote_string_literal(&node_text(n, &source)));
+        let mut c = stmt.walk();
+        let is_default = stmt.children(&mut c).any(|ch| ch.kind() == "default");
+        if is_default {
+            let named = stmt
+                .child_by_field_name("declaration")
+                .and_then(|d| d.child_by_field_name("name"))
+                .or_else(|| {
+                    stmt.child_by_field_name("value")
+                        .filter(|v| v.kind() == "identifier")
+                });
+            if let Some(n) = named {
+                out.default_local = Some(node_text(n, &source));
+            }
+        }
+        let mut c = stmt.walk();
+        for child in stmt.children(&mut c) {
+            match child.kind() {
+                "*" => out.stars.extend(spec.clone()),
+                "namespace_export" => {
+                    if let (Some(spec), Some(name)) = (&spec, child.named_child(0)) {
+                        out.namespaces
+                            .insert(node_text(name, &source), spec.clone());
+                    }
+                }
+                "export_clause" => {
+                    let mut sc = child.walk();
+                    for item in child.named_children(&mut sc) {
+                        let Some(name) = item.child_by_field_name("name") else {
+                            continue;
+                        };
+                        let orig = node_text(name, &source);
+                        let exported = item
+                            .child_by_field_name("alias")
+                            .map(|a| node_text(a, &source))
+                            .unwrap_or_else(|| orig.clone());
+                        match &spec {
+                            Some(spec) => out.reexports.push(ReExport {
+                                exported,
+                                spec: spec.clone(),
+                                orig,
+                            }),
+                            None if exported == DEFAULT_EXPORT => out.default_local = Some(orig),
+                            None => {
+                                out.aliases.insert(exported, orig);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out.names = ex.names;
+    out
+}
+
+/// Hash of what `chase_export` can see of `rel` (its export surface), or
+/// `None` when the file can't be read. A body-only edit leaves it unchanged,
+/// so importers chased through the file needn't be re-extracted.
+pub fn export_surface_hash(repo_root: &Path, rel: &str) -> Option<i64> {
+    let exports = scan_exports(repo_root, rel)?;
+    Some(crate::indexer::scan::hash_i64(
+        exports.surface_text().as_bytes(),
+    ))
+}
+
+/// Whether `rel` re-exports other modules' exports (see
+/// `FileExports::re_exports`); `false` when unreadable.
+pub fn is_re_exporting(repo_root: &Path, rel: &str) -> bool {
+    scan_exports(repo_root, rel).is_some_and(|e| e.re_exports())
+}
+
+/// What an export resolves to.
+#[derive(PartialEq, Eq)]
+enum ExportTarget {
+    /// A declaration: file path and local name.
+    Symbol(String, String),
+    /// A whole module (`export * as ns from`, or an exported namespace import).
+    Namespace(String),
+}
+
+/// (file path, export name) pairs already explored by one chase; each is
+/// explored once, which also terminates cycles and diamond re-walks.
+type Visited = HashSet<(String, String)>;
+
+/// Follows export `name` (`"default"` for the default export) of `path`
+/// through `export ... from` chains and import-then-export barrels to what
+/// declares it. `None` when nothing is found.
+fn chase_export(
+    repo_root: &Path,
+    path: &str,
+    name: &str,
+    cache: &mut ExportCache,
+    visited: &mut Visited,
+) -> Option<ExportTarget> {
+    if !visited.insert((path.to_string(), name.to_string())) {
+        return None;
+    }
+    let exports = cache
+        .entry(path.to_string())
+        .or_insert_with(|| scan_exports(repo_root, path).map(Rc::new))
+        .clone()?;
+    let mut follow = |spec: &str, orig: &str| {
+        let dst = resolve_import_path(repo_root, path, spec)?;
+        chase_export(repo_root, &dst, orig, cache, visited)
+    };
+    // A local name this file exports: an import binding chases on to the
+    // imported module, anything else is declared here.
+    let local_target = |local: &str, follow: &mut dyn FnMut(&str, &str) -> Option<ExportTarget>| {
+        if let Some((spec, imported)) = exports.imports.get(local) {
+            let hit = match imported {
+                Some(orig) => follow(spec, orig),
+                None => resolve_import_path(repo_root, path, spec).map(ExportTarget::Namespace),
+            };
+            if hit.is_some() {
+                return hit;
+            }
+        }
+        Some(ExportTarget::Symbol(path.to_string(), local.to_string()))
+    };
+    if name == DEFAULT_EXPORT
+        && let Some(local) = &exports.default_local
+    {
+        return local_target(local, &mut follow);
+    }
+    for r in &exports.reexports {
+        if r.exported == name
+            && let Some(hit) = follow(&r.spec, &r.orig)
+        {
+            return Some(hit);
+        }
+    }
+    if let Some(spec) = exports.namespaces.get(name)
+        && let Some(dst) = resolve_import_path(repo_root, path, spec)
+    {
+        return Some(ExportTarget::Namespace(dst));
+    }
+    if let Some(local) = exports.aliases.get(name) {
+        return local_target(local, &mut follow);
+    }
+    if name == DEFAULT_EXPORT {
+        return None;
+    }
+    if exports.names.contains(name) {
+        return local_target(name, &mut follow);
+    }
+    // `export *` sources: two that both provide `name` collide, and a
+    // colliding name is exported by neither.
+    let mut found: Option<ExportTarget> = None;
+    for spec in &exports.stars {
+        let Some(hit) = follow(spec, name) else {
+            continue;
+        };
+        match &found {
+            None => found = Some(hit),
+            Some(prev) if *prev == hit => {}
+            Some(_) => return None,
+        }
+    }
+    found
+}
+
+/// Rewrites an import placeholder's `member` (`name[.rest]`, or a
+/// `DEFAULT_IMPORT_MARK`-prefixed `local[.rest]` for a default import)
+/// against `dst`, returning the declaring file and the plain member.
+/// Anything not found keeps `dst` and the imported/local name.
+fn chase_member(
+    repo_root: &Path,
+    dst: &str,
+    member: &str,
+    cache: &mut ExportCache,
+) -> (String, String) {
+    let (is_default, member) = match member.strip_prefix(DEFAULT_IMPORT_MARK) {
+        Some(m) => (true, m),
+        None => (false, member),
+    };
+    let (head, tail) = match member.split_once('.') {
+        Some((h, t)) => (h, format!(".{t}")),
+        None => (member, String::new()),
+    };
+    let lookup = if is_default { DEFAULT_EXPORT } else { head };
+    let fallback = || (dst.to_string(), member.to_string());
+    match chase_export(repo_root, dst, lookup, cache, &mut Visited::new()) {
+        Some(ExportTarget::Symbol(path, name)) => (path, format!("{name}{tail}")),
+        // `ns.fn()` through an exported namespace: chase `fn` in that module.
+        Some(ExportTarget::Namespace(module)) => {
+            let Some((next, rest)) = tail.strip_prefix('.').map(|t| match t.split_once('.') {
+                Some((n, r)) => (n.to_string(), format!(".{r}")),
+                None => (t.to_string(), String::new()),
+            }) else {
+                return fallback();
+            };
+            match chase_export(repo_root, &module, &next, cache, &mut Visited::new()) {
+                Some(ExportTarget::Symbol(path, name)) => (path, format!("{name}{rest}")),
+                _ => fallback(),
+            }
+        }
+        None => fallback(),
+    }
 }
 
 /// Splits off any `?query`/`#hash` suffix and classifies whether `target`
@@ -404,7 +727,7 @@ fn resolve_import_target(
     is_relative: bool,
 ) -> Option<(String, bool)> {
     if !is_relative {
-        return resolve_tsconfig_alias(repo_root, file_rel_path, target).map(|path| (path, true));
+        return resolve_tsconfig_alias(repo_root, file_rel_path, target);
     }
     let rel = relative_import_target(file_rel_path, target)?;
     match probe_module_candidates(repo_root, &rel) {
@@ -461,12 +784,20 @@ fn probe_module_candidates(repo_root: &Path, rel: &Path) -> Option<String> {
 /// `node/dpb-app`, each mapping `@/*` to a different root — never bleed
 /// into each other.
 ///
-/// Returns `None` (never a guess) unless a `paths` entry syntactically
-/// matches the specifier *and* the mapped location, run back through the
-/// same extension/index probing relative imports use, is a real file.
-fn resolve_tsconfig_alias(repo_root: &Path, file_rel_path: &str, target: &str) -> Option<String> {
+/// Returns `None` unless a `paths` entry syntactically matches the
+/// specifier. Then `(path, true)` when the mapped location, run back through
+/// the same extension/index probing relative imports use, is a real file,
+/// else `(guess, false)`: the first mapped location, so the caller can still
+/// record an unresolved `IMPORTS_FILE` edge that a later-added file (or a
+/// tsconfig edit) finds again (`Indexer::js_importers_of`).
+fn resolve_tsconfig_alias(
+    repo_root: &Path,
+    file_rel_path: &str,
+    target: &str,
+) -> Option<(String, bool)> {
     let config_dir = find_owning_tsconfig_dir(repo_root, file_rel_path)?;
     let aliases = load_tsconfig_aliases(repo_root, &config_dir)?;
+    let mut guess: Option<String> = None;
     for (pattern, targets) in &aliases.entries {
         let Some(capture) = match_alias_pattern(pattern, target) else {
             continue;
@@ -480,12 +811,27 @@ fn resolve_tsconfig_alias(repo_root: &Path, file_rel_path: &str, target: &str) -
             };
             let mut rel = aliases.base_dir.clone();
             rel.push(mapped_tail);
+            // Collapse `..` (a base config's `../../lib/*`) so the resolved
+            // path names the same module as a direct import of that file.
+            let Some(rel) = relative_import_target("", &util::normalize_path(&rel)) else {
+                continue;
+            };
             if let Some(resolved) = probe_module_candidates(repo_root, &rel) {
-                return Some(resolved);
+                return Some((resolved, true));
             }
+            guess.get_or_insert_with(|| util::normalize_path(&rel));
         }
     }
-    None
+    guess.map(|g| (g, false))
+}
+
+/// Whether `rel_path` is a `tsconfig.json`/`jsconfig.json`, whose edits can
+/// change how every JS/TS import under its directory resolves.
+pub fn is_js_config_path(rel_path: &str) -> bool {
+    matches!(
+        Path::new(rel_path).file_name().and_then(|n| n.to_str()),
+        Some("tsconfig.json" | "jsconfig.json")
+    )
 }
 
 /// Walks from `file_rel_path`'s directory up toward `repo_root`, returning
@@ -494,7 +840,7 @@ fn resolve_tsconfig_alias(repo_root: &Path, file_rel_path: &str, target: &str) -
 /// rather than global: a file under `node/dpb-app/` finds
 /// `node/dpb-app/tsconfig.json` before it ever sees
 /// `node/datacatalog-ui/tsconfig.json`, even though both define `@/*`.
-fn find_owning_tsconfig_dir(repo_root: &Path, file_rel_path: &str) -> Option<PathBuf> {
+pub fn find_owning_tsconfig_dir(repo_root: &Path, file_rel_path: &str) -> Option<PathBuf> {
     let start_dir = Path::new(file_rel_path)
         .parent()
         .unwrap_or_else(|| Path::new(""));
@@ -516,46 +862,167 @@ struct TsconfigAliases {
     entries: Vec<(String, Vec<String>)>,
 }
 
-// ponytail: a tsconfig that `extends` another one (relative path or, like
-// `@docusaurus/tsconfig`, a package) is read for its own `compilerOptions`
-// only — an extended `paths`/`baseUrl` isn't inherited. Ceiling: an alias
-// defined solely in a base config the project extends resolves nothing
-// here. Neither `node/datacatalog-ui/tsconfig.json` nor
-// `node/dpb-app/tsconfig.json` (the two configs this fix targets) extend
-// anything, so this doesn't affect either. Follow the (relative-path-only)
-// `extends` chain here if a project that needs it is reported.
-fn load_tsconfig_aliases(repo_root: &Path, config_dir: &Path) -> Option<TsconfigAliases> {
-    let raw = util::read_to_string(&repo_root.join(config_dir).join("tsconfig.json")).ok()?;
-    let cleaned = strip_jsonc(&raw);
-    let value: serde_json::Value = serde_json::from_str(&cleaned).ok()?;
-    let compiler_options = value.get("compilerOptions")?;
-    let paths = compiler_options.get("paths")?.as_object()?;
-    if paths.is_empty() {
+/// `compilerOptions.paths` as (pattern, targets) pairs.
+type PathsEntries = Vec<(String, Vec<String>)>;
+
+/// The `baseUrl`/`paths` a tsconfig ends up with after following its
+/// `extends` chain: the nearest declaring config wins for each (a child's
+/// `paths` replaces its parent's wholesale, as in TypeScript), and a
+/// `baseUrl` is resolved against the config that declared it.
+#[derive(Default)]
+struct EffectiveOptions {
+    base_url: Option<PathBuf>,
+    /// `paths` entries plus the directory of the config that declared them
+    /// (their base when no `baseUrl` is set anywhere).
+    paths: Option<(PathBuf, PathsEntries)>,
+}
+
+fn read_tsconfig(repo_root: &Path, config_rel: &Path) -> Option<serde_json::Value> {
+    let raw = util::read_to_string(&repo_root.join(config_rel)).ok()?;
+    serde_json::from_str(&strip_jsonc(&raw)).ok()
+}
+
+/// `extends` entries of a parsed tsconfig: a string, or (TS 5) an array.
+fn extends_specs(value: &serde_json::Value) -> Vec<String> {
+    match value.get("extends") {
+        Some(serde_json::Value::String(s)) => vec![s.clone()],
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Repo-relative path of the config an `extends` spec names. A relative
+/// spec always yields a path (even for a missing file, so a later-added
+/// base still shows up in `config_chain`); a package-style spec
+/// (`@tsconfig/node18/tsconfig.json`) is looked up under each ancestor's
+/// `node_modules` and yields `None` unless found.
+fn resolve_extends(repo_root: &Path, config_rel: &Path, spec: &str) -> Option<PathBuf> {
+    let config_dir = config_rel.parent().unwrap_or_else(|| Path::new(""));
+    let probe = |base: PathBuf| -> Option<PathBuf> {
+        let plain = repo_root.join(&base);
+        if plain.is_file() {
+            return Some(base);
+        }
+        let with_json = PathBuf::from(format!("{}.json", util::normalize_path(&base)));
+        if repo_root.join(&with_json).is_file() {
+            return Some(with_json);
+        }
+        let index = base.join("tsconfig.json");
+        repo_root.join(&index).is_file().then_some(index)
+    };
+    if spec.starts_with("./") || spec.starts_with("../") {
+        let rel = relative_import_target(&util::normalize_path(config_rel), spec)?;
+        let fallback = PathBuf::from(format!("{}.json", util::normalize_path(&rel)));
+        return Some(probe(rel.clone()).unwrap_or(if spec.ends_with(".json") {
+            rel
+        } else {
+            fallback
+        }));
+    }
+    if spec.starts_with('/') || spec.is_empty() {
         return None;
     }
-    let base_url = compiler_options
-        .get("baseUrl")
-        .and_then(|v| v.as_str())
-        .unwrap_or(".");
-    let base_dir = config_dir.join(base_url);
+    config_dir
+        .ancestors()
+        .find_map(|dir| probe(dir.join("node_modules").join(spec)))
+}
 
-    let mut entries: Vec<(String, Vec<String>)> = Vec::new();
-    for (pattern, targets_value) in paths {
-        let Some(targets_array) = targets_value.as_array() else {
-            continue;
-        };
-        let targets: Vec<String> = targets_array
-            .iter()
-            .filter_map(|t| t.as_str().map(|s| s.to_string()))
-            .collect();
-        if targets.is_empty() {
-            continue;
+/// One link of a config's dependency chain (`config_chain`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConfigRef {
+    /// A config file (repo-relative path), present or not.
+    File(String),
+    /// A package-style `extends` spec that resolves to no file. Kept so its
+    /// appearing or disappearing changes the fingerprint.
+    MissingPackage(String),
+}
+
+/// Every config file `config_rel` depends on: itself plus its `extends`
+/// chain, transitively and cycle-safe.
+///
+/// Sync only sees paths it is asked to sync and `node_modules` is usually
+/// not watched, so an appearing/disappearing package base is caught by
+/// `Indexer::reindex`, whose config fingerprint hashes this chain.
+pub fn config_chain(repo_root: &Path, config_rel: &Path) -> Vec<ConfigRef> {
+    fn walk(repo_root: &Path, config_rel: &Path, seen: &mut Vec<ConfigRef>) {
+        let key = ConfigRef::File(util::normalize_path(config_rel));
+        if seen.contains(&key) {
+            return;
         }
-        entries.push((pattern.clone(), targets));
+        seen.push(key);
+        let Some(value) = read_tsconfig(repo_root, config_rel) else {
+            return;
+        };
+        for spec in extends_specs(&value) {
+            match resolve_extends(repo_root, config_rel, &spec) {
+                Some(parent) => walk(repo_root, &parent, seen),
+                None => seen.push(ConfigRef::MissingPackage(spec)),
+            }
+        }
     }
+    let mut seen = Vec::new();
+    walk(repo_root, config_rel, &mut seen);
+    seen
+}
+
+fn effective_options(
+    repo_root: &Path,
+    config_rel: &Path,
+    visiting: &mut HashSet<PathBuf>,
+) -> EffectiveOptions {
+    let mut out = EffectiveOptions::default();
+    if !visiting.insert(config_rel.to_path_buf()) {
+        return out;
+    }
+    if let Some(value) = read_tsconfig(repo_root, config_rel) {
+        let dir = config_rel.parent().unwrap_or_else(|| Path::new(""));
+        for spec in extends_specs(&value) {
+            if let Some(parent) = resolve_extends(repo_root, config_rel, &spec) {
+                let inherited = effective_options(repo_root, &parent, visiting);
+                out.base_url = inherited.base_url.or(out.base_url);
+                out.paths = inherited.paths.or(out.paths);
+            }
+        }
+        if let Some(compiler_options) = value.get("compilerOptions") {
+            if let Some(base_url) = compiler_options.get("baseUrl").and_then(|v| v.as_str()) {
+                out.base_url = Some(dir.join(base_url));
+            }
+            if let Some(paths) = compiler_options.get("paths").and_then(|v| v.as_object()) {
+                let mut entries: Vec<(String, Vec<String>)> = Vec::new();
+                for (pattern, targets_value) in paths {
+                    let Some(targets_array) = targets_value.as_array() else {
+                        continue;
+                    };
+                    let targets: Vec<String> = targets_array
+                        .iter()
+                        .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                        .collect();
+                    if !targets.is_empty() {
+                        entries.push((pattern.clone(), targets));
+                    }
+                }
+                out.paths = Some((dir.to_path_buf(), entries));
+            }
+        }
+    }
+    visiting.remove(config_rel);
+    out
+}
+
+fn load_tsconfig_aliases(repo_root: &Path, config_dir: &Path) -> Option<TsconfigAliases> {
+    let effective = effective_options(
+        repo_root,
+        &config_dir.join("tsconfig.json"),
+        &mut HashSet::new(),
+    );
+    let (paths_dir, mut entries) = effective.paths?;
     if entries.is_empty() {
         return None;
     }
+    let base_dir = effective.base_url.unwrap_or(paths_dir);
     // TypeScript tries the pattern with the longest non-wildcard prefix
     // first when more than one pattern could match the same specifier.
     entries.sort_by(|(a, _), (b, _)| {
@@ -749,6 +1216,9 @@ fn extract_with_parser(
     };
     walk_node(root, &ctx, source, &mut output);
     mark_unexported_private(root, source, module_name, &mut output);
+    output.export_surface = Some(crate::indexer::scan::hash_i64(
+        exports_from_root(root, source).surface_text().as_bytes(),
+    ));
     Ok(output)
 }
 
@@ -795,7 +1265,22 @@ fn mark_unexported_private(
         })
         .map(|s| s.qualname.clone())
         .collect();
+    // Members of an unexported top-level symbol are unreachable from other
+    // files too (issue #187).
+    let members: Vec<String> = output
+        .symbols
+        .iter()
+        .filter(|s| {
+            unexported.iter().any(|q| {
+                s.qualname
+                    .strip_prefix(q)
+                    .is_some_and(|r| r.starts_with('.'))
+            })
+        })
+        .map(|s| s.qualname.clone())
+        .collect();
     output.private_qualnames.extend(unexported);
+    output.private_qualnames.extend(members);
 }
 
 /// Whether any `require(..)` call appears (marks a CommonJS module).
@@ -1410,7 +1895,7 @@ fn collect_import_bindings(root: Node<'_>, source: &str) -> ImportBindings {
                 match part.kind() {
                     "identifier" => {
                         let local = node_text(part, source);
-                        bindings.insert(local.clone(), (spec.clone(), Some(local)));
+                        bindings.insert(local, (spec.clone(), Some(DEFAULT_EXPORT.to_string())));
                     }
                     "namespace_import" => {
                         let mut ns_cursor = part.walk();
@@ -1461,6 +1946,10 @@ fn import_placeholder(raw: &str, ctx: &Context) -> Option<String> {
     }
     let (spec, imported) = ctx.import_bindings.get(root)?;
     let member = match (imported, rest) {
+        (Some(name), rest) if name == DEFAULT_EXPORT => {
+            let tail = rest.map(|r| format!(".{r}")).unwrap_or_default();
+            format!("{DEFAULT_IMPORT_MARK}{root}{tail}")
+        }
         (Some(name), Some(rest)) => format!("{name}.{rest}"),
         (Some(name), None) => name.clone(),
         (None, Some(rest)) => rest.to_string(),

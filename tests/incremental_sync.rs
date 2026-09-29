@@ -1184,3 +1184,339 @@ fn csharp_deferred_receiver_resolves_when_callee_is_added_later() {
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+// Issue #187: JS/TS import candidates are chased through re-export barrels
+// and default exports at extraction time, so editing/adding/deleting only
+// the barrel or target must re-extract the (hash-unchanged) importers.
+
+const TS_CALLER: &str =
+    "import { foo } from './lib';\nexport function go() {\n  return foo();\n}\n";
+
+fn ts_calls(indexer: &Indexer) -> Vec<(String, Option<String>)> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    golden::snapshot_edges(indexer.db(), gv)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "CALLS" && e.source_qualname == "use.go")
+        .map(|e| (e.source_qualname, e.target_qualname))
+        .collect()
+}
+
+/// Incremental sync of `synced` after `edit` must equal a fresh reindex of
+/// `final_files`; returns the incremental indexer for extra assertions.
+fn ts_incremental_matches_fresh(
+    label: &str,
+    initial: &[(&str, &str)],
+    edit: impl FnOnce(&std::path::Path),
+    synced: &[&str],
+    final_files: &[(&str, &str)],
+) -> (tempfile::TempDir, Indexer) {
+    let (tmp, repo_root, mut indexer) = indexed_tree(label, initial);
+    edit(&repo_root);
+    let rels: Vec<String> = synced.iter().map(|s| s.to_string()).collect();
+    indexer.sync_rel_paths(&rels).unwrap();
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(final_files);
+    common::assert_matches_fresh(&snapshot, &fresh);
+    (tmp, indexer)
+}
+
+fn target_of(indexer: &Indexer) -> Option<String> {
+    ts_calls(indexer).into_iter().next().and_then(|(_, t)| t)
+}
+
+const FOO_A: (&str, &str) = ("lib/a.ts", "export function foo() {}\n");
+const FOO_B: (&str, &str) = ("lib/b.ts", "export function foo() {}\n");
+
+#[test]
+fn incremental_barrel_edit_reextracts_unchanged_importer() {
+    let barrel_v2 = "export { foo } from './b';\n";
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-barrel-edit",
+        &[
+            FOO_A,
+            FOO_B,
+            ("lib/index.ts", "export { foo } from './a';\n"),
+            ("use.ts", TS_CALLER),
+        ],
+        |root| common::write_files(root, &[("lib/index.ts", barrel_v2)]),
+        &["lib/index.ts"],
+        &[
+            FOO_A,
+            FOO_B,
+            ("lib/index.ts", barrel_v2),
+            ("use.ts", TS_CALLER),
+        ],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/b.foo"));
+}
+
+#[test]
+fn incremental_default_export_rename_reextracts_unchanged_importer() {
+    let caller = "import api from './api';\nexport function go() {\n  return api.get();\n}\n";
+    let v1 = "const apiClient = { get() { return 1; } };\nexport default apiClient;\n";
+    let v2 = "const renamedClient = { get() { return 1; } };\nexport default renamedClient;\n";
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-default-rename",
+        &[("api.ts", v1), ("use.ts", caller)],
+        |root| common::write_files(root, &[("api.ts", v2)]),
+        &["api.ts"],
+        &[("api.ts", v2), ("use.ts", caller)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("api.renamedClient"));
+}
+
+#[test]
+fn incremental_barrel_repointed_to_new_file_reextracts_importer() {
+    let barrel_v2 = "export { foo } from './c';\n";
+    let c = ("lib/c.ts", "export function foo() {}\n");
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-barrel-repoint",
+        &[
+            FOO_A,
+            ("lib/index.ts", "export { foo } from './a';\n"),
+            ("use.ts", TS_CALLER),
+        ],
+        |root| {
+            common::write_files(root, &[c, ("lib/index.ts", barrel_v2)]);
+        },
+        &["lib/c.ts", "lib/index.ts"],
+        &[FOO_A, c, ("lib/index.ts", barrel_v2), ("use.ts", TS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/c.foo"));
+}
+
+#[test]
+fn incremental_added_barrel_target_reextracts_importer_through_barrel() {
+    let barrel = ("lib/index.ts", "export * from './x';\n");
+    let x = ("lib/x.ts", "export function foo() {}\n");
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-target-added",
+        &[barrel, ("use.ts", TS_CALLER)],
+        |root| common::write_files(root, &[x]),
+        &["lib/x.ts"],
+        &[barrel, x, ("use.ts", TS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/x.foo"));
+}
+
+#[test]
+fn incremental_deleted_barrel_target_reextracts_importer_through_barrel() {
+    let barrel = ("lib/index.ts", "export * from './x';\n");
+    let x = ("lib/x.ts", "export function foo() {}\n");
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-target-deleted",
+        &[barrel, x, ("use.ts", TS_CALLER)],
+        |root| std::fs::remove_file(root.join("lib/x.ts")).unwrap(),
+        &["lib/x.ts"],
+        &[barrel, ("use.ts", TS_CALLER)],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("lib/x.foo"));
+}
+
+#[test]
+fn full_reindex_reextracts_importer_of_edited_barrel() {
+    let barrel_v2 = "export { foo } from './b';\n";
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "ts-reindex-barrel",
+        &[
+            FOO_A,
+            FOO_B,
+            ("lib/index.ts", "export { foo } from './a';\n"),
+            ("use.ts", TS_CALLER),
+        ],
+    );
+    common::write_files(&root, &[("lib/index.ts", barrel_v2)]);
+    indexer.reindex().unwrap();
+    assert_eq!(target_of(&indexer).as_deref(), Some("lib/b.foo"));
+}
+
+const ALIAS_TSCONFIG: (&str, &str) = (
+    "tsconfig.json",
+    "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"./*\"]}}}",
+);
+const ALIAS_CALLER: &str =
+    "import { foo } from '@/lib/foo';\nexport function go() {\n  return foo();\n}\n";
+const LIB_FOO: (&str, &str) = ("lib/foo.ts", "export function foo() {}\n");
+
+#[test]
+fn incremental_tsconfig_paths_added_reextracts_alias_importer() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-config-added",
+        &[("tsconfig.json", "{}"), LIB_FOO, ("use.ts", ALIAS_CALLER)],
+        |root| common::write_files(root, &[ALIAS_TSCONFIG]),
+        &["tsconfig.json"],
+        &[ALIAS_TSCONFIG, LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn incremental_tsconfig_deleted_reextracts_alias_importer() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-config-deleted",
+        &[ALIAS_TSCONFIG, LIB_FOO, ("use.ts", ALIAS_CALLER)],
+        |root| std::fs::remove_file(root.join("tsconfig.json")).unwrap(),
+        &["tsconfig.json"],
+        &[LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn full_reindex_reextracts_alias_importer_after_tsconfig_edit() {
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "ts-reindex-config",
+        &[("tsconfig.json", "{}"), LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    common::write_files(&root, &[ALIAS_TSCONFIG]);
+    indexer.reindex().unwrap();
+    assert_eq!(target_of(&indexer).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn incremental_alias_import_of_missing_file_resolves_once_file_added() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-alias-missing",
+        &[ALIAS_TSCONFIG, ("use.ts", ALIAS_CALLER)],
+        |root| common::write_files(root, &[LIB_FOO]),
+        &["lib/foo.ts"],
+        &[ALIAS_TSCONFIG, LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/foo.foo"));
+}
+
+const BASE_ALIAS_CFG: (&str, &str) = ("tsconfig.json", "{\"extends\":\"./tsconfig.base.json\"}");
+
+#[test]
+fn incremental_base_config_edit_reextracts_alias_importer() {
+    let base_v1 = "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"nope/*\"]}}}";
+    let base_v2 = "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"./*\"]}}}";
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-base-config-edit",
+        &[
+            ("tsconfig.base.json", base_v1),
+            BASE_ALIAS_CFG,
+            LIB_FOO,
+            ("use.ts", ALIAS_CALLER),
+        ],
+        |root| common::write_files(root, &[("tsconfig.base.json", base_v2)]),
+        &["tsconfig.base.json"],
+        &[
+            ("tsconfig.base.json", base_v2),
+            BASE_ALIAS_CFG,
+            LIB_FOO,
+            ("use.ts", ALIAS_CALLER),
+        ],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn incremental_base_config_deleted_reextracts_alias_importer() {
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-base-config-deleted",
+        &[
+            ("tsconfig.base.json", ALIAS_TSCONFIG.1),
+            BASE_ALIAS_CFG,
+            LIB_FOO,
+            ("use.ts", ALIAS_CALLER),
+        ],
+        |root| std::fs::remove_file(root.join("tsconfig.base.json")).unwrap(),
+        &["tsconfig.base.json"],
+        &[BASE_ALIAS_CFG, LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    assert_ne!(target_of(&idx).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn full_reindex_reextracts_alias_importer_after_base_config_edit() {
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "ts-reindex-base-config",
+        &[
+            ("tsconfig.base.json", "{}"),
+            BASE_ALIAS_CFG,
+            LIB_FOO,
+            ("use.ts", ALIAS_CALLER),
+        ],
+    );
+    common::write_files(&root, &[("tsconfig.base.json", ALIAS_TSCONFIG.1)]);
+    indexer.reindex().unwrap();
+    assert_eq!(target_of(&indexer).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn full_reindex_reextracts_alias_importer_after_package_base_config_deleted() {
+    let pkg = "node_modules/@shared/tsconfig/tsconfig.json";
+    let pkg_cfg = "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"../../../*\"]}}}";
+    let child = (
+        "tsconfig.json",
+        "{\"extends\":\"@shared/tsconfig/tsconfig.json\"}",
+    );
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "ts-package-base-deleted",
+        &[(pkg, pkg_cfg), child, LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    assert_eq!(target_of(&indexer).as_deref(), Some("lib/foo.foo"));
+    std::fs::remove_file(root.join(pkg)).unwrap();
+    indexer.reindex().unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&[child, LIB_FOO, ("use.ts", ALIAS_CALLER)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+    assert_ne!(target_of(&indexer).as_deref(), Some("lib/foo.foo"));
+}
+
+#[test]
+fn incremental_import_then_export_barrel_repoint_reextracts_importer() {
+    let v1 = "import { foo } from './a';\nexport { foo };\n";
+    let v2 = "import { foo } from './b';\nexport { foo };\n";
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-import-export-repoint",
+        &[FOO_A, FOO_B, ("lib/index.ts", v1), ("use.ts", TS_CALLER)],
+        |root| common::write_files(root, &[("lib/index.ts", v2)]),
+        &["lib/index.ts"],
+        &[FOO_A, FOO_B, ("lib/index.ts", v2), ("use.ts", TS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/b.foo"));
+}
+
+#[test]
+fn incremental_leaf_body_edit_does_not_reextract_importers() {
+    let barrel = ("lib/index.ts", "export * from './a';\n");
+    let (_t, root, mut indexer) =
+        indexed_tree("ts-body-edit", &[FOO_A, barrel, ("use.ts", TS_CALLER)]);
+    // Body only: same export surface.
+    common::write_files(
+        &root,
+        &[("lib/a.ts", "export function foo() { return 1; }\n")],
+    );
+    let stats = indexer.sync_rel_paths(&["lib/a.ts".to_string()]).unwrap();
+    assert_eq!(stats.indexed, 1, "importers must not be re-extracted");
+    // A new export changes the surface, so importers are re-extracted.
+    common::write_files(
+        &root,
+        &[(
+            "lib/a.ts",
+            "export function foo() { return 1; }\nexport function bar() {}\n",
+        )],
+    );
+    let stats = indexer.sync_rel_paths(&["lib/a.ts".to_string()]).unwrap();
+    assert!(stats.indexed > 1, "{stats:?}");
+}
+
+#[test]
+fn sync_of_tsconfig_change_keeps_next_reindex_from_redoing_js_files() {
+    let (_t, root, mut indexer) = indexed_tree(
+        "ts-config-fingerprint",
+        &[("tsconfig.json", "{}"), LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    common::write_files(&root, &[ALIAS_TSCONFIG]);
+    indexer
+        .sync_rel_paths(&["tsconfig.json".to_string()])
+        .unwrap();
+    let stats = indexer.reindex().unwrap();
+    assert_eq!(stats.indexed, 0, "{stats:?}");
+}

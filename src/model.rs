@@ -243,6 +243,10 @@ impl ReadSymbolEntry {
     }
 }
 
+/// `resolution_kind` of the synthetic CALLS edges built by
+/// `Db::edges_for_symbols_with_dispatch` (interface method -> implementor).
+pub const INTERFACE_DISPATCH_KIND: &str = "interface_dispatch";
+
 #[derive(Debug, Serialize, Clone)]
 pub struct Edge {
     pub id: i64,
@@ -285,6 +289,14 @@ pub struct Edge {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<String>,
     pub event_ts: Option<i64>,
+}
+
+impl Edge {
+    /// Whether this edge was synthesized by interface dispatch rather than
+    /// stored in the index (it has no row, so `id` is 0).
+    pub fn is_synthetic(&self) -> bool {
+        self.id == 0 && self.resolution_kind.as_deref() == Some(INTERFACE_DISPATCH_KIND)
+    }
 }
 
 /// One edge, normalized for the golden-corpus correctness scoreboard
@@ -899,6 +911,10 @@ pub struct ExplainRef {
     /// kind the resolver doesn't label).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution_kind: Option<String>,
+    /// The ref reaches the symbol only through interface dispatch (a call
+    /// to the interface method, not to this implementation).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub via_interface: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1016,14 +1032,14 @@ pub struct DiffImpactEntry {
 pub struct TestCoverageEntry {
     pub symbol_qualname: String,
     pub tests: Vec<TestRef>,
-    pub status: String, // "covered", "uncovered"
+    pub status: String, // "covered", "covered_via_interface", "uncovered"
 }
 
 #[derive(Debug, Serialize)]
 pub struct TestRef {
     pub test_qualname: String,
     pub test_file: String,
-    pub coverage_type: String, // "direct", "indirect"
+    pub coverage_type: String, // "direct", "via_interface"
 }
 
 #[derive(Debug, Serialize)]
@@ -1065,6 +1081,8 @@ pub struct TraceFlowResult {
     pub paths_found: usize,
     pub reached_target: bool,
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncation_reason: Option<String>,
     pub budget: BudgetInfo,
     pub lower_bound: LowerBound,
     #[serde(skip_serializing_if = "Vec::is_empty")]

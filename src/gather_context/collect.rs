@@ -263,8 +263,11 @@ fn direction_labels(
         let ResolvedSeed::Symbol { symbol, .. } = r else {
             continue;
         };
-        let edges =
-            db.edges_for_symbol(symbol.id, config.languages.as_deref(), config.graph_version)?;
+        let edges = db.edges_for_symbol_with_dispatch(
+            symbol.id,
+            config.languages.as_deref(),
+            config.graph_version,
+        )?;
         for e in edges.iter().filter(|e| e.kind == "CALLS") {
             if e.source_symbol_id == Some(symbol.id) {
                 labels.extend(e.target_symbol_id.map(|id| (id, "callee")));
@@ -481,8 +484,11 @@ fn collect_content_file_strategy(
                 break;
             }
 
-            let edges =
-                db.edges_for_symbol(symbol_id, config.languages.as_deref(), config.graph_version)?;
+            let edges = db.edges_for_symbol_with_dispatch(
+                symbol_id,
+                config.languages.as_deref(),
+                config.graph_version,
+            )?;
             for edge in &edges {
                 if edge.kind == "CALLS" && edge.target_symbol_id == Some(symbol_id) {
                     let Some(source_id) = edge.source_symbol_id else {
@@ -653,7 +659,7 @@ fn collect_content_symbol_strategy(
                 if cross_file_bytes >= cross_file_budget {
                     break;
                 }
-                let edges = db.edges_for_symbol(
+                let edges = db.edges_for_symbol_with_dispatch(
                     *seed_id,
                     config.languages.as_deref(),
                     config.graph_version,

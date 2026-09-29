@@ -188,6 +188,7 @@ pub fn analyze_impact(
                 relationship,
                 path,
                 confidence: Some(*confidence),
+                also_via: Vec::new(),
             });
         }
     }
