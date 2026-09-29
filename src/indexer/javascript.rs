@@ -2432,15 +2432,20 @@ fn object_property_methods(node: &Node<'_>, source: &str) -> Vec<String> {
     methods
 }
 
+/// Returns the opening tag node for a JSX element or self-closing element.
+/// A `jsx_element` node's opening tag is its `open_tag` field (see
+/// both grammars' `node-types.json`) — a self-closing element has no
+/// separate opening tag node, it *is* the opening tag.
+fn jsx_opening_tag(node: Node<'_>) -> Option<Node<'_>> {
+    match node.kind() {
+        "jsx_element" => node.child_by_field_name("open_tag"),
+        "jsx_self_closing_element" => Some(node),
+        _ => None,
+    }
+}
+
 fn jsx_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let opening = match node.kind() {
-        // A `jsx_element` node's opening tag is its `open_tag` field (see
-        // both grammars' `node-types.json`) — a self-closing element has no
-        // separate opening tag node, it *is* the opening tag.
-        "jsx_element" => node.child_by_field_name("open_tag")?,
-        "jsx_self_closing_element" => node,
-        _ => return None,
-    };
+    let opening = jsx_opening_tag(node)?;
     let name_node = opening.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     if name != "Route" {
@@ -2491,11 +2496,7 @@ fn jsx_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
 /// exactly like a function call does. Lowercase intrinsic tags (`<div>`)
 /// and the `<ns:Foo>` XML-namespace form return `None`.
 fn jsx_component_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let opening = match node.kind() {
-        "jsx_element" => node.child_by_field_name("open_tag")?,
-        "jsx_self_closing_element" => node,
-        _ => return None,
-    };
+    let opening = jsx_opening_tag(node)?;
     let name_node = opening.child_by_field_name("name")?;
     // Only a bare identifier (`Foo`) or a dotted member access
     // (`ns.Foo`, aliased by the grammar to `member_expression`) is a

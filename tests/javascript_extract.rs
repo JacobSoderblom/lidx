@@ -1,6 +1,6 @@
 use lidx::indexer::extract::{LanguageExtractor, ReceiverType};
 use lidx::indexer::javascript::{
-    JavascriptExtractor, TypescriptExtractor, module_name_from_rel_path,
+    JavascriptExtractor, TsxExtractor, TypescriptExtractor, module_name_from_rel_path,
 };
 
 #[test]
@@ -957,5 +957,28 @@ function Layout() {
             .iter()
             .filter(|e| e.kind == "CALLS")
             .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn tsx_imported_component_call_resolves_through_imports() {
+    let source = r#"
+import { StatusBadge } from './status-badge';
+
+export function Card() {
+    return <StatusBadge status="active" />;
+}
+"#;
+    let mut extractor = TsxExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/card").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("src/card.StatusBadge"))
+        .expect("<StatusBadge /> usage in tsx file must emit a CALLS edge with import candidates");
+    assert_eq!(
+        call.import_candidates,
+        vec!["./status-badge\0StatusBadge".to_string()],
+        "JSX component in .tsx file must resolve through imports like a function call"
     );
 }
