@@ -6020,7 +6020,9 @@ public class C : IA<int>, IA<string>, N1.IB, N2.IB {
             .iter()
             .find(|e| e.kind == "IMPLEMENTS" && e.target_qualname.as_deref() == Some("IA"))
             .unwrap();
-        assert_eq!(edge.import_candidates, ["Acme.IA", "N2.IA"]);
+        // enclosing namespaces, the global namespace, then usings
+        assert_eq!(edge.import_candidates, ["Acme.IA", "IA", "N2.IA"]);
+        assert_eq!(edge.detail.as_deref(), Some("int"));
     }
 
     #[test]
