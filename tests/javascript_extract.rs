@@ -856,3 +856,106 @@ class Foo {
          `store: EventStore` and must not be resolved via the outer type"
     );
 }
+
+// Issue #111: `<Foo />` usage emitted no edge at all — `walk_node` only fed
+// a `jsx_element`/`jsx_self_closing_element` node to `jsx_route_edge`
+// (react-router `<Route path="...">` detection only), so every React
+// component's actual JSX usages were invisible to the graph and every
+// component came back with 0 callers. A capitalized JSX tag name is a
+// reference to an in-scope value/component (never a literal DOM tag — see
+// https://react.dev/learn/your-first-component#using-a-component), so it
+// must be resolved through the same import path an ordinary call uses.
+
+#[test]
+fn jsx_self_closing_capitalized_component_emits_calls_edge() {
+    let source = r#"
+import { StatusBadge } from "./status-badge";
+
+function ProductTabs() {
+    return <StatusBadge status="active" />;
+}
+"#;
+    let mut extractor = JavascriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/product-tabs").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS"
+                && e.target_qualname.as_deref() == Some("src/product-tabs.StatusBadge")
+        })
+        .expect("<StatusBadge /> usage must emit a CALLS edge");
+    assert_eq!(
+        call.import_candidates,
+        vec!["./status-badge\0StatusBadge".to_string()],
+        "the JSX usage must resolve through imports exactly like an ordinary call"
+    );
+}
+
+#[test]
+fn jsx_element_with_children_capitalized_component_emits_calls_edge() {
+    let source = r#"
+import { Card } from "./card";
+
+function Page() {
+    return <Card>content</Card>;
+}
+"#;
+    let mut extractor = JavascriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/page").unwrap();
+    assert!(
+        extracted
+            .edges
+            .iter()
+            .any(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("src/page.Card")),
+        "<Card>...</Card> usage must emit a CALLS edge, got {:?}",
+        extracted
+            .edges
+            .iter()
+            .filter(|e| e.kind == "CALLS")
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn jsx_namespaced_capitalized_component_emits_calls_edge() {
+    let source = r#"
+import * as ui from "./ui";
+
+function Menu() {
+    return <ui.Foo />;
+}
+"#;
+    let mut extractor = JavascriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/menu").unwrap();
+    let call = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("ui.Foo"))
+        .expect("<ui.Foo /> usage must emit a CALLS edge");
+    assert_eq!(
+        call.import_candidates,
+        vec!["./ui\0Foo".to_string()],
+        "a namespace-qualified JSX usage must resolve through imports like `ui.Foo()` would"
+    );
+}
+
+#[test]
+fn jsx_lowercase_intrinsic_tags_emit_no_calls_edge() {
+    let source = r#"
+function Layout() {
+    return <div className="wrap"><span /></div>;
+}
+"#;
+    let mut extractor = JavascriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/layout").unwrap();
+    assert!(
+        extracted.edges.iter().all(|e| e.kind != "CALLS"),
+        "lowercase intrinsic JSX tags (<div>, <span>) must not emit CALLS edges, got {:?}",
+        extracted
+            .edges
+            .iter()
+            .filter(|e| e.kind == "CALLS")
+            .collect::<Vec<_>>()
+    );
+}
