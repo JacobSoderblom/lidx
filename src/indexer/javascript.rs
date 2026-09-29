@@ -2897,25 +2897,27 @@ fn handle_variable_declaration(
     }
 }
 
-/// True when the declaration sits inside a function/method body or a plain
-/// block (`if`, `for`, ...), i.e. is not module scope. TS `namespace` bodies
-/// (also `statement_block`) still count as module scope.
+/// A declaration is module scope only if every ancestor up to `program` is
+/// the program itself, an `export`/`declare` wrapper, or a TS namespace (its
+/// wrapper, node and body block). Anything else (function/arrow/method
+/// bodies, `if`/`for`/`switch` blocks, ...) is local.
 fn is_local_declaration(node: Node<'_>) -> bool {
     let mut cur = node.parent();
     while let Some(n) = cur {
-        let kind = n.kind();
-        if is_lambda_node(kind)
-            || is_dynamic_this_function_node(kind)
-            || kind == "method_definition"
-        {
-            return true;
-        }
-        if kind == "statement_block"
-            && !matches!(
+        let ok = match n.kind() {
+            "program"
+            | "export_statement"
+            | "ambient_declaration"
+            | "expression_statement"
+            | "internal_module"
+            | "module" => true,
+            "statement_block" => matches!(
                 n.parent().map(|p| p.kind()),
                 Some("internal_module" | "module")
-            )
-        {
+            ),
+            _ => false,
+        };
+        if !ok {
             return true;
         }
         cur = n.parent();

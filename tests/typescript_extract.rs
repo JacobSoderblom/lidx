@@ -350,3 +350,37 @@ export class K {
     );
     assert!(names.contains(&"top") && names.contains(&"handler") && names.contains(&"run"));
 }
+
+#[test]
+fn loop_switch_locals_are_not_symbols_but_namespace_members_are() {
+    let source = r#"
+for (let i = 0; i < 3; i++) {}
+switch (k) {
+    case 1:
+        const inCase = 1;
+        break;
+    default:
+        const inDefault = 2;
+}
+namespace X {
+    export const y = 1;
+}
+export namespace Z {
+    export const w = 1;
+}
+export const response = 1;
+function f() {
+    const response = 2;
+}
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/mod").unwrap();
+    let names: Vec<_> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+    for bad in ["i", "inCase", "inDefault"] {
+        assert!(!names.contains(&bad), "{bad} leaked: {names:?}");
+    }
+    for good in ["y", "w"] {
+        assert!(names.contains(&good), "{good} missing: {names:?}");
+    }
+    assert_eq!(names.iter().filter(|n| **n == "response").count(), 1);
+}
