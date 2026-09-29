@@ -106,6 +106,7 @@ pub fn confidence_from_source(source: &ImpactSource) -> ConfidenceScore {
             // Test link confidence depends on strategy
             match strategy.as_str() {
                 "call" => 0.95,
+                "call_via_interface" => 0.7,
                 "import" => 0.7,
                 "naming" => 0.6,
                 "proximity" => 0.4,
