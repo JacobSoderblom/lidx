@@ -1,5 +1,5 @@
 use super::{Db, edge_from_row, symbol_from_row};
-use crate::model::{Edge, EdgeSnapshotRow, Symbol};
+use crate::model::{Edge, EdgeSnapshotRow, INTERFACE_DISPATCH_KIND, Symbol};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
@@ -155,7 +155,7 @@ impl Db {
                 evidence_start_line: None,
                 evidence_end_line: None,
                 confidence: None,
-                resolution_kind: Some("interface_dispatch".to_string()),
+                resolution_kind: Some(INTERFACE_DISPATCH_KIND.to_string()),
                 graph_version,
                 commit_sha: None,
                 trace_id: None,
@@ -170,6 +170,30 @@ impl Db {
             }
         }
         Ok(map)
+    }
+
+    /// Real edges into the interface-method peers of `id`: the callers that
+    /// reach `id` only *through* the interface, not by calling it directly.
+    /// Empty when `id` implements no interface method. Callers filter by
+    /// kind (`CALLS`) and use `source_symbol_id`; results are never
+    /// synthetic. Consumers that report coverage or callers should label
+    /// these as via-interface rather than direct: a call to `IFoo.Run`
+    /// reaches every implementor.
+    pub fn interface_caller_edges(
+        &self,
+        id: i64,
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<Vec<Edge>> {
+        let mut out = Vec::new();
+        for peer in self.dispatch_peers(id, graph_version)?.interface_methods {
+            out.extend(
+                self.edges_for_symbol(peer, languages, graph_version)?
+                    .into_iter()
+                    .filter(|e| e.target_symbol_id == Some(peer)),
+            );
+        }
+        Ok(out)
     }
 
     /// Single-symbol form of [`Db::edges_for_symbols_with_dispatch`].

@@ -290,5 +290,116 @@ fn analyze_diff_and_gather_context_follow_interface_dispatch() {
         "gather_context",
         json!({"seeds": [{"type": "symbol", "qualname": IMPL_M}], "max_bytes": 80000, "depth": 2}),
     );
-    assert!(r.to_string().contains(CALLER), "gather: {r}");
+    let qualnames: Vec<&str> = r["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|i| i["symbol"]["qualname"].as_str())
+        .collect();
+    assert!(qualnames.contains(&CALLER), "gather: {qualnames:?}");
+}
+
+const SECOND_IMPL: &str = "namespace Shop
+{
+    public class AuditPublisher : IPublisher
+    {
+        public void PublishDeleted(int id)
+        {
+        }
+    }
+}
+";
+
+const IFACE_TEST: &str = "using Xunit;
+
+namespace Shop.Tests
+{
+    public class CoordinatorTests
+    {
+        private readonly IPublisher _pub;
+
+        [Fact]
+        public void DeleteCallsPublisher()
+        {
+            _pub.PublishDeleted(1);
+        }
+    }
+}
+";
+
+const TEST_QN: &str = "Shop.Tests.CoordinatorTests.DeleteCallsPublisher";
+const SECOND_IMPL_M: &str = "Shop.AuditPublisher.PublishDeleted";
+
+/// A test calling `IPublisher.PublishDeleted` reaches every implementor only
+/// via the interface: it is reported as such, never as direct coverage, in
+/// analyze_diff, explain_symbol and the impact test layer (issue #188).
+#[test]
+fn tests_through_interface_are_marked_via_interface() {
+    let (_tmp, repo, db) = common::setup_repo("cs_interface_dispatch");
+    common::write_files(
+        &repo,
+        &[
+            ("AuditPublisher.cs", SECOND_IMPL),
+            ("tests/Shop.Tests/CoordinatorTests.cs", IFACE_TEST),
+        ],
+    );
+    let mut indexer = Indexer::new(repo.clone(), db.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+
+    // analyze_diff coverage, for both implementors.
+    let r = call(
+        &repo,
+        &db,
+        "analyze_diff",
+        json!({"paths": ["Publisher.cs", "AuditPublisher.cs"]}),
+    );
+    let coverage = r["test_coverage"].as_array().expect("test_coverage");
+    for qn in [IMPL_M, SECOND_IMPL_M] {
+        let entry = coverage
+            .iter()
+            .find(|c| c["symbol_qualname"] == qn)
+            .unwrap_or_else(|| panic!("no coverage entry for {qn}: {r}"));
+        assert_eq!(entry["status"], "covered_via_interface", "{qn}: {entry}");
+        let tests = entry["tests"].as_array().unwrap();
+        assert_eq!(tests.len(), 1, "{qn}: {entry}");
+        assert_eq!(tests[0]["test_qualname"], TEST_QN);
+        assert_eq!(tests[0]["coverage_type"], "via_interface");
+    }
+
+    // explain_symbol tests section carries the marker.
+    let r = call(
+        &repo,
+        &db,
+        "explain_symbol",
+        json!({"qualname": IMPL_M, "sections": ["tests"]}),
+    );
+    let tests = r["tests"].as_array().expect("tests");
+    let hit = tests
+        .iter()
+        .find(|t| t["symbol"]["qualname"] == TEST_QN)
+        .unwrap_or_else(|| panic!("test missing: {r}"));
+    assert_eq!(hit["via_interface"], true, "{hit}");
+
+    // Impact test layer: strategy is call_via_interface, not call.
+    let seed = indexer
+        .db()
+        .get_symbol_by_qualname(IMPL_M, gv)
+        .unwrap()
+        .unwrap();
+    let layer = lidx::impact::layers::test::TestImpactLayer::new(indexer.db());
+    let result = layer.analyze(&[seed.id], &[], gv).unwrap();
+    let test_sym = indexer
+        .db()
+        .get_symbol_by_qualname(TEST_QN, gv)
+        .unwrap()
+        .unwrap();
+    let evidence = &result.evidence[&test_sym.id];
+    let has = |wanted: &str| {
+        evidence.iter().any(|e| {
+            matches!(e, lidx::impact::types::ImpactSource::TestLink { strategy, .. } if strategy == wanted)
+        })
+    };
+    assert!(has("call_via_interface"), "{evidence:?}");
+    assert!(!has("call"), "{evidence:?}");
 }

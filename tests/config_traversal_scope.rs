@@ -438,18 +438,39 @@ public class Reader {
 #[test]
 fn container_reached_via_two_uris_reports_both_secrets() {
     let repo = two_secret_repo();
+    let has = |qualnames: &[String], needle: &str| {
+        qualnames.iter().any(|q| q.to_lowercase().contains(needle))
+    };
     let r = call(
         &repo,
         "analyze_impact",
         r#"{"qualname":"Two.Reader.Run","direction":"upstream","max_depth":6}"#,
     );
-    let s = r["affected"].to_string().to_lowercase();
-    assert!(s.contains("alpha") && s.contains("beta"), "impact: {r}");
+    let affected: Vec<String> = r["affected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| {
+            a["symbol"]["qualname"]
+                .as_str()
+                .or_else(|| a["qualname"].as_str())
+                .map(str::to_string)
+        })
+        .collect();
+    assert!(
+        has(&affected, "alpha") && has(&affected, "beta"),
+        "impact: {affected:?}"
+    );
     let r = call(
         &repo,
         "trace_flow",
         r#"{"start_qualname":"Two.Reader.Run","direction":"upstream","max_hops":8,"max_bytes":200000}"#,
     );
-    let s = r["trace"].to_string().to_lowercase();
-    assert!(s.contains("alpha") && s.contains("beta"), "trace: {r}");
+    let hops: Vec<String> = r["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|h| h["symbol"]["qualname"].as_str().map(str::to_string))
+        .collect();
+    assert!(has(&hops, "alpha") && has(&hops, "beta"), "trace: {hops:?}");
 }
