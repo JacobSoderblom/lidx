@@ -11,7 +11,7 @@ use std::time::Instant;
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 3;
+pub const EXTRACTOR_VERSION: i64 = 4;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -24,6 +24,7 @@ pub mod extract;
 pub mod go;
 pub mod http;
 pub mod javascript;
+mod js_stale;
 pub mod markdown;
 pub mod postgres;
 pub mod proto;
@@ -237,7 +238,19 @@ impl Indexer {
         // unique again, which `Db::retry_unresolved_references`'s
         // insertion-only watermark would otherwise never notice.
         let mut any_symbols_deleted = false;
-        for path in paths {
+        javascript::clear_export_cache();
+        // Hash-unchanged JS/TS files whose chased imports or alias config
+        // changed must be re-extracted too. Computed before any deletion so
+        // importers' edges still exist.
+        let batch_rels: Vec<String> = paths
+            .iter()
+            .filter_map(|p| crate::util::normalize_rel_path(&self.repo_root, p).ok())
+            .collect();
+        let js_stale = self.js_stale();
+        let stale_js_files = js_stale.stale_js_files(&batch_rels, self.graph_version)?;
+        let mut all_paths: Vec<PathBuf> = paths.to_vec();
+        all_paths.extend(stale_js_files.iter().map(|rel| self.repo_root.join(rel)));
+        for path in &all_paths {
             let rel_path = match crate::util::normalize_rel_path(&self.repo_root, path) {
                 Ok(value) => value,
                 Err(_) => continue,
@@ -260,6 +273,7 @@ impl Indexer {
             };
             if let Some(existing) = self.db.get_file_by_path(&scanned.rel_path)?
                 && existing.hash == scanned.hash
+                && !stale_js_files.contains(&scanned.rel_path)
             {
                 stats.skipped += 1;
                 continue;
@@ -303,6 +317,15 @@ impl Indexer {
                 self.graph_version,
             )?;
             stats.edges += xref_edges;
+        }
+        javascript::clear_export_cache();
+        if batch_rels.iter().any(|p| p.ends_with(".json")) {
+            // Keep the reindex fingerprint current so the next reindex
+            // doesn't re-extract every JS/TS file for a change sync handled.
+            let js_stale = self.js_stale();
+            let fingerprint = js_stale.config_fingerprint(&js_stale.js_ts_file_paths()?);
+            self.db
+                .set_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY, fingerprint)?;
         }
         if touched {
             // Issue #77: an edge outside this batch already bound to a
@@ -354,6 +377,40 @@ impl Indexer {
         // A stale extractor version means unchanged files must be re-extracted.
         let force_reextract = self.extractor_version_stale()?;
 
+        // Hash-unchanged JS/TS files whose chased imports or alias config
+        // changed are re-extracted too (see `js_stale`).
+        javascript::clear_export_cache();
+        let scanned_paths: HashSet<&str> = scanned.iter().map(|f| f.rel_path.as_str()).collect();
+        let mut changed_paths: Vec<String> = scanned
+            .iter()
+            .filter(|f| {
+                existing_map
+                    .get(&f.rel_path)
+                    .is_none_or(|record| record.hash != f.hash)
+            })
+            .map(|f| f.rel_path.clone())
+            .collect();
+        changed_paths.extend(
+            existing_map
+                .keys()
+                .filter(|p| !scanned_paths.contains(p.as_str()))
+                .cloned(),
+        );
+        let js_stale = self.js_stale();
+        let mut stale_js_files = js_stale.stale_js_files(&changed_paths, previous_graph_version)?;
+        // A tsconfig/jsconfig isn't an indexed file, so its edits show up
+        // only as a fingerprint change (this also covers a package base in
+        // node_modules, which sync doesn't watch): re-extract every JS/TS file.
+        let js_paths: Vec<String> = scanned
+            .iter()
+            .filter(|f| javascript::is_js_ts_path(&f.rel_path))
+            .map(|f| f.rel_path.clone())
+            .collect();
+        let config_fingerprint = js_stale.config_fingerprint(&js_paths);
+        if self.db.get_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY)? != Some(config_fingerprint) {
+            stale_js_files.extend(js_paths);
+        }
+
         let mut seen = HashSet::new();
         let mut stats = IndexStats {
             scanned: scanned.len(),
@@ -380,6 +437,7 @@ impl Indexer {
             if let Some(existing_record) = existing_map.get(&file.rel_path)
                 && existing_record.hash == file.hash
                 && !force_reextract
+                && !stale_js_files.contains(&file.rel_path)
             {
                 // Unchanged: skip the parse (tree-sitter + symbol extraction is the
                 // expensive part) and carry the file's rows forward further down.
@@ -620,6 +678,8 @@ impl Indexer {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
+        self.db
+            .set_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY, config_fingerprint)?;
         self.db.set_meta_i64("last_indexed", now)?;
 
         // Reclaim rows from graph versions this reindex just aged out. Safe to
@@ -785,6 +845,13 @@ impl Indexer {
         Ok((symbols.len(), edges_count))
     }
 
+    fn js_stale(&self) -> js_stale::JsStale<'_> {
+        js_stale::JsStale {
+            db: &self.db,
+            repo_root: &self.repo_root,
+        }
+    }
+
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {
         let extractor = self
             .extractors
@@ -802,6 +869,10 @@ impl Indexer {
             &module_name,
             &mut extracted.edges,
         );
+        if let Some(surface) = extracted.export_surface {
+            self.db
+                .set_meta_i64(&js_stale::export_surface_key(&file.rel_path), surface)?;
+        }
         Ok(extracted)
     }
 }
