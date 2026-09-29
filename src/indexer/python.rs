@@ -123,6 +123,7 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             imports: Rc::new(collect_import_bindings(root, source)),
         };
         walk_node(root, &ctx, source, &mut output);
+        emit_module_export_edges(root, module_name, source, &mut output);
         Ok(output)
     }
 
@@ -425,12 +426,20 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
                 let snippet =
                     util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+                let bindings = parse_import_bindings(node, source);
                 for target in parse_imports(node, source) {
+                    // Issue #116: persist the name this import binds (`np`
+                    // for `import numpy as np`) so `unused_imports` can look
+                    // for it; the target text alone can't say.
+                    let detail = bindings
+                        .iter()
+                        .find(|(_, bound_target)| *bound_target == target)
+                        .map(|(bound, _)| serde_json::json!({ "bound_name": bound }).to_string());
                     output.edges.push(EdgeInput {
                         kind: "IMPORTS".to_string(),
                         source_qualname: Some(module.clone()),
                         target_qualname: Some(target),
-                        detail: None,
+                        detail,
                         evidence_snippet: snippet.clone(),
                         evidence_start_line: Some(start_line),
                         evidence_end_line: Some(end_line),
@@ -1799,6 +1808,69 @@ fn extract_string_list(node: Node<'_>, source: &str) -> Vec<String> {
         out.push(value);
     }
     out
+}
+
+/// Internal-only edge kind for `__all__` exports (see `emit_module_export_edges`).
+const MODULE_EXPORT_KIND: &str = "MODULE_EXPORT";
+
+/// Issue #116: a name listed in a module-level `__all__ = [...]`/`(...)` is
+/// part of the file's declared public API -- re-exported, so "used" even
+/// when nothing else in this file references it. Recorded as one
+/// `MODULE_EXPORT_KIND` edge per name, `ReceiverType::Unresolved` so it
+/// always lands in `unresolved_references` rather than risking a bind to
+/// some unrelated same-named symbol elsewhere in the repo (see
+/// `db::resolver::Resolver::resolve`'s `Some("")` short-circuit) -- it
+/// exists purely as a same-file text signal for
+/// `db::analytics::Db::unused_imports` to check an import's bound name
+/// against.
+///
+/// ponytail: only a direct module-level `__all__ = [...]` assignment is
+/// recognized -- not `__all__ += [...]`, and not one nested inside an `if`
+/// block. The common shape by a wide margin.
+fn emit_module_export_edges(
+    root: Node<'_>,
+    module_name: &str,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        let assignment = if stmt.kind() == "expression_statement" {
+            stmt.named_child(0)
+                .filter(|child| child.kind() == "assignment")
+        } else if stmt.kind() == "assignment" {
+            Some(stmt)
+        } else {
+            continue;
+        };
+        let Some(assignment) = assignment else {
+            continue;
+        };
+        let Some(left) = assignment.child_by_field_name("left") else {
+            continue;
+        };
+        if left.kind() != "identifier" || node_text(left, source) != "__all__" {
+            continue;
+        }
+        let Some(right) = assignment.child_by_field_name("right") else {
+            continue;
+        };
+        let (start_line, _, end_line, _, _, _) = span(stmt);
+        for name in extract_string_list(right, source) {
+            if name.is_empty() {
+                continue;
+            }
+            output.edges.push(EdgeInput {
+                kind: MODULE_EXPORT_KIND.to_string(),
+                source_qualname: Some(module_name.to_string()),
+                target_qualname: Some(name),
+                receiver_type: ReceiverType::Unresolved,
+                evidence_start_line: Some(start_line),
+                evidence_end_line: Some(end_line),
+                ..Default::default()
+            });
+        }
+    }
 }
 
 fn http_client_label(base: &str) -> Option<&'static str> {

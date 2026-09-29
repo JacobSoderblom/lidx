@@ -1,7 +1,9 @@
 use super::overview::module_prefix;
+use super::resolver::qualname_trailing_name;
 use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row};
 use crate::model::{DuplicateGroup, Edge, Symbol, SymbolComplexity, SymbolCoupling};
 use anyhow::Result;
+use std::collections::{HashMap, HashSet};
 
 // Issue #134 follow-up: module identity used to be computed twice in
 // `top_fan_in_by_module` -- once here via a raw-SQL "first path segment"
@@ -574,11 +576,30 @@ impl Db {
     /// NULL`). Unioned in here as a second branch so it's still reported as
     /// unused when nothing calls it, with its `id` negated (`-ur.id`) to
     /// keep it visibly distinct from a real `edges.id` -- a pending row has
-    /// no edge of its own to report the id of. The "is it used" check is
-    /// unioned the same way on the CALLS side: a call the write path also
-    /// left unresolved (`from fastapi import FastAPI` + `FastAPI()`, both
-    /// external) is just as real a use as a resolved one, and before issue
-    /// #79 both shared one `edges` row's worth of visibility here.
+    /// no edge of its own to report the id of.
+    ///
+    /// Issue #116: "is it used" is no longer a same-file `CALLS` edge with
+    /// an *identical* `target_qualname` string -- a Python call's
+    /// `target_qualname` is the extractor's own local guess (e.g. a bare
+    /// `helper_used()` call becomes `<this module>.helper_used` regardless
+    /// of which module actually defines it), so it essentially never equals
+    /// the IMPORTS edge's own `target_qualname`, and an attribute use
+    /// (`json.dumps(...)`) or an annotation-only use never had a matching
+    /// `CALLS` edge at all. `import_alias_used` below now checks, in order:
+    /// (1) a resolved import's `target_symbol_id` matching any other
+    /// same-file edge's resolved target -- the precise case, e.g. `from
+    /// pkg.utils import helper_used` + a same-file call that resolves to
+    /// that same symbol despite its own guessed text differing; (2) the
+    /// bound name (the IMPORTS edge's `bound_name` detail, so `import numpy as np`
+    /// looks for `np`; else the target's trailing segment) occurring as a
+    /// same-file reference's own name, its own bare form, or the leading or
+    /// trailing dotted segment of one -- covers both the bare-call-guess
+    /// mismatch above and attribute access on an unresolved external import
+    /// (`import json` + `json.dumps(...)`); (3) that same bound name
+    /// occurring as a token in a same-file symbol's `signature` -- the
+    /// annotation-only case (`def f(x: Optional[int])`), which never emits
+    /// any edge at all; (4) a module-level `__all__` re-export of that name
+    /// (`python::emit_module_export_edges`, `MODULE_EXPORT_KIND`).
     pub fn unused_imports(
         &self,
         limit: usize,
@@ -591,35 +612,15 @@ impl Db {
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
                     e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
-                    e.resolution_kind
+                    e.resolution_kind, e.file_id
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE e.kind = 'IMPORTS'
                AND e.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-               AND e.target_qualname IS NOT NULL
-               AND NOT EXISTS (
-                 SELECT 1 FROM edges e2
-                 WHERE e2.kind = 'CALLS'
-                   AND e2.file_id = e.file_id
-                   AND e2.target_qualname = e.target_qualname
-                   AND e2.graph_version = ?
-               )
-               AND NOT EXISTS (
-                 SELECT 1 FROM unresolved_references ur2
-                 WHERE ur2.edge_kind = 'CALLS'
-                   AND ur2.edge_id IS NULL
-                   AND ur2.file_id = e.file_id
-                   AND ur2.reference_name = e.target_qualname
-                   AND ur2.graph_version = ?
-               )",
+               AND e.target_qualname IS NOT NULL",
         );
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![
-            &graph_version,
-            &graph_version,
-            &graph_version,
-            &graph_version,
-        ];
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
 
         if let Some(languages) = languages
             && !languages.is_empty()
@@ -652,32 +653,15 @@ impl Db {
                     ur.reference_name, ur.detail, ur.evidence_snippet,
                     ur.evidence_start_line, ur.evidence_end_line, ur.confidence,
                     ur.graph_version, ur.commit_sha, ur.trace_id, ur.span_id, ur.event_ts,
-                    NULL
+                    NULL, ur.file_id
              FROM unresolved_references ur
              JOIN files f ON ur.file_id = f.id
              WHERE ur.edge_kind = 'IMPORTS'
                AND ur.edge_id IS NULL
                AND ur.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-               AND ur.reference_name IS NOT NULL
-               AND NOT EXISTS (
-                 SELECT 1 FROM edges e2
-                 WHERE e2.kind = 'CALLS'
-                   AND e2.file_id = ur.file_id
-                   AND e2.target_qualname = ur.reference_name
-                   AND e2.graph_version = ?
-               )
-               AND NOT EXISTS (
-                 SELECT 1 FROM unresolved_references ur2
-                 WHERE ur2.edge_kind = 'CALLS'
-                   AND ur2.edge_id IS NULL
-                   AND ur2.file_id = ur.file_id
-                   AND ur2.reference_name = ur.reference_name
-                   AND ur2.graph_version = ?
-               )",
+               AND ur.reference_name IS NOT NULL",
         );
-        params.push(&graph_version);
-        params.push(&graph_version);
         params.push(&graph_version);
         params.push(&graph_version);
 
@@ -708,18 +692,147 @@ impl Db {
 
         // Column 2 = file_path, column 9 = evidence_start_line -- an ORDER BY
         // after a UNION ALL can't qualify columns by table alias anymore.
-        full_sql.push_str(" ORDER BY 2, 9 LIMIT ?");
-        let limit = limit as i64;
-        params.push(&limit);
+        // No LIMIT here: `limit` counts *unused* imports, decided below only
+        // after each candidate is checked against same-file usage signals.
+        full_sql.push_str(" ORDER BY 2, 9");
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&full_sql)?;
-        let rows = stmt.query_map(&*params, edge_from_row)?;
+        let candidates: Vec<(Edge, i64)> = stmt
+            .query_map(&*params, |row| {
+                let edge = edge_from_row(row)?;
+                let file_id: i64 = row.get(17)?;
+                Ok((edge, file_id))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let file_ids: Vec<i64> = candidates
+            .iter()
+            .map(|(_, file_id)| *file_id)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let usage = self.file_usage_signals(&file_ids, graph_version)?;
+
         let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
+        for (edge, file_id) in candidates {
+            if results.len() >= limit {
+                break;
+            }
+            let Some(target_qualname) = edge.target_qualname.as_deref() else {
+                continue;
+            };
+            let bound_name = edge
+                .detail
+                .as_deref()
+                .and_then(|detail| serde_json::from_str::<serde_json::Value>(detail).ok())
+                .and_then(|detail| detail["bound_name"].as_str().map(String::from));
+            let alias = bound_name
+                .as_deref()
+                .unwrap_or_else(|| qualname_trailing_name(target_qualname));
+            if import_alias_used(alias, edge.target_symbol_id, file_id, &usage) {
+                continue;
+            }
+            results.push(edge);
         }
         Ok(results)
+    }
+
+    /// Same-file "this name/symbol is referenced somewhere" signals for
+    /// `unused_imports`, gathered once for every file with at least one
+    /// IMPORTS candidate rather than per-candidate (issue #116). `names`
+    /// covers both resolved edges (any kind but the import machinery
+    /// itself) and still-unresolved references (including a module's own
+    /// `MODULE_EXPORT_KIND` `__all__` entries); `signatures` covers
+    /// annotation-only uses, which never emit an edge at all.
+    fn file_usage_signals(
+        &self,
+        file_ids: &[i64],
+        graph_version: i64,
+    ) -> Result<HashMap<i64, FileUsage>> {
+        let mut usage: HashMap<i64, FileUsage> = HashMap::new();
+        if file_ids.is_empty() {
+            return Ok(usage);
+        }
+        let conn = self.read_conn()?;
+        let placeholders = file_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+        let edges_sql = format!(
+            "SELECT file_id, target_qualname, target_symbol_id FROM edges
+             WHERE graph_version = ?
+               AND kind NOT IN ('IMPORTS', 'IMPORTS_FILE', 'CONTAINS')
+               AND file_id IN ({placeholders})"
+        );
+        let mut edges_params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
+        for id in file_ids {
+            edges_params.push(id as &dyn rusqlite::ToSql);
+        }
+        let mut edges_stmt = conn.prepare(&edges_sql)?;
+        let edge_rows = edges_stmt.query_map(&*edges_params, |row| {
+            let file_id: i64 = row.get(0)?;
+            let target_qualname: Option<String> = row.get(1)?;
+            let target_symbol_id: Option<i64> = row.get(2)?;
+            Ok((file_id, target_qualname, target_symbol_id))
+        })?;
+        for row in edge_rows {
+            let (file_id, target_qualname, target_symbol_id) = row?;
+            let entry = usage.entry(file_id).or_default();
+            if let Some(name) = target_qualname {
+                entry.names.push(name);
+            }
+            if let Some(id) = target_symbol_id {
+                entry.symbol_ids.insert(id);
+            }
+        }
+
+        let ur_sql = format!(
+            "SELECT file_id, reference_name FROM unresolved_references
+             WHERE graph_version = ?
+               AND edge_kind NOT IN ('IMPORTS', 'IMPORTS_FILE')
+               AND reference_name IS NOT NULL
+               AND file_id IN ({placeholders})"
+        );
+        let mut ur_params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
+        for id in file_ids {
+            ur_params.push(id as &dyn rusqlite::ToSql);
+        }
+        let mut ur_stmt = conn.prepare(&ur_sql)?;
+        let ur_rows = ur_stmt.query_map(&*ur_params, |row| {
+            let file_id: i64 = row.get(0)?;
+            let reference_name: String = row.get(1)?;
+            Ok((file_id, reference_name))
+        })?;
+        for row in ur_rows {
+            let (file_id, reference_name) = row?;
+            usage.entry(file_id).or_default().names.push(reference_name);
+        }
+
+        let sig_sql = format!(
+            "SELECT file_id, signature FROM symbols
+             WHERE graph_version = ?
+               AND signature IS NOT NULL
+               AND file_id IN ({placeholders})"
+        );
+        let mut sig_params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version];
+        for id in file_ids {
+            sig_params.push(id as &dyn rusqlite::ToSql);
+        }
+        let mut sig_stmt = conn.prepare(&sig_sql)?;
+        let sig_rows = sig_stmt.query_map(&*sig_params, |row| {
+            let file_id: i64 = row.get(0)?;
+            let signature: String = row.get(1)?;
+            Ok((file_id, signature))
+        })?;
+        for row in sig_rows {
+            let (file_id, signature) = row?;
+            usage.entry(file_id).or_default().signatures.push(signature);
+        }
+
+        Ok(usage)
     }
 
     pub fn orphan_tests(
@@ -832,6 +945,70 @@ impl Db {
 
         Ok(orphans)
     }
+}
+
+/// Same-file "this name/symbol is referenced somewhere" signals for
+/// `Db::unused_imports` (issue #116), gathered once per file rather than
+/// per import candidate.
+#[derive(Default)]
+struct FileUsage {
+    /// Reference-name texts to check a bound alias against (equal, or the
+    /// alias's leading/trailing dotted segment) -- from
+    /// `edges.target_qualname` (any kind but the import machinery itself)
+    /// and `unresolved_references.reference_name` (which also carries a
+    /// module's own `MODULE_EXPORT_KIND` `__all__` entries).
+    names: Vec<String>,
+    /// Resolved `target_symbol_id`s any same-file edge points at.
+    symbol_ids: HashSet<i64>,
+    /// Same-file symbols' `signature` text, tokenized for annotation-only
+    /// uses (`def f(x: Optional[int])` never emits an edge at all).
+    signatures: Vec<String>,
+}
+
+/// Issue #116's "is it used" predicate for one IMPORTS candidate.
+/// `alias` is the name the import binds into the file's scope (the IMPORTS
+/// edge's `bound_name` detail, else the target's trailing segment);
+/// `target_symbol_id` is `Some` only when the import itself resolved to a
+/// real symbol.
+fn import_alias_used(
+    alias: &str,
+    target_symbol_id: Option<i64>,
+    file_id: i64,
+    usage: &HashMap<i64, FileUsage>,
+) -> bool {
+    let Some(file_usage) = usage.get(&file_id) else {
+        return false;
+    };
+    if let Some(id) = target_symbol_id
+        && file_usage.symbol_ids.contains(&id)
+    {
+        return true;
+    }
+    if alias.is_empty() {
+        return false;
+    }
+    let prefix = format!("{alias}.");
+    let suffix = format!(".{alias}");
+    if file_usage
+        .names
+        .iter()
+        .any(|name| name == alias || name.starts_with(&prefix) || name.ends_with(&suffix))
+    {
+        return true;
+    }
+    file_usage
+        .signatures
+        .iter()
+        .any(|signature| signature_mentions(signature, alias))
+}
+
+/// Whether `alias` occurs as a whole identifier token in `signature` (e.g.
+/// `Optional` in `(x: Optional[int]) -> None`) -- not just a substring, so
+/// an alias like `Int` doesn't match `MyIntSetting`.
+fn signature_mentions(signature: &str, alias: &str) -> bool {
+    signature
+        .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .any(|token| token == alias)
 }
 
 #[cfg(test)]
