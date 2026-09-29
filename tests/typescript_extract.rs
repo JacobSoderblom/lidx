@@ -310,3 +310,43 @@ fn unmapped_alias_and_third_party_specifier_stay_unresolved() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn function_local_consts_and_destructuring_are_not_symbols() {
+    let source = r#"
+export const top = 1;
+const { a, b } = require("x");
+const [c, d] = [1, 2];
+
+export async function run() {
+    const controller = new AbortController();
+    const response = await fetch("a");
+    const { timeout = 10, ...rest } = opts;
+    if (x) {
+        const inner = 1;
+    }
+}
+
+export const handler = async () => {
+    const response = await fetch("b");
+    const { q } = opts;
+};
+
+export class K {
+    m() {
+        const local = 1;
+    }
+}
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/mod").unwrap();
+    let names: Vec<_> = extracted.symbols.iter().map(|s| s.name.as_str()).collect();
+    for bad in ["controller", "response", "inner", "local", "q", "rest"] {
+        assert!(!names.contains(&bad), "{bad} leaked: {names:?}");
+    }
+    assert!(
+        names.iter().all(|n| !n.contains('{') && !n.contains('[')),
+        "pattern symbol: {names:?}"
+    );
+    assert!(names.contains(&"top") && names.contains(&"handler") && names.contains(&"run"));
+}

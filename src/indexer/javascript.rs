@@ -2846,7 +2846,7 @@ fn handle_variable_declaration(
     source: &str,
     output: &mut ExtractedFile,
 ) {
-    if !ctx.class_stack.is_empty() {
+    if !ctx.class_stack.is_empty() || is_local_declaration(node) {
         return;
     }
     let decl_kind = declaration_keyword(node, source);
@@ -2863,6 +2863,10 @@ fn handle_variable_declaration(
         let Some(name_node) = child.child_by_field_name("name") else {
             continue;
         };
+        // Destructuring patterns (`{ a, b }` / `[a, b]`) are not symbols.
+        if name_node.kind() != "identifier" {
+            continue;
+        }
         let name = node_text(name_node, source);
         if name.is_empty() {
             continue;
@@ -2891,6 +2895,32 @@ fn handle_variable_declaration(
             ..Default::default()
         });
     }
+}
+
+/// True when the declaration sits inside a function/method body or a plain
+/// block (`if`, `for`, ...), i.e. is not module scope. TS `namespace` bodies
+/// (also `statement_block`) still count as module scope.
+fn is_local_declaration(node: Node<'_>) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        let kind = n.kind();
+        if is_lambda_node(kind)
+            || is_dynamic_this_function_node(kind)
+            || kind == "method_definition"
+        {
+            return true;
+        }
+        if kind == "statement_block"
+            && !matches!(
+                n.parent().map(|p| p.kind()),
+                Some("internal_module" | "module")
+            )
+        {
+            return true;
+        }
+        cur = n.parent();
+    }
+    false
 }
 
 fn declaration_keyword(node: Node<'_>, source: &str) -> &'static str {
