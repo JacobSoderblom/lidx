@@ -445,3 +445,10 @@ pub(crate) fn hash_bytes(data: &[u8]) -> String {
     hasher.update(data);
     hasher.finalize().to_hex().to_string()
 }
+
+/// Content hash squeezed into an `i64` for the `meta` table: the first 15
+/// hex digits (60 bits) always fit a non-negative `i64`.
+pub(crate) fn hash_i64(data: &[u8]) -> i64 {
+    let hex = hash_bytes(data);
+    i64::from_str_radix(&hex[..15], 16).unwrap_or(0)
+}

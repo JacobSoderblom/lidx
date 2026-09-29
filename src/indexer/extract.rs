@@ -223,6 +223,10 @@ pub struct ExtractedFile {
     /// to `private` by `Db::set_private_symbols`; only the C# deferred
     /// `Type.Method()` receiver reads it.
     pub static_qualnames: Vec<String>,
+    /// JS/TS only: hash of the file's export surface (see
+    /// `javascript::export_surface_hash`), stored so a later sync can tell a
+    /// body-only edit from one that changes what importers resolve.
+    pub export_surface: Option<i64>,
 }
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use anyhow::Result;

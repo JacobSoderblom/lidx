@@ -24,6 +24,7 @@ pub mod extract;
 pub mod go;
 pub mod http;
 pub mod javascript;
+mod js_stale;
 pub mod markdown;
 pub mod postgres;
 pub mod proto;
@@ -238,16 +239,17 @@ impl Indexer {
         // insertion-only watermark would otherwise never notice.
         let mut any_symbols_deleted = false;
         javascript::clear_export_cache();
-        // JS/TS importers of a changed/added/deleted JS/TS file must be
-        // re-extracted even when their own hash is unchanged. Computed
-        // before any deletion so the importers' edges still exist.
+        // Hash-unchanged JS/TS files whose chased imports or alias config
+        // changed must be re-extracted too. Computed before any deletion so
+        // importers' edges still exist.
         let batch_rels: Vec<String> = paths
             .iter()
             .filter_map(|p| crate::util::normalize_rel_path(&self.repo_root, p).ok())
             .collect();
-        let importers = self.js_importers_of(&batch_rels, self.graph_version)?;
+        let js_stale = self.js_stale();
+        let stale_js_files = js_stale.stale_js_files(&batch_rels, self.graph_version)?;
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
-        all_paths.extend(importers.iter().map(|rel| self.repo_root.join(rel)));
+        all_paths.extend(stale_js_files.iter().map(|rel| self.repo_root.join(rel)));
         for path in &all_paths {
             let rel_path = match crate::util::normalize_rel_path(&self.repo_root, path) {
                 Ok(value) => value,
@@ -271,7 +273,7 @@ impl Indexer {
             };
             if let Some(existing) = self.db.get_file_by_path(&scanned.rel_path)?
                 && existing.hash == scanned.hash
-                && !importers.contains(&scanned.rel_path)
+                && !stale_js_files.contains(&scanned.rel_path)
             {
                 stats.skipped += 1;
                 continue;
@@ -317,6 +319,14 @@ impl Indexer {
             stats.edges += xref_edges;
         }
         javascript::clear_export_cache();
+        if batch_rels.iter().any(|p| p.ends_with(".json")) {
+            // Keep the reindex fingerprint current so the next reindex
+            // doesn't re-extract every JS/TS file for a change sync handled.
+            let js_stale = self.js_stale();
+            let fingerprint = js_stale.config_fingerprint(&js_stale.js_ts_file_paths()?);
+            self.db
+                .set_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY, fingerprint)?;
+        }
         if touched {
             // Issue #77: an edge outside this batch already bound to a
             // qualname this batch just gave a second (same or differently
@@ -367,9 +377,8 @@ impl Indexer {
         // A stale extractor version means unchanged files must be re-extracted.
         let force_reextract = self.extractor_version_stale()?;
 
-        // JS/TS importers of a changed, added or deleted JS/TS file are
-        // re-extracted too, since their import candidates were chased through
-        // it (see `js_importers_of`).
+        // Hash-unchanged JS/TS files whose chased imports or alias config
+        // changed are re-extracted too (see `js_stale`).
         javascript::clear_export_cache();
         let scanned_paths: HashSet<&str> = scanned.iter().map(|f| f.rel_path.as_str()).collect();
         let mut changed_paths: Vec<String> = scanned
@@ -387,17 +396,19 @@ impl Indexer {
                 .filter(|p| !scanned_paths.contains(p.as_str()))
                 .cloned(),
         );
-        let mut importers = self.js_importers_of(&changed_paths, previous_graph_version)?;
-        // A changed tsconfig/jsconfig (not itself an indexed file) can
-        // re-map any alias import, so re-extract every JS/TS file.
-        let config_fingerprint = self.js_config_fingerprint(&scanned);
-        if self.db.get_meta_i64("js_config_fingerprint")? != Some(config_fingerprint) {
-            importers.extend(
-                scanned
-                    .iter()
-                    .filter(|f| javascript::is_js_ts_path(&f.rel_path))
-                    .map(|f| f.rel_path.clone()),
-            );
+        let js_stale = self.js_stale();
+        let mut stale_js_files = js_stale.stale_js_files(&changed_paths, previous_graph_version)?;
+        // A tsconfig/jsconfig isn't an indexed file, so its edits show up
+        // only as a fingerprint change (this also covers a package base in
+        // node_modules, which sync doesn't watch): re-extract every JS/TS file.
+        let js_paths: Vec<String> = scanned
+            .iter()
+            .filter(|f| javascript::is_js_ts_path(&f.rel_path))
+            .map(|f| f.rel_path.clone())
+            .collect();
+        let config_fingerprint = js_stale.config_fingerprint(&js_paths);
+        if self.db.get_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY)? != Some(config_fingerprint) {
+            stale_js_files.extend(js_paths);
         }
 
         let mut seen = HashSet::new();
@@ -426,7 +437,7 @@ impl Indexer {
             if let Some(existing_record) = existing_map.get(&file.rel_path)
                 && existing_record.hash == file.hash
                 && !force_reextract
-                && !importers.contains(&file.rel_path)
+                && !stale_js_files.contains(&file.rel_path)
             {
                 // Unchanged: skip the parse (tree-sitter + symbol extraction is the
                 // expensive part) and carry the file's rows forward further down.
@@ -668,7 +679,7 @@ impl Indexer {
             .unwrap_or_default()
             .as_secs() as i64;
         self.db
-            .set_meta_i64("js_config_fingerprint", config_fingerprint)?;
+            .set_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY, config_fingerprint)?;
         self.db.set_meta_i64("last_indexed", now)?;
 
         // Reclaim rows from graph versions this reindex just aged out. Safe to
@@ -834,160 +845,11 @@ impl Indexer {
         Ok((symbols.len(), edges_count))
     }
 
-    /// Repo paths of every JS/TS file that (transitively) imports one of
-    /// `changed`, per the stored `IMPORTS_FILE` edges (resolved, or still in the unresolved store) at `graph_version`.
-    /// Their import candidates were chased through the changed files' exports
-    /// at extraction time (`javascript::chase_export`), so they must be
-    /// re-extracted rather than hash-skipped. An added or deleted file is
-    /// covered too: an importer's `IMPORTS_FILE` edge targets the module name
-    /// even while the file is missing. Excludes `changed` itself.
-    fn js_importers_of(&self, changed: &[String], graph_version: i64) -> Result<HashSet<String>> {
-        let mut result: HashSet<String> = HashSet::new();
-        // A changed tsconfig/jsconfig can re-map any import under its
-        // directory, so every JS/TS file there is re-extracted.
-        for cfg in changed.iter().filter(|p| javascript::is_js_config_path(p)) {
-            let dir = std::path::Path::new(cfg)
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new(""));
-            let conn = self.db.read_conn()?;
-            let mut stmt = conn.prepare("SELECT path FROM files")?;
-            let paths = stmt
-                .query_map([], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            result.extend(paths.into_iter().filter(|p| {
-                javascript::is_js_ts_path(p) && std::path::Path::new(p).starts_with(dir)
-            }));
+    fn js_stale(&self) -> js_stale::JsStale<'_> {
+        js_stale::JsStale {
+            db: &self.db,
+            repo_root: &self.repo_root,
         }
-        // A changed JSON file may be a base config some tsconfig `extends`
-        // (any depth): re-extract files whose owning config's chain has it.
-        let changed_json: HashSet<&str> = changed
-            .iter()
-            .filter(|p| p.ends_with(".json"))
-            .map(String::as_str)
-            .collect();
-        if !changed_json.is_empty() {
-            let conn = self.db.read_conn()?;
-            let mut stmt = conn.prepare("SELECT path FROM files")?;
-            let paths = stmt
-                .query_map([], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let mut chains: HashMap<PathBuf, Vec<String>> = HashMap::new();
-            for path in paths.iter().filter(|p| javascript::is_js_ts_path(p)) {
-                let Some(dir) = javascript::find_owning_tsconfig_dir(&self.repo_root, path) else {
-                    continue;
-                };
-                let chain = chains.entry(dir.clone()).or_insert_with(|| {
-                    javascript::config_chain(&self.repo_root, &dir.join("tsconfig.json"))
-                });
-                if chain.iter().any(|c| changed_json.contains(c.as_str())) {
-                    result.insert(path.clone());
-                }
-            }
-        }
-        let mut frontier: Vec<String> = changed
-            .iter()
-            .filter(|p| javascript::is_js_ts_path(p))
-            .map(|p| javascript::module_name_from_rel_path(p))
-            .collect();
-        if frontier.is_empty() {
-            for path in changed {
-                result.remove(path);
-            }
-            return Ok(result);
-        }
-        let conn = self.db.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT f.path FROM edges e
-             JOIN symbols s ON s.id = e.source_symbol_id
-             JOIN files f ON f.id = s.file_id
-             WHERE e.graph_version = ?1 AND e.kind = 'IMPORTS_FILE' AND e.target_qualname = ?2
-             UNION
-             SELECT f.path FROM unresolved_references u
-             JOIN files f ON f.id = u.file_id
-             WHERE u.graph_version = ?1 AND u.edge_kind = 'IMPORTS_FILE' AND u.reference_name = ?2",
-        )?;
-        let mut seen: HashSet<String> = frontier.iter().cloned().collect();
-        while let Some(module) = frontier.pop() {
-            let paths = stmt
-                .query_map(rusqlite::params![graph_version, module], |r| {
-                    r.get::<_, String>(0)
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for path in paths {
-                if !javascript::is_js_ts_path(&path) {
-                    continue;
-                }
-                let importer_module = javascript::module_name_from_rel_path(&path);
-                if seen.insert(importer_module.clone()) {
-                    frontier.push(importer_module);
-                }
-                result.insert(path);
-            }
-        }
-        for path in changed {
-            result.remove(path);
-        }
-        Ok(result)
-    }
-
-    /// Fingerprint of every `tsconfig.json`/`jsconfig.json` that could own a
-    /// scanned JS/TS file (its directory or any ancestor). Config files are
-    /// not scanned as indexed files, so a reindex can only notice an edit,
-    /// addition or deletion by comparing this against the stored value.
-    fn js_config_fingerprint(&self, scanned: &[scan::ScannedFile]) -> i64 {
-        let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
-        for file in scanned
-            .iter()
-            .filter(|f| javascript::is_js_ts_path(&f.rel_path))
-        {
-            let mut dir = std::path::Path::new(&file.rel_path).parent();
-            while let Some(d) = dir {
-                if !dirs.insert(d.to_path_buf()) {
-                    break;
-                }
-                dir = d.parent();
-            }
-        }
-        let mut data = Vec::new();
-        for dir in &dirs {
-            for name in ["tsconfig.json", "jsconfig.json"] {
-                let path = self.repo_root.join(dir).join(name);
-                if let Ok(bytes) = std::fs::read(&path) {
-                    data.extend_from_slice(dir.join(name).to_string_lossy().as_bytes());
-                    data.push(0);
-                    data.extend_from_slice(&bytes);
-                    data.push(0);
-                }
-            }
-        }
-        // Configs the owning tsconfigs extend (base configs are edited too).
-        let mut chain_files: std::collections::BTreeSet<String> = Default::default();
-        let mut owners: std::collections::BTreeSet<PathBuf> = Default::default();
-        for file in scanned
-            .iter()
-            .filter(|f| javascript::is_js_ts_path(&f.rel_path))
-        {
-            let Some(dir) = javascript::find_owning_tsconfig_dir(&self.repo_root, &file.rel_path)
-            else {
-                continue;
-            };
-            if owners.insert(dir.clone()) {
-                chain_files.extend(javascript::config_chain(
-                    &self.repo_root,
-                    &dir.join("tsconfig.json"),
-                ));
-            }
-        }
-        for rel in &chain_files {
-            data.extend_from_slice(rel.as_bytes());
-            data.push(0);
-            if let Ok(bytes) = std::fs::read(self.repo_root.join(rel)) {
-                data.extend_from_slice(&bytes);
-            }
-            data.push(0);
-        }
-        let hex = scan::hash_bytes(&data);
-        i64::from_str_radix(&hex[..15], 16).unwrap_or(0)
     }
 
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {
@@ -1007,6 +869,10 @@ impl Indexer {
             &module_name,
             &mut extracted.edges,
         );
+        if let Some(surface) = extracted.export_surface {
+            self.db
+                .set_meta_i64(&js_stale::export_surface_key(&file.rel_path), surface)?;
+        }
         Ok(extracted)
     }
 }

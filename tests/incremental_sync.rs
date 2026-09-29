@@ -1468,3 +1468,55 @@ fn full_reindex_reextracts_alias_importer_after_package_base_config_deleted() {
     common::assert_matches_fresh(&snapshot, &fresh);
     assert_ne!(target_of(&indexer).as_deref(), Some("lib/foo.foo"));
 }
+
+#[test]
+fn incremental_import_then_export_barrel_repoint_reextracts_importer() {
+    let v1 = "import { foo } from './a';\nexport { foo };\n";
+    let v2 = "import { foo } from './b';\nexport { foo };\n";
+    let (_t, idx) = ts_incremental_matches_fresh(
+        "ts-import-export-repoint",
+        &[FOO_A, FOO_B, ("lib/index.ts", v1), ("use.ts", TS_CALLER)],
+        |root| common::write_files(root, &[("lib/index.ts", v2)]),
+        &["lib/index.ts"],
+        &[FOO_A, FOO_B, ("lib/index.ts", v2), ("use.ts", TS_CALLER)],
+    );
+    assert_eq!(target_of(&idx).as_deref(), Some("lib/b.foo"));
+}
+
+#[test]
+fn incremental_leaf_body_edit_does_not_reextract_importers() {
+    let barrel = ("lib/index.ts", "export * from './a';\n");
+    let (_t, root, mut indexer) =
+        indexed_tree("ts-body-edit", &[FOO_A, barrel, ("use.ts", TS_CALLER)]);
+    // Body only: same export surface.
+    common::write_files(
+        &root,
+        &[("lib/a.ts", "export function foo() { return 1; }\n")],
+    );
+    let stats = indexer.sync_rel_paths(&["lib/a.ts".to_string()]).unwrap();
+    assert_eq!(stats.indexed, 1, "importers must not be re-extracted");
+    // A new export changes the surface, so importers are re-extracted.
+    common::write_files(
+        &root,
+        &[(
+            "lib/a.ts",
+            "export function foo() { return 1; }\nexport function bar() {}\n",
+        )],
+    );
+    let stats = indexer.sync_rel_paths(&["lib/a.ts".to_string()]).unwrap();
+    assert!(stats.indexed > 1, "{stats:?}");
+}
+
+#[test]
+fn sync_of_tsconfig_change_keeps_next_reindex_from_redoing_js_files() {
+    let (_t, root, mut indexer) = indexed_tree(
+        "ts-config-fingerprint",
+        &[("tsconfig.json", "{}"), LIB_FOO, ("use.ts", ALIAS_CALLER)],
+    );
+    common::write_files(&root, &[ALIAS_TSCONFIG]);
+    indexer
+        .sync_rel_paths(&["tsconfig.json".to_string()])
+        .unwrap();
+    let stats = indexer.reindex().unwrap();
+    assert_eq!(stats.indexed, 0, "{stats:?}");
+}

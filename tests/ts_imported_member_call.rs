@@ -458,3 +458,82 @@ fn cyclic_extends_terminates() {
     ]);
     assert!(!t.contains(&"lib/foo.foo".to_string()), "{t:?}");
 }
+
+// Import-then-export barrels, namespace re-exports, diamonds.
+
+#[test]
+fn import_then_export_barrel_binds_to_original() {
+    let t = single_call_target(&[
+        ("lib/foo.ts", "export function foo() {}\n"),
+        (
+            "lib/index.ts",
+            "import { foo } from './foo';\nexport { foo };\n",
+        ),
+        ("use.ts", &caller("./lib", "{ foo }", "foo()")),
+    ]);
+    assert_eq!(t, vec!["lib/foo.foo".to_string()]);
+}
+
+#[test]
+fn import_then_export_default_barrel_binds_to_original() {
+    let t = single_call_target(&[
+        (
+            "lib/client.ts",
+            "const apiClient = { get() { return 1; } };\nexport default apiClient;\n",
+        ),
+        (
+            "lib/index.ts",
+            "import apiClient from './client';\nexport default apiClient;\n",
+        ),
+        ("use.ts", &caller("./lib", "api", "api.get()")),
+    ]);
+    assert_eq!(t, vec!["lib/client.apiClient".to_string()]);
+}
+
+#[test]
+fn export_star_as_namespace_binds_member_to_original() {
+    let t = single_call_target(&[
+        ("lib/x.ts", "export function fn() {}\n"),
+        ("lib/index.ts", "export * as ns from './x';\n"),
+        ("use.ts", &caller("./lib", "{ ns }", "ns.fn()")),
+    ]);
+    assert_eq!(t, vec!["lib/x.fn".to_string()]);
+}
+
+#[test]
+fn imported_namespace_exported_through_barrel_binds_member() {
+    let t = single_call_target(&[
+        ("lib/x.ts", "export function fn() {}\n"),
+        (
+            "lib/index.ts",
+            "import * as ns from './x';\nexport { ns };\n",
+        ),
+        ("use.ts", &caller("./lib", "{ ns }", "ns.fn()")),
+    ]);
+    assert_eq!(t, vec!["lib/x.fn".to_string()]);
+}
+
+#[test]
+fn namespace_import_of_barrel_binds_star_member() {
+    for spec in ["./lib", "@/lib"] {
+        let t = single_call_target(&[
+            TSCONFIG,
+            ("lib/x.ts", "export function viaStar() {}\n"),
+            ("lib/index.ts", "export * from './x';\n"),
+            ("use.ts", &caller(spec, "* as ns", "ns.viaStar()")),
+        ]);
+        assert_eq!(t, vec!["lib/x.viaStar".to_string()], "{spec}");
+    }
+}
+
+#[test]
+fn diamond_star_reexports_bind_once_to_the_shared_leaf() {
+    let t = single_call_target(&[
+        ("leaf.ts", "export function foo() {}\n"),
+        ("a.ts", "export * from './leaf';\n"),
+        ("b.ts", "export * from './leaf';\n"),
+        ("index.ts", "export * from './a';\nexport * from './b';\n"),
+        ("use.ts", &caller("./index", "{ foo }", "foo()")),
+    ]);
+    assert_eq!(t, vec!["leaf.foo".to_string()]);
+}
