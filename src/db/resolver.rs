@@ -340,7 +340,41 @@ pub(crate) struct LanguageProfile {
     /// signature and whether the call was awaited (`ReceiverType::Deferred`).
     /// `None` for a language that never defers a receiver.
     pub return_receiver: Option<fn(signature: &str, awaited: bool) -> Option<String>>,
+    /// Finishes a language's own deferred-receiver marker (an `@ret:`
+    /// column this language's extractor wrote) from the declarations it
+    /// names. `None` for a language without one.
+    pub deferred_receiver: Option<ResolveDeferred>,
 }
+
+/// A symbol a deferred receiver's declaration query matched.
+pub struct Declaration {
+    pub qualname: String,
+    pub signature: Option<String>,
+}
+
+/// What a `ResolveDeferred` hook may ask the index for. Every query is
+/// limited to the hook's language and to live symbols of the current graph.
+pub enum DeclarationQuery<'a> {
+    /// A function or method with exactly this qualname.
+    Callable(&'a str),
+    /// A method whose qualname ends `::<qualified>` (`Type::method`).
+    Method(&'a str),
+    /// A type declaration (struct, enum, class, ...) with this name.
+    Type(&'a str),
+}
+
+/// The symbol index as a deferred-receiver hook sees it.
+pub trait DeclarationIndex {
+    fn declarations(&self, query: DeclarationQuery<'_>) -> Result<Vec<Declaration>>;
+    /// Whether a type named `name` is declared in the repo.
+    fn is_repo_type(&self, name: &str) -> Result<bool>;
+}
+
+/// See `LanguageProfile::deferred_receiver`. `Ok(None)`: not this
+/// language's marker. `Ok(Some(None))`: the receiver stays untracked.
+/// `Ok(Some(Some(ty)))`: the receiver's type.
+pub type ResolveDeferred =
+    fn(column: &str, index: &dyn DeclarationIndex) -> Result<Option<Option<String>>>;
 
 impl LanguageProfile {
     /// Dot-separated, no relative-import syntax, import-tier miss refuses
@@ -355,6 +389,7 @@ impl LanguageProfile {
         import_member_fallback: false,
         visibility: VisibilityRule::None,
         return_receiver: None,
+        deferred_receiver: None,
     };
 }
 
@@ -685,6 +720,56 @@ struct CallerContext<'a> {
     qualname: Option<&'a str>,
 }
 
+/// `Resolver`'s symbol index for one language (`DeclarationIndex`).
+struct LanguageIndex<'r, 'c> {
+    resolver: &'r Resolver<'c>,
+    lang: &'r str,
+}
+
+/// Restricts a `symbols s JOIN files f` query to symbols live at graph
+/// version `?n`.
+fn live_symbols(n: usize) -> String {
+    format!("s.graph_version = ?{n} AND (f.deleted_version IS NULL OR f.deleted_version > ?{n})")
+}
+
+impl DeclarationIndex for LanguageIndex<'_, '_> {
+    fn declarations(&self, query: DeclarationQuery<'_>) -> Result<Vec<Declaration>> {
+        let (filter, arg) = match query {
+            DeclarationQuery::Callable(qualname) => (
+                "s.kind IN ('function', 'method') AND s.qualname = ?1",
+                qualname.to_string(),
+            ),
+            DeclarationQuery::Method(qualified) => (
+                "s.kind = 'method' AND (s.qualname = ?1 OR substr(s.qualname, -length(?1) - 2) = '::' || ?1)",
+                qualified.to_string(),
+            ),
+            DeclarationQuery::Type(name) => (
+                "s.kind IN ('struct', 'enum', 'class', 'interface', 'record') AND s.name = ?1",
+                name.to_string(),
+            ),
+        };
+        let mut stmt = self.resolver.conn.prepare_cached(&format!(
+            "SELECT s.qualname, s.signature FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE {filter} AND f.language = ?3 AND {}",
+            live_symbols(2)
+        ))?;
+        let rows = stmt.query_map(
+            params![arg, self.resolver.graph_version, self.lang],
+            |row| {
+                Ok(Declaration {
+                    qualname: row.get(0)?,
+                    signature: row.get(1)?,
+                })
+            },
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn is_repo_type(&self, name: &str) -> Result<bool> {
+        Ok(!self.declarations(DeclarationQuery::Type(name))?.is_empty())
+    }
+}
+
 /// Resolves references against one graph version. Prepared statements
 /// borrow `conn`, so build one per transaction.
 pub(crate) struct Resolver<'c> {
@@ -751,6 +836,36 @@ impl<'c> Resolver<'c> {
         // declared return type, or `""` (unresolved) -- never a guess.
         let deferred;
         let patched;
+        let patched_hook;
+        // A language's own marker (Rust); a hook miss leaves the receiver
+        // untracked rather than `""`, so no name-tier edge is lost.
+        let hooked: Option<String>;
+        let r = match r
+            .receiver_type
+            .filter(|column| column.starts_with(DEFERRED_RETURN_PREFIX))
+            .and_then(|column| {
+                let hook = profile_for(r.source_lang).deferred_receiver?;
+                Some(hook(
+                    column,
+                    &LanguageIndex {
+                        resolver: self,
+                        lang: r.source_lang,
+                    },
+                ))
+            }) {
+            Some(resolved) => match resolved? {
+                Some(ty) => {
+                    hooked = ty;
+                    patched_hook = Reference {
+                        receiver_type: hooked.as_deref(),
+                        ..*r
+                    };
+                    &patched_hook
+                }
+                None => r,
+            },
+            None => r,
+        };
         let r = match r
             .receiver_type
             .and_then(ReceiverType::parse_deferred_return)

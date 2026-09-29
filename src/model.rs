@@ -1,6 +1,36 @@
 use serde::Serialize;
 use serde_json::Value;
 
+/// Longest struct/enum signature shown in a response. The stored signature
+/// stays whole (deferred Rust receivers read field types from it).
+const MAX_DISPLAY_SIGNATURE: usize = 240;
+
+/// A struct/enum signature capped at `MAX_DISPLAY_SIGNATURE` bytes on a
+/// field/variant boundary, ending `, …`; anything else is returned as is.
+pub fn display_signature(signature: &str) -> std::borrow::Cow<'_, str> {
+    let is_adt = signature.starts_with("struct ") || signature.starts_with("enum ");
+    if !is_adt || signature.len() <= MAX_DISPLAY_SIGNATURE {
+        return signature.into();
+    }
+    let mut end = MAX_DISPLAY_SIGNATURE;
+    while !signature.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &signature[..end];
+    let cut = head.rfind(", ").unwrap_or(head.len());
+    format!("{}, …", &head[..cut]).into()
+}
+
+fn serialize_signature<S: serde::Serializer>(
+    signature: &Option<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match signature {
+        Some(sig) => serializer.serialize_some(display_signature(sig).as_ref()),
+        None => serializer.serialize_none(),
+    }
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct Symbol {
     pub id: i64,
@@ -14,7 +44,10 @@ pub struct Symbol {
     pub end_col: i64,
     pub start_byte: i64,
     pub end_byte: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_signature"
+    )]
     pub signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docstring: Option<String>,
@@ -42,7 +75,10 @@ pub struct SymbolCompact {
     pub qualname: String,
     pub file_path: String,
     pub start_line: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_signature"
+    )]
     pub signature: Option<String>,
 }
 
@@ -82,7 +118,10 @@ pub struct OutlineEntry {
     pub kind: String,
     pub name: String,
     pub qualname: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_signature"
+    )]
     pub signature: Option<String>,
     pub start_line: i64,
     pub end_line: i64,
@@ -1071,4 +1110,50 @@ pub struct TraceHop {
     /// CONFIG_* -- or an edge kind the resolver doesn't label).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution_kind: Option<String>,
+}
+
+#[cfg(test)]
+mod display_signature_tests {
+    use super::display_signature;
+
+    #[test]
+    fn long_struct_signature_is_capped_on_a_field_boundary() {
+        let fields: Vec<String> = (0..60).map(|i| format!("field_{i}: Type{i}")).collect();
+        let full = format!("struct Big {{ {} }}", fields.join(", "));
+        let shown = display_signature(&full);
+        assert!(shown.len() < full.len());
+        assert!(shown.starts_with("struct Big { field_0: Type0, field_1"));
+        assert!(shown.ends_with(", \u{2026}"));
+        assert!(!shown.contains("field_59"));
+    }
+
+    #[test]
+    fn responses_serialize_the_capped_signature() {
+        let fields: Vec<String> = (0..60).map(|i| format!("field_{i}: Type{i}")).collect();
+        let full = format!("struct Big {{ {} }}", fields.join(", "));
+        let compact = super::SymbolCompact {
+            id: 1,
+            kind: "struct".into(),
+            name: "Big".into(),
+            qualname: "crate::Big".into(),
+            file_path: "a.rs".into(),
+            start_line: 1,
+            signature: Some(full.clone()),
+        };
+        let json = serde_json::to_value(&compact).unwrap();
+        let shown = json["signature"].as_str().unwrap();
+        assert!(shown.len() < full.len() && shown.ends_with('\u{2026}'));
+        // The value itself is untouched.
+        assert_eq!(compact.signature.as_deref(), Some(full.as_str()));
+    }
+
+    #[test]
+    fn short_and_non_adt_signatures_are_untouched() {
+        assert_eq!(
+            display_signature("struct P { x: u8 }"),
+            "struct P { x: u8 }"
+        );
+        let long_fn = format!("({})", "a: u8, ".repeat(100));
+        assert_eq!(display_signature(&long_fn), long_fn.as_str());
+    }
 }
