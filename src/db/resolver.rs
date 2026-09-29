@@ -59,7 +59,7 @@
 
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
-use crate::indexer::extract::CallShape;
+use crate::indexer::extract::{CallShape, DEFERRED_RETURN_PREFIX, DeferredReturn, ReceiverType};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
 use std::collections::HashMap;
@@ -272,13 +272,15 @@ impl Resolution {
     /// external should be stored as such.
     pub(crate) fn stored_receiver_type(self, extracted: Option<&str>) -> Option<&str> {
         match self {
+            // A deferred receiver keeps its marker: it is re-judged whenever
+            // its callee changes, so it must never be frozen to `""`.
             Self::Resolved {
                 kind:
                     ResolutionKind::External {
                         via_language_fallback: false,
                     },
                 ..
-            } => Some(""),
+            } if !extracted.is_some_and(|e| e.starts_with(DEFERRED_RETURN_PREFIX)) => Some(""),
             _ => extracted,
         }
     }
@@ -334,6 +336,10 @@ pub(crate) struct LanguageProfile {
     /// same-kind, cross-file candidate is visible to the reference. Never
     /// consulted by the exact/import/receiver-type/inherited tiers.
     pub visibility: VisibilityRule,
+    /// The receiver type name a call yields, from the callee's indexed
+    /// signature and whether the call was awaited (`ReceiverType::Deferred`).
+    /// `None` for a language that never defers a receiver.
+    pub return_receiver: Option<fn(signature: &str, awaited: bool) -> Option<String>>,
 }
 
 impl LanguageProfile {
@@ -348,6 +354,7 @@ impl LanguageProfile {
         import_suffix_matching: true,
         import_member_fallback: false,
         visibility: VisibilityRule::None,
+        return_receiver: None,
     };
 }
 
@@ -400,9 +407,9 @@ impl VisibilityRule {
     ) -> bool {
         match self {
             VisibilityRule::None => true,
-            VisibilityRule::Recorded => candidate_visibility != Some("private"),
+            VisibilityRule::Recorded => !is_private(candidate_visibility),
             VisibilityRule::RustModule => {
-                candidate_visibility != Some("private")
+                !is_private(candidate_visibility)
                     || is_descendant_rust_module(candidate_qualname, source_qualname)
             }
             VisibilityRule::GoCapitalization => {
@@ -414,6 +421,12 @@ impl VisibilityRule {
             }
         }
     }
+}
+
+/// `symbols.visibility` is a space-separated modifier list (`private`,
+/// `static`); whether it contains `private`.
+fn is_private(visibility: Option<&str>) -> bool {
+    visibility.is_some_and(|v| v.split_whitespace().any(|m| m == "private"))
 }
 
 /// The qualname minus its own trailing name segment — the module, type,
@@ -734,6 +747,24 @@ impl<'c> Resolver<'c> {
         r: &Reference<'_>,
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
+        // A deferred receiver (`ReceiverType::Deferred`) becomes the callee's
+        // declared return type, or `""` (unresolved) -- never a guess.
+        let deferred;
+        let patched;
+        let r = match r
+            .receiver_type
+            .and_then(ReceiverType::parse_deferred_return)
+        {
+            Some(call) => {
+                deferred = self.deferred_receiver(&call, r.source_lang)?;
+                patched = Reference {
+                    receiver_type: Some(&deferred),
+                    ..*r
+                };
+                &patched
+            }
+            None => r,
+        };
         self.arity = match r.call_shape {
             Some(shape) if !shape.is_new => Some(Arity {
                 args: shape.arg_count as usize,
@@ -758,6 +789,63 @@ impl<'c> Resolver<'c> {
             });
         }
         Ok(resolution)
+    }
+
+    /// The receiver type of `ty.method(..)`'s return value: the return type
+    /// (via the language's `return_receiver`) shared by every method named
+    /// `method` on a type named `ty` (overloads, same-named types in other
+    /// namespaces), else `""`. A `static_only` call needs every candidate to
+    /// be `static`, and the return type must name a repo type -- which also
+    /// rules out a generic type parameter such as `T`.
+    fn deferred_receiver(&self, call: &DeferredReturn<'_>, lang: &str) -> Result<String> {
+        let Some(return_receiver) = profile_for(lang).return_receiver else {
+            return Ok(String::new());
+        };
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT s.signature, s.visibility FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.name = ?1 AND s.kind = 'method' AND f.language = ?5
+               AND (s.qualname = ?2 OR substr(s.qualname, -length(?3)) = ?3)
+               AND s.graph_version = ?4
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?4)",
+        )?;
+        let suffix = format!(".{}.{}", call.type_name, call.method);
+        let qualname = format!("{}.{}", call.type_name, call.method);
+        let rows = stmt.query_map(
+            params![call.method, qualname, suffix, self.graph_version, lang],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )?;
+        let mut found: Option<String> = None;
+        for row in rows {
+            let (sig, visibility) = row?;
+            let is_static = visibility
+                .as_deref()
+                .is_some_and(|v| v.split_whitespace().any(|m| m == "static"));
+            let ret = sig.and_then(|sig| return_receiver(&sig, call.awaited));
+            let Some(ret) = ret.filter(|_| is_static || !call.static_only) else {
+                return Ok(String::new());
+            };
+            match &found {
+                Some(prev) if *prev != ret => return Ok(String::new()),
+                _ => found = Some(ret),
+            }
+        }
+        let Some(ret) = found else {
+            return Ok(String::new());
+        };
+        let is_repo_type: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.name = ?1 AND s.kind IN ('class', 'struct', 'interface', 'record', 'enum')
+               AND f.language = ?2 AND s.graph_version = ?3
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?3))",
+            params![ret, lang, self.graph_version],
+            |row| row.get(0),
+        )?;
+        Ok(if is_repo_type { ret } else { String::new() })
     }
 
     /// The single constructor of class-like symbol `class_id` (its
@@ -2386,7 +2474,19 @@ impl Db {
             |row| row.get(0),
         )?;
         let inheritance_changed = max_inheritance_edge_id > inheritance_watermark;
-        if !symbols_deleted_this_batch && !inheritance_changed && max_symbol_id <= watermark {
+        // A stored deferred-receiver row hangs on its callee's signature,
+        // not on any symbol sharing its name, so it is always retried.
+        let has_deferred_rows: bool = self.read_conn()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM unresolved_references
+             WHERE graph_version = ? AND receiver_type LIKE '@ret:%')",
+            params![graph_version],
+            |row| row.get(0),
+        )?;
+        if !symbols_deleted_this_batch
+            && !inheritance_changed
+            && !has_deferred_rows
+            && max_symbol_id <= watermark
+        {
             return Ok(0);
         }
 
@@ -2440,8 +2540,8 @@ impl Db {
                  JOIN files f ON f.id = ur.file_id
                  LEFT JOIN symbols src ON src.id = ur.source_symbol_id
                  WHERE ur.graph_version = ?1
-                   AND ?4
-                   AND ur.receiver_type IS NOT NULL AND ur.receiver_type != ''",
+                   AND ((?4 AND ur.receiver_type IS NOT NULL AND ur.receiver_type != '')
+                        OR ur.receiver_type LIKE '@ret:%')",
             )?;
             let rows = stmt.query_map(
                 params![
@@ -2584,6 +2684,38 @@ impl Db {
     /// case: still genuinely external) is a no-op, not counted in the
     /// returned total.
     pub fn retry_external_stub_edges(&self, graph_version: i64) -> Result<usize> {
+        self.rejudge_bound_edges(
+            graph_version,
+            "JOIN symbols stub ON stub.id = e.target_symbol_id",
+            "AND stub.graph_version = ?1 AND stub.kind = 'external'",
+        )
+    }
+
+    /// Re-judge every bound edge with a deferred receiver
+    /// (`ReceiverType::Deferred`). Its target hangs on the *callee's*
+    /// signature, so an edit to (or addition of) that callee -- which never
+    /// touches this edge's own file or its bound target -- must retarget or
+    /// unbind it, or incremental sync would diverge from a fresh reindex
+    /// (issue #77). Same rescan shape as `retry_external_stub_edges`,
+    /// bounded by the deferred call sites.
+    pub fn retry_deferred_receiver_edges(&self, graph_version: i64) -> Result<usize> {
+        self.rejudge_bound_edges(
+            graph_version,
+            "",
+            "AND e.target_symbol_id IS NOT NULL AND e.receiver_type LIKE '@ret:%'",
+        )
+    }
+
+    /// Re-run `Resolver::resolve` on the edges of `graph_version` selected
+    /// by `extra_join`/`extra_where` (both spliced into the query), updating
+    /// one that now resolves elsewhere and unbinding one that no longer
+    /// resolves. Returns how many changed.
+    fn rejudge_bound_edges(
+        &self,
+        graph_version: i64,
+        extra_join: &str,
+        extra_where: &str,
+    ) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let mut total_resolved = 0;
@@ -2595,18 +2727,16 @@ impl Db {
         }
 
         let rows: Vec<StubEdgeRow> = {
-            let mut stmt = tx.prepare(
+            let mut stmt = tx.prepare(&format!(
                 "SELECT e.id, e.target_symbol_id, e.kind, e.target_qualname,
                         e.receiver_type, e.import_candidates, e.bare_call,
                         COALESCE(f.language, 'unknown'), f.path, src.qualname, e.call_shape
                  FROM edges e
-                 JOIN symbols stub ON stub.id = e.target_symbol_id
+                 {extra_join}
                  JOIN files f ON f.id = e.file_id
                  LEFT JOIN symbols src ON src.id = e.source_symbol_id
-                 WHERE e.graph_version = ?1
-                   AND stub.graph_version = ?1
-                   AND stub.kind = 'external'",
-            )?;
+                 WHERE e.graph_version = ?1 {extra_where}"
+            ))?;
             let out = stmt.query_map(params![graph_version], |row| {
                 Ok(StubEdgeRow {
                     edge_id: row.get(0)?,
@@ -2772,6 +2902,15 @@ impl Db {
         let reconciled = self.reconcile_unresolved_reference_store(graph_version)?;
         if reconciled > 0 {
             eprintln!("lidx: reconciled {reconciled} unresolved reference(s) after {context}");
+        }
+        // Before the store retry: an edge unbound here is moved into the
+        // store by a reconcile and retried with the rest.
+        let deferred_rejudged = self.retry_deferred_receiver_edges(graph_version)?;
+        if deferred_rejudged > 0 {
+            eprintln!(
+                "lidx: re-judged {deferred_rejudged} deferred-receiver edge(s) after {context}"
+            );
+            self.reconcile_unresolved_reference_store(graph_version)?;
         }
         let store_resolved =
             self.retry_unresolved_references(graph_version, symbols_deleted_this_batch)?;

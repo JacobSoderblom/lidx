@@ -26,6 +26,7 @@ use tree_sitter::{Node, Parser};
 /// to bind across files.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     visibility: VisibilityRule::Recorded,
+    return_receiver: Some(receiver_from_signature),
     ..LanguageProfile::DEFAULT
 };
 
@@ -74,6 +75,9 @@ struct Context {
     /// `collect_class_level_attr_types`. Used only to resolve a single-hop
     /// `this.field.Method()` receiver.
     class_attr_types: Rc<HashMap<String, LocalType>>,
+    /// Declared type *text* of the same fields/properties (only used to find
+    /// a `foreach` deconstruction's element types).
+    class_attr_raw: Rc<HashMap<String, String>>,
     /// The directly enclosing type's own base class, if its `base_list`
     /// names one and it's resolvable (see `handle_type`) — used only to
     /// resolve a `base.Method()` receiver. `Other` when the type has no
@@ -199,6 +203,26 @@ enum LocalType {
     /// map) still gates resolution: it means "we looked, and it's not a
     /// usable type" as opposed to "we never looked".
     Other,
+    /// Transient: `var x = recv.Method(..)` before `resolve_pending_calls`
+    /// has looked `recv` up. Never present in a finished `local_types` map.
+    Call {
+        receiver: String,
+        method: String,
+        awaited: bool,
+    },
+    /// The return value of a callee declared in another file; the resolver
+    /// finishes it (see `ReceiverType::Deferred`). Holds the column text.
+    Deferred(String),
+}
+
+impl LocalType {
+    fn receiver(&self) -> ReceiverType {
+        match self {
+            LocalType::Known(ty) => ReceiverType::Known(ty.clone()),
+            LocalType::Deferred(marker) => ReceiverType::Deferred(marker.clone()),
+            _ => ReceiverType::Unresolved,
+        }
+    }
 }
 
 pub struct CSharpExtractor {
@@ -270,6 +294,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             // outside of `handle_method`/`handle_constructor`.
             local_types: Rc::new(HashMap::new()),
             class_attr_types: Rc::new(HashMap::new()),
+            class_attr_raw: Rc::new(HashMap::new()),
             base_type: LocalType::Other,
             imports: Rc::new(collect_import_context(root, source)),
             extension_registry: Rc::clone(&self.extension_registry),
@@ -279,6 +304,21 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             walk_compilation_unit(root, &ctx, source, &mut output);
         } else {
             walk_node(root, &ctx, source, &mut output);
+        }
+        // A qualname shared by overloads counts as static only when every
+        // one of them is.
+        let statics = std::mem::take(&mut output.static_qualnames);
+        for q in &statics {
+            let declared = output
+                .symbols
+                .iter()
+                .filter(|s| s.kind == "method" && s.qualname == *q)
+                .count();
+            if statics.iter().filter(|o| *o == q).count() == declared
+                && !output.static_qualnames.contains(q)
+            {
+                output.static_qualnames.push(q.clone());
+            }
         }
         Ok(output)
     }
@@ -375,7 +415,8 @@ fn walk_compilation_unit(node: Node<'_>, ctx: &Context, source: &str, output: &m
         }
     }
     next_ctx.route_groups = collect_global_route_groups(node, source);
-    next_ctx.grpc_clients = collect_global_grpc_clients(node, source);
+    next_ctx.grpc_clients = collect_global_grpc_clients(node, source, &ctx.method_returns);
+    next_ctx.local_types = Rc::new(infer_global_local_types(node, source, ctx));
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -580,8 +621,11 @@ fn handle_type(
     next_ctx.grpc_service = grpc_service_info.map(|(service, _)| service);
     next_ctx.grpc_package_candidates = grpc_package_candidates;
     next_ctx.base_type = resolvable_base_type(node, source, type_kind);
+    // Top-level-statement locals aren't visible inside a type.
+    next_ctx.local_types = Rc::new(HashMap::new());
     if let Some(body) = node.child_by_field_name("body") {
         next_ctx.class_attr_types = Rc::new(collect_class_level_attr_types(body, source));
+        next_ctx.class_attr_raw = Rc::new(collect_class_level_attr_type_texts(body, source));
         // In-class access only (`Client.Method()`/`this.Client.Method()`
         // from within this same type) — same-file, so this is fine to
         // resolve directly here, unlike the cross-file case
@@ -589,7 +633,7 @@ fn handle_type(
         // for (see that type's doc for why this one *can't* be resolved
         // here: the registry may still be incomplete at this point,
         // depending on scan order).
-        let grpc_fields = collect_class_level_grpc_client_fields(body, source);
+        let grpc_fields = collect_class_level_grpc_client_fields(body, source, &ctx.method_returns);
         if !grpc_fields.is_empty() {
             let mut clients = next_ctx.grpc_clients.clone();
             for (field_name, service_and_prefix) in grpc_fields {
@@ -645,6 +689,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     if has_modifier(node, source, "private") {
         output.private_qualnames.push(qualname.clone());
     }
+    if has_modifier(node, source, "static") {
+        output.static_qualnames.push(qualname.clone());
+    }
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -681,7 +728,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         let mut grpc_clients = ctx.grpc_clients.clone();
         grpc_clients.extend(collect_grpc_clients(body, source, &ctx.method_returns));
         next_ctx.grpc_clients = grpc_clients;
-        next_ctx.local_types = Rc::new(infer_local_types(node, source, &ctx.method_returns));
+        next_ctx.local_types = Rc::new(infer_local_types(node, source, ctx));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -770,7 +817,7 @@ fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = qualname;
-        next_ctx.local_types = Rc::new(infer_local_types(node, source, &ctx.method_returns));
+        next_ctx.local_types = Rc::new(infer_local_types(node, source, ctx));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -1528,6 +1575,7 @@ fn collect_route_groups(node: Node<'_>, source: &str) -> HashMap<String, String>
 fn collect_global_grpc_clients(
     node: Node<'_>,
     source: &str,
+    method_returns: &MethodReturns,
 ) -> HashMap<String, (String, Option<String>)> {
     let mut clients = HashMap::new();
     let mut cursor = node.walk();
@@ -1535,8 +1583,7 @@ fn collect_global_grpc_clients(
         if child.kind() != "global_statement" {
             continue;
         }
-        // Limitation: top-level statements have no method-return context.
-        collect_grpc_clients_inner(child, source, &MethodReturns::default(), &mut clients);
+        collect_grpc_clients_inner(child, source, method_returns, &mut clients);
     }
     clients
 }
@@ -2239,13 +2286,15 @@ fn prescan_grpc_client_fields(repo_root: &Path, registry: &GrpcClientFieldRegist
         let Some(tree) = parser.parse(&source, None) else {
             continue;
         };
-        collect_grpc_client_fields_from_tree(tree.root_node(), &source, registry);
+        let method_returns = MethodReturns::collect(tree.root_node(), &source);
+        collect_grpc_client_fields_from_tree(tree.root_node(), &source, &method_returns, registry);
     }
 }
 
 fn collect_grpc_client_fields_from_tree(
     node: Node<'_>,
     source: &str,
+    method_returns: &MethodReturns,
     registry: &GrpcClientFieldRegistry,
 ) {
     if matches!(
@@ -2253,7 +2302,7 @@ fn collect_grpc_client_fields_from_tree(
         "class_declaration" | "struct_declaration" | "record_declaration"
     ) && let Some(body) = node.child_by_field_name("body")
     {
-        let fields = collect_class_level_grpc_client_fields(body, source);
+        let fields = collect_class_level_grpc_client_fields(body, source, method_returns);
         if !fields.is_empty() {
             let mut reg = registry.borrow_mut();
             for (name, service_and_prefix) in fields {
@@ -2266,7 +2315,7 @@ fn collect_grpc_client_fields_from_tree(
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_grpc_client_fields_from_tree(child, source, registry);
+        collect_grpc_client_fields_from_tree(child, source, method_returns, registry);
     }
 }
 
@@ -3077,6 +3126,32 @@ fn type_signature(node: Node<'_>, source: &str) -> Option<String> {
         })
 }
 
+/// True when `ret` mentions a type parameter of the method itself or of any
+/// enclosing generic type.
+fn return_names_type_param(node: Node<'_>, ret: &str, source: &str) -> bool {
+    let ident = |c: char| !(c.is_alphanumeric() || c == '_');
+    let mut cur = Some(node);
+    while let Some(n) = cur {
+        let mut cursor = n.walk();
+        let list = n.child_by_field_name("type_parameters").or_else(|| {
+            n.named_children(&mut cursor)
+                .find(|c| c.kind() == "type_parameter_list")
+        });
+        if let Some(tp) = list {
+            let params = node_text(tp, source);
+            if params
+                .split(ident)
+                .filter(|t| !t.is_empty())
+                .any(|t| ret.split(ident).any(|r| r == t))
+            {
+                return true;
+            }
+        }
+        cur = n.parent();
+    }
+    false
+}
+
 fn method_signature(node: Node<'_>, source: &str) -> Option<String> {
     let params = node
         .child_by_field_name("parameters")
@@ -3219,10 +3294,7 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
 
     if root.kind() == "base" {
         if hops == 0 {
-            return match &ctx.base_type {
-                LocalType::Known(ty) => ReceiverType::Known(ty.clone()),
-                LocalType::Other => ReceiverType::Unresolved,
-            };
+            return ctx.base_type.receiver();
         }
         // ponytail: `base.Field.Method()` would need the base type's own
         // field types, which may live in another file entirely — out of
@@ -3238,10 +3310,9 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
             let attr_name = object
                 .child_by_field_name("name")
                 .map(|n| node_text(n, source));
-            return match attr_name.and_then(|name| ctx.class_attr_types.get(&name).cloned()) {
-                Some(LocalType::Known(ty)) => ReceiverType::Known(ty),
-                _ => ReceiverType::Unresolved,
-            };
+            return attr_name
+                .and_then(|name| ctx.class_attr_types.get(&name))
+                .map_or(ReceiverType::Unresolved, LocalType::receiver);
         }
         // ponytail: deeper chains (`this.a.b.Method()`) would need real
         // attribute-type inference across assignments — out of scope, same
@@ -3266,19 +3337,13 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     // site.
     if let Some(local) = ctx.local_types.get(&root_name) {
         if hops == 0 {
-            return match local {
-                LocalType::Known(ty) => ReceiverType::Known(ty.clone()),
-                LocalType::Other => ReceiverType::Unresolved,
-            };
+            return local.receiver();
         }
         return ReceiverType::Unresolved;
     }
     if let Some(attr) = ctx.class_attr_types.get(&root_name) {
         if hops == 0 {
-            return match attr {
-                LocalType::Known(ty) => ReceiverType::Known(ty.clone()),
-                LocalType::Other => ReceiverType::Unresolved,
-            };
+            return attr.receiver();
         }
         return ReceiverType::Unresolved;
     }
@@ -3562,7 +3627,7 @@ fn record_extension_method(
         .map(|t| classify_annotation_raw(&node_text(t, source)))
         .and_then(|ty| match ty {
             LocalType::Known(name) => Some(name),
-            LocalType::Other => None,
+            _ => None,
         });
     let namespace = ctx.namespace_stack.join(".");
     ctx.extension_registry
@@ -3735,7 +3800,88 @@ fn classify_value_expr(value: Node<'_>, source: &str, method_returns: &MethodRet
     if let Some(ret) = method_returns.call_return_type(value, source) {
         return classify_annotation(&ret);
     }
-    LocalType::Other
+    member_call(value, source).unwrap_or(LocalType::Other)
+}
+
+/// `recv.Method(..)` / `this.recv.Method(..)` (optionally awaited /
+/// `.ConfigureAwait(..)`) as a pending `LocalType::Call` for
+/// `resolve_pending_calls`. `recv` is a bare identifier (a local, field, or
+/// static type name); anything else (chains, `this.Method()`) is `None`.
+fn member_call(value: Node<'_>, source: &str) -> Option<LocalType> {
+    let (call, awaited) = unwrap_call(value, source)?;
+    let function = call.child_by_field_name("function")?;
+    if function.kind() != "member_access_expression" {
+        return None;
+    }
+    let recv = function.child_by_field_name("expression")?;
+    let receiver = match recv.kind() {
+        "identifier" => node_text(recv, source),
+        "member_access_expression" if recv.child_by_field_name("expression")?.kind() == "this" => {
+            format!(
+                "this.{}",
+                node_text(recv.child_by_field_name("name")?, source)
+            )
+        }
+        _ => return None,
+    };
+    let name = function.child_by_field_name("name")?;
+    let method = node_text(name, source);
+    let method = method.split('<').next().unwrap_or(&method).to_string();
+    Some(LocalType::Call {
+        receiver,
+        method,
+        awaited,
+    })
+}
+
+/// Finish every pending `recv.Method(..)` binding: a `recv` bound to a known
+/// type (local first, then field/property) or spelled like a static type
+/// name (capitalised and not bound at all) becomes a `Deferred` marker for
+/// the resolver; anything else is untracked.
+fn resolve_pending_calls(
+    locals: &mut HashMap<String, LocalType>,
+    class_attr_types: &HashMap<String, LocalType>,
+) {
+    let snapshot = locals.clone();
+    for ty in locals.values_mut() {
+        let LocalType::Call {
+            receiver,
+            method,
+            awaited,
+        } = ty
+        else {
+            continue;
+        };
+        let known = |t: Option<&LocalType>| match t {
+            Some(LocalType::Known(t)) => Some((t.clone(), false)),
+            _ => None,
+        };
+        // (callee type, receiver spelled as a bare type name)
+        let callee = if let Some(field) = receiver.strip_prefix("this.") {
+            known(class_attr_types.get(field))
+        } else if let Some(bound) = snapshot
+            .get(receiver.as_str())
+            .or_else(|| class_attr_types.get(receiver.as_str()))
+        {
+            known(Some(bound))
+        } else if receiver.starts_with(|c: char| c.is_ascii_uppercase()) {
+            // Not bound here, so possibly a static type name -- but also
+            // possibly an inherited property; the resolver only accepts a
+            // `static` callee for this shape.
+            known(Some(&classify_type_name(receiver))).map(|(t, _)| (t, true))
+        } else {
+            None
+        };
+        *ty = match callee {
+            Some((t, static_only)) => {
+                match ReceiverType::deferred_return(&t, method, *awaited, static_only) {
+                    ReceiverType::Deferred(marker) => LocalType::Deferred(marker),
+                    _ => LocalType::Other,
+                }
+            }
+            None => LocalType::Other,
+        };
+    }
 }
 
 /// Declared return types (raw text) of every method / local function in a
@@ -3759,18 +3905,7 @@ impl MethodReturns {
             ) {
                 let name = node_text(name, source);
                 let ret = node_text(ret, source).trim().to_string();
-                let names_type_param =
-                    node.child_by_field_name("type_parameters")
-                        .is_some_and(|tp| {
-                            let params = node_text(tp, source);
-                            params
-                                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                                .filter(|t| !t.is_empty())
-                                .any(|t| {
-                                    ret.split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                                        .any(|r| r == t)
-                                })
-                        });
+                let names_type_param = return_names_type_param(node, &ret, source);
                 match out.get(&name) {
                     _ if names_type_param => {
                         out.insert(name, None);
@@ -3804,23 +3939,7 @@ impl MethodReturns {
     /// `Task<T>` (or bare `Task`) yields `None`, as does `void` and any
     /// callee not recorded.
     fn call_return_type(&self, value: Node<'_>, source: &str) -> Option<String> {
-        let (mut call, awaited) = if value.kind() == "await_expression" {
-            (value.named_child(0)?, true)
-        } else {
-            (value, false)
-        };
-        if awaited
-            && call.kind() == "invocation_expression"
-            && let Some(f) = call.child_by_field_name("function")
-            && f.kind() == "member_access_expression"
-            && f.child_by_field_name("name")
-                .is_some_and(|n| node_text(n, source) == "ConfigureAwait")
-        {
-            call = f.child_by_field_name("expression")?;
-        }
-        if call.kind() != "invocation_expression" {
-            return None;
-        }
+        let (call, awaited) = unwrap_call(value, source)?;
         let function = call.child_by_field_name("function")?;
         let name_node = match function.kind() {
             "identifier" | "generic_name" => function,
@@ -3835,16 +3954,56 @@ impl MethodReturns {
         if let Some(idx) = name.find('<') {
             name.truncate(idx);
         }
-        let ret = self.0.get(&name)?.trim();
-        let wrapped = ["Task<", "ValueTask<"]
-            .iter()
-            .find_map(|p| ret.strip_prefix(p).and_then(|r| r.strip_suffix('>')));
-        let is_task_like = wrapped.is_some() || ["Task", "ValueTask", "void"].contains(&ret);
-        match (awaited, wrapped) {
-            (true, Some(inner)) => Some(inner.trim().to_string()),
-            _ if is_task_like => None,
-            _ => Some(ret.to_string()),
-        }
+        unwrap_return(self.0.get(&name)?, awaited)
+    }
+}
+
+/// The invocation inside `value` (peeling `await` and a trailing
+/// `.ConfigureAwait(..)`) and whether it was awaited.
+fn unwrap_call<'t>(value: Node<'t>, source: &str) -> Option<(Node<'t>, bool)> {
+    let (mut call, awaited) = if value.kind() == "await_expression" {
+        (value.named_child(0)?, true)
+    } else {
+        (value, false)
+    };
+    if awaited
+        && call.kind() == "invocation_expression"
+        && let Some(f) = call.child_by_field_name("function")
+        && f.kind() == "member_access_expression"
+        && f.child_by_field_name("name")
+            .is_some_and(|n| node_text(n, source) == "ConfigureAwait")
+    {
+        call = f.child_by_field_name("expression")?;
+    }
+    (call.kind() == "invocation_expression").then_some((call, awaited))
+}
+
+/// A declared return type's usable text: an awaited `Task<T>` /
+/// `ValueTask<T>` unwraps to `T`; a non-awaited task, a bare `Task` and
+/// `void` yield `None`.
+fn unwrap_return(ret: &str, awaited: bool) -> Option<String> {
+    let ret = ret.trim();
+    let wrapped = ["Task<", "ValueTask<"]
+        .iter()
+        .find_map(|p| ret.strip_prefix(p).and_then(|r| r.strip_suffix('>')));
+    let is_task_like = wrapped.is_some() || ["Task", "ValueTask", "void"].contains(&ret);
+    match (awaited, wrapped) {
+        (true, Some(inner)) => Some(inner.trim().to_string()),
+        _ if is_task_like => None,
+        _ => Some(ret.to_string()),
+    }
+}
+
+/// The receiver type name a call to a method with this indexed `signature`
+/// (`(params) -> Ret`) yields, for the resolver's `ReceiverType::Deferred`.
+/// `None` when the signature has no return type or it isn't a plain
+/// non-builtin type name (the resolver separately requires a repo type of
+/// that name, which rules out a generic type parameter).
+fn receiver_from_signature(signature: &str, awaited: bool) -> Option<String> {
+    let ret = unwrap_return(signature.rsplit_once(" -> ")?.1, awaited)?;
+    match classify_annotation(&ret) {
+        LocalType::Known(name) => Some(name),
+        _ => None,
     }
 }
 
@@ -3889,9 +4048,14 @@ fn variable_declarator_value(node: Node<'_>) -> Option<Node<'_>> {
 fn infer_local_types(
     function_node: Node<'_>,
     source: &str,
-    method_returns: &MethodReturns,
+    ctx: &Context,
 ) -> HashMap<String, LocalType> {
+    let method_returns = &*ctx.method_returns;
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
+    let mut raw = RawTypes {
+        locals: HashMap::new(),
+        class: &ctx.class_attr_raw,
+    };
     if let Some(params) = function_node.child_by_field_name("parameters") {
         let mut cursor = params.walk();
         for param in params.named_children(&mut cursor) {
@@ -3909,13 +4073,57 @@ fn infer_local_types(
                 .child_by_field_name("type")
                 .map(|t| classify_annotation(&node_text(t, source)))
                 .unwrap_or(LocalType::Other);
+            if let Some(t) = param.child_by_field_name("type") {
+                raw.record(&name, Some(node_text(t, source)));
+            }
             bindings.push((name, ty));
         }
     }
     if let Some(body) = function_node.child_by_field_name("body") {
-        collect_statement_bindings(body, source, method_returns, &mut bindings);
+        collect_statement_bindings(body, source, method_returns, &mut raw, &mut bindings);
     }
-    bindings_to_local_types(bindings)
+    let mut locals = bindings_to_local_types(bindings);
+    resolve_pending_calls(&mut locals, &ctx.class_attr_types);
+    locals
+}
+
+/// `infer_local_types` for a compilation unit's top-level statements, which
+/// share one scope (their local functions are boundaries, as in a method).
+fn infer_global_local_types(
+    root: Node<'_>,
+    source: &str,
+    ctx: &Context,
+) -> HashMap<String, LocalType> {
+    let mut bindings: Vec<(String, LocalType)> = Vec::new();
+    let mut raw = RawTypes {
+        locals: HashMap::new(),
+        class: &ctx.class_attr_raw,
+    };
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        if child.kind() == "global_statement" {
+            collect_statement_bindings(child, source, &ctx.method_returns, &mut raw, &mut bindings);
+        }
+    }
+    let mut locals = bindings_to_local_types(bindings);
+    resolve_pending_calls(&mut locals, &ctx.class_attr_types);
+    locals
+}
+
+/// Declared type text of names bound in the current method (`None` once a
+/// name is bound twice), falling back to the enclosing type's fields.
+struct RawTypes<'a> {
+    locals: HashMap<String, Option<String>>,
+    class: &'a HashMap<String, String>,
+}
+
+impl RawTypes<'_> {
+    fn record(&mut self, name: &str, text: Option<String>) {
+        self.locals
+            .entry(name.to_string())
+            .and_modify(|t| *t = None)
+            .or_insert(text);
+    }
 }
 
 /// Fold a scope's raw (name, inferred-type) bindings into a lookup map,
@@ -3949,13 +4157,12 @@ fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String
 ///
 /// `var (a, b) = Method(..)` is bound via `bind_tuple_pattern`.
 ///
-/// ponytail: `foreach (var (k, v) in map)` deconstruction isn't tracked —
-/// the loop variable's `left` isn't a plain identifier in that shape, so
-/// it's skipped rather than bound.
+/// `foreach (var (k, v) in expr)` is bound via `bind_foreach_deconstruction`.
 fn collect_statement_bindings(
     node: Node<'_>,
     source: &str,
     method_returns: &MethodReturns,
+    raw: &mut RawTypes<'_>,
     bindings: &mut Vec<(String, LocalType)>,
 ) {
     if is_local_function_node(node.kind()) {
@@ -3997,13 +4204,23 @@ fn collect_statement_bindings(
                 if name.is_empty() {
                     continue;
                 }
+                let value = variable_declarator_value(child);
                 let ty = if is_var {
-                    variable_declarator_value(child)
+                    value
                         .map(|v| classify_value_expr(v, source, method_returns))
                         .unwrap_or(LocalType::Other)
                 } else {
                     classify_annotation(&node_text(type_node.expect("checked above"), source))
                 };
+                let text = match (is_var, value) {
+                    (false, _) => type_node.map(|t| node_text(t, source)),
+                    (true, Some(v)) if v.kind() == "object_creation_expression" => {
+                        v.child_by_field_name("type").map(|t| node_text(t, source))
+                    }
+                    (true, Some(v)) => method_returns.call_return_type(v, source),
+                    (true, None) => None,
+                };
+                raw.record(&name, text);
                 bindings.push((name, ty));
             }
         }
@@ -4018,6 +4235,13 @@ fn collect_statement_bindings(
                     bindings.push((name, ty));
                 }
             }
+        }
+        "foreach_statement"
+            if node
+                .child_by_field_name("left")
+                .is_some_and(|l| l.kind() != "identifier") =>
+        {
+            bind_foreach_deconstruction(node, source, method_returns, raw, bindings);
         }
         "foreach_statement" => {
             if let Some(left) = node.child_by_field_name("left")
@@ -4038,7 +4262,118 @@ fn collect_statement_bindings(
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_statement_bindings(child, source, method_returns, bindings);
+        collect_statement_bindings(child, source, method_returns, raw, bindings);
+    }
+}
+
+/// Bind the names of `foreach (var (k, v) in expr)`. Each gets the matching
+/// element of `expr`'s element type when that is a tuple (`IEnumerable<(A,
+/// B)>`, `List<(A, B)>`, `(A, B)[]`) or a dictionary's key/value pair;
+/// otherwise -- and for any explicit-typed, nested or discard shape -- the
+/// names are bound `Other` so they still shadow a same-named field.
+fn bind_foreach_deconstruction(
+    node: Node<'_>,
+    source: &str,
+    method_returns: &MethodReturns,
+    raw: &RawTypes<'_>,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    let Some(left) = node.child_by_field_name("left") else {
+        return;
+    };
+    let implicit = node
+        .child_by_field_name("type")
+        .is_some_and(|t| t.kind() == "implicit_type");
+    let elements = node
+        .child_by_field_name("right")
+        .filter(|_| implicit && left.kind() == "tuple_pattern")
+        .and_then(|right| {
+            let text = match right.kind() {
+                "identifier" => {
+                    let name = node_text(right, source);
+                    if raw.locals.contains_key(&name) {
+                        raw.locals.get(&name)?.clone()
+                    } else if bindings.iter().any(|(n, _)| *n == name) {
+                        None
+                    } else {
+                        raw.class.get(&name).cloned()
+                    }
+                }
+                _ => method_returns.call_return_type(right, source),
+            }?;
+            foreach_element_types(&text)
+        });
+    if let Some(types) = elements.filter(|t| t.len() == left.named_child_count()) {
+        let mut cursor = left.walk();
+        for (el, ty) in left.named_children(&mut cursor).zip(types) {
+            if el.kind() == "identifier" {
+                bindings.push((node_text(el, source), classify_annotation(&ty)));
+            } else {
+                poison_identifiers(el, source, bindings);
+            }
+        }
+    } else {
+        poison_identifiers(left, source, bindings);
+    }
+}
+
+/// Bind every identifier under `node` (a pattern / declaration expression)
+/// to `Other`.
+fn poison_identifiers(node: Node<'_>, source: &str, bindings: &mut Vec<(String, LocalType)>) {
+    if node.kind() == "identifier" {
+        bindings.push((node_text(node, source), LocalType::Other));
+        return;
+    }
+    if node.kind() == "declaration_expression"
+        && let Some(name) = node.child_by_field_name("name")
+    {
+        bindings.push((node_text(name, source), LocalType::Other));
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        poison_identifiers(child, source, bindings);
+    }
+}
+
+/// The deconstruction element types of one item of a collection type text:
+/// `List<(A, B)>` / `IEnumerable<(A x, B y)>` / `(A, B)[]` give `[A, B]`,
+/// `Dictionary<K, V>` gives `[K, V]`; `None` for anything else.
+fn foreach_element_types(text: &str) -> Option<Vec<String>> {
+    let text = text.trim().trim_end_matches('?');
+    if let Some(elem) = text.strip_suffix("[]") {
+        return tuple_element_types(elem);
+    }
+    let (name, rest) = text.split_once('<')?;
+    let inner = rest.strip_suffix('>')?;
+    let name = name.rsplit('.').next()?.trim();
+    // A tuple's own commas aren't bracket-nested, so only the dictionary
+    // shape splits its arguments (any tuple key/value then fails to match).
+    match name {
+        "IEnumerable"
+        | "IAsyncEnumerable"
+        | "List"
+        | "IList"
+        | "ICollection"
+        | "IReadOnlyList"
+        | "IReadOnlyCollection"
+        | "HashSet"
+        | "ISet"
+        | "Queue"
+        | "Stack"
+        | "Collection"
+        | "ImmutableArray"
+        | "ImmutableList" => tuple_element_types(inner),
+        "Dictionary"
+        | "IDictionary"
+        | "IReadOnlyDictionary"
+        | "SortedDictionary"
+        | "ConcurrentDictionary"
+        | "ImmutableDictionary" => match split_respecting_brackets(inner).as_slice() {
+            [k, v] => Some(vec![k.trim().to_string(), v.trim().to_string()]),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -4080,7 +4415,27 @@ fn collect_class_level_attr_types(
     class_body: Node<'_>,
     source: &str,
 ) -> HashMap<String, LocalType> {
-    let mut result = HashMap::new();
+    class_level_typed_members(class_body, source)
+        .into_iter()
+        .map(|(name, ty)| (name, classify_annotation(&ty)))
+        .collect()
+}
+
+/// The same fields/properties as `collect_class_level_attr_types`, keyed to
+/// their declared type text (`List<(A, B)>`, ...).
+fn collect_class_level_attr_type_texts(
+    class_body: Node<'_>,
+    source: &str,
+) -> HashMap<String, String> {
+    class_level_typed_members(class_body, source)
+        .into_iter()
+        .collect()
+}
+
+/// `(name, declared type text)` of every explicitly typed field / property
+/// declared directly in a type's body.
+fn class_level_typed_members(class_body: Node<'_>, source: &str) -> Vec<(String, String)> {
+    let mut result = Vec::new();
     let mut cursor = class_body.walk();
     for member in class_body.named_children(&mut cursor) {
         match member.kind() {
@@ -4097,7 +4452,7 @@ fn collect_class_level_attr_types(
                     if type_node.kind() == "implicit_type" {
                         continue;
                     }
-                    let ty = classify_annotation(&node_text(type_node, source));
+                    let ty = node_text(type_node, source);
                     let mut dcursor = decl.walk();
                     for declarator in decl.named_children(&mut dcursor) {
                         if declarator.kind() != "variable_declarator" {
@@ -4110,25 +4465,23 @@ fn collect_class_level_attr_types(
                             continue;
                         }
                         let name = node_text(name_node, source);
-                        if name.is_empty() {
-                            continue;
+                        if !name.is_empty() {
+                            result.push((name, ty.clone()));
                         }
-                        result.insert(name, ty.clone());
                     }
                 }
             }
             "property_declaration" => {
-                let Some(name_node) = member.child_by_field_name("name") else {
-                    continue;
-                };
-                let Some(type_node) = member.child_by_field_name("type") else {
+                let (Some(name_node), Some(type_node)) = (
+                    member.child_by_field_name("name"),
+                    member.child_by_field_name("type"),
+                ) else {
                     continue;
                 };
                 let name = node_text(name_node, source);
-                if name.is_empty() {
-                    continue;
+                if !name.is_empty() {
+                    result.push((name, node_text(type_node, source)));
                 }
-                result.insert(name, classify_annotation(&node_text(type_node, source)));
             }
             _ => {}
         }
@@ -4155,6 +4508,7 @@ fn collect_class_level_attr_types(
 fn collect_class_level_grpc_client_fields(
     class_body: Node<'_>,
     source: &str,
+    method_returns: &MethodReturns,
 ) -> HashMap<String, (String, Option<String>)> {
     let mut result = HashMap::new();
     let mut cursor = class_body.walk();
@@ -4169,7 +4523,7 @@ fn collect_class_level_grpc_client_fields(
                     collect_grpc_clients_from_declaration(
                         decl,
                         source,
-                        &MethodReturns::default(), // limitation: field initializers are not resolved against method return types
+                        method_returns,
                         &mut result,
                     );
                 }
@@ -5014,5 +5368,169 @@ public class Tests {
                 .map(|e| &e.target_qualname)
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// Receiver type of the first CALLS edge whose snippet starts with `needle`.
+    fn recv_of(file: &ExtractedFile, needle: &str) -> ReceiverType {
+        file.edges
+            .iter()
+            .find(|e| {
+                e.kind == "CALLS"
+                    && e.evidence_snippet
+                        .as_deref()
+                        .is_some_and(|s| s.starts_with(needle))
+            })
+            .unwrap_or_else(|| panic!("no CALLS edge for {needle}"))
+            .receiver_type
+            .clone()
+    }
+
+    #[test]
+    fn foreach_deconstruction_binds_tuple_element_types() {
+        let source = r#"
+public class C {
+    private List<(string, Bus)> _pairs;
+    private Dictionary<string, Bus> _map;
+    public void M(List<(string Name, Store S)> xs, (int, Bus)[] arr, IEnumerable<Store> plain) {
+        foreach (var (k, v) in xs) { v.A(); }
+        foreach (var (k2, b) in _pairs) { b.B(); }
+        foreach (var (k3, m) in _map) { m.C(); }
+        foreach (var (n, b2) in arr) { b2.D(); }
+        foreach (var (p, q) in plain) { q.E(); }
+        foreach (var (r, s) in Unknown()) { s.F(); }
+        foreach (var (_, (t, u)) in xs) { u.G(); }
+    }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let known = |n: &str| ReceiverType::Known(n.to_string());
+        assert_eq!(recv_of(&file, "v.A"), known("Store"));
+        assert_eq!(recv_of(&file, "b.B"), known("Bus"));
+        assert_eq!(recv_of(&file, "m.C"), known("Bus"));
+        assert_eq!(recv_of(&file, "b2.D"), known("Bus"));
+        assert_eq!(recv_of(&file, "q.E"), ReceiverType::Unresolved);
+        assert_eq!(recv_of(&file, "s.F"), ReceiverType::Unresolved);
+        assert_eq!(recv_of(&file, "u.G"), ReceiverType::Unresolved);
+    }
+
+    #[test]
+    fn grpc_call_resolves_top_level_var_from_same_file_factory_return_type() {
+        let source = r#"
+using Example.V1;
+var greeter = CreateGreeterClient(null);
+await greeter.SayHelloAsync(new HelloRequest());
+Greeter.GreeterClient CreateGreeterClient(object factory) => default;
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        assert!(
+            file.edges.iter().any(|e| e.kind == proto::RPC_CALL_KIND
+                && e.target_qualname.as_deref() == Some("/example.v1.greeter/sayhello")),
+            "{:?}",
+            file.edges
+                .iter()
+                .filter(|e| e.kind == proto::RPC_CALL_KIND)
+                .map(|e| &e.target_qualname)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn cross_file_callee_defers_the_receiver_type() {
+        let source = r#"
+public class C {
+    private Repo _repo;
+    public async Task M(Repo repo, int n) {
+        var a = repo.Open();
+        a.A();
+        var b = Repo.Create();
+        b.B();
+        var c = await _repo.OpenAsync().ConfigureAwait(false);
+        c.C();
+        var d = this._repo.Open();
+        d.D();
+        var e = n.Foo();
+        e.E();
+        var repo2 = Missing();
+        var f = repo2.Open();
+        f.F();
+        var g = a.Open();
+        g.G();
+    }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let deferred =
+            |m: &str, aw: bool, st: bool| ReceiverType::deferred_return("Repo", m, aw, st);
+        assert_eq!(recv_of(&file, "a.A"), deferred("Open", false, false));
+        assert_eq!(recv_of(&file, "b.B"), deferred("Create", false, true));
+        assert_eq!(recv_of(&file, "c.C"), deferred("OpenAsync", true, false));
+        assert_eq!(recv_of(&file, "d.D"), deferred("Open", false, false));
+        assert_eq!(recv_of(&file, "e.E"), ReceiverType::Unresolved);
+        assert_eq!(recv_of(&file, "f.F"), ReceiverType::Unresolved);
+        assert_eq!(recv_of(&file, "g.G"), ReceiverType::Unresolved);
+    }
+
+    #[test]
+    fn signatures_keep_generic_return_types_and_static_is_recorded() {
+        let source = r#"
+public class Box<T> {
+    public T Get() => default;
+    public static Store Plain() => null;
+    public U Map<U>(int x) => default;
+    public static int Over(int a) => 0;
+    public int Over(string a) => 0;
+    public static int Twice(int a) => 0;
+    public static int Twice(string a) => 0;
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let sig = |name: &str| {
+            file.symbols
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap()
+                .signature
+                .clone()
+        };
+        assert_eq!(sig("Get").as_deref(), Some("() -> T"));
+        assert_eq!(sig("Map").as_deref(), Some("(int x) -> U"));
+        assert_eq!(sig("Plain").as_deref(), Some("() -> Store"));
+        let mut statics = file.static_qualnames.clone();
+        statics.sort();
+        assert_eq!(statics, vec!["module.Box.Plain", "module.Box.Twice"]);
+        assert_eq!(
+            receiver_from_signature("() -> Task<Store>", true).as_deref(),
+            Some("Store")
+        );
+        assert_eq!(receiver_from_signature("() -> Task<Store>", false), None);
+        assert_eq!(receiver_from_signature("() -> int", false), None);
+        assert_eq!(receiver_from_signature("()", false), None);
+    }
+
+    #[test]
+    fn top_level_statements_get_local_types() {
+        let source = r#"
+var store = new Store();
+store.A();
+var made = Repo.Create();
+made.B();
+public class C { public void M() { store.Z(); } }
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        assert_eq!(
+            recv_of(&file, "store.A"),
+            ReceiverType::Known("Store".into())
+        );
+        assert_eq!(
+            recv_of(&file, "made.B"),
+            ReceiverType::deferred_return("Repo", "Create", false, true)
+        );
+        // Top-level locals aren't in scope inside a type.
+        assert_eq!(recv_of(&file, "store.Z"), ReceiverType::NotTracked);
     }
 }

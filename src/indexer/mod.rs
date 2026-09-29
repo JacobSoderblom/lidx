@@ -469,6 +469,7 @@ impl Indexer {
                 *file_id,
                 self.graph_version,
                 &extracted.private_qualnames,
+                &extracted.static_qualnames,
             )?;
         }
 
@@ -725,8 +726,12 @@ impl Indexer {
         // Mark this file's private/unexported symbols. Must happen for
         // every file in the batch before any file's edges are resolved —
         // see `sync_abs_paths`.
-        self.db
-            .set_private_symbols(file_id, self.graph_version, &extracted.private_qualnames)?;
+        self.db.set_private_symbols(
+            file_id,
+            self.graph_version,
+            &extracted.private_qualnames,
+            &extracted.static_qualnames,
+        )?;
 
         Ok(Some(ScannedFileSymbols {
             extracted,
