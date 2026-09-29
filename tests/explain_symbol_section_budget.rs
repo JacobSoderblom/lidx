@@ -4,42 +4,34 @@
 /// were actually requested, so e.g. `sections:["callers"], max_bytes:4000`
 /// only gave callers a 20%-of-4000 = 800 byte budget -- capable of returning
 /// nothing at all even though 80% of the requested budget went unused.
+mod common;
+
 use lidx::indexer::Indexer;
 use lidx::rpc;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+/// (temp-dir guard, repo root, db path), as shaped by the shared helpers in
+/// `tests/common`.
+type TempRepo = (tempfile::TempDir, PathBuf, PathBuf);
 
-fn temp_repo_dir(label: &str) -> PathBuf {
-    let mut dir = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-    dir.push(format!(
-        "lidx-explain-section-budget-{label}-{nanos}-{counter}"
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-struct TempRepo {
-    pub repo_root: PathBuf,
-    pub db_path: PathBuf,
-}
-
-impl Drop for TempRepo {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.repo_root);
-    }
+fn index_repo(files: &[(&str, &str)]) -> TempRepo {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-explain-section-budget-")
+        .tempdir()
+        .unwrap();
+    let repo_root = tmp.path().to_path_buf();
+    common::write_files(&repo_root, files);
+    let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+    (tmp, repo_root, db_path)
 }
 
 fn call(temp: &TempRepo, method: &str, params: &str) -> serde_json::Value {
     let raw = rpc::call(
-        temp.repo_root.clone(),
-        temp.db_path.clone(),
+        temp.1.clone(),
+        temp.2.clone(),
         method.to_string(),
         params,
         "1",
@@ -60,24 +52,21 @@ fn call(temp: &TempRepo, method: &str, params: &str) -> serde_json::Value {
 /// calls `target.target()` directly, so each contributes exactly one
 /// resolved CALLS edge/caller.
 fn many_callers_repo(count: usize) -> TempRepo {
-    let dir = temp_repo_dir("many-callers");
-    std::fs::write(dir.join("target.py"), "def target():\n    return 1\n").unwrap();
+    let mut files = vec![(
+        "target.py".to_string(),
+        "def target():\n    return 1\n".to_string(),
+    )];
     for i in 0..count {
-        std::fs::write(
-            dir.join(format!("caller_{i}.py")),
+        files.push((
+            format!("caller_{i}.py"),
             format!("from target import target\n\n\ndef wrapper_{i}():\n    return target()\n"),
-        )
-        .unwrap();
+        ));
     }
-    let db_path = dir.join(".lidx").join(".lidx.sqlite");
-    let repo = TempRepo {
-        repo_root: dir,
-        db_path,
-    };
-    let mut indexer = Indexer::new(repo.repo_root.clone(), repo.db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-    drop(indexer);
-    repo
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    index_repo(&refs)
 }
 
 #[test]
@@ -130,22 +119,13 @@ fn unused_share_from_an_earlier_section_rolls_over_to_a_later_one() {
     // `sections:["callers","implements"]` with a max_bytes tight enough
     // that implements' own 10%-equivalent share alone would starve it, but
     // the full budget (all of it, since callers is empty) does not.
-    let dir = temp_repo_dir("rollover");
     let mut source = String::new();
     for i in 0..15 {
         source.push_str(&format!("class Base{i}:\n    pass\n\n\n"));
     }
     let bases: Vec<String> = (0..15).map(|i| format!("Base{i}")).collect();
     source.push_str(&format!("class Foo({}):\n    pass\n", bases.join(", ")));
-    std::fs::write(dir.join("bases.py"), source).unwrap();
-    let db_path = dir.join(".lidx").join(".lidx.sqlite");
-    let temp = TempRepo {
-        repo_root: dir,
-        db_path,
-    };
-    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-    drop(indexer);
+    let temp = index_repo(&[("bases.py", &source)]);
 
     // Baseline: implements alone (its whole budget, no competing section) --
     // used to size a max_bytes that starves implements when it must share
@@ -235,5 +215,42 @@ fn section_never_returns_empty_when_first_ref_would_fit_overall_budget() {
         result["budget"]["used_bytes"].as_u64().unwrap() as usize <= max_bytes,
         "used_bytes must still respect the overall max_bytes cap: {:?}",
         result["budget"]
+    );
+}
+
+#[test]
+fn empty_later_section_share_is_reachable_by_an_earlier_section() {
+    // `target` has callers but no callees. With sections callers+callees the
+    // callees share is unused; it must flow to callers even though callees
+    // comes after callers in build order.
+    let temp = many_callers_repo(3);
+
+    let baseline = call(
+        &temp,
+        "explain_symbol",
+        r#"{"qualname":"target.target","sections":["callers"],"max_bytes":40000}"#,
+    );
+    let callers = baseline["callers"].as_array().expect("callers array");
+    assert_eq!(callers.len(), 3, "sanity: all 3 callers resolve");
+    let one_ref_bytes = serde_json::to_string(&callers[0]).unwrap().len();
+
+    // Enough for all three callers only if callers gets the whole budget; a
+    // 50/50 callers/callees split leaves room for roughly one.
+    let max_bytes = one_ref_bytes * 3;
+
+    let result = call(
+        &temp,
+        "explain_symbol",
+        &format!(
+            r#"{{"qualname":"target.target","sections":["callers","callees"],"max_bytes":{max_bytes}}}"#
+        ),
+    );
+
+    let callers = result["callers"].as_array().expect("callers array");
+    assert_eq!(
+        callers.len(),
+        3,
+        "callees has no candidates, so its share must reach callers: {:?}",
+        result
     );
 }
