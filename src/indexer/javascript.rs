@@ -804,7 +804,10 @@ fn grpc_service_from_client_initializer(node: Node<'_>, source: &str) -> Option<
             _ => break,
         }
     }
-    if current.kind() != "new_expression" && current.kind() != "call_expression" {
+    // Only `new Ctor(..)` declares a client (`new FooServiceClient(..)`,
+    // `new proto.pkg.Greeter(..)`); a call result such as
+    // `await jobScheduling.listJobs()` is data, not a client (#115).
+    if current.kind() != "new_expression" {
         return None;
     }
     let target_node = call_target_node(current)?;
@@ -1639,7 +1642,8 @@ fn grpc_service_from_receiver(receiver: &str, ctx: &Context) -> Option<GrpcServi
     {
         return Some(service.clone());
     }
-    grpc_service_from_path(receiver)
+    // Only receivers registered from a `new` client constructor (#115).
+    None
 }
 
 fn grpc_service_from_raw_path(raw_path: &str) -> Option<(GrpcService, String)> {
