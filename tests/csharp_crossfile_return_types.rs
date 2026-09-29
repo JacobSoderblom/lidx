@@ -16,6 +16,8 @@ namespace App
 {
     public class Store { public void Write() { } }
     public class Other { public void Write() { } }
+    public class Logger { public Store Info() { return null; } }
+    public class Base { public Other Logger { get { return null; } } }
 }
 "#;
 
@@ -32,8 +34,27 @@ namespace App
         public Other Dup(int a) { return null; }
         public Store Dup(string a) { return null; }
         public Task<Store> Lazy() { return null; }
+        public Store Twice(int a) { return null; }
+        public Store Twice(string a) { return null; }
+        public int Count() { return 0; }
     }
 }
+"#;
+
+const INHERITED: &str = r#"
+namespace App
+{
+    public class Derived : Base
+    {
+        public void M() { var r = Logger.Info(); r.Write(); }
+    }
+}
+"#;
+
+const PROGRAM: &str = r#"
+using App;
+var s = Repo.Create();
+s.Write();
 "#;
 
 const CALLER: &str = r#"
@@ -54,6 +75,8 @@ namespace App
         public void Generic(Repo repo) { var g = repo.Get<Store>(); g.Write(); }
         public void Overloaded(Repo repo) { var d = repo.Dup(1); d.Write(); }
         public void NotAwaited(Repo repo) { var t = repo.Lazy(); t.Write(); }
+        public void OverloadsAgree(Repo repo) { var t = repo.Twice(1); t.Write(); }
+        public void Builtin(Repo repo) { var n = repo.Count(); n.Write(); }
         public void Unknown(Repo repo) { var u = repo.Missing(); u.Write(); }
         public void Deconstruct(List<(string, Store)> pairs) { foreach (var (k, v) in pairs) { v.Write(); } }
         public void DeconstructDict(Dictionary<string, Store> map) { foreach (var (k, v) in map) { v.Write(); } }
@@ -74,6 +97,8 @@ fn setup() -> (PathBuf, Indexer, i64) {
     std::fs::write(dir.join("Types.cs"), TYPES).unwrap();
     std::fs::write(dir.join("Repo.cs"), REPO).unwrap();
     std::fs::write(dir.join("Caller.cs"), CALLER).unwrap();
+    std::fs::write(dir.join("Derived.cs"), INHERITED).unwrap();
+    std::fs::write(dir.join("Program.cs"), PROGRAM).unwrap();
     let db_path = dir.join(".lidx").join(".lidx.sqlite");
     let mut indexer = Indexer::new(dir.clone(), db_path).unwrap();
     indexer.reindex().unwrap();
@@ -109,6 +134,7 @@ fn cross_file_return_types_bind_the_receiver() {
         "FromField",
         "FromThisField",
         "FromLocal",
+        "OverloadsAgree",
         "Deconstruct",
         "DeconstructDict",
     ] {
@@ -128,6 +154,7 @@ fn ambiguous_generic_or_unknown_return_types_stay_untracked() {
         "Generic",
         "Overloaded",
         "NotAwaited",
+        "Builtin",
         "Unknown",
         "DeconstructUnknown",
     ] {
@@ -136,5 +163,35 @@ fn ambiguous_generic_or_unknown_return_types_stay_untracked() {
             "{caller} bound a Write target"
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn capitalised_receiver_bound_to_an_instance_method_stays_untracked() {
+    // `Logger` is an inherited property here, not the unrelated `Logger`
+    // type, whose `Info` is an instance method.
+    let (dir, indexer, gv) = setup();
+    assert!(write_targets(&indexer, gv, "App.Derived.M").is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn top_level_statements_bind_cross_file_static_return_types() {
+    let (dir, indexer, gv) = setup();
+    let conn = indexer.db().read_conn().unwrap();
+    let targets: Vec<String> = conn
+        .prepare(
+            "SELECT t.qualname FROM edges e
+             JOIN files f ON f.id = e.file_id
+             JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind = 'CALLS' AND f.path = 'Program.cs' AND e.graph_version = ?
+               AND t.name = 'Write'",
+        )
+        .unwrap()
+        .query_map(params![gv], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(targets, vec!["App.Store.Write".to_string()]);
     let _ = std::fs::remove_dir_all(&dir);
 }

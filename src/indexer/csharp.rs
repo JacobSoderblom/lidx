@@ -26,6 +26,7 @@ use tree_sitter::{Node, Parser};
 /// to bind across files.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     visibility: VisibilityRule::Recorded,
+    return_receiver: Some(receiver_from_signature),
     ..LanguageProfile::DEFAULT
 };
 
@@ -304,6 +305,21 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
         } else {
             walk_node(root, &ctx, source, &mut output);
         }
+        // A qualname shared by overloads counts as static only when every
+        // one of them is.
+        let statics = std::mem::take(&mut output.static_qualnames);
+        for q in &statics {
+            let declared = output
+                .symbols
+                .iter()
+                .filter(|s| s.kind == "method" && s.qualname == *q)
+                .count();
+            if statics.iter().filter(|o| *o == q).count() == declared
+                && !output.static_qualnames.contains(q)
+            {
+                output.static_qualnames.push(q.clone());
+            }
+        }
         Ok(output)
     }
 
@@ -400,6 +416,7 @@ fn walk_compilation_unit(node: Node<'_>, ctx: &Context, source: &str, output: &m
     }
     next_ctx.route_groups = collect_global_route_groups(node, source);
     next_ctx.grpc_clients = collect_global_grpc_clients(node, source, &ctx.method_returns);
+    next_ctx.local_types = Rc::new(infer_global_local_types(node, source, ctx));
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -604,6 +621,8 @@ fn handle_type(
     next_ctx.grpc_service = grpc_service_info.map(|(service, _)| service);
     next_ctx.grpc_package_candidates = grpc_package_candidates;
     next_ctx.base_type = resolvable_base_type(node, source, type_kind);
+    // Top-level-statement locals aren't visible inside a type.
+    next_ctx.local_types = Rc::new(HashMap::new());
     if let Some(body) = node.child_by_field_name("body") {
         next_ctx.class_attr_types = Rc::new(collect_class_level_attr_types(body, source));
         next_ctx.class_attr_raw = Rc::new(collect_class_level_attr_type_texts(body, source));
@@ -664,6 +683,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     let signature = method_signature(node, source);
     if has_modifier(node, source, "private") {
         output.private_qualnames.push(qualname.clone());
+    }
+    if has_modifier(node, source, "static") {
+        output.static_qualnames.push(qualname.clone());
     }
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
@@ -3068,8 +3090,7 @@ fn type_signature(node: Node<'_>, source: &str) -> Option<String> {
 }
 
 /// True when `ret` mentions a type parameter of the method itself or of any
-/// enclosing generic type. The indexed signature omits such a return type
-/// (it isn't a real type name), so nothing downstream can mistake it for one.
+/// enclosing generic type.
 fn return_names_type_param(node: Node<'_>, ret: &str, source: &str) -> bool {
     let ident = |c: char| !(c.is_alphanumeric() || c == '_');
     let mut cur = Some(node);
@@ -3105,8 +3126,7 @@ fn method_signature(node: Node<'_>, source: &str) -> Option<String> {
     let returns = node
         .child_by_field_name("returns")
         .map(|n| node_text(n, source))
-        .filter(|value| !value.is_empty())
-        .filter(|ret| !return_names_type_param(node, ret, source));
+        .filter(|value| !value.is_empty());
     match returns {
         Some(ret) => Some(format!("{params} -> {ret}")),
         None => Some(params),
@@ -3786,12 +3806,6 @@ fn resolve_pending_calls(
     class_attr_types: &HashMap<String, LocalType>,
 ) {
     let snapshot = locals.clone();
-    let deferred = |ty: &str, method: &str, awaited: bool| match ReceiverType::deferred_return(
-        ty, method, awaited,
-    ) {
-        ReceiverType::Deferred(marker) => LocalType::Deferred(marker),
-        _ => LocalType::Other,
-    };
     for ty in locals.values_mut() {
         let LocalType::Call {
             receiver,
@@ -3802,22 +3816,33 @@ fn resolve_pending_calls(
             continue;
         };
         let known = |t: Option<&LocalType>| match t {
-            Some(LocalType::Known(t)) => deferred(t, method, *awaited),
-            _ => LocalType::Other,
+            Some(LocalType::Known(t)) => Some((t.clone(), false)),
+            _ => None,
         };
-        *ty = if let Some(field) = receiver.strip_prefix("this.") {
+        // (callee type, receiver spelled as a bare type name)
+        let callee = if let Some(field) = receiver.strip_prefix("this.") {
             known(class_attr_types.get(field))
-        } else if let Some(local) = snapshot.get(receiver.as_str()) {
-            known(Some(local))
-        } else if let Some(attr) = class_attr_types.get(receiver.as_str()) {
-            known(Some(attr))
+        } else if let Some(bound) = snapshot
+            .get(receiver.as_str())
+            .or_else(|| class_attr_types.get(receiver.as_str()))
+        {
+            known(Some(bound))
         } else if receiver.starts_with(|c: char| c.is_ascii_uppercase()) {
-            match classify_type_name(receiver) {
-                LocalType::Known(t) => deferred(&t, method, *awaited),
-                _ => LocalType::Other,
-            }
+            // Not bound here, so possibly a static type name -- but also
+            // possibly an inherited property; the resolver only accepts a
+            // `static` callee for this shape.
+            known(Some(&classify_type_name(receiver))).map(|(t, _)| (t, true))
         } else {
-            LocalType::Other
+            None
+        };
+        *ty = match callee {
+            Some((t, static_only)) => {
+                match ReceiverType::deferred_return(&t, method, *awaited, static_only) {
+                    ReceiverType::Deferred(marker) => LocalType::Deferred(marker),
+                    _ => LocalType::Other,
+                }
+            }
+            None => LocalType::Other,
         };
     }
 }
@@ -3934,9 +3959,10 @@ fn unwrap_return(ret: &str, awaited: bool) -> Option<String> {
 
 /// The receiver type name a call to a method with this indexed `signature`
 /// (`(params) -> Ret`) yields, for the resolver's `ReceiverType::Deferred`.
-/// `None` when the signature has no return type (generic-parameter returns
-/// are omitted by `method_signature`), or it isn't a plain non-builtin type.
-pub(crate) fn receiver_from_signature(signature: &str, awaited: bool) -> Option<String> {
+/// `None` when the signature has no return type or it isn't a plain
+/// non-builtin type name (the resolver separately requires a repo type of
+/// that name, which rules out a generic type parameter).
+fn receiver_from_signature(signature: &str, awaited: bool) -> Option<String> {
     let ret = unwrap_return(signature.rsplit_once(" -> ")?.1, awaited)?;
     match classify_annotation(&ret) {
         LocalType::Known(name) => Some(name),
@@ -4018,6 +4044,29 @@ fn infer_local_types(
     }
     if let Some(body) = function_node.child_by_field_name("body") {
         collect_statement_bindings(body, source, method_returns, &mut raw, &mut bindings);
+    }
+    let mut locals = bindings_to_local_types(bindings);
+    resolve_pending_calls(&mut locals, &ctx.class_attr_types);
+    locals
+}
+
+/// `infer_local_types` for a compilation unit's top-level statements, which
+/// share one scope (their local functions are boundaries, as in a method).
+fn infer_global_local_types(
+    root: Node<'_>,
+    source: &str,
+    ctx: &Context,
+) -> HashMap<String, LocalType> {
+    let mut bindings: Vec<(String, LocalType)> = Vec::new();
+    let mut raw = RawTypes {
+        locals: HashMap::new(),
+        class: &ctx.class_attr_raw,
+    };
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        if child.kind() == "global_statement" {
+            collect_statement_bindings(child, source, &ctx.method_returns, &mut raw, &mut bindings);
+        }
     }
     let mut locals = bindings_to_local_types(bindings);
     resolve_pending_calls(&mut locals, &ctx.class_attr_types);
@@ -5367,24 +5416,28 @@ public class C {
 "#;
         let mut extractor = CSharpExtractor::new().unwrap();
         let file = extractor.extract(source, "module").unwrap();
-        let deferred = |m: &str, aw: bool| ReceiverType::deferred_return("Repo", m, aw);
-        assert_eq!(recv_of(&file, "a.A"), deferred("Open", false));
-        assert_eq!(recv_of(&file, "b.B"), deferred("Create", false));
-        assert_eq!(recv_of(&file, "c.C"), deferred("OpenAsync", true));
-        assert_eq!(recv_of(&file, "d.D"), deferred("Open", false));
+        let deferred =
+            |m: &str, aw: bool, st: bool| ReceiverType::deferred_return("Repo", m, aw, st);
+        assert_eq!(recv_of(&file, "a.A"), deferred("Open", false, false));
+        assert_eq!(recv_of(&file, "b.B"), deferred("Create", false, true));
+        assert_eq!(recv_of(&file, "c.C"), deferred("OpenAsync", true, false));
+        assert_eq!(recv_of(&file, "d.D"), deferred("Open", false, false));
         assert_eq!(recv_of(&file, "e.E"), ReceiverType::Unresolved);
         assert_eq!(recv_of(&file, "f.F"), ReceiverType::Unresolved);
         assert_eq!(recv_of(&file, "g.G"), ReceiverType::Unresolved);
     }
 
     #[test]
-    fn generic_return_types_are_omitted_from_signatures() {
+    fn signatures_keep_generic_return_types_and_static_is_recorded() {
         let source = r#"
 public class Box<T> {
     public T Get() => default;
-    public Store Plain() => null;
+    public static Store Plain() => null;
     public U Map<U>(int x) => default;
-    public List<U> Many<U>() => null;
+    public static int Over(int a) => 0;
+    public int Over(string a) => 0;
+    public static int Twice(int a) => 0;
+    public static int Twice(string a) => 0;
 }
 "#;
         let mut extractor = CSharpExtractor::new().unwrap();
@@ -5397,10 +5450,12 @@ public class Box<T> {
                 .signature
                 .clone()
         };
-        assert_eq!(sig("Get").as_deref(), Some("()"));
+        assert_eq!(sig("Get").as_deref(), Some("() -> T"));
+        assert_eq!(sig("Map").as_deref(), Some("(int x) -> U"));
         assert_eq!(sig("Plain").as_deref(), Some("() -> Store"));
-        assert_eq!(sig("Map").as_deref(), Some("(int x)"));
-        assert_eq!(sig("Many").as_deref(), Some("()"));
+        let mut statics = file.static_qualnames.clone();
+        statics.sort();
+        assert_eq!(statics, vec!["module.Box.Plain", "module.Box.Twice"]);
         assert_eq!(
             receiver_from_signature("() -> Task<Store>", true).as_deref(),
             Some("Store")
@@ -5408,5 +5463,28 @@ public class Box<T> {
         assert_eq!(receiver_from_signature("() -> Task<Store>", false), None);
         assert_eq!(receiver_from_signature("() -> int", false), None);
         assert_eq!(receiver_from_signature("()", false), None);
+    }
+
+    #[test]
+    fn top_level_statements_get_local_types() {
+        let source = r#"
+var store = new Store();
+store.A();
+var made = Repo.Create();
+made.B();
+public class C { public void M() { store.Z(); } }
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        assert_eq!(
+            recv_of(&file, "store.A"),
+            ReceiverType::Known("Store".into())
+        );
+        assert_eq!(
+            recv_of(&file, "made.B"),
+            ReceiverType::deferred_return("Repo", "Create", false, true)
+        );
+        // Top-level locals aren't in scope inside a type.
+        assert_eq!(recv_of(&file, "store.Z"), ReceiverType::NotTracked);
     }
 }

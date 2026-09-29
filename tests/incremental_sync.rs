@@ -1082,3 +1082,105 @@ fn incremental_sync_resolves_call_via_inheritance_on_newly_added_type() {
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+const DEFERRED_TYPES: &str = "namespace App { public class Store { public void Write() { } } \
+public class Other { public void Write() { } } }\n";
+const DEFERRED_CALLER: &str = "namespace App { public class Caller { \
+public void Run(Repo repo) { var s = repo.Open(); s.Write(); } } }\n";
+
+fn deferred_repo(open_return: &str) -> String {
+    format!(
+        "namespace App {{ public class Repo {{ public {open_return} Open() {{ return null; }} }} }}\n"
+    )
+}
+
+/// The `Write` target `Caller.Run`'s edge is bound to in the current graph.
+fn deferred_write_target(indexer: &Indexer) -> Option<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    golden::snapshot_edges(indexer.db(), gv)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            e.kind == "CALLS"
+                && e.source_qualname == "App.Caller.Run"
+                && e.target_qualname
+                    .as_deref()
+                    .is_some_and(|t| t.ends_with(".Write"))
+        })
+        .and_then(|e| e.target_qualname)
+}
+
+/// A deferred receiver (`var s = repo.Open(); s.Write()`) hangs on the
+/// callee's return type: editing `Repo.Open` alone -- caller and `Write`
+/// untouched -- must retarget the caller's edge, as a fresh reindex would.
+#[test]
+fn csharp_deferred_receiver_retargets_when_callee_return_type_is_edited() {
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "deferred-edit",
+        &[
+            ("Types.cs", DEFERRED_TYPES),
+            ("Repo.cs", &deferred_repo("Store")),
+            ("Caller.cs", DEFERRED_CALLER),
+        ],
+    );
+    assert_eq!(
+        deferred_write_target(&indexer).as_deref(),
+        Some("App.Store.Write")
+    );
+
+    common::write_files(&root, &[("Repo.cs", &deferred_repo("Other"))]);
+    indexer.sync_rel_paths(&["Repo.cs".to_string()]).unwrap();
+    assert_eq!(
+        deferred_write_target(&indexer).as_deref(),
+        Some("App.Other.Write")
+    );
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_t, fresh) = common::index_files(&[
+        ("Types.cs", DEFERRED_TYPES),
+        ("Repo.cs", &deferred_repo("Other")),
+        ("Caller.cs", DEFERRED_CALLER),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+
+    // An int return is untracked: the edge must unbind.
+    common::write_files(&root, &[("Repo.cs", &deferred_repo("int"))]);
+    indexer.sync_rel_paths(&["Repo.cs".to_string()]).unwrap();
+    assert_eq!(deferred_write_target(&indexer), None);
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_t, fresh) = common::index_files(&[
+        ("Types.cs", DEFERRED_TYPES),
+        ("Repo.cs", &deferred_repo("int")),
+        ("Caller.cs", DEFERRED_CALLER),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// The callee added after the caller: the stored unresolved reference must
+/// resolve once `Repo.Open` exists.
+#[test]
+fn csharp_deferred_receiver_resolves_when_callee_is_added_later() {
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "deferred-add",
+        &[("Types.cs", DEFERRED_TYPES), ("Caller.cs", DEFERRED_CALLER)],
+    );
+    assert_eq!(deferred_write_target(&indexer), None);
+
+    common::write_files(&root, &[("Repo.cs", &deferred_repo("Store"))]);
+    indexer.sync_rel_paths(&["Repo.cs".to_string()]).unwrap();
+    assert_eq!(
+        deferred_write_target(&indexer).as_deref(),
+        Some("App.Store.Write")
+    );
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_t, fresh) = common::index_files(&[
+        ("Types.cs", DEFERRED_TYPES),
+        ("Repo.cs", &deferred_repo("Store")),
+        ("Caller.cs", DEFERRED_CALLER),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

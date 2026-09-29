@@ -53,25 +53,47 @@ pub enum ReceiverType {
     Deferred(String),
 }
 
+/// A parsed `ReceiverType::Deferred` marker.
+pub struct DeferredReturn<'a> {
+    pub awaited: bool,
+    pub static_only: bool,
+    pub type_name: &'a str,
+    pub method: &'a str,
+}
+
 /// Column-text prefix of `ReceiverType::Deferred`. `@` can't start a type name.
 pub const DEFERRED_RETURN_PREFIX: &str = "@ret:";
 
 impl ReceiverType {
     /// `Deferred` for "the (optionally awaited) return value of
     /// `type_name.method`".
-    pub fn deferred_return(type_name: &str, method: &str, awaited: bool) -> Self {
+    ///
+    /// `static_only` marks a receiver spelled like a bare type name
+    /// (`Type.Method()`): only a `static` method can be called that way.
+    pub fn deferred_return(
+        type_name: &str,
+        method: &str,
+        awaited: bool,
+        static_only: bool,
+    ) -> Self {
         Self::Deferred(format!(
-            "{DEFERRED_RETURN_PREFIX}{}:{type_name}.{method}",
-            u8::from(awaited)
+            "{DEFERRED_RETURN_PREFIX}{}{}:{type_name}.{method}",
+            if awaited { "a" } else { "" },
+            if static_only { "s" } else { "" },
         ))
     }
 
-    /// Inverse of `deferred_return` on column text: `(awaited, type, method)`.
-    pub fn parse_deferred_return(column: &str) -> Option<(bool, &str, &str)> {
+    /// Inverse of `deferred_return` on column text.
+    pub fn parse_deferred_return(column: &str) -> Option<DeferredReturn<'_>> {
         let rest = column.strip_prefix(DEFERRED_RETURN_PREFIX)?;
-        let (awaited, callee) = rest.split_once(':')?;
+        let (flags, callee) = rest.split_once(':')?;
         let (ty, method) = callee.rsplit_once('.')?;
-        Some((awaited == "1", ty, method))
+        Some(DeferredReturn {
+            awaited: flags.contains('a'),
+            static_only: flags.contains('s'),
+            type_name: ty,
+            method,
+        })
     }
 
     /// Encode as the `edges.receiver_type` column value: `None` = not
@@ -196,6 +218,11 @@ pub struct ExtractedFile {
     /// sites). Empty for languages with no recorded visibility rule
     /// (Python) or a derived one that needs no storage (Go: capitalization).
     pub private_qualnames: Vec<String>,
+    /// Qualnames of methods this extractor recorded as `static` (C#: every
+    /// same-qualname overload is). Recorded into `symbols.visibility` next
+    /// to `private` by `Db::set_private_symbols`; only the C# deferred
+    /// `Type.Method()` receiver reads it.
+    pub static_qualnames: Vec<String>,
 }
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use anyhow::Result;
