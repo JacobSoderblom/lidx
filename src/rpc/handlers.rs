@@ -11,6 +11,25 @@ use crate::search::{
 // GROUP 1 -- Symbol query handlers
 // ---------------------------------------------------------------------------
 
+/// True when a section's byte-budget check should let `ref_bytes` through
+/// even though it doesn't fit that section's own (renormalized +
+/// rolled-over) share -- but only for the section's very first entry, and
+/// only when the true remaining budget (every earlier section's bytes, plus
+/// this section's own bytes so far) can still fit it.
+///
+/// Issue #120: without this, a requested section could come back empty
+/// purely because its share happened to be smaller than its first
+/// candidate, even with most of `max_bytes` still unused.
+fn first_ref_fits_remaining(
+    section_is_empty: bool,
+    used_bytes_before_section: usize,
+    section_bytes_so_far: usize,
+    ref_bytes: usize,
+    max_bytes: usize,
+) -> bool {
+    section_is_empty && used_bytes_before_section + section_bytes_so_far + ref_bytes <= max_bytes
+}
+
 pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: ExplainSymbolParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
@@ -108,23 +127,72 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         ctx.graph_version,
     )?;
 
-    // 2. Budget allocation (30% source, 20% callers, 20% callees, 10% tests,
-    // 10% implements, 10% expansion) - FIX #4
-    let source_budget = max_bytes * 30 / 100;
-    let callers_budget = max_bytes * 20 / 100;
-    let callees_budget = max_bytes * 20 / 100;
-    let tests_budget = max_bytes * 10 / 100;
-    let implements_budget = max_bytes * 10 / 100;
+    // 2. Budget allocation: percentages below are shares of max_bytes (30%
+    // source, 20% callers, 20% callees, 10% tests, 10% implements) - FIX #4.
+    //
+    // Issue #120: these shares used to apply even to sections nobody asked
+    // for, so e.g. `sections:["callers"]` alone still only got 20% of
+    // max_bytes -- sometimes leaving the section empty even though 80% of
+    // the budget went unused. Shares are now renormalized across only the
+    // requested sections, and any share a section doesn't spend rolls
+    // forward into the next one, in source -> callers -> callees -> tests
+    // -> implements order (the same order they're built in below).
+    let wants = |s: &str| sections.iter().any(|x| x == s);
+    let wants_source = wants("source");
+    let wants_callers = wants("callers");
+    let wants_callees = wants("callees");
+    let wants_tests = wants("tests");
+    let wants_implements = wants("implements");
+
+    const SOURCE_PCT: usize = 30;
+    const CALLERS_PCT: usize = 20;
+    const CALLEES_PCT: usize = 20;
+    const TESTS_PCT: usize = 10;
+    const IMPLEMENTS_PCT: usize = 10;
+
+    let active_pct: usize = [
+        (wants_source, SOURCE_PCT),
+        (wants_callers, CALLERS_PCT),
+        (wants_callees, CALLEES_PCT),
+        (wants_tests, TESTS_PCT),
+        (wants_implements, IMPLEMENTS_PCT),
+    ]
+    .into_iter()
+    .filter_map(|(active, pct)| active.then_some(pct))
+    .sum();
+    let alloc_share = |pct: usize, active: bool| -> usize {
+        if active && active_pct > 0 {
+            max_bytes * pct / active_pct
+        } else {
+            0
+        }
+    };
+
+    // Expansion (step 9) only adds source snippets to callers/callees
+    // already selected below; it's a headroom check ("is there enough
+    // budget left over to bother"), not a user-selectable section, so it
+    // keeps a flat share of the raw max_bytes instead of competing with
+    // requested sections for renormalized space.
     let expansion_budget = max_bytes * 10 / 100;
+
     let mut used_bytes = 0usize;
     // Tracks only the source-snippet cut; caller/callee/test/implements
     // truncation is derived honestly below from `returned.len() < total` for
     // each section (see step 9.5), so a section capped by max_refs is never
     // reported as complete just because it didn't also blow its byte budget.
     let mut source_truncated = false;
+    // Unused share of one section's budget rolls forward into the next
+    // (source -> callers -> callees -> tests -> implements), so a section
+    // that's skipped or spends less than its share never strands bytes a
+    // later requested section could have used. Source is first, so it only
+    // ever carries the initial (always-zero) rollover, kept explicit here
+    // for symmetry with every later section's `budget = share + rollover`.
+    let mut rollover = 0usize;
+    let source_budget = alloc_share(SOURCE_PCT, wants_source) + rollover;
 
     // 3. Read source (FIX #5: truncate at line boundaries)
-    let source = if sections.contains(&"source".to_string()) {
+    let mut source_bytes_used = 0usize;
+    let source = if wants_source {
         let repo_root = indexer.repo_root();
         let full_path = repo_root.join(&symbol.file_path);
         if full_path.exists() {
@@ -143,7 +211,8 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             } else {
                 snippet
             };
-            used_bytes += snippet.len();
+            source_bytes_used = snippet.len();
+            used_bytes += source_bytes_used;
             Some(snippet)
         } else {
             None
@@ -151,6 +220,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     } else {
         None
     };
+    rollover = source_budget.saturating_sub(source_bytes_used);
 
     // 4. Get edges for callers/callees
     let edges =
@@ -166,13 +236,12 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     } else {
         vec![symbol.id]
     };
-    let wants = |s: &str| sections.iter().any(|x| x == s);
-    let incoming_cross = if wants("callers") || wants("tests") {
+    let incoming_cross = if wants_callers || wants_tests {
         cross_boundary_refs(indexer.db(), &cross_seeds, false, &ctx)?
     } else {
         Vec::new()
     };
-    let outgoing_cross = if wants("callees") {
+    let outgoing_cross = if wants_callees {
         cross_boundary_refs(indexer.db(), &cross_seeds, true, &ctx)?
     } else {
         Vec::new()
@@ -185,7 +254,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     // were dropped instead of asserting completeness it doesn't have. Once a
     // cap is hit we stop resolving+pushing refs (`still_adding = false`) but
     // keep scanning edges already in hand to finish the count.
-    let (mut callers, callers_total) = if sections.contains(&"callers".to_string()) {
+    let callers_budget = alloc_share(CALLERS_PCT, wants_callers) + rollover;
+    let mut callers_bytes_used = 0usize;
+    let (mut callers, callers_total) = if wants_callers {
         let mut caller_refs = Vec::new();
         let mut caller_bytes = 0usize;
         let mut caller_total = 0usize;
@@ -247,7 +318,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         let evidence = edge.evidence_snippet.clone();
                         let ref_json = serde_json::to_string(&caller_sym).unwrap_or_default();
                         let ref_bytes = ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                        if caller_bytes + ref_bytes > callers_budget {
+                        if caller_bytes + ref_bytes > callers_budget
+                            && !first_ref_fits_remaining(
+                                caller_refs.is_empty(),
+                                used_bytes,
+                                caller_bytes,
+                                ref_bytes,
+                                max_bytes,
+                            )
+                        {
                             still_adding = false;
                             continue;
                         }
@@ -280,7 +359,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 continue;
             }
             let ref_bytes = serde_json::to_string(r).map_or(0, |j| j.len());
-            if caller_bytes + ref_bytes > callers_budget {
+            if caller_bytes + ref_bytes > callers_budget
+                && !first_ref_fits_remaining(
+                    caller_refs.is_empty(),
+                    used_bytes,
+                    caller_bytes,
+                    ref_bytes,
+                    max_bytes,
+                )
+            {
                 still_adding = false;
                 continue;
             }
@@ -288,17 +375,21 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             caller_refs.push(r.clone());
         }
 
+        callers_bytes_used = caller_bytes;
         used_bytes += caller_bytes;
         (Some(caller_refs), caller_total)
     } else {
         (None, 0)
     };
+    rollover = callers_budget.saturating_sub(callers_bytes_used);
 
     // 6. Build callees (outgoing CALLS) - FIX #3: For class symbols, aggregate from methods
     //
     // Same honest-counting shape as callers: `callee_total` counts every
     // distinct match, `still_adding` gates whether we still resolve+push.
-    let (mut callees, callees_total) = if sections.contains(&"callees".to_string()) {
+    let callees_budget = alloc_share(CALLEES_PCT, wants_callees) + rollover;
+    let mut callees_bytes_used = 0usize;
+    let (mut callees, callees_total) = if wants_callees {
         let mut callee_refs = Vec::new();
         let mut callee_bytes = 0usize;
         let mut callee_total = 0usize;
@@ -356,7 +447,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                     serde_json::to_string(&callee_sym).unwrap_or_default();
                                 let ref_bytes =
                                     ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                                if callee_bytes + ref_bytes > callees_budget {
+                                if callee_bytes + ref_bytes > callees_budget
+                                    && !first_ref_fits_remaining(
+                                        callee_refs.is_empty(),
+                                        used_bytes,
+                                        callee_bytes,
+                                        ref_bytes,
+                                        max_bytes,
+                                    )
+                                {
                                     still_adding = false;
                                     continue;
                                 }
@@ -398,7 +497,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             let ref_json = serde_json::to_string(&callee_sym).unwrap_or_default();
                             let ref_bytes =
                                 ref_json.len() + evidence.as_ref().map_or(0, |e| e.len());
-                            if callee_bytes + ref_bytes > callees_budget {
+                            if callee_bytes + ref_bytes > callees_budget
+                                && !first_ref_fits_remaining(
+                                    callee_refs.is_empty(),
+                                    used_bytes,
+                                    callee_bytes,
+                                    ref_bytes,
+                                    max_bytes,
+                                )
+                            {
                                 still_adding = false;
                                 continue;
                             }
@@ -432,7 +539,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 continue;
             }
             let ref_bytes = serde_json::to_string(r).map_or(0, |j| j.len());
-            if callee_bytes + ref_bytes > callees_budget {
+            if callee_bytes + ref_bytes > callees_budget
+                && !first_ref_fits_remaining(
+                    callee_refs.is_empty(),
+                    used_bytes,
+                    callee_bytes,
+                    ref_bytes,
+                    max_bytes,
+                )
+            {
                 still_adding = false;
                 continue;
             }
@@ -440,14 +555,18 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             callee_refs.push(r.clone());
         }
 
+        callees_bytes_used = callee_bytes;
         used_bytes += callee_bytes;
         (Some(callee_refs), callee_total)
     } else {
         (None, 0)
     };
+    rollover = callees_budget.saturating_sub(callees_bytes_used);
 
     // 7. Find tests (incoming CALLS from test files)
-    let (mut tests, tests_total) = if sections.contains(&"tests".to_string()) {
+    let tests_budget = alloc_share(TESTS_PCT, wants_tests) + rollover;
+    let mut tests_bytes_used = 0usize;
+    let (mut tests, tests_total) = if wants_tests {
         let mut test_refs = Vec::new();
         let mut test_bytes = 0usize;
         let mut test_total = 0usize;
@@ -468,7 +587,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 }
                 let ref_json = serde_json::to_string(&test_sym).unwrap_or_default();
                 let ref_bytes = ref_json.len();
-                if test_bytes + ref_bytes > tests_budget {
+                if test_bytes + ref_bytes > tests_budget
+                    && !first_ref_fits_remaining(
+                        test_refs.is_empty(),
+                        used_bytes,
+                        test_bytes,
+                        ref_bytes,
+                        max_bytes,
+                    )
+                {
                     still_adding = false;
                     continue;
                 }
@@ -499,7 +626,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 continue;
             }
             let ref_bytes = serde_json::to_string(r).map_or(0, |j| j.len());
-            if test_bytes + ref_bytes > tests_budget {
+            if test_bytes + ref_bytes > tests_budget
+                && !first_ref_fits_remaining(
+                    test_refs.is_empty(),
+                    used_bytes,
+                    test_bytes,
+                    ref_bytes,
+                    max_bytes,
+                )
+            {
                 still_adding = false;
                 continue;
             }
@@ -509,11 +644,13 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 still_adding = false;
             }
         }
+        tests_bytes_used = test_bytes;
         used_bytes += test_bytes;
         (Some(test_refs), test_total)
     } else {
         (None, 0)
     };
+    rollover = tests_budget.saturating_sub(tests_bytes_used);
 
     // 7.5. Issue #68: an empty tests list means two different things -- "no
     // test-scope files were ever indexed" or "tests exist but none reach
@@ -521,7 +658,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     // genuine "no" and would be noise. Reuses #63's scope-count query, so
     // this only runs when the tests section was requested and came back
     // empty.
-    if sections.contains(&"tests".to_string())
+    if wants_tests
         && tests_total == 0
         && !indexer
             .db()
@@ -541,7 +678,8 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     // Same honest-counting shape as callers/callees/tests: `implements_total`
     // counts every distinct match, `still_adding` gates whether we still
     // collect once max_refs or the byte budget is hit.
-    let (implements, implements_total) = if sections.contains(&"implements".to_string()) {
+    let implements_budget = alloc_share(IMPLEMENTS_PCT, wants_implements) + rollover;
+    let (implements, implements_total) = if wants_implements {
         let mut impl_syms = Vec::new();
         let mut impl_bytes = 0usize;
         let mut impl_total = 0usize;
@@ -557,7 +695,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     continue;
                 }
                 let ref_bytes = serde_json::to_string(&impl_sym).unwrap_or_default().len();
-                if impl_bytes + ref_bytes > implements_budget {
+                if impl_bytes + ref_bytes > implements_budget
+                    && !first_ref_fits_remaining(
+                        impl_syms.is_empty(),
+                        used_bytes,
+                        impl_bytes,
+                        ref_bytes,
+                        max_bytes,
+                    )
+                {
                     still_adding = false;
                     continue;
                 }

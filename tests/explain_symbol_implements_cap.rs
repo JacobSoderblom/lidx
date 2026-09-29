@@ -152,21 +152,22 @@ fn implements_total_matches_returned_when_max_refs_raised_to_cover_all() {
 fn implements_respects_byte_budget_independent_of_max_refs() {
     // max_refs raised out of the way (50, well above the 15 bases) so the
     // only thing that can still cap the list is the byte budget itself.
-    // implements gets 10% of max_bytes; a tiny max_bytes squeezes that share
-    // below what 15 serialized Symbols need.
+    // `implements` is the only requested section, so it gets the whole
+    // (renormalized, issue #120) max_bytes -- a tight max_bytes still
+    // squeezes that budget below what 15 serialized Symbols need.
     let temp = many_bases_repo(15);
 
     let result = call(
         &temp,
         "explain_symbol",
-        r#"{"qualname":"bases.Foo","sections":["implements"],"max_refs":50,"max_bytes":8000}"#,
+        r#"{"qualname":"bases.Foo","sections":["implements"],"max_refs":50,"max_bytes":1200}"#,
     );
 
     let implements = result["implements"].as_array().expect("implements array");
     assert!(
         !implements.is_empty() && implements.len() < 15,
         "byte budget should have partially filled implements (some but not \
-         all of the 15 bases fit in an 800-byte share), got {}: {:?}",
+         all of the 15 bases fit in a 1200-byte budget), got {}: {:?}",
         implements.len(),
         result
     );
