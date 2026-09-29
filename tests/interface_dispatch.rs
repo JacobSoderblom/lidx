@@ -161,7 +161,7 @@ fn interface_dispatch_covers_chains_generics_and_explicit_impls() {
         ("Shop.Worker.Run", "Shop.ChainCaller.Go", "Shop.IB.Run"),
         ("Shop.Repo.Save", "Shop.RepoCaller.Store", "Shop.IRepo.Save"),
         (
-            "Shop.Publisher.Publish",
+            "Shop.Publisher.IPublisher.Publish",
             "Shop.PubCaller.Fire",
             "Shop.IPublisher.Publish",
         ),
@@ -182,4 +182,53 @@ fn interface_dispatch_covers_chains_generics_and_explicit_impls() {
             "{iface} trace: {r}"
         );
     }
+}
+
+/// Issue #181: an explicit interface implementation is a distinct symbol
+/// (`C.IA.Run`) and pairs only with the interface it names; the implicit
+/// method pairs with the remaining interfaces; direct calls bind implicit.
+#[test]
+fn explicit_impl_has_distinct_identity_and_pairs_only_with_named_interface() {
+    let (_tmp, repo, db) = common::setup_repo("cs_explicit_impl");
+    let mut indexer = Indexer::new(repo.clone(), db.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    let implicit = "Shop.C.Run";
+    let explicit = "Shop.C.IA.Run";
+
+    let r = call(&repo, &db, "explain_symbol", json!({"qualname": explicit}));
+    assert_eq!(r["symbol"]["name"], "Run", "{r}");
+    assert!(
+        names(&r["callers"]).contains(&"Shop.ViaA.Go".to_string()),
+        "explicit callers: {r}"
+    );
+    assert!(
+        !names(&r["callers"]).contains(&"Shop.Direct.Go".to_string()),
+        "explicit must not get direct callers: {r}"
+    );
+
+    let r = call(&repo, &db, "explain_symbol", json!({"qualname": implicit}));
+    let callers = names(&r["callers"]);
+    assert!(callers.contains(&"Shop.Direct.Go".to_string()), "{r}");
+    assert!(
+        !callers.contains(&"Shop.ViaA.Go".to_string()),
+        "implicit must not pair with IA.Run: {r}"
+    );
+
+    let down = |iface: &str| {
+        let r = call(
+            &repo,
+            &db,
+            "trace_flow",
+            json!({"start_qualname": iface, "direction": "downstream"}),
+        );
+        names(&r["trace"])
+    };
+    let a = down("Shop.IA.Run");
+    assert!(a.contains(&explicit.to_string()), "IA: {a:?}");
+    assert!(!a.contains(&implicit.to_string()), "IA: {a:?}");
+    let b = down("Shop.IB.Run");
+    assert!(b.contains(&implicit.to_string()), "IB: {b:?}");
+    assert!(!b.contains(&explicit.to_string()), "IB: {b:?}");
 }

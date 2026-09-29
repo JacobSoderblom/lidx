@@ -634,7 +634,12 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     if name.is_empty() {
         return;
     }
-    let qualname = build_qualname(ctx, &name);
+    // Explicit interface implementation (`void IA.Run()`): a distinct symbol
+    // `C.IA.Run` (name `Run`) so it never collides with an implicit `C.Run`.
+    let qualname = match explicit_interface_name(node, source) {
+        Some(iface) => build_qualname(ctx, &format!("{iface}.{name}")),
+        None => build_qualname(ctx, &name),
+    };
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     let signature = method_signature(node, source);
     if has_modifier(node, source, "private") {
@@ -679,6 +684,20 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         next_ctx.local_types = Rc::new(infer_local_types(node, source, &ctx.method_returns));
         walk_node(body, &next_ctx, source, output);
     }
+}
+
+/// Simple name of the interface in an `explicit_interface_specifier`
+/// (`N.IA<T>.` -> `IA`), or `None` for an ordinary method.
+fn explicit_interface_name(node: Node<'_>, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    let spec = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "explicit_interface_specifier")?;
+    let text = node_text(spec, source);
+    let text = text.trim().trim_end_matches('.');
+    let text = text.split('<').next().unwrap_or(text);
+    let last = text.rsplit('.').next().unwrap_or(text).trim();
+    (!last.is_empty()).then(|| last.to_string())
 }
 
 fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {

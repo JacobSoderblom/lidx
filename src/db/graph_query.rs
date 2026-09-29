@@ -40,11 +40,21 @@ pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
          JOIN symbols c ON c.graph_version = {gv}
                        AND c.qualname IN (
                            substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 1),
-                           substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 2))
+                           substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 2),
+                           substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - length(i.name) - 2))
          JOIN ({ancestors}) a ON a.cid = c.id
          JOIN symbols i ON i.id = a.iid
-         JOIN symbols im ON im.qualname = i.qualname || substr(cm.qualname, length(c.qualname) + 1)
-                        AND im.name = cm.name AND im.kind = 'method' AND im.graph_version = {gv}
+         JOIN symbols im ON im.name = cm.name AND im.kind = 'method' AND im.graph_version = {gv}
+                        AND (
+                            -- explicit impl `C.<Iface>.<name>`: pairs only with the interface it names
+                            (cm.qualname = c.qualname || '.' || i.name || '.' || cm.name
+                             AND im.qualname = i.qualname || '.' || cm.name)
+                            -- implicit impl `C.<name>`: not when it has an explicit twin for this interface
+                            OR (im.qualname = i.qualname || substr(cm.qualname, length(c.qualname) + 1)
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM symbols x
+                                     WHERE x.graph_version = {gv} AND x.kind = 'method'
+                                       AND x.qualname = c.qualname || '.' || i.name || '.' || cm.name)))
          JOIN files fc ON fc.id = cm.file_id
                       AND (fc.deleted_version IS NULL OR fc.deleted_version > {gv})
          JOIN files fi ON fi.id = im.file_id
