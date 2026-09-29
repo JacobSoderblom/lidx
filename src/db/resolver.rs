@@ -908,7 +908,7 @@ impl<'c> Resolver<'c> {
         while let Some(row) = rows.next()? {
             let qualname: String = row.get(col_qualname)?;
             if !matches_name_case_sensitive(&qualname, name) {
-                return Ok(false);
+                continue;
             }
             if on_match(row)? {
                 real_match_count += 1;
