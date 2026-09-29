@@ -723,7 +723,12 @@ impl<'c> Resolver<'c> {
         }
 
         if let Some(qn) = r.target_qualname
-            && let Some(id) = self.exact(qn, symbol_map, r.source_file_path)?
+            && let Some(id) = self.exact(
+                qn,
+                symbol_map,
+                r.source_file_path,
+                matches!(r.edge_kind, "IMPLEMENTS" | "EXTENDS" | "INHERITS"),
+            )?
         {
             return Ok(resolved(id, ResolutionKind::Exact));
         }
@@ -820,17 +825,26 @@ impl<'c> Resolver<'c> {
     /// same kind) collapses to the lowest id, anything else refuses rather
     /// than guess — issue #77's ambiguity rule, so incremental and fresh
     /// always agree on an ambiguous name.
+    ///
+    /// `types_only` is set for IMPLEMENTS/EXTENDS/INHERITS: the target text
+    /// names a type, so a same-named file `module`/`namespace` (C#
+    /// `IPublisher.cs` -> module `IPublisher`) must not win (issue #122).
+    /// The in-batch map carries no kind, so it is skipped for those edges.
     fn exact(
         &mut self,
         qualname: &str,
         symbol_map: &HashMap<String, i64>,
         caller_file: &str,
+        types_only: bool,
     ) -> Result<Option<i64>> {
-        if let Some(&id) = symbol_map.get(qualname) {
+        if !types_only && let Some(&id) = symbol_map.get(qualname) {
             return Ok(Some(id));
         }
         let gv = self.graph_version;
-        let candidates = query_exact_candidates(&mut self.exact, qualname, gv, caller_file)?;
+        let mut candidates = query_exact_candidates(&mut self.exact, qualname, gv, caller_file)?;
+        if types_only {
+            candidates.retain(|(_, _, kind)| !matches!(kind.as_str(), "module" | "namespace"));
+        }
         let resolved = collapse_exact_candidates(&candidates);
         if resolved.is_none() && candidates.len() > 1 {
             self.saw_ambiguous = true;
@@ -1307,7 +1321,7 @@ impl<'c> Resolver<'c> {
             let mut found: Option<i64> = None;
             for candidate in candidates {
                 let id = if exact_round {
-                    self.exact(candidate, symbol_map, caller_file)?
+                    self.exact(candidate, symbol_map, caller_file, false)?
                 } else {
                     let name = qualname_trailing_name(candidate);
                     let suffix = format!(".{candidate}");

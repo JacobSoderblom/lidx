@@ -492,24 +492,6 @@ impl Db {
         Ok(results)
     }
 
-    fn called_via_interface(&self, method_id: i64, graph_version: i64) -> Result<bool> {
-        let peers = self.dispatch_peers(method_id, graph_version)?;
-        if peers.interface_methods.is_empty() {
-            return Ok(false);
-        }
-        let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT 1 FROM edges WHERE target_symbol_id = ? AND kind = 'CALLS'
-               AND graph_version = ? LIMIT 1",
-        )?;
-        for id in peers.interface_methods {
-            if stmt.exists(rusqlite::params![id, graph_version])? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     pub fn dead_symbols(
         &self,
         limit: usize,
@@ -517,7 +499,10 @@ impl Db {
         paths: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<Symbol>> {
-        let sql = "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
+        // Issue #122: impl methods called only through their interface are live.
+        let dispatch_from = super::graph_query::dispatch_pairs_from(graph_version);
+        let gv = graph_version;
+        let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                           s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                           s.graph_version, s.commit_sha, s.stable_id
                    FROM symbols s
@@ -549,6 +534,15 @@ impl Db {
                          AND e.kind IN ('HTTP_ROUTE', 'RPC_IMPL', 'CHANNEL_SUBSCRIBE')
                          AND e.graph_version = ?
                      )
+                     AND NOT EXISTS (
+                       SELECT 1 {dispatch_from}
+                         AND cm.id = s.id
+                         AND EXISTS (
+                           SELECT 1 FROM edges ce
+                           WHERE ce.target_symbol_id = im.id AND ce.kind = 'CALLS'
+                             AND ce.graph_version = {gv}
+                         )
+                     )
                      AND NOT (s.kind IN ('method', 'function') AND (
                        EXISTS (
                          SELECT 1 FROM edges e
@@ -562,9 +556,9 @@ impl Db {
                            AND ur.edge_kind = 'IMPLEMENTS'
                            AND ur.graph_version = ?
                        )
-                     ))";
+                     ))");
 
-        let mut full_sql = String::from(sql);
+        let mut full_sql = sql;
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![
             &graph_version,
             &graph_version,
@@ -594,25 +588,16 @@ impl Db {
         let mut path_params = Vec::new();
         append_path_filters(&mut full_sql, &mut params, &mut path_params, paths, "f");
 
-        // No SQL LIMIT: the interface-dispatch filter below runs after the
-        // query, so limiting first could drop live symbols and starve results.
-        full_sql.push_str(" ORDER BY s.qualname");
+        full_sql.push_str(" ORDER BY s.qualname LIMIT ?");
+        let limit = limit as i64;
+        params.push(&limit);
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&full_sql)?;
         let rows = stmt.query_map(&*params, symbol_from_row)?;
         let mut results = Vec::new();
         for row in rows {
-            let sym = row?;
-            // Issue #122: an impl method called only through its interface
-            // has no CALLS edge of its own -- its interface method does.
-            if sym.kind == "method" && self.called_via_interface(sym.id, graph_version)? {
-                continue;
-            }
-            if results.len() >= limit {
-                break;
-            }
-            results.push(sym);
+            results.push(row?);
         }
         Ok(results)
     }

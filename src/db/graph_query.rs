@@ -4,139 +4,117 @@ use anyhow::Result;
 use rusqlite::OptionalExtension;
 use std::collections::{HashMap, HashSet};
 
+/// `FROM` clause of the one interface-dispatch query (issue #122), shared
+/// by [`Db::dispatch_pairs`] and `dead_symbols`: yields one row per
+/// `(im.id = interface method, cm.id = implementing method)` -- `cm`'s class
+/// `c` IMPLEMENTS the interface `i`, and `im` is `i`'s method with the same
+/// name (same qualname tail as `cm`, whatever the separator). The parent of
+/// `cm` is `qualname` minus `<sep><name>`, tried for 1- and 2-char
+/// separators (`.` / `::`). Callers append their own `WHERE`/`JOIN`s.
+/// `graph_version` is inlined (an `i64`, so injection-safe) so callers can
+/// mix it into queries with their own positional parameters.
+pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
+    let gv = graph_version;
+    format!(
+        "FROM symbols cm
+         JOIN symbols c ON c.graph_version = {gv}
+                       AND c.qualname IN (
+                           substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 1),
+                           substr(cm.qualname, 1, length(cm.qualname) - length(cm.name) - 2))
+         JOIN edges e ON e.source_symbol_id = c.id AND e.kind = 'IMPLEMENTS'
+                     AND e.graph_version = {gv}
+         JOIN symbols i ON i.id = e.target_symbol_id
+         JOIN symbols im ON im.qualname = i.qualname || substr(cm.qualname, length(c.qualname) + 1)
+                        AND im.name = cm.name AND im.kind = 'method' AND im.graph_version = {gv}
+         JOIN files fc ON fc.id = cm.file_id
+                      AND (fc.deleted_version IS NULL OR fc.deleted_version > {gv})
+         JOIN files fi ON fi.id = im.file_id
+                      AND (fi.deleted_version IS NULL OR fi.deleted_version > {gv})
+         WHERE cm.kind = 'method' AND cm.graph_version = {gv}"
+    )
+}
+
 impl Db {
-    /// Types that `type_id` IMPLEMENTS (outgoing edges).
-    ///
-    /// A bare-name IMPLEMENTS target ("IPublisher") can bind to the file's
-    /// same-named `module` symbol rather than the type (C# file modules
-    /// carry the bare file name as qualname), so an edge target that is a
-    /// module/namespace stands for every type sharing its name; callers
-    /// confirm a match by an exact member qualname.
-    pub fn implemented_types(&self, type_id: i64, graph_version: i64) -> Result<Vec<i64>> {
-        self.type_ids(
-            "SELECT DISTINCT t.id
-             FROM edges e
-             JOIN symbols t0 ON t0.id = e.target_symbol_id
-             JOIN symbols t ON t.graph_version = ?1
-                           AND t.kind IN ('interface', 'class', 'struct', 'trait')
-                           AND (t.id = t0.id
-                                OR (t0.kind IN ('module', 'namespace') AND t.name = t0.name))
-             WHERE e.source_symbol_id = ?2 AND e.kind = 'IMPLEMENTS' AND e.graph_version = ?1
-             ORDER BY t.id",
-            type_id,
-            graph_version,
-        )
-    }
-
-    /// Types that IMPLEMENT `type_id` (incoming edges), with the same
-    /// module-binding tolerance as [`Db::implemented_types`].
-    pub fn implementing_types(&self, type_id: i64, graph_version: i64) -> Result<Vec<i64>> {
-        self.type_ids(
-            "SELECT DISTINCT e.source_symbol_id
-             FROM symbols p
-             JOIN edges e ON e.kind = 'IMPLEMENTS' AND e.graph_version = ?1
-                         AND e.source_symbol_id IS NOT NULL
-             JOIN symbols t0 ON t0.id = e.target_symbol_id
-                            AND (t0.id = p.id
-                                 OR (t0.kind IN ('module', 'namespace') AND t0.name = p.name))
-             WHERE p.id = ?2
-             ORDER BY e.source_symbol_id",
-            type_id,
-            graph_version,
-        )
-    }
-
-    fn type_ids(&self, sql: &str, type_id: i64, graph_version: i64) -> Result<Vec<i64>> {
+    /// The one lookup behind interface dispatch (issue #122): a call through
+    /// an interface-typed receiver only ever resolves to the *interface*
+    /// method, so the implementing method looks uncalled. Returns every
+    /// `(interface_method_id, impl_method_id)` pair where either side is in
+    /// `ids`, via class IMPLEMENTS edges + same method name. Language-
+    /// agnostic. Deliberately not handled: interface inheritance chains,
+    /// EXTENDS'd virtual/abstract methods, generics, explicit interface impls.
+    pub fn dispatch_pairs(&self, ids: &[i64], graph_version: i64) -> Result<Vec<(i64, i64)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT DISTINCT im.id, cm.id {} AND (cm.id IN ({list}) OR im.id IN ({list}))
+             ORDER BY im.id, cm.id",
+            dispatch_pairs_from(graph_version)
+        );
         let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map(rusqlite::params![graph_version, type_id], |r| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// [`Db::dispatch_pairs`] for one method, split by side.
+    pub fn dispatch_peers(&self, symbol_id: i64, graph_version: i64) -> Result<DispatchPeers> {
+        let mut peers = DispatchPeers::default();
+        for (iface, imp) in self.dispatch_pairs(&[symbol_id], graph_version)? {
+            if imp == symbol_id {
+                peers.interface_methods.push(iface);
+            }
+            if iface == symbol_id {
+                peers.impl_methods.push(imp);
+            }
+        }
+        Ok(peers)
+    }
+
+    /// Types that IMPLEMENT `type_id` (incoming IMPLEMENTS edges).
+    pub fn implementing_types(&self, type_id: i64, graph_version: i64) -> Result<Vec<i64>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT source_symbol_id FROM edges
+             WHERE target_symbol_id = ?1 AND kind = 'IMPLEMENTS' AND graph_version = ?2
+               AND source_symbol_id IS NOT NULL
+             ORDER BY source_symbol_id",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![type_id, graph_version], |r| {
             r.get::<_, i64>(0)
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// The one lookup behind interface dispatch (issue #122): a call through
-    /// an interface-typed receiver only ever resolves to the *interface*
-    /// method, so the implementing method looks uncalled. Given a method,
-    /// returns the same-named methods on the interfaces its class
-    /// `IMPLEMENTS` (`interface_methods`), and the same-named methods on the
-    /// classes that `IMPLEMENTS` its interface (`impl_methods`). Empty for
-    /// non-methods and for classes/interfaces with no resolved IMPLEMENTS
-    /// edges. Language-agnostic: keyed on the qualname shape
-    /// `<parent><sep><name>` only.
-    pub fn dispatch_peers(&self, symbol_id: i64, graph_version: i64) -> Result<DispatchPeers> {
-        let mut peers = DispatchPeers::default();
-        let Some(sym) = self.get_symbol_by_id(symbol_id)? else {
-            return Ok(peers);
-        };
-        if sym.kind != "method" {
-            return Ok(peers);
-        }
-        let Some(head) = sym.qualname.strip_suffix(sym.name.as_str()) else {
-            return Ok(peers);
-        };
-        let (parent, sep) = if let Some(p) = head.strip_suffix("::") {
-            (p, "::")
-        } else if let Some(p) = head.strip_suffix('.') {
-            (p, ".")
-        } else {
-            return Ok(peers);
-        };
-        let parent_id = self.lookup_symbol_id(parent, graph_version)?;
-        let Some(parent_id) = parent_id else {
-            return Ok(peers);
-        };
-        let sibling = |type_ids: Vec<i64>, out: &mut Vec<i64>| -> Result<()> {
-            for type_id in type_ids {
-                let Some(t) = self.get_symbol_by_id(type_id)? else {
-                    continue;
-                };
-                let qn = format!("{}{sep}{}", t.qualname, sym.name);
-                if let Some(id) = self.lookup_symbol_id(&qn, graph_version)?
-                    && !out.contains(&id)
-                {
-                    out.push(id);
-                }
-            }
-            Ok(())
-        };
-        sibling(
-            self.implemented_types(parent_id, graph_version)?,
-            &mut peers.interface_methods,
-        )?;
-        sibling(
-            self.implementing_types(parent_id, graph_version)?,
-            &mut peers.impl_methods,
-        )?;
-        Ok(peers)
-    }
-}
-
-impl Db {
-    /// [`Db::dispatch_peers`] as synthetic CALLS edges (interface method ->
-    /// implementing method, `resolution_kind = "interface_dispatch"`, id 0)
-    /// so graph traversals (trace_flow, analyze_impact) can walk dynamic
-    /// dispatch with their ordinary edge handling: downstream from the
-    /// interface method reaches the impls, upstream from an impl reaches the
-    /// interface method and, through its own real edges, its callers.
-    pub fn dispatch_edges(&self, symbol_id: i64, graph_version: i64) -> Result<Vec<Edge>> {
-        let peers = self.dispatch_peers(symbol_id, graph_version)?;
-        let mut edges = Vec::new();
-        let pairs = peers
-            .interface_methods
-            .iter()
-            .map(|&i| (i, symbol_id, i))
-            .chain(peers.impl_methods.iter().map(|&m| (symbol_id, m, m)));
-        for (source, target, peer) in pairs {
-            let Some(peer_sym) = self.get_symbol_by_id(peer)? else {
-                continue;
+    /// [`Db::edges_for_symbols`] plus, for every id, the synthetic
+    /// interface-dispatch edges around it: CALLS edges from an interface
+    /// method to each implementing method (`resolution_kind =
+    /// "interface_dispatch"`, id 0), listed under both endpoints. Downstream
+    /// from the interface method reaches the impls; upstream from an impl
+    /// reaches the interface method and, through its real edges, its
+    /// callers. Used by graph traversals (trace_flow, analyze_impact);
+    /// every other `edges_for_symbol(s)` caller keeps raw-edge semantics.
+    pub fn edges_for_symbols_with_dispatch(
+        &self,
+        ids: &[i64],
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<HashMap<i64, Vec<Edge>>> {
+        let mut map = self.edges_for_symbols(ids, languages, graph_version)?;
+        for (iface, imp) in self.dispatch_pairs(ids, graph_version)? {
+            let peer_file = |id: i64| -> Result<String> {
+                Ok(self
+                    .get_symbol_by_id(id)?
+                    .map(|s| s.file_path)
+                    .unwrap_or_default())
             };
-            edges.push(Edge {
+            let make = |file_path: String| Edge {
                 id: 0,
-                file_path: peer_sym.file_path,
+                file_path,
                 kind: "CALLS".to_string(),
-                source_symbol_id: Some(source),
-                target_symbol_id: Some(target),
+                source_symbol_id: Some(iface),
+                target_symbol_id: Some(imp),
                 target_qualname: None,
                 detail: Some("interface dispatch".to_string()),
                 evidence_snippet: None,
@@ -149,9 +127,28 @@ impl Db {
                 trace_id: None,
                 span_id: None,
                 event_ts: None,
-            });
+            };
+            if ids.contains(&iface) {
+                map.entry(iface).or_default().push(make(peer_file(imp)?));
+            }
+            if ids.contains(&imp) {
+                map.entry(imp).or_default().push(make(peer_file(iface)?));
+            }
         }
-        Ok(edges)
+        Ok(map)
+    }
+
+    /// Single-symbol form of [`Db::edges_for_symbols_with_dispatch`].
+    pub fn edges_for_symbol_with_dispatch(
+        &self,
+        id: i64,
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<Vec<Edge>> {
+        Ok(self
+            .edges_for_symbols_with_dispatch(&[id], languages, graph_version)?
+            .remove(&id)
+            .unwrap_or_default())
     }
 }
 

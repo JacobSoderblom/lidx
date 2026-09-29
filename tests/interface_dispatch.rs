@@ -119,3 +119,32 @@ fn interface_dispatch_links_impl_and_interface_methods() {
         "implements: {r}"
     );
 }
+
+/// Same-named interfaces in different namespaces must not be cross-linked.
+#[test]
+fn interface_dispatch_does_not_link_same_named_interfaces_across_namespaces() {
+    let (_tmp, repo, db) = common::setup_repo("cs_interface_dispatch_ns");
+    let mut indexer = Indexer::new(repo.clone(), db.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    let r = call(
+        &repo,
+        &db,
+        "explain_symbol",
+        json!({"qualname": "Shop.IPublisher"}),
+    );
+    let implementors = names(&r["implements"]);
+    assert_eq!(implementors, vec!["Shop.Publisher".to_string()], "{r}");
+
+    let r = call(
+        &repo,
+        &db,
+        "trace_flow",
+        json!({"start_qualname": IFACE_M, "direction": "downstream"}),
+    );
+    assert!(
+        !names(&r["trace"]).contains(&"Other.OtherImpl.PublishDeleted".to_string()),
+        "trace: {r}"
+    );
+}

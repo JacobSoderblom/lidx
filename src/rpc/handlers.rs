@@ -344,15 +344,12 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         // Issue #122: calls through an interface-typed receiver bind to the
         // interface method; count them as callers of the implementing method.
         let mut target_ids = target_ids;
-        for id in target_ids.clone() {
-            for peer in indexer
-                .db()
-                .dispatch_peers(id, ctx.graph_version)?
-                .interface_methods
-            {
-                if !target_ids.contains(&peer) {
-                    target_ids.push(peer);
-                }
+        for (iface, imp) in indexer
+            .db()
+            .dispatch_pairs(&target_ids.clone(), ctx.graph_version)?
+        {
+            if target_ids.contains(&imp) && !target_ids.contains(&iface) {
+                target_ids.push(iface);
             }
         }
 
