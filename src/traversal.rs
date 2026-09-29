@@ -123,14 +123,41 @@ pub fn trace_flow(
     while let Some((current_id, dist, prev_file)) = queue.pop_front() {
         // A node at `dist == max_hops` was already recorded as a hop when
         // its parent expanded (below); it must not itself expand, or its
-        // children would be recorded at `max_hops + 1`. This is not a
-        // budget truncation -- the trace is complete up to the requested
-        // depth -- so `truncated` stays false here. BFS pops in
+        // children would be recorded at `max_hops + 1`. BFS pops in
         // non-decreasing `dist` order (all seeds start at 0, children are
         // always enqueued at `dist + 1`), so once one node hits the depth
-        // limit every remaining queued node does too, and it's safe to stop
-        // the whole loop rather than skip node by node.
+        // limit every remaining queued node does too -- the rest of the
+        // queue at this point *is* the frontier sitting at the ceiling, so
+        // it's safe to stop the whole loop rather than skip node by node.
+        //
+        // Whether stopping here is a truncation depends on whether that
+        // frontier actually has more graph beyond it. A trace whose
+        // reachable graph happens to end exactly at `max_hops` (the
+        // ceiling nodes are leaves, or their only further edges are
+        // filtered out) is complete, not truncated -- reporting truncation
+        // there would be a false positive. But a frontier that still has
+        // edges we're declining to follow genuinely lost information to
+        // the depth cutoff, so `truncated` must reflect that: it gates the
+        // "continue trace" next_hops in `handle_trace_flow`, one of lidx's
+        // most valuable affordances.
         if dist >= config.max_hops {
+            if !truncated {
+                let ceiling_frontier =
+                    std::iter::once(current_id).chain(queue.iter().map(|(id, _, _)| *id));
+                for candidate in ceiling_frontier {
+                    if has_further_edges(
+                        db,
+                        candidate,
+                        is_upstream,
+                        config,
+                        languages,
+                        graph_version,
+                    )? {
+                        truncated = true;
+                        break;
+                    }
+                }
+            }
             break;
         }
         if used_bytes >= config.max_bytes {
@@ -345,6 +372,58 @@ pub fn trace_flow(
         unresolved_reference_count,
         traversed_heuristic_kind,
     })
+}
+
+/// Whether `id` has at least one further edge that the BFS in
+/// [`trace_flow`] would follow -- i.e. whether stopping expansion at `id`
+/// (because it sits at the `max_hops` ceiling) actually discards reachable
+/// graph. Mirrors the edge filtering and direction resolution used inside
+/// the main loop (`allowed_kinds`, `xref_is_traversable`,
+/// `exclude_resolution_kinds`, direct edge resolution, and bridge-kind
+/// edges via `bridge_complement`), but only checks for existence -- it does
+/// not build hops, consult `visited`, or resolve bridge targets against the
+/// database, so it stays cheap even for a wide final frontier.
+fn has_further_edges(
+    db: &Db,
+    id: i64,
+    is_upstream: bool,
+    config: &TraceConfig,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> Result<bool> {
+    let edges = db.edges_for_symbol(id, languages, graph_version)?;
+    for edge in &edges {
+        if !config.allowed_kinds.contains(&edge.kind) || !crate::model::xref_is_traversable(edge) {
+            continue;
+        }
+        if crate::model::is_resolution_excluded(
+            edge.resolution_kind.as_deref(),
+            &config.exclude_resolution_kinds,
+        ) {
+            continue;
+        }
+
+        let next_id = if is_upstream {
+            if edge.target_symbol_id == Some(id) || edge.target_symbol_id.is_none() {
+                edge.source_symbol_id
+            } else {
+                continue;
+            }
+        } else {
+            if edge.source_symbol_id != Some(id) {
+                continue;
+            }
+            edge.target_symbol_id
+        };
+        if next_id.is_some() {
+            return Ok(true);
+        }
+
+        if edge.target_qualname.is_some() && bridge_complement(&edge.kind).is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn build_hop(
