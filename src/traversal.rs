@@ -1736,6 +1736,7 @@ mod null_target_regression_tests {
             receiver_type: ReceiverType::NotTracked,
             import_candidates: Vec::new(),
             bare_call: false,
+            call_shape: None,
         }
     }
 
