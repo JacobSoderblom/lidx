@@ -562,8 +562,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             "UPDATE edges SET derived = 1, call_shape = NULL WHERE call_shape = 'rpc:deferred'",
             [],
         )?;
+        let tx = conn.unchecked_transaction()?;
+        let mut dropped = 0;
         for table in ["edges", "unresolved_references"] {
-            legacy_receiver::convert_table(conn, table)?;
+            dropped += legacy_receiver::convert_table(&tx, table)?;
+        }
+        tx.commit()?;
+        if dropped > 0 {
+            eprintln!(
+                "migration 24: {dropped} deferred receiver marker(s) could not be parsed; \
+                 their receivers are now untracked"
+            );
         }
         conn.execute_batch(
             "DROP INDEX IF EXISTS idx_edges_deferred_sites;
@@ -890,11 +899,15 @@ mod legacy_receiver {
     const RUST: &str = "@ret:r:";
     const ARG: &str = "@arg:";
 
-    pub(super) fn convert_table(conn: &Connection, table: &str) -> Result<()> {
+    /// Converts one table; returns how many markers failed to parse.
+    pub(super) fn convert_table(conn: &Connection, table: &str) -> Result<usize> {
+        let mut dropped = 0;
         let rows: Vec<(i64, String)> = {
             let mut stmt = conn.prepare(&format!(
                 "SELECT id, receiver_type FROM {table}
-                 WHERE receiver_type LIKE '@%' OR receiver_type LIKE '%|%'"
+                 WHERE receiver_type LIKE '@%'
+                    OR (receiver_type LIKE '%|%'
+                        AND file_id IN (SELECT id FROM files WHERE language = 'csharp'))"
             ))?;
             let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
@@ -907,19 +920,25 @@ mod legacy_receiver {
             if column.starts_with('@') {
                 // A marker that no longer parses can't be re-judged; leave
                 // the receiver untracked, as a fresh reindex would.
-                let (kind, payload) = match marker(&column).map(|m| m.encode()) {
+                let (kind, payload) = match parse_legacy_marker(&column).map(|m| m.encode()) {
                     Some((kind, payload)) => (Some(kind), Some(payload)),
-                    None => (None, None),
+                    None => {
+                        dropped += 1;
+                        (None, None)
+                    }
                 };
                 update.execute(params![id, None::<String>, None::<String>, kind, payload])?;
             } else if let Some((scope, ty)) = column.split_once('|') {
                 update.execute(params![id, ty, Some(scope), None::<String>, None::<String>])?;
             }
         }
-        Ok(())
+        Ok(dropped)
     }
 
-    fn marker(column: &str) -> Option<DeferredMarker> {
+    /// The payload JSON comes from `DeferredMarker::encode`; a test in
+    /// `extract.rs` pins its exact shape, so changing it breaks loudly and
+    /// needs a new migration.
+    fn parse_legacy_marker(column: &str) -> Option<DeferredMarker> {
         if let Some(rest) = column.strip_prefix(ARG) {
             let mut parts = rest.splitn(4, ':');
             let index = parts.next()?.parse().ok()?;
@@ -932,13 +951,14 @@ mod legacy_receiver {
                 callee: parts.next()?.to_string(),
             }));
         }
+        // `@ret:r:` (Rust) is a prefix-extension of `@ret:` (C#): test it first.
         if column.starts_with(RUST) {
-            return rust(column).map(DeferredMarker::Rust);
+            return parse_legacy_rust(column).map(DeferredMarker::Rust);
         }
-        ret(column).map(DeferredMarker::Return)
+        parse_legacy_ret(column).map(DeferredMarker::Return)
     }
 
-    fn ret(column: &str) -> Option<DeferredReturn> {
+    fn parse_legacy_ret(column: &str) -> Option<DeferredReturn> {
         let rest = column.strip_prefix(RET)?;
         let (flags, callee) = rest.split_once(':')?;
         if !flags.chars().all(|c| matches!(c, 'a' | 's' | 'n')) {
@@ -946,7 +966,7 @@ mod legacy_receiver {
         }
         let (base, method) = callee.rsplit_once('.')?;
         let base = if base.starts_with(RET) {
-            DeferredBase::Call(Box::new(ret(base)?))
+            DeferredBase::Call(Box::new(parse_legacy_ret(base)?))
         } else {
             DeferredBase::Type(base.to_string())
         };
@@ -959,7 +979,7 @@ mod legacy_receiver {
         })
     }
 
-    fn step(text: &str) -> Option<Step> {
+    fn parse_legacy_step(text: &str) -> Option<Step> {
         Some(match text {
             "some" => Step::OptionSome,
             "ok" => Step::ResultOk,
@@ -971,7 +991,7 @@ mod legacy_receiver {
         })
     }
 
-    fn rust(column: &str) -> Option<RustDeferred> {
+    fn parse_legacy_rust(column: &str) -> Option<RustDeferred> {
         let rest = column.strip_prefix(RUST)?;
         let mut parts = rest.splitn(5, '|');
         let (tag, x, y) = (parts.next()?, parts.next()?, parts.next()?);
@@ -993,7 +1013,7 @@ mod legacy_receiver {
             .next()?
             .split(',')
             .filter(|s| !s.is_empty())
-            .map(step)
+            .map(parse_legacy_step)
             .collect::<Option<Vec<_>>>()?;
         let fallback = parts.next()?;
         Some(RustDeferred {
@@ -1394,7 +1414,7 @@ mod tests {
 
     #[test]
     fn migration_24_moves_string_encoded_receivers_into_typed_columns() {
-        use crate::indexer::extract::{DeferredMarker, DeferredReturn, TypeScope};
+        use crate::indexer::extract::{DeferredBase, DeferredMarker, DeferredReturn, TypeScope};
 
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -1428,11 +1448,43 @@ mod tests {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO files (id, path, hash, language, size, modified)
+             VALUES (2, 'a.py', 'h', 'python', 1, 1)",
+            [],
+        )
+        .unwrap();
+        // Nested `@ret:` base, Rust marker, unparseable marker, a `|` in a
+        // non-C# row, and unresolved_references rows.
+        for (id, file, receiver) in [
+            (7, 1, "@ret:s:@ret:a:Repo.Create.Load"),
+            (8, 1, "@ret:r:method|Engine|build|some,.unwrap|Fallback"),
+            (9, 1, "@ret:zz:garbage"),
+            (10, 2, "py|keeps"),
+        ] {
+            conn.execute(
+                "INSERT INTO edges (id, file_id, kind, target_qualname, graph_version, receiver_type)
+                 VALUES (?, ?, 'CALLS', 'x', 1, ?)",
+                params![id, file, receiver],
+            )
+            .unwrap();
+        }
+        for (id, receiver) in [(1, "@ret:as:Repo.Create"), (2, "N1|IStore")] {
+            conn.execute(
+                "INSERT INTO unresolved_references
+                    (id, file_id, edge_kind, reference_name, name_tail, reason, graph_version,
+                     receiver_type)
+                 VALUES (?, 1, 'CALLS', 'x', 'x', 'no_candidates', 1, ?)",
+                params![id, receiver],
+            )
+            .unwrap();
+        }
+        conn.execute(
             "UPDATE meta SET value = '23' WHERE key = 'schema_version'",
             [],
         )
         .unwrap();
         migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // idempotent
 
         type Row = (
             Option<String>,
@@ -1475,6 +1527,46 @@ mod tests {
         );
         assert_eq!(row(4).0.as_deref(), Some("Plain"));
         assert_eq!(row(5).0.as_deref(), Some(""));
+        let (ty, _, kind, payload) = row(7);
+        assert_eq!(ty, None);
+        let Some(DeferredMarker::Return(outer)) =
+            DeferredMarker::decode(&kind.unwrap(), &payload.unwrap())
+        else {
+            panic!("nested marker must convert");
+        };
+        assert!(outer.static_only && outer.method == "Load");
+        let DeferredBase::Call(inner) = outer.base else {
+            panic!("nested base must stay a call");
+        };
+        assert!(inner.awaited && inner.method == "Create");
+        let (_, _, kind, payload) = row(8);
+        assert!(matches!(
+            DeferredMarker::decode(&kind.unwrap(), &payload.unwrap()),
+            Some(DeferredMarker::Rust(r)) if r.fallback.as_deref() == Some("Fallback")
+                && r.steps.len() == 2
+        ));
+        assert_eq!(row(9), (None, None, None, None));
+        assert_eq!(row(10).0.as_deref(), Some("py|keeps"));
+        let ur = |id: i64| -> Row {
+            conn.query_row(
+                "SELECT receiver_type, receiver_scope, deferred_kind, deferred
+                 FROM unresolved_references WHERE id = ?",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+        };
+        let (ty, scope, kind, payload) = ur(1);
+        assert_eq!((ty, scope), (None, None));
+        assert!(matches!(
+            DeferredMarker::decode(&kind.unwrap(), &payload.unwrap()),
+            Some(DeferredMarker::Return(_))
+        ));
+        let (ty, scope, kind, _) = ur(2);
+        assert_eq!(
+            (ty.as_deref(), scope.as_deref(), kind),
+            (Some("IStore"), Some("N1"), None)
+        );
         let (derived, shape): (i64, Option<String>) = conn
             .query_row(
                 "SELECT derived, call_shape FROM edges WHERE id = 6",

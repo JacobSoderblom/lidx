@@ -205,7 +205,8 @@ pub const DEFERRED_KIND_ARGUMENT: &str = "argument";
 impl DeferredMarker {
     /// `(deferred_kind, deferred)` column values.
     pub fn encode(&self) -> (&'static str, String) {
-        let json = |r: serde_json::Result<String>| r.expect("deferred marker serialises");
+        // Invariant: these plain data types always serialise.
+        let json = |r: serde_json::Result<String>| r.unwrap_or_default();
         match self {
             Self::Return(m) => (DEFERRED_KIND_RETURN, json(serde_json::to_string(m))),
             Self::Rust(m) => (DEFERRED_KIND_RUST, json(serde_json::to_string(m))),
@@ -484,6 +485,41 @@ pub trait LanguageExtractor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PIN_RETURN: &str = r#"{"base":{"Call":{"base":{"Type":"Repo"},"method":"Create","awaited":true,"static_only":true,"name_only":false}},"method":"Load","awaited":false,"static_only":false,"name_only":false}"#;
+    const PIN_RUST: &str = r#"{"source":{"Method":{"receiver_type":"E","method":"m"}},"steps":[{"Tuple":1},{"Method":"u"}],"fallback":null}"#;
+    const PIN_ARG: &str = r#"{"index":1,"name":null,"arg_count":2,"callee":"H.M"}"#;
+
+    /// The stored JSON is a persisted format (migration 24 writes it): a
+    /// change here needs a new migration.
+    #[test]
+    fn deferred_marker_json_shape_is_pinned() {
+        let ret = DeferredMarker::Return(DeferredReturn::on_call(
+            DeferredReturn::on_type("Repo", "Create", true, true),
+            "Load",
+            false,
+        ));
+        assert_eq!(ret.encode().0, "return");
+        assert_eq!(ret.encode().1, PIN_RETURN);
+        let rust = DeferredMarker::Rust(RustDeferred {
+            source: DeferredSource::Method {
+                receiver_type: "E".into(),
+                method: "m".into(),
+            },
+            steps: vec![Step::Tuple(1), Step::Method("u".into())],
+            fallback: None,
+        });
+        assert_eq!(rust.encode().0, "rust");
+        assert_eq!(rust.encode().1, PIN_RUST);
+        let arg = DeferredMarker::Argument(DeferredArgument {
+            index: 1,
+            name: None,
+            arg_count: 2,
+            callee: "H.M".into(),
+        });
+        assert_eq!(arg.encode().0, "argument");
+        assert_eq!(arg.encode().1, PIN_ARG);
+    }
 
     #[test]
     fn deferred_markers_round_trip() {

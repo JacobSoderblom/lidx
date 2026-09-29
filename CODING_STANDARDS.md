@@ -119,7 +119,7 @@ Key changes
 
 ## SQL and Schema
 
-Migrations live in `src/db/migrations/`. Use the existing migration numbering scheme. All schema changes require a migration. Never modify existing migrations — always create a new one.
+Migrations live in `src/db/migrations.rs`. Use the existing migration numbering scheme. All schema changes require a migration. Never modify existing migrations — always create a new one.
 
 ---
 
