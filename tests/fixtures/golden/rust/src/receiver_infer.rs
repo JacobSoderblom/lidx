@@ -8,6 +8,10 @@ impl Engine {
         Engine {}
     }
 
+    pub fn from_parts() -> Result<Self, ()> {
+        Ok(Engine {})
+    }
+
     pub fn resolve(&self) -> u32 {
         1
     }
@@ -56,4 +60,35 @@ pub fn via_unknown(e: impl Sized) -> u32 {
 
 fn make() -> Engine {
     Engine {}
+}
+
+/// `let mut e = Engine::new()` is a `mut_pattern`.
+pub fn via_mut_local() -> u32 {
+    let mut e = Engine::new();
+    e.resolve()
+}
+
+/// `.unwrap()` peeled off the initializer.
+pub fn via_unwrap() -> u32 {
+    let e = Engine::from_parts().unwrap();
+    e.resolve()
+}
+
+/// `?` peeled off the initializer.
+pub fn via_try() -> Option<u32> {
+    let e = Engine::from_parts()?;
+    Some(e.resolve())
+}
+
+/// A generic param `T` is not a receiver type: nothing locally knowable, so
+/// the ambiguous bare name stays unresolved (as before inference existed).
+pub fn via_generic<T: Sized>(e: T) -> u32 {
+    e.resolve()
+}
+
+/// A tuple pattern rebinds `e`, poisoning the earlier `Engine::new()` type.
+pub fn via_shadowed_by_tuple() -> u32 {
+    let e = Engine::new();
+    let (e, _) = (Cache, 0);
+    e.resolve()
 }

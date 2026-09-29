@@ -665,7 +665,12 @@ fn handle_function(
             .last()
             .map(|c| c.rsplit("::").next().unwrap_or(c).to_string());
         let mut local_types = HashMap::new();
-        collect_local_types(node, source, self_ty.as_deref(), &mut local_types);
+        let env = TypeEnv {
+            source,
+            self_ty: self_ty.as_deref(),
+            generics: collect_generic_names(node, source),
+        };
+        collect_local_types(node, &env, &mut local_types);
         next_ctx.local_types = Rc::new(local_types);
 
         walk_node(body, &next_ctx, source, output);
@@ -874,59 +879,121 @@ const TRANSPARENT_WRAPPERS: &[&str] = &[
     "Arc", "Rc", "Box", "Cow", "Option", "Result", "Vec", "RefCell", "Cell", "Mutex", "RwLock",
 ];
 
-/// Bare type name of a type node: peels `&`/`&mut`, generics and paths
-/// (`&mut crate::a::Resolver<'_>` -> `Resolver`). `None` for anything that
-/// is not a nominal, capitalised, non-wrapper type.
-fn type_node_name(node: Node<'_>, source: &str, self_ty: Option<&str>) -> Option<String> {
-    let mut current = node;
-    loop {
-        match current.kind() {
-            "reference_type" | "generic_type" => current = current.child_by_field_name("type")?,
-            "scoped_type_identifier" => current = current.child_by_field_name("name")?,
-            "type_identifier" => break,
-            _ => return None,
-        }
-    }
-    let name = node_text(current, source);
-    let name = if name == "Self" {
-        self_ty?.to_string()
-    } else {
-        name
-    };
-    let first = name.chars().next()?;
-    (first.is_uppercase() && !TRANSPARENT_WRAPPERS.contains(&name.as_str())).then_some(name)
+/// What `collect_local_types` needs to turn a type name into a receiver type.
+struct TypeEnv<'a> {
+    source: &'a str,
+    self_ty: Option<&'a str>,
+    /// Generic parameter names of the enclosing fn and impl/trait: a
+    /// receiver of type `T` says nothing about which type declares the method.
+    generics: HashSet<String>,
 }
 
-/// Type of a `let` initializer: `T::new(..)`/`T::default()`/`T::with_*`/
-/// `T::from*` or `T { .. }`.
-fn value_type_name(value: Node<'_>, source: &str, self_ty: Option<&str>) -> Option<String> {
-    match value.kind() {
-        "struct_expression" => type_node_name(value.child_by_field_name("name")?, source, self_ty),
-        "call_expression" => {
-            let function = value.child_by_field_name("function")?;
-            if function.kind() != "scoped_identifier" {
-                return None;
-            }
-            let ctor = node_text(function.child_by_field_name("name")?, source);
-            if !(ctor == "new"
-                || ctor == "default"
-                || ctor.starts_with("with_")
-                || ctor.starts_with("from"))
-            {
-                return None;
-            }
-            let path = function.child_by_field_name("path")?;
-            let ty = match path.kind() {
-                "identifier" if node_text(path, source) == "Self" => self_ty?.to_string(),
-                "identifier" => node_text(path, source),
-                "scoped_identifier" => node_text(path.child_by_field_name("name")?, source),
-                _ => return None,
-            };
-            let first = ty.chars().next()?;
-            (first.is_uppercase() && !TRANSPARENT_WRAPPERS.contains(&ty.as_str())).then_some(ty)
-        }
-        _ => None,
+impl TypeEnv<'_> {
+    /// Accepts only nominal, capitalised, non-wrapper, non-generic names;
+    /// `Self` maps to the enclosing impl type.
+    fn usable(&self, name: String) -> Option<String> {
+        let name = if name == "Self" {
+            self.self_ty?.to_string()
+        } else {
+            name
+        };
+        (name.chars().next()?.is_uppercase()
+            && !TRANSPARENT_WRAPPERS.contains(&name.as_str())
+            && !self.generics.contains(&name))
+        .then_some(name)
     }
+
+    /// Bare type name of a type node: peels `&`/`&mut`, generics and paths
+    /// (`&mut crate::a::Resolver<'_>` -> `Resolver`).
+    fn type_name(&self, node: Node<'_>) -> Option<String> {
+        let mut current = node;
+        loop {
+            match current.kind() {
+                "reference_type" | "generic_type" => {
+                    current = current.child_by_field_name("type")?
+                }
+                "scoped_type_identifier" => current = current.child_by_field_name("name")?,
+                "type_identifier" => break,
+                _ => return None,
+            }
+        }
+        self.usable(node_text(current, self.source))
+    }
+
+    /// Type of a `let` initializer: `T::new(..)`/`T::default()`/`T::with_*`/
+    /// `T::from*`, or `T { .. }`, optionally followed by `?`, `.unwrap()` or
+    /// `.expect(..)`.
+    fn value_type(&self, value: Node<'_>) -> Option<String> {
+        let mut value = value;
+        loop {
+            match value.kind() {
+                "try_expression" => value = value.named_child(0)?,
+                "call_expression" => {
+                    let function = value.child_by_field_name("function")?;
+                    if function.kind() == "field_expression" {
+                        let field = node_text(function.child_by_field_name("field")?, self.source);
+                        if field != "unwrap" && field != "expect" {
+                            return None;
+                        }
+                        value = function.child_by_field_name("value")?;
+                    } else {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        match value.kind() {
+            "struct_expression" => self.type_name(value.child_by_field_name("name")?),
+            "call_expression" => {
+                let function = value.child_by_field_name("function")?;
+                if function.kind() != "scoped_identifier" {
+                    return None;
+                }
+                let ctor = node_text(function.child_by_field_name("name")?, self.source);
+                if !(ctor == "new"
+                    || ctor == "default"
+                    || ctor.starts_with("with_")
+                    || ctor.starts_with("from"))
+                {
+                    return None;
+                }
+                let path = function.child_by_field_name("path")?;
+                let ty = match path.kind() {
+                    "identifier" => node_text(path, self.source),
+                    "scoped_identifier" => {
+                        node_text(path.child_by_field_name("name")?, self.source)
+                    }
+                    _ => return None,
+                };
+                self.usable(ty)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Generic parameter names of `node` and its enclosing impl/trait items.
+fn collect_generic_names(node: Node<'_>, source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut current = Some(node);
+    while let Some(n) = current {
+        if let Some(params) = n.child_by_field_name("type_parameters") {
+            let mut cursor = params.walk();
+            for p in params.named_children(&mut cursor) {
+                let id = match p.kind() {
+                    "type_identifier" => Some(p),
+                    "constrained_type_parameter" => p.child_by_field_name("left"),
+                    _ => None,
+                };
+                if let Some(id) = id {
+                    out.insert(node_text(id, source));
+                }
+            }
+        }
+        current = n.parent();
+    }
+    out
 }
 
 /// Record `name -> type` for one binding; a second binding of the same
@@ -942,68 +1009,73 @@ fn record_local(out: &mut HashMap<String, Option<String>>, name: String, ty: Opt
     }
 }
 
+/// `x` or `mut x` -> the identifier node.
+fn simple_binding(pat: Node<'_>) -> Option<Node<'_>> {
+    match pat.kind() {
+        "identifier" => Some(pat),
+        "mut_pattern" => {
+            let mut cursor = pat.walk();
+            pat.named_children(&mut cursor)
+                .find(|c| c.kind() == "identifier")
+        }
+        _ => None,
+    }
+}
+
+/// Poison every name a pattern binds (tuple/struct/match/`if let`/closure
+/// shapes we do not type), so a shadowed name never keeps a stale type.
+fn poison_pattern(pat: Node<'_>, source: &str, out: &mut HashMap<String, Option<String>>) {
+    if matches!(pat.kind(), "identifier" | "shorthand_field_identifier") {
+        record_local(out, node_text(pat, source), None);
+    }
+    let mut cursor = pat.walk();
+    for child in pat.children(&mut cursor) {
+        poison_pattern(child, source, out);
+    }
+}
+
 /// Locally-knowable receiver types for one function: typed params
-/// (`x: T`, `&T`, `&mut T<'_>`) and `let x: T = ..` / `let x = T::new(..)` /
-/// `let x = T { .. }`. Closure params and `for` patterns poison their names.
-/// Nested `fn` items are skipped (they are collected on their own).
+/// (`x: T`, `&T`, `&mut T<'_>`) and `let [mut] x: T = ..` /
+/// `let x = T::new(..)` / `let x = T { .. }`. Every other binding shape
+/// poisons the names it binds. Nested `fn` items are collected on their own.
 fn collect_local_types(
     node: Node<'_>,
-    source: &str,
-    self_ty: Option<&str>,
+    env: &TypeEnv<'_>,
     out: &mut HashMap<String, Option<String>>,
 ) {
+    let source = env.source;
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
             "function_item" => continue,
-            "parameter" => {
-                if let Some(pat) = child.child_by_field_name("pattern")
-                    && pat.kind() == "identifier"
-                {
-                    let ty = child
-                        .child_by_field_name("type")
-                        .and_then(|t| type_node_name(t, source, self_ty));
-                    record_local(out, node_text(pat, source), ty);
-                }
-            }
-            "let_declaration" => {
-                if let Some(pat) = child.child_by_field_name("pattern")
-                    && pat.kind() == "identifier"
-                {
-                    let ty = child
-                        .child_by_field_name("type")
-                        .and_then(|t| type_node_name(t, source, self_ty))
-                        .or_else(|| {
-                            child
-                                .child_by_field_name("value")
-                                .and_then(|v| value_type_name(v, source, self_ty))
-                        });
-                    record_local(out, node_text(pat, source), ty);
-                }
-            }
-            "closure_parameters" => {
-                let mut c = child.walk();
-                for p in child.named_children(&mut c) {
-                    let id = if p.kind() == "parameter" {
-                        p.child_by_field_name("pattern")
-                    } else {
-                        Some(p)
-                    };
-                    if let Some(id) = id.filter(|n| n.kind() == "identifier") {
-                        record_local(out, node_text(id, source), None);
+            "parameter" | "let_declaration" => {
+                if let Some(pat) = child.child_by_field_name("pattern") {
+                    match simple_binding(pat) {
+                        Some(id) => {
+                            let ty = child
+                                .child_by_field_name("type")
+                                .and_then(|t| env.type_name(t))
+                                .or_else(|| {
+                                    child
+                                        .child_by_field_name("value")
+                                        .and_then(|v| env.value_type(v))
+                                });
+                            record_local(out, node_text(id, source), ty);
+                        }
+                        None => poison_pattern(pat, source, out),
                     }
                 }
             }
-            "for_expression" => {
-                if let Some(pat) = child.child_by_field_name("pattern")
-                    && pat.kind() == "identifier"
-                {
-                    record_local(out, node_text(pat, source), None);
+            "for_expression" | "let_condition" => {
+                // Only the `pattern` field binds; the rest is walked below.
+                if let Some(pat) = child.child_by_field_name("pattern") {
+                    poison_pattern(pat, source, out);
                 }
             }
+            "match_pattern" | "closure_parameters" => poison_pattern(child, source, out),
             _ => {}
         }
-        collect_local_types(child, source, self_ty, out);
+        collect_local_types(child, env, out);
     }
 }
 

@@ -234,3 +234,16 @@ crate::receiver_infer::via_annotated_local CALLS crate::receiver_infer::Engine::
 crate::receiver_infer::via_ref_param CALLS crate::receiver_infer::Engine::resolve receiver_type
 crate::receiver_infer::via_mut_generic_param CALLS crate::receiver_infer::Engine::resolve receiver_type
 crate::receiver_infer::via_unknown CALLS UNRESOLVED
+crate::receiver_infer::via_mut_local CALLS crate::receiver_infer::Engine::new two_segment
+crate::receiver_infer::via_mut_local CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_unwrap CALLS crate::receiver_infer::Engine::from_parts two_segment
+crate::receiver_infer::via_unwrap CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_try CALLS crate::receiver_infer::Engine::from_parts two_segment
+crate::receiver_infer::via_try CALLS crate::receiver_infer::Engine::resolve receiver_type
+crate::receiver_infer::via_generic CALLS UNRESOLVED
+crate::receiver_infer::via_shadowed_by_tuple CALLS crate::receiver_infer::Engine::new two_segment
+crate::receiver_infer::via_shadowed_by_tuple CALLS UNRESOLVED
+# Std prelude calls (`Ok`, `Some`) and the peeled `.unwrap()` stay unresolved.
+crate::receiver_infer::Engine::from_parts CALLS UNRESOLVED
+crate::receiver_infer::via_unwrap CALLS UNRESOLVED
+crate::receiver_infer::via_try CALLS UNRESOLVED
