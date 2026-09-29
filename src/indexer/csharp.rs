@@ -2869,7 +2869,11 @@ fn handle_base_list(
         if child.kind() != "base_list" {
             continue;
         }
-        bases.extend(base_list_types(child, source));
+        bases.extend(
+            base_list_types(child, source)
+                .into_iter()
+                .map(|b| strip_type_args(&b)),
+        );
     }
     if bases.is_empty() {
         return;
@@ -2930,6 +2934,22 @@ fn handle_base_list(
             }
         }
     }
+}
+
+/// `IRepo<Order>` -> `IRepo`; `A<B>.C<D>` -> `A.C`. Type arguments never
+/// take part in qualname resolution.
+fn strip_type_args(name: &str) -> String {
+    let mut depth = 0usize;
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' if depth > 0 => depth -= 1,
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out.trim().to_string()
 }
 
 fn base_list_types(node: Node<'_>, source: &str) -> Vec<String> {
@@ -3608,6 +3628,17 @@ fn classify_annotation(text: &str) -> LocalType {
     if text.is_empty() {
         return LocalType::Other;
     }
+    // A generic *interface* type (`IRepo<Order>`) tracks as its bare name so
+    // calls through it dispatch (issue #173); other generics stay untracked
+    // (`List<int>` must not bind to an unrelated project `List`).
+    let stripped;
+    let text =
+        if text.contains('<') && is_likely_interface_name(text.split('<').next().unwrap_or("")) {
+            stripped = strip_type_args(text);
+            stripped.as_str()
+        } else {
+            text
+        };
     if text.contains(['<', '[', '(', ')', '{', '*']) {
         return LocalType::Other;
     }

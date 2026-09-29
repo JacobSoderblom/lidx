@@ -148,3 +148,38 @@ fn interface_dispatch_does_not_link_same_named_interfaces_across_namespaces() {
         "trace: {r}"
     );
 }
+
+/// Issue #173: chains, generic interfaces, explicit implementations.
+#[test]
+fn interface_dispatch_covers_chains_generics_and_explicit_impls() {
+    let (_tmp, repo, db) = common::setup_repo("cs_interface_dispatch_gaps");
+    let mut indexer = Indexer::new(repo.clone(), db.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+
+    for (imp, caller, iface) in [
+        ("Shop.Worker.Run", "Shop.ChainCaller.Go", "Shop.IB.Run"),
+        ("Shop.Repo.Save", "Shop.RepoCaller.Store", "Shop.IRepo.Save"),
+        (
+            "Shop.Publisher.Publish",
+            "Shop.PubCaller.Fire",
+            "Shop.IPublisher.Publish",
+        ),
+    ] {
+        let r = call(&repo, &db, "explain_symbol", json!({"qualname": imp}));
+        assert!(
+            names(&r["callers"]).contains(&caller.to_string()),
+            "{imp} callers: {r}"
+        );
+        let r = call(
+            &repo,
+            &db,
+            "trace_flow",
+            json!({"start_qualname": iface, "direction": "downstream"}),
+        );
+        assert!(
+            names(&r["trace"]).contains(&imp.to_string()),
+            "{iface} trace: {r}"
+        );
+    }
+}
