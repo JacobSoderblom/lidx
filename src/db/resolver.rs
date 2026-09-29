@@ -59,10 +59,14 @@
 
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
-use crate::indexer::extract::{CallShape, DEFERRED_RETURN_PREFIX, DeferredReturn, ReceiverType};
+use crate::indexer::extract::{
+    CallShape, DEFERRED_ARG_PREFIX, DEFERRED_MARKER_PREFIX, DeferredArgument, DeferredReturn,
+    ReceiverType,
+};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 /// An edge's target as the extractor saw it: what the resolver binds.
 pub(crate) struct Reference<'a> {
@@ -280,7 +284,7 @@ impl Resolution {
                         via_language_fallback: false,
                     },
                 ..
-            } if !extracted.is_some_and(|e| e.starts_with(DEFERRED_RETURN_PREFIX)) => Some(""),
+            } if !extracted.is_some_and(ReceiverType::is_deferred_column) => Some(""),
             _ => extracted,
         }
     }
@@ -294,6 +298,10 @@ impl Resolution {
         }
     }
 }
+
+/// `LanguageProfile::parameter_type`: (callee signature, argument index,
+/// argument name) -> parameter type name.
+pub(crate) type ParameterTypeFn = fn(&str, usize, Option<&str>) -> Option<String>;
 
 /// A language's qualname conventions, import-miss fallback policy and
 /// visibility rule, consulted here instead of a hardcoded per-language
@@ -340,6 +348,11 @@ pub(crate) struct LanguageProfile {
     /// signature and whether the call was awaited (`ReceiverType::Deferred`).
     /// `None` for a language that never defers a receiver.
     pub return_receiver: Option<fn(signature: &str, awaited: bool) -> Option<String>>,
+    /// The type name of the parameter at `index` (or named `name`) of a
+    /// callee's indexed signature, for a deferred argument marker
+    /// (`ReceiverType::deferred_argument`). `None` for a language that
+    /// never defers an argument.
+    pub parameter_type: Option<ParameterTypeFn>,
 }
 
 impl LanguageProfile {
@@ -355,6 +368,7 @@ impl LanguageProfile {
         import_member_fallback: false,
         visibility: VisibilityRule::None,
         return_receiver: None,
+        parameter_type: None,
     };
 }
 
@@ -573,7 +587,7 @@ const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.ki
 /// `SAME_LANG_SQL`'s doc — a case-sensitive re-check after the fetch means
 /// a `LIMIT` could truncate the set before a real match past the cutoff is
 /// ever seen.
-const ANY_LANG_SQL: &str = "SELECT s.id, s.qualname
+const ANY_LANG_SQL: &str = "SELECT s.id, s.qualname, s.kind, s.signature, f.language
      FROM symbols s
      JOIN files f ON s.file_id = f.id
      WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
@@ -747,6 +761,24 @@ impl<'c> Resolver<'c> {
         r: &Reference<'_>,
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
+        // A deferred argument (`new(..)` passed to a call) becomes the type of
+        // the callee's parameter, then resolves as `new T(..)` would.
+        if let Some(arg) = r
+            .receiver_type
+            .and_then(ReceiverType::parse_deferred_argument)
+        {
+            return Ok(match self.deferred_argument_type(&arg, r.source_lang)? {
+                Some(ty) => self.resolve(
+                    &Reference {
+                        target_qualname: Some(&ty),
+                        receiver_type: None,
+                        ..*r
+                    },
+                    symbol_map,
+                )?,
+                None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
+            });
+        }
         // A deferred receiver (`ReceiverType::Deferred`) becomes the callee's
         // declared return type, or `""` (unresolved) -- never a guess.
         let deferred;
@@ -788,7 +820,84 @@ impl<'c> Resolver<'c> {
                 kind,
             });
         }
+        // `new I()` / `: base()` never construct an interface: a name that
+        // only reaches one refuses instead of binding it.
+        if let (Some(shape), Resolution::Resolved { target_id, .. }) = (r.call_shape, resolution)
+            && shape.is_new
+        {
+            let kind: Option<String> = self
+                .conn
+                .query_row("SELECT kind FROM symbols WHERE id = ?", [target_id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if kind.as_deref() == Some("interface") {
+                return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+            }
+        }
         Ok(resolution)
+    }
+
+    /// The repo type a deferred argument constructs: the declared type of the
+    /// parameter it is passed for, shared by every arity-admitted overload of
+    /// the callee (differing or unreadable parameters -> `None`, never a
+    /// guess) and naming a repo type (which rules out a type parameter).
+    fn deferred_argument_type(
+        &self,
+        arg: &DeferredArgument<'_>,
+        lang: &str,
+    ) -> Result<Option<String>> {
+        let Some(parameter_type) = profile_for(lang).parameter_type else {
+            return Ok(None);
+        };
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT s.signature FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.kind = 'method' AND f.language = ?4
+               AND (s.qualname = ?1 OR substr(s.qualname, -length(?2)) = ?2)
+               AND s.graph_version = ?3
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?3)",
+        )?;
+        let suffix = format!(".{}", arg.callee);
+        let rows = stmt.query_map(
+            params![arg.callee, suffix, self.graph_version, lang],
+            |row| row.get::<_, Option<String>>(0),
+        )?;
+        let arity = Some(Arity {
+            args: arg.arg_count,
+            value_receiver: false,
+        });
+        let mut found: Option<String> = None;
+        for row in rows {
+            let Some(sig) = row? else {
+                return Ok(None);
+            };
+            if !arity_admits(arity, "method", Some(&sig)) {
+                continue;
+            }
+            let Some(ty) = parameter_type(&sig, arg.index, arg.name) else {
+                return Ok(None);
+            };
+            match &found {
+                Some(prev) if *prev != ty => return Ok(None),
+                _ => found = Some(ty),
+            }
+        }
+        let Some(ty) = found else {
+            return Ok(None);
+        };
+        Ok(self.is_repo_type(&ty, lang)?.then_some(ty))
+    }
+
+    /// Whether a class-like symbol named `name` exists in `lang`.
+    fn is_repo_type(&self, name: &str, lang: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.name = ?1 AND s.kind IN ('class', 'struct', 'interface', 'record', 'enum')
+               AND f.language = ?2 AND s.graph_version = ?3
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?3))",
+            params![name, lang, self.graph_version],
+            |row| row.get(0),
+        )?)
     }
 
     /// The receiver type of `ty.method(..)`'s return value: the return type
@@ -837,14 +946,7 @@ impl<'c> Resolver<'c> {
         let Some(ret) = found else {
             return Ok(String::new());
         };
-        let is_repo_type: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
-             WHERE s.name = ?1 AND s.kind IN ('class', 'struct', 'interface', 'record', 'enum')
-               AND f.language = ?2 AND s.graph_version = ?3
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?3))",
-            params![ret, lang, self.graph_version],
-            |row| row.get(0),
-        )?;
+        let is_repo_type = self.is_repo_type(&ret, lang)?;
         Ok(if is_repo_type { ret } else { String::new() })
     }
 
@@ -1159,9 +1261,20 @@ impl<'c> Resolver<'c> {
     /// lazily, same early-exit-on-second-match shape as `same_lang_lookup`
     /// (see `ANY_LANG_SQL`'s doc for why it carries no `LIMIT`).
     fn any_lang_lookup(&mut self, query_params: &[&dyn ToSql], name: &str) -> Result<Option<i64>> {
+        let arity = self.arity;
         let mut rows = self.any_lang.query(query_params)?;
         let mut matched: Option<i64> = None;
         let is_ambiguous = Self::check_case_sensitive_matches(&mut rows, name, 1, |row| {
+            // Issue #186: a C# overload of the wrong arity was never a
+            // candidate (only C# signatures are arity-readable).
+            let language: Option<String> = row.get(4)?;
+            if language.as_deref() == Some("csharp") {
+                let kind: String = row.get(2)?;
+                let signature: Option<String> = row.get(3)?;
+                if !arity_admits(arity, &kind, signature.as_deref()) {
+                    return Ok(false);
+                }
+            }
             matched = Some(row.get(0)?);
             Ok(true)
         })?;
@@ -1957,6 +2070,47 @@ impl ReferenceContext {
     }
 }
 
+/// The callee text a deferred-argument edge keeps as its `target_qualname`
+/// while unbound (`None` for any other edge).
+pub(crate) fn deferred_callee(receiver_type: Option<&str>) -> Option<String> {
+    ReceiverType::parse_deferred_argument(receiver_type?).map(|arg| arg.callee.to_string())
+}
+
+/// The `target_qualname` to store for an edge just bound to `target_id`: the
+/// bound symbol's qualname for a deferred-argument edge (whose own text is
+/// only its callee's name), else the extracted text unchanged.
+pub(crate) fn bound_target_qualname(
+    conn: &Connection,
+    receiver_type: Option<&str>,
+    target_qualname: Option<&str>,
+    target_id: i64,
+) -> Result<Option<String>> {
+    if receiver_type.is_some_and(|r| r.starts_with(DEFERRED_ARG_PREFIX)) {
+        return Ok(conn
+            .query_row(
+                "SELECT qualname FROM symbols WHERE id = ?",
+                params![target_id],
+                |row| row.get(0),
+            )
+            .optional()?);
+    }
+    Ok(target_qualname.map(str::to_string))
+}
+
+/// Rebinds an edge (`?1` target id or NULL, `?2` resolution kind, `?3` edge
+/// id, `?4` the callee text). A deferred-argument edge also keeps its
+/// `target_qualname` in step: the bound constructor's qualname, or the
+/// callee's name again once unbound.
+static UPDATE_EDGE_TARGET_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "UPDATE edges SET target_symbol_id = ?1, resolution_kind = ?2,
+           target_qualname = CASE WHEN receiver_type LIKE '{DEFERRED_ARG_PREFIX}%'
+             THEN COALESCE((SELECT qualname FROM symbols WHERE id = ?1), ?4)
+             ELSE target_qualname END
+         WHERE id = ?3"
+    )
+});
+
 /// The in-batch fast path `Resolver::exact` (and `resolve_import`, which
 /// calls it) consult before falling through to `EXACT_SQL` — every symbol
 /// just written for one file, keyed by qualname, collapsed through
@@ -2077,7 +2231,7 @@ fn arity_admits(arity: Option<Arity>, kind: &str, signature: Option<&str>) -> bo
 /// The characters of `s` outside any `()`/`<>`/`[]`/`{}` nesting, with their
 /// byte offsets. A closer with nothing open is yielded (it ends the
 /// enclosing list), as is an opener itself.
-fn top_level_chars(s: &str) -> impl Iterator<Item = (usize, char)> + '_ {
+pub(crate) fn top_level_chars(s: &str) -> impl Iterator<Item = (usize, char)> + '_ {
     let mut depth = 0usize;
     s.char_indices().filter(move |&(_, c)| {
         let at_top = depth == 0;
@@ -2092,12 +2246,12 @@ fn top_level_chars(s: &str) -> impl Iterator<Item = (usize, char)> + '_ {
 
 /// The text between a signature's opening `(` (already stripped) and its
 /// matching `)`.
-fn parameter_list(rest: &str) -> Option<&str> {
+pub(crate) fn parameter_list(rest: &str) -> Option<&str> {
     let (end, _) = top_level_chars(rest).find(|&(_, c)| c == ')')?;
     Some(&rest[..end])
 }
 
-fn split_top_level(params: &str) -> Vec<&str> {
+pub(crate) fn split_top_level(params: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = 0;
     for (i, _) in top_level_chars(params).filter(|&(_, c)| c == ',') {
@@ -2313,9 +2467,7 @@ impl Db {
 
         {
             let mut resolver = Resolver::new(&tx, graph_version)?;
-            let mut update_edge = tx.prepare(
-                "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
-            )?;
+            let mut update_edge = tx.prepare(&UPDATE_EDGE_TARGET_SQL)?;
             let mut delete_edge = tx.prepare("DELETE FROM edges WHERE id = ?")?;
             let mut insert_unresolved = tx.prepare(UNRESOLVED_REFERENCE_INSERT_SQL)?;
             let mut clear_resolution_kind =
@@ -2332,7 +2484,12 @@ impl Db {
                 let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
                 match resolution {
                     Resolution::Resolved { target_id, kind } => {
-                        update_edge.execute(params![target_id, kind.as_str(), edge_id])?;
+                        update_edge.execute(params![
+                            target_id,
+                            kind.as_str(),
+                            edge_id,
+                            deferred_callee(row.ctx.receiver_type.as_deref())
+                        ])?;
                         reconciled += 1;
                     }
                     Resolution::Unresolved(reason) => {
@@ -2477,8 +2634,10 @@ impl Db {
         // A stored deferred-receiver row hangs on its callee's signature,
         // not on any symbol sharing its name, so it is always retried.
         let has_deferred_rows: bool = self.read_conn()?.query_row(
-            "SELECT EXISTS(SELECT 1 FROM unresolved_references
-             WHERE graph_version = ? AND receiver_type LIKE '@ret:%')",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM unresolved_references
+                 WHERE graph_version = ? AND receiver_type LIKE '{DEFERRED_MARKER_PREFIX}%')"
+            ),
             params![graph_version],
             |row| row.get(0),
         )?;
@@ -2513,7 +2672,7 @@ impl Db {
             // Issue #79: the store is self-contained now, so neither branch
             // joins back to `edges` at all -- every column comes straight
             // off `ur`.
-            let mut stmt = tx.prepare(
+            let mut stmt = tx.prepare(&format!(
                 "SELECT DISTINCT ur.id, ur.edge_id, ur.source_symbol_id, ur.file_id,
                         ur.edge_kind, ur.reference_name, ur.import_candidates,
                         ur.receiver_type, ur.bare_call, ur.detail, ur.evidence_snippet,
@@ -2541,8 +2700,8 @@ impl Db {
                  LEFT JOIN symbols src ON src.id = ur.source_symbol_id
                  WHERE ur.graph_version = ?1
                    AND ((?4 AND ur.receiver_type IS NOT NULL AND ur.receiver_type != '')
-                        OR ur.receiver_type LIKE '@ret:%')",
-            )?;
+                        OR ur.receiver_type LIKE '{DEFERRED_MARKER_PREFIX}%')"
+            ))?;
             let rows = stmt.query_map(
                 params![
                     graph_version,
@@ -2584,9 +2743,7 @@ impl Db {
 
         {
             let mut resolver = Resolver::new(&tx, graph_version)?;
-            let mut update_edge = tx.prepare(
-                "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
-            )?;
+            let mut update_edge = tx.prepare(&UPDATE_EDGE_TARGET_SQL)?;
             // Issue #79: a pending, non-Bridge-Edge-kind row (`edge_id`
             // `None`) has no edge to update -- a successful retry inserts a
             // brand new one from this row's own shadow columns instead,
@@ -2608,7 +2765,12 @@ impl Db {
                 if let Resolution::Resolved { target_id, kind } = resolution {
                     match row.ctx.edge_id {
                         Some(edge_id) => {
-                            update_edge.execute(params![target_id, kind.as_str(), edge_id])?;
+                            update_edge.execute(params![
+                                target_id,
+                                kind.as_str(),
+                                edge_id,
+                                deferred_callee(row.ctx.receiver_type.as_deref())
+                            ])?;
                         }
                         None => {
                             insert_edge.execute(params![
@@ -2616,7 +2778,12 @@ impl Db {
                                 row.source_symbol_id,
                                 target_id,
                                 &row.ctx.edge_kind,
-                                row.ctx.target_qualname.as_deref(),
+                                bound_target_qualname(
+                                    &tx,
+                                    row.ctx.receiver_type.as_deref(),
+                                    row.ctx.target_qualname.as_deref(),
+                                    target_id,
+                                )?,
                                 row.detail.as_deref(),
                                 row.evidence_snippet.as_deref(),
                                 row.evidence_start_line,
@@ -2702,7 +2869,10 @@ impl Db {
         self.rejudge_bound_edges(
             graph_version,
             "",
-            "AND e.target_symbol_id IS NOT NULL AND e.receiver_type LIKE '@ret:%'",
+            &format!(
+                "AND e.target_symbol_id IS NOT NULL
+                 AND e.receiver_type LIKE '{DEFERRED_MARKER_PREFIX}%'"
+            ),
         )
     }
 
@@ -2760,9 +2930,7 @@ impl Db {
 
         {
             let mut resolver = Resolver::new(&tx, graph_version)?;
-            let mut update_edge = tx.prepare(
-                "UPDATE edges SET target_symbol_id = ?, resolution_kind = ? WHERE id = ?",
-            )?;
+            let mut update_edge = tx.prepare(&UPDATE_EDGE_TARGET_SQL)?;
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &rows {
@@ -2770,7 +2938,12 @@ impl Db {
                     Resolution::Resolved { target_id, kind }
                         if target_id != row.target_symbol_id =>
                     {
-                        update_edge.execute(params![target_id, kind.as_str(), row.edge_id])?;
+                        update_edge.execute(params![
+                            target_id,
+                            kind.as_str(),
+                            row.edge_id,
+                            deferred_callee(row.ctx.receiver_type.as_deref())
+                        ])?;
                         total_resolved += 1;
                     }
                     // A fresh index would leave this reference unresolved,
@@ -2778,7 +2951,12 @@ impl Db {
                     // `reconcile_unresolved_reference_store` moves it into
                     // the store with its reason.
                     Resolution::Unresolved(_) => {
-                        update_edge.execute(params![None::<i64>, None::<String>, row.edge_id])?;
+                        update_edge.execute(params![
+                            None::<i64>,
+                            None::<String>,
+                            row.edge_id,
+                            deferred_callee(row.ctx.receiver_type.as_deref())
+                        ])?;
                         total_resolved += 1;
                     }
                     _ => {}
@@ -3799,6 +3977,46 @@ mod tests {
 
         assert!(
             matches!(resolution, Resolution::Unresolved(_)),
+            "{resolution:?}"
+        );
+    }
+
+    /// Issue #186: the bridge any-language tier tells C# overloads apart by
+    /// the call's arity instead of refusing them as ambiguous.
+    #[test]
+    fn resolve_any_lang_fallback_is_arity_aware_for_csharp() {
+        let conn = test_conn();
+        let cs = insert_file(&conn, "Svc.cs", "csharp");
+        for sig in ["(int a)", "(int a, int b)"] {
+            let id = insert_symbol(&conn, cs, "method", "Handler", "App.Svc.Handler", None);
+            conn.execute(
+                "UPDATE symbols SET signature = ? WHERE id = ?",
+                params![sig, id],
+            )
+            .unwrap();
+        }
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let symbol_map = std::collections::HashMap::new();
+        let mut r = reference(
+            "crate::caller::Handler",
+            "RPC_CALL",
+            "rust",
+            "caller.rs",
+            None,
+            true,
+        );
+        // No arity signal: two overloads, ambiguous.
+        assert!(matches!(
+            resolver.resolve(&r, &symbol_map).unwrap(),
+            Resolution::Unresolved(_)
+        ));
+        r.call_shape = Some(crate::indexer::extract::CallShape {
+            arg_count: 2,
+            is_new: false,
+        });
+        let resolution = resolver.resolve(&r, &symbol_map).unwrap();
+        assert!(
+            matches!(resolution, Resolution::Resolved { .. }),
             "{resolution:?}"
         );
     }

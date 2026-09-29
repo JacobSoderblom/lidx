@@ -410,6 +410,8 @@ mod tests {
             import_candidates: Vec::new(),
             bare_call: false,
             call_shape: None,
+            source_start_byte: None,
+            target_start_byte: None,
         };
         db.insert_edges(tst, &[edge], &map, 1, None).unwrap();
 

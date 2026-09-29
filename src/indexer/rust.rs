@@ -27,6 +27,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     import_member_fallback: false,
     visibility: VisibilityRule::RustModule,
     return_receiver: None,
+    parameter_type: None,
 };
 
 /// `LanguageProfile::normalize_import_target` for Rust: rewrite

@@ -64,7 +64,63 @@ pub struct DeferredReturn<'a> {
 /// Column-text prefix of `ReceiverType::Deferred`. `@` can't start a type name.
 pub const DEFERRED_RETURN_PREFIX: &str = "@ret:";
 
+/// A parsed `ReceiverType::deferred_argument` marker.
+pub struct DeferredArgument<'a> {
+    /// Zero-based position of the argument in the call.
+    pub index: usize,
+    /// The argument's name for a named argument (`x: new()`).
+    pub name: Option<&'a str>,
+    /// How many arguments the call passes, for overload selection.
+    pub arg_count: usize,
+    /// `Type.Method` or a qualified method name, as spelled at the call site.
+    pub callee: &'a str,
+}
+
+/// Every deferred marker (`@ret:`, `@arg:`) starts with this; `@` can't start
+/// a type name.
+pub const DEFERRED_MARKER_PREFIX: &str = "@";
+
+/// Column-text prefix of a deferred argument-position marker.
+pub const DEFERRED_ARG_PREFIX: &str = "@arg:";
+
 impl ReceiverType {
+    /// `Deferred` for "the parameter at `index` (or named `name`) of the
+    /// `arg_count`-argument call to `callee`" (`Type.Method` or a qualified
+    /// method name): the type a target-typed `new(..)` argument constructs.
+    pub fn deferred_argument(
+        index: usize,
+        name: Option<&str>,
+        arg_count: usize,
+        callee: &str,
+    ) -> Self {
+        Self::Deferred(format!(
+            "{DEFERRED_ARG_PREFIX}{index}:{}:{arg_count}:{callee}",
+            name.unwrap_or("")
+        ))
+    }
+
+    /// Inverse of `deferred_argument` on column text.
+    pub fn parse_deferred_argument(column: &str) -> Option<DeferredArgument<'_>> {
+        let rest = column.strip_prefix(DEFERRED_ARG_PREFIX)?;
+        let mut parts = rest.splitn(4, ':');
+        let index = parts.next()?.parse().ok()?;
+        let name = parts.next().filter(|n| !n.is_empty());
+        let arg_count = parts.next()?.parse().ok()?;
+        Some(DeferredArgument {
+            index,
+            name,
+            arg_count,
+            callee: parts.next()?,
+        })
+    }
+
+    /// Whether an `edges.receiver_type` column value is any deferred marker
+    /// (`@ret:` / `@arg:`; `@` can't start a type name), which the resolver
+    /// re-judges whenever a callee changes.
+    pub fn is_deferred_column(column: &str) -> bool {
+        column.starts_with(DEFERRED_MARKER_PREFIX)
+    }
+
     /// `Deferred` for "the (optionally awaited) return value of
     /// `type_name.method`".
     ///
@@ -147,6 +203,12 @@ impl CallShape {
 pub struct EdgeInput {
     pub kind: String,
     pub source_qualname: Option<String>,
+    /// Start byte of the source symbol, for a source whose qualname is
+    /// shared by several symbols (C# overloads): the edge's source is then
+    /// the symbol at this span, not "whichever has the qualname".
+    pub source_start_byte: Option<i64>,
+    /// Same for the *target* of a `CONTAINS` edge to an overload.
+    pub target_start_byte: Option<i64>,
     pub target_qualname: Option<String>,
     pub detail: Option<String>,
     pub evidence_snippet: Option<String>,
