@@ -477,7 +477,7 @@ fn is_foreign_rust_path(target_qualname: &str) -> bool {
 /// Whether `path` lives under a `tests/fixtures/` tree: test data indexed
 /// as part of the repo, never a legitimate call target for code outside it.
 fn is_fixture_path(path: &str) -> bool {
-    path.starts_with("tests/fixtures/") || path.contains("/tests/fixtures/")
+    path.starts_with("tests/fixtures/")
 }
 
 /// Look up a language's resolution profile by its `files.language` value:
@@ -1369,7 +1369,7 @@ impl<'c> Resolver<'c> {
                 .split('.')
                 .any(|seg| seg.ends_with("_pb2") || seg.ends_with("_pb2_grpc"))
             {
-                return Ok(false);
+                continue;
             }
             let root = candidate.split('.').next().unwrap_or("");
             if root.is_empty() || self.repo_python_module.exists(params![root])? {
@@ -3408,6 +3408,48 @@ mod tests {
         let resolution = resolver.resolve(&r, &map).unwrap();
         assert!(
             matches!(resolution, Resolution::Unresolved(_)),
+            "{resolution:?}"
+        );
+    }
+
+    /// A `_pb2` candidate is skipped, not decisive: a later candidate
+    /// rooted in a repo module still makes the import repo-local.
+    #[test]
+    fn python_pb2_candidate_before_repo_module_still_counts_as_repo() {
+        let conn = test_conn();
+        let f = insert_file(&conn, "pkg/__init__.py", "python");
+        insert_symbol(&conn, f, "module", "pkg", "pkg", None);
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let candidates = vec!["gen.v1.thing_pb2".to_string(), "pkg.util".to_string()];
+        assert!(resolver.is_repo_python_import(&candidates).unwrap());
+        let only_pb2 = vec!["pkg.v1.thing_pb2".to_string()];
+        assert!(!resolver.is_repo_python_import(&only_pb2).unwrap());
+    }
+
+    /// `Type::assoc` where `Type` names two repo types is ambiguous: the
+    /// type segment doesn't count as a repo type, so the trailing name
+    /// never binds to a same-named repo symbol.
+    #[test]
+    fn rust_foreign_path_with_ambiguous_type_segment_never_binds() {
+        let conn = test_conn();
+        let a = insert_file(&conn, "src/a.rs", "rust");
+        let b = insert_file(&conn, "src/b.rs", "rust");
+        insert_symbol(&conn, a, "struct", "Widget", "crate::a::Widget", None);
+        insert_symbol(&conn, b, "struct", "Widget", "crate::b::Widget", None);
+        let c = insert_file(&conn, "src/c.rs", "rust");
+        insert_symbol(&conn, c, "function", "build", "crate::c::build", None);
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let map = std::collections::HashMap::new();
+        let r = reference("Widget::build", "CALLS", "rust", "src/init.rs", None, false);
+        let resolution = resolver.resolve(&r, &map).unwrap();
+        assert!(
+            !matches!(
+                resolution,
+                Resolution::Resolved {
+                    kind: ResolutionKind::BareName | ResolutionKind::TwoSegment,
+                    ..
+                }
+            ),
             "{resolution:?}"
         );
     }
