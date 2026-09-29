@@ -24,6 +24,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     normalize_import_target: Some(normalize_import_target),
     import_miss: ImportMissPolicy::FallThrough,
     import_suffix_matching: false,
+    import_member_fallback: false,
     visibility: VisibilityRule::RustModule,
 };
 
