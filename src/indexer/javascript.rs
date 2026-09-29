@@ -818,6 +818,11 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     {
         output.edges.push(edge);
     }
+    if (node.kind() == "jsx_element" || node.kind() == "jsx_self_closing_element")
+        && let Some(edge) = jsx_component_call_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
+    }
     if node.kind() == "call_expression" || node.kind() == "new_expression" {
         // `handle_call` returns `true` when it has already fully walked a
         // callback argument itself with adjusted context (currently just
@@ -2427,12 +2432,20 @@ fn object_property_methods(node: &Node<'_>, source: &str) -> Vec<String> {
     methods
 }
 
+/// Returns the opening tag node for a JSX element or self-closing element.
+/// A `jsx_element` node's opening tag is its `open_tag` field (see
+/// both grammars' `node-types.json`) — a self-closing element has no
+/// separate opening tag node, it *is* the opening tag.
+fn jsx_opening_tag(node: Node<'_>) -> Option<Node<'_>> {
+    match node.kind() {
+        "jsx_element" => node.child_by_field_name("open_tag"),
+        "jsx_self_closing_element" => Some(node),
+        _ => None,
+    }
+}
+
 fn jsx_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let opening = match node.kind() {
-        "jsx_element" => node.child_by_field_name("opening_element")?,
-        "jsx_self_closing_element" => node,
-        _ => return None,
-    };
+    let opening = jsx_opening_tag(node)?;
     let name_node = opening.child_by_field_name("name")?;
     let name = node_text(name_node, source);
     if name != "Route" {
@@ -2465,6 +2478,58 @@ fn jsx_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
         evidence_snippet: None,
         evidence_start_line: Some(span(node).0),
         evidence_end_line: Some(span(node).2),
+        ..Default::default()
+    })
+}
+
+/// `<Foo />` / `<Foo ...>...</Foo>` / `<ns.Foo>` — a capitalized JSX tag
+/// name is a reference to an in-scope component, never a literal DOM tag
+/// string (React's own convention: a lowercase name always compiles to a
+/// string, an uppercase or dotted one always compiles to the referenced
+/// value — see https://react.dev/learn/your-first-component). Before this,
+/// `walk_node` only fed a `jsx_element`/`jsx_self_closing_element` node to
+/// `jsx_route_edge` (react-router `<Route>` detection only), so every other
+/// JSX usage was invisible to the graph and every component came back with
+/// 0 callers (issue #111). Emits a CALLS edge through the same
+/// `resolve_call_target`/`import_placeholder` path `handle_call` uses for
+/// an ordinary call, so a rendered component resolves through imports
+/// exactly like a function call does. Lowercase intrinsic tags (`<div>`)
+/// and the `<ns:Foo>` XML-namespace form return `None`.
+fn jsx_component_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let opening = jsx_opening_tag(node)?;
+    let name_node = opening.child_by_field_name("name")?;
+    // Only a bare identifier (`Foo`) or a dotted member access
+    // (`ns.Foo`, aliased by the grammar to `member_expression`) is a
+    // component reference; `jsx_namespace_name` (`<svg:rect>`) is a
+    // literal namespaced tag, not an expression.
+    if name_node.kind() != "identifier" && name_node.kind() != "member_expression" {
+        return None;
+    }
+    let raw = node_text(name_node, source);
+    let last_segment = raw.rsplit('.').next().unwrap_or(raw.as_str());
+    if !last_segment
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_uppercase())
+    {
+        return None;
+    }
+    let target = resolve_call_target(&raw, ctx);
+    let import_candidates = import_placeholder(&raw, ctx).into_iter().collect();
+    let detail = if target.is_some() { None } else { Some(raw) };
+    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+    let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+    Some(EdgeInput {
+        kind: "CALLS".to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: target,
+        detail,
+        evidence_snippet: snippet,
+        receiver_type: infer_receiver_type(name_node, source, ctx),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        import_candidates,
+        bare_call: name_node.kind() == "identifier",
         ..Default::default()
     })
 }
