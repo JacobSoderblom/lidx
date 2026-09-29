@@ -213,7 +213,10 @@ pub fn trace_flow(
         });
     }
 
-    let mut used_bytes: usize = 0;
+    // Byte budget is applied to the settled, canonically ordered hops (at
+    // level boundaries and once at the end), never per arrival, so a hop
+    // replaced by a same-level tie-break cannot change truncation.
+    let mut last_level: usize = 0;
     let mut truncated = false;
     let mut reached_target = false;
     let is_upstream = matches!(config.direction, TraceDirection::Upstream);
@@ -269,9 +272,12 @@ pub fn trace_flow(
             }
             break;
         }
-        if used_bytes >= config.max_bytes {
-            truncated = true;
-            break;
+        if dist > last_level {
+            last_level = dist;
+            if budget_exhausted(&trace, config) {
+                truncated = true;
+                break;
+            }
         }
 
         let edges = db.edges_for_symbol_with_dispatch(current_id, languages, graph_version)?;
@@ -372,7 +378,6 @@ pub fn trace_flow(
                     config.include_snippets,
                 );
 
-                let hop_size = estimate_hop_size(&hop, config.compact);
                 let hop_idx = trace.len();
                 trace.push(hop);
                 slots.insert(
@@ -385,14 +390,6 @@ pub fn trace_flow(
                 );
                 traversed_edge_ids.push(edge.id);
                 visited.insert(next_id);
-                if hop_idx >= config.trace_offset {
-                    used_bytes += hop_size;
-                    if used_bytes >= config.max_bytes {
-                        truncated = true;
-                        break;
-                    }
-                }
-
                 if end_id == Some(next_id) {
                     reached_target = true;
                     break;
@@ -478,7 +475,6 @@ pub fn trace_flow(
                         visited.insert(bridged_id);
                         if let Ok(Some(bridged_sym)) = db.get_symbol_by_id(bridged_id) {
                             let hop = make_hop(&bridged_sym);
-                            let hop_size = estimate_hop_size(&hop, config.compact);
                             let hop_idx = trace.len();
                             trace.push(hop);
                             slots.insert(
@@ -490,13 +486,6 @@ pub fn trace_flow(
                                 },
                             );
                             traversed_edge_ids.push(bridged_edge.id);
-                            if hop_idx >= config.trace_offset {
-                                used_bytes += hop_size;
-                                if used_bytes >= config.max_bytes {
-                                    truncated = true;
-                                    break;
-                                }
-                            }
                             if end_id == Some(bridged_id) {
                                 reached_target = true;
                                 break;
@@ -527,14 +516,19 @@ pub fn trace_flow(
     truncated |= scope.capped();
 
     // Canonical order: independent of the order edges were processed in.
-    trace.sort_by(|a, b| {
-        (a.distance, &a.symbol.qualname, &a.edge_kind).cmp(&(
-            b.distance,
-            &b.symbol.qualname,
-            &b.edge_kind,
-        ))
-    });
-    let trace: Vec<TraceHop> = trace.into_iter().skip(config.trace_offset).collect();
+    trace.sort_by_cached_key(canonical_key);
+    let mut trace: Vec<TraceHop> = trace.into_iter().skip(config.trace_offset).collect();
+
+    // Apply the byte budget to the settled hops: keep hops up to and
+    // including the one that reaches it.
+    let mut used_bytes = 0usize;
+    if let Some(cut) = trace.iter().position(|h| {
+        used_bytes += estimate_hop_size(h, config.compact);
+        used_bytes >= config.max_bytes
+    }) {
+        trace.truncate(cut + 1);
+        truncated = true;
+    }
 
     let end_sym = if let Some(eid) = end_id {
         db.get_symbol_by_id(eid)?
@@ -813,6 +807,27 @@ fn extract_protocol_context(edge: &Edge) -> Option<serde_json::Value> {
         }
         _ => None,
     }
+}
+
+fn canonical_key(h: &TraceHop) -> (usize, String, String, String) {
+    (
+        h.distance,
+        h.symbol.qualname.clone(),
+        h.edge_kind.clone(),
+        serde_json::to_string(h).unwrap_or_default(),
+    )
+}
+
+/// Whether the settled hops so far (after `trace_offset`, in canonical
+/// order) already reach the byte budget.
+fn budget_exhausted(trace: &[TraceHop], config: &TraceConfig) -> bool {
+    let mut sorted: Vec<&TraceHop> = trace.iter().collect();
+    sorted.sort_by_cached_key(|h| canonical_key(h));
+    let mut used = 0usize;
+    sorted.into_iter().skip(config.trace_offset).any(|h| {
+        used += estimate_hop_size(h, config.compact);
+        used >= config.max_bytes
+    })
 }
 
 fn estimate_hop_size(hop: &TraceHop, compact: bool) -> usize {

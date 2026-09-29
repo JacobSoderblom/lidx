@@ -30,6 +30,11 @@ fn sym(name: &str, line: i64) -> SymbolInput {
 }
 
 fn edge(kind: &str, src: &str, target: &str) -> EdgeInput {
+    // "Target#snippet" attaches an evidence snippet to the edge.
+    let (target, snippet) = match target.split_once('#') {
+        Some((t, sn)) => (t, Some(sn.to_string())),
+        None => (target, None),
+    };
     EdgeInput {
         kind: kind.to_string(),
         source_qualname: Some(format!("app.{src}")),
@@ -41,7 +46,7 @@ fn edge(kind: &str, src: &str, target: &str) -> EdgeInput {
         detail: target
             .contains("://")
             .then(|| format!(r#"{{"config_uri":"{target}","role":"r"}}"#)),
-        evidence_snippet: None,
+        evidence_snippet: snippet,
         evidence_start_line: None,
         evidence_end_line: None,
         confidence: Some(1.0),
@@ -80,9 +85,14 @@ fn graph(names: &[&str], edges: &[(&str, &str, &str)]) -> Graph {
 const KINDS: [&str; 4] = ["CALLS", "CONFIG_SOURCE", "CONFIG_READ", "CONFIG_BIND"];
 
 fn trace(g: &Graph, start: &str) -> lidx::traversal::TraceResult {
+    trace_with_budget(g, start, TraceConfig::default().max_bytes)
+}
+
+fn trace_with_budget(g: &Graph, start: &str, max_bytes: usize) -> lidx::traversal::TraceResult {
     let config = TraceConfig {
         direction: TraceDirection::Downstream,
         max_hops: 6,
+        max_bytes,
         ..Default::default()
     };
     trace_flow(&g.db, vec![g.ids[start]], None, None, 1, &config).unwrap()
@@ -177,6 +187,49 @@ fn edge_order_does_not_change_hops_or_reached_nodes() {
             .collect();
         // Parent P1 sorts before P2, so its CALLS edge is the reported one.
         assert_eq!(x, vec!["CALLS"]);
+    }
+
+    // Byte budget and truncation are decided on the settled hops, so a
+    // replaced hop (CALLS wins over the larger channel-bridge hop) cannot
+    // change them: a budget that only the winning hops fit, and one that
+    // cuts exactly at the last hop, behave the same in both edge orders.
+    let g1 = graph(&tie_names, &tie_edges);
+    let g2 = graph(&tie_names, &tie_reversed);
+    let total: usize = t1
+        .hops
+        .iter()
+        .map(|h| serde_json::to_string(h).unwrap().len())
+        .sum();
+    for (budget, expect_truncated) in [(total + 1, false), (total, true)] {
+        let (a, b) = (
+            trace_with_budget(&g1, "S", budget),
+            trace_with_budget(&g2, "S", budget),
+        );
+        assert_eq!(hops_json(&a), hops_json(&b), "budget {budget}");
+        assert_eq!(a.truncated, expect_truncated, "budget {budget}");
+        assert_eq!(b.truncated, expect_truncated, "budget {budget}");
+        assert_eq!(a.used_bytes, b.used_bytes, "budget {budget}");
+        assert_eq!(a.hops.len(), t1.hops.len(), "budget {budget}");
+    }
+    // Tighter budgets cut identically too.
+    for budget in [1, total / 2] {
+        let (a, b) = (
+            trace_with_budget(&g1, "S", budget),
+            trace_with_budget(&g2, "S", budget),
+        );
+        assert_eq!(hops_json(&a), hops_json(&b), "budget {budget}");
+        assert!(a.truncated && b.truncated);
+    }
+
+    // Same parent and kind, differing only in snippet: the smaller snippet
+    // is reported whichever edge comes first.
+    let snip_edges = [("CALLS", "S", "X#aaa"), ("CALLS", "S", "X#zzz")];
+    let mut snip_reversed = snip_edges;
+    snip_reversed.reverse();
+    for edges in [snip_edges, snip_reversed] {
+        let t = trace(&graph(&["S", "X"], &edges), "S");
+        let snippets: Vec<Option<&str>> = t.hops.iter().map(|h| h.snippet.as_deref()).collect();
+        assert_eq!(snippets, vec![Some("aaa")], "{edges:?}");
     }
 
     let (a, b) = (impact(&fwd, "S"), impact(&rev, "S"));
