@@ -95,7 +95,7 @@ pub fn build_config_bind_detail(
 // traversals use.
 
 use crate::model::Edge;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 fn is_config_kind(kind: &str) -> bool {
     matches!(
@@ -105,6 +105,7 @@ fn is_config_kind(kind: &str) -> bool {
 }
 
 /// A config edge about to be bridged to its complement.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BridgeTarget {
     pub uri: String,
     pub edge_kind: String,
@@ -112,39 +113,138 @@ pub struct BridgeTarget {
     pub source_id: i64,
 }
 
-/// Which config URI each traversed node was entered through.
+/// What a traversal step may expand a node under: everything (`Unscoped`), or
+/// only config edges related to one config URI.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Entry {
+    Unscoped,
+    Uri(String),
+}
+
+impl Entry {
+    fn as_uri(&self) -> Option<&str> {
+        match self {
+            Entry::Unscoped => None,
+            Entry::Uri(u) => Some(u),
+        }
+    }
+}
+
+/// A newly reached (node, entry) pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Admission {
+    pub entry: Entry,
+    /// Whether to expand the node under `entry`. False when the node has
+    /// already expanded `Unscoped`, whose expansion is a superset: the pair
+    /// is still reported (one hop per pair) but not re-walked.
+    pub expand: bool,
+}
+
+/// Max distinct config URIs a node is entered under.
+pub const MAX_ENTRIES_PER_NODE: usize = 8;
+
+/// Why a traversal reports `truncated` when `ConfigScope::capped`.
+pub const CAP_TRUNCATION_REASON: &str = "config re-entry cap reached: a node with more than 8 config URIs is entered under only its 8 lowest (sorted) URIs";
+
+/// Which (node, entry) pairs a traversal has reached. A node is reached once
+/// per pair: via two secrets it is expanded under each scope. Everything is
+/// keyed by pair, never by arrival order, so the set of pairs (and so the
+/// hops) is the same whichever edge is processed first:
+/// - `Unscoped` is an entry like any other; a plain edge reaching a
+///   scoped-only node reaches it `Unscoped`. Seeds keep the one entry they
+///   start with (a URI seed stays scoped) and are never re-reached.
+/// - A node that expanded `Unscoped` does not re-walk scoped entries (a
+///   subset), but still reports them.
+/// - A node can only be bridged into on a URI one of its own config edges
+///   carries; when it has more than `MAX_ENTRIES_PER_NODE` such URIs only
+///   the lowest (sorted) are admitted, independent of arrival order.
 #[derive(Default)]
 pub struct ConfigScope {
-    entered: HashMap<i64, String>,
+    seen: HashSet<(i64, Entry)>,
+    eligible: HashMap<i64, BTreeSet<String>>,
+    seed_uri: Option<String>,
+    seeds: HashSet<i64>,
+    capped: bool,
 }
 
 impl ConfigScope {
     /// `seed_uri`: the config URI the seeds were resolved from, if any.
     pub fn new(seeds: &[i64], seed_uri: Option<&str>) -> Self {
-        let mut scope = Self::default();
-        if let Some(uri) = seed_uri {
-            for &id in seeds {
-                scope.entered.insert(id, uri.to_string());
-            }
+        let mut scope = Self {
+            seed_uri: seed_uri.map(str::to_string),
+            ..Self::default()
+        };
+        let entry = scope.seed_entry();
+        for &id in seeds {
+            scope.seen.insert((id, entry.clone()));
+            scope.seeds.insert(id);
         }
         scope
     }
 
-    /// Record that `id` was reached by bridging a `bridge_kind` edge on `uri`.
-    pub fn record_bridge(&mut self, id: i64, bridge_kind: &str, uri: &str) {
-        if is_config_kind(bridge_kind) {
-            self.entered.insert(id, uri.to_string());
-        }
+    /// Entry the seed nodes are expanded under.
+    pub fn seed_entry(&self) -> Entry {
+        self.seed_uri.clone().map_or(Entry::Unscoped, Entry::Uri)
     }
 
-    /// URIs `id`'s config edges may follow, or None when it is unscoped.
-    /// A node entered via URI `U` keeps `U` plus the secret/env-var mapping of
+    /// Whether an entry was refused because a node hit the per-node cap.
+    pub fn capped(&self) -> bool {
+        self.capped
+    }
+
+    /// A plain (non-bridge) edge reached `id`.
+    pub fn admit_plain(&mut self, id: i64) -> Option<Admission> {
+        if self.seeds.contains(&id) || !self.seen.insert((id, Entry::Unscoped)) {
+            return None;
+        }
+        Some(Admission {
+            entry: Entry::Unscoped,
+            expand: true,
+        })
+    }
+
+    /// `id` was reached by bridging a `bridge_kind` edge on `uri`. Config
+    /// bridges admit each new (node, URI) pair; other bridge kinds are
+    /// visit-once. `node_uris` lists every config URI `id`'s own edges
+    /// carry (called once per node, only for config bridges).
+    pub fn admit_bridge(
+        &mut self,
+        id: i64,
+        bridge_kind: &str,
+        uri: &str,
+        node_uris: impl FnOnce() -> BTreeSet<String>,
+    ) -> Option<Admission> {
+        if !is_config_kind(bridge_kind) {
+            return self.admit_plain(id);
+        }
+        if self.seeds.contains(&id) {
+            return None;
+        }
+        let eligible = self.eligible.entry(id).or_insert_with(|| {
+            let mut uris = node_uris();
+            uris.insert(uri.to_string());
+            uris.into_iter().take(MAX_ENTRIES_PER_NODE).collect()
+        });
+        if !eligible.contains(uri) {
+            self.capped = true;
+            return None;
+        }
+        let entry = Entry::Uri(uri.to_string());
+        if !self.seen.insert((id, entry.clone())) {
+            return None;
+        }
+        let expand = !self.seen.contains(&(id, Entry::Unscoped));
+        Some(Admission { entry, expand })
+    }
+
+    /// URIs a node's config edges may follow when expanded under `entry`, or
+    /// None when unscoped. A node entered via URI `U` keeps `U` plus the secret/env-var mapping of
     /// its own `secretKeyRef` CONFIG_SOURCE edges (`detail.secret` <-> env var
     /// and its `__` section prefixes), in both directions, so the chain
     /// code -> `env://X` -> container -> `secret://S` -> Bicep stays intact.
-    pub fn allowed(&self, id: i64, node_edges: &[Edge]) -> Option<HashSet<String>> {
-        let uri = self.entered.get(&id)?;
-        let mut allowed = HashSet::from([uri.clone()]);
+    pub fn allowed(entry: &Entry, node_edges: &[Edge]) -> Option<HashSet<String>> {
+        let uri = entry.as_uri()?;
+        let mut allowed = HashSet::from([uri.to_string()]);
         let entry_var = uri.strip_prefix("env://");
         for e in node_edges.iter().filter(|e| e.kind == CONFIG_SOURCE_KIND) {
             let Some(tq) = e.target_qualname.as_deref() else {
@@ -162,7 +262,7 @@ impl ConfigScope {
                 continue;
             };
             let secret_uri = format!("secret://{secret}");
-            let related = *uri == secret_uri
+            let related = uri == secret_uri
                 || entry_var.is_some_and(|x| {
                     var == x || var.strip_prefix(x).is_some_and(|r| r.starts_with("__"))
                 });
@@ -345,6 +445,76 @@ mod tests {
         assert_eq!(parsed["config_uri"], "env://FOO");
         assert_eq!(parsed["framework"], "dotnet");
         assert_eq!(parsed["role"], "reader");
+    }
+
+    fn uri(u: &str) -> Entry {
+        Entry::Uri(u.to_string())
+    }
+
+    fn uris(n: usize) -> BTreeSet<String> {
+        (0..n).map(|i| format!("env://U{i}")).collect()
+    }
+
+    #[test]
+    fn scope_reenters_per_uri() {
+        let mut s = ConfigScope::default();
+        let a = s
+            .admit_bridge(1, CONFIG_SOURCE_KIND, "env://U0", || uris(2))
+            .unwrap();
+        assert_eq!((a.entry, a.expand), (uri("env://U0"), true));
+        let b = s
+            .admit_bridge(1, CONFIG_SOURCE_KIND, "env://U1", || unreachable!())
+            .unwrap();
+        assert_eq!(b.entry, uri("env://U1"));
+        assert!(
+            s.admit_bridge(1, CONFIG_SOURCE_KIND, "env://U1", || unreachable!())
+                .is_none()
+        );
+        // Non-config bridges stay visit-once.
+        assert!(s.admit_bridge(2, "RPC_IMPL", "x", BTreeSet::new).is_some());
+        assert!(s.admit_bridge(2, "RPC_IMPL", "x", BTreeSet::new).is_none());
+        assert!(!s.capped());
+    }
+
+    #[test]
+    fn cap_keeps_lowest_uris_whatever_the_arrival_order() {
+        let expected: BTreeSet<String> = uris(MAX_ENTRIES_PER_NODE);
+        for order in [(0..10).collect::<Vec<_>>(), (0..10).rev().collect()] {
+            let mut s = ConfigScope::default();
+            let admitted: BTreeSet<String> = order
+                .into_iter()
+                .map(|i| format!("env://U{i}"))
+                .filter(|u| {
+                    s.admit_bridge(3, CONFIG_READ_KIND, u, || uris(10))
+                        .is_some()
+                })
+                .collect();
+            assert_eq!(admitted, expected);
+            assert!(s.capped());
+        }
+    }
+
+    #[test]
+    fn unscoped_dominates_expansion_in_either_arrival_order() {
+        // Bridge first, then plain: both pairs are reached, both expand.
+        let mut s = ConfigScope::default();
+        assert!(
+            s.admit_bridge(1, CONFIG_READ_KIND, "env://U0", || uris(2))
+                .unwrap()
+                .expand
+        );
+        let p = s.admit_plain(1).unwrap();
+        assert_eq!((p.entry, p.expand), (Entry::Unscoped, true));
+        // Plain first: the scoped pair is still reported, but not re-walked.
+        let mut s = ConfigScope::default();
+        s.admit_plain(1).unwrap();
+        let b = s
+            .admit_bridge(1, CONFIG_READ_KIND, "env://U0", || uris(2))
+            .unwrap();
+        assert_eq!((b.entry, b.expand), (uri("env://U0"), false));
+        // Seeds resolved from a URI stay scoped.
+        let mut s = ConfigScope::new(&[9], Some("secret://x"));
+        assert!(s.admit_plain(9).is_none());
     }
 
     #[test]
