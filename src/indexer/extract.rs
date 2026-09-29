@@ -46,30 +46,126 @@ pub enum ReceiverType {
     /// require the target method to belong to a matching type.
     Known(String),
     /// The receiver is the return value of `Type.Method(..)`, whose
-    /// signature the extractor can't see (another file). Holds the encoded
-    /// column text (`ReceiverType::deferred_return`); the resolver swaps it
-    /// for `Known(return type)` -- or `Unresolved` -- once every symbol
-    /// exists. Persisted as-is so a later retry re-resolves it.
-    Deferred(String),
+    /// signature the extractor can't see (another file). The resolver swaps
+    /// it for `Known(return type)` -- or `Unresolved` -- once every symbol
+    /// exists. Persisted as column text (`DeferredReturn::encode`) so a
+    /// later retry re-resolves it.
+    Deferred(DeferredReturn),
+    /// A Rust receiver traced to a declaration in another file.
+    RustDeferred(RustDeferred),
 }
 
-/// A parsed `ReceiverType::Deferred` marker.
-pub struct DeferredReturn<'a> {
+/// "The (optionally awaited) return value of `base.method(..)`".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredReturn {
+    pub base: DeferredBase,
+    pub method: String,
     pub awaited: bool,
+    /// The base is spelled like a bare type name (`Type.Method()`): only a
+    /// `static` method can be called that way.
     pub static_only: bool,
-    pub type_name: &'a str,
-    pub method: &'a str,
+    /// Set on the marker of a call edge whose own target text is just the
+    /// called method's name (`a.B().C()` has no printable receiver): the
+    /// resolver binds it through the receiver type only.
+    pub name_only: bool,
 }
 
-/// Column-text prefix of `ReceiverType::Deferred`. `@` can't start a type name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeferredBase {
+    /// A receiver of this type.
+    Type(String),
+    /// A receiver that is another call's return value (a chained call, or a
+    /// `var` bound from a deferred `var`).
+    Call(Box<DeferredReturn>),
+}
+
+/// Column-text prefix of a serialised `DeferredReturn`. `@` can't start a
+/// type name.
 pub const DEFERRED_RETURN_PREFIX: &str = "@ret:";
+
+/// `edges.call_shape` value on an `RPC_CALL` edge that the resolver derived
+/// from a deferred receiver (`Db::rederive_deferred_rpc_calls`).
+pub const DERIVED_RPC_SHAPE: &str = "rpc:deferred";
+
+/// How many calls may nest in a `DeferredReturn` (`a.B().C()...`, `var b =
+/// a.G()`) before extraction or resolution gives up and leaves the receiver
+/// untracked.
+pub const MAX_DEFERRED_DEPTH: usize = 8;
+
+impl DeferredReturn {
+    pub fn on_type(type_name: &str, method: &str, awaited: bool, static_only: bool) -> Self {
+        Self {
+            base: DeferredBase::Type(type_name.to_string()),
+            method: method.to_string(),
+            awaited,
+            static_only,
+            name_only: false,
+        }
+    }
+
+    pub fn on_call(inner: DeferredReturn, method: &str, awaited: bool) -> Self {
+        Self {
+            base: DeferredBase::Call(Box::new(inner)),
+            method: method.to_string(),
+            awaited,
+            static_only: false,
+            name_only: false,
+        }
+    }
+
+    /// How many calls this nests (1 for a call on a type).
+    pub fn depth(&self) -> usize {
+        match &self.base {
+            DeferredBase::Type(_) => 1,
+            DeferredBase::Call(inner) => 1 + inner.depth(),
+        }
+    }
+
+    /// The `edges.receiver_type` column text.
+    pub fn encode(&self) -> String {
+        let base = match &self.base {
+            DeferredBase::Type(ty) => ty.clone(),
+            DeferredBase::Call(inner) => inner.encode(),
+        };
+        format!(
+            "{DEFERRED_RETURN_PREFIX}{}{}{}:{base}.{}",
+            if self.awaited { "a" } else { "" },
+            if self.static_only { "s" } else { "" },
+            if self.name_only { "n" } else { "" },
+            self.method,
+        )
+    }
+
+    /// Inverse of `encode`.
+    pub fn parse(column: &str) -> Option<Self> {
+        let rest = column.strip_prefix(DEFERRED_RETURN_PREFIX)?;
+        let (flags, callee) = rest.split_once(':')?;
+        // Not another language's `@ret:` marker (Rust's is `@ret:r:`).
+        if !flags.chars().all(|c| matches!(c, 'a' | 's' | 'n')) {
+            return None;
+        }
+        let (base, method) = callee.rsplit_once('.')?;
+        let base = if base.starts_with(DEFERRED_RETURN_PREFIX) {
+            DeferredBase::Call(Box::new(Self::parse(base)?))
+        } else {
+            DeferredBase::Type(base.to_string())
+        };
+        Some(Self {
+            base,
+            method: method.to_string(),
+            awaited: flags.contains('a'),
+            static_only: flags.contains('s'),
+            name_only: flags.contains('n'),
+        })
+    }
+}
 
 /// Column-text prefix of a Rust deferred receiver (`@ret:` family, so the
 /// resolver's `LIKE '@ret:%'` retry scans cover it).
 pub const RUST_DEFERRED_PREFIX: &str = "@ret:r:";
 
 /// Where a Rust deferred receiver's declared type is read from.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeferredSource {
     /// Return type of a callee, one of these absolute qualnames.
     Call { candidates: Vec<String> },
@@ -84,7 +180,7 @@ pub enum DeferredSource {
 }
 
 /// One projection applied to a declared type to reach the receiver's type.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     /// `Some(x)` pattern: `Option<T>` -> `T`.
     OptionSome,
@@ -105,7 +201,7 @@ pub enum Step {
 /// A Rust receiver type the extractor could only trace to a declaration in
 /// another file, plus how to project it. Persisted in
 /// `edges.receiver_type` (`encode`/`decode`) and finished by the resolver.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RustDeferred {
     pub source: DeferredSource,
     pub steps: Vec<Step>,
@@ -198,44 +294,37 @@ impl RustDeferred {
 impl ReceiverType {
     /// `Deferred` for "the (optionally awaited) return value of
     /// `type_name.method`".
-    ///
-    /// `static_only` marks a receiver spelled like a bare type name
-    /// (`Type.Method()`): only a `static` method can be called that way.
     pub fn deferred_return(
         type_name: &str,
         method: &str,
         awaited: bool,
         static_only: bool,
     ) -> Self {
-        Self::Deferred(format!(
-            "{DEFERRED_RETURN_PREFIX}{}{}:{type_name}.{method}",
-            if awaited { "a" } else { "" },
-            if static_only { "s" } else { "" },
+        Self::Deferred(DeferredReturn::on_type(
+            type_name,
+            method,
+            awaited,
+            static_only,
         ))
     }
 
-    /// Inverse of `deferred_return` on column text.
-    pub fn parse_deferred_return(column: &str) -> Option<DeferredReturn<'_>> {
-        let rest = column.strip_prefix(DEFERRED_RETURN_PREFIX)?;
-        let (flags, callee) = rest.split_once(':')?;
-        let (ty, method) = callee.rsplit_once('.')?;
-        Some(DeferredReturn {
-            awaited: flags.contains('a'),
-            static_only: flags.contains('s'),
-            type_name: ty,
-            method,
-        })
+    /// `DeferredReturn::parse` on column text.
+    pub fn parse_deferred_return(column: &str) -> Option<DeferredReturn> {
+        DeferredReturn::parse(column)
     }
 
     /// Encode as the `edges.receiver_type` column value: `None` = not
     /// tracked (legacy resolution tiers apply), `Some("")` = tracked but
     /// unresolved/builtin (must not bind, no lookup attempted at all),
     /// `Some(ty)` = tracked with this inferred type name.
-    pub fn as_column(&self) -> Option<&str> {
+    pub fn as_column(&self) -> Option<std::borrow::Cow<'_, str>> {
+        use std::borrow::Cow;
         match self {
             ReceiverType::NotTracked => None,
-            ReceiverType::Unresolved => Some(""),
-            ReceiverType::Known(ty) | ReceiverType::Deferred(ty) => Some(ty.as_str()),
+            ReceiverType::Unresolved => Some(Cow::Borrowed("")),
+            ReceiverType::Known(ty) => Some(Cow::Borrowed(ty.as_str())),
+            ReceiverType::Deferred(call) => Some(Cow::Owned(call.encode())),
+            ReceiverType::RustDeferred(pending) => Some(Cow::Owned(pending.encode())),
         }
     }
 }

@@ -59,7 +59,7 @@
 
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
-use crate::indexer::extract::{CallShape, DEFERRED_RETURN_PREFIX, DeferredReturn, ReceiverType};
+use crate::indexer::extract::{CallShape, DEFERRED_RETURN_PREFIX, DERIVED_RPC_SHAPE, ReceiverType};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
 use std::collections::HashMap;
@@ -336,10 +336,11 @@ pub(crate) struct LanguageProfile {
     /// same-kind, cross-file candidate is visible to the reference. Never
     /// consulted by the exact/import/receiver-type/inherited tiers.
     pub visibility: VisibilityRule,
-    /// The receiver type name a call yields, from the callee's indexed
-    /// signature and whether the call was awaited (`ReceiverType::Deferred`).
-    /// `None` for a language that never defers a receiver.
-    pub return_receiver: Option<fn(signature: &str, awaited: bool) -> Option<String>>,
+    /// The `RPC_CALL` edges a call site yields when its receiver is a
+    /// deferred call returning a generated gRPC client (a factory in another
+    /// file); `None` when it is no client. See
+    /// `Db::rederive_deferred_rpc_calls`.
+    pub deferred_rpc: Option<DeferredRpcFn>,
     /// Finishes a language's own deferred-receiver marker (an `@ret:`
     /// column this language's extractor wrote) from the declarations it
     /// names. `None` for a language without one.
@@ -350,6 +351,8 @@ pub(crate) struct LanguageProfile {
 pub struct Declaration {
     pub qualname: String,
     pub signature: Option<String>,
+    pub visibility: Option<String>,
+    pub file_id: i64,
 }
 
 /// What a `ResolveDeferred` hook may ask the index for. Every query is
@@ -361,6 +364,15 @@ pub enum DeclarationQuery<'a> {
     Method(&'a str),
     /// A type declaration (struct, enum, class, ...) with this name.
     Type(&'a str),
+    /// Methods named `method` on a type named `ty` (`ty.method`, or
+    /// `<namespace>.ty.method`; dot-separated qualnames).
+    Member { ty: &'a str, method: &'a str },
+}
+
+/// The `using`s and namespaces in scope where a declaration is written.
+pub struct ScopeImports {
+    pub namespaces: Vec<String>,
+    pub aliases: HashMap<String, String>,
 }
 
 /// The symbol index as a deferred-receiver hook sees it.
@@ -368,13 +380,35 @@ pub trait DeclarationIndex {
     fn declarations(&self, query: DeclarationQuery<'_>) -> Result<Vec<Declaration>>;
     /// Whether a type named `name` is declared in the repo.
     fn is_repo_type(&self, name: &str) -> Result<bool>;
+    /// `DeclarationQuery::Member` for `ty`, or -- when it declares none --
+    /// for its nearest ancestors (EXTENDS/IMPLEMENTS/INHERITS, breadth
+    /// first, like `Resolver::resolve_via_inheritance`) that do. An ancestor
+    /// already bound to a symbol is matched by that symbol's full qualname,
+    /// one still only named by its text by its trailing name.
+    fn inherited_members(&self, ty: &str, method: &str) -> Result<Vec<Declaration>>;
+    /// The imports and enclosing namespaces of where `decl` is declared.
+    fn imports_in_scope(&self, decl: &Declaration) -> Result<ScopeImports>;
 }
 
 /// See `LanguageProfile::deferred_receiver`. `Ok(None)`: not this
 /// language's marker. `Ok(Some(None))`: the receiver stays untracked.
-/// `Ok(Some(Some(ty)))`: the receiver's type.
+/// `Ok(Some(Some(ty)))`: the receiver's type (`""`: known not to bind).
 pub type ResolveDeferred =
     fn(column: &str, index: &dyn DeclarationIndex) -> Result<Option<Option<String>>>;
+
+/// One `RPC_CALL` edge `LanguageProfile::deferred_rpc` yields.
+pub struct RpcCallEdge {
+    pub target_qualname: String,
+    pub detail: String,
+}
+
+/// `LanguageProfile::deferred_rpc`: the edges for a call of `method` through
+/// the deferred receiver in `column`; `Ok(None)` when it isn't a client.
+pub type DeferredRpcFn = fn(
+    column: &str,
+    method: &str,
+    index: &dyn DeclarationIndex,
+) -> Result<Option<Vec<RpcCallEdge>>>;
 
 impl LanguageProfile {
     /// Dot-separated, no relative-import syntax, import-tier miss refuses
@@ -388,7 +422,7 @@ impl LanguageProfile {
         import_suffix_matching: true,
         import_member_fallback: false,
         visibility: VisibilityRule::None,
-        return_receiver: None,
+        deferred_rpc: None,
         deferred_receiver: None,
     };
 }
@@ -734,31 +768,49 @@ fn live_symbols(n: usize) -> String {
 
 impl DeclarationIndex for LanguageIndex<'_, '_> {
     fn declarations(&self, query: DeclarationQuery<'_>) -> Result<Vec<Declaration>> {
-        let (filter, arg) = match query {
+        // (filter over ?1, ?4 = method name, ?5 = qualname suffix; ?1 the arg)
+        let (filter, arg, name, suffix) = match query {
             DeclarationQuery::Callable(qualname) => (
                 "s.kind IN ('function', 'method') AND s.qualname = ?1",
                 qualname.to_string(),
+                String::new(),
+                String::new(),
             ),
             DeclarationQuery::Method(qualified) => (
                 "s.kind = 'method' AND (s.qualname = ?1 OR substr(s.qualname, -length(?1) - 2) = '::' || ?1)",
                 qualified.to_string(),
+                String::new(),
+                String::new(),
             ),
             DeclarationQuery::Type(name) => (
                 "s.kind IN ('struct', 'enum', 'class', 'interface', 'record') AND s.name = ?1",
                 name.to_string(),
+                String::new(),
+                String::new(),
+            ),
+            DeclarationQuery::Member { ty, method } => (
+                "s.kind = 'method' AND s.name = ?4
+                 AND (s.qualname = ?1 OR substr(s.qualname, -length(?5)) = ?5)",
+                format!("{ty}.{method}"),
+                method.to_string(),
+                format!(".{ty}.{method}"),
             ),
         };
         let mut stmt = self.resolver.conn.prepare_cached(&format!(
-            "SELECT s.qualname, s.signature FROM symbols s JOIN files f ON s.file_id = f.id
-             WHERE {filter} AND f.language = ?3 AND {}",
+            "SELECT s.qualname, s.signature, s.visibility, s.file_id
+             FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE {filter} AND f.language = ?3 AND {}
+               AND (?4 IS NOT NULL AND ?5 IS NOT NULL)",
             live_symbols(2)
         ))?;
         let rows = stmt.query_map(
-            params![arg, self.resolver.graph_version, self.lang],
+            params![arg, self.resolver.graph_version, self.lang, name, suffix],
             |row| {
                 Ok(Declaration {
                     qualname: row.get(0)?,
                     signature: row.get(1)?,
+                    visibility: row.get(2)?,
+                    file_id: row.get(3)?,
                 })
             },
         )?;
@@ -767,6 +819,131 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
 
     fn is_repo_type(&self, name: &str) -> Result<bool> {
         Ok(!self.declarations(DeclarationQuery::Type(name))?.is_empty())
+    }
+
+    fn inherited_members(&self, ty: &str, method: &str) -> Result<Vec<Declaration>> {
+        let conn = self.resolver.conn;
+        let gv = self.resolver.graph_version;
+        let own = self.declarations(DeclarationQuery::Member { ty, method })?;
+        if !own.is_empty() {
+            return Ok(own);
+        }
+        let type_ids = |name: &str| -> Result<Vec<i64>> {
+            let mut stmt = conn.prepare_cached(&format!(
+                "SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
+                 WHERE s.name = ?1 AND s.kind IN ('class', 'struct', 'interface', 'record')
+                   AND f.language = ?3 AND {}",
+                live_symbols(2)
+            ))?;
+            let rows = stmt.query_map(params![name, gv, self.lang], |row| row.get(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        };
+        let mut frontier = type_ids(qualname_trailing_name(ty))?;
+        let mut seen: std::collections::HashSet<i64> = frontier.iter().copied().collect();
+        for _ in 0..MAX_INHERITANCE_DEPTH {
+            let mut level: Vec<(Option<i64>, String)> = Vec::new();
+            let mut hierarchy = conn.prepare_cached(HIERARCHY_SQL)?;
+            for &id in &frontier {
+                let rows = hierarchy.query_map(params![id, gv], |row| {
+                    Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?))
+                })?;
+                for row in rows {
+                    level.push(row?);
+                }
+            }
+            if level.is_empty() {
+                break;
+            }
+            let mut found = Vec::new();
+            for (id, text) in &level {
+                let bound: Option<String> = match id {
+                    Some(id) => conn
+                        .prepare_cached("SELECT qualname FROM symbols WHERE id = ?")?
+                        .query_row(params![id], |row| row.get(0))
+                        .optional()?,
+                    None => None,
+                };
+                found.extend(match bound {
+                    // Already bound: its full qualname names the type.
+                    Some(qualname) => self
+                        .declarations(DeclarationQuery::Member {
+                            ty: &qualname,
+                            method,
+                        })?
+                        .into_iter()
+                        .filter(|d| d.qualname == format!("{qualname}.{method}"))
+                        .collect(),
+                    None => self.declarations(DeclarationQuery::Member {
+                        ty: qualname_trailing_name(text),
+                        method,
+                    })?,
+                });
+            }
+            if !found.is_empty() {
+                return Ok(found);
+            }
+            frontier = Vec::new();
+            for (id, text) in level {
+                let ids = match id {
+                    Some(id) => vec![id],
+                    None => type_ids(qualname_trailing_name(&text))?,
+                };
+                frontier.extend(ids.into_iter().filter(|id| seen.insert(*id)));
+            }
+            if frontier.is_empty() {
+                break;
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    fn imports_in_scope(&self, decl: &Declaration) -> Result<ScopeImports> {
+        let gv = self.resolver.graph_version;
+        let mut stmt = self.resolver.conn.prepare_cached(
+            "SELECT target_qualname, detail FROM edges
+             WHERE kind = 'IMPORTS' AND file_id = ?1 AND graph_version = ?2
+             UNION ALL
+             SELECT reference_name, detail FROM unresolved_references
+             WHERE edge_kind = 'IMPORTS' AND file_id = ?1 AND graph_version = ?2
+             ORDER BY 1, 2",
+        )?;
+        let rows = stmt.query_map(params![decl.file_id, gv], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        })?;
+        let mut namespaces = Vec::new();
+        let mut aliases = HashMap::new();
+        for row in rows {
+            let (target, detail) = row?;
+            let alias = detail
+                .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+                .and_then(|d| {
+                    Some((
+                        d.get("alias")?.as_str()?.to_string(),
+                        d.get("target")?.as_str()?.to_string(),
+                    ))
+                });
+            match (alias, target) {
+                (Some((alias, target)), _) => {
+                    aliases.insert(alias, target);
+                }
+                (None, Some(target)) => namespaces.push(target),
+                _ => {}
+            }
+        }
+        // `App.Clients.Create` sits in `App.Clients` (or a class of that
+        // name in `App`): every enclosing namespace is in scope.
+        let mut scope = decl.qualname.rsplit_once('.').map(|(t, _)| t);
+        while let Some((prefix, _)) = scope.and_then(|t| t.rsplit_once('.')) {
+            namespaces.push(prefix.to_string());
+            scope = Some(prefix);
+        }
+        Ok(ScopeImports {
+            namespaces,
+            aliases,
+        })
     }
 }
 
@@ -834,12 +1011,14 @@ impl<'c> Resolver<'c> {
     ) -> Result<Resolution> {
         // A deferred receiver (`ReceiverType::Deferred`) becomes the callee's
         // declared return type, or `""` (unresolved) -- never a guess.
-        let deferred;
-        let patched;
         let patched_hook;
-        // A language's own marker (Rust); a hook miss leaves the receiver
-        // untracked rather than `""`, so no name-tier edge is lost.
+        // A language's own marker; `Some(None)` from its hook leaves the
+        // receiver untracked rather than `""`, so no name-tier edge is lost.
         let hooked: Option<String>;
+        let name_only = r
+            .receiver_type
+            .and_then(ReceiverType::parse_deferred_return)
+            .is_some_and(|call| call.name_only);
         let r = match r
             .receiver_type
             .filter(|column| column.starts_with(DEFERRED_RETURN_PREFIX))
@@ -866,20 +1045,6 @@ impl<'c> Resolver<'c> {
             },
             None => r,
         };
-        let r = match r
-            .receiver_type
-            .and_then(ReceiverType::parse_deferred_return)
-        {
-            Some(call) => {
-                deferred = self.deferred_receiver(&call, r.source_lang)?;
-                patched = Reference {
-                    receiver_type: Some(&deferred),
-                    ..*r
-                };
-                &patched
-            }
-            None => r,
-        };
         self.arity = match r.call_shape {
             Some(shape) if !shape.is_new => Some(Arity {
                 args: shape.arg_count as usize,
@@ -891,7 +1056,11 @@ impl<'c> Resolver<'c> {
             .receiver_type
             .filter(|ty| !ty.is_empty())
             .map(|ty| simple_type_name(ty).to_string());
-        let resolution = self.resolve_tiers(r, symbol_map)?;
+        let resolution = if name_only {
+            self.resolve_name_only(r)?
+        } else {
+            self.resolve_tiers(r, symbol_map)?
+        };
         // Issue #124: `new T(...)` names the class, but the call runs one of
         // its constructors -- bind that when exactly one matches by arity.
         if let (Some(shape), Resolution::Resolved { target_id, kind }) = (r.call_shape, resolution)
@@ -906,61 +1075,34 @@ impl<'c> Resolver<'c> {
         Ok(resolution)
     }
 
-    /// The receiver type of `ty.method(..)`'s return value: the return type
-    /// (via the language's `return_receiver`) shared by every method named
-    /// `method` on a type named `ty` (overloads, same-named types in other
-    /// namespaces), else `""`. A `static_only` call needs every candidate to
-    /// be `static`, and the return type must name a repo type -- which also
-    /// rules out a generic type parameter such as `T`.
-    fn deferred_receiver(&self, call: &DeferredReturn<'_>, lang: &str) -> Result<String> {
-        let Some(return_receiver) = profile_for(lang).return_receiver else {
-            return Ok(String::new());
+    /// Resolve a call whose target text is only the called method's name
+    /// (`a.B().C()`, see `DeferredReturn::name_only`) through its receiver
+    /// type alone: the name says nothing about which symbol it is.
+    fn resolve_name_only(&mut self, r: &Reference<'_>) -> Result<Resolution> {
+        self.saw_ambiguous = false;
+        self.saw_private = false;
+        let ty = r.receiver_type.unwrap_or("");
+        let found = match r.target_qualname {
+            Some(name) if !ty.is_empty() => self.resolve_by_name(
+                name,
+                Some(ty),
+                r.edge_kind,
+                r.source_lang,
+                CallerContext {
+                    file_path: r.source_file_path,
+                    qualname: r.source_qualname,
+                },
+                r.bare_call,
+            )?,
+            _ => None,
         };
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT s.signature, s.visibility FROM symbols s JOIN files f ON s.file_id = f.id
-             WHERE s.name = ?1 AND s.kind = 'method' AND f.language = ?5
-               AND (s.qualname = ?2 OR substr(s.qualname, -length(?3)) = ?3)
-               AND s.graph_version = ?4
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?4)",
-        )?;
-        let suffix = format!(".{}.{}", call.type_name, call.method);
-        let qualname = format!("{}.{}", call.type_name, call.method);
-        let rows = stmt.query_map(
-            params![call.method, qualname, suffix, self.graph_version, lang],
-            |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                ))
-            },
-        )?;
-        let mut found: Option<String> = None;
-        for row in rows {
-            let (sig, visibility) = row?;
-            let is_static = visibility
-                .as_deref()
-                .is_some_and(|v| v.split_whitespace().any(|m| m == "static"));
-            let ret = sig.and_then(|sig| return_receiver(&sig, call.awaited));
-            let Some(ret) = ret.filter(|_| is_static || !call.static_only) else {
-                return Ok(String::new());
-            };
-            match &found {
-                Some(prev) if *prev != ret => return Ok(String::new()),
-                _ => found = Some(ret),
-            }
-        }
-        let Some(ret) = found else {
-            return Ok(String::new());
-        };
-        let is_repo_type: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
-             WHERE s.name = ?1 AND s.kind IN ('class', 'struct', 'interface', 'record', 'enum')
-               AND f.language = ?2 AND s.graph_version = ?3
-               AND (f.deleted_version IS NULL OR f.deleted_version > ?3))",
-            params![ret, lang, self.graph_version],
-            |row| row.get(0),
-        )?;
-        Ok(if is_repo_type { ret } else { String::new() })
+        Ok(match found {
+            Some((id, kind)) => resolved(id, kind),
+            None if ty.is_empty() => Resolution::Unresolved(UnresolvedReason::External),
+            None if self.saw_ambiguous => Resolution::Unresolved(UnresolvedReason::Ambiguous),
+            None if self.saw_private => Resolution::Unresolved(UnresolvedReason::Private),
+            None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
+        })
     }
 
     /// The single constructor of class-like symbol `class_id` (its
@@ -2593,7 +2735,8 @@ impl Db {
         // not on any symbol sharing its name, so it is always retried.
         let has_deferred_rows: bool = self.read_conn()?.query_row(
             "SELECT EXISTS(SELECT 1 FROM unresolved_references
-             WHERE graph_version = ? AND receiver_type LIKE '@ret:%')",
+             WHERE graph_version = ? AND edge_kind = 'CALLS'
+               AND receiver_type LIKE '@ret:%')",
             params![graph_version],
             |row| row.get(0),
         )?;
@@ -2817,8 +2960,35 @@ impl Db {
         self.rejudge_bound_edges(
             graph_version,
             "",
-            "AND e.target_symbol_id IS NOT NULL AND e.receiver_type LIKE '@ret:%'",
+            "AND e.target_symbol_id IS NOT NULL AND e.kind = 'CALLS'
+             AND e.receiver_type LIKE '@ret:%'",
         )
+    }
+
+    /// Rebuild the `RPC_CALL` edges of calls through a deferred receiver
+    /// (`ReceiverType::Deferred`) whose callee returns a generated gRPC
+    /// client (`var c = CreateClient(); c.SayHello()` with the factory in
+    /// another file). The extractor can't see that return type, so the call
+    /// site's `CALLS` edge (or its unresolved-store row) is re-read here and
+    /// the edges derived from the callee's declaration. Last pass's derived
+    /// edges (`call_shape = DERIVED_RPC_SHAPE`) go first, so the outcome
+    /// depends only on the current symbols and incremental sync equals a
+    /// fresh reindex (issue #77). Returns how many edges it wrote.
+    pub fn rederive_deferred_rpc_calls(&self, graph_version: i64) -> Result<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM edges WHERE graph_version = ?1 AND call_shape = ?2",
+            params![graph_version, DERIVED_RPC_SHAPE],
+        )?;
+        let sites = load_deferred_call_sites(&tx, graph_version)?;
+        let derived = {
+            let mut resolver = Resolver::new(&tx, graph_version)?;
+            derive_rpc_calls(&mut resolver, &sites)?
+        };
+        let written = insert_derived_rpc_calls(&tx, graph_version, &derived)?;
+        tx.commit()?;
+        Ok(written)
     }
 
     /// Re-run `Resolver::resolve` on the edges of `graph_version` selected
@@ -3043,6 +3213,12 @@ impl Db {
             // the store like any other orphaned edge.
             self.reconcile_unresolved_reference_store(graph_version)?;
         }
+        // After every step that can bind a deferred call site, since it
+        // reads both bound edges and store rows.
+        let deferred_rpc = self.rederive_deferred_rpc_calls(graph_version)?;
+        if deferred_rpc > 0 {
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
         // Runs after `retry_external_stub_edges`, so a stub an edge just
         // moved off of in this same pass is pruned immediately if that was
         // its last caller, not left one repair pass behind.
@@ -3137,6 +3313,178 @@ struct NullTargetEdgeRow {
     span_id: Option<String>,
     event_ts: Option<i64>,
     ctx: ReferenceContext,
+}
+
+/// A call through a deferred receiver, as stored on its `CALLS` edge or
+/// unresolved-store row.
+struct DeferredCallSite {
+    file_id: i64,
+    source_symbol_id: Option<i64>,
+    /// The `edges.receiver_type` column text.
+    marker: String,
+    /// The call's target text (`c.SayHello`).
+    target: String,
+    snippet: Option<String>,
+    start_line: Option<i64>,
+    end_line: Option<i64>,
+    confidence: Option<f64>,
+    commit_sha: Option<String>,
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    event_ts: Option<i64>,
+    lang: String,
+    path: String,
+}
+
+/// (marker, method, language): what a deferred RPC derivation depends on.
+type RpcCacheKey<'a> = (&'a str, &'a str, &'a str);
+
+/// An `RPC_CALL` edge derived for a `DeferredCallSite`, resolved.
+struct DerivedRpcCall<'a> {
+    site: &'a DeferredCallSite,
+    edge: RpcCallEdge,
+    target_id: Option<i64>,
+    resolution_kind: Option<&'static str>,
+}
+
+/// Every deferred `CALLS` site of `graph_version`, bound (`edges`) or not
+/// (`unresolved_references`). Both scans hit partial indexes on the marker
+/// prefix (migration 23).
+fn load_deferred_call_sites(
+    conn: &Connection,
+    graph_version: i64,
+) -> Result<Vec<DeferredCallSite>> {
+    let mut sites = Vec::new();
+    for (table, kind_col, target_col) in [
+        ("edges", "kind", "target_qualname"),
+        ("unresolved_references", "edge_kind", "reference_name"),
+    ] {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT t.file_id, t.source_symbol_id, t.receiver_type, t.{target_col},
+                    t.evidence_snippet, t.evidence_start_line, t.evidence_end_line,
+                    t.confidence, t.commit_sha, t.trace_id, t.span_id, t.event_ts,
+                    COALESCE(f.language, 'unknown'), f.path
+             FROM {table} t JOIN files f ON f.id = t.file_id
+             WHERE t.graph_version = ?1 AND t.{kind_col} = 'CALLS'
+               AND t.receiver_type LIKE '{DEFERRED_RETURN_PREFIX}%'
+               AND t.{target_col} IS NOT NULL
+             ORDER BY t.id"
+        ))?;
+        let rows = stmt.query_map(params![graph_version], |row| {
+            Ok(DeferredCallSite {
+                file_id: row.get(0)?,
+                source_symbol_id: row.get(1)?,
+                marker: row.get(2)?,
+                target: row.get(3)?,
+                snippet: row.get(4)?,
+                start_line: row.get(5)?,
+                end_line: row.get(6)?,
+                confidence: row.get(7)?,
+                commit_sha: row.get(8)?,
+                trace_id: row.get(9)?,
+                span_id: row.get(10)?,
+                event_ts: row.get(11)?,
+                lang: row.get(12)?,
+                path: row.get(13)?,
+            })
+        })?;
+        for row in rows {
+            sites.push(row?);
+        }
+    }
+    Ok(sites)
+}
+
+/// The `RPC_CALL` edges of each site whose callee returns a client, with
+/// their targets resolved. Sites sharing a marker and method are judged once.
+fn derive_rpc_calls<'a>(
+    resolver: &mut Resolver<'_>,
+    sites: &'a [DeferredCallSite],
+) -> Result<Vec<DerivedRpcCall<'a>>> {
+    let no_symbols: HashMap<String, i64> = HashMap::new();
+    let mut cache: HashMap<RpcCacheKey<'_>, Vec<(String, String)>> = HashMap::new();
+    let mut derived = Vec::new();
+    for site in sites {
+        let Some(hook) = profile_for(&site.lang).deferred_rpc else {
+            continue;
+        };
+        let method = qualname_trailing_name(&site.target);
+        let key = (site.marker.as_str(), method, site.lang.as_str());
+        if let std::collections::hash_map::Entry::Vacant(slot) = cache.entry(key) {
+            let index = LanguageIndex {
+                resolver,
+                lang: &site.lang,
+            };
+            let edges = hook(&site.marker, method, &index)?.unwrap_or_default();
+            let edges = edges
+                .into_iter()
+                .map(|e| (e.target_qualname, e.detail))
+                .collect::<Vec<_>>();
+            slot.insert(edges);
+        }
+        for (target_qualname, detail) in &cache[&key] {
+            let resolution = resolver.resolve(
+                &Reference {
+                    target_qualname: Some(target_qualname),
+                    edge_kind: "RPC_CALL",
+                    receiver_type: None,
+                    import_candidates: &[],
+                    source_lang: &site.lang,
+                    source_file_path: &site.path,
+                    source_qualname: None,
+                    bare_call: false,
+                    call_shape: None,
+                },
+                &no_symbols,
+            )?;
+            derived.push(DerivedRpcCall {
+                site,
+                edge: RpcCallEdge {
+                    target_qualname: target_qualname.clone(),
+                    detail: detail.clone(),
+                },
+                target_id: resolution.target_id(),
+                resolution_kind: resolution.kind_column(),
+            });
+        }
+    }
+    Ok(derived)
+}
+
+fn insert_derived_rpc_calls(
+    conn: &Connection,
+    graph_version: i64,
+    derived: &[DerivedRpcCall<'_>],
+) -> Result<usize> {
+    let mut insert = conn.prepare(
+        "INSERT INTO edges
+         (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
+          evidence_snippet, evidence_start_line, evidence_end_line, confidence,
+          graph_version, commit_sha, trace_id, span_id, event_ts, resolution_kind, call_shape)
+         VALUES (?, ?, ?, 'RPC_CALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )?;
+    for d in derived {
+        let site = d.site;
+        insert.execute(params![
+            site.file_id,
+            site.source_symbol_id,
+            d.target_id,
+            d.edge.target_qualname,
+            d.edge.detail,
+            site.snippet,
+            site.start_line,
+            site.end_line,
+            site.confidence,
+            graph_version,
+            site.commit_sha,
+            site.trace_id,
+            site.span_id,
+            site.event_ts,
+            d.resolution_kind,
+            DERIVED_RPC_SHAPE,
+        ])?;
+    }
+    Ok(derived.len())
 }
 
 /// Encode `EdgeInput::import_candidates` for the `edges.import_candidates`

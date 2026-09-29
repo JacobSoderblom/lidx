@@ -1,7 +1,12 @@
-use crate::db::resolver::{LanguageProfile, VisibilityRule};
+use crate::db::resolver::{
+    Declaration, DeclarationIndex, LanguageProfile, RpcCallEdge, ScopeImports, VisibilityRule,
+};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{CallShape, EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
+use crate::indexer::extract::{
+    CallShape, DeferredBase, DeferredReturn, EdgeInput, ExtractedFile, MAX_DEFERRED_DEPTH,
+    ReceiverType, SymbolInput,
+};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::scan;
@@ -26,7 +31,8 @@ use tree_sitter::{Node, Parser};
 /// to bind across files.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     visibility: VisibilityRule::Recorded,
-    return_receiver: Some(receiver_from_signature),
+    deferred_receiver: Some(resolve_deferred),
+    deferred_rpc: Some(deferred_rpc_calls),
     ..LanguageProfile::DEFAULT
 };
 
@@ -70,6 +76,9 @@ struct Context {
     /// entry; never merged across methods. See
     /// `python::infer_receiver_type` for the mechanism this mirrors.
     local_types: Rc<HashMap<String, LocalType>>,
+    /// Plain assignments (`x = M()`) to a local or field within the current
+    /// method body; see `type_at`.
+    assigns: Rc<ScopeAssigns>,
     /// Type-annotated fields and properties of the *directly* enclosing
     /// type, read once when entering its body — see
     /// `collect_class_level_attr_types`. Used only to resolve a single-hop
@@ -205,14 +214,53 @@ enum LocalType {
     Other,
     /// Transient: `var x = recv.Method(..)` before `resolve_pending_calls`
     /// has looked `recv` up. Never present in a finished `local_types` map.
-    Call {
-        receiver: String,
-        method: String,
-        awaited: bool,
-    },
+    Call(PendingCall),
     /// The return value of a callee declared in another file; the resolver
     /// finishes it (see `ReceiverType::Deferred`). Holds the column text.
-    Deferred(String),
+    Deferred(DeferredReturn),
+}
+
+/// `recv.Method(..)` awaiting `resolve_pending_calls`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingCall {
+    /// Where the call starts, for `type_at` lookups of its receiver.
+    pos: usize,
+    recv: PendingRecv,
+    method: String,
+    awaited: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingRecv {
+    /// A bare identifier (a local, field, or static type name) or
+    /// `this.field`.
+    Name(String),
+    /// The enclosing type: `M()` / `this.M()`.
+    This,
+    /// `base.M()`.
+    Base,
+    /// The value of another call (`a.B().C()`).
+    Call(Box<PendingCall>),
+}
+
+/// The enclosing type (`Foo` for a bare / `this.` call, possibly inherited
+/// or declared in another partial-class file) and its base class.
+#[derive(Default)]
+struct ThisEnv {
+    this_type: Option<String>,
+    base_type: Option<String>,
+}
+
+impl ThisEnv {
+    fn from_ctx(ctx: &Context) -> Self {
+        Self {
+            this_type: ctx.type_stack.last().cloned(),
+            base_type: match &ctx.base_type {
+                LocalType::Known(t) => Some(t.clone()),
+                _ => None,
+            },
+        }
+    }
 }
 
 impl LocalType {
@@ -293,6 +341,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             // method/constructor body), so this starts and stays empty
             // outside of `handle_method`/`handle_constructor`.
             local_types: Rc::new(HashMap::new()),
+            assigns: Rc::new(ScopeAssigns::default()),
             class_attr_types: Rc::new(HashMap::new()),
             class_attr_raw: Rc::new(HashMap::new()),
             base_type: LocalType::Other,
@@ -416,7 +465,9 @@ fn walk_compilation_unit(node: Node<'_>, ctx: &Context, source: &str, output: &m
     }
     next_ctx.route_groups = collect_global_route_groups(node, source);
     next_ctx.grpc_clients = collect_global_grpc_clients(node, source, &ctx.method_returns);
-    next_ctx.local_types = Rc::new(infer_global_local_types(node, source, ctx));
+    let (local_types, assigns) = infer_global_local_types(node, source, ctx);
+    next_ctx.local_types = Rc::new(local_types);
+    next_ctx.assigns = Rc::new(assigns);
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -623,6 +674,7 @@ fn handle_type(
     next_ctx.base_type = resolvable_base_type(node, source, type_kind);
     // Top-level-statement locals aren't visible inside a type.
     next_ctx.local_types = Rc::new(HashMap::new());
+    next_ctx.assigns = Rc::new(ScopeAssigns::default());
     if let Some(body) = node.child_by_field_name("body") {
         next_ctx.class_attr_types = Rc::new(collect_class_level_attr_types(body, source));
         next_ctx.class_attr_raw = Rc::new(collect_class_level_attr_type_texts(body, source));
@@ -728,7 +780,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         let mut grpc_clients = ctx.grpc_clients.clone();
         grpc_clients.extend(collect_grpc_clients(body, source, &ctx.method_returns));
         next_ctx.grpc_clients = grpc_clients;
-        next_ctx.local_types = Rc::new(infer_local_types(node, source, ctx));
+        let (local_types, assigns) = infer_local_types(node, source, ctx);
+        next_ctx.local_types = Rc::new(local_types);
+        next_ctx.assigns = Rc::new(assigns);
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -817,7 +871,9 @@ fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = qualname;
-        next_ctx.local_types = Rc::new(infer_local_types(node, source, ctx));
+        let (local_types, assigns) = infer_local_types(node, source, ctx);
+        next_ctx.local_types = Rc::new(local_types);
+        next_ctx.assigns = Rc::new(assigns);
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -939,13 +995,22 @@ fn handle_using(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
     let Some(target) = target else {
         return;
     };
+    // An alias's target text is the alias itself; keep what it names for the
+    // resolver (see `using_context`).
+    let mut aliased = ImportContext::default();
+    record_using_directive(node, source, &mut aliased);
+    let detail = aliased
+        .aliases
+        .into_iter()
+        .next()
+        .map(|(alias, target)| json!({ "alias": alias, "target": target }).to_string());
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     output.edges.push(EdgeInput {
         kind: "IMPORTS".to_string(),
         source_qualname: Some(base_qualname(ctx)),
         target_qualname: Some(target),
-        detail: None,
+        detail,
         evidence_snippet: snippet,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
@@ -1037,7 +1102,24 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             import_candidates.push(candidate);
         }
     }
-    let target = resolve_call_target(&raw, ctx);
+    let mut receiver_type = receiver_type;
+    let mut target = resolve_call_target(&raw, ctx);
+    if target.is_none()
+        && let ReceiverType::Deferred(call) = &mut receiver_type
+        && let Some(parts) = call_target_parts(target_node, source)
+    {
+        // `a.B().C()`: no printable receiver, so the target is just `C`,
+        // bound through the deferred receiver type alone.
+        call.name_only = true;
+        target = Some(
+            parts
+                .name
+                .split('<')
+                .next()
+                .unwrap_or(&parts.name)
+                .to_string(),
+        );
+    }
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
@@ -3280,8 +3362,9 @@ const CS_BUILTIN_TYPES: &[&str] = &[
 /// - `X.Method()` where `X` is a bare identifier: `Known`/`Unresolved` from
 ///   this method's local types if `X` is tracked, else `NotTracked` (a
 ///   static/class reference, e.g. `Console.WriteLine()`).
+/// - A call result (`a.B().C()`) → the deferred return type of `B`.
 /// - Anything deeper, or a chain rooted in something other than a bare
-///   identifier/`this`/`base` (a call result, a cast, ...), → `Unresolved`
+///   identifier/`this`/`base` (a cast, ...), → `Unresolved`
 ///   if the root is `this` or a tracked local, `NotTracked` otherwise.
 fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
     if function_node.kind() != "member_access_expression" {
@@ -3311,7 +3394,14 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
                 .child_by_field_name("name")
                 .map(|n| node_text(n, source));
             return attr_name
-                .and_then(|name| ctx.class_attr_types.get(&name))
+                .and_then(|name| {
+                    type_at(
+                        &name,
+                        function_node.start_byte(),
+                        ctx.class_attr_types.get(&name),
+                        &ctx.assigns.attrs,
+                    )
+                })
                 .map_or(ReceiverType::Unresolved, LocalType::receiver);
         }
         // ponytail: deeper chains (`this.a.b.Method()`) would need real
@@ -3320,9 +3410,25 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         return ReceiverType::Unresolved;
     }
 
+    if hops == 0
+        && matches!(
+            root.kind(),
+            "invocation_expression" | "await_expression" | "parenthesized_expression"
+        )
+    {
+        // `a.B().C()`: the receiver is another call's return value.
+        let names = Names {
+            locals: &ctx.local_types,
+            class_attrs: &ctx.class_attr_types,
+            assigns: &ctx.assigns,
+        };
+        return pending_call(root, source, 0)
+            .and_then(|call| call_marker(&call, &names, &ThisEnv::from_ctx(ctx)))
+            .map_or(ReceiverType::Unresolved, ReceiverType::Deferred);
+    }
     if root.kind() != "identifier" {
-        // Chain rooted in a call result, cast expression, subscript, etc.
-        // — not inferable.
+        // Chain rooted in a cast expression, subscript, etc. — not
+        // inferable.
         return ReceiverType::Unresolved;
     }
     let root_name = node_text(root, source);
@@ -3335,15 +3441,18 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     // `class_attr_types` — reusing the exact same field/property map
     // `this.field.Method()` already consults, just from an additional call
     // site.
+    let pos = function_node.start_byte();
     if let Some(local) = ctx.local_types.get(&root_name) {
         if hops == 0 {
-            return local.receiver();
+            return type_at(&root_name, pos, Some(local), &ctx.assigns.locals)
+                .map_or(ReceiverType::Unresolved, LocalType::receiver);
         }
         return ReceiverType::Unresolved;
     }
     if let Some(attr) = ctx.class_attr_types.get(&root_name) {
         if hops == 0 {
-            return attr.receiver();
+            return type_at(&root_name, pos, Some(attr), &ctx.assigns.attrs)
+                .map_or(ReceiverType::Unresolved, LocalType::receiver);
         }
         return ReceiverType::Unresolved;
     }
@@ -3800,88 +3909,382 @@ fn classify_value_expr(value: Node<'_>, source: &str, method_returns: &MethodRet
     if let Some(ret) = method_returns.call_return_type(value, source) {
         return classify_annotation(&ret);
     }
-    member_call(value, source).unwrap_or(LocalType::Other)
+    match pending_call(value, source, 0) {
+        // A same-file callee `call_return_type` couldn't type (`void`, a task
+        // nobody awaited) stays untracked.
+        Some(call)
+            if call.recv == PendingRecv::This && method_returns.0.contains_key(&call.method) =>
+        {
+            LocalType::Other
+        }
+        Some(call) => LocalType::Call(call),
+        None => LocalType::Other,
+    }
 }
 
-/// `recv.Method(..)` / `this.recv.Method(..)` (optionally awaited /
-/// `.ConfigureAwait(..)`) as a pending `LocalType::Call` for
-/// `resolve_pending_calls`. `recv` is a bare identifier (a local, field, or
-/// static type name); anything else (chains, `this.Method()`) is `None`.
-fn member_call(value: Node<'_>, source: &str) -> Option<LocalType> {
-    let (call, awaited) = unwrap_call(value, source)?;
-    let function = call.child_by_field_name("function")?;
-    if function.kind() != "member_access_expression" {
+/// The call (optionally awaited / `.ConfigureAwait(..)`) in `value` as a
+/// `PendingCall` for `resolve_pending_calls`: `recv.Method(..)` with `recv` a
+/// bare identifier or `this.field`, `M(..)` / `this.M(..)` / `base.M(..)`, or
+/// a chain (`a.B().C()`, `(await a.B()).C()`). Anything else is `None`.
+fn pending_call(value: Node<'_>, source: &str, depth: usize) -> Option<PendingCall> {
+    if depth > MAX_DEFERRED_DEPTH {
         return None;
     }
-    let recv = function.child_by_field_name("expression")?;
-    let receiver = match recv.kind() {
-        "identifier" => node_text(recv, source),
-        "member_access_expression" if recv.child_by_field_name("expression")?.kind() == "this" => {
-            format!(
-                "this.{}",
-                node_text(recv.child_by_field_name("name")?, source)
-            )
+    let (call, awaited) = unwrap_call(peel_parens(value), source)?;
+    let function = call.child_by_field_name("function")?;
+    let (recv, name) = match function.kind() {
+        "identifier" | "generic_name" => (PendingRecv::This, function),
+        "member_access_expression" => {
+            let expr = peel_parens(function.child_by_field_name("expression")?);
+            let recv = match expr.kind() {
+                "identifier" => PendingRecv::Name(node_text(expr, source)),
+                "this" => PendingRecv::This,
+                "base" => PendingRecv::Base,
+                "member_access_expression"
+                    if expr.child_by_field_name("expression")?.kind() == "this" =>
+                {
+                    PendingRecv::Name(format!(
+                        "this.{}",
+                        node_text(expr.child_by_field_name("name")?, source)
+                    ))
+                }
+                _ => PendingRecv::Call(Box::new(pending_call(expr, source, depth + 1)?)),
+            };
+            (recv, function.child_by_field_name("name")?)
         }
         _ => return None,
     };
-    let name = function.child_by_field_name("name")?;
     let method = node_text(name, source);
     let method = method.split('<').next().unwrap_or(&method).to_string();
-    Some(LocalType::Call {
-        receiver,
+    Some(PendingCall {
+        pos: value.start_byte(),
+        recv,
         method,
         awaited,
     })
 }
 
-/// Finish every pending `recv.Method(..)` binding: a `recv` bound to a known
-/// type (local first, then field/property) or spelled like a static type
-/// name (capitalised and not bound at all) becomes a `Deferred` marker for
-/// the resolver; anything else is untracked.
+fn peel_parens(mut node: Node<'_>) -> Node<'_> {
+    while node.kind() == "parenthesized_expression"
+        && let Some(inner) = node.named_child(0)
+    {
+        node = inner;
+    }
+    node
+}
+
+/// Names a `PendingCall` receiver can be bound to.
+struct Names<'a> {
+    locals: &'a HashMap<String, LocalType>,
+    class_attrs: &'a HashMap<String, LocalType>,
+    assigns: &'a ScopeAssigns,
+}
+
+impl Names<'_> {
+    /// What `name` (a local or field; `this.field` when `this_field`) holds at
+    /// byte `pos`.
+    fn type_at(&self, name: &str, pos: usize, this_field: bool) -> Option<&LocalType> {
+        if !this_field && self.locals.contains_key(name) {
+            return type_at(name, pos, self.locals.get(name), &self.assigns.locals);
+        }
+        type_at(name, pos, self.class_attrs.get(name), &self.assigns.attrs)
+    }
+}
+
+/// One plain assignment `name = value` that may change `name`'s type.
+#[derive(Debug, Clone)]
+struct Assign {
+    /// End of the assignment: it holds from here on.
+    pos: usize,
+    /// Byte range of the block the assignment always runs in; a call
+    /// outside it (after a branch) can't rely on it.
+    region: (usize, usize),
+    /// Loops around the assignment: a call earlier in one sees it too.
+    loops: Vec<(usize, usize)>,
+    ty: LocalType,
+}
+
+type Assigns = HashMap<String, Vec<Assign>>;
+
+#[derive(Debug, Default)]
+struct ScopeAssigns {
+    locals: Assigns,
+    attrs: Assigns,
+}
+
+static UNTRACKED: LocalType = LocalType::Other;
+
+/// The type of `name` at byte `pos`: its latest assignment before `pos` when
+/// that always runs before it, `base` (the declaration) when there is none,
+/// and untracked when a branch or loop makes it ambiguous.
+fn type_at<'a>(
+    name: &str,
+    pos: usize,
+    base: Option<&'a LocalType>,
+    assigns: &'a Assigns,
+) -> Option<&'a LocalType> {
+    let Some(events) = assigns.get(name) else {
+        return base;
+    };
+    let in_range = |(start, end): (usize, usize)| start <= pos && pos < end;
+    if events
+        .iter()
+        .any(|ev| ev.pos > pos && ev.loops.iter().any(|l| in_range(*l)))
+    {
+        return Some(&UNTRACKED);
+    }
+    match events.iter().rev().find(|ev| ev.pos <= pos) {
+        None => base,
+        Some(ev) if in_range(ev.region) => Some(&ev.ty),
+        Some(_) => Some(&UNTRACKED),
+    }
+}
+
+/// The deferred return for `call`: its receiver a bound `Known` type, a
+/// bound `Deferred` local (nested in the new one), the enclosing / base
+/// type, another call, or a name spelled like a static type (capitalised and
+/// not bound at all). `None` when the receiver's type is unknown.
+fn call_marker(call: &PendingCall, names: &Names<'_>, env: &ThisEnv) -> Option<DeferredReturn> {
+    let inner = |ty: &LocalType| match ty {
+        LocalType::Known(t) => Some(DeferredReturn::on_type(
+            t,
+            &call.method,
+            call.awaited,
+            false,
+        )),
+        LocalType::Deferred(prev) => Some(DeferredReturn::on_call(
+            prev.clone(),
+            &call.method,
+            call.awaited,
+        )),
+        _ => None,
+    };
+    let marker = match &call.recv {
+        PendingRecv::Name(name) => {
+            let bound = match name.strip_prefix("this.") {
+                Some(field) => names.type_at(field, call.pos, true),
+                None => names.type_at(name, call.pos, false),
+            };
+            match bound {
+                Some(ty) => inner(ty)?,
+                // Possibly a static type name -- but also possibly an
+                // inherited property; the resolver only accepts a `static`
+                // callee for this shape.
+                None if name.starts_with(|c: char| c.is_ascii_uppercase()) => {
+                    match classify_type_name(name) {
+                        LocalType::Known(t) => {
+                            DeferredReturn::on_type(&t, &call.method, call.awaited, true)
+                        }
+                        _ => return None,
+                    }
+                }
+                None => return None,
+            }
+        }
+        PendingRecv::This => inner(&LocalType::Known(env.this_type.clone()?))?,
+        PendingRecv::Base => inner(&LocalType::Known(env.base_type.clone()?))?,
+        PendingRecv::Call(prev) => {
+            DeferredReturn::on_call(call_marker(prev, names, env)?, &call.method, call.awaited)
+        }
+    };
+    (marker.depth() <= MAX_DEFERRED_DEPTH).then_some(marker)
+}
+
+/// Finish every pending call binding -- declarations and assignments -- as a
+/// `Deferred` marker for the resolver (or `Other` when its receiver's type
+/// is unknown). A pending call on another pending name (`var a = F(); var b =
+/// a.G();`) waits for that one, a round at a time, up to `MAX_DEFERRED_DEPTH`
+/// deep.
 fn resolve_pending_calls(
     locals: &mut HashMap<String, LocalType>,
     class_attr_types: &HashMap<String, LocalType>,
+    assigns: &mut ScopeAssigns,
+    env: &ThisEnv,
 ) {
-    let snapshot = locals.clone();
-    for ty in locals.values_mut() {
-        let LocalType::Call {
-            receiver,
-            method,
-            awaited,
-        } = ty
-        else {
-            continue;
+    let pending = |ty: &LocalType| matches!(ty, LocalType::Call(_));
+    for _ in 0..=MAX_DEFERRED_DEPTH {
+        let snapshot_locals = locals.clone();
+        let snapshot_assigns = ScopeAssigns {
+            locals: assigns.locals.clone(),
+            attrs: assigns.attrs.clone(),
         };
-        let known = |t: Option<&LocalType>| match t {
-            Some(LocalType::Known(t)) => Some((t.clone(), false)),
-            _ => None,
+        let names = Names {
+            locals: &snapshot_locals,
+            class_attrs: class_attr_types,
+            assigns: &snapshot_assigns,
         };
-        // (callee type, receiver spelled as a bare type name)
-        let callee = if let Some(field) = receiver.strip_prefix("this.") {
-            known(class_attr_types.get(field))
-        } else if let Some(bound) = snapshot
-            .get(receiver.as_str())
-            .or_else(|| class_attr_types.get(receiver.as_str()))
+        let mut progressed = false;
+        let mut finish = |ty: &mut LocalType| {
+            let LocalType::Call(call) = &*ty else {
+                return;
+            };
+            let waits = {
+                let mut root = call;
+                while let PendingRecv::Call(inner) = &root.recv {
+                    root = inner;
+                }
+                matches!(&root.recv, PendingRecv::Name(n)
+                    if names.type_at(n.strip_prefix("this.").unwrap_or(n), root.pos, n.starts_with("this."))
+                        .is_some_and(pending))
+            };
+            if waits {
+                return;
+            }
+            *ty = call_marker(call, &names, env).map_or(LocalType::Other, LocalType::Deferred);
+            progressed = true;
+        };
+        for ty in locals.values_mut() {
+            finish(ty);
+        }
+        for ev in assigns
+            .locals
+            .values_mut()
+            .chain(assigns.attrs.values_mut())
+            .flatten()
         {
-            known(Some(bound))
-        } else if receiver.starts_with(|c: char| c.is_ascii_uppercase()) {
-            // Not bound here, so possibly a static type name -- but also
-            // possibly an inherited property; the resolver only accepts a
-            // `static` callee for this shape.
-            known(Some(&classify_type_name(receiver))).map(|(t, _)| (t, true))
-        } else {
-            None
-        };
-        *ty = match callee {
-            Some((t, static_only)) => {
-                match ReceiverType::deferred_return(&t, method, *awaited, static_only) {
-                    ReceiverType::Deferred(marker) => LocalType::Deferred(marker),
+            finish(&mut ev.ty);
+        }
+        if !progressed {
+            break;
+        }
+    }
+    // Still pending: an unresolvable cycle or a chain past the depth cap.
+    for ty in locals.values_mut() {
+        if pending(ty) {
+            *ty = LocalType::Other;
+        }
+    }
+    for ev in assigns
+        .locals
+        .values_mut()
+        .chain(assigns.attrs.values_mut())
+        .flatten()
+    {
+        if pending(&ev.ty) {
+            ev.ty = LocalType::Other;
+        }
+    }
+}
+
+/// Every identifier under a deconstruction target.
+fn collect_identifiers(node: Node<'_>, source: &str, out: &mut Vec<String>) {
+    if node.kind() == "identifier" {
+        out.push(node_text(node, source));
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_identifiers(child, source, out);
+    }
+}
+
+/// Every assignment to a name in `body`, keyed by name, sorted by position:
+/// to a local declared in `locals`, else to a field.
+fn collect_assignments(
+    body: Node<'_>,
+    source: &str,
+    method_returns: &MethodReturns,
+    locals: &HashMap<String, LocalType>,
+) -> ScopeAssigns {
+    fn walk(
+        node: Node<'_>,
+        source: &str,
+        returns: &MethodReturns,
+        locals: &HashMap<String, LocalType>,
+        loops: &mut Vec<(usize, usize)>,
+        out: &mut ScopeAssigns,
+    ) {
+        let is_loop = matches!(
+            node.kind(),
+            "for_statement" | "foreach_statement" | "while_statement" | "do_statement"
+        );
+        if is_loop {
+            loops.push((node.start_byte(), node.end_byte()));
+        }
+        if node.kind() == "assignment_expression"
+            && let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            )
+        {
+            let plain = node
+                .child_by_field_name("operator")
+                .is_some_and(|op| node_text(op, source) == "=");
+            // Only `x = <typed value>` gives `x` a type; any other write
+            // (`??=`, `+=`, a deconstruction, an untypeable value) leaves
+            // it unknown from here on.
+            let ty = if plain && left.kind() != "tuple_expression" {
+                match classify_value_expr(right, source, returns) {
+                    ty @ (LocalType::Known(_) | LocalType::Call(_)) => ty,
                     _ => LocalType::Other,
                 }
+            } else {
+                LocalType::Other
+            };
+            let mut targets: Vec<String> = Vec::new();
+            match left.kind() {
+                "identifier" => targets.push(node_text(left, source)),
+                "member_access_expression"
+                    if left.child_by_field_name("expression").map(|e| e.kind()) == Some("this") =>
+                {
+                    targets.extend(
+                        left.child_by_field_name("name")
+                            .map(|n| node_text(n, source)),
+                    );
+                }
+                "tuple_expression" => collect_identifiers(left, source, &mut targets),
+                _ => {}
             }
-            None => LocalType::Other,
-        };
+            // Always runs before what follows in its block only as a whole
+            // statement of that block; anything else (a branch's lone
+            // statement, a condition, a lambda body) just poisons.
+            let stmt = node.parent().filter(|p| p.kind() == "expression_statement");
+            let region = match stmt.and_then(|s| s.parent()) {
+                Some(block)
+                    if matches!(
+                        block.kind(),
+                        "block" | "switch_section" | "global_statement" | "compilation_unit"
+                    ) =>
+                {
+                    (block.start_byte(), block.end_byte())
+                }
+                _ => (node.start_byte(), node.end_byte()),
+            };
+            for name in targets {
+                let assigns = if locals.contains_key(&name) {
+                    &mut out.locals
+                } else {
+                    &mut out.attrs
+                };
+                assigns.entry(name).or_default().push(Assign {
+                    pos: node.end_byte(),
+                    region,
+                    loops: loops.clone(),
+                    ty: ty.clone(),
+                });
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk(child, source, returns, locals, loops, out);
+        }
+        if is_loop {
+            loops.pop();
+        }
     }
+    let mut out = ScopeAssigns::default();
+    walk(
+        body,
+        source,
+        method_returns,
+        locals,
+        &mut Vec::new(),
+        &mut out,
+    );
+    for events in out.locals.values_mut().chain(out.attrs.values_mut()) {
+        events.sort_by_key(|ev| ev.pos);
+    }
+    out
 }
 
 /// Declared return types (raw text) of every method / local function in a
@@ -3994,6 +4397,138 @@ fn unwrap_return(ret: &str, awaited: bool) -> Option<String> {
     }
 }
 
+/// `LanguageProfile::deferred_receiver`: the type a deferred call returns
+/// (`""` when it can't be told, so the call binds nothing).
+fn resolve_deferred(column: &str, index: &dyn DeclarationIndex) -> Result<Option<Option<String>>> {
+    let Some(call) = DeferredReturn::parse(column) else {
+        return Ok(None);
+    };
+    Ok(Some(Some(
+        receiver_type(&call, index, 0)?.unwrap_or_default(),
+    )))
+}
+
+/// The repo type `call` returns: the return type shared by every method it
+/// may reach (overloads, same-named types in other namespaces), which must
+/// name a repo type -- also ruling out a generic type parameter such as `T`.
+fn receiver_type(
+    call: &DeferredReturn,
+    index: &dyn DeclarationIndex,
+    depth: usize,
+) -> Result<Option<String>> {
+    let ret = reachable(call, index, depth, |decl, awaited| {
+        Ok(decl
+            .signature
+            .as_deref()
+            .and_then(|sig| receiver_from_signature(sig, awaited)))
+    })?;
+    match ret {
+        Some(ret) if index.is_repo_type(&ret)? => Ok(Some(ret)),
+        _ => Ok(None),
+    }
+}
+
+/// `map` of every method a deferred call may reach -- the receiver type's
+/// own, else its nearest ancestors' -- when they all agree on one `Some`
+/// value. `None` for no method, a disagreement, a `map` miss, or a
+/// `static_only` call reaching a non-`static` method.
+fn reachable<T: PartialEq>(
+    call: &DeferredReturn,
+    index: &dyn DeclarationIndex,
+    depth: usize,
+    map: impl Fn(&Declaration, bool) -> Result<Option<T>>,
+) -> Result<Option<T>> {
+    // A nested call is the receiver's own deferred call (`a.B().C()`).
+    let ty = match &call.base {
+        DeferredBase::Type(ty) => ty.clone(),
+        DeferredBase::Call(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
+        DeferredBase::Call(inner) => match receiver_type(inner, index, depth + 1)? {
+            Some(ty) => ty,
+            None => return Ok(None),
+        },
+    };
+    let mut found: Option<T> = None;
+    for decl in index.inherited_members(&ty, &call.method)? {
+        let is_static = decl
+            .visibility
+            .as_deref()
+            .is_some_and(|v| v.split_whitespace().any(|m| m == "static"));
+        let value = if is_static || !call.static_only {
+            map(&decl, call.awaited)?
+        } else {
+            None
+        };
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        match &found {
+            Some(prev) if *prev != value => return Ok(None),
+            _ => found = Some(value),
+        }
+    }
+    Ok(found)
+}
+
+/// `LanguageProfile::deferred_rpc`: the `RPC_CALL` edges of a call of
+/// `method` whose receiver is the return value of a callee returning a
+/// generated gRPC client -- one per candidate package, taken from the
+/// imports of the callee's file, where the client type is written.
+fn deferred_rpc_calls(
+    column: &str,
+    method: &str,
+    index: &dyn DeclarationIndex,
+) -> Result<Option<Vec<RpcCallEdge>>> {
+    let Some(call) = DeferredReturn::parse(column) else {
+        return Ok(None);
+    };
+    reachable(&call, index, 0, |decl, awaited| {
+        let Some(signature) = decl.signature.as_deref() else {
+            return Ok(None);
+        };
+        let Some(client) = client_of_signature(signature, awaited) else {
+            return Ok(None);
+        };
+        let imports = index.imports_in_scope(decl)?;
+        Ok(Some(grpc_edges(client, method, &imports)))
+    })
+    .map(|edges| {
+        edges.map(|e| {
+            e.into_iter()
+                .map(|(t, d)| RpcCallEdge {
+                    target_qualname: t,
+                    detail: d,
+                })
+                .collect()
+        })
+    })
+}
+
+/// `(service, prefix)` of the generated gRPC client type a method with this
+/// indexed `signature` returns.
+fn client_of_signature(signature: &str, awaited: bool) -> Option<(String, Option<String>)> {
+    let ret = unwrap_return(signature.rsplit_once(" -> ")?.1, awaited)?;
+    split_client_service_and_prefix(ret.trim())
+}
+
+/// `(target_qualname, detail)` of an `RPC_CALL` edge per candidate package.
+fn grpc_edges(
+    client: (String, Option<String>),
+    method: &str,
+    scope: &ScopeImports,
+) -> Vec<(String, String)> {
+    let Some(rpc) = normalize_grpc_method_name(method.split('<').next().unwrap_or(method)) else {
+        return Vec::new();
+    };
+    let imports = ImportContext {
+        namespaces: scope.namespaces.clone(),
+        aliases: scope.aliases.clone(),
+    };
+    build_grpc_call_edges(&[client], &rpc, "", &None, 0, 0, &imports)
+        .into_iter()
+        .filter_map(|e| Some((e.target_qualname?, e.detail?)))
+        .collect()
+}
+
 /// The receiver type name a call to a method with this indexed `signature`
 /// (`(params) -> Ret`) yields, for the resolver's `ReceiverType::Deferred`.
 /// `None` when the signature has no return type or it isn't a plain
@@ -4049,7 +4584,7 @@ fn infer_local_types(
     function_node: Node<'_>,
     source: &str,
     ctx: &Context,
-) -> HashMap<String, LocalType> {
+) -> (HashMap<String, LocalType>, ScopeAssigns) {
     let method_returns = &*ctx.method_returns;
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
     let mut raw = RawTypes {
@@ -4083,8 +4618,17 @@ fn infer_local_types(
         collect_statement_bindings(body, source, method_returns, &mut raw, &mut bindings);
     }
     let mut locals = bindings_to_local_types(bindings);
-    resolve_pending_calls(&mut locals, &ctx.class_attr_types);
-    locals
+    let mut assigns = function_node
+        .child_by_field_name("body")
+        .map(|body| collect_assignments(body, source, method_returns, &locals))
+        .unwrap_or_default();
+    resolve_pending_calls(
+        &mut locals,
+        &ctx.class_attr_types,
+        &mut assigns,
+        &ThisEnv::from_ctx(ctx),
+    );
+    (locals, assigns)
 }
 
 /// `infer_local_types` for a compilation unit's top-level statements, which
@@ -4093,7 +4637,7 @@ fn infer_global_local_types(
     root: Node<'_>,
     source: &str,
     ctx: &Context,
-) -> HashMap<String, LocalType> {
+) -> (HashMap<String, LocalType>, ScopeAssigns) {
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
     let mut raw = RawTypes {
         locals: HashMap::new(),
@@ -4106,8 +4650,28 @@ fn infer_global_local_types(
         }
     }
     let mut locals = bindings_to_local_types(bindings);
-    resolve_pending_calls(&mut locals, &ctx.class_attr_types);
-    locals
+    let mut assigns = ScopeAssigns::default();
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        if child.kind() == "global_statement" {
+            let found = collect_assignments(child, source, &ctx.method_returns, &locals);
+            for (from, to) in [
+                (found.locals, &mut assigns.locals),
+                (found.attrs, &mut assigns.attrs),
+            ] {
+                for (name, events) in from {
+                    to.entry(name).or_default().extend(events);
+                }
+            }
+        }
+    }
+    resolve_pending_calls(
+        &mut locals,
+        &ctx.class_attr_types,
+        &mut assigns,
+        &ThisEnv::default(),
+    );
+    (locals, assigns)
 }
 
 /// Declared type text of names bound in the current method (`None` once a
@@ -5338,9 +5902,12 @@ public class Tests {
         assert_eq!(recv("t.Write2"), known("Store"));
         assert_eq!(recv("a.Write3"), known("Store"));
         assert_eq!(recv("l.Write4"), ReceiverType::Unresolved);
-        assert_eq!(recv("d.Write5"), ReceiverType::Unresolved);
+        // Overloaded / generic same-file callees drop out of the same-file
+        // table; the resolver sees the same ambiguity and stays untracked.
+        let own = |m: &str| ReceiverType::deferred_return("Tests", m, false, false);
+        assert_eq!(recv("d.Write5"), own("Dup"));
         assert_eq!(recv("x.Write6"), ReceiverType::Unresolved);
-        assert_eq!(recv("g.Write7"), ReceiverType::Unresolved);
+        assert_eq!(recv("g.Write7"), own("Get"));
         assert_eq!(recv("c.Write8"), known("Store"));
     }
 
@@ -5371,6 +5938,25 @@ public class Tests {
     }
 
     /// Receiver type of the first CALLS edge whose snippet starts with `needle`.
+    trait WithNameOnly {
+        fn with_name_only(self, name_only: bool) -> Self;
+    }
+
+    impl WithNameOnly for ReceiverType {
+        fn with_name_only(self, name_only: bool) -> Self {
+            match self {
+                ReceiverType::Deferred(call) => {
+                    ReceiverType::Deferred(DeferredReturn { name_only, ..call })
+                }
+                other => other,
+            }
+        }
+    }
+
+    fn on_call(inner: DeferredReturn, method: &str) -> ReceiverType {
+        ReceiverType::Deferred(DeferredReturn::on_call(inner, method, false))
+    }
+
     fn recv_of(file: &ExtractedFile, needle: &str) -> ReceiverType {
         file.edges
             .iter()
@@ -5383,6 +5969,8 @@ public class Tests {
             .unwrap_or_else(|| panic!("no CALLS edge for {needle}"))
             .receiver_type
             .clone()
+            // Whether the call's own target is name-only is asserted apart.
+            .with_name_only(false)
     }
 
     #[test]
@@ -5469,8 +6057,86 @@ public class C {
         assert_eq!(recv_of(&file, "c.C"), deferred("OpenAsync", true, false));
         assert_eq!(recv_of(&file, "d.D"), deferred("Open", false, false));
         assert_eq!(recv_of(&file, "e.E"), ReceiverType::Unresolved);
-        assert_eq!(recv_of(&file, "f.F"), ReceiverType::Unresolved);
-        assert_eq!(recv_of(&file, "g.G"), ReceiverType::Unresolved);
+        // A `var` bound from another deferred `var` nests its marker.
+        let marker = |r: ReceiverType| match r {
+            ReceiverType::Deferred(m) => m,
+            other => panic!("not deferred: {other:?}"),
+        };
+        let missing = marker(ReceiverType::deferred_return("C", "Missing", false, false));
+        assert_eq!(recv_of(&file, "f.F"), on_call(missing, "Open"));
+        let open = marker(deferred("Open", false, false));
+        assert_eq!(recv_of(&file, "g.G"), on_call(open, "Open"));
+    }
+
+    #[test]
+    fn chained_this_and_base_calls_defer_the_receiver_type() {
+        let source = r#"
+public class D : B {
+    private Repo _repo;
+    public async Task M(Repo repo) {
+        repo.Open().A();
+        repo.Nested().Open().B();
+        (await repo.OpenAsync()).C();
+        var s = base.Inherited();
+        s.D();
+        var t = this.Local();
+        t.E();
+        var u = t.Next();
+        var v = u.Next();
+        v.F();
+        _repo.Open().G();
+        Local().H();
+        Unknown.Open().I();
+    }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let marker = |r: ReceiverType| match r {
+            ReceiverType::Deferred(m) => m,
+            other => panic!("not deferred: {other:?}"),
+        };
+        let d =
+            |ty: &str, m: &str, aw: bool, st: bool| ReceiverType::deferred_return(ty, m, aw, st);
+        assert_eq!(
+            recv_of(&file, "repo.Open().A"),
+            d("Repo", "Open", false, false)
+        );
+        let nested = marker(d("Repo", "Nested", false, false));
+        assert_eq!(
+            recv_of(&file, "repo.Nested().Open().B"),
+            on_call(nested, "Open")
+        );
+        assert_eq!(
+            recv_of(&file, "(await repo.OpenAsync()).C"),
+            d("Repo", "OpenAsync", true, false)
+        );
+        assert_eq!(recv_of(&file, "s.D"), d("B", "Inherited", false, false));
+        assert_eq!(recv_of(&file, "t.E"), d("D", "Local", false, false));
+        let t = marker(d("D", "Local", false, false));
+        let u = marker(on_call(t, "Next"));
+        assert_eq!(recv_of(&file, "v.F"), on_call(u, "Next"));
+        assert_eq!(
+            recv_of(&file, "_repo.Open().G"),
+            d("Repo", "Open", false, false)
+        );
+        assert_eq!(recv_of(&file, "Local().H"), d("D", "Local", false, false));
+        assert_eq!(
+            recv_of(&file, "Unknown.Open().I"),
+            d("Unknown", "Open", false, true)
+        );
+        // A chained call's target is its bare method name, never a placeholder.
+        let chained = file
+            .edges
+            .iter()
+            .find(|e| {
+                e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with("repo.Open().A"))
+            })
+            .unwrap();
+        assert_eq!(chained.target_qualname.as_deref(), Some("A"));
+        assert!(matches!(&chained.receiver_type, ReceiverType::Deferred(c) if c.name_only));
     }
 
     #[test]

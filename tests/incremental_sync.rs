@@ -1185,6 +1185,32 @@ fn csharp_deferred_receiver_resolves_when_callee_is_added_later() {
     common::assert_matches_fresh(&snapshot, &fresh);
 }
 
+/// A namespace declared by several files is one symbol per file, and the
+/// other files' CONTAINS edges bind to one of them: after some of the files
+/// were re-synced, deleting another must hand those edges to a surviving
+/// declaration, as a fresh reindex would.
+#[test]
+fn csharp_deleting_a_file_of_a_shared_namespace_keeps_contains_edges() {
+    let a = "namespace App { public class A { } }\n";
+    let b = "namespace App { public class B { } }\n";
+    let c = "namespace App { public class C { } }\n";
+    let b2 = "namespace App { public class B { public void M() { } } }\n";
+    let c2 = "namespace App { public class C { public void M() { } } }\n";
+    let (_tmp, root, mut indexer) =
+        indexed_tree("shared-ns", &[("A.cs", a), ("B.cs", b), ("C.cs", c)]);
+    common::write_files(&root, &[("B.cs", b2)]);
+    indexer.sync_rel_paths(&["B.cs".to_string()]).unwrap();
+    common::write_files(&root, &[("C.cs", c2)]);
+    indexer.sync_rel_paths(&["C.cs".to_string()]).unwrap();
+    std::fs::remove_file(root.join("A.cs")).unwrap();
+    indexer.sync_rel_paths(&["A.cs".to_string()]).unwrap();
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_t, fresh) = common::index_files(&[("B.cs", b2), ("C.cs", c2)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
 // Issue #187: JS/TS import candidates are chased through re-export barrels
 // and default exports at extraction time, so editing/adding/deleting only
 // the barrel or target must re-extract the (hash-unchanged) importers.

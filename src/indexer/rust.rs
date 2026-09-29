@@ -30,7 +30,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     import_suffix_matching: false,
     import_member_fallback: false,
     visibility: VisibilityRule::RustModule,
-    return_receiver: None,
+    deferred_rpc: None,
     deferred_receiver: Some(resolve_deferred),
 };
 
@@ -895,7 +895,7 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         value.start_byte(),
     ) {
         Ty::Named(ty) => ReceiverType::Known(ty),
-        Ty::Pending(p) => ReceiverType::Deferred(p.encode()),
+        Ty::Pending(p) => ReceiverType::RustDeferred(p),
         _ => ReceiverType::NotTracked,
     }
 }
@@ -3590,7 +3590,7 @@ fn tc() {}
             .filter(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("go"))
             .map(|e| match &e.receiver_type {
                 ReceiverType::Known(t) => t.clone(),
-                ReceiverType::Deferred(m) => m.clone(),
+                ReceiverType::RustDeferred(m) => m.encode(),
                 _ => "-".to_string(),
             })
             .collect()
