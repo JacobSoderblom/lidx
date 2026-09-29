@@ -84,7 +84,12 @@ public class Foo {
         .iter()
         .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("store.Append"))
         .expect("store.Append() call edge");
-    assert_eq!(call.receiver_type, ReceiverType::Unresolved);
+    // `GetStore` may be inherited or declared in another partial file: the
+    // resolver decides, from its declared return type.
+    assert_eq!(
+        call.receiver_type,
+        ReceiverType::deferred_return("Foo", "GetStore", false, false)
+    );
 }
 
 #[test]
@@ -814,8 +819,11 @@ public class Foo {
                     .is_some_and(|s| s.contains("Baz"))
         })
         .expect("foo(bar).Baz() call edge");
+    // No printable receiver: the target is the bare method name, bound only
+    // through the deferred receiver type (`Foo.foo`'s return).
+    assert_eq!(call.target_qualname.as_deref(), Some("Baz"));
     assert!(
-        call.target_qualname.is_none(),
+        matches!(call.receiver_type, ReceiverType::Deferred(_)),
         "call-in-receiver-position must not bind, got {:?}",
         call.target_qualname
     );
@@ -962,8 +970,9 @@ public class Foo {
                     .is_some_and(|s| s.contains("Bar"))
         })
         .expect("await foo().Bar() call edge");
+    assert_eq!(call.target_qualname.as_deref(), Some("Bar"));
     assert!(
-        call.target_qualname.is_none(),
+        matches!(call.receiver_type, ReceiverType::Deferred(_)),
         "awaited-call receiver must not bind, got {:?}",
         call.target_qualname
     );

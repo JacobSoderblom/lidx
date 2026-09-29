@@ -43,6 +43,10 @@ pub struct ImpactEntry {
     /// Added in v2, defaults to 1.0 for v1 compatibility
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
+    /// Other paths reaching this symbol (e.g. the same container reached via
+    /// a second config URI); `path` is the first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_via: Vec<ImpactPath>,
 }
 
 /// Impact grouped by file
@@ -105,7 +109,7 @@ pub enum ImpactSource {
     },
     /// Test relationship
     TestLink {
-        strategy: String,  // "import", "call", "naming", "proximity"
+        strategy: String,  // "import", "call", "call_via_interface", "naming", "proximity"
         test_type: String, // "unit", "integration", "e2e"
     },
     /// Historical co-change pattern
@@ -115,6 +119,10 @@ pub enum ImpactSource {
         last_cochange: Option<String>, // ISO timestamp
     },
 }
+
+/// How a symbol was reached: (parent id, edge kind, resolution kind of the
+/// traversed edge, whether the edge was walked against its direction).
+pub type ParentLink = (i64, String, Option<String>, bool);
 
 /// Result from a single impact layer
 #[derive(Debug, Clone)]
@@ -129,10 +137,15 @@ pub struct LayerResult {
     pub duration_ms: u64,
     /// Whether this layer was truncated
     pub truncated: bool,
+    /// Why the layer was truncated, when not a plain size/time limit.
+    pub truncation_reason: Option<String>,
     /// Parent tracking for path reconstruction: child_id -> (parent_id,
     /// edge_kind, resolution_kind of the traversed edge, whether the edge was
     /// walked against its direction, i.e. the parent is the edge's target)
-    pub parent_map: HashMap<i64, (i64, String, Option<String>, bool)>,
+    pub parent_map: HashMap<i64, ParentLink>,
+    /// Further parent links of nodes re-entered under another config URI
+    /// (`parent_map` keeps the first): child_id -> extra links, same shape.
+    pub alt_parents: HashMap<i64, Vec<ParentLink>>,
     /// Issue #81 (R5): whether this layer traversed at least one edge with a
     /// heuristic (`bare_name`/`two_segment`) resolution kind. Only the direct
     /// layer (`analyze_direct_impact`) computes this meaningfully; every
@@ -249,6 +262,8 @@ pub struct UnifiedImpactResult {
     pub summary: ImpactSummary,
     /// Whether results were truncated
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncation_reason: Option<String>,
     /// Configuration used
     pub config: ImpactConfig,
     /// Layer-specific metadata
@@ -276,6 +291,8 @@ pub struct BatchImpactEntry {
     pub affected: Vec<ImpactEntry>,
     pub summary: ImpactSummary,
     pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncation_reason: Option<String>,
     pub layers: LayerMetadata,
     pub lower_bound: LowerBound,
     /// Present only when seed resolution failed; contains next_hops and a message.

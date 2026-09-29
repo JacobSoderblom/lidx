@@ -189,8 +189,12 @@ fn analyze_impact_from_secret_uri_stays_on_that_secret() {
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|a| a["qualname"].as_str().map(str::to_string))
+            .filter_map(|a| a["symbol"]["qualname"].as_str().map(str::to_string))
             .collect();
+        assert!(
+            !bicep_names.is_empty(),
+            "{direction}: no affected symbols, the leak check would be vacuous: {r}"
+        );
         assert!(
             !bicep_names
                 .iter()
@@ -363,4 +367,114 @@ fn external_stub_as_seed_still_lists_its_callers() {
     );
     let s = r.to_string();
     assert!(s.contains("run_a") && s.contains("run_b"), "{r}");
+}
+
+const TWO_SECRET_DEPLOYMENT: &str = r#"apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: svc
+spec:
+  template:
+    spec:
+      containers:
+        - name: svc
+          image: img
+          env:
+            - name: ALPHA
+              valueFrom:
+                secretKeyRef:
+                  name: secret-alpha
+                  key: value
+            - name: BETA
+              valueFrom:
+                secretKeyRef:
+                  name: secret-beta
+                  key: value
+"#;
+
+const TWO_SECRET_BICEP: &str = r#"resource alpha 'Microsoft.KeyVault/vaults/secrets@2021-06-01-preview' = {
+  name: 'secret-alpha'
+  properties: {
+    value: 'x'
+  }
+}
+
+resource beta 'Microsoft.KeyVault/vaults/secrets@2021-06-01-preview' = {
+  name: 'secret-beta'
+  properties: {
+    value: 'y'
+  }
+}
+"#;
+
+fn two_secret_repo() -> Repo {
+    let root = fresh_root("lidx-config-reentry");
+    let reader = r#"using System;
+
+namespace Two;
+
+public class Reader {
+    public void Run() {
+        var a = Environment.GetEnvironmentVariable("ALPHA");
+        var b = Environment.GetEnvironmentVariable("BETA");
+    }
+}
+"#;
+    for (path, content) in [
+        ("infra/main.bicep", TWO_SECRET_BICEP),
+        ("infra/svc/deployment.yaml", TWO_SECRET_DEPLOYMENT),
+        ("src/Reader.cs", reader),
+    ] {
+        let p = root.join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, content).unwrap();
+    }
+    let db = root.join(".lidx").join(".lidx.sqlite");
+    Indexer::new(root.clone(), db.clone())
+        .unwrap()
+        .reindex()
+        .unwrap();
+    Repo { root, db }
+}
+
+/// A container reached through two env URIs is expanded under each scope, so
+/// both secrets' Bicep resources are reported (issue #188).
+#[test]
+fn container_reached_via_two_uris_reports_both_secrets() {
+    let repo = two_secret_repo();
+    let has = |qualnames: &[String], needle: &str| {
+        qualnames.iter().any(|q| q.to_lowercase().contains(needle))
+    };
+    let r = call(
+        &repo,
+        "analyze_impact",
+        r#"{"qualname":"Two.Reader.Run","direction":"upstream","max_depth":6}"#,
+    );
+    let affected: Vec<String> = r["affected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| {
+            a["symbol"]["qualname"]
+                .as_str()
+                .or_else(|| a["qualname"].as_str())
+                .map(str::to_string)
+        })
+        .collect();
+    assert!(
+        has(&affected, "alpha") && has(&affected, "beta"),
+        "impact: {affected:?}"
+    );
+    let r = call(
+        &repo,
+        "trace_flow",
+        r#"{"start_qualname":"Two.Reader.Run","direction":"upstream","max_hops":8,"max_bytes":200000}"#,
+    );
+    let hops: Vec<String> = r["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|h| h["symbol"]["qualname"].as_str().map(str::to_string))
+        .collect();
+    assert!(has(&hops, "alpha") && has(&hops, "beta"), "trace: {hops:?}");
 }

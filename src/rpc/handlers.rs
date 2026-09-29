@@ -171,10 +171,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let wants_implements = wants("implements");
 
     // 4. Get edges for callers/callees
-    let edges =
-        indexer
-            .db()
-            .edges_for_symbol(symbol.id, ctx.languages.as_deref(), ctx.graph_version)?;
+    let edges = indexer.db().edges_for_symbol_with_dispatch(
+        symbol.id,
+        ctx.languages.as_deref(),
+        ctx.graph_version,
+    )?;
 
     // 4b. Cross-boundary neighbours (RPC/HTTP/channel/config), appended after
     // the CALLS refs in callers/callees/tests below. Same seed set as the
@@ -350,12 +351,14 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         // Issue #122: calls through an interface-typed receiver bind to the
         // interface method; count them as callers of the implementing method.
         let mut target_ids = target_ids;
+        let mut via_interface_ids = std::collections::HashSet::new();
         for (iface, imp) in indexer
             .db()
             .dispatch_pairs(&target_ids.clone(), ctx.graph_version)?
         {
             if target_ids.contains(&imp) && !target_ids.contains(&iface) {
                 target_ids.push(iface);
+                via_interface_ids.insert(iface);
             }
         }
 
@@ -374,6 +377,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             // Collect resolved callers
             for edge in &target_edges {
                 if edge.kind == "CALLS"
+                    && !edge.is_synthetic()
                     && edge.target_symbol_id == Some(*target_id)
                     && meets_min_resolution(&edge.resolution_kind)
                     && let Some(source_id) = edge.source_symbol_id
@@ -407,6 +411,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             edge_kind: "CALLS".to_string(),
                             protocol_context: None,
                             resolution_kind: edge.resolution_kind.clone(),
+                            via_interface: via_interface_ids.contains(target_id),
                         });
                     }
                 }
@@ -473,7 +478,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
 
             // Get callees from all methods
             for method in methods {
-                let method_edges = indexer.db().edges_for_symbol(
+                let method_edges = indexer.db().edges_for_symbol_with_dispatch(
                     method.id,
                     ctx.languages.as_deref(),
                     ctx.graph_version,
@@ -521,6 +526,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                     edge_kind: "CALLS".to_string(),
                                     protocol_context: None,
                                     resolution_kind: edge.resolution_kind.clone(),
+                                    via_interface: edge.is_synthetic(),
                                 });
                             }
                         }
@@ -568,6 +574,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                 edge_kind: "CALLS".to_string(),
                                 protocol_context: None,
                                 resolution_kind: edge.resolution_kind.clone(),
+                                via_interface: edge.is_synthetic(),
                             });
                         }
                     }
@@ -612,15 +619,29 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         let mut test_total = 0usize;
         let mut still_adding = true;
         let mut calls_test_ids = std::collections::HashSet::new();
-        for edge in &edges {
+        // Tests calling the interface method this symbol implements reach it
+        // only via dispatch: listed, but marked, after the direct ones.
+        let interface_edges = indexer.db().interface_caller_edges(
+            symbol.id,
+            ctx.languages.as_deref(),
+            ctx.graph_version,
+        )?;
+        for (edge, via_interface) in edges
+            .iter()
+            .filter(|e| !e.is_synthetic())
+            .map(|e| (e, false))
+            .chain(interface_edges.iter().map(|e| (e, true)))
+        {
             if edge.kind == "CALLS"
-                && edge.target_symbol_id == Some(symbol.id)
+                && (via_interface || edge.target_symbol_id == Some(symbol.id))
                 && meets_min_resolution(&edge.resolution_kind)
                 && let Some(source_id) = edge.source_symbol_id
                 && let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id)
                 && is_test_symbol(&test_sym)
             {
-                calls_test_ids.insert(test_sym.id);
+                if !calls_test_ids.insert(test_sym.id) {
+                    continue;
+                }
                 test_total += 1;
                 if !still_adding {
                     continue;
@@ -638,6 +659,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     edge_kind: "CALLS".to_string(),
                     protocol_context: None,
                     resolution_kind: edge.resolution_kind.clone(),
+                    via_interface,
                 });
                 if test_refs.len() >= max_refs {
                     still_adding = false;
@@ -1000,6 +1022,7 @@ fn cross_boundary_refs(
             };
             Some(ExplainRef {
                 symbol: hop.symbol,
+                via_interface: false,
                 evidence: hop.snippet,
                 edge_kind,
                 protocol_context: hop.protocol_context,
@@ -1019,6 +1042,7 @@ fn cross_boundary_refs(
                 {
                     refs.push(ExplainRef {
                         symbol: sym,
+                        via_interface: false,
                         evidence: edge.evidence_snippet,
                         edge_kind: edge.kind,
                         protocol_context: None,
@@ -1690,6 +1714,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         paths_found: trace_result.paths_found,
         reached_target: trace_result.reached_target,
         truncated,
+        truncation_reason: trace_result.truncation_reason,
         budget: BudgetInfo {
             budget_bytes: trace_result.budget_bytes,
             used_bytes: trace_result.used_bytes,
@@ -1815,6 +1840,7 @@ fn batch_error_entry(
             total_affected: 0,
         },
         truncated: false,
+        truncation_reason: None,
         layers: crate::impact::types::LayerMetadata {
             direct: Some(crate::impact::types::LayerStats {
                 enabled: false,
@@ -1886,6 +1912,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                             affected: result.affected,
                             summary: result.summary,
                             truncated: result.truncated,
+                            truncation_reason: result.truncation_reason,
                             layers: result.layers,
                             lower_bound: result.lower_bound,
                             recovery: None,
@@ -2404,10 +2431,11 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                 break;
             }
 
-            let edges =
-                indexer
-                    .db()
-                    .edges_for_symbol(sym.id, languages.as_deref(), ctx.graph_version)?;
+            let edges = indexer.db().edges_for_symbol_with_dispatch(
+                sym.id,
+                languages.as_deref(),
+                ctx.graph_version,
+            )?;
 
             // Find callers via resolved edges
             for edge in &edges {
@@ -2449,15 +2477,26 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
         for cs in &changed_symbols {
             let mut tests = Vec::new();
             let mut seen_test_ids = HashSet::new();
-            // Check resolved edges
-            let edges = indexer.db().edges_for_symbol(
+            // Direct callers, then tests that call the interface method this
+            // one implements: those reach every implementor, so they are
+            // reported as "via_interface", not direct coverage.
+            let direct = indexer.db().edges_for_symbol(
                 cs.symbol.id,
                 languages.as_deref(),
                 ctx.graph_version,
             )?;
-            for edge in &edges {
+            let via_interface = indexer.db().interface_caller_edges(
+                cs.symbol.id,
+                languages.as_deref(),
+                ctx.graph_version,
+            )?;
+            for (edge, coverage_type) in direct
+                .iter()
+                .filter(|e| e.target_symbol_id == Some(cs.symbol.id))
+                .map(|e| (e, "direct"))
+                .chain(via_interface.iter().map(|e| (e, "via_interface")))
+            {
                 if edge.kind == "CALLS"
-                    && edge.target_symbol_id == Some(cs.symbol.id)
                     && let Some(source_id) = edge.source_symbol_id
                     && let Ok(Some(caller)) = indexer.db().get_symbol_by_id(source_id)
                     && is_test_symbol(&caller)
@@ -2466,14 +2505,16 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                     tests.push(TestRef {
                         test_qualname: caller.qualname.clone(),
                         test_file: caller.file_path.clone(),
-                        coverage_type: "direct".to_string(),
+                        coverage_type: coverage_type.to_string(),
                     });
                 }
             }
-            let status = if tests.is_empty() {
+            let status = if tests.iter().any(|t| t.coverage_type == "direct") {
+                "covered"
+            } else if tests.is_empty() {
                 "uncovered"
             } else {
-                "covered"
+                "covered_via_interface"
             };
             coverage.push(TestCoverageEntry {
                 symbol_qualname: cs.symbol.qualname.clone(),

@@ -8,8 +8,8 @@ use crate::impact::confidence::fuse_evidence;
 use crate::impact::config::MultiLayerConfig;
 use crate::impact::layers::{HistoricalImpactLayer, TestImpactLayer, analyze_direct_impact_scoped};
 use crate::impact::types::{
-    ImpactEntry, ImpactSource, ImpactSummary, LayerMetadata, LayerResult, LayerStats, PathStep,
-    UnifiedImpactResult,
+    ImpactEntry, ImpactSource, ImpactSummary, LayerMetadata, LayerResult, LayerStats, ParentLink,
+    PathStep, UnifiedImpactResult,
 };
 use crate::model::{Symbol, SymbolCompact};
 use anyhow::Result;
@@ -312,7 +312,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
 
         // Fuse results from all layers
         let num_layers = layer_results.len();
-        let (affected, summary, truncated) =
+        let (affected, summary, truncated, truncation_reason) =
             self.fuse_results(layer_results, seed_ids, graph_version)?;
 
         // Apply global confidence filter
@@ -347,6 +347,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
             affected: filtered_affected,
             summary: final_summary,
             truncated,
+            truncation_reason,
             config: self.build_config_summary(),
             layers: layer_metadata,
             lower_bound,
@@ -498,7 +499,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
 
         // Fuse results from all layers
         let num_layers = layer_results.len();
-        let (affected, summary, truncated) =
+        let (affected, summary, truncated, truncation_reason) =
             self.fuse_results(layer_results, seed_ids, graph_version)?;
 
         // Apply global confidence filter
@@ -533,6 +534,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
             affected: filtered_affected,
             summary: final_summary,
             truncated,
+            truncation_reason,
             config: self.build_config_summary(),
             layers: layer_metadata,
             traversed_heuristic_kind,
@@ -617,15 +619,26 @@ impl<'a> MultiLayerOrchestrator<'a> {
         layer_results: Vec<LayerResult>,
         seed_ids: &[i64],
         graph_version: i64,
-    ) -> Result<(Vec<ImpactEntry>, ImpactSummary, bool)> {
+    ) -> Result<(Vec<ImpactEntry>, ImpactSummary, bool, Option<String>)> {
         // Collect all unique symbol IDs and their evidence
         let mut symbol_evidence: HashMap<i64, Vec<ImpactSource>> = HashMap::new();
         let mut any_truncated = false;
+        let mut truncation_reason: Option<String> = None;
+        let mut merged_alts: HashMap<i64, Vec<ParentLink>> = HashMap::new();
 
         // Merge parent maps from all layers (direct layer is primary)
-        let mut merged_parents: HashMap<i64, (i64, String, Option<String>, bool)> = HashMap::new();
+        let mut merged_parents: HashMap<i64, ParentLink> = HashMap::new();
         for layer_result in &layer_results {
             any_truncated = any_truncated || layer_result.truncated;
+            if truncation_reason.is_none() {
+                truncation_reason = layer_result.truncation_reason.clone();
+            }
+            for (child, links) in &layer_result.alt_parents {
+                merged_alts
+                    .entry(*child)
+                    .or_default()
+                    .extend(links.iter().cloned());
+            }
 
             for (child, parent_info) in &layer_result.parent_map {
                 merged_parents
@@ -703,6 +716,29 @@ impl<'a> MultiLayerOrchestrator<'a> {
                 } else {
                     None
                 };
+                // Paths through the other parents this symbol was re-entered
+                // by (e.g. a second config URI).
+                let also_via = if self.config.include_paths {
+                    merged_alts
+                        .get(&symbol_id)
+                        .into_iter()
+                        .flatten()
+                        .map(|link| {
+                            let mut parents = merged_parents.clone();
+                            parents.insert(symbol_id, link.clone());
+                            crate::impact::types::ImpactPath {
+                                steps: reconstruct_path_steps(
+                                    symbol_id,
+                                    &seed_set,
+                                    &parents,
+                                    &symbol_map,
+                                ),
+                            }
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
                 affected.push(ImpactEntry {
                     symbol: SymbolCompact::from(symbol),
@@ -710,6 +746,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
                     relationship,
                     path,
                     confidence: Some(confidence),
+                    also_via,
                 });
             }
         }
@@ -732,7 +769,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
         // Build summary
         let summary = crate::impact::build_summary_from_entries(&affected);
 
-        Ok((affected, summary, any_truncated))
+        Ok((affected, summary, any_truncated, truncation_reason))
     }
 
     /// Load seed symbols
@@ -757,7 +794,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
 fn reconstruct_path_steps(
     symbol_id: i64,
     seed_set: &HashSet<i64>,
-    parent_map: &HashMap<i64, (i64, String, Option<String>, bool)>,
+    parent_map: &HashMap<i64, ParentLink>,
     symbol_map: &HashMap<i64, Symbol>,
 ) -> Vec<PathStep> {
     let mut steps = Vec::new();

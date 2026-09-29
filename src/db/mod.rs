@@ -331,6 +331,29 @@ impl Db {
     /// - `delete_edges_for_file()` + `insert_edges()` for edges
     pub fn delete_symbols_edges_for_file(&self, file_id: i64, graph_version: i64) -> Result<()> {
         self.delete_edges_for_file(file_id, graph_version)?;
+        // A namespace declared by several files is one symbol per file, and
+        // other files' edges bind to the one a fresh index saw first: the
+        // file earliest in path order (files are indexed in that order).
+        // Hand such edges to that survivor before this file's copy goes, or
+        // they'd be nulled and diverge from a fresh reindex.
+        let survivor = "SELECT o.id FROM symbols o
+                 JOIN files fo ON fo.id = o.file_id
+                 JOIN symbols d ON d.qualname = o.qualname AND d.kind = o.kind
+                  AND d.graph_version = o.graph_version
+                 WHERE d.id = edges.{col} AND o.file_id != d.file_id
+                 ORDER BY fo.path LIMIT 1";
+        for column in ["source_symbol_id", "target_symbol_id"] {
+            let survivor = survivor.replace("{col}", column);
+            self.conn().execute(
+                &format!(
+                    "UPDATE edges SET {column} = COALESCE(({survivor}), {column})
+                     WHERE graph_version = ?2 AND {column} IN (
+                        SELECT id FROM symbols
+                        WHERE file_id = ?1 AND graph_version = ?2 AND kind = 'namespace')"
+                ),
+                params![file_id, graph_version],
+            )?;
+        }
         // Deleting these symbols nulls any other file's edge that still
         // references one of them via `edges`' `ON DELETE SET NULL` foreign
         // key (issue #76) -- no manual nulling needed here.
@@ -1449,7 +1472,8 @@ impl Db {
                         graph_version,
                     )?,
                 };
-                let extracted_receiver_type = edge.receiver_type.as_column();
+                let extracted_column = edge.receiver_type.as_column();
+                let extracted_receiver_type = extracted_column.as_deref();
                 let call_shape = edge.call_shape.map(|shape| shape.encode());
                 let pinned_target = match (&edge.target_qualname, edge.target_start_byte) {
                     (Some(qualname), Some(start_byte)) => span_lookup_stmt

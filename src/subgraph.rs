@@ -46,6 +46,8 @@ pub fn build_subgraph_filtered(
     sorted_start.dedup();
 
     let mut edge_ids: HashSet<i64> = HashSet::new();
+    // Synthetic dispatch edges all carry id 0; dedupe them by endpoints.
+    let mut synthetic: HashSet<(Option<i64>, Option<i64>)> = HashSet::new();
     let mut edges: Vec<Edge> = Vec::new();
     let mut symbol_cache: HashMap<i64, String> = HashMap::new();
     let mut symbol_checked: HashSet<i64> = HashSet::new();
@@ -73,7 +75,7 @@ pub fn build_subgraph_filtered(
         if dist >= depth {
             continue;
         }
-        let mut neighbors = db.edges_for_symbol(id, languages, graph_version)?;
+        let mut neighbors = db.edges_for_symbol_with_dispatch(id, languages, graph_version)?;
         // Every edge kind's target is either resolved at write time or, if
         // unresolved, has no live edge to fall back on at all (issue #79) —
         // the read path must not guess one via fuzzy qualname lookup. Edge
@@ -117,7 +119,12 @@ pub fn build_subgraph_filtered(
             if !source_ok || !target_ok {
                 continue;
             }
-            if edge_ids.insert(edge.id) {
+            let new_edge = if edge.is_synthetic() {
+                synthetic.insert((edge.source_symbol_id, edge.target_symbol_id))
+            } else {
+                edge_ids.insert(edge.id)
+            };
+            if new_edge {
                 edges.push(edge.clone());
             }
             let neighbor_id = if edge.source_symbol_id == Some(id) {
