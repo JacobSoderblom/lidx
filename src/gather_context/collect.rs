@@ -421,7 +421,11 @@ fn collect_content_file_strategy(
                 relationship: Some("caller".to_string()),
                 distance: Some(1),
             };
-            c.try_add_symbol(&caller, caller.start_byte, caller.end_byte, source, None)?;
+            if config.include_snippets {
+                c.try_add_symbol(&caller, caller.start_byte, caller.end_byte, source, None)?;
+            } else {
+                c.try_add_formatted(&caller, format_tier2(&caller), source, None);
+            }
         }
     }
 

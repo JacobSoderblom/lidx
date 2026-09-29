@@ -588,8 +588,7 @@ fn gather_context_dry_run_estimate_matches_real_run() {
     let real = gather(&temp, &format!("{{{seeds}}}"));
     assert!(rel_of(&dry, "callermod.caller").is_some(), "{dry}");
     assert_eq!(
-        dry["items"].as_array().unwrap().len(),
-        real["items"].as_array().unwrap().len(),
+        dry["estimated_bytes"], real["total_bytes"],
         "dry {dry}\nreal {real}"
     );
 }
@@ -611,4 +610,37 @@ fn gather_context_relationship_reflects_edge_direction() {
         Some("callee"),
         "{r}"
     );
+}
+
+#[test]
+fn gather_context_no_snippets_cross_file_callers_are_stubs() {
+    let temp = expansion_repo();
+    let r = gather(
+        &temp,
+        r#"{"seeds":[{"type":"symbol","qualname":"seedmod.seed"}],"strategy":"file","depth":0,"include_snippets":false}"#,
+    );
+    let caller = r["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["symbol"]["qualname"] == "callermod.caller")
+        .unwrap_or_else(|| panic!("{r}"));
+    let content = caller["content"].as_str().unwrap();
+    assert!(!content.contains("return seed(1)"), "{content}");
+}
+
+#[test]
+fn gather_context_tight_budget_prefers_caller_over_module_stub() {
+    let temp = expansion_repo();
+    let r = gather(
+        &temp,
+        r#"{"seeds":[{"type":"symbol","qualname":"seedmod.seed"}],"max_bytes":240}"#,
+    );
+    assert!(rel_of(&r, "callermod.caller").is_some(), "{r}");
+    let has_module = r["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i["symbol"]["kind"] == "module");
+    assert!(!has_module, "{r}");
 }
