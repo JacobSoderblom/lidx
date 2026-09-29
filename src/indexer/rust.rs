@@ -1507,12 +1507,6 @@ fn grpc_package_from_parts(parts: &[&str]) -> Option<String> {
         .copied()
         .filter(|part| !matches!(*part, "crate" | "self" | "super"))
         .collect();
-    // Drop a conventional leading `proto` wrapper module (`crate::proto::x::v1`
-    // wraps `include_proto!("x.v1")`); it is never part of the proto package.
-    let filtered = match filtered.as_slice() {
-        ["proto", rest @ ..] if !rest.is_empty() => rest.to_vec(),
-        _ => filtered,
-    };
     if filtered.is_empty() {
         None
     } else {
@@ -2297,10 +2291,13 @@ async fn run(ch: Channel) {
             .filter_map(|edge| edge.target_qualname.as_deref())
             .collect();
         assert!(
-            targets.contains(&"/sync.v1.syncservice/sync"),
+            targets.contains(&"/proto.sync.v1.syncservice/sync"),
             "{targets:?}"
         );
-        assert!(targets.contains(&"/sync.v1.health/check"), "{targets:?}");
+        assert!(
+            targets.contains(&"/proto.sync.v1.health/check"),
+            "{targets:?}"
+        );
     }
 
     #[test]

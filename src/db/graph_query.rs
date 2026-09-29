@@ -237,7 +237,104 @@ impl Db {
     /// Find edges by exact target_qualname match and edge kind filter.
     /// Used for traversal bridging: given a channel/route qualname, find all
     /// edges pointing at it with complementary kinds.
+    ///
+    /// RPC paths additionally bind by `service/method` suffix when a side
+    /// guessed the proto package wrong (see `resolve_rpc_route`).
     pub fn edges_by_target_qualname_and_kinds(
+        &self,
+        target_qualname: &str,
+        kinds: &[&str],
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<Vec<Edge>> {
+        let is_rpc = kinds.iter().any(|k| matches!(*k, "RPC_CALL" | "RPC_IMPL"));
+        if !is_rpc || !target_qualname.starts_with('/') {
+            return self.edges_by_exact_target(target_qualname, kinds, languages, graph_version);
+        }
+        // Our own path may be a wrong guess: bind it to the one real route.
+        let own = self.resolve_rpc_route(target_qualname, graph_version)?;
+        let mut edges = self.edges_by_exact_target(
+            own.as_deref().unwrap_or(target_qualname),
+            kinds,
+            languages,
+            graph_version,
+        )?;
+        // The other side may be the wrong guess: pull in its edges whose
+        // guessed path resolves to our route.
+        if kinds.contains(&"RPC_CALL") && own.is_none() {
+            let (_, svc_method) = rpc_split(target_qualname);
+            let conn = self.read_conn()?;
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT target_qualname FROM edges
+                 WHERE kind = 'RPC_CALL' AND graph_version = ?1
+                   AND target_qualname != ?2
+                   AND (target_qualname = '/' || ?3
+                        OR substr(target_qualname, -length(?3) - 1) = '.' || ?3)",
+            )?;
+            let guesses: Vec<String> = stmt
+                .query_map(
+                    rusqlite::params![graph_version, target_qualname, svc_method],
+                    |r| r.get(0),
+                )?
+                .collect::<rusqlite::Result<_>>()?;
+            for guess in guesses {
+                if self.resolve_rpc_route(&guess, graph_version)?.as_deref()
+                    == Some(target_qualname)
+                {
+                    edges.extend(self.edges_by_exact_target(
+                        &guess,
+                        &["RPC_CALL"],
+                        languages,
+                        graph_version,
+                    )?);
+                }
+            }
+        }
+        Ok(edges)
+    }
+
+    /// Bind a guessed RPC path (`/pkg.service/method`, package possibly wrong
+    /// or missing) to a real `.proto` RPC_ROUTE path. `None` when the path
+    /// already has an exact route, or no single route can be chosen: one
+    /// `service/method` suffix match binds; several are narrowed to those
+    /// whose package agrees with the guessed package (one a dotted suffix
+    /// of the other); still ambiguous means unbound.
+    fn resolve_rpc_route(&self, guess: &str, graph_version: i64) -> Result<Option<String>> {
+        let (guess_pkg, svc_method) = rpc_split(guess);
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT target_qualname FROM edges
+             WHERE kind = 'RPC_ROUTE' AND graph_version = ?1
+               AND (target_qualname = '/' || ?2
+                    OR substr(target_qualname, -length(?2) - 1) = '.' || ?2)",
+        )?;
+        let routes: Vec<String> = stmt
+            .query_map(rusqlite::params![graph_version, svc_method], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if routes.iter().any(|r| r == guess) {
+            return Ok(None);
+        }
+        if routes.len() > 1 && !guess_pkg.is_empty() {
+            let agree: Vec<&String> = routes
+                .iter()
+                .filter(|r| {
+                    let (pkg, _) = rpc_split(r);
+                    pkg == guess_pkg
+                        || pkg.ends_with(&format!(".{guess_pkg}"))
+                        || guess_pkg.ends_with(&format!(".{pkg}"))
+                })
+                .collect();
+            if let [only] = agree.as_slice() {
+                return Ok(Some((*only).clone()));
+            }
+        }
+        Ok(match routes.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        })
+    }
+
+    fn edges_by_exact_target(
         &self,
         target_qualname: &str,
         kinds: &[&str],
@@ -608,5 +705,16 @@ impl Db {
             map.insert(id, kind);
         }
         Ok(map)
+    }
+}
+
+/// Split `/pkg.Service/method` into (`pkg`, `service/method`); `pkg` is empty
+/// when the path has none.
+fn rpc_split(path: &str) -> (&str, &str) {
+    let path = path.trim_start_matches('/');
+    let svc_path = path.split_once('/').map_or(path, |(svc, _)| svc);
+    match svc_path.rfind('.') {
+        Some(i) => (&path[..i], &path[i + 1..]),
+        None => ("", path),
     }
 }
