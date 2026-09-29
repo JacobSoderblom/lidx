@@ -8,7 +8,7 @@ use lidx::indexer::{EXTRACTOR_VERSION, Indexer};
 use std::path::Path;
 
 /// Recorded alongside `EXTRACTOR_VERSION`; update both together.
-const RECORDED_HASH: &str = "6a87515b96bda968aa54c2e8ae2042b190ed37671b3ce83edf91faf0a70f9587";
+const RECORDED_HASH: &str = "12cfc9b54ba3f0bbf8b8c4ea46ffcb32ecc09c8df3bd65bc551ab751015de587";
 
 fn collect(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {
@@ -23,9 +23,11 @@ fn collect(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
 
 #[test]
 fn extractor_sources_match_recorded_hash() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/indexer");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let root = manifest.clone();
     let mut files = Vec::new();
-    collect(&root, &mut files);
+    collect(&manifest.join("indexer"), &mut files);
+    files.push(manifest.join("db/resolver.rs"));
     files.sort();
     let mut hasher = blake3::Hasher::new();
     for f in &files {
@@ -37,7 +39,7 @@ fn extractor_sources_match_recorded_hash() {
     let actual = hasher.finalize().to_hex().to_string();
     assert_eq!(
         actual, RECORDED_HASH,
-        "src/indexer/** changed. Bump EXTRACTOR_VERSION (currently {EXTRACTOR_VERSION}) in \
+        "src/indexer/** or src/db/resolver.rs changed. Bump EXTRACTOR_VERSION (currently {EXTRACTOR_VERSION}) in \
          src/indexer/mod.rs if extractor output changed, then set RECORDED_HASH in \
          tests/extractor_version.rs to {actual}"
     );
@@ -62,13 +64,42 @@ fn stale_extractor_version_forces_reextraction() {
         "unchanged is skipped"
     );
 
+    // Seed a bogus edge; a forced re-extraction must replace the file's edges.
+    let file = indexer.db().get_file_by_path("a.py").unwrap().unwrap();
+    let bogus = |gv: i64| {
+        indexer
+            .db()
+            .read_conn()
+            .unwrap()
+            .execute(
+                "INSERT INTO edges (file_id, kind, target_qualname, graph_version) \
+                 VALUES (?, 'CALLS', 'bogus.stale', ?)",
+                rusqlite::params![file.id, gv],
+            )
+            .unwrap();
+    };
+    bogus(indexer.graph_version());
+    let count = |ix: &Indexer| -> i64 {
+        ix.db()
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'bogus.stale' AND graph_version = ?",
+                [ix.graph_version()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(count(&indexer), 1);
     indexer.db().set_meta_i64("extractor_version", 0).unwrap();
+    assert!(indexer.extractor_version_stale().unwrap());
     let stats = indexer.reindex().unwrap();
     assert_eq!(
         (stats.indexed, stats.skipped),
         (1, 0),
         "stale version re-extracts"
     );
+    assert_eq!(count(&indexer), 0, "stale edge replaced");
     assert_eq!(
         indexer.db().get_meta_i64("extractor_version").unwrap(),
         Some(EXTRACTOR_VERSION)

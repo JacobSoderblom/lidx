@@ -268,7 +268,8 @@ fn run_loop(
     let mut indexer = Indexer::new_with_options(repo_root.clone(), db_path, config.scan_options)
         .with_context(|| format!("watch open indexer {}", repo_root.display()))?;
     if config.bootstrap
-        && indexer.db().get_meta_i64("last_indexed")?.is_none()
+        && (indexer.db().get_meta_i64("last_indexed")?.is_none()
+            || indexer.extractor_version_stale()?)
         && let Err(err) = indexer.reindex()
     {
         eprintln!("watch bootstrap reindex failed: {err}");

@@ -137,6 +137,12 @@ impl Indexer {
         &self.repo_root
     }
 
+    /// True when the stored extractor version differs from `EXTRACTOR_VERSION`
+    /// (including a never-indexed DB), i.e. a full `reindex` must re-extract.
+    pub fn extractor_version_stale(&self) -> Result<bool> {
+        Ok(self.db.get_meta_i64(EXTRACTOR_VERSION_KEY)? != Some(EXTRACTOR_VERSION))
+    }
+
     pub fn graph_version(&self) -> i64 {
         self.graph_version
     }
@@ -346,8 +352,7 @@ impl Indexer {
         }
 
         // A stale extractor version means unchanged files must be re-extracted.
-        let force_reextract =
-            self.db.get_meta_i64(EXTRACTOR_VERSION_KEY)? != Some(EXTRACTOR_VERSION);
+        let force_reextract = self.extractor_version_stale()?;
 
         let mut seen = HashSet::new();
         let mut stats = IndexStats {
