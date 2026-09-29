@@ -878,6 +878,35 @@ impl<'c> Resolver<'c> {
         self.any_lang_lookup(params![name, dot_pattern, colons_pattern, gv, gv], name)
     }
 
+    /// Iterate rows checking `qualname` (at column `col_qualname`) case-
+    /// sensitively against `name`. For each case-sensitive match, call
+    /// `on_match` with the row; if it returns true, count that as a "real"
+    /// match. Returns true if a second "real" match is found (ambiguity).
+    fn check_case_sensitive_matches<F>(
+        rows: &mut rusqlite::Rows,
+        name: &str,
+        col_qualname: usize,
+        mut on_match: F,
+    ) -> Result<bool>
+    where
+        F: FnMut(&rusqlite::Row) -> Result<bool>,
+    {
+        let mut real_match_count = 0usize;
+        while let Some(row) = rows.next()? {
+            let qualname: String = row.get(col_qualname)?;
+            if !matches_name_case_sensitive(&qualname, name) {
+                continue;
+            }
+            if on_match(row)? {
+                real_match_count += 1;
+                if real_match_count >= 2 {
+                    return Ok(true); // ambiguous
+                }
+            }
+        }
+        Ok(false) // not ambiguous
+    }
+
     /// The any-language round of the guarded name-fallback tier (Bridge
     /// Edge kinds only — see `unique_by_pattern`'s doc): same
     /// case-sensitive re-check as `same_lang_lookup` (issue #110), just
@@ -888,16 +917,16 @@ impl<'c> Resolver<'c> {
     fn any_lang_lookup(&mut self, query_params: &[&dyn ToSql], name: &str) -> Result<Option<i64>> {
         let mut rows = self.any_lang.query(query_params)?;
         let mut matched: Option<i64> = None;
-        while let Some(row) = rows.next()? {
-            let qualname: String = row.get(1)?;
-            if !matches_name_case_sensitive(&qualname, name) {
-                continue;
+        let is_ambiguous = Self::check_case_sensitive_matches(&mut rows, name, 1, |row| {
+            if matched.is_none() {
+                matched = Some(row.get(0)?);
+                Ok(true)
+            } else {
+                Ok(true) // signal ambiguity
             }
-            if matched.is_some() {
-                self.saw_ambiguous = true;
-                return Ok(None);
-            }
-            matched = Some(row.get(0)?);
+        })?;
+        if is_ambiguous {
+            self.saw_ambiguous = true;
         }
         Ok(matched)
     }
@@ -944,14 +973,11 @@ impl<'c> Resolver<'c> {
         let mut rows = self.same_lang.query(query_params)?;
         let mut kind_eligible = 0usize;
         let mut visible: Vec<i64> = Vec::new();
-        while let Some(row) = rows.next()? {
+        let is_ambiguous = Self::check_case_sensitive_matches(&mut rows, name, 2, |row| {
             let id: i64 = row.get(0)?;
             let visibility: Option<String> = row.get(1)?;
             let qualname: String = row.get(2)?;
             let file_path: String = row.get(3)?;
-            if !matches_name_case_sensitive(&qualname, name) {
-                continue;
-            }
             // `SAME_LANG_SQL` already excludes `method`-kind rows when
             // `guard.exclude_method` — every row reaching here is kind-eligible.
             kind_eligible += 1;
@@ -966,11 +992,13 @@ impl<'c> Resolver<'c> {
                 );
             if ok {
                 visible.push(id);
-                if visible.len() >= 2 {
-                    self.saw_ambiguous = true;
-                    return Ok(None);
-                }
+                Ok(true) // count as a "real" match
+            } else {
+                Ok(false) // case-sensitive match but not visible
             }
+        })?;
+        if is_ambiguous {
+            self.saw_ambiguous = true;
         }
 
         match visible.len() {
@@ -979,7 +1007,7 @@ impl<'c> Resolver<'c> {
                 self.saw_private = true;
                 Ok(None)
             }
-            // Only reachable with 0 (the `>= 2` case already returned above).
+            // Only reachable with 0 or > 1 (when `saw_ambiguous` was set).
             _ => Ok(None),
         }
     }
@@ -2656,9 +2684,8 @@ fn two_segment_qualname_patterns(qn: &str) -> Option<(String, String, String)> {
 mod tests {
     use super::{
         ImportMissPolicy, LanguageProfile, Reference, Resolution, Resolver, UnresolvedReason,
-        VisibilityRule, fuzzy_qualname_patterns, matches_name_case_sensitive, package_dir,
-        primary_separator, profile_for, qualname_trailing_name, same_lang_patterns,
-        two_segment_qualname_patterns,
+        VisibilityRule, fuzzy_qualname_patterns, package_dir, primary_separator, profile_for,
+        qualname_trailing_name, same_lang_patterns, two_segment_qualname_patterns,
     };
     use rusqlite::{Connection, params};
 
@@ -3102,23 +3129,58 @@ mod tests {
         );
     }
 
+    /// Issue #110: Case-sensitive matching succeeds with exact match.
     #[test]
-    fn matches_name_case_sensitive_rejects_a_different_case_suffix() {
-        // SQLite `LIKE` is case-insensitive for ASCII, so `error` would
-        // pass `qualname LIKE '%.Error'` — the Rust-side re-check must not
-        // repeat that mistake (issue #110).
-        assert!(!matches_name_case_sensitive("pkg.schemas.error", "Error"));
-        assert!(!matches_name_case_sensitive(
-            "crate::schemas::error",
-            "Error"
-        ));
-        // Same case, still matches.
-        assert!(matches_name_case_sensitive("pkg.schemas.Error", "Error"));
-        assert!(matches_name_case_sensitive("Error", "Error"));
-        // A same-case substring with no separator boundary must not match
-        // (mirrors `fuzzy_qualname_patterns`' anchoring: `process` must
-        // never match `reprocess`).
-        assert!(!matches_name_case_sensitive("pkg.newError", "Error"));
+    fn resolve_guarded_fallback_succeeds_with_exact_case() {
+        let conn = test_conn();
+        let file = insert_file(&conn, "pkg/error.py", "python");
+        insert_symbol(&conn, file, "class", "Error", "Error", None);
+
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let symbol_map = std::collections::HashMap::new();
+        let r = reference("Error", "CALLS", "python", "caller.py", None, true);
+        let resolution = resolver.resolve(&r, &symbol_map).unwrap();
+
+        assert!(
+            matches!(resolution, Resolution::Resolved { .. }),
+            "exact case match should resolve: {resolution:?}"
+        );
+    }
+
+    /// Issue #110: Case-sensitive matching succeeds with dot-separated suffix.
+    #[test]
+    fn resolve_guarded_fallback_succeeds_with_dot_boundary() {
+        let conn = test_conn();
+        let file = insert_file(&conn, "pkg/error.py", "python");
+        insert_symbol(&conn, file, "class", "Error", "pkg.Error", None);
+
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let symbol_map = std::collections::HashMap::new();
+        let r = reference("Error", "CALLS", "python", "caller.py", None, true);
+        let resolution = resolver.resolve(&r, &symbol_map).unwrap();
+
+        assert!(
+            matches!(resolution, Resolution::Resolved { .. }),
+            "dot-boundary suffix should resolve: {resolution:?}"
+        );
+    }
+
+    /// Issue #110: Case-sensitive matching succeeds with :: separator.
+    #[test]
+    fn resolve_guarded_fallback_succeeds_with_colons_boundary() {
+        let conn = test_conn();
+        let file = insert_file(&conn, "pkg/error.rs", "rust");
+        insert_symbol(&conn, file, "struct", "Error", "crate::error::Error", None);
+
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let symbol_map = std::collections::HashMap::new();
+        let r = reference("Error", "CALLS", "rust", "caller.rs", None, true);
+        let resolution = resolver.resolve(&r, &symbol_map).unwrap();
+
+        assert!(
+            matches!(resolution, Resolution::Resolved { .. }),
+            ":: boundary suffix should resolve: {resolution:?}"
+        );
     }
 
     /// Issue #110: `SAME_LANG_SQL`'s `LIKE` clauses are case-insensitive

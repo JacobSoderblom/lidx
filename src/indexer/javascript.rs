@@ -3080,6 +3080,17 @@ const JS_TS_GLOBAL_CALLABLES: &[&str] = &[
     "Symbol",
     "BigInt",
     "Proxy",
+    "URL",
+    "URLSearchParams",
+    "Request",
+    "Response",
+    "Headers",
+    "FormData",
+    "Blob",
+    "AbortController",
+    "TextEncoder",
+    "TextDecoder",
+    "WeakRef",
 ];
 
 /// Whether `name` is a `JS_TS_GLOBAL_CALLABLES` entry not shadowed in
@@ -3877,6 +3888,26 @@ function handler() {
         let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert_eq!(calls[0].receiver_type, ReceiverType::NotTracked);
+    }
+
+    /// New global `URL` constructor is gated from fuzzy resolution.
+    #[test]
+    fn new_url_constructor_is_gated() {
+        let source = r#"
+function fetchFile(path) {
+    const url = new URL(path, 'https://example.com');
+    return url.href;
+}
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "index").unwrap();
+        let calls: Vec<_> = file.edges.iter().filter(|e| e.kind == "CALLS").collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.receiver_type == ReceiverType::Unresolved),
+            "new URL(...) should be gated: {calls:?}"
+        );
     }
 }
 
