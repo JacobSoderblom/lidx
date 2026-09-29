@@ -91,6 +91,10 @@ static LANGUAGE_SPECS: &[LanguageSpec] = &[
         name: "bicep",
         extensions: &["bicep", "bicepparam"],
     },
+    LanguageSpec {
+        name: "markdown",
+        extensions: &["md", "markdown"],
+    },
 ];
 
 static LANGUAGE_FILTERS: &[LanguageFilter] = &[

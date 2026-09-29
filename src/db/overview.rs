@@ -65,7 +65,8 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT language
              FROM files
-             WHERE deleted_version IS NULL OR deleted_version > ?
+             WHERE (deleted_version IS NULL OR deleted_version > ?)
+               AND language != 'external'
              ORDER BY language",
         )?;
         let rows = stmt.query_map(params![graph_version], |row| row.get(0))?;
