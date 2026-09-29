@@ -704,10 +704,9 @@ fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut Extracted
             continue;
         }
         let trimmed = line.trim_start();
-        let Some((kind, raw)) = parse_create(trimmed) else {
+        let Some((kind, raw)) = create_at(&lines, i) else {
             continue;
         };
-        let raw = raw.split(['(', ';']).next().unwrap_or("");
         if raw.starts_with(['#', '@']) {
             continue;
         }
@@ -732,14 +731,14 @@ fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut Extracted
         let end_byte = if kind == "table" {
             table_end(source, start_byte)
         } else {
-            let stop = lines[i + 1..]
-                .iter()
-                .find(|(_, l)| {
+            let stop = (i + 1..lines.len())
+                .find(|&j| {
+                    let l = lines[j].1;
                     is_go(l)
-                        || parse_create(l).is_some_and(|(_, n)| !n.starts_with(['#', '@']))
-                            && l.starts_with(['c', 'C'])
+                        || l.starts_with(['c', 'C'])
+                            && create_at(&lines, j).is_some_and(|(_, n)| !n.starts_with(['#', '@']))
                 })
-                .map_or(source.len(), |&(s, _)| s);
+                .map_or(source.len(), |j| lines[j].0);
             start_byte + source[start_byte..stop].trim_end().len()
         };
         let pos = |byte: usize| {
@@ -773,19 +772,69 @@ fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut Extracted
     }
 }
 
-/// Parses `CREATE [OR ALTER] {PROC|PROCEDURE|TABLE} [IF NOT EXISTS] <name>`
-/// from a trimmed line, returning the symbol kind and the raw name token.
-fn parse_create(line: &str) -> Option<(&'static str, &str)> {
-    let mut words = line.split_whitespace();
-    if !words.next()?.eq_ignore_ascii_case("create") {
+/// Splits the next whitespace-delimited word off `s`.
+fn next_word<'a>(s: &mut &'a str) -> Option<&'a str> {
+    let t = s.trim_start();
+    if t.is_empty() {
         return None;
     }
-    let mut word = words.next()?;
+    let end = t.find(char::is_whitespace).unwrap_or(t.len());
+    let (word, rest) = t.split_at(end);
+    *s = rest;
+    Some(word)
+}
+
+/// Reads a possibly dotted object name from `s`, honouring `[...]` and
+/// `"..."` parts (which may contain spaces). Returns the raw text.
+fn parse_name(s: &str) -> String {
+    let s = s.trim_start();
+    let mut end = 0;
+    let mut close: Option<char> = None;
+    for (i, c) in s.char_indices() {
+        match close {
+            Some(q) => {
+                if c == q {
+                    close = None;
+                }
+            }
+            None => match c {
+                '[' => close = Some(']'),
+                '"' => close = Some('"'),
+                c if c.is_whitespace() || matches!(c, '(' | ';') => break,
+                _ => {}
+            },
+        }
+        end = i + c.len_utf8();
+    }
+    s[..end].to_string()
+}
+
+/// `CREATE ...` starting at line `i`, allowing the keywords and name to
+/// continue on following lines (blank and `--` lines are skipped).
+fn create_at(lines: &[(usize, &str)], i: usize) -> Option<(&'static str, String)> {
+    let text: String = lines[i..]
+        .iter()
+        .map(|&(_, l)| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with("--"))
+        .take(6)
+        .collect::<Vec<_>>()
+        .join("\n");
+    parse_create(&text)
+}
+
+/// Parses `CREATE [OR ALTER] {PROC|PROCEDURE|TABLE} [IF NOT EXISTS] <name>`,
+/// returning the symbol kind and the raw name.
+fn parse_create(text: &str) -> Option<(&'static str, String)> {
+    let mut rest = text;
+    if !next_word(&mut rest)?.eq_ignore_ascii_case("create") {
+        return None;
+    }
+    let mut word = next_word(&mut rest)?;
     if word.eq_ignore_ascii_case("or") {
-        if !words.next()?.eq_ignore_ascii_case("alter") {
+        if !next_word(&mut rest)?.eq_ignore_ascii_case("alter") {
             return None;
         }
-        word = words.next()?;
+        word = next_word(&mut rest)?;
     }
     let kind = if word.eq_ignore_ascii_case("proc") || word.eq_ignore_ascii_case("procedure") {
         "procedure"
@@ -794,14 +843,15 @@ fn parse_create(line: &str) -> Option<(&'static str, &str)> {
     } else {
         return None;
     };
-    let mut name = words.next()?;
+    let mut name = parse_name(rest);
     if kind == "table" && name.eq_ignore_ascii_case("if") {
-        let not = words.next()?;
-        let exists = words.next()?;
+        next_word(&mut rest)?;
+        let not = next_word(&mut rest)?;
+        let exists = next_word(&mut rest)?;
         if !(not.eq_ignore_ascii_case("not") && exists.eq_ignore_ascii_case("exists")) {
             return None;
         }
-        name = words.next()?;
+        name = parse_name(rest);
     }
     Some((kind, name))
 }

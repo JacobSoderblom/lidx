@@ -308,3 +308,25 @@ fn tsql_fallback_table_lines() {
         .unwrap();
     assert_eq!((t.start_line, t.end_line), (2, 4));
 }
+
+#[test]
+fn tsql_fallback_multiline_create_and_spaced_names() {
+    let source = "CREATE OR ALTER\n-- note\n\nPROCEDURE\n    [dbo].[my proc]\n    @a int\nAS\nSELECT 1;\nGO\nCREATE\nTABLE\n[dbo].[my table] (\n  id int\n);\nCREATE\nPROC dbo.next AS SELECT 1;\n";
+    let mut extractor = SqlExtractor::new().unwrap();
+    let out = extractor.extract(source, "m").unwrap();
+    let p = out
+        .symbols
+        .iter()
+        .find(|s| s.qualname == "dbo.my proc")
+        .expect("proc");
+    assert_eq!(p.kind, "procedure");
+    assert_eq!(p.name, "my proc");
+    assert_eq!((p.start_line, p.end_line), (1, 8));
+    let t = out
+        .symbols
+        .iter()
+        .find(|s| s.qualname == "dbo.my table")
+        .expect("table");
+    assert_eq!((t.start_line, t.end_line), (10, 14));
+    assert!(out.symbols.iter().any(|s| s.qualname == "dbo.next"));
+}
