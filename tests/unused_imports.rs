@@ -175,3 +175,66 @@ fn unused_imports_still_flags_a_resolved_but_unreferenced_import() {
          unused_imports, got: {unused:?}"
     );
 }
+
+/// The used-check must look for the name an import *binds*, not the
+/// imported module's own last segment: `import numpy as np` binds `np`.
+#[test]
+fn unused_imports_uses_as_alias_of_module_import() {
+    let (_tmp, mut indexer) = temp_indexer(&[(
+        "app.py",
+        "import numpy as np\nimport sys as system\n\n\ndef f():\n    return np.array([1])\n",
+    )]);
+    indexer.reindex().unwrap();
+
+    let unused = unused_import_qualnames(&mut indexer);
+    assert!(
+        !unused.iter().any(|q| q == "numpy"),
+        "np.array() uses the numpy alias, got: {unused:?}"
+    );
+    assert!(
+        unused.iter().any(|q| q == "sys"),
+        "`system` is never used, got: {unused:?}"
+    );
+}
+
+/// `from x import y as z` binds `z`; a use of `z` counts, a bare `y`
+/// elsewhere in the file (a different, unrelated name) must not.
+#[test]
+fn unused_imports_uses_as_alias_of_from_import() {
+    let (_tmp, mut indexer) = temp_indexer(&[(
+        "app.py",
+        "from pkg.mod import used_orig as used_alias\nfrom pkg.mod import other_orig as other_alias\n\n\ndef f():\n    other_orig = 1\n    return used_alias() + other_orig\n",
+    )]);
+    indexer.reindex().unwrap();
+
+    let unused = unused_import_qualnames(&mut indexer);
+    assert!(
+        !unused.iter().any(|q| q == "pkg.mod.used_orig"),
+        "used_alias() is called, got: {unused:?}"
+    );
+    assert!(
+        unused.iter().any(|q| q == "pkg.mod.other_orig"),
+        "other_alias is never used (a local named other_orig is unrelated), got: {unused:?}"
+    );
+}
+
+/// `import os.path` binds `os`, so `os.getcwd()` uses it even though the
+/// imported target's trailing segment is `path`.
+#[test]
+fn unused_imports_dotted_import_binds_first_segment() {
+    let (_tmp, mut indexer) = temp_indexer(&[(
+        "app.py",
+        "import os.path\nimport xml.dom\n\n\ndef f():\n    return os.getcwd()\n",
+    )]);
+    indexer.reindex().unwrap();
+
+    let unused = unused_import_qualnames(&mut indexer);
+    assert!(
+        !unused.iter().any(|q| q == "os.path"),
+        "os.getcwd() uses the `os` binding, got: {unused:?}"
+    );
+    assert!(
+        unused.iter().any(|q| q == "xml.dom"),
+        "xml is never used, got: {unused:?}"
+    );
+}

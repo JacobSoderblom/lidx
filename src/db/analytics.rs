@@ -703,7 +703,15 @@ impl Db {
             let Some(target_qualname) = edge.target_qualname.as_deref() else {
                 continue;
             };
-            if import_alias_used(target_qualname, edge.target_symbol_id, file_id, &usage) {
+            let bound_name = edge
+                .detail
+                .as_deref()
+                .and_then(|detail| serde_json::from_str::<serde_json::Value>(detail).ok())
+                .and_then(|detail| detail["bound_name"].as_str().map(String::from));
+            let alias = bound_name
+                .as_deref()
+                .unwrap_or_else(|| qualname_trailing_name(target_qualname));
+            if import_alias_used(alias, edge.target_symbol_id, file_id, &usage) {
                 continue;
             }
             results.push(edge);
@@ -935,12 +943,12 @@ struct FileUsage {
 }
 
 /// Issue #116's "is it used" predicate for one IMPORTS candidate.
-/// `target_qualname` is its own extracted text (the resolved qualname when
-/// the import itself resolved, otherwise its raw reference text);
+/// `alias` is the name the import binds into the file's scope (the IMPORTS
+/// edge's `bound_name` detail, else the target's trailing segment);
 /// `target_symbol_id` is `Some` only when the import itself resolved to a
 /// real symbol.
 fn import_alias_used(
-    target_qualname: &str,
+    alias: &str,
     target_symbol_id: Option<i64>,
     file_id: i64,
     usage: &HashMap<i64, FileUsage>,
@@ -953,7 +961,6 @@ fn import_alias_used(
     {
         return true;
     }
-    let alias = qualname_trailing_name(target_qualname);
     if alias.is_empty() {
         return false;
     }
