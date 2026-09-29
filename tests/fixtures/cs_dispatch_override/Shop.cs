@@ -11,6 +11,18 @@ namespace Shop
         public void N()
         {
         }
+
+        public abstract int P { get; }
+
+        public virtual event System.EventHandler E;
+
+        public virtual void Ov(int a)
+        {
+        }
+
+        public virtual void Ov(string a, int b)
+        {
+        }
     }
 
     public class Derived : Base
@@ -24,6 +36,18 @@ namespace Shop
         }
 
         public new void N()
+        {
+        }
+
+        public override int P => 1;
+
+        public override event System.EventHandler E;
+
+        public override void Ov(int a)
+        {
+        }
+
+        public new void Ov(string a, int b)
         {
         }
     }
@@ -51,6 +75,7 @@ namespace Shop
             _b.M();
             _b.V();
             _b.N();
+            _b.Ov(1);
         }
     }
 }

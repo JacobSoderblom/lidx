@@ -85,4 +85,22 @@ namespace Shop
             _o.Run();
         }
     }
+
+    public class TwoArgs
+    {
+        public void Go(IA<int> a, IA<string> b)
+        {
+            a.Run();
+            b.Run();
+        }
+    }
+
+    public class TwoArgsRev
+    {
+        public void Go(IA<string> b, IA<int> a)
+        {
+            b.Run();
+            a.Run();
+        }
+    }
 }

@@ -6025,6 +6025,22 @@ fn collect_class_level_grpc_client_fields(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn normalize_type_args_canonicalises_aliases_nullables_and_nesting() {
+        use super::normalize_type_args as n;
+        assert_eq!(n("Int32"), "int");
+        assert_eq!(n("System.String"), "string");
+        assert_eq!(n("String?"), "string");
+        assert_eq!(n("object?"), "object");
+        assert_eq!(n("int?"), "int?");
+        assert_eq!(n("Int64 , System.Boolean"), "long,bool");
+        assert_eq!(
+            n("Dictionary<String, List<Int32>>"),
+            "Dictionary<string,List<int>>"
+        );
+        assert_eq!(n("System.Guid"), "System.Guid");
+    }
+
+    #[test]
     fn explicit_interface_identity_keeps_closed_generics_and_namespace() {
         use super::explicit_interface_identity as f;
         assert_eq!(f("Outer<T>.IA.").as_deref(), Some("Outer.IA"));

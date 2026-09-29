@@ -627,3 +627,30 @@ mod rust_deferred_tests {
         assert_eq!(RustDeferred::decode("@ret:s:x"), None);
     }
 }
+
+#[cfg(test)]
+mod type_scope_tests {
+    use super::TypeScope;
+
+    #[test]
+    fn type_scope_round_trips_through_the_column_format() {
+        let scope = TypeScope {
+            enclosing: vec!["A.B.Outer".into(), "A.B".into(), "A".into()],
+            usings: vec!["N1".into(), "N2".into()],
+        };
+        let column = scope.encode("IA<int>");
+        assert_eq!(column, "A.B.Outer,A.B,A;N1,N2|IA<int>");
+        assert_eq!(TypeScope::decode(&column), (scope, "IA<int>"));
+        let empty = TypeScope::default();
+        assert_eq!(empty.encode("IA"), "IA");
+        assert_eq!(TypeScope::decode("IA"), (empty, "IA"));
+        let only_usings = TypeScope {
+            enclosing: vec![],
+            usings: vec!["N1".into()],
+        };
+        assert_eq!(
+            TypeScope::decode(&only_usings.encode("IA")),
+            (only_usings, "IA")
+        );
+    }
+}

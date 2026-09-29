@@ -178,7 +178,9 @@ pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
              UNION
              SELECT anc.cid, e.target_symbol_id, anc.d + 1, anc.ov
                FROM anc JOIN edges e ON e.source_symbol_id = anc.iid
-                                    AND e.kind IN ('EXTENDS', 'IMPLEMENTS')
+                                    -- `+` keeps the planner on idx_edges_source: with
+                                    -- `kind IN (..)` it scanned every IMPLEMENTS edge per row
+                                    AND +e.kind IN ('EXTENDS', 'IMPLEMENTS')
                                     AND e.graph_version = {gv}
                                     AND e.target_symbol_id IS NOT NULL
               WHERE anc.d <= {MAX_IFACE_CHAIN_DEPTH})
