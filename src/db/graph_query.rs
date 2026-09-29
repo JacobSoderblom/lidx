@@ -7,64 +7,114 @@ use std::collections::{HashMap, HashSet};
 /// Max interface -> interface hops followed by dispatch.
 const MAX_IFACE_CHAIN_DEPTH: i64 = 5;
 
-/// `FROM` clause of the one interface-dispatch query (issue #122), shared
-/// by [`Db::dispatch_pairs`] and `dead_symbols`: yields one row per
-/// `(im.id = interface method, cm.id = implementing method)` -- `cm`'s class
-/// `c` IMPLEMENTS the interface `i`, and `im` is `i`'s method with the same
-/// name (same qualname tail as `cm`, whatever the separator). The parent of
-/// `cm` is `qualname` minus `<sep><name>`, tried for 1- and 2-char
-/// separators (`.` / `::`). Callers append their own `WHERE`/`JOIN`s.
+/// `member` (alias `m`) declared on class `c` as an explicit interface
+/// implementation (`C.<Iface>.<name>`, issue #181): its qualname is the
+/// class's, a `.`, an identity segment, `.` and the member's own name.
+fn explicit_impl(m: &str, c: &str) -> String {
+    format!(
+        "(length({m}.qualname) >= length({c}.qualname) + length({m}.name) + 3
+          AND substr({m}.qualname, 1, length({c}.qualname) + 1) = {c}.qualname || '.'
+          AND substr({m}.qualname, -(length({m}.name) + 1)) = '.' || {m}.name)"
+    )
+}
+
+/// The interface name an explicit impl `m` on `c` names, as written and
+/// without generic arguments (`C.N1.IA<int>.Run` -> `N1.IA`, issue #185).
+fn explicit_base(m: &str, c: &str) -> String {
+    let spec = format!(
+        "substr({m}.qualname, length({c}.qualname) + 2,
+                length({m}.qualname) - length({c}.qualname) - length({m}.name) - 2)"
+    );
+    format!(
+        "(CASE WHEN instr({spec}, '<') > 0 THEN substr({spec}, 1, instr({spec}, '<') - 1) ELSE {spec} END)"
+    )
+}
+
+/// Whether interface `i` is the one the written name `base` (from an
+/// explicit impl on class `c`) denotes: `i`'s qualname is `base` or ends in
+/// `.base`, unless `c` lists a *different* interface under that very text
+/// in its base list (`class C : IA, N2.IA` -- the short `IA` is the first).
+fn names_interface(base: &str, i: &str, c: &str, gv: i64) -> String {
+    format!(
+        "(({i}.qualname = {base} OR substr({i}.qualname, -(length({base}) + 1)) = '.' || {base})
+          AND NOT EXISTS (SELECT 1 FROM edges e2
+                           WHERE e2.source_symbol_id = {c}.id AND e2.kind = 'IMPLEMENTS'
+                             AND e2.graph_version = {gv} AND e2.target_qualname = {base}
+                             AND e2.target_symbol_id <> {i}.id))"
+    )
+}
+
+/// `FROM` clause of the one dispatch query (issues #122, #185), shared by
+/// [`Db::dispatch_pairs`] and `dead_symbols`: yields one row per
+/// `(im.id = base member, cm.id = implementing member)` -- `cm`'s class `c`
+/// IMPLEMENTS the interface (or EXTENDS the base class) `i`, and `im` is
+/// `i`'s member of the same kind and name. `cm` is a method, property or
+/// event. `c` is `cm`'s container: its qualname minus `<sep><name>` for 1-
+/// and 2-char separators (`.` / `::`), or its CONTAINS parent (an explicit
+/// impl's qualname carries an identity segment, so no fixed offset works).
+/// An explicit impl pairs only with the interface its identity names; an
+/// implicit one with every other one; through a base *class* only an
+/// `override` pairs. Callers append their own `WHERE`/`JOIN`s.
 /// `graph_version` is inlined (an `i64`, so injection-safe) so callers can
 /// mix it into queries with their own positional parameters.
 pub(super) fn dispatch_pairs_from(graph_version: i64) -> String {
     let gv = graph_version;
-    // Every interface a class reaches: its direct IMPLEMENTS targets, then
-    // interface -> interface EXTENDS/IMPLEMENTS hops (issue #173), depth-
-    // bounded (cycle-safe: `UNION` dedups and `d` caps the recursion).
+    // Every type a class reaches: its direct IMPLEMENTS/EXTENDS targets,
+    // then interface -> interface and class -> base hops (issues #173,
+    // #185), depth-bounded (cycle-safe: `UNION` dedups and `d` caps the
+    // recursion). `ov` marks paths through a base class, whose members
+    // only an `override` implements.
     let ancestors = format!(
-        "WITH RECURSIVE anc(cid, iid, d) AS (
-             SELECT source_symbol_id, target_symbol_id, 1 FROM edges
-              WHERE kind = 'IMPLEMENTS' AND graph_version = {gv}
+        "WITH RECURSIVE anc(cid, iid, d, ov) AS (
+             SELECT source_symbol_id, target_symbol_id, 1, kind = 'EXTENDS' FROM edges
+              WHERE kind IN ('IMPLEMENTS', 'EXTENDS') AND graph_version = {gv}
                 AND target_symbol_id IS NOT NULL
              UNION
-             SELECT anc.cid, e.target_symbol_id, anc.d + 1
+             SELECT anc.cid, e.target_symbol_id, anc.d + 1, anc.ov
                FROM anc JOIN edges e ON e.source_symbol_id = anc.iid
                                     AND e.kind IN ('EXTENDS', 'IMPLEMENTS')
                                     AND e.graph_version = {gv}
                                     AND e.target_symbol_id IS NOT NULL
               WHERE anc.d <= {MAX_IFACE_CHAIN_DEPTH})
-         SELECT cid, iid FROM anc"
+         SELECT cid, iid, ov FROM anc"
     );
-    // Qualname of an explicit impl of `i`'s method on class `c`
-    // (`C.<Iface>.<name>`, issue #181), and the `cm` -> `c` parent offsets:
-    // 1 / 2 chars are the `.` / `::` separators; the third also strips the
-    // interface segment of an explicit impl.
-    let explicit = "c.qualname || '.' || i.name || '.' || cm.name";
     let parent = "substr(cm.qualname, 1, length(cm.qualname) - length(cm.name)";
+    let cm_explicit = explicit_impl("cm", "c");
+    let cm_names_i = names_interface(&explicit_base("cm", "c"), "i", "c", gv);
+    let x_names_i = names_interface(&explicit_base("x", "c"), "i", "c", gv);
+    let x_explicit = explicit_impl("x", "c");
     format!(
         "FROM symbols cm
          JOIN symbols c ON c.graph_version = {gv}
-                       AND c.qualname IN (
-                           {parent} - 1),
-                           {parent} - 2),
-                           {parent} - length(i.name) - 2))
+                       AND (c.qualname IN (
+                                {parent} - 1),
+                                {parent} - 2))
+                            OR c.id IN (SELECT ce.source_symbol_id FROM edges ce
+                                         WHERE ce.target_symbol_id = cm.id AND ce.kind = 'CONTAINS'
+                                           AND ce.graph_version = {gv}))
          JOIN ({ancestors}) a ON a.cid = c.id
          JOIN symbols i ON i.id = a.iid
          -- One indexed `im.qualname = <expr>` equality: an explicit impl pairs
          -- only with the interface it names, an implicit one keeps the tail.
-         JOIN symbols im ON im.qualname = CASE WHEN cm.qualname = {explicit}
+         JOIN symbols im ON im.qualname = CASE WHEN {cm_explicit}
                                                THEN i.qualname || '.' || cm.name
                                                ELSE i.qualname || substr(cm.qualname, length(c.qualname) + 1) END
-                        AND im.name = cm.name AND im.kind = 'method' AND im.graph_version = {gv}
+                        AND +im.name = cm.name AND +im.kind = cm.kind AND im.graph_version = {gv}
          JOIN files fc ON fc.id = cm.file_id
                       AND (fc.deleted_version IS NULL OR fc.deleted_version > {gv})
          JOIN files fi ON fi.id = im.file_id
                       AND (fi.deleted_version IS NULL OR fi.deleted_version > {gv})
-         WHERE cm.kind = 'method' AND cm.graph_version = {gv}
-           -- an implicit impl is not paired with an interface that has an explicit twin
-           AND (cm.qualname = {explicit} OR NOT EXISTS (
-                SELECT 1 FROM symbols x
-                 WHERE x.graph_version = {gv} AND x.kind = 'method' AND x.qualname = {explicit}))"
+         WHERE cm.kind IN ('method', 'property', 'event') AND cm.graph_version = {gv}
+           AND CASE WHEN {cm_explicit}
+                    THEN i.kind = 'interface' AND {cm_names_i}
+                    ELSE (a.ov = 0 OR (' ' || COALESCE(cm.visibility, '') || ' ') LIKE '% override %')
+                         -- an implicit impl is not paired with an interface that has an explicit twin
+                         AND NOT EXISTS (
+                             SELECT 1 FROM symbols x
+                              WHERE x.graph_version = {gv} AND +x.kind = cm.kind AND +x.name = cm.name
+                                AND x.qualname > c.qualname || '.' AND x.qualname < c.qualname || '/'
+                                AND {x_explicit} AND i.kind = 'interface' AND {x_names_i})
+               END"
     )
 }
 
@@ -74,22 +124,29 @@ impl Db {
     /// method, so the implementing method looks uncalled. Returns every
     /// `(interface_method_id, impl_method_id)` pair where either side is in
     /// `ids`, via class IMPLEMENTS edges + same method name. Language-
-    /// agnostic. Follows interface inheritance chains; deliberately not
-    /// handled: EXTENDS'd virtual/abstract methods.
+    /// agnostic. Follows interface inheritance chains and, for C#, an
+    /// `override` reached through EXTENDS (issue #185).
     pub fn dispatch_pairs(&self, ids: &[i64], graph_version: i64) -> Result<Vec<(i64, i64)>> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
         let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT DISTINCT im.id, cm.id {} AND (cm.id IN ({list}) OR im.id IN ({list}))
-             ORDER BY im.id, cm.id",
-            dispatch_pairs_from(graph_version)
-        );
+        // One statement per side: an `OR` across `cm.id` / `im.id` would
+        // defeat the rowid lookup and scan every symbol.
+        let from = dispatch_pairs_from(graph_version);
         let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        let mut pairs = Vec::new();
+        for side in ["cm", "im"] {
+            let sql = format!("SELECT DISTINCT im.id, cm.id {from} AND {side}.id IN ({list})");
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+            for row in rows {
+                pairs.push(row?);
+            }
+        }
+        pairs.sort_unstable();
+        pairs.dedup();
+        Ok(pairs)
     }
 
     /// [`Db::dispatch_pairs`] for one method, split by side.
