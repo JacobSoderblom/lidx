@@ -121,8 +121,16 @@ pub fn trace_flow(
     let mut traversed_edge_ids: Vec<i64> = Vec::new();
 
     while let Some((current_id, dist, prev_file)) = queue.pop_front() {
-        if dist > config.max_hops {
-            truncated = true;
+        // A node at `dist == max_hops` was already recorded as a hop when
+        // its parent expanded (below); it must not itself expand, or its
+        // children would be recorded at `max_hops + 1`. This is not a
+        // budget truncation -- the trace is complete up to the requested
+        // depth -- so `truncated` stays false here. BFS pops in
+        // non-decreasing `dist` order (all seeds start at 0, children are
+        // always enqueued at `dist + 1`), so once one node hits the depth
+        // limit every remaining queued node does too, and it's safe to stop
+        // the whole loop rather than skip node by node.
+        if dist >= config.max_hops {
             break;
         }
         if used_bytes >= config.max_bytes {
@@ -348,7 +356,11 @@ fn build_hop(
 ) -> TraceHop {
     let prev_lang = detect_language(prev_file);
     let next_lang = detect_language(&next_sym.file_path);
-    let cross_lang = prev_lang != next_lang;
+    // External stubs (issue #121) live in a synthetic `<external>` file with
+    // no real language of its own -- `next_lang` would otherwise come back
+    // "unknown" and get reported as a bogus cross-language boundary (e.g.
+    // "C# -> unknown" for `ext:SHA256.Create`).
+    let cross_lang = prev_lang != next_lang && !next_sym.is_external();
 
     let snippet = if include_snippets {
         edge.evidence_snippet.clone()
@@ -1134,10 +1146,17 @@ mod tests {
         );
         let max_dist = shallow.hops.iter().map(|h| h.distance).max().unwrap_or(0);
         assert!(
-            max_dist <= 2,
-            "with max_hops=1, nodes at distance 1 are processed and their children \
-             (distance 2) are collected but not expanded further; got max_dist={}",
+            max_dist <= shallow_config.max_hops,
+            "no hop should exceed max_hops={}; got max_dist={}",
+            shallow_config.max_hops,
             max_dist
+        );
+        let deep_max_dist = deep.hops.iter().map(|h| h.distance).max().unwrap_or(0);
+        assert!(
+            deep_max_dist <= deep_config.max_hops,
+            "no hop should exceed max_hops={}; got max_dist={}",
+            deep_config.max_hops,
+            deep_max_dist
         );
     }
 
@@ -1224,7 +1243,7 @@ mod tests {
     }
 
     #[test]
-    fn max_hops_zero_still_traces_direct_neighbors() {
+    fn max_hops_zero_returns_no_hops() {
         let (_temp, indexer) = indexed_repo("py_mvp");
         let gv = indexer.db().current_graph_version().unwrap();
 
@@ -1245,11 +1264,46 @@ mod tests {
         };
 
         let result = trace_flow(indexer.db(), seeds, None, None, gv, &config).unwrap();
-        // max_hops=0 means seeds (dist 0) are expanded, their children (dist 1) are collected
+        // Issue #121: max_hops bounds the maximum returned hop distance
+        // directly, and every hop is at least distance 1 (the seed itself
+        // is never reported as a hop), so max_hops=0 must return nothing.
+        assert!(
+            result.hops.is_empty(),
+            "with max_hops=0, no hops should be returned, got {:?}",
+            result.hops.iter().map(|h| h.distance).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn max_hops_one_returns_direct_neighbors_only() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let gv = indexer.db().current_graph_version().unwrap();
+
+        let start = crate::resolve::resolve_symbol(
+            indexer.db(),
+            crate::resolve::SymbolRef::Query("run".into()),
+            None,
+            gv,
+        )
+        .unwrap();
+        let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
+
+        let config = TraceConfig {
+            max_hops: 1,
+            direction: TraceDirection::Downstream,
+            allowed_kinds: vec!["CALLS".into()],
+            ..Default::default()
+        };
+
+        let result = trace_flow(indexer.db(), seeds, None, None, gv, &config).unwrap();
+        assert!(
+            !result.hops.is_empty(),
+            "with max_hops=1, direct neighbors should still be returned"
+        );
         for hop in &result.hops {
-            assert!(
-                hop.distance <= 1,
-                "with max_hops=0, hops should be at distance <= 1, got {}",
+            assert_eq!(
+                hop.distance, 1,
+                "with max_hops=1, every hop should be at distance 1, got {}",
                 hop.distance
             );
         }
@@ -1462,6 +1516,30 @@ mod tsx_normalization_tests {
         }
     }
 
+    // External stubs (issue #121) are attributed to a synthetic `<external>`
+    // file, which `detect_language` can't map to a real language -- see
+    // `Symbol::is_external`'s doc.
+    fn dummy_external_symbol(qualname: &str) -> Symbol {
+        Symbol {
+            id: 2,
+            file_path: "<external>".to_string(),
+            kind: "external".to_string(),
+            name: qualname.rsplit('.').next().unwrap_or(qualname).to_string(),
+            qualname: qualname.to_string(),
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 0,
+            signature: None,
+            docstring: None,
+            graph_version: 1,
+            commit_sha: None,
+            stable_id: None,
+        }
+    }
+
     #[test]
     fn ts_tsx_variants_are_same_language() {
         let edge = dummy_edge();
@@ -1496,6 +1574,31 @@ mod tsx_normalization_tests {
             assert!(
                 hop.boundary_type.is_some(),
                 "{label} -> .py should have boundary type"
+            );
+        }
+    }
+
+    #[test]
+    fn external_stub_is_not_cross_language() {
+        let edge = dummy_edge();
+
+        for (source, target_qualname, label) in [
+            ("src/Program.cs", "ext:SHA256.Create", "C# -> BCL external"),
+            ("src/main.rs", "ext:std::fs::read", "Rust -> std external"),
+        ] {
+            let target_sym = dummy_external_symbol(target_qualname);
+            let hop = build_hop(&target_sym, &edge, 1, source, true);
+            assert!(
+                !hop.cross_language,
+                "{label}: external stub should not be reported as cross-language"
+            );
+            assert!(
+                hop.boundary_type.is_none(),
+                "{label}: external stub should have no boundary type"
+            );
+            assert!(
+                hop.boundary_detail.is_none(),
+                "{label}: external stub should have no boundary detail"
             );
         }
     }

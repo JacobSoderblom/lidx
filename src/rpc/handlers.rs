@@ -740,7 +740,9 @@ const SERVER_BRIDGE_KINDS: &[&str] = &[
 
 /// One-hop cross-boundary neighbours of `seeds` for explain_symbol, found by
 /// running trace_flow's own traversal (direct resolved edges + bridge
-/// crossing by exact target_qualname) with `max_hops: 0`.
+/// crossing by exact target_qualname) with `max_hops: 1` (issue #121:
+/// `max_hops` now bounds the maximum returned hop distance directly, so
+/// "one hop" means `max_hops: 1`, not `0`).
 ///
 /// Every ref is labelled with the *client-side* kind (RPC_CALL, HTTP_CALL,
 /// CHANNEL_PUBLISH, CONFIG_READ) or CONFIG_BIND, so a test -> impl gRPC hop
@@ -771,7 +773,7 @@ fn cross_boundary_refs(
         allowed_kinds.push("CONFIG_BIND".to_string());
     }
     let config = crate::traversal::TraceConfig {
-        max_hops: 0,
+        max_hops: 1,
         max_bytes: usize::MAX,
         allowed_kinds,
         ..Default::default()
