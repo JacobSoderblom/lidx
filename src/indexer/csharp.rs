@@ -100,6 +100,13 @@ struct Context {
     /// gets no candidate from this source — see the ponytail note on
     /// `extension_method_candidates`.
     extension_registry: ExtensionRegistry,
+    /// Declared return-type text of every method / local function in *this
+    /// file* whose bare name is unambiguous (declared once, or several
+    /// times with the identical return type) — see
+    /// `collect_method_return_types`. Feeds `var x = Method(..)` /
+    /// `var (a, b) = Method(..)` inference. Same-file only; a callee
+    /// declared elsewhere stays untracked.
+    method_returns: Rc<MethodReturns>,
 }
 
 /// One extension method declaration, as recorded by `record_extension_method`
@@ -266,6 +273,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             base_type: LocalType::Other,
             imports: Rc::new(collect_import_context(root, source)),
             extension_registry: Rc::clone(&self.extension_registry),
+            method_returns: Rc::new(MethodReturns::collect(root, source)),
         };
         if root.kind() == "compilation_unit" {
             walk_compilation_unit(root, &ctx, source, &mut output);
@@ -666,9 +674,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         next_ctx.current_scope = qualname;
         next_ctx.route_groups = collect_route_groups(body, source);
         let mut grpc_clients = ctx.grpc_clients.clone();
-        grpc_clients.extend(collect_grpc_clients(body, source));
+        grpc_clients.extend(collect_grpc_clients(body, source, &ctx.method_returns));
         next_ctx.grpc_clients = grpc_clients;
-        next_ctx.local_types = Rc::new(infer_local_types(node, source));
+        next_ctx.local_types = Rc::new(infer_local_types(node, source, &ctx.method_returns));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -725,7 +733,7 @@ fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = qualname;
-        next_ctx.local_types = Rc::new(infer_local_types(node, source));
+        next_ctx.local_types = Rc::new(infer_local_types(node, source, &ctx.method_returns));
         walk_node(body, &next_ctx, source, output);
     }
 }
@@ -1490,14 +1498,19 @@ fn collect_global_grpc_clients(
         if child.kind() != "global_statement" {
             continue;
         }
-        collect_grpc_clients_inner(child, source, &mut clients);
+        // Limitation: top-level statements have no method-return context.
+        collect_grpc_clients_inner(child, source, &MethodReturns::default(), &mut clients);
     }
     clients
 }
 
-fn collect_grpc_clients(node: Node<'_>, source: &str) -> HashMap<String, (String, Option<String>)> {
+fn collect_grpc_clients(
+    node: Node<'_>,
+    source: &str,
+    method_returns: &MethodReturns,
+) -> HashMap<String, (String, Option<String>)> {
     let mut clients = HashMap::new();
-    collect_grpc_clients_inner(node, source, &mut clients);
+    collect_grpc_clients_inner(node, source, method_returns, &mut clients);
     clients
 }
 
@@ -1528,6 +1541,7 @@ fn collect_route_groups_inner(node: Node<'_>, source: &str, groups: &mut HashMap
 fn collect_grpc_clients_inner(
     node: Node<'_>,
     source: &str,
+    method_returns: &MethodReturns,
     clients: &mut HashMap<String, (String, Option<String>)>,
 ) {
     match node.kind() {
@@ -1552,14 +1566,14 @@ fn collect_grpc_clients_inner(
         // bottom-up match on `variable_declarator` directly, just able to
         // see the declared type too.
         "variable_declaration" => {
-            collect_grpc_clients_from_declaration(node, source, clients);
+            collect_grpc_clients_from_declaration(node, source, method_returns, clients);
             return;
         }
         _ => {}
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_grpc_clients_inner(child, source, clients);
+        collect_grpc_clients_inner(child, source, method_returns, clients);
     }
 }
 
@@ -1587,6 +1601,7 @@ fn collect_grpc_clients_inner(
 fn collect_grpc_clients_from_declaration(
     node: Node<'_>,
     source: &str,
+    method_returns: &MethodReturns,
     clients: &mut HashMap<String, (String, Option<String>)>,
 ) {
     let declared = node
@@ -1609,7 +1624,17 @@ fn collect_grpc_clients_from_declaration(
             .child_by_field_name("initializer")
             .and_then(|initializer| grpc_client_from_initializer(initializer, source))
             .or_else(|| grpc_client_from_initializer(declarator, source));
-        if let Some(service_and_prefix) = from_initializer.or_else(|| declared.clone()) {
+        // `var c = CreateClient(..)`: fall back to the same-file callee's
+        // declared return type (`Greeter.GreeterClient CreateClient(..)`).
+        let from_return = || {
+            let value = variable_declarator_value(declarator)?;
+            let ret = method_returns.call_return_type(value, source)?;
+            split_client_service_and_prefix(&ret)
+        };
+        if let Some(service_and_prefix) = from_initializer
+            .or_else(|| declared.clone())
+            .or_else(from_return)
+        {
             clients.insert(name, service_and_prefix);
         }
     }
@@ -3629,13 +3654,150 @@ fn classify_type_name(name: &str) -> LocalType {
 /// `Other` — mirrors `python::classify_assignment_value`'s identical
 /// ceiling, and matches this task's "`var` only when the initializer is a
 /// direct `new T()`" scope.
-fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
+fn classify_value_expr(value: Node<'_>, source: &str, method_returns: &MethodReturns) -> LocalType {
     if value.kind() == "object_creation_expression"
         && let Some(type_node) = value.child_by_field_name("type")
     {
         return classify_annotation(&node_text(type_node, source));
     }
+    if let Some(ret) = method_returns.call_return_type(value, source) {
+        return classify_annotation(&ret);
+    }
     LocalType::Other
+}
+
+/// Declared return types (raw text) of every method / local function in a
+/// file, keyed by bare name. A name declared more than once with different
+/// return types is dropped, as is a generic method whose return type names
+/// one of its own type parameters: ambiguous means untracked, never a
+/// wrong type.
+#[derive(Debug, Default)]
+struct MethodReturns(HashMap<String, String>);
+
+impl MethodReturns {
+    fn collect(root: Node<'_>, source: &str) -> Self {
+        fn walk(node: Node<'_>, source: &str, out: &mut HashMap<String, Option<String>>) {
+            if matches!(
+                node.kind(),
+                "method_declaration" | "local_function_statement"
+            ) && let (Some(name), Some(ret)) = (
+                node.child_by_field_name("name"),
+                node.child_by_field_name("returns")
+                    .or_else(|| node.child_by_field_name("type")),
+            ) {
+                let name = node_text(name, source);
+                let ret = node_text(ret, source).trim().to_string();
+                let names_type_param =
+                    node.child_by_field_name("type_parameters")
+                        .is_some_and(|tp| {
+                            let params = node_text(tp, source);
+                            params
+                                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                                .filter(|t| !t.is_empty())
+                                .any(|t| {
+                                    ret.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                                        .any(|r| r == t)
+                                })
+                        });
+                match out.get(&name) {
+                    _ if names_type_param => {
+                        out.insert(name, None);
+                    }
+                    Some(Some(prev)) if *prev == ret => {}
+                    Some(_) => {
+                        out.insert(name, None);
+                    }
+                    None => {
+                        out.insert(name, Some(ret));
+                    }
+                }
+            }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                walk(child, source, out);
+            }
+        }
+        let mut out = HashMap::new();
+        walk(root, source, &mut out);
+        Self(
+            out.into_iter()
+                .filter_map(|(k, v)| v.map(|v| (k, v)))
+                .collect(),
+        )
+    }
+
+    /// The declared return type text of a bare / `this.` call (optionally
+    /// awaited, optionally `.ConfigureAwait(..)`) to a same-file method. An
+    /// awaited call unwraps `Task<T>` / `ValueTask<T>`; a non-awaited
+    /// `Task<T>` (or bare `Task`) yields `None`, as does `void` and any
+    /// callee not recorded.
+    fn call_return_type(&self, value: Node<'_>, source: &str) -> Option<String> {
+        let (mut call, awaited) = if value.kind() == "await_expression" {
+            (value.named_child(0)?, true)
+        } else {
+            (value, false)
+        };
+        if awaited
+            && call.kind() == "invocation_expression"
+            && let Some(f) = call.child_by_field_name("function")
+            && f.kind() == "member_access_expression"
+            && f.child_by_field_name("name")
+                .is_some_and(|n| node_text(n, source) == "ConfigureAwait")
+        {
+            call = f.child_by_field_name("expression")?;
+        }
+        if call.kind() != "invocation_expression" {
+            return None;
+        }
+        let function = call.child_by_field_name("function")?;
+        let name_node = match function.kind() {
+            "identifier" | "generic_name" => function,
+            "member_access_expression"
+                if function.child_by_field_name("expression")?.kind() == "this" =>
+            {
+                function.child_by_field_name("name")?
+            }
+            _ => return None,
+        };
+        let mut name = node_text(name_node, source);
+        if let Some(idx) = name.find('<') {
+            name.truncate(idx);
+        }
+        let ret = self.0.get(&name)?.trim();
+        let wrapped = ["Task<", "ValueTask<"]
+            .iter()
+            .find_map(|p| ret.strip_prefix(p).and_then(|r| r.strip_suffix('>')));
+        let is_task_like = wrapped.is_some() || ["Task", "ValueTask", "void"].contains(&ret);
+        match (awaited, wrapped) {
+            (true, Some(inner)) => Some(inner.trim().to_string()),
+            _ if is_task_like => None,
+            _ => Some(ret.to_string()),
+        }
+    }
+}
+
+/// Element types of a tuple return type text (`(A, B)` / `(A a, B b)`),
+/// `None` per element when it isn't a plain type. `None` overall when
+/// `text` isn't a tuple.
+fn tuple_element_types(text: &str) -> Option<Vec<String>> {
+    let inner = text.trim().strip_prefix('(')?.strip_suffix(')')?;
+    Some(
+        split_respecting_brackets(inner)
+            .into_iter()
+            .map(|el| {
+                let el = el.trim();
+                match el.rsplit_once(char::is_whitespace) {
+                    Some((ty, name))
+                        if !name.is_empty()
+                            && name.chars().all(|c| c.is_alphanumeric() || c == '_') =>
+                    {
+                        ty.trim().to_string()
+                    }
+                    _ => el.to_string(),
+                }
+            })
+            .collect(),
+    )
 }
 
 /// The initializer expression of a `variable_declarator`, if any — its
@@ -3652,7 +3814,11 @@ fn variable_declarator_value(node: Node<'_>) -> Option<Node<'_>> {
 /// parameters and typed/`var` local declarations. Scope is strictly this
 /// method — never a caller, a callee, or another method of the same type
 /// (see `Context::local_types`'s doc comment).
-fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {
+fn infer_local_types(
+    function_node: Node<'_>,
+    source: &str,
+    method_returns: &MethodReturns,
+) -> HashMap<String, LocalType> {
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
     if let Some(params) = function_node.child_by_field_name("parameters") {
         let mut cursor = params.walk();
@@ -3675,7 +3841,7 @@ fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, L
         }
     }
     if let Some(body) = function_node.child_by_field_name("body") {
-        collect_statement_bindings(body, source, &mut bindings);
+        collect_statement_bindings(body, source, method_returns, &mut bindings);
     }
     bindings_to_local_types(bindings)
 }
@@ -3709,14 +3875,15 @@ fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String
 /// misattributed to whatever the enclosing scope happens to bind that name
 /// to.
 ///
-/// ponytail: tuple-deconstruction targets (`var (a, b) = GetPair();`,
-/// `foreach (var (k, v) in map)`) aren't tracked — the declarator/loop
-/// variable's `name` field isn't a plain identifier in that shape, so it's
-/// skipped rather than bound. This is no worse than before this change
-/// (such names were never gated), just not improved by it.
+/// `var (a, b) = Method(..)` is bound via `bind_tuple_pattern`.
+///
+/// ponytail: `foreach (var (k, v) in map)` deconstruction isn't tracked —
+/// the loop variable's `left` isn't a plain identifier in that shape, so
+/// it's skipped rather than bound.
 fn collect_statement_bindings(
     node: Node<'_>,
     source: &str,
+    method_returns: &MethodReturns,
     bindings: &mut Vec<(String, LocalType)>,
 ) {
     if is_local_function_node(node.kind()) {
@@ -3741,6 +3908,13 @@ fn collect_statement_bindings(
                 if child.kind() != "variable_declarator" {
                     continue;
                 }
+                if is_var
+                    && let Some(pattern) =
+                        child.named_child(0).filter(|n| n.kind() == "tuple_pattern")
+                {
+                    bind_tuple_pattern(pattern, child, source, method_returns, bindings);
+                    continue;
+                }
                 let Some(name_node) = child.child_by_field_name("name") else {
                     continue;
                 };
@@ -3753,7 +3927,7 @@ fn collect_statement_bindings(
                 }
                 let ty = if is_var {
                     variable_declarator_value(child)
-                        .map(|v| classify_value_expr(v, source))
+                        .map(|v| classify_value_expr(v, source, method_returns))
                         .unwrap_or(LocalType::Other)
                 } else {
                     classify_annotation(&node_text(type_node.expect("checked above"), source))
@@ -3792,7 +3966,37 @@ fn collect_statement_bindings(
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_statement_bindings(child, source, bindings);
+        collect_statement_bindings(child, source, method_returns, bindings);
+    }
+}
+
+/// Bind the names of `var (a, b) = Method(..)`: each gets the matching
+/// element of the callee's tuple return type when determinable, else
+/// `Other` (still bound so it shadows a same-named field). Discards and
+/// nested patterns are skipped / `Other`.
+fn bind_tuple_pattern(
+    pattern: Node<'_>,
+    declarator: Node<'_>,
+    source: &str,
+    method_returns: &MethodReturns,
+    bindings: &mut Vec<(String, LocalType)>,
+) {
+    let elements = variable_declarator_value(declarator)
+        .and_then(|v| method_returns.call_return_type(v, source))
+        .and_then(|ret| tuple_element_types(&ret));
+    let mut cursor = pattern.walk();
+    for (idx, el) in pattern.named_children(&mut cursor).enumerate() {
+        if el.kind() != "identifier" {
+            continue;
+        }
+        let ty = match &elements {
+            Some(types) if types.len() == pattern.named_child_count() => types
+                .get(idx)
+                .map(|t| classify_annotation(t))
+                .unwrap_or(LocalType::Other),
+            _ => LocalType::Other,
+        };
+        bindings.push((node_text(el, source), ty));
     }
 }
 
@@ -3890,7 +4094,12 @@ fn collect_class_level_grpc_client_fields(
                     if decl.kind() != "variable_declaration" {
                         continue;
                     }
-                    collect_grpc_clients_from_declaration(decl, source, &mut result);
+                    collect_grpc_clients_from_declaration(
+                        decl,
+                        source,
+                        &MethodReturns::default(), // limitation: field initializers are not resolved against method return types
+                        &mut result,
+                    );
                 }
             }
             "property_declaration" => {
@@ -4593,6 +4802,95 @@ public class ProductDeltaStrategy {
         assert_eq!(
             call("Mapper.Map<").target_qualname.as_deref(),
             Some("Mapper.Map")
+        );
+    }
+
+    #[test]
+    fn var_local_infers_receiver_type_from_same_file_return_type() {
+        let source = r#"
+namespace Acme;
+public class Tests {
+    private (Publisher, Bus) MakePublisher() => default;
+    private static Store Open() => default;
+    private async Task<Store> OpenAsync() => default;
+    private Task<Store> Lazy() => default;
+    private Store Dup(int a) => default;
+    private Other Dup(string a) => default;
+    private T Get<T>() => default;
+    public async Task Run() {
+        var (pub, bus) = MakePublisher();
+        pub.PublishDeleted();
+        bus.Flush();
+        var s = Open();
+        s.Write();
+        var t = this.Open();
+        t.Write2();
+        var a = await OpenAsync();
+        a.Write3();
+        var l = Lazy();
+        l.Write4();
+        var d = Dup(1);
+        d.Write5();
+        var (x, _) = Unknown();
+        x.Write6();
+        var g = Get<Store>();
+        g.Write7();
+        var c = await OpenAsync().ConfigureAwait(false);
+        c.Write8();
+    }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let recv = |needle: &str| {
+            file.edges
+                .iter()
+                .find(|e| {
+                    e.kind == "CALLS"
+                        && e.evidence_snippet
+                            .as_deref()
+                            .is_some_and(|s| s.starts_with(needle))
+                })
+                .unwrap_or_else(|| panic!("no CALLS edge for {needle}"))
+                .receiver_type
+                .clone()
+        };
+        let known = |n: &str| ReceiverType::Known(n.to_string());
+        assert_eq!(recv("pub.PublishDeleted"), known("Publisher"));
+        assert_eq!(recv("bus.Flush"), known("Bus"));
+        assert_eq!(recv("s.Write("), known("Store"));
+        assert_eq!(recv("t.Write2"), known("Store"));
+        assert_eq!(recv("a.Write3"), known("Store"));
+        assert_eq!(recv("l.Write4"), ReceiverType::Unresolved);
+        assert_eq!(recv("d.Write5"), ReceiverType::Unresolved);
+        assert_eq!(recv("x.Write6"), ReceiverType::Unresolved);
+        assert_eq!(recv("g.Write7"), ReceiverType::Unresolved);
+        assert_eq!(recv("c.Write8"), known("Store"));
+    }
+
+    #[test]
+    fn grpc_call_resolves_var_from_same_file_factory_return_type() {
+        let source = r#"
+using Example.V1;
+public class Tests {
+    private static Greeter.GreeterClient CreateGreeterClient(object factory) => default;
+    public async Task Run(object factory) {
+        var greeter = CreateGreeterClient(factory);
+        await greeter.SayHelloAsync(new HelloRequest());
+    }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        assert!(
+            file.edges.iter().any(|e| e.kind == proto::RPC_CALL_KIND
+                && e.target_qualname.as_deref() == Some("/example.v1.greeter/sayhello")),
+            "{:?}",
+            file.edges
+                .iter()
+                .filter(|e| e.kind == proto::RPC_CALL_KIND)
+                .map(|e| &e.target_qualname)
+                .collect::<Vec<_>>()
         );
     }
 }
