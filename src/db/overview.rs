@@ -445,15 +445,23 @@ impl Db {
 ///
 /// Paths deeper than `depth` are truncated (e.g. `"a/b/c.rs"` at depth 1
 /// becomes `"a/"`). Paths at or below `depth` use their parent directory,
-/// and root-level files map to `"."`.
-fn module_prefix(path: &str, depth: usize) -> String {
+/// and root-level files map to `"./"`. The trailing `/` is part of the
+/// contract every call site relies on (e.g. the repo map's "## Modules"
+/// and "Dependencies" sections do not append their own) -- issue #134
+/// found a caller that assumed this held for the root case when it did
+/// not, so it is enforced here for all three branches instead.
+///
+/// `pub(super)` so `db::analytics` can group by the same module identity
+/// `db::overview` uses, rather than recomputing it with a second,
+/// disagreeing definition (also issue #134).
+pub(super) fn module_prefix(path: &str, depth: usize) -> String {
     let parts: Vec<&str> = path.split('/').collect();
     if parts.len() > depth {
         parts[..depth].join("/") + "/"
     } else if parts.len() > 1 {
         parts[..parts.len() - 1].join("/") + "/"
     } else {
-        ".".to_string()
+        "./".to_string()
     }
 }
 
@@ -669,8 +677,8 @@ mod tests {
 
     #[test]
     fn module_prefix_root_level_file() {
-        // Single-part path at depth 1: 1 > 1 is false, falls to else; 1 > 1 is false -> "."
-        assert_eq!(module_prefix("main.rs", 1), ".");
+        // Single-part path at depth 1: 1 > 1 is false, falls to else; 1 > 1 is false -> "./"
+        assert_eq!(module_prefix("main.rs", 1), "./");
         // Single-part path at depth 0: 1 > 0 is true -> parts[..0] = "/" (same as multi-part)
         assert_eq!(module_prefix("main.rs", 0), "/");
     }
@@ -1104,7 +1112,7 @@ mod tests {
     }
 
     #[test]
-    fn module_summary_root_files_dot() {
+    fn module_summary_root_files_dot_slash() {
         let (db, _temp) = create_test_db();
         let gv = db.create_graph_version(None).unwrap();
         db.upsert_file("main.rs", "h1", "rust", 10, 0).unwrap();
@@ -1112,7 +1120,7 @@ mod tests {
 
         let summary = db.module_summary(1, None, None, gv).unwrap();
         assert_eq!(summary.len(), 1);
-        assert_eq!(summary[0].path, ".");
+        assert_eq!(summary[0].path, "./");
         assert_eq!(summary[0].file_count, 2);
     }
 

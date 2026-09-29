@@ -2057,27 +2057,6 @@ fn symbol_from_row(row: &Row<'_>) -> rusqlite::Result<Symbol> {
     })
 }
 
-fn symbol_from_row_offset(row: &Row<'_>, offset: usize) -> rusqlite::Result<Symbol> {
-    Ok(Symbol {
-        id: row.get(offset)?,
-        file_path: row.get(offset + 1)?,
-        kind: row.get(offset + 2)?,
-        name: row.get(offset + 3)?,
-        qualname: row.get(offset + 4)?,
-        start_line: row.get(offset + 5)?,
-        start_col: row.get(offset + 6)?,
-        end_line: row.get(offset + 7)?,
-        end_col: row.get(offset + 8)?,
-        start_byte: row.get(offset + 9)?,
-        end_byte: row.get(offset + 10)?,
-        signature: row.get(offset + 11)?,
-        docstring: row.get(offset + 12)?,
-        graph_version: row.get(offset + 13)?,
-        commit_sha: row.get(offset + 14)?,
-        stable_id: row.get(offset + 15)?,
-    })
-}
-
 fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
     Ok(Edge {
         id: row.get(0)?,

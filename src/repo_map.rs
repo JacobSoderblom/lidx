@@ -42,9 +42,15 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
         } else {
             m.languages.join(",")
         };
+        // `m.path` (from `module_summary`/`module_prefix`) always carries a
+        // trailing separator, including "./" for root-level files -- see
+        // the "Dependencies" and "Key Symbols" sections below, which rely
+        // on the same contract -- so it is not added again here. Issue
+        // #134: doing so produced doubled separators like "py//" for any
+        // module below the repo root.
         writeln!(
             out,
-            "- **{}/** ({} files, {} symbols, {})",
+            "- **{}** ({} files, {} symbols, {})",
             m.path, m.file_count, m.symbol_count, dominant_language
         )?;
     }
@@ -84,7 +90,11 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
                 break;
             }
             if let Some(syms) = by_module.get(&module) {
-                writeln!(out, "\n### {}/", module)?;
+                // `module` (from `top_fan_in_by_module`, now backed by the
+                // same `module_prefix()` as `module_summary`) already
+                // carries a trailing separator -- see the "## Modules"
+                // comment above -- so it is not added again here.
+                writeln!(out, "\n### {}", module)?;
                 for (sym, count) in syms.iter().take(5) {
                     let line = format!(
                         "- {} **{}** `{}` (fan-in: {})\n",
@@ -126,4 +136,229 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
         symbols: total_symbols,
         bytes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexer::extract::{EdgeInput, SymbolInput};
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn create_test_db() -> (Db, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = Db::new(&db_path).unwrap();
+        (db, temp_dir)
+    }
+
+    fn make_symbol(qualname: &str, kind: &str) -> SymbolInput {
+        SymbolInput {
+            kind: kind.to_string(),
+            name: qualname
+                .split('.')
+                .next_back()
+                .unwrap_or(qualname)
+                .to_string(),
+            qualname: qualname.to_string(),
+            start_line: 1,
+            start_col: 0,
+            end_line: 5,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 50,
+            signature: None,
+            docstring: None,
+        }
+    }
+
+    fn make_edge(kind: &str, source: &str, target: &str) -> EdgeInput {
+        EdgeInput {
+            kind: kind.to_string(),
+            source_qualname: Some(source.to_string()),
+            target_qualname: Some(target.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn default_config(graph_version: i64) -> RepoMapConfig {
+        RepoMapConfig {
+            max_bytes: 50_000,
+            languages: None,
+            paths: None,
+            graph_version,
+        }
+    }
+
+    // Issue #134: `module_prefix` (used by `module_summary`) already
+    // returns paths with a trailing separator (e.g. "pkg/"), but the
+    // "## Modules" line in the repo map appended another "/" on top of
+    // that, producing "pkg//" for any module one level deep.
+    #[test]
+    fn module_list_has_no_doubled_slash() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+        let fid = db.upsert_file("pkg/a.py", "h1", "python", 10, 0).unwrap();
+        db.insert_symbols(
+            fid,
+            "pkg/a.py",
+            &[make_symbol("pkg.a.helper", "function")],
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let result = build_repo_map(&db, &default_config(gv)).unwrap();
+
+        assert!(
+            !result.text.contains("//"),
+            "module paths should not contain a doubled separator:\n{}",
+            result.text
+        );
+        assert!(
+            result.text.contains("**pkg/**"),
+            "expected a single trailing slash on the module path:\n{}",
+            result.text
+        );
+    }
+
+    // Issue #134: two distinct symbols sharing a bare name (e.g. a common
+    // helper name repeated across files in the same top-level module) both
+    // appeared under that module's "Key Symbols" section, listing the same
+    // name twice with nothing to tell them apart.
+    #[test]
+    fn key_symbols_section_dedupes_same_name_per_module() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+
+        let fid_a = db.upsert_file("pkg/a.py", "h1", "python", 10, 0).unwrap();
+        let fid_b = db.upsert_file("pkg/b.py", "h2", "python", 10, 0).unwrap();
+        let fid_app = db.upsert_file("app.py", "h3", "python", 10, 0).unwrap();
+
+        let ins_a = db
+            .insert_symbols(
+                fid_a,
+                "pkg/a.py",
+                &[make_symbol("pkg.a.helper", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let ins_b = db
+            .insert_symbols(
+                fid_b,
+                "pkg/b.py",
+                &[make_symbol("pkg.b.helper", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let ins_app = db
+            .insert_symbols(
+                fid_app,
+                "app.py",
+                &[make_symbol("app.caller", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+
+        let mut sym_map = HashMap::new();
+        sym_map.insert("pkg.a.helper".to_string(), ins_a[0].id);
+        sym_map.insert("pkg.b.helper".to_string(), ins_b[0].id);
+        sym_map.insert("app.caller".to_string(), ins_app[0].id);
+        db.insert_edges(
+            fid_app,
+            &[
+                make_edge("CALLS", "app.caller", "pkg.a.helper"),
+                make_edge("CALLS", "app.caller", "pkg.b.helper"),
+            ],
+            &sym_map,
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let result = build_repo_map(&db, &default_config(gv)).unwrap();
+
+        let helper_occurrences = result.text.matches("**helper**").count();
+        assert_eq!(
+            helper_occurrences, 1,
+            "expected `helper` to appear once under the `pkg` module:\n{}",
+            result.text
+        );
+    }
+
+    // Issue #134 follow-up: the "## Modules" section (via `module_summary`)
+    // and "## Key Symbols" section (via `top_fan_in_by_module`) used to
+    // disagree on module identity for root-level files (no `/` in their
+    // path): "## Modules" grouped them under "." while "## Key Symbols"
+    // grouped them under their own bare filename plus an appended "/",
+    // e.g. "### main.rs/" -- a bogus pseudo-directory unrelated to the
+    // "## Modules" entry. Both sections must now agree: root-level files
+    // group under "./" in both places, with no doubled or missing
+    // separators.
+    #[test]
+    fn root_level_module_matches_between_modules_and_key_symbols_sections() {
+        let (mut db, _temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+
+        let fid_main = db.upsert_file("main.rs", "h1", "rust", 10, 0).unwrap();
+        let fid_other = db.upsert_file("other.rs", "h2", "rust", 10, 0).unwrap();
+
+        let ins_main = db
+            .insert_symbols(
+                fid_main,
+                "main.rs",
+                &[make_symbol("main.run", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+        let ins_other = db
+            .insert_symbols(
+                fid_other,
+                "other.rs",
+                &[make_symbol("other.caller", "function")],
+                gv,
+                None,
+            )
+            .unwrap();
+
+        let mut sym_map = HashMap::new();
+        sym_map.insert("main.run".to_string(), ins_main[0].id);
+        sym_map.insert("other.caller".to_string(), ins_other[0].id);
+        db.insert_edges(
+            fid_other,
+            &[make_edge("CALLS", "other.caller", "main.run")],
+            &sym_map,
+            gv,
+            None,
+        )
+        .unwrap();
+
+        let result = build_repo_map(&db, &default_config(gv)).unwrap();
+
+        assert!(
+            !result.text.contains("//"),
+            "module paths should not contain a doubled separator:\n{}",
+            result.text
+        );
+        assert!(
+            !result.text.contains("main.rs/"),
+            "root-level file should not be rendered as a pseudo-directory:\n{}",
+            result.text
+        );
+        assert!(
+            result.text.contains("**./**"),
+            "expected the \"## Modules\" section to label the root module \"./\":\n{}",
+            result.text
+        );
+        assert!(
+            result.text.contains("### ./"),
+            "expected the \"## Key Symbols\" section to label the root module \"./\", \
+             matching \"## Modules\":\n{}",
+            result.text
+        );
+    }
 }
