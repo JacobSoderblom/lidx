@@ -711,9 +711,46 @@ fn base_initializer_qualifies_the_base_through_usings() {
         "using A;\nusing B;\nnamespace C { public class D : Base { public D() : base(1) { } } }";
     let (dir, indexer, gv) = setup_files(&[("A.cs", a), ("B.cs", b), ("D.cs", d)]);
     let got = resolved_targets(&indexer, gv, "C.D..ctor");
-    assert!(
-        got.iter().all(|(q, _)| q.starts_with("ext:")),
-        "must not bind a repo Base: {got:?}"
-    );
+    assert!(got.is_empty(), "two repo candidates is ambiguity: {got:?}");
+    let conn = indexer.db().read_conn().unwrap();
+    let stubs: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM symbols WHERE kind = 'external' AND qualname LIKE '%Base%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stubs, 0, "no external stub for an ambiguous repo type");
+    let reason: String = conn
+        .query_row(
+            "SELECT ur.reason FROM unresolved_references ur
+             JOIN symbols s ON s.id = ur.source_symbol_id
+             WHERE s.qualname = 'C.D..ctor' AND ur.edge_kind = 'CALLS'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "ambiguous");
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn new_of_a_type_named_in_two_imported_namespaces_is_ambiguous_not_external() {
+    let a = "namespace A { public class Widget { public Widget(int x) { } } }";
+    let b = "namespace B { public class Widget { public Widget(int x) { } } }";
+    let c = "using A;\nusing B;\nnamespace C { public class U { public void M() { var w = new Widget(1); } } }";
+    let (dir, indexer, gv) = setup_files(&[("A.cs", a), ("B.cs", b), ("C.cs", c)]);
+    assert!(resolved_targets(&indexer, gv, "C.U.M").is_empty());
+    let conn = indexer.db().read_conn().unwrap();
+    let reason: String = conn
+        .query_row(
+            "SELECT ur.reason FROM unresolved_references ur
+             JOIN symbols s ON s.id = ur.source_symbol_id WHERE s.qualname = 'C.U.M'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "ambiguous");
     let _ = std::fs::remove_dir_all(&dir);
 }

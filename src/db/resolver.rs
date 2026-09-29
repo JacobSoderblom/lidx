@@ -1024,6 +1024,11 @@ impl<'c> Resolver<'c> {
         )? {
             return Ok(resolved(id, ResolutionKind::Import));
         }
+        // `new T()` / `: base()` whose `using`s name two repo types `T` is
+        // ambiguous, not external: never fall on to the external-stub tier.
+        if self.saw_ambiguous && r.call_shape.is_some_and(|shape| shape.is_new) {
+            return Ok(Resolution::Unresolved(UnresolvedReason::Ambiguous));
+        }
 
         // `import_candidates` is populated only when the extractor already
         // established (from this file's own using/import directives) that
