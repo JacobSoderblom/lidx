@@ -27,6 +27,7 @@ use tree_sitter::{Node, Parser};
 /// "typescript" and "tsx" alike (`db::resolver::profile_for`) since they
 /// share one resolution family.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
+    import_member_fallback: true,
     visibility: VisibilityRule::Recorded,
     ..LanguageProfile::DEFAULT
 };

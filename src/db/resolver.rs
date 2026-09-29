@@ -319,6 +319,12 @@ pub(crate) struct LanguageProfile {
     /// suffix. Off for languages whose candidates are already absolute
     /// (Rust), where a suffix hit would be a same-named local module.
     pub import_suffix_matching: bool,
+    /// Whether `resolve_import`, when no candidate hits, retries each with
+    /// its last segment stripped (`mod.x.m` -> `mod.x`), so a member call on
+    /// an imported binding whose members aren't indexed (a JS/TS object
+    /// literal) binds to the binding itself. A module-kind parent never
+    /// counts (issue #113).
+    pub import_member_fallback: bool,
     /// How the guarded name-fallback tier (`Resolver::same_lang_lookup`,
     /// tier 5 only — see the module doc) decides whether a same-language,
     /// same-kind, cross-file candidate is visible to the reference. Never
@@ -336,6 +342,7 @@ impl LanguageProfile {
         normalize_import_target: None,
         import_miss: ImportMissPolicy::Refuse,
         import_suffix_matching: true,
+        import_member_fallback: false,
         visibility: VisibilityRule::None,
     };
 }
@@ -1328,7 +1335,34 @@ impl<'c> Resolver<'c> {
                 return Ok(found);
             }
         }
-        Ok(None)
+        if !profile_for(source_lang).import_member_fallback {
+            return Ok(None);
+        }
+        let mut found: Option<i64> = None;
+        for candidate in candidates {
+            let Some((parent, _)) = candidate.rsplit_once('.') else {
+                continue;
+            };
+            let Some(id) = self.exact(parent, symbol_map, caller_file)? else {
+                continue;
+            };
+            let kind: Option<String> = self
+                .conn
+                .query_row("SELECT kind FROM symbols WHERE id = ?", [id], |r| r.get(0))
+                .optional()?;
+            if kind.as_deref() == Some("module") {
+                continue;
+            }
+            match found {
+                None => found = Some(id),
+                Some(existing) if existing == id => {}
+                Some(_) => {
+                    self.saw_ambiguous = true;
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Resolve an `IMPORTS_FILE` edge's ordered candidate list (see
