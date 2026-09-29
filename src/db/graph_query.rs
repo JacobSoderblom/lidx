@@ -97,8 +97,6 @@ impl Db {
         Ok(results)
     }
 
-    /// Search symbols where name starts with the given prefix.
-    /// Used for fuzzy matching candidate retrieval.
     /// Bounded candidate scan for fuzzy "did you mean": symbols whose
     /// lowercased name contains any of `patterns` (plain alphanumeric tokens),
     /// those matching the most patterns first, at most `cap` rows.
@@ -124,7 +122,7 @@ impl Db {
                AND s.kind NOT IN ('heading','section')
                AND s.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-             ORDER BY ({score}) DESC, LENGTH(s.name)
+             ORDER BY ({score}) DESC, LENGTH(s.name), s.id
              LIMIT ?"
         );
         let cap = cap as i64;
@@ -144,6 +142,8 @@ impl Db {
         Ok(results)
     }
 
+    /// Search symbols where name starts with the given prefix.
+    /// Used for fuzzy matching candidate retrieval.
     pub fn find_symbols_by_name_prefix(
         &self,
         prefix: &str,

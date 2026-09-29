@@ -262,6 +262,15 @@ pub fn find_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> 
 /// Max rows the fuzzy prefilter pulls from SQL before scoring in Rust.
 const FUZZY_SCAN_CAP: usize = 500;
 const FUZZY_RESULTS: usize = 5;
+/// Cap on query tokens used for the SQL prefilter (bounds bound-variable count).
+const FUZZY_MAX_QUERY_TOKENS: usize = 8;
+/// Minimum combined score for a candidate to be suggested.
+const FUZZY_MIN_SCORE: f64 = 0.45;
+/// A single query token matching a candidate token at least this well admits it.
+const FUZZY_MIN_TOKEN_MATCH: f64 = 0.4;
+/// Weight of token overlap vs. last-segment Levenshtein similarity.
+const FUZZY_OVERLAP_WEIGHT: f64 = 0.6;
+const FUZZY_EDIT_WEIGHT: f64 = 0.4;
 
 /// Levenshtein distance (two-row DP) between two strings, by `char`.
 fn levenshtein(a: &str, b: &str) -> usize {
@@ -318,6 +327,9 @@ fn token_match(q: &str, c: &str) -> f64 {
         0.6
     } else if ql.min(cl) >= 3 && (c.starts_with(q) || q.starts_with(c)) {
         0.5
+    } else if ql.min(cl) >= 5 && (c.contains(q) || q.contains(c)) {
+        // e.g. `resolve` inside `unresolved`
+        0.4
     } else {
         0.0
     }
@@ -327,14 +339,17 @@ fn token_match(q: &str, c: &str) -> f64 {
 /// Levenshtein similarity of the last name segments (0.4). Returns `None`
 /// when no query token matches at all.
 fn fuzzy_score(query_tokens: &[String], query_last: &str, sym: &Symbol) -> Option<f64> {
+    let mut best = 0.0f64;
     let cand_tokens = name_tokens(&sym.name);
     let overlap: f64 = query_tokens
         .iter()
         .map(|q| {
-            cand_tokens
+            let m = cand_tokens
                 .iter()
                 .map(|c| token_match(q, c))
-                .fold(0.0, f64::max)
+                .fold(0.0, f64::max);
+            best = best.max(m);
+            m
         })
         .sum::<f64>()
         / query_tokens.len() as f64;
@@ -344,14 +359,18 @@ fn fuzzy_score(query_tokens: &[String], query_last: &str, sym: &Symbol) -> Optio
     let cand_last = sym.name.to_lowercase();
     let max_len = query_last.chars().count().max(cand_last.chars().count());
     let sim = 1.0 - levenshtein(query_last, &cand_last) as f64 / max_len.max(1) as f64;
-    Some(0.6 * overlap + 0.4 * sim)
+    let score = FUZZY_OVERLAP_WEIGHT * overlap + FUZZY_EDIT_WEIGHT * sim;
+    // A single strong token match (e.g. `resolve` inside `unresolved`) is
+    // enough to suggest, even when the rest of the name differs.
+    (score >= FUZZY_MIN_SCORE || best >= FUZZY_MIN_TOKEN_MATCH).then_some(score)
 }
 
 /// Typo / retired-name suggestions: prefilter symbols by SQL LIKE on the
 /// query's tokens (bounded by `FUZZY_SCAN_CAP`), then rank in Rust by token
 /// overlap and Levenshtein distance on the last name segment.
 fn fuzzy_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
-    let query_tokens = name_tokens(query);
+    let mut query_tokens = name_tokens(query);
+    query_tokens.truncate(FUZZY_MAX_QUERY_TOKENS);
     if query_tokens.is_empty() {
         return Vec::new();
     }
@@ -376,11 +395,7 @@ fn fuzzy_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
         .to_lowercase();
     let mut scored: Vec<(f64, Symbol)> = rows
         .into_iter()
-        .filter_map(|sym| {
-            fuzzy_score(&query_tokens, &query_last, &sym)
-                .filter(|score| *score >= 0.45)
-                .map(|score| (score, sym))
-        })
+        .filter_map(|sym| fuzzy_score(&query_tokens, &query_last, &sym).map(|score| (score, sym)))
         .collect();
     scored.sort_by(|a, b| {
         b.0.total_cmp(&a.0)
@@ -1232,5 +1247,29 @@ mod tests {
                 .iter()
                 .any(|h| h["method"] == "search")
         );
+    }
+
+    #[test]
+    fn issue_example_suggests_unresolved_helpers() {
+        let temp = TempRepo::new("py_mvp");
+        std::fs::write(
+            temp.repo_root.join("pkg").join("repair.py"),
+            "def retry_unresolved_references():\n    pass\n\n\ndef repair_unresolved():\n    pass\n",
+        )
+        .unwrap();
+        let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+        indexer.reindex().unwrap();
+        let gv = indexer.db().current_graph_version().unwrap();
+        for q in ["resolve_nul_target", "resolve_null_target_edges"] {
+            let names: Vec<String> = find_candidates(indexer.db(), q, gv)
+                .into_iter()
+                .map(|s| s.name)
+                .collect();
+            assert!(
+                names.contains(&"retry_unresolved_references".to_string())
+                    && names.contains(&"repair_unresolved".to_string()),
+                "{q}: {names:?}"
+            );
+        }
     }
 }
