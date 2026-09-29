@@ -64,9 +64,23 @@ pub struct DeferredReturn<'a> {
 /// Column-text prefix of `ReceiverType::Deferred`. `@` can't start a type name.
 pub const DEFERRED_RETURN_PREFIX: &str = "@ret:";
 
+/// Detail JSON key on a `CALLS` edge whose receiver is `Deferred` and might
+/// be a generated gRPC client returned from another file; holds what
+/// `Db::rederive_deferred_rpc_calls` needs to build the `RPC_CALL` edges.
+pub const DEFERRED_RPC_KEY: &str = "deferred_grpc";
+
+/// How many `Deferred` markers may nest (`a.B().C()...`, `var b = a.G()`)
+/// before extraction or resolution gives up and leaves the receiver
+/// untracked.
+pub const MAX_DEFERRED_DEPTH: usize = 8;
+
 impl ReceiverType {
     /// `Deferred` for "the (optionally awaited) return value of
     /// `type_name.method`".
+    ///
+    /// `type_name` is either a type name or another `Deferred` marker's
+    /// column text (a chained call or a `var` bound from a deferred `var`);
+    /// the resolver evaluates the inner marker first.
     ///
     /// `static_only` marks a receiver spelled like a bare type name
     /// (`Type.Method()`): only a `static` method can be called that way.
