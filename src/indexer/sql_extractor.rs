@@ -58,6 +58,11 @@ impl crate::indexer::extract::LanguageExtractor for SqlExtractor {
         // Post-walk: scan for DO blocks
         extract_do_blocks(source, module_name, &mut output);
 
+        // The Postgres grammar has no T-SQL support: procedures parse as ERROR
+        // nodes and one bad statement (MERGE, IF/BEGIN, GO) can swallow later
+        // CREATE TABLEs. Recover them with a line scan.
+        extract_tsql_fallback(source, module_name, &mut output);
+
         Ok(output)
     }
 }
@@ -651,6 +656,118 @@ fn extract_do_blocks(source: &str, module_name: &str, output: &mut ExtractedFile
 
         search_start = abs_idx + 2;
     }
+}
+
+/// Line-based recovery of `CREATE [OR ALTER] PROC[EDURE]` and `CREATE TABLE`
+/// statements the tree-sitter pass missed. Symbols whose qualname already
+/// exists are skipped, so this never duplicates the grammar-derived ones.
+fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut ExtractedFile) {
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        lines.push((offset, line));
+        offset += line.len();
+    }
+    let is_go = |l: &str| l.trim().eq_ignore_ascii_case("go");
+
+    for (i, &(line_start, line)) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let mut words = trimmed.split_whitespace();
+        if !words
+            .next()
+            .is_some_and(|w| w.eq_ignore_ascii_case("create"))
+        {
+            continue;
+        }
+        let mut word = words.next().unwrap_or("");
+        if word.eq_ignore_ascii_case("or") {
+            if !words
+                .next()
+                .is_some_and(|w| w.eq_ignore_ascii_case("alter"))
+            {
+                continue;
+            }
+            word = words.next().unwrap_or("");
+        }
+        let kind = if word.eq_ignore_ascii_case("proc") || word.eq_ignore_ascii_case("procedure") {
+            "procedure"
+        } else if word.eq_ignore_ascii_case("table") {
+            "table"
+        } else {
+            continue;
+        };
+        let raw = words.next().unwrap_or("");
+        let raw = raw.split(['(', ';']).next().unwrap_or("");
+        let qualname: String = raw
+            .chars()
+            .filter(|c| !matches!(c, '[' | ']' | '"'))
+            .collect();
+        if qualname.is_empty() || output.symbols.iter().any(|s| s.qualname == qualname) {
+            continue;
+        }
+        let name = qualname.rsplit('.').next().unwrap_or(&qualname).to_string();
+
+        let start_byte = line_start + (line.len() - trimmed.len());
+        // Tables end at their closing paren; procedures at the next `GO` or
+        // unindented CREATE.
+        let end_byte = if kind == "table" {
+            table_end(source, start_byte)
+        } else {
+            let stop = lines[i + 1..]
+                .iter()
+                .find(|(_, l)| is_go(l) || l.to_ascii_lowercase().starts_with("create "))
+                .map_or(source.len(), |&(s, _)| s);
+            start_byte + source[start_byte..stop].trim_end().len()
+        };
+        let pos = |byte: usize| {
+            let row = source[..byte].bytes().filter(|&b| b == b'\n').count();
+            let col = byte - source[..byte].rfind('\n').map_or(0, |n| n + 1);
+            (row as i64 + 1, col as i64 + 1)
+        };
+        let (start_line, start_col) = pos(start_byte);
+        let (end_line, end_col) = pos(end_byte);
+        output.symbols.push(SymbolInput {
+            kind: kind.to_string(),
+            name,
+            qualname: qualname.clone(),
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+            start_byte: start_byte as i64,
+            end_byte: end_byte as i64,
+            signature: None,
+            docstring: None,
+        });
+        output.edges.push(EdgeInput {
+            kind: "CONTAINS".to_string(),
+            source_qualname: Some(module_name.to_string()),
+            target_qualname: Some(qualname),
+            detail: None,
+            evidence_snippet: None,
+            ..Default::default()
+        });
+    }
+}
+
+/// End byte of a `CREATE TABLE` statement: the paren matching the first `(`,
+/// or the end of the first line when there is none.
+fn table_end(source: &str, start: usize) -> usize {
+    let rest = &source[start..];
+    let mut depth = 0usize;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    return start + i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    start + rest.lines().next().map_or(0, |l| l.trim_end().len())
 }
 
 #[cfg(test)]

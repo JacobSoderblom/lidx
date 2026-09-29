@@ -226,3 +226,39 @@ $$ LANGUAGE plpgsql;
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+fn tsql_symbols(source: &str) -> Vec<(String, String)> {
+    let mut extractor = SqlExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "mssql/m").unwrap();
+    extracted
+        .symbols
+        .iter()
+        .map(|s| (s.kind.clone(), s.qualname.clone()))
+        .collect()
+}
+
+#[test]
+fn tsql_create_procedure_variants_are_extracted() {
+    let source = "CREATE TABLE dpb.t1 (id int);\nGO\nCREATE OR ALTER PROCEDURE dpb.write_to_audit @a int, @b nvarchar(10)\nAS\nBEGIN\n    SET NOCOUNT ON;\n    INSERT INTO dpb.audit (id) VALUES (@a);\nEND\nGO\ncreate proc [dpb].[upsert_dataproduct] as select 1;\nGO\nCREATE PROCEDURE plain_proc AS SELECT 1;\n";
+    let syms = tsql_symbols(source);
+    for name in ["dpb.write_to_audit", "dpb.upsert_dataproduct", "plain_proc"] {
+        assert!(
+            syms.contains(&("procedure".to_string(), name.to_string())),
+            "missing {name}: {syms:?}"
+        );
+    }
+    assert!(syms.contains(&("table".to_string(), "dpb.t1".to_string())));
+}
+
+#[test]
+fn tsql_tables_after_merge_and_inside_if_begin_are_extracted() {
+    let source = "MERGE dpb.t1 AS t USING dpb.t2 AS s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.id = s.id;\nCREATE TABLE dpb.audit (id int);\nIF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'x')\nBEGIN\n    CREATE TABLE dpb.inside (id int);\nEND\nCREATE TABLE dpb.last (id int);\n";
+    let syms = tsql_symbols(source);
+    for name in ["dpb.audit", "dpb.inside", "dpb.last"] {
+        assert!(
+            syms.contains(&("table".to_string(), name.to_string())),
+            "missing {name}: {syms:?}"
+        );
+        assert_eq!(syms.iter().filter(|(_, q)| q == name).count(), 1);
+    }
+}
