@@ -314,17 +314,14 @@ fn default_kinds_upstream_and_both_from_secret_uri_do_not_fan_out() {
     }
 }
 
-#[test]
-fn shared_external_api_does_not_connect_unrelated_callers() {
+fn hashlib_repo() -> Repo {
     let root = fresh_root("lidx-ext-stub");
-    for (name, cls) in [("A", "Alpha"), ("B", "Beta")] {
-        let p = root.join(format!("src/{name}.cs"));
+    for (name, func) in [("a", "run_a"), ("b", "run_b")] {
+        let p = root.join(format!("{name}.py"));
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(
             p,
-            format!(
-                "using System.Security.Cryptography;\nnamespace N;\npublic class {cls} {{\n    public void Run() {{ var h = SHA256.Create(); }}\n}}\n"
-            ),
+            format!("import hashlib\n\n\ndef {func}():\n    return hashlib.sha256()\n"),
         )
         .unwrap();
     }
@@ -333,17 +330,37 @@ fn shared_external_api_does_not_connect_unrelated_callers() {
         .unwrap()
         .reindex()
         .unwrap();
-    let repo = Repo { root, db };
+    Repo { root, db }
+}
+
+#[test]
+fn shared_external_api_does_not_connect_unrelated_callers() {
+    let repo = hashlib_repo();
     let r = call(
         &repo,
         "analyze_impact",
-        r#"{"qualname":"N.Alpha.Run","direction":"upstream","max_depth":5}"#,
+        r#"{"qualname":"a.run_a","direction":"both","max_depth":5}"#,
     );
-    assert!(!r.to_string().contains("Beta"), "{r}");
+    // The stub itself is listed as a leaf, so the test cannot pass vacuously.
+    assert!(r.to_string().contains("ext:hashlib.sha256"), "no stub: {r}");
+    assert!(!r.to_string().contains("run_b"), "{r}");
     let r = call(
         &repo,
         "trace_flow",
-        r#"{"start_qualname":"N.Alpha.Run","direction":"upstream","max_hops":5}"#,
+        r#"{"start_qualname":"a.run_a","direction":"both","max_hops":5}"#,
     );
-    assert!(!r.to_string().contains("Beta"), "{r}");
+    assert!(r.to_string().contains("ext:hashlib.sha256"), "no stub: {r}");
+    assert!(!r.to_string().contains("run_b"), "{r}");
+}
+
+#[test]
+fn external_stub_as_seed_still_lists_its_callers() {
+    let repo = hashlib_repo();
+    let r = call(
+        &repo,
+        "analyze_impact",
+        r#"{"qualname":"ext:hashlib.sha256","direction":"upstream","max_depth":5}"#,
+    );
+    let s = r.to_string();
+    assert!(s.contains("run_a") && s.contains("run_b"), "{r}");
 }

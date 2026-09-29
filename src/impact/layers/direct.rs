@@ -206,7 +206,9 @@ fn resolve_bridge_targets(
                     bridged_edge.resolution_kind.clone(),
                     bridge_hop_is_reversed(edge_kind),
                 ));
-                queue.push_back((bridged_id, current_distance + 1));
+                if !symbol_cache[&bridged_id].is_external() {
+                    queue.push_back((bridged_id, current_distance + 1));
+                }
                 if visited.len() >= limit {
                     return Ok(true);
                 }
