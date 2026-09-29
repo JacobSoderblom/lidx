@@ -112,7 +112,9 @@ impl<'a> HistoricalImpactLayer<'a> {
                 evidence: HashMap::new(),
                 duration_ms: start.elapsed().as_millis() as u64,
                 truncated: false,
+                truncation_reason: None,
                 parent_map: HashMap::new(),
+                alt_parents: HashMap::new(),
                 traversed_heuristic_kind: false,
             });
         }
@@ -168,7 +170,9 @@ impl<'a> HistoricalImpactLayer<'a> {
             evidence,
             duration_ms,
             truncated: false,
+            truncation_reason: None,
             parent_map: HashMap::new(),
+            alt_parents: HashMap::new(),
             traversed_heuristic_kind: false,
         })
     }

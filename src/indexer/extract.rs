@@ -51,6 +51,8 @@ pub enum ReceiverType {
     /// exists. Persisted as column text (`DeferredReturn::encode`) so a
     /// later retry re-resolves it.
     Deferred(DeferredReturn),
+    /// A Rust receiver traced to a declaration in another file.
+    RustDeferred(RustDeferred),
 }
 
 /// "The (optionally awaited) return value of `base.method(..)`".
@@ -138,6 +140,10 @@ impl DeferredReturn {
     pub fn parse(column: &str) -> Option<Self> {
         let rest = column.strip_prefix(DEFERRED_RETURN_PREFIX)?;
         let (flags, callee) = rest.split_once(':')?;
+        // Not another language's `@ret:` marker (Rust's is `@ret:r:`).
+        if !flags.chars().all(|c| matches!(c, 'a' | 's' | 'n')) {
+            return None;
+        }
         let (base, method) = callee.rsplit_once('.')?;
         let base = if base.starts_with(DEFERRED_RETURN_PREFIX) {
             DeferredBase::Call(Box::new(Self::parse(base)?))
@@ -150,6 +156,137 @@ impl DeferredReturn {
             awaited: flags.contains('a'),
             static_only: flags.contains('s'),
             name_only: flags.contains('n'),
+        })
+    }
+}
+
+/// Column-text prefix of a Rust deferred receiver (`@ret:` family, so the
+/// resolver's `LIKE '@ret:%'` retry scans cover it).
+pub const RUST_DEFERRED_PREFIX: &str = "@ret:r:";
+
+/// Where a Rust deferred receiver's declared type is read from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeferredSource {
+    /// Return type of a callee, one of these absolute qualnames.
+    Call { candidates: Vec<String> },
+    /// Return type of the method `method` of the type `receiver_type`.
+    Method {
+        receiver_type: String,
+        method: String,
+    },
+    /// Type of a field of the struct/enum `owner`: `field` is `name`, `0`, or
+    /// `Variant::name` / `Variant::0` for an enum variant.
+    Field { owner: String, field: String },
+}
+
+/// One projection applied to a declared type to reach the receiver's type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// `Some(x)` pattern: `Option<T>` -> `T`.
+    OptionSome,
+    /// `Ok(x)` pattern: `Result<T, E>` -> `T`.
+    ResultOk,
+    /// `Err(x)` pattern: `Result<T, E>` -> `E`.
+    ResultErr,
+    /// Element of a tuple.
+    Tuple(usize),
+    /// Item of a sequence or iterator.
+    Elem,
+    /// A std method whose result type follows from the receiver's.
+    Method(String),
+    /// `.await` of a future.
+    Await,
+}
+
+/// A Rust receiver type the extractor could only trace to a declaration in
+/// another file, plus how to project it. Persisted in
+/// `edges.receiver_type` (`encode`/`decode`) and finished by the resolver.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RustDeferred {
+    pub source: DeferredSource,
+    pub steps: Vec<Step>,
+    /// Receiver type to use when no declaration is found (the
+    /// constructor-name guess); dropped by any step that changes the type.
+    pub fallback: Option<String>,
+}
+
+impl Step {
+    fn encode(&self) -> String {
+        match self {
+            Step::OptionSome => "some".into(),
+            Step::ResultOk => "ok".into(),
+            Step::ResultErr => "err".into(),
+            Step::Tuple(i) => format!("t{i}"),
+            Step::Elem => "elem".into(),
+            Step::Method(m) => format!(".{m}"),
+            Step::Await => "await".into(),
+        }
+    }
+
+    fn decode(text: &str) -> Option<Step> {
+        Some(match text {
+            "some" => Step::OptionSome,
+            "ok" => Step::ResultOk,
+            "err" => Step::ResultErr,
+            "elem" => Step::Elem,
+            "await" => Step::Await,
+            t if t.starts_with('t') => Step::Tuple(t[1..].parse().ok()?),
+            t => Step::Method(t.strip_prefix('.')?.to_string()),
+        })
+    }
+}
+
+impl RustDeferred {
+    /// Column text: `@ret:r:<source>|<x>|<y>|<steps>|<fallback>` with
+    /// `call|<candidates ;-joined>|`, `method|<type>|<method>` or
+    /// `field|<owner>|<field>` as the source and `,`-joined steps.
+    pub fn encode(&self) -> String {
+        let (tag, x, y) = match &self.source {
+            DeferredSource::Call { candidates } => ("call", candidates.join(";"), String::new()),
+            DeferredSource::Method {
+                receiver_type,
+                method,
+            } => ("method", receiver_type.clone(), method.clone()),
+            DeferredSource::Field { owner, field } => ("field", owner.clone(), field.clone()),
+        };
+        let steps: Vec<String> = self.steps.iter().map(Step::encode).collect();
+        format!(
+            "{RUST_DEFERRED_PREFIX}{tag}|{x}|{y}|{}|{}",
+            steps.join(","),
+            self.fallback.as_deref().unwrap_or("")
+        )
+    }
+
+    /// Inverse of `encode`; `None` for any other column text.
+    pub fn decode(column: &str) -> Option<RustDeferred> {
+        let rest = column.strip_prefix(RUST_DEFERRED_PREFIX)?;
+        let mut parts = rest.splitn(5, '|');
+        let (tag, x, y) = (parts.next()?, parts.next()?, parts.next()?);
+        let source = match tag {
+            "call" => DeferredSource::Call {
+                candidates: x.split(';').map(str::to_string).collect(),
+            },
+            "method" => DeferredSource::Method {
+                receiver_type: x.to_string(),
+                method: y.to_string(),
+            },
+            "field" => DeferredSource::Field {
+                owner: x.to_string(),
+                field: y.to_string(),
+            },
+            _ => return None,
+        };
+        let steps = parts
+            .next()?
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(Step::decode)
+            .collect::<Option<Vec<_>>>()?;
+        let fallback = parts.next()?;
+        Some(RustDeferred {
+            source,
+            steps,
+            fallback: (!fallback.is_empty()).then(|| fallback.to_string()),
         })
     }
 }
@@ -187,6 +324,7 @@ impl ReceiverType {
             ReceiverType::Unresolved => Some(Cow::Borrowed("")),
             ReceiverType::Known(ty) => Some(Cow::Borrowed(ty.as_str())),
             ReceiverType::Deferred(call) => Some(Cow::Owned(call.encode())),
+            ReceiverType::RustDeferred(pending) => Some(Cow::Owned(pending.encode())),
         }
     }
 }
@@ -305,6 +443,10 @@ pub struct ExtractedFile {
     /// to `private` by `Db::set_private_symbols`; only the C# deferred
     /// `Type.Method()` receiver reads it.
     pub static_qualnames: Vec<String>,
+    /// JS/TS only: hash of the file's export surface (see
+    /// `javascript::export_surface_hash`), stored so a later sync can tell a
+    /// body-only edit from one that changes what importers resolve.
+    pub export_surface: Option<i64>,
 }
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use anyhow::Result;
@@ -321,5 +463,45 @@ pub trait LanguageExtractor {
         _edges: &mut Vec<EdgeInput>,
     ) {
         // default no-op
+    }
+}
+
+#[cfg(test)]
+mod rust_deferred_tests {
+    use super::*;
+
+    #[test]
+    fn rust_deferred_round_trips_through_column_text() {
+        for source in [
+            DeferredSource::Call {
+                candidates: vec!["crate::a::f".into(), "crate::b::f".into()],
+            },
+            DeferredSource::Method {
+                receiver_type: "Engine".into(),
+                method: "build".into(),
+            },
+            DeferredSource::Field {
+                owner: "Slot".into(),
+                field: "Full::0".into(),
+            },
+        ] {
+            for fallback in [None, Some("Engine".to_string())] {
+                let deferred = RustDeferred {
+                    source: source.clone(),
+                    steps: vec![
+                        Step::OptionSome,
+                        Step::ResultOk,
+                        Step::ResultErr,
+                        Step::Tuple(12),
+                        Step::Elem,
+                        Step::Method("unwrap".into()),
+                        Step::Await,
+                    ],
+                    fallback,
+                };
+                assert_eq!(RustDeferred::decode(&deferred.encode()), Some(deferred));
+            }
+        }
+        assert_eq!(RustDeferred::decode("@ret:s:x"), None);
     }
 }

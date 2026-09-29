@@ -1,7 +1,11 @@
-use crate::db::resolver::{ImportMissPolicy, LanguageProfile, VisibilityRule};
+use crate::db::resolver::{
+    DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, VisibilityRule,
+};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
+use crate::indexer::extract::{
+    DeferredSource, EdgeInput, ExtractedFile, ReceiverType, RustDeferred, Step, SymbolInput,
+};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::tree_helpers::{
@@ -26,8 +30,8 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     import_suffix_matching: false,
     import_member_fallback: false,
     visibility: VisibilityRule::RustModule,
-    return_receiver: None,
     deferred_rpc: None,
+    deferred_receiver: Some(resolve_deferred),
 };
 
 /// `LanguageProfile::normalize_import_target` for Rust: rewrite
@@ -91,9 +95,14 @@ struct Context {
     /// Set only inside an `impl Trait for Type` body (not a trait declaration).
     in_trait_impl: Option<String>,
     /// Current function's locals/params whose type is locally knowable
-    /// (`collect_local_types`); `None` value = bound more than once or
-    /// otherwise uninferable. Empty outside a function body.
-    local_types: Rc<HashMap<String, Option<String>>>,
+    /// (`collect_local_types`), scoped to the block/arm that binds them.
+    /// Empty outside a function body.
+    local_types: Rc<Locals>,
+    /// Same-file struct / enum-variant field types (`collect_adts`), used to
+    /// type struct and tuple-struct patterns.
+    adts: Rc<Adts>,
+    /// Same-file fn/method return types (`collect_returns`).
+    returns: Rc<Returns>,
 }
 
 pub struct RustExtractor {
@@ -176,6 +185,8 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             imports: Rc::new(collect_use_bindings(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
+            adts: Rc::new(collect_adts(root, source)),
+            returns: Rc::new(collect_returns(root, source)),
             in_trait_scope: false,
             in_trait_impl: None,
         };
@@ -398,7 +409,11 @@ fn handle_named_item(
         end_col,
         start_byte,
         end_byte,
-        signature: None,
+        signature: if matches!(kind, "struct" | "enum") {
+            adt_signature(node, source)
+        } else {
+            None
+        },
         docstring: None,
     });
     output.edges.push(EdgeInput {
@@ -663,15 +678,19 @@ fn handle_function(
         collect_shadowed_names(node, source, &mut shadowed);
         next_ctx.shadowed_names = Rc::new(shadowed);
 
+        // In a trait declaration `Self` is not the trait.
         let self_ty = ctx
             .container_stack
             .last()
+            .filter(|_| !(ctx.in_trait_scope && ctx.in_trait_impl.is_none()))
             .map(|c| c.rsplit("::").next().unwrap_or(c).to_string());
         let mut local_types = HashMap::new();
         let env = TypeEnv {
             source,
             self_ty: self_ty.as_deref(),
             generics: collect_generic_names(node, source),
+            adts: &ctx.adts,
+            ctx: Some(&next_ctx),
         };
         collect_local_types(node, &env, &mut local_types);
         next_ctx.local_types = Rc::new(local_types);
@@ -870,8 +889,13 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     if value.kind() != "identifier" {
         return ReceiverType::NotTracked;
     }
-    match ctx.local_types.get(&node_text(value, source)) {
-        Some(Some(ty)) => ReceiverType::Known(ty.clone()),
+    match lookup_local(
+        &ctx.local_types,
+        &node_text(value, source),
+        value.start_byte(),
+    ) {
+        Ty::Named(ty) => ReceiverType::Known(ty),
+        Ty::Pending(p) => ReceiverType::RustDeferred(p),
         _ => ReceiverType::NotTracked,
     }
 }
@@ -882,6 +906,128 @@ const TRANSPARENT_WRAPPERS: &[&str] = &[
     "Arc", "Rc", "Box", "Cow", "Option", "Result", "Vec", "RefCell", "Cell", "Mutex", "RwLock",
 ];
 
+/// Locally-inferred type of a value. `Unknown` is the "never wrong" escape
+/// hatch: anything not provable from the current function or same-file item
+/// declarations. Only `Named` can become a receiver type.
+#[derive(Clone, Debug, PartialEq)]
+enum Ty {
+    Unknown,
+    Named(String),
+    Option(Box<Ty>),
+    Result(Box<Ty>, Box<Ty>),
+    Tuple(Vec<Ty>),
+    /// `Vec<T>`, `VecDeque<T>`, `[T]`, `[T; N]`.
+    Seq(Box<Ty>),
+    /// An iterator whose item type is known.
+    Iter(Box<Ty>),
+    /// Output of an `async fn`, awaited via `.await`.
+    Future(Box<Ty>),
+    /// Type known only from a declaration in another file; the resolver
+    /// finishes it.
+    Pending(RustDeferred),
+}
+
+/// Method names `project` follows on a `Pending` type.
+const TRACKED_METHODS: &[&str] = &[
+    "unwrap",
+    "expect",
+    "ok",
+    "err",
+    "as_ref",
+    "as_mut",
+    "clone",
+    "take",
+    "cloned",
+    "copied",
+    "iter",
+    "into_iter",
+    "iter_mut",
+    "drain",
+    "by_ref",
+    "next",
+    "next_back",
+    "last",
+    "pop",
+    "pop_front",
+    "pop_back",
+    "first",
+];
+
+/// Apply one projection step; `Unknown` when the shape doesn't fit.
+fn project(ty: Ty, step: Step) -> Ty {
+    if let Ty::Pending(mut p) = ty {
+        if matches!(&step, Step::Method(m) if !TRACKED_METHODS.contains(&m.as_str())) {
+            return Ty::Unknown;
+        }
+        let keeps_fallback = matches!(&step, Step::Await)
+            || matches!(&step, Step::Method(m) if m == "unwrap" || m == "expect");
+        if !keeps_fallback {
+            p.fallback = None;
+        }
+        p.steps.push(step);
+        return Ty::Pending(p);
+    }
+    match (ty, step) {
+        (Ty::Option(t), Step::OptionSome)
+        | (Ty::Result(t, _), Step::ResultOk)
+        | (Ty::Result(_, t), Step::ResultErr)
+        | (Ty::Seq(t) | Ty::Iter(t), Step::Elem)
+        | (Ty::Future(t), Step::Await) => *t,
+        (Ty::Tuple(ts), Step::Tuple(i)) => ts.into_iter().nth(i).unwrap_or(Ty::Unknown),
+        (ty, Step::Method(m)) => method_ty(ty, &m),
+        _ => Ty::Unknown,
+    }
+}
+
+/// Every tuple/`..`-free element list must line up positionally.
+fn has_rest(elems: &[Node<'_>]) -> bool {
+    elems.iter().any(|e| e.kind() == "remaining_field_pattern")
+}
+
+/// `Type` (struct) or `Enum::Variant` -> field types by name (`"0"`, `"1"`
+/// for tuple fields). `None` when the key is declared more than once.
+type Adts = HashMap<String, Option<Vec<(String, Ty)>>>;
+
+/// Byte range a binding is visible in.
+type Scope = (usize, usize);
+
+struct Binding {
+    scope: Scope,
+    ty: Ty,
+}
+type Locals = HashMap<String, Vec<Binding>>;
+
+/// Return types of this file's free fns (`name`) and methods
+/// (`Type::name`); `None` when declared more than once with different types.
+type Returns = HashMap<String, Option<Ty>>;
+
+/// Type visible for `name` at byte `pos`: the innermost (latest-starting)
+/// binding whose scope contains `pos`. Same-start bindings that disagree
+/// (or-pattern alternatives) are `Unknown`.
+fn lookup_local(locals: &Locals, name: &str, pos: usize) -> Ty {
+    let mut best: Option<(usize, Ty)> = None;
+    for b in locals.get(name).into_iter().flatten() {
+        let (start, end) = b.scope;
+        if start > pos || pos >= end {
+            continue;
+        }
+        match &mut best {
+            Some((best_start, ty)) if *best_start == start => {
+                if *ty != b.ty {
+                    *ty = Ty::Unknown;
+                }
+            }
+            Some((best_start, _)) if *best_start > start => {}
+            _ => best = Some((start, b.ty.clone())),
+        }
+    }
+    best.map_or(Ty::Unknown, |(_, ty)| ty)
+}
+
+fn record_local(out: &mut Locals, name: String, ty: Ty, scope: Scope) {
+    out.entry(name).or_default().push(Binding { scope, ty });
+}
+
 /// What `collect_local_types` needs to turn a type name into a receiver type.
 struct TypeEnv<'a> {
     source: &'a str,
@@ -889,6 +1035,10 @@ struct TypeEnv<'a> {
     /// Generic parameter names of the enclosing fn and impl/trait: a
     /// receiver of type `T` says nothing about which type declares the method.
     generics: HashSet<String>,
+    adts: &'a Adts,
+    /// Imports, shadowed names and same-file return types; absent when only
+    /// declaration types are read (`collect_adts`, `project_deferred`).
+    ctx: Option<&'a Context>,
 }
 
 impl TypeEnv<'_> {
@@ -923,57 +1073,859 @@ impl TypeEnv<'_> {
         self.usable(node_text(current, self.source))
     }
 
-    /// Type of a `let` initializer: `T::new(..)`/`T::default()`/`T::with_*`/
-    /// `T::from*`, or `T { .. }`, optionally followed by `?`, `.unwrap()` or
-    /// `.expect(..)`.
-    fn value_type(&self, value: Node<'_>) -> Option<String> {
-        let mut value = value;
-        loop {
-            match value.kind() {
-                "try_expression" => value = value.named_child(0)?,
-                "call_expression" => {
-                    let function = value.child_by_field_name("function")?;
-                    if function.kind() == "field_expression" {
-                        let field = node_text(function.child_by_field_name("field")?, self.source);
-                        if field != "unwrap" && field != "expect" {
-                            return None;
-                        }
-                        value = function.child_by_field_name("value")?;
-                    } else {
-                        break;
-                    }
-                }
-                _ => break,
+    /// Structured type of a type node (`Option<T>`, `Result<T, E>`, tuples,
+    /// sequences, iterators of known item type); anything else is `Named`
+    /// via `type_name` or `Unknown`.
+    fn ty(&self, node: Node<'_>) -> Ty {
+        match node.kind() {
+            "reference_type" => node
+                .child_by_field_name("type")
+                .map_or(Ty::Unknown, |t| self.ty(t)),
+            "tuple_type" => {
+                let mut cursor = node.walk();
+                Ty::Tuple(
+                    node.named_children(&mut cursor)
+                        .map(|c| self.ty(c))
+                        .collect(),
+                )
             }
+            "array_type" => node
+                .child_by_field_name("element")
+                .map_or(Ty::Unknown, |t| Ty::Seq(Box::new(self.ty(t)))),
+            "abstract_type" => node
+                .child_by_field_name("trait")
+                .and_then(|t| self.iterator_item(t))
+                .map_or(Ty::Unknown, |t| Ty::Iter(Box::new(t))),
+            "generic_type" => {
+                let name = node
+                    .child_by_field_name("type")
+                    .and_then(|t| match t.kind() {
+                        "type_identifier" => Some(node_text(t, self.source)),
+                        "scoped_type_identifier" => t
+                            .child_by_field_name("name")
+                            .map(|n| node_text(n, self.source)),
+                        _ => None,
+                    });
+                let mut args = Vec::new();
+                if let Some(list) = node.child_by_field_name("type_arguments") {
+                    let mut cursor = list.walk();
+                    args.extend(
+                        list.named_children(&mut cursor)
+                            .filter(|c| c.kind() != "lifetime"),
+                    );
+                }
+                let arg = |i: usize| args.get(i).map_or(Ty::Unknown, |a| self.ty(*a));
+                match (name.as_deref(), args.len()) {
+                    // Method calls auto-deref, so for receiver purposes a
+                    // smart pointer to `T` is a `T`.
+                    (Some("Box" | "Arc" | "Rc"), 1) => arg(0),
+                    (Some("Option"), 1) => Ty::Option(Box::new(arg(0))),
+                    (Some("Result"), 1) => Ty::Result(Box::new(arg(0)), Box::new(Ty::Unknown)),
+                    (Some("Result"), 2) => Ty::Result(Box::new(arg(0)), Box::new(arg(1))),
+                    (Some("Vec" | "VecDeque"), 1) => Ty::Seq(Box::new(arg(0))),
+                    (Some("IntoIter" | "Iter" | "IterMut" | "Drain"), 1) => {
+                        Ty::Iter(Box::new(arg(0)))
+                    }
+                    _ => self.type_name(node).map_or(Ty::Unknown, Ty::Named),
+                }
+            }
+            _ => self.type_name(node).map_or(Ty::Unknown, Ty::Named),
         }
+    }
+
+    /// `Iterator<Item = T>` -> `T`.
+    fn iterator_item(&self, node: Node<'_>) -> Option<Ty> {
+        if node.kind() != "generic_type" {
+            return None;
+        }
+        let list = node.child_by_field_name("type_arguments")?;
+        let mut cursor = list.walk();
+        let binding = list.named_children(&mut cursor).find(|c| {
+            c.kind() == "type_binding"
+                && c.child_by_field_name("name")
+                    .is_some_and(|n| node_text(n, self.source) == "Item")
+        })?;
+        Some(self.ty(binding.child_by_field_name("type")?))
+    }
+
+    /// Type of an expression: `T::new(..)`/`T::default()`/`T::with_*`/
+    /// `T::from*`, `T { .. }`, `Some(..)`/`Ok(..)`/`Err(..)`, tuples, locals
+    /// with a known type, and `?`/`.unwrap()`/`.expect(..)`/`.next()`/
+    /// `.iter()`-style method chains over those.
+    fn expr_ty(&self, value: Node<'_>, locals: &Locals) -> Ty {
+        self.expr_ty_opt(value, locals).unwrap_or(Ty::Unknown)
+    }
+
+    fn expr_ty_opt(&self, value: Node<'_>, locals: &Locals) -> Option<Ty> {
+        let source = self.source;
         match value.kind() {
-            "struct_expression" => self.type_name(value.child_by_field_name("name")?),
+            "parenthesized_expression" | "reference_expression" => {
+                let inner = value
+                    .child_by_field_name("value")
+                    .or_else(|| value.named_child(0))?;
+                self.expr_ty_opt(inner, locals)
+            }
+            // Only deref: `-x` / `!x` say nothing about the type.
+            "unary_expression" if node_text(value, source).starts_with('*') => {
+                self.expr_ty_opt(value.named_child(0)?, locals)
+            }
+            "self" => self.usable("Self".to_string()).map(Ty::Named),
+            "identifier" => Some(lookup_local(
+                locals,
+                &node_text(value, source),
+                value.start_byte(),
+            )),
+            "try_expression" => {
+                let inner = self.expr_ty_opt(value.named_child(0)?, locals)?;
+                Some(match inner {
+                    Ty::Option(t) | Ty::Result(t, _) => *t,
+                    Ty::Named(n) => Ty::Named(n),
+                    Ty::Pending(_) => project(inner, Step::Method("unwrap".into())),
+                    _ => Ty::Unknown,
+                })
+            }
+            "await_expression" => {
+                let inner = self.expr_ty_opt(value.named_child(0)?, locals)?;
+                Some(project(inner, Step::Await))
+            }
+            "field_expression" => {
+                let base = self.expr_ty_opt(value.child_by_field_name("value")?, locals)?;
+                let field = node_text(value.child_by_field_name("field")?, source);
+                Some(self.field_ty(base, &field))
+            }
+            "tuple_expression" => {
+                let mut cursor = value.walk();
+                Some(Ty::Tuple(
+                    value
+                        .named_children(&mut cursor)
+                        .map(|c| self.expr_ty(c, locals))
+                        .collect(),
+                ))
+            }
+            "struct_expression" => {
+                let name = self.type_name(value.child_by_field_name("name")?)?;
+                Some(Ty::Named(name))
+            }
             "call_expression" => {
                 let function = value.child_by_field_name("function")?;
-                if function.kind() != "scoped_identifier" {
-                    return None;
-                }
-                let ctor = node_text(function.child_by_field_name("name")?, self.source);
-                if !(ctor == "new"
-                    || ctor == "default"
-                    || ctor.starts_with("with_")
-                    || ctor.starts_with("from"))
-                {
-                    return None;
-                }
-                let path = function.child_by_field_name("path")?;
-                let ty = match path.kind() {
-                    "identifier" => node_text(path, self.source),
-                    "scoped_identifier" => {
-                        node_text(path.child_by_field_name("name")?, self.source)
+                match function.kind() {
+                    "field_expression" => {
+                        let recv =
+                            self.expr_ty_opt(function.child_by_field_name("value")?, locals)?;
+                        let method = node_text(function.child_by_field_name("field")?, source);
+                        Some(self.method_call_ty(recv, &method))
                     }
-                    _ => return None,
-                };
-                self.usable(ty)
+                    "identifier" | "scoped_identifier" => {
+                        self.path_call_ty(value, function, locals)
+                    }
+                    _ => None,
+                }
             }
             _ => None,
         }
     }
+
+    /// `recv.method(..)`: this file's `Type::method` return type, else the
+    /// handful of std shapes, else (a `Named` receiver) the method's
+    /// declaration in another file.
+    fn method_call_ty(&self, recv: Ty, method: &str) -> Ty {
+        if let Ty::Named(t) = &recv {
+            if let Some(entry) = self
+                .ctx
+                .and_then(|c| c.returns.get(&format!("{t}::{method}")))
+            {
+                return entry.clone().unwrap_or(Ty::Unknown);
+            }
+            if matches!(method, "unwrap" | "expect") {
+                return recv;
+            }
+            return self.pending(
+                DeferredSource::Method {
+                    receiver_type: t.clone(),
+                    method: method.to_string(),
+                },
+                None,
+            );
+        }
+        project(recv, Step::Method(method.to_string()))
+    }
+
+    fn pending(&self, source: DeferredSource, fallback: Option<String>) -> Ty {
+        if self.ctx.is_none() {
+            return fallback.map_or(Ty::Unknown, Ty::Named);
+        }
+        Ty::Pending(RustDeferred {
+            source,
+            steps: Vec::new(),
+            fallback,
+        })
+    }
+
+    /// Field `field` of a value of type `base`.
+    fn field_ty(&self, base: Ty, field: &str) -> Ty {
+        let is_index = field.chars().all(|c| c.is_ascii_digit());
+        match base {
+            Ty::Named(owner) => self.adt_field(&owner, None, field),
+            Ty::Tuple(_) | Ty::Pending(_) if is_index => {
+                project(base, Step::Tuple(field.parse().unwrap_or(usize::MAX)))
+            }
+            _ => Ty::Unknown,
+        }
+    }
+
+    /// Field type of struct `owner` (`variant == None`) or enum variant
+    /// `owner::variant`: from this file's declaration, or deferred to the
+    /// declaration in another file.
+    fn adt_field(&self, owner: &str, variant: Option<&str>, field: &str) -> Ty {
+        if self.adts.contains_key(owner) {
+            let key = variant.map_or_else(|| owner.to_string(), |v| format!("{owner}::{v}"));
+            return match self.adts.get(&key) {
+                Some(Some(fields)) => fields
+                    .iter()
+                    .find(|(name, _)| name == field)
+                    .map_or(Ty::Unknown, |(_, ty)| ty.clone()),
+                _ => Ty::Unknown,
+            };
+        }
+        let field = variant.map_or_else(|| field.to_string(), |v| format!("{v}::{field}"));
+        self.pending(
+            DeferredSource::Field {
+                owner: owner.to_string(),
+                field,
+            },
+            None,
+        )
+    }
+
+    /// `f(..)`, `Type::f(..)`, `Self::f(..)`, `module::f(..)`: this file's
+    /// declared return type first, then the callee's declaration in another
+    /// file (via `use` bindings / absolute paths), then -- constructor-named
+    /// calls only -- the assumption that `T::new()` is a `T`.
+    fn path_call_ty(&self, call: Node<'_>, function: Node<'_>, locals: &Locals) -> Option<Ty> {
+        let source = self.source;
+        let raw = collapse_call_target_whitespace(&node_text(function, source));
+        if function.kind() == "identifier" {
+            let args = call_arguments(call);
+            if let [arg] = args.as_slice() {
+                let wrap = |t: Ty| Box::new(t);
+                match raw.as_str() {
+                    "Some" => return Some(Ty::Option(wrap(self.expr_ty(*arg, locals)))),
+                    "Ok" => {
+                        let ok = wrap(self.expr_ty(*arg, locals));
+                        return Some(Ty::Result(ok, wrap(Ty::Unknown)));
+                    }
+                    "Err" => {
+                        let err = wrap(self.expr_ty(*arg, locals));
+                        return Some(Ty::Result(wrap(Ty::Unknown), err));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let heuristic = self.ctor_type(function);
+        let Some(ctx) = self.ctx else {
+            return heuristic.map(Ty::Named);
+        };
+        let segs: Vec<&str> = raw.split("::").collect();
+        // `shadowed_names` only guards a bare callee; a path's first segment
+        // is a type or module, never a local.
+        let shadowed = segs.len() == 1
+            && (ctx.shadowed_names.contains(segs[0]) || ctx.shadowed_names.contains("*"));
+        let imported = if shadowed {
+            None
+        } else {
+            ctx.imports.get(segs[0])
+        };
+        // This file's own declarations.
+        if !shadowed && imported.is_none() {
+            let key = match segs.as_slice() {
+                [n] | ["self", n] => Some((*n).to_string()),
+                [owner, n] => {
+                    let owner = if *owner == "Self" {
+                        self.self_ty?
+                    } else {
+                        owner
+                    };
+                    owner
+                        .starts_with(char::is_uppercase)
+                        .then(|| format!("{owner}::{n}"))
+                }
+                _ => None,
+            };
+            if let Some(entry) = key.and_then(|k| ctx.returns.get(&k)) {
+                return entry.clone();
+            }
+        }
+        let cands: Vec<String> = match (imported, segs[0]) {
+            (Some(targets), _) => targets
+                .iter()
+                .map(|t| {
+                    if segs.len() > 1 {
+                        format!("{t}::{}", segs[1..].join("::"))
+                    } else {
+                        t.clone()
+                    }
+                })
+                .collect(),
+            (None, "crate") => vec![raw.clone()],
+            (None, "self" | "super") if segs.len() > 1 => PROFILE
+                .normalize_import_target
+                .and_then(|f| f(&raw, &ctx.module))
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
+        };
+        if cands.is_empty() {
+            return heuristic.map(Ty::Named);
+        }
+        Some(self.pending(DeferredSource::Call { candidates: cands }, heuristic))
+    }
+
+    /// `T::new(..)`/`T::default()`/`T::with_*`/`T::from*` -> `T`.
+    fn ctor_type(&self, function: Node<'_>) -> Option<String> {
+        if function.kind() != "scoped_identifier" {
+            return None;
+        }
+        let ctor = node_text(function.child_by_field_name("name")?, self.source);
+        if !(ctor == "new"
+            || ctor == "default"
+            || ctor.starts_with("with_")
+            || ctor.starts_with("from"))
+        {
+            return None;
+        }
+        let path = function.child_by_field_name("path")?;
+        let ty = match path.kind() {
+            "identifier" => node_text(path, self.source),
+            "scoped_identifier" => node_text(path.child_by_field_name("name")?, self.source),
+            _ => return None,
+        };
+        self.usable(ty)
+    }
+
+    /// Bind every name in `pat` (matched against a value of type `ty`) over
+    /// `scope`. A shape that does not line up with `ty` binds `Unknown`.
+    fn bind(&self, pat: Node<'_>, ty: &Ty, scope: Scope, out: &mut Locals) {
+        let source = self.source;
+        match pat.kind() {
+            "identifier" => {
+                let name = node_text(pat, source);
+                // Uppercase idents are consts / unit variants, not bindings.
+                let ty = if name.chars().next().is_some_and(char::is_uppercase) {
+                    Ty::Unknown
+                } else {
+                    ty.clone()
+                };
+                record_local(out, name, ty, scope);
+            }
+            "shorthand_field_identifier" => {
+                record_local(out, node_text(pat, source), ty.clone(), scope)
+            }
+            "mut_pattern" | "ref_pattern" | "reference_pattern" => {
+                let mut cursor = pat.walk();
+                for c in pat.named_children(&mut cursor) {
+                    if c.kind() != "mutable_specifier" {
+                        self.bind(c, ty, scope, out);
+                    }
+                }
+            }
+            "captured_pattern" | "or_pattern" => {
+                let mut cursor = pat.walk();
+                for c in pat.named_children(&mut cursor) {
+                    self.bind(c, ty, scope, out);
+                }
+            }
+            "tuple_pattern" => {
+                let mut cursor = pat.walk();
+                let elems: Vec<_> = pat.named_children(&mut cursor).collect();
+                match ty {
+                    Ty::Tuple(tys) if !has_rest(&elems) && tys.len() == elems.len() => {
+                        for (e, t) in elems.iter().zip(tys) {
+                            self.bind(*e, t, scope, out);
+                        }
+                    }
+                    Ty::Pending(_) if !has_rest(&elems) => {
+                        for (i, e) in elems.iter().enumerate() {
+                            self.bind(*e, &project(ty.clone(), Step::Tuple(i)), scope, out);
+                        }
+                    }
+                    _ => self.bind_all(pat, scope, out),
+                }
+            }
+            "tuple_struct_pattern" => {
+                let type_node = pat.child_by_field_name("type");
+                let mut cursor = pat.walk();
+                let elems: Vec<_> = pat
+                    .named_children(&mut cursor)
+                    .filter(|c| Some(*c) != type_node)
+                    .collect();
+                let step = match type_node.map(|t| node_text(t, source)).as_deref() {
+                    Some("Some") => Some(Step::OptionSome),
+                    Some("Ok") => Some(Step::ResultOk),
+                    Some("Err") => Some(Step::ResultErr),
+                    _ => None,
+                };
+                if let (Some(step), [elem]) = (step, elems.as_slice())
+                    && matches!(ty, Ty::Option(_) | Ty::Result(..) | Ty::Pending(_))
+                {
+                    self.bind(*elem, &project(ty.clone(), step.clone()), scope, out);
+                    return;
+                }
+                match type_node.and_then(|t| self.adt_key(t, ty)) {
+                    Some((owner, variant)) if !has_rest(&elems) => {
+                        for (i, e) in elems.iter().enumerate() {
+                            let field = self.adt_field(&owner, variant.as_deref(), &i.to_string());
+                            self.bind(*e, &field, scope, out);
+                        }
+                    }
+                    _ => {
+                        for e in elems {
+                            self.bind(e, &Ty::Unknown, scope, out);
+                        }
+                    }
+                }
+            }
+            "struct_pattern" => {
+                let key = pat
+                    .child_by_field_name("type")
+                    .and_then(|t| self.adt_key(t, ty));
+                let mut cursor = pat.walk();
+                for fp in pat.named_children(&mut cursor) {
+                    if fp.kind() != "field_pattern" {
+                        continue;
+                    }
+                    let Some(name_node) = fp.child_by_field_name("name") else {
+                        continue;
+                    };
+                    let name = node_text(name_node, source);
+                    let field_ty = key.as_ref().map_or(Ty::Unknown, |(owner, variant)| {
+                        self.adt_field(owner, variant.as_deref(), &name)
+                    });
+                    match fp.child_by_field_name("pattern") {
+                        Some(inner) => self.bind(inner, &field_ty, scope, out),
+                        None => record_local(out, name, field_ty, scope),
+                    }
+                }
+            }
+            "remaining_field_pattern" | "_" => {}
+            _ => self.bind_all(pat, scope, out),
+        }
+    }
+
+    /// Poison every name under `pat` (shapes we do not type).
+    fn bind_all(&self, pat: Node<'_>, scope: Scope, out: &mut Locals) {
+        let mut cursor = pat.walk();
+        for c in pat.named_children(&mut cursor) {
+            self.bind(c, &Ty::Unknown, scope, out);
+        }
+    }
+
+    /// `(type, variant)` a pattern path names when matched against a `Named`
+    /// scrutinee: `Type` (struct) or `Type::Variant` (enum), `Self` resolved.
+    fn adt_key(&self, path: Node<'_>, scrutinee: &Ty) -> Option<(String, Option<String>)> {
+        let Ty::Named(n) = scrutinee else {
+            return None;
+        };
+        let resolve = |s: String| {
+            if s == "Self" {
+                self.self_ty.map(str::to_string)
+            } else {
+                Some(s)
+            }
+        };
+        match path.kind() {
+            "identifier" | "type_identifier" => {
+                (resolve(node_text(path, self.source))? == *n).then(|| (n.clone(), None))
+            }
+            "scoped_identifier" | "scoped_type_identifier" => {
+                let head = path.child_by_field_name("path")?;
+                let head = match head.kind() {
+                    "identifier" | "type_identifier" => head,
+                    "scoped_identifier" | "scoped_type_identifier" => {
+                        head.child_by_field_name("name")?
+                    }
+                    _ => return None,
+                };
+                let variant = node_text(path.child_by_field_name("name")?, self.source);
+                (resolve(node_text(head, self.source))? == *n).then(|| (n.clone(), Some(variant)))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Result type of `recv.method()` for the few std methods whose result type
+/// follows from the receiver type; everything else is `Unknown`.
+fn method_ty(recv: Ty, method: &str) -> Ty {
+    match (recv, method) {
+        (Ty::Option(t) | Ty::Result(t, _), "unwrap" | "expect") => *t,
+        (Ty::Named(n), "unwrap" | "expect") => Ty::Named(n),
+        (Ty::Result(t, _), "ok") => Ty::Option(t),
+        (Ty::Result(_, e), "err") => Ty::Option(e),
+        (t @ (Ty::Option(_) | Ty::Result(..)), "as_ref" | "as_mut" | "clone") => t,
+        (t @ Ty::Option(_), "take" | "cloned" | "copied") => t,
+        (Ty::Seq(t), "iter" | "into_iter" | "iter_mut" | "drain") => Ty::Iter(t),
+        (t @ Ty::Iter(_), "into_iter" | "by_ref") => t,
+        (Ty::Iter(t), "next" | "next_back" | "last") => Ty::Option(t),
+        (Ty::Seq(t), "pop" | "pop_front" | "pop_back" | "first" | "last") => Ty::Option(t),
+        _ => Ty::Unknown,
+    }
+}
+
+/// Return types of this file's free fns and inherent/trait-impl methods.
+fn collect_returns(root: Node<'_>, source: &str) -> Returns {
+    fn owner_of(node: Node<'_>, source: &str) -> Option<Option<String>> {
+        let list = node.parent()?;
+        match list.parent().map(|p| p.kind()) {
+            Some("impl_item") => {
+                let impl_node = list.parent()?;
+                let env = TypeEnv {
+                    source,
+                    self_ty: None,
+                    generics: collect_generic_names(impl_node, source),
+                    adts: &Adts::new(),
+                    ctx: None,
+                };
+                Some(Some(env.type_name(impl_node.child_by_field_name("type")?)?))
+            }
+            // Trait default methods: `Self` is unknown.
+            Some("trait_item") => None,
+            _ => Some(None),
+        }
+    }
+    fn walk(node: Node<'_>, source: &str, out: &mut Returns) {
+        if node.kind() == "function_item" {
+            if node.child_by_field_name("body").is_some()
+                && let Some(owner) = owner_of(node, source)
+                && let Some(name) = node.child_by_field_name("name")
+            {
+                let empty = Adts::new();
+                let env = TypeEnv {
+                    source,
+                    self_ty: owner.as_deref(),
+                    generics: collect_generic_names(node, source),
+                    adts: &empty,
+                    ctx: None,
+                };
+                let mut ty = node
+                    .child_by_field_name("return_type")
+                    .map_or(Ty::Unknown, |t| env.ty(t));
+                let mut cursor = node.walk();
+                let is_async = node.children(&mut cursor).any(|c| {
+                    c.kind() == "function_modifiers" && node_text(c, source).contains("async")
+                });
+                if is_async {
+                    ty = Ty::Future(Box::new(ty));
+                }
+                let name = node_text(name, source);
+                let key = owner.map_or(name.clone(), |o| format!("{o}::{name}"));
+                match out.get(&key) {
+                    Some(prev) if *prev != Some(ty.clone()) => {
+                        out.insert(key, None);
+                    }
+                    _ => {
+                        out.insert(key, Some(ty));
+                    }
+                }
+            }
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, source, out);
+        }
+    }
+    let mut out = Returns::new();
+    walk(root, source, &mut out);
+    out
+}
+
+thread_local! {
+    /// One Rust parser per thread, reused across `resolve_deferred` calls.
+    static DECLARATION_PARSER: RefCell<Option<Parser>> = const { RefCell::new(None) };
+}
+
+fn parse_declaration(src: &str) -> Option<tree_sitter::Tree> {
+    DECLARATION_PARSER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            let mut parser = Parser::new();
+            parser
+                .set_language(&tree_sitter_rust::LANGUAGE.into())
+                .ok()?;
+            *slot = Some(parser);
+        }
+        slot.as_mut()?.parse(src, None)
+    })
+}
+
+/// `LanguageProfile::deferred_receiver`: finish a `RustDeferred` marker from
+/// the declarations it names. Every matching declaration must agree on a
+/// type that is declared in the repo; a declaration that isn't a repo type
+/// (a `Result`, a future never awaited, a generic) leaves the receiver
+/// untracked, and only "no declaration found" keeps the marker's fallback.
+fn resolve_deferred(
+    column: &str,
+    index: &dyn DeclarationIndex,
+) -> anyhow::Result<Option<Option<String>>> {
+    let Some(deferred) = RustDeferred::decode(column) else {
+        return Ok(None);
+    };
+    let declarations = match &deferred.source {
+        DeferredSource::Call { candidates } => {
+            let mut all = Vec::new();
+            for candidate in candidates {
+                all.extend(index.declarations(DeclarationQuery::Callable(candidate))?);
+            }
+            all
+        }
+        DeferredSource::Method {
+            receiver_type,
+            method,
+        } => index.declarations(DeclarationQuery::Method(&format!(
+            "{receiver_type}::{method}"
+        )))?,
+        DeferredSource::Field { owner, .. } => index.declarations(DeclarationQuery::Type(owner))?,
+    };
+    if declarations.is_empty() {
+        return Ok(Some(deferred.fallback));
+    }
+    let mut found: Option<String> = None;
+    for declaration in &declarations {
+        let Some(signature) = &declaration.signature else {
+            return Ok(Some(deferred.fallback));
+        };
+        let Some(ty) = declared_receiver_type(&deferred, &declaration.qualname, signature) else {
+            return Ok(Some(None));
+        };
+        match &found {
+            Some(prev) if *prev != ty => return Ok(Some(None)),
+            _ => found = Some(ty),
+        }
+    }
+    Ok(Some(match found {
+        Some(ty) if index.is_repo_type(&ty)? => Some(ty),
+        _ => None,
+    }))
+}
+
+/// The receiver type `deferred` reaches through one declaration's indexed
+/// signature: a callable's return type or a struct/enum's field type, then
+/// the marker's steps.
+fn declared_receiver_type(
+    deferred: &RustDeferred,
+    qualname: &str,
+    signature: &str,
+) -> Option<String> {
+    let name = qualname.rsplit("::").next()?;
+    let mut ty = match &deferred.source {
+        DeferredSource::Field { field, .. } => {
+            // `struct Name<G> { .. }` / `enum Name<G> { .. }` (`adt_signature`).
+            let src = if signature.ends_with('}') {
+                signature.to_string()
+            } else {
+                format!("{signature};")
+            };
+            let tree = parse_declaration(&src)?;
+            let adts = collect_adts(tree.root_node(), &src);
+            let (variant, field) = match field.split_once("::") {
+                Some((v, f)) => (Some(v), f),
+                None => (None, field.as_str()),
+            };
+            let key = variant.map_or_else(|| name.to_string(), |v| format!("{name}::{v}"));
+            adts.get(&key)?
+                .as_ref()?
+                .iter()
+                .find(|(n, _)| n == field)?
+                .1
+                .clone()
+        }
+        DeferredSource::Call { .. } | DeferredSource::Method { .. } => {
+            let (is_async, signature) = split_callable_signature(signature);
+            let src = format!("fn __f{signature} {{}}");
+            let tree = parse_declaration(&src)?;
+            let func = tree.root_node().named_child(0)?;
+            if func.kind() != "function_item" {
+                return None;
+            }
+            let owner = qualname
+                .rsplit("::")
+                .nth(1)
+                .filter(|o| o.starts_with(char::is_uppercase));
+            let env = TypeEnv {
+                source: &src,
+                self_ty: owner,
+                // The signature keeps the fn's and its impl's `<..>`.
+                generics: collect_generic_names(func, &src),
+                adts: &Adts::new(),
+                ctx: None,
+            };
+            let ret = env.ty(func.child_by_field_name("return_type")?);
+            if is_async {
+                Ty::Future(Box::new(ret))
+            } else {
+                ret
+            }
+        }
+    };
+    for step in &deferred.steps {
+        ty = project(ty, step.clone());
+    }
+    match ty {
+        Ty::Named(n) => Some(n),
+        _ => None,
+    }
+}
+
+/// `(is_async, rest)` of a callable's indexed signature, past any leading
+/// `#[test]`-style attribute lines (`extract_signature`).
+fn split_callable_signature(signature: &str) -> (bool, &str) {
+    let mut rest = signature;
+    while rest.starts_with("#[") {
+        rest = rest.split_once('\n').map_or("", |(_, tail)| tail);
+    }
+    match rest.strip_prefix("async ") {
+        Some(tail) => (true, tail),
+        None => (false, rest),
+    }
+}
+
+/// `struct Name<G> { a: T }` / `struct Name(A, B)` / `enum Name { V(A) }`:
+/// the declaration's field types, kept in the symbol's signature so other
+/// files' extractors can defer to it (`project_deferred`).
+fn adt_signature(node: Node<'_>, source: &str) -> Option<String> {
+    let flat = |n: Node<'_>| {
+        node_text(n, source)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let fields = |body: Node<'_>| -> String {
+        let mut cursor = body.walk();
+        match body.kind() {
+            "field_declaration_list" => {
+                let parts: Vec<String> = body
+                    .named_children(&mut cursor)
+                    .filter(|f| f.kind() == "field_declaration")
+                    .filter_map(|f| {
+                        Some(format!(
+                            "{}: {}",
+                            flat(f.child_by_field_name("name")?),
+                            flat(f.child_by_field_name("type")?)
+                        ))
+                    })
+                    .collect();
+                format!("{{ {} }}", parts.join(", "))
+            }
+            "ordered_field_declaration_list" => {
+                let parts: Vec<String> = body
+                    .children_by_field_name("type", &mut cursor)
+                    .map(flat)
+                    .collect();
+                format!("({})", parts.join(", "))
+            }
+            _ => String::new(),
+        }
+    };
+    let name = flat(node.child_by_field_name("name")?);
+    let generics = node
+        .child_by_field_name("type_parameters")
+        .map(flat)
+        .unwrap_or_default();
+    let body = node.child_by_field_name("body");
+    if node.kind() == "struct_item" {
+        let body = body.map(fields).unwrap_or_default();
+        let sep = if body.starts_with('{') { " " } else { "" };
+        return Some(format!("struct {name}{generics}{sep}{body}"));
+    }
+    let mut cursor = body?.walk();
+    let variants: Vec<String> = body?
+        .named_children(&mut cursor)
+        .filter(|v| v.kind() == "enum_variant")
+        .filter_map(|v| {
+            let vn = flat(v.child_by_field_name("name")?);
+            let vb = v
+                .child_by_field_name("body")
+                .map(fields)
+                .unwrap_or_default();
+            let sep = if vb.starts_with('{') { " " } else { "" };
+            Some(format!("{vn}{sep}{vb}"))
+        })
+        .collect();
+    Some(format!(
+        "enum {name}{generics} {{ {} }}",
+        variants.join(", ")
+    ))
+}
+
+/// Struct and enum-variant field types declared in this file.
+fn collect_adts(root: Node<'_>, source: &str) -> Adts {
+    fn fields_of(env: &TypeEnv<'_>, body: Option<Node<'_>>) -> Vec<(String, Ty)> {
+        let Some(body) = body else {
+            return Vec::new();
+        };
+        let mut cursor = body.walk();
+        match body.kind() {
+            "field_declaration_list" => body
+                .named_children(&mut cursor)
+                .filter(|f| f.kind() == "field_declaration")
+                .filter_map(|f| {
+                    let name = node_text(f.child_by_field_name("name")?, env.source);
+                    Some((name, env.ty(f.child_by_field_name("type")?)))
+                })
+                .collect(),
+            "ordered_field_declaration_list" => body
+                .children_by_field_name("type", &mut cursor)
+                .enumerate()
+                .map(|(i, t)| (i.to_string(), env.ty(t)))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+    fn walk(node: Node<'_>, source: &str, empty: &Adts, out: &mut Adts) {
+        let kind = node.kind();
+        if matches!(kind, "struct_item" | "enum_item")
+            && let Some(name) = node.child_by_field_name("name")
+        {
+            let name = node_text(name, source);
+            let env = TypeEnv {
+                source,
+                self_ty: Some(&name),
+                generics: collect_generic_names(node, source),
+                adts: empty,
+                ctx: None,
+            };
+            let mut entries = Vec::new();
+            if kind == "struct_item" {
+                entries.push((
+                    name.clone(),
+                    fields_of(&env, node.child_by_field_name("body")),
+                ));
+            } else if let Some(list) = node.child_by_field_name("body") {
+                // Marks the enum as declared here (see `adt_field`).
+                entries.push((name.clone(), Vec::new()));
+                let mut cursor = list.walk();
+                for v in list.named_children(&mut cursor) {
+                    if let Some(vn) = v.child_by_field_name("name") {
+                        let key = format!("{name}::{}", node_text(vn, source));
+                        entries.push((key, fields_of(&env, v.child_by_field_name("body"))));
+                    }
+                }
+            }
+            for (key, fields) in entries {
+                let dup = out.contains_key(&key);
+                out.insert(key, if dup { None } else { Some(fields) });
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, source, empty, out);
+        }
+    }
+    let empty = Adts::new();
+    let mut out = Adts::new();
+    walk(root, source, &empty, &mut out);
+    out
 }
 
 /// Generic parameter names of `node` and its enclosing impl/trait items.
@@ -987,6 +1939,7 @@ fn collect_generic_names(node: Node<'_>, source: &str) -> HashSet<String> {
                 let id = match p.kind() {
                     "type_identifier" => Some(p),
                     "constrained_type_parameter" => p.child_by_field_name("left"),
+                    "type_parameter" | "optional_type_parameter" => p.child_by_field_name("name"),
                     _ => None,
                 };
                 if let Some(id) = id {
@@ -999,83 +1952,109 @@ fn collect_generic_names(node: Node<'_>, source: &str) -> HashSet<String> {
     out
 }
 
-/// Record `name -> type` for one binding; a second binding of the same
-/// name (shadowing, differing types) poisons it to `None`.
-fn record_local(out: &mut HashMap<String, Option<String>>, name: String, ty: Option<String>) {
-    match out.get(&name) {
-        Some(prev) if *prev != ty => {
-            out.insert(name, None);
+/// End of the block an `if let`/`while let` condition guards: the
+/// consequence/body of the nearest `if`/`while` whose condition holds it.
+fn let_scope_end(cond: Node<'_>) -> Option<usize> {
+    let mut current = cond.parent();
+    while let Some(n) = current {
+        if matches!(n.kind(), "if_expression" | "while_expression") {
+            let block = n
+                .child_by_field_name("consequence")
+                .or_else(|| n.child_by_field_name("body"))?;
+            return Some(block.end_byte());
         }
-        _ => {
-            out.insert(name, ty);
-        }
+        current = n.parent();
     }
+    None
 }
 
-/// `x` or `mut x` -> the identifier node.
-fn simple_binding(pat: Node<'_>) -> Option<Node<'_>> {
-    match pat.kind() {
-        "identifier" => Some(pat),
-        "mut_pattern" => {
-            let mut cursor = pat.walk();
-            pat.named_children(&mut cursor)
-                .find(|c| c.kind() == "identifier")
-        }
-        _ => None,
-    }
-}
-
-/// Poison every name a pattern binds (tuple/struct/match/`if let`/closure
-/// shapes we do not type), so a shadowed name never keeps a stale type.
-fn poison_pattern(pat: Node<'_>, source: &str, out: &mut HashMap<String, Option<String>>) {
-    if matches!(pat.kind(), "identifier" | "shorthand_field_identifier") {
-        record_local(out, node_text(pat, source), None);
-    }
-    let mut cursor = pat.walk();
-    for child in pat.children(&mut cursor) {
-        poison_pattern(child, source, out);
-    }
-}
-
-/// Locally-knowable receiver types for one function: typed params
-/// (`x: T`, `&T`, `&mut T<'_>`) and `let [mut] x: T = ..` /
-/// `let x = T::new(..)` / `let x = T { .. }`. Every other binding shape
-/// poisons the names it binds. Nested `fn` items are collected on their own.
-fn collect_local_types(
-    node: Node<'_>,
-    env: &TypeEnv<'_>,
-    out: &mut HashMap<String, Option<String>>,
-) {
-    let source = env.source;
+/// Locally-knowable receiver types for one function, scoped: typed params
+/// (`x: T`, `&T`, `&mut T<'_>`), `let` bindings (annotated, `T::new(..)`,
+/// `T { .. }`, or a known-typed scrutinee), `if let`/`while let`/`match`/
+/// `for` pattern bindings (typed when the scrutinee type is known, else
+/// poisoned) and closure params. Nested `fn` items are collected on their own.
+fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
             "function_item" => continue,
-            "parameter" | "let_declaration" => {
-                if let Some(pat) = child.child_by_field_name("pattern") {
-                    match simple_binding(pat) {
-                        Some(id) => {
-                            let ty = child
-                                .child_by_field_name("type")
-                                .and_then(|t| env.type_name(t))
-                                .or_else(|| {
-                                    child
-                                        .child_by_field_name("value")
-                                        .and_then(|v| env.value_type(v))
-                                });
-                            record_local(out, node_text(id, source), ty);
-                        }
-                        None => poison_pattern(pat, source, out),
+            "parameter" => {
+                if let (Some(pat), Some(owner)) = (
+                    child.child_by_field_name("pattern"),
+                    child.parent().and_then(|p| p.parent()),
+                ) {
+                    let ty = child.child_by_field_name("type").map(|t| env.ty(t));
+                    let scope = (owner.start_byte(), owner.end_byte());
+                    env.bind(pat, &ty.unwrap_or(Ty::Unknown), scope, out);
+                }
+            }
+            "let_declaration" => {
+                if let (Some(pat), Some(block)) =
+                    (child.child_by_field_name("pattern"), child.parent())
+                {
+                    let mut ty = child
+                        .child_by_field_name("type")
+                        .map_or(Ty::Unknown, |t| env.ty(t));
+                    if ty == Ty::Unknown
+                        && let Some(v) = child.child_by_field_name("value")
+                    {
+                        ty = env.expr_ty(v, out);
+                    }
+                    env.bind(pat, &ty, (child.end_byte(), block.end_byte()), out);
+                }
+            }
+            "let_condition" => {
+                if let (Some(pat), Some(value)) = (
+                    child.child_by_field_name("pattern"),
+                    child.child_by_field_name("value"),
+                ) {
+                    // No enclosing `if`/`while`: poison the names for the rest
+                    // of the fn instead of leaking an outer binding's type.
+                    let (ty, end) = match let_scope_end(child) {
+                        Some(end) => (env.expr_ty(value, out), end),
+                        None => (Ty::Unknown, usize::MAX),
+                    };
+                    env.bind(pat, &ty, (value.end_byte(), end), out);
+                }
+            }
+            "for_expression" => {
+                if let (Some(pat), Some(value), Some(body)) = (
+                    child.child_by_field_name("pattern"),
+                    child.child_by_field_name("value"),
+                    child.child_by_field_name("body"),
+                ) {
+                    let ty = project(env.expr_ty(value, out), Step::Elem);
+                    env.bind(pat, &ty, (value.end_byte(), body.end_byte()), out);
+                }
+            }
+            "match_arm" => {
+                let scrutinee = child
+                    .parent()
+                    .and_then(|block| block.parent())
+                    .and_then(|m| m.child_by_field_name("value"));
+                if let Some(mp) = child.child_by_field_name("pattern") {
+                    let ty = scrutinee.map_or(Ty::Unknown, |v| env.expr_ty(v, out));
+                    let guard = mp.child_by_field_name("condition");
+                    let mut c = mp.walk();
+                    let scope = (child.start_byte(), child.end_byte());
+                    for p in mp.named_children(&mut c).filter(|p| Some(*p) != guard) {
+                        env.bind(p, &ty, scope, out);
                     }
                 }
             }
-            "for_expression" | "let_condition" => {
-                // Only the `pattern` field binds; the rest is walked below.
-                if let Some(pat) = child.child_by_field_name("pattern") {
-                    poison_pattern(pat, source, out);
+            "closure_expression" => {
+                if let Some(params) = child.child_by_field_name("parameters") {
+                    let scope = (child.start_byte(), child.end_byte());
+                    let mut c = params.walk();
+                    // Typed `|e: T|` params are handled as `parameter` below.
+                    for p in params
+                        .named_children(&mut c)
+                        .filter(|p| p.kind() != "parameter")
+                    {
+                        env.bind(p, &Ty::Unknown, scope, out);
+                    }
                 }
             }
-            "match_pattern" | "closure_parameters" => poison_pattern(child, source, out),
             _ => {}
         }
         collect_local_types(child, env, out);
@@ -2370,15 +3349,53 @@ fn extract_signature(node: Node<'_>, source: &str, attributes: &[Node<'_>]) -> O
     let return_type = node
         .child_by_field_name("return_type")
         .map(|n| node_text(n, source));
+    // The fn's and its impl's generic parameters, so `project_deferred`-style
+    // readers can tell `-> Item` (a parameter) from a type named `Item`.
+    let generics = signature_generics(node, source);
     let base = match (params, return_type) {
-        (Some(p), Some(r)) => Some(format!("{p} -> {r}")),
-        (Some(p), None) => Some(p),
+        (Some(p), Some(r)) => Some(format!("{generics}{p} -> {r}")),
+        (Some(p), None) => Some(format!("{generics}{p}")),
         _ => None,
     };
+    // Calling an `async fn` yields a future; `resolve_deferred` reads this.
+    let mut cursor = node.walk();
+    let is_async = node
+        .children(&mut cursor)
+        .any(|c| c.kind() == "function_modifiers" && node_text(c, source).contains("async"));
+    let base = base.map(|b| if is_async { format!("async {b}") } else { b });
     match (test_attribute_prefix(attributes, source), base) {
         (Some(prefix), Some(base)) => Some(format!("{prefix}{base}")),
         (Some(prefix), None) => Some(prefix),
         (None, base) => base,
+    }
+}
+
+/// `<Item, T: Bound>`: the generic parameters of `node` and of the impl/trait
+/// enclosing it (impl's first), or `""` when there are none.
+fn signature_generics(node: Node<'_>, source: &str) -> String {
+    let mut owners = vec![node];
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if matches!(n.kind(), "impl_item" | "trait_item") {
+            owners.push(n);
+        }
+        current = n.parent();
+    }
+    let parts: Vec<String> = owners
+        .iter()
+        .rev()
+        .filter_map(|n| n.child_by_field_name("type_parameters"))
+        .filter_map(|params| {
+            let text = node_text(params, source);
+            let inner = text.strip_prefix('<')?.strip_suffix('>')?;
+            Some(inner.split_whitespace().collect::<Vec<_>>().join(" "))
+        })
+        .filter(|inner| !inner.is_empty())
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", parts.join(", "))
     }
 }
 
@@ -2551,6 +3568,7 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
 mod tests {
     use super::RustExtractor;
     use crate::indexer::extract::LanguageExtractor;
+    use crate::indexer::extract::{DeferredSource, ReceiverType, RustDeferred, Step};
     use crate::indexer::http;
     use crate::indexer::proto;
 
@@ -2563,6 +3581,94 @@ pub fn a(x: Foo, y: Foo, n: u32, s: String, v: Vec<Foo>) -> Option<Foo> { None }
 #[test_case(1)]
 fn tc() {}
 "#;
+
+    /// Receiver types of every `x.go()` call in `src`, in source order.
+    fn go_receivers(src: &str) -> Vec<String> {
+        let file = RustExtractor::new().unwrap().extract(src, "crate").unwrap();
+        file.edges
+            .iter()
+            .filter(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("go"))
+            .map(|e| match &e.receiver_type {
+                ReceiverType::Known(t) => t.clone(),
+                ReceiverType::RustDeferred(m) => m.encode(),
+                _ => "-".to_string(),
+            })
+            .collect()
+    }
+
+    fn call(steps: Vec<Step>) -> RustDeferred {
+        RustDeferred {
+            source: DeferredSource::Call {
+                candidates: vec!["crate::a::f".into()],
+            },
+            steps,
+            fallback: None,
+        }
+    }
+
+    #[test]
+    fn test_attribute_before_async_is_still_read_as_async() {
+        let src = "pub struct Engine;\n#[test]\npub async fn t() -> Engine { Engine }";
+        let file = RustExtractor::new().unwrap().extract(src, "crate").unwrap();
+        let sig = file
+            .symbols
+            .iter()
+            .find(|s| s.name == "t")
+            .and_then(|s| s.signature.clone())
+            .unwrap();
+        assert!(sig.starts_with("#[test]\nasync "), "{sig}");
+        assert_eq!(
+            super::declared_receiver_type(&call(vec![]), "crate::a::t", &sig),
+            None
+        );
+        assert_eq!(
+            super::declared_receiver_type(&call(vec![Step::Await]), "crate::a::t", &sig),
+            Some("Engine".to_string())
+        );
+    }
+
+    #[test]
+    fn generic_parameters_of_fn_and_impl_are_not_receiver_types() {
+        let src = "pub struct Item;
+pub struct W<T>(T);
+impl<Item> W<Item> { pub fn get(self) -> Item { todo!() } pub fn plain(self) -> Item2 { todo!() } }
+pub fn make<Item>() -> Item { todo!() }
+pub fn concrete() -> Item { todo!() }";
+        let file = RustExtractor::new().unwrap().extract(src, "crate").unwrap();
+        let sig = |name: &str| {
+            file.symbols
+                .iter()
+                .find(|s| s.name == name)
+                .and_then(|s| s.signature.clone())
+                .unwrap()
+        };
+        let receiver = |name: &str, qualname: &str| {
+            super::declared_receiver_type(&call(vec![]), qualname, &sig(name))
+        };
+        assert_eq!(receiver("get", "crate::W::get"), None);
+        assert_eq!(receiver("make", "crate::make"), None);
+        assert_eq!(receiver("concrete", "crate::concrete"), Some("Item".into()));
+    }
+
+    #[test]
+    fn same_block_shadowing_types_each_call_by_position() {
+        let src = "pub struct A; pub struct B;
+fn f() {
+    let e = A::new();
+    e.go();
+    let e = B::new();
+    e.go();
+    {
+        let e = A::new();
+        e.go();
+    }
+    e.go();
+    let x = 1;
+    if let Some(e) = x { e.go(); }
+    e.go();
+}";
+        assert_eq!(go_receivers(src), ["A", "B", "A", "B", "-", "B"]);
+    }
 
     #[test]
     fn uses_edges_are_deduped_and_skip_primitives() {

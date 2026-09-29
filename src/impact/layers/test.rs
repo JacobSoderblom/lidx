@@ -104,7 +104,9 @@ impl<'a> TestImpactLayer<'a> {
             evidence,
             duration_ms,
             truncated: false,
+            truncation_reason: None,
             parent_map: HashMap::new(),
+            alt_parents: HashMap::new(),
             traversed_heuristic_kind: false,
         })
     }
@@ -175,9 +177,18 @@ impl<'a> TestImpactLayer<'a> {
 
         for seed_id in seed_ids {
             // Find edges where this symbol is the source or target
+            // Tests calling the interface method this symbol implements reach
+            // it only via dispatch: strategy `call_via_interface`, not `call`.
+            let via_interface_edges =
+                self.db
+                    .interface_caller_edges(*seed_id, None, graph_version)?;
             let edges = self.db.edges_for_symbol(*seed_id, None, graph_version)?;
 
-            for edge in edges {
+            for (edge, via_interface) in edges
+                .into_iter()
+                .map(|e| (e, false))
+                .chain(via_interface_edges.into_iter().map(|e| (e, true)))
+            {
                 // We want CALL edges where the seed is the TARGET (being called)
                 if edge.kind != "CALLS" {
                     continue;
@@ -194,7 +205,7 @@ impl<'a> TestImpactLayer<'a> {
                     continue;
                 }
 
-                if edge.target_symbol_id == Some(*seed_id)
+                if (via_interface || edge.target_symbol_id == Some(*seed_id))
                     && let Some(source_id) = edge.source_symbol_id
                 {
                     if seen.contains(&source_id) {
@@ -211,7 +222,12 @@ impl<'a> TestImpactLayer<'a> {
                         results.push((
                             source_id,
                             ImpactSource::TestLink {
-                                strategy: "call".to_string(),
+                                strategy: if via_interface {
+                                    "call_via_interface"
+                                } else {
+                                    "call"
+                                }
+                                .to_string(),
                                 test_type: test_type.to_string(),
                             },
                         ));

@@ -1,9 +1,11 @@
-use crate::db::resolver::{DeferredRpcSite, LanguageProfile, RpcCallEdge, VisibilityRule};
+use crate::db::resolver::{
+    Declaration, DeclarationIndex, LanguageProfile, RpcCallEdge, ScopeImports, VisibilityRule,
+};
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    CallShape, DeferredReturn, EdgeInput, ExtractedFile, MAX_DEFERRED_DEPTH, ReceiverType,
-    SymbolInput,
+    CallShape, DeferredBase, DeferredReturn, EdgeInput, ExtractedFile, MAX_DEFERRED_DEPTH,
+    ReceiverType, SymbolInput,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -29,8 +31,8 @@ use tree_sitter::{Node, Parser};
 /// to bind across files.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     visibility: VisibilityRule::Recorded,
-    return_receiver: Some(receiver_from_signature),
-    deferred_rpc: Some(grpc_calls_from_signature),
+    deferred_receiver: Some(resolve_deferred),
+    deferred_rpc: Some(deferred_rpc_calls),
     ..LanguageProfile::DEFAULT
 };
 
@@ -4395,35 +4397,136 @@ fn unwrap_return(ret: &str, awaited: bool) -> Option<String> {
     }
 }
 
-/// The `RPC_CALL` edges of a call site whose receiver is the return value
-/// of a callee with this indexed `signature`: one per candidate package when
-/// that return type is a generated gRPC client, else `None`. The site's
-/// imports are those of the callee's file, where the client type is written
-/// (see `Db::rederive_deferred_rpc_calls`).
-fn grpc_calls_from_signature(
-    signature: &str,
-    awaited: bool,
-    site: &DeferredRpcSite,
-) -> Option<Vec<RpcCallEdge>> {
-    let ret = unwrap_return(signature.rsplit_once(" -> ")?.1, awaited)?;
-    let service_and_prefix = split_client_service_and_prefix(ret.trim())?;
-    let rpc = normalize_grpc_method_name(site.method.split('<').next().unwrap_or(&site.method))?;
-    let imports = ImportContext {
-        namespaces: site.namespaces.clone(),
-        aliases: site.aliases.clone(),
+/// `LanguageProfile::deferred_receiver`: the type a deferred call returns
+/// (`""` when it can't be told, so the call binds nothing).
+fn resolve_deferred(column: &str, index: &dyn DeclarationIndex) -> Result<Option<Option<String>>> {
+    let Some(call) = DeferredReturn::parse(column) else {
+        return Ok(None);
     };
-    let edges = build_grpc_call_edges(&[service_and_prefix], &rpc, "", &None, 0, 0, &imports);
-    Some(
-        edges
-            .into_iter()
-            .filter_map(|e| {
-                Some(RpcCallEdge {
-                    target_qualname: e.target_qualname?,
-                    detail: e.detail?,
+    Ok(Some(Some(
+        receiver_type(&call, index, 0)?.unwrap_or_default(),
+    )))
+}
+
+/// The repo type `call` returns: the return type shared by every method it
+/// may reach (overloads, same-named types in other namespaces), which must
+/// name a repo type -- also ruling out a generic type parameter such as `T`.
+fn receiver_type(
+    call: &DeferredReturn,
+    index: &dyn DeclarationIndex,
+    depth: usize,
+) -> Result<Option<String>> {
+    let ret = reachable(call, index, depth, |decl, awaited| {
+        Ok(decl
+            .signature
+            .as_deref()
+            .and_then(|sig| receiver_from_signature(sig, awaited)))
+    })?;
+    match ret {
+        Some(ret) if index.is_repo_type(&ret)? => Ok(Some(ret)),
+        _ => Ok(None),
+    }
+}
+
+/// `map` of every method a deferred call may reach -- the receiver type's
+/// own, else its nearest ancestors' -- when they all agree on one `Some`
+/// value. `None` for no method, a disagreement, a `map` miss, or a
+/// `static_only` call reaching a non-`static` method.
+fn reachable<T: PartialEq>(
+    call: &DeferredReturn,
+    index: &dyn DeclarationIndex,
+    depth: usize,
+    map: impl Fn(&Declaration, bool) -> Result<Option<T>>,
+) -> Result<Option<T>> {
+    // A nested call is the receiver's own deferred call (`a.B().C()`).
+    let ty = match &call.base {
+        DeferredBase::Type(ty) => ty.clone(),
+        DeferredBase::Call(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
+        DeferredBase::Call(inner) => match receiver_type(inner, index, depth + 1)? {
+            Some(ty) => ty,
+            None => return Ok(None),
+        },
+    };
+    let mut found: Option<T> = None;
+    for decl in index.inherited_members(&ty, &call.method)? {
+        let is_static = decl
+            .visibility
+            .as_deref()
+            .is_some_and(|v| v.split_whitespace().any(|m| m == "static"));
+        let value = if is_static || !call.static_only {
+            map(&decl, call.awaited)?
+        } else {
+            None
+        };
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        match &found {
+            Some(prev) if *prev != value => return Ok(None),
+            _ => found = Some(value),
+        }
+    }
+    Ok(found)
+}
+
+/// `LanguageProfile::deferred_rpc`: the `RPC_CALL` edges of a call of
+/// `method` whose receiver is the return value of a callee returning a
+/// generated gRPC client -- one per candidate package, taken from the
+/// imports of the callee's file, where the client type is written.
+fn deferred_rpc_calls(
+    column: &str,
+    method: &str,
+    index: &dyn DeclarationIndex,
+) -> Result<Option<Vec<RpcCallEdge>>> {
+    let Some(call) = DeferredReturn::parse(column) else {
+        return Ok(None);
+    };
+    reachable(&call, index, 0, |decl, awaited| {
+        let Some(signature) = decl.signature.as_deref() else {
+            return Ok(None);
+        };
+        let Some(client) = client_of_signature(signature, awaited) else {
+            return Ok(None);
+        };
+        let imports = index.imports_in_scope(decl)?;
+        Ok(Some(grpc_edges(client, method, &imports)))
+    })
+    .map(|edges| {
+        edges.map(|e| {
+            e.into_iter()
+                .map(|(t, d)| RpcCallEdge {
+                    target_qualname: t,
+                    detail: d,
                 })
-            })
-            .collect(),
-    )
+                .collect()
+        })
+    })
+}
+
+/// `(service, prefix)` of the generated gRPC client type a method with this
+/// indexed `signature` returns.
+fn client_of_signature(signature: &str, awaited: bool) -> Option<(String, Option<String>)> {
+    let ret = unwrap_return(signature.rsplit_once(" -> ")?.1, awaited)?;
+    split_client_service_and_prefix(ret.trim())
+}
+
+/// `(target_qualname, detail)` of an `RPC_CALL` edge per candidate package.
+fn grpc_edges(
+    client: (String, Option<String>),
+    method: &str,
+    scope: &ScopeImports,
+) -> Vec<(String, String)> {
+    let Some(rpc) = normalize_grpc_method_name(method.split('<').next().unwrap_or(method)) else {
+        return Vec::new();
+    };
+    let imports = ImportContext {
+        namespaces: scope.namespaces.clone(),
+        aliases: scope.aliases.clone(),
+    };
+    build_grpc_call_edges(&[client], &rpc, "", &None, 0, 0, &imports)
+        .into_iter()
+        .filter_map(|e| Some((e.target_qualname?, e.detail?)))
+        .collect()
 }
 
 /// The receiver type name a call to a method with this indexed `signature`
