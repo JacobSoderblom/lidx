@@ -513,7 +513,7 @@ impl Db {
                      AND NOT EXISTS (
                        SELECT 1 FROM edges e
                        WHERE e.target_symbol_id = s.id
-                         AND e.kind IN ('CALLS', 'IMPORTS', 'RPC_IMPL', 'IMPLEMENTS', 'EXTENDS', 'USES', 'TRAIT_IMPL_METHOD')
+                         AND e.kind IN ('CALLS', 'IMPORTS', 'RPC_IMPL', 'IMPLEMENTS', 'EXTENDS', 'USES')
                          AND e.graph_version = ?
                      )
                      AND NOT EXISTS (
@@ -528,10 +528,26 @@ impl Db {
                        WHERE e.source_symbol_id = s.id
                          AND e.kind IN ('HTTP_ROUTE', 'RPC_IMPL', 'CHANNEL_SUBSCRIBE')
                          AND e.graph_version = ?
-                     )";
+                     )
+                     AND NOT (s.kind IN ('method', 'function') AND (
+                       EXISTS (
+                         SELECT 1 FROM edges e
+                         WHERE e.source_symbol_id = s.id
+                           AND e.kind = 'IMPLEMENTS'
+                           AND e.graph_version = ?
+                       )
+                       OR EXISTS (
+                         SELECT 1 FROM unresolved_references ur
+                         WHERE ur.source_symbol_id = s.id
+                           AND ur.edge_kind = 'IMPLEMENTS'
+                           AND ur.graph_version = ?
+                       )
+                     ))";
 
         let mut full_sql = String::from(sql);
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![
+            &graph_version,
+            &graph_version,
             &graph_version,
             &graph_version,
             &graph_version,

@@ -85,7 +85,7 @@ struct Context {
     /// private (issue #75 follow-up, finding B).
     in_trait_scope: bool,
     /// Set only inside an `impl Trait for Type` body (not a trait declaration).
-    in_trait_impl: bool,
+    in_trait_impl: Option<String>,
 }
 
 pub struct RustExtractor {
@@ -135,7 +135,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             imports: Rc::new(collect_use_bindings(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
             in_trait_scope: false,
-            in_trait_impl: false,
+            in_trait_impl: None,
         };
         walk_node(root, &ctx, source, &mut output);
         collect_uses(root, &ctx, source, &mut output, &mut HashSet::new());
@@ -540,13 +540,13 @@ fn handle_function(
         evidence_snippet: None,
         ..Default::default()
     });
-    if ctx.in_trait_impl {
-        // Self-targeting marker: the method is reached through its trait
-        // (often external), so `dead_symbols` must not report it.
+    if let Some(trait_qualname) = &ctx.in_trait_impl {
+        // Reached through its trait (often external), so `dead_symbols`
+        // must not report it.
         output.edges.push(EdgeInput {
-            kind: "TRAIT_IMPL_METHOD".to_string(),
+            kind: "IMPLEMENTS".to_string(),
             source_qualname: Some(qualname.clone()),
-            target_qualname: Some(qualname.clone()),
+            target_qualname: Some(format!("{trait_qualname}::{name}")),
             ..Default::default()
         });
     }
@@ -667,7 +667,9 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // directly — but an inherent impl's methods keep their own `pub`/
     // private status as normal. See `Context::in_trait_scope`.
     next_ctx.in_trait_scope = is_trait_impl;
-    next_ctx.in_trait_impl = is_trait_impl;
+    next_ctx.in_trait_impl = node
+        .child_by_field_name("trait")
+        .map(|t| qualify_type_name(&ctx.module, &normalize_type_path(&node_text(t, source))));
     walk_node(body, &next_ctx, source, output);
 }
 
@@ -2231,13 +2233,29 @@ fn tc() {}
             let sig = sym.signature.clone().unwrap_or_default();
             assert!(!sig.contains("trait_method"), "{}: {sig}", sym.qualname);
         }
-        let marked: Vec<_> = file
+        assert!(
+            !file.edges.iter().any(|e| e.kind == "TRAIT_IMPL_METHOD"),
+            "pseudo-edge must not exist"
+        );
+    }
+
+    #[test]
+    fn trait_impl_methods_get_method_level_implements_edge() {
+        let file = RustExtractor::new()
+            .unwrap()
+            .extract(USES_SRC, "crate")
+            .unwrap();
+        let edges: Vec<_> = file
             .edges
             .iter()
-            .filter(|e| e.kind == "TRAIT_IMPL_METHOD")
-            .filter_map(|e| e.source_qualname.clone())
+            .filter(|e| {
+                e.kind == "IMPLEMENTS" && e.source_qualname.as_deref() == Some("crate::Foo::req")
+            })
             .collect();
-        assert_eq!(marked, vec!["crate::Foo::req".to_string()], "{marked:?}");
+        assert_eq!(edges.len(), 1, "{edges:?}");
+        assert_eq!(edges[0].target_qualname.as_deref(), Some("crate::T::req"));
+        assert!(!file.edges.iter().any(|e| e.kind == "IMPLEMENTS"
+            && e.source_qualname.as_deref() == Some("crate::Foo::inherent")));
     }
 
     #[test]

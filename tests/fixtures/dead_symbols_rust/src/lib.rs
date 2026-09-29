@@ -44,6 +44,12 @@ impl PoolCustomizer {
     pub fn inherent_dead_method(&self) {}
 }
 
+impl std::fmt::Display for PoolCustomizer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("pool")
+    }
+}
+
 pub fn truly_dead_function() {}
 
 pub struct TrulyDeadStruct;

@@ -97,6 +97,15 @@ fn still_reports_inherent_methods_of_trait_implementors() {
 }
 
 #[test]
+fn excludes_external_trait_impl_methods() {
+    let names = rust_dead_qualnames();
+    assert!(
+        !names.iter().any(|q| q.ends_with("PoolCustomizer::fmt")),
+        "{names:?}"
+    );
+}
+
+#[test]
 fn counts_type_references_as_uses() {
     let names = rust_dead_qualnames();
     assert!(!names.iter().any(|q| q.ends_with("CrossRef")), "{names:?}");
