@@ -128,20 +128,29 @@ pub struct DiffHunk {
 #[derive(Debug, Clone)]
 pub struct ChangedFile {
     pub path: String,
-    /// Runs of added (`+`) lines.  Runs are split by removed lines, so a
-    /// symbol inside a single run is entirely new.
+    /// Runs of `+` lines, including ones that replace removed lines.
     pub changed_ranges: Vec<DiffHunk>,
-    /// Same runs as `changed_ranges` (every `+` line is both added and changed).
+    /// Runs of pure insertions: `+` lines not paired with a removed line in
+    /// the same change block.  A replaced line (`-X = 1` / `+X = 2`) is a
+    /// modification, so it is never part of an added run.
     pub added_ranges: Vec<DiffHunk>,
     /// Old-side header ranges (`-start,count`), kept as-is.
     pub deleted_ranges: Vec<DiffHunk>,
-    /// Removed lines have no new-side line number.  Each entry `p` means
-    /// lines were removed between new-side lines `p` and `p + 1`
-    /// (`p == 0` when removed at the very top of the file).
-    pub deletion_points: Vec<i64>,
+    /// Removed lines have no new-side line number; see [`Deletion`].
+    pub deletion_points: Vec<Deletion>,
+}
+
+/// Lines removed between new-side lines `after` and `after + 1`
+/// (`after == 0` when removed at the very top of the file).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deletion {
+    pub after: i64,
+    /// Smallest leading-whitespace width among the removed non-blank lines.
+    pub min_indent: Option<usize>,
 }
 
 impl ChangedFile {
+    /// An empty `ChangedFile` for `path`, with no recorded line changes.
     pub fn new(path: String) -> Self {
         Self {
             path,
@@ -159,11 +168,41 @@ impl ChangedFile {
 
     /// Does a symbol spanning `start..=end` overlap an added line, or contain
     /// a deletion (removed lines between two lines that are both inside it)?
-    pub fn touches(&self, start: i64, end: i64) -> bool {
-        self.changed_ranges.iter().any(|h| {
+    ///
+    /// A deletion right after the symbol's last line is ambiguous: it is
+    /// either a trailing body line (indentation-delimited languages such as
+    /// Python, where no closing delimiter remains) or a following sibling.
+    /// It counts only when the removed lines are indented deeper than the
+    /// symbol's `def` line, which `def_indent` lazily supplies.
+    pub fn touches(
+        &self,
+        start: i64,
+        end: i64,
+        def_indent: impl FnOnce() -> Option<usize>,
+    ) -> bool {
+        if self.changed_ranges.iter().any(|h| {
             let hunk_end = h.start_line + h.line_count - 1;
             start <= hunk_end && end >= h.start_line
-        }) || self.deletion_points.iter().any(|&p| start <= p && p < end)
+        }) || self
+            .deletion_points
+            .iter()
+            .any(|d| start <= d.after && d.after < end)
+        {
+            return true;
+        }
+        let mut trailing = self
+            .deletion_points
+            .iter()
+            .filter(|d| d.after == end)
+            .filter_map(|d| d.min_indent)
+            .peekable();
+        if trailing.peek().is_none() {
+            return false;
+        }
+        match def_indent() {
+            Some(def) => trailing.any(|indent| indent > def),
+            None => false,
+        }
     }
 
     /// Is the symbol `start..=end` entirely made of added lines?
@@ -189,17 +228,30 @@ pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
     let mut new_left = 0i64;
     let mut new_line = 0i64;
     let mut run: Option<(i64, i64)> = None;
+    // Open run of pure insertions (a suffix of `run`), and how many removed
+    // lines of the current change block are still unpaired with a `+` line.
+    let mut pure_run: Option<(i64, i64)> = None;
+    let mut unpaired_removed = 0i64;
 
-    fn flush(file: &mut Option<ChangedFile>, run: &mut Option<(i64, i64)>) {
-        if let (Some(f), Some((start, count))) = (file.as_mut(), run.take()) {
-            f.added_ranges.push(DiffHunk {
-                start_line: start,
-                line_count: count,
-            });
-            f.changed_ranges.push(DiffHunk {
-                start_line: start,
-                line_count: count,
-            });
+    fn flush(
+        file: &mut Option<ChangedFile>,
+        run: &mut Option<(i64, i64)>,
+        pure_run: &mut Option<(i64, i64)>,
+    ) {
+        let Some(f) = file.as_mut() else {
+            run.take();
+            pure_run.take();
+            return;
+        };
+        let hunk = |(start_line, line_count)| DiffHunk {
+            start_line,
+            line_count,
+        };
+        if let Some(r) = run.take() {
+            f.changed_ranges.push(hunk(r));
+        }
+        if let Some(r) = pure_run.take() {
+            f.added_ranges.push(hunk(r));
         }
     }
 
@@ -219,15 +271,37 @@ pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
                         Some((_, count)) => *count += 1,
                         None => run = Some((new_line, 1)),
                     }
+                    if unpaired_removed > 0 {
+                        // Replaces a removed line: a modification, not an insertion.
+                        unpaired_removed -= 1;
+                    } else {
+                        match pure_run.as_mut() {
+                            Some((_, count)) => *count += 1,
+                            None => pure_run = Some((new_line, 1)),
+                        }
+                    }
                     new_line += 1;
                     new_left -= 1;
                 }
                 Some(b'-') => {
-                    flush(&mut current_file, &mut run);
+                    flush(&mut current_file, &mut run, &mut pure_run);
+                    unpaired_removed += 1;
                     if let Some(f) = current_file.as_mut() {
-                        let p = new_line - 1;
-                        if f.deletion_points.last() != Some(&p) {
-                            f.deletion_points.push(p);
+                        let after = new_line - 1;
+                        let indent = line[1..]
+                            .find(|c: char| !c.is_whitespace())
+                            .filter(|_| !line[1..].trim().is_empty());
+                        match f.deletion_points.last_mut() {
+                            Some(d) if d.after == after => {
+                                d.min_indent = match (d.min_indent, indent) {
+                                    (Some(a), Some(b)) => Some(a.min(b)),
+                                    (a, b) => a.or(b),
+                                };
+                            }
+                            _ => f.deletion_points.push(Deletion {
+                                after,
+                                min_indent: indent,
+                            }),
                         }
                     }
                     old_left -= 1;
@@ -236,7 +310,8 @@ pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
                 _ => {
                     // Context line (a space, or an empty line whose trailing
                     // space was stripped).
-                    flush(&mut current_file, &mut run);
+                    flush(&mut current_file, &mut run, &mut pure_run);
+                    unpaired_removed = 0;
                     new_line += 1;
                     old_left -= 1;
                     new_left -= 1;
@@ -244,7 +319,8 @@ pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
             }
             continue;
         }
-        flush(&mut current_file, &mut run);
+        flush(&mut current_file, &mut run, &mut pure_run);
+        unpaired_removed = 0;
         if let Some(rest) = line.strip_prefix("+++ b/") {
             if let Some(file) = current_file.take() {
                 files.push(file);
@@ -288,7 +364,7 @@ pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
             }
         }
     }
-    flush(&mut current_file, &mut run);
+    flush(&mut current_file, &mut run, &mut pure_run);
 
     if let Some(file) = current_file {
         files.push(file);
@@ -809,9 +885,18 @@ new mode 100755
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].deleted_ranges[0].start_line, 5);
         assert_eq!(files[0].deleted_ranges[0].line_count, 1);
-        assert_eq!(files[0].added_ranges[0].start_line, 7);
-        assert_eq!(files[0].added_ranges[0].line_count, 1);
-        assert_eq!(files[0].deletion_points, vec![6]);
+        assert_eq!(files[0].changed_ranges[0].start_line, 7);
+        assert_eq!(files[0].changed_ranges[0].line_count, 1);
+        assert_eq!(
+            files[0].deletion_points,
+            vec![Deletion {
+                after: 6,
+                min_indent: Some(0)
+            }]
+        );
+        // `-old` / `+new` is a replacement: changed, never a pure insertion.
+        assert_eq!(files[0].changed_ranges[0].start_line, 7);
+        assert!(files[0].added_ranges.is_empty());
     }
 
     #[test]
@@ -868,13 +953,14 @@ new mode 100755
 \\ No newline at end of file
 ";
         let f = &parse_diff_with_ranges(diff)[0];
-        assert_eq!(f.deletion_points, vec![1]);
+        assert_eq!(f.deletion_points.len(), 1);
+        assert_eq!(f.deletion_points[0].after, 1);
         assert!(f.added_ranges.is_empty());
         // Deletion between lines 1 and 2: a symbol spanning 1..=2 is touched,
         // one ending at 1 or starting at 2 is not.
-        assert!(f.touches(1, 2));
-        assert!(!f.touches(1, 1));
-        assert!(!f.touches(2, 2));
+        assert!(f.touches(1, 2, || None));
+        assert!(!f.touches(1, 1, || None));
+        assert!(!f.touches(2, 2, || None));
     }
 
     #[test]
@@ -892,7 +978,7 @@ new mode 100755
         let files = parse_diff_with_ranges(diff);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "f.sql");
-        assert_eq!(files[0].added_ranges[0].start_line, 1);
+        assert_eq!(files[0].changed_ranges[0].start_line, 1);
     }
 
     /// Issue #212: two new symbols that hash identically must both be kept

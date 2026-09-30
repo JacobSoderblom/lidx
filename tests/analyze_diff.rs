@@ -140,7 +140,7 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// Returns `{qualname: change_type}` for function/method/class symbols,
+/// Returns `{qualname: change_type}` for function/method/class/const symbols,
 /// asserting the verdicts are identical for -U0, -U3 and -U10 and that
 /// nothing outside `expect_added` is ever reported `added`.
 fn verdicts(
@@ -185,7 +185,7 @@ fn verdicts(
         let mut map = BTreeMap::new();
         for cs in result["changed_symbols"].as_array().unwrap() {
             let kind = cs["symbol"]["kind"].as_str().unwrap_or("");
-            if !matches!(kind, "function" | "method" | "class") {
+            if !matches!(kind, "function" | "method" | "class" | "const" | "static") {
                 continue;
             }
             map.insert(
@@ -311,4 +311,55 @@ fn hunk_whitespace_only_change_marks_function_modified() {
     let edited = BASE.replace("    x = 10", "    x  =  10");
     let v = verdicts(&[("m.py", BASE)], &[("m.py", &edited)], &[]);
     assert_eq!(v, expect(&[("m.beta", "modified")]));
+}
+
+const RS_BASE: &str = "\
+const A: i32 = 1;
+const B: i32 = 2;
+const C: i32 = 3;
+
+fn keep() -> i32 {
+    A + B + C
+}
+";
+
+/// Replacing a pre-existing one-line symbol (`-B = 2` / `+B = 5`) is a
+/// modification, never an addition.
+#[test]
+fn hunk_replaced_one_line_symbol_is_modified_not_added() {
+    let edited = RS_BASE.replace("const B: i32 = 2;", "const B: i32 = 5;");
+    let v = verdicts(&[("m.rs", RS_BASE)], &[("m.rs", &edited)], &[]);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v.values().all(|t| t == "modified"), "{v:?}");
+}
+
+/// A genuinely new one-line symbol inserted between two others is added.
+#[test]
+fn hunk_inserted_one_line_symbol_is_added() {
+    let edited = RS_BASE.replace("const C:", "const NEW: i32 = 9;\nconst C:");
+    let v = verdicts(
+        &[("m.rs", RS_BASE)],
+        &[("m.rs", &edited)],
+        &["crate::m::NEW"],
+    );
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v.values().all(|t| t == "added"), "{v:?}");
+}
+
+/// Python has no closing delimiter, so deleting the last body line leaves no
+/// line of the function after it: the deletion sits at the function's end.
+#[test]
+fn hunk_deleting_trailing_body_line_of_python_function_is_modified() {
+    let edited = BASE.replace("    return x + y + z\n", "");
+    let v = verdicts(&[("m.py", BASE)], &[("m.py", &edited)], &[]);
+    assert_eq!(v, expect(&[("m.beta", "modified")]));
+}
+
+/// The same position, but the removed lines are a following sibling at the
+/// same indentation as the function's `def`: not attributed to it.
+#[test]
+fn hunk_deleting_following_sibling_does_not_touch_preceding_function() {
+    let edited = BASE.replace("def gamma():\n    g = 7\n    return g * 2\n", "");
+    let v = verdicts(&[("m.py", BASE)], &[("m.py", &edited)], &[]);
+    assert!(v.is_empty(), "{v:?}");
 }

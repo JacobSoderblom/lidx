@@ -2455,11 +2455,24 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             continue;
         }
         let has_ranges = cf.has_line_changes();
+        // Source lines, read lazily to tell a trailing body deletion from a
+        // following sibling's (see `ChangedFile::touches`).
+        let mut file_lines: Option<Vec<String>> = None;
         for sym in symbols {
             let change_type = if has_ranges {
                 // Only added lines and deletions inside the symbol count;
                 // context lines never do.
-                if !cf.touches(sym.start_line, sym.end_line) {
+                let def_indent = || {
+                    let text = file_lines
+                        .get_or_insert_with(|| {
+                            std::fs::read_to_string(indexer.repo_root().join(&cf.path))
+                                .map(|t| t.lines().map(str::to_owned).collect())
+                                .unwrap_or_default()
+                        })
+                        .get(usize::try_from(sym.start_line - 1).ok()?)?;
+                    text.find(|c: char| !c.is_whitespace())
+                };
+                if !cf.touches(sym.start_line, sym.end_line, def_indent) {
                     continue;
                 }
                 // Fully within one run of added lines means the symbol is new.
