@@ -64,6 +64,7 @@ impl LanguageExtractor for BicepExtractor {
                 end_byte: decl.end_byte,
                 signature,
                 docstring: decl.description.clone(),
+                identity: None,
             };
             output.symbols.push(symbol);
             output.edges.push(EdgeInput {

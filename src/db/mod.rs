@@ -1614,11 +1614,11 @@ impl Db {
         file_id: i64,
         graph_version: i64,
         private_qualnames: &[String],
-        static_qualnames: &[String],
+        static_member_qualnames: &[String],
         override_symbols: &[(String, i64)],
     ) -> Result<()> {
         if private_qualnames.is_empty()
-            && static_qualnames.is_empty()
+            && static_member_qualnames.is_empty()
             && override_symbols.is_empty()
         {
             self.conn().execute(
@@ -1630,7 +1630,7 @@ impl Db {
         }
         // `visibility` is a space-separated modifier list: `private`, `static`.
         let private_ph = vec!["?"; private_qualnames.len()].join(",");
-        let static_ph = vec!["?"; static_qualnames.len()].join(",");
+        let static_ph = vec!["?"; static_member_qualnames.len()].join(",");
         // Overloads share a qualname, so an override is keyed by its line too.
         let override_test = if override_symbols.is_empty() {
             "0".to_string()
@@ -1650,7 +1650,7 @@ impl Db {
         );
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = private_qualnames
             .iter()
-            .chain(static_qualnames)
+            .chain(static_member_qualnames)
             .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
         for (qualname, line) in override_symbols {
@@ -1690,11 +1690,17 @@ impl Db {
         &mut self,
         file_id: i64,
         metrics: &[SymbolMetricsInput],
-        symbol_map: &HashMap<String, i64>,
+        symbols: &[Symbol],
     ) -> Result<usize> {
         if metrics.is_empty() {
             return Ok(0);
         }
+        // Keyed by (qualname, start byte), not qualname alone: declarations
+        // sharing a qualname (C# overloads, cfg twins) each own their metric.
+        let by_span: HashMap<(&str, i64), i64> = symbols
+            .iter()
+            .map(|s| ((s.qualname.as_str(), s.start_byte), s.id))
+            .collect();
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let mut count = 0;
@@ -1710,7 +1716,8 @@ impl Db {
                     duplication_hash = excluded.duplication_hash",
             )?;
             for metric in metrics {
-                let Some(symbol_id) = symbol_map.get(&metric.qualname) else {
+                let Some(symbol_id) = by_span.get(&(metric.qualname.as_str(), metric.start_byte))
+                else {
                     continue;
                 };
                 stmt.execute(params![
@@ -2377,6 +2384,7 @@ mod tests {
             end_byte: 100,
             signature: signature.map(String::from),
             docstring: None,
+            identity: None,
         }
     }
 
@@ -2792,11 +2800,12 @@ mod tests {
 
         let metrics = vec![SymbolMetricsInput {
             qualname: "carry_guard.fn".to_string(),
+            start_byte: inserted[0].start_byte,
             loc: 5,
             complexity: 2,
             duplication_hash: Some("duphash".to_string()),
         }];
-        db.insert_symbol_metrics(file_id, &metrics, &symbol_map)
+        db.insert_symbol_metrics(file_id, &metrics, &inserted)
             .unwrap();
 
         // Stamp a unique, non-NULL sentinel into every non-exempt column of
@@ -2959,6 +2968,7 @@ mod tests {
                 end_byte: 100,
                 signature: Some("(z: float) -> None".to_string()),
                 docstring: Some("This is a docstring".to_string()),
+                identity: None,
             },
         ];
 

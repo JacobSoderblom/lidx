@@ -163,6 +163,60 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
     }
 }
 
+/// Cap on how much of a Python file `file_identifiers` reads.
+const MAX_SCAN_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Every whole identifier in the Python file at `repo_root/rel_path`,
+/// excluding the import statements themselves (issue #242), or `None` when
+/// the file can't be read. Deliberately a plain token scan with no string
+/// or comment awareness: a name mentioned only in a comment, a string or a
+/// quoted annotation counts as present -- an over-count that keeps
+/// `unused_imports` from accusing working code. Reads at most
+/// `MAX_SCAN_BYTES`.
+pub fn file_identifiers(
+    repo_root: &Path,
+    rel_path: &str,
+) -> Option<std::collections::HashSet<String>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(repo_root.join(rel_path))
+        .ok()?
+        .take(MAX_SCAN_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(identifiers_outside_imports(&String::from_utf8_lossy(
+        &bytes,
+    )))
+}
+
+/// Whole identifiers of `src` outside `import` / `from ... import`
+/// statements. A statement spans its parenthesized or backslash
+/// continuation lines.
+fn identifiers_outside_imports(src: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let mut in_import = false;
+    let mut depth = 0i32;
+    for line in src.lines() {
+        let trimmed = line.trim_start();
+        if !in_import && (trimmed.starts_with("import ") || trimmed.starts_with("from ")) {
+            in_import = true;
+            depth = 0;
+        }
+        if in_import {
+            let code = line.split('#').next().unwrap_or("");
+            depth += code.matches('(').count() as i32 - code.matches(')').count() as i32;
+            in_import = depth > 0 || code.trim_end().ends_with('\\');
+            continue;
+        }
+        out.extend(
+            line.split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|t| !t.is_empty())
+                .map(String::from),
+        );
+    }
+    out
+}
+
 pub fn resolve_import_file_edges(
     repo_root: &Path,
     file_rel_path: &str,
@@ -314,6 +368,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                     end_byte,
                     signature: None,
                     docstring,
+                    identity: None,
                 });
                 let parent = container_qualname(&ctx.module, &ctx.class_stack);
                 output.edges.push(EdgeInput {
@@ -395,6 +450,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                     end_byte,
                     signature,
                     docstring,
+                    identity: None,
                 });
                 let parent = container_qualname(&ctx.module, &ctx.class_stack);
                 output.edges.push(EdgeInput {

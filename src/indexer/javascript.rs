@@ -1661,6 +1661,7 @@ fn handle_class(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         end_byte,
         signature: None,
         docstring: None,
+        identity: None,
     });
     let parent = container_qualname(&ctx.module, &ctx.class_stack);
     output.edges.push(EdgeInput {
@@ -3769,6 +3770,7 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
         end_byte,
         signature,
         docstring: None,
+        identity: None,
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -3827,6 +3829,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         end_byte,
         signature,
         docstring: None,
+        identity: None,
     });
     let parent = container_qualname(&ctx.module, &ctx.class_stack);
     output.edges.push(EdgeInput {
@@ -3875,6 +3878,7 @@ fn handle_named_item(
         end_byte,
         signature: None,
         docstring: None,
+        identity: None,
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -3934,6 +3938,7 @@ fn handle_variable_declaration(
                 end_byte,
                 signature: None,
                 docstring: None,
+                identity: None,
             });
             output.edges.push(EdgeInput {
                 kind: "CONTAINS".to_string(),

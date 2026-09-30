@@ -139,6 +139,7 @@ fn resource_to_symbols(
         end_byte,
         signature: Some(signature),
         docstring,
+        identity: None,
     };
     output.symbols.push(symbol);
     output.edges.push(EdgeInput {
@@ -164,6 +165,7 @@ fn resource_to_symbols(
             end_byte,
             signature: container.image,
             docstring: None,
+            identity: None,
         };
         output.symbols.push(container_symbol);
         output.edges.push(EdgeInput {
