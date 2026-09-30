@@ -49,9 +49,67 @@ impl std::fmt::Display for SymbolNotFound {
 
 impl std::error::Error for SymbolNotFound {}
 
+/// How a `SymbolRef` was turned into a symbol. Lets a handler tell an exact
+/// hit from a silent substitution (issue #235).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedVia {
+    /// `SymbolRef::Id` lookup.
+    Id,
+    /// `SymbolRef::Qualname` that matched a symbol's qualname exactly.
+    Exact,
+    /// `SymbolRef::Qualname` whose exact lookup missed and was answered by
+    /// the fuzzy query fallback -- the symbol is *not* the one asked for.
+    FuzzyFallback,
+    /// `SymbolRef::Query`: fuzzy is the contract, so this is not a
+    /// substitution.
+    Query,
+}
+
+impl ResolvedVia {
+    /// True only for a fuzzy fallback after an exact-qualname miss.
+    pub fn is_inexact(self) -> bool {
+        self == ResolvedVia::FuzzyFallback
+    }
+}
+
+/// A resolved symbol together with how it was found.
+#[derive(Debug)]
+pub struct Resolved {
+    pub symbol: Symbol,
+    pub via: ResolvedVia,
+}
+
+impl Resolved {
+    /// Human-readable warning for a substituted qualname; `None` for an
+    /// exact hit, id or query resolution.
+    pub fn substitution_warning(&self, requested: &str) -> Option<String> {
+        self.via.is_inexact().then(|| {
+            format!(
+                "qualname '{}' not found; resolved by fuzzy match to '{}' (inexact match)",
+                requested, self.symbol.qualname
+            )
+        })
+    }
+
+    /// Stamps `requested_qualname`, `resolved_via` and `exact_match: false`
+    /// onto a JSON object response when the match was a fuzzy fallback. An
+    /// exact hit (or any non-object value) is left byte-for-byte unchanged.
+    /// The returned qualname is the response's own `qualname`/`symbol.qualname`.
+    pub fn annotate_response(&self, requested: &str, response: &mut Value) {
+        if !self.via.is_inexact() {
+            return;
+        }
+        if let Some(obj) = response.as_object_mut() {
+            obj.insert("requested_qualname".to_string(), json!(requested));
+            obj.insert("resolved_via".to_string(), json!("fuzzy_fallback"));
+            obj.insert("exact_match".to_string(), json!(false));
+        }
+    }
+}
+
 /// Outcome of `resolve_symbol_with_candidates`.
 pub enum QueryResolution {
-    Found(Box<Symbol>),
+    Found(Box<Resolved>),
     /// Multiple candidates tied for best match at the exact-name-match tier
     /// (`find_symbols`'s own top ranking criterion) -- picking one would be
     /// a guess.
@@ -65,18 +123,22 @@ pub fn resolve_symbol(
     reference: SymbolRef,
     languages: Option<&[String]>,
     graph_version: i64,
-) -> Result<Symbol> {
+) -> Result<Resolved> {
+    let resolved = |symbol, via| Resolved { symbol, via };
     match reference {
         SymbolRef::Id(id) => db
             .get_symbol_by_id(id)?
+            .map(|sym| resolved(sym, ResolvedVia::Id))
             .ok_or_else(|| anyhow::anyhow!("symbol not found: id={}", id)),
 
         SymbolRef::Qualname(ref qn) => match db.get_symbol_by_qualname(qn, graph_version)? {
-            Some(sym) => Ok(sym),
-            None => resolve_by_query(db, qn, languages, graph_version),
+            Some(sym) => Ok(resolved(sym, ResolvedVia::Exact)),
+            None => resolve_by_query(db, qn, languages, graph_version)
+                .map(|sym| resolved(sym, ResolvedVia::FuzzyFallback)),
         },
 
-        SymbolRef::Query(ref query) => resolve_by_query(db, query, languages, graph_version),
+        SymbolRef::Query(ref query) => resolve_by_query(db, query, languages, graph_version)
+            .map(|sym| resolved(sym, ResolvedVia::Query)),
     }
 }
 
@@ -96,26 +158,27 @@ pub fn resolve_symbol_with_candidates(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<QueryResolution> {
-    let query = match reference {
+    let (query, via) = match reference {
         SymbolRef::Id(_) => {
-            let sym = resolve_symbol(db, reference, languages, graph_version)?;
-            return Ok(QueryResolution::Found(Box::new(sym)));
+            let resolved = resolve_symbol(db, reference, languages, graph_version)?;
+            return Ok(QueryResolution::Found(Box::new(resolved)));
         }
         SymbolRef::Qualname(qn) => {
-            if let Some(sym) = db.get_symbol_by_qualname(&qn, graph_version)? {
-                return Ok(QueryResolution::Found(Box::new(sym)));
+            if let Some(symbol) = db.get_symbol_by_qualname(&qn, graph_version)? {
+                let via = ResolvedVia::Exact;
+                return Ok(QueryResolution::Found(Box::new(Resolved { symbol, via })));
             }
-            qn
+            (qn, ResolvedVia::FuzzyFallback)
         }
-        SymbolRef::Query(query) => query,
+        SymbolRef::Query(query) => (query, ResolvedVia::Query),
     };
 
     let (trimmed, candidates) = trimmed_query_candidates(db, &query, languages, graph_version)?;
     if let Some(tied) = tied_candidates(&trimmed, &candidates) {
         return Ok(QueryResolution::Ambiguous(tied));
     }
-    let sym = resolve_after_candidates(db, &query, candidates, graph_version)?;
-    Ok(QueryResolution::Found(Box::new(sym)))
+    let symbol = resolve_after_candidates(db, &query, candidates, graph_version)?;
+    Ok(QueryResolution::Found(Box::new(Resolved { symbol, via })))
 }
 
 /// Trims `query`, bails with a consistent "no symbol found" error if that
@@ -621,7 +684,7 @@ pub fn resolve_or_recovery(
     graph_version: i64,
     method: &str,
     base_params: &Value,
-) -> Result<std::result::Result<Symbol, Value>> {
+) -> Result<std::result::Result<Resolved, Value>> {
     match resolve_symbol(db, reference, languages, graph_version) {
         Ok(sym) => Ok(Ok(sym)),
         Err(e) => match recovery_from_error(db, &e, graph_version, method, base_params) {
@@ -775,14 +838,61 @@ mod tests {
     }
 
     #[test]
+    fn resolved_via_records_how_each_reference_was_found() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let db = indexer.db();
+        let gv = db.current_graph_version().unwrap();
+        let via = |r: SymbolRef| resolve_symbol(db, r, None, gv).unwrap().via;
+        let id = resolve_symbol(db, SymbolRef::Query("Greeter".into()), None, gv)
+            .unwrap()
+            .symbol
+            .id;
+
+        assert_eq!(via(SymbolRef::Id(id)), ResolvedVia::Id);
+        assert_eq!(
+            via(SymbolRef::Qualname("pkg.core.Greeter".into())),
+            ResolvedVia::Exact
+        );
+        assert_eq!(
+            via(SymbolRef::Qualname("Greeter".into())),
+            ResolvedVia::FuzzyFallback
+        );
+        assert_eq!(via(SymbolRef::Query("Greeter".into())), ResolvedVia::Query);
+        assert!(ResolvedVia::FuzzyFallback.is_inexact());
+        assert!(!ResolvedVia::Exact.is_inexact());
+        assert!(!ResolvedVia::Query.is_inexact());
+
+        // The candidates entry point reports the same provenance.
+        let found = |r: SymbolRef| match resolve_symbol_with_candidates(db, r, None, gv).unwrap() {
+            QueryResolution::Found(r) => r.via,
+            QueryResolution::Ambiguous(_) => panic!("unexpected tie"),
+        };
+        assert_eq!(
+            found(SymbolRef::Qualname("pkg.core.Greeter".into())),
+            ResolvedVia::Exact
+        );
+        assert_eq!(
+            found(SymbolRef::Qualname("Greeter".into())),
+            ResolvedVia::FuzzyFallback
+        );
+        assert_eq!(
+            found(SymbolRef::Query("Greeter".into())),
+            ResolvedVia::Query
+        );
+    }
+
+    #[test]
     fn resolve_by_id() {
         let (_temp, indexer) = indexed_repo("py_mvp");
         let gv = indexer.db().current_graph_version().unwrap();
 
-        let sym =
-            resolve_symbol(indexer.db(), SymbolRef::Query("Greeter".into()), None, gv).unwrap();
+        let sym = resolve_symbol(indexer.db(), SymbolRef::Query("Greeter".into()), None, gv)
+            .unwrap()
+            .symbol;
 
-        let resolved = resolve_symbol(indexer.db(), SymbolRef::Id(sym.id), None, gv).unwrap();
+        let resolved = resolve_symbol(indexer.db(), SymbolRef::Id(sym.id), None, gv)
+            .unwrap()
+            .symbol;
         assert_eq!(resolved.id, sym.id);
         assert_eq!(resolved.name, "Greeter");
     }
@@ -798,7 +908,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         assert_eq!(resolved.name, "Greeter");
         assert_eq!(resolved.qualname, "pkg.core.Greeter");
     }
@@ -808,8 +919,9 @@ mod tests {
         let (_temp, indexer) = indexed_repo("py_mvp");
         let gv = indexer.db().current_graph_version().unwrap();
 
-        let resolved =
-            resolve_symbol(indexer.db(), SymbolRef::Query("Greeter".into()), None, gv).unwrap();
+        let resolved = resolve_symbol(indexer.db(), SymbolRef::Query("Greeter".into()), None, gv)
+            .unwrap()
+            .symbol;
         assert_eq!(resolved.name, "Greeter");
     }
 
@@ -824,7 +936,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         assert_eq!(resolved.name, "Greeter");
         assert!(resolved.qualname.contains("core"));
     }
@@ -863,7 +976,8 @@ mod tests {
             Some(&nonexistent_lang),
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         assert_eq!(resolved.name, "Greeter");
     }
 
@@ -884,7 +998,7 @@ mod tests {
         // Should resolve to the symbol that reads this env var
         assert!(result.is_ok(), "config key fallback should find a symbol");
         let sym = result.unwrap();
-        assert_eq!(sym.file_path, "app.py");
+        assert_eq!(sym.symbol.file_path, "app.py");
     }
 
     #[test]
@@ -898,7 +1012,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         assert_eq!(func.kind, "function");
 
         let seeds = expand_seeds(indexer.db(), func.id, gv).unwrap();
@@ -950,7 +1065,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         assert_eq!(resolved.name, "Greeter");
         assert_eq!(resolved.qualname, "pkg.core.Greeter");
     }
@@ -969,7 +1085,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         assert_eq!(resolved.qualname, "pkg.core");
         assert_eq!(resolved.kind, "module");
     }
@@ -1011,8 +1128,9 @@ mod tests {
         let (_temp, indexer) = indexed_repo("py_mvp");
         let gv = indexer.db().current_graph_version().unwrap();
 
-        let class =
-            resolve_symbol(indexer.db(), SymbolRef::Query("Greeter".into()), None, gv).unwrap();
+        let class = resolve_symbol(indexer.db(), SymbolRef::Query("Greeter".into()), None, gv)
+            .unwrap()
+            .symbol;
         assert_eq!(class.kind, "class");
 
         let seeds = expand_seeds(indexer.db(), class.id, gv).unwrap();
@@ -1063,7 +1181,8 @@ mod tests {
             Some(&empty),
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         assert_eq!(resolved.name, "Greeter");
     }
 
@@ -1072,8 +1191,9 @@ mod tests {
         let (_temp, indexer) = indexed_repo("py_mvp");
         let gv = indexer.db().current_graph_version().unwrap();
 
-        let class =
-            resolve_symbol(indexer.db(), SymbolRef::Query("Greeter".into()), None, gv).unwrap();
+        let class = resolve_symbol(indexer.db(), SymbolRef::Query("Greeter".into()), None, gv)
+            .unwrap()
+            .symbol;
         let seeds = expand_seeds(indexer.db(), class.id, gv).unwrap();
 
         let mut seen = std::collections::HashSet::new();
@@ -1098,7 +1218,7 @@ mod tests {
         // Should resolve to the symbol that reads this env var
         assert!(result.is_ok(), "config URI query should find a symbol");
         let sym = result.unwrap();
-        assert_eq!(sym.file_path, "app.py");
+        assert_eq!(sym.symbol.file_path, "app.py");
     }
 
     #[test]
@@ -1117,7 +1237,7 @@ mod tests {
         // Should resolve to the symbol that reads this env var
         assert!(result.is_ok(), "config URI qualname should find a symbol");
         let sym = result.unwrap();
-        assert_eq!(sym.file_path, "app.py");
+        assert_eq!(sym.symbol.file_path, "app.py");
     }
 
     #[test]
@@ -1136,7 +1256,7 @@ mod tests {
         // Should resolve to the resource that defines this secret
         assert!(result.is_ok(), "secret URI query should find a symbol");
         let sym = result.unwrap();
-        assert_eq!(sym.file_path, "main.bicep");
+        assert_eq!(sym.symbol.file_path, "main.bicep");
     }
 
     #[test]
@@ -1191,7 +1311,7 @@ mod tests {
         .unwrap()
         {
             Err(p) => p,
-            Ok(sym) => panic!("unexpectedly resolved to {}", sym.qualname),
+            Ok(sym) => panic!("unexpectedly resolved to {}", sym.symbol.qualname),
         }
     }
 

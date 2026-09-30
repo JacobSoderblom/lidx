@@ -141,7 +141,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     } else {
         anyhow::bail!("explain_symbol requires id, qualname, or query");
     };
-    let symbol = match crate::resolve::resolve_or_recovery(
+    let resolved = match crate::resolve::resolve_or_recovery(
         indexer.db(),
         sym_ref,
         ctx.languages.as_deref(),
@@ -149,9 +149,16 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         "explain_symbol",
         &raw_params,
     )? {
-        Ok(sym) => sym,
+        Ok(resolved) => resolved,
         Err(payload) => return Ok(payload),
     };
+    // Issue #235: an explicit qualname that missed and was answered by the
+    // fuzzy fallback must say so, not pose as an exact hit.
+    let requested_qualname = params.qualname.clone().unwrap_or_default();
+    if let Some(w) = resolved.substitution_warning(&requested_qualname) {
+        warnings.push(w);
+    }
+    let symbol = resolved.symbol.clone();
 
     // 2. Budget allocation: percentages below are shares of max_bytes (30%
     // source, 20% callers, 20% callees, 10% tests, 10% implements) - FIX #4.
@@ -965,7 +972,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     // onto every nested symbol -- the main `symbol`, each `ExplainRef.symbol`
     // in `callers`/`callees`/`tests`, and each entry of `implements` -- since
     // the top-level `graph_version` field above is already present.
-    Ok(serde_json::to_value(&result)?)
+    let mut response = serde_json::to_value(&result)?;
+    resolved.annotate_response(&requested_qualname, &mut response);
+    Ok(response)
 }
 
 /// Client side of each bridge pair (see `bridge_complement`): the kinds an
@@ -1091,7 +1100,7 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
     let ctx = HandlerContext::new(indexer, params.common)?;
 
     // Resolve optional focus symbol via resolve module
-    let focus_sym = if let Some(ref qn) = params.focus_qualname {
+    let focus_sym: Option<crate::resolve::Resolved> = if let Some(ref qn) = params.focus_qualname {
         Some(crate::resolve::resolve_symbol(
             indexer.db(),
             crate::resolve::SymbolRef::Qualname(qn.clone()),
@@ -1180,17 +1189,21 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
     }
 
     // Include focus symbol metadata when provided
-    if let Some(sym) = focus_sym {
-        result.insert(
-            "focus_symbol".to_string(),
-            json!({
-                "id": sym.id,
-                "name": sym.name,
-                "qualname": sym.qualname,
-                "kind": sym.kind,
-                "file_path": sym.file_path,
-            }),
+    if let Some(resolved) = focus_sym {
+        let sym = &resolved.symbol;
+        let mut focus = json!({
+            "id": sym.id,
+            "name": sym.name,
+            "qualname": sym.qualname,
+            "kind": sym.kind,
+            "file_path": sym.file_path,
+        });
+        // Issue #235: disclose a focus_qualname that was fuzzy-substituted.
+        resolved.annotate_response(
+            params.focus_qualname.as_deref().unwrap_or_default(),
+            &mut focus,
         );
+        result.insert("focus_symbol".to_string(), focus);
     }
 
     Ok(Value::Object(result))
@@ -1528,7 +1541,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     } else {
         anyhow::bail!("trace_flow requires start_id, start_qualname, or query");
     };
-    let start = match crate::resolve::resolve_or_recovery(
+    let resolved = match crate::resolve::resolve_or_recovery(
         indexer.db(),
         start_ref,
         ctx.languages.as_deref(),
@@ -1536,9 +1549,12 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         "trace_flow",
         &raw_params,
     )? {
-        Ok(sym) => sym,
+        Ok(resolved) => resolved,
         Err(payload) => return Ok(payload),
     };
+    // Issue #235: a start_qualname answered by the fuzzy fallback is disclosed.
+    let requested_qualname = params.start_qualname.clone().unwrap_or_default();
+    let start = resolved.symbol.clone();
 
     // Resolve optional end symbol
     let end_id = if let Some(id) = params.end_id {
@@ -1755,6 +1771,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     if compact_mode {
         value = super::compact::apply_compact_format(value);
     }
+    resolved.annotate_response(&requested_qualname, &mut value);
     Ok(value)
 }
 
@@ -2034,6 +2051,8 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     // Resolve symbol by id, qualname, or fuzzy query (skip if config URI already resolved).
     // For qualname/query we catch resolution failure and return a structured recovery payload
     // instead of propagating a flat error — giving the caller actionable next_hops.
+    let requested_qualname = params.qualname.clone().unwrap_or_default();
+    let mut substitution: Option<crate::resolve::Resolved> = None;
     let seed_ids = if !seed_ids.is_empty() {
         seed_ids
     } else {
@@ -2048,7 +2067,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 "analyze_impact requires id, qualname, or query"
             ));
         };
-        let symbol = match crate::resolve::resolve_or_recovery(
+        let resolved = match crate::resolve::resolve_or_recovery(
             indexer.db(),
             sym_ref,
             ctx.languages.as_deref(),
@@ -2056,9 +2075,14 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
             "analyze_impact",
             &raw_params,
         )? {
-            Ok(sym) => sym,
+            Ok(resolved) => resolved,
             Err(payload) => return Ok(payload),
         };
+        // Issue #235: remember a fuzzy fallback so the response can disclose it.
+        let symbol = resolved.symbol.clone();
+        if resolved.via.is_inexact() {
+            substitution = Some(resolved);
+        }
 
         // Property→parent expansion: if the seed is a property/field/attribute/const,
         // also add the parent class so CONFIG_BIND consumers are reachable
@@ -2302,18 +2326,25 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         if let Some(obj) = value.as_object_mut() {
             obj.insert("next_hops".to_string(), json!(next_hops));
         }
+        if let Some(r) = &substitution {
+            r.annotate_response(&requested_qualname, &mut value);
+        }
         return Ok(value);
     }
 
-    if resolution_next_hops.is_empty() {
-        Ok(json!(result))
+    let mut value = if resolution_next_hops.is_empty() {
+        json!(result)
     } else {
         let mut value = serde_json::to_value(&result)?;
         if let Some(obj) = value.as_object_mut() {
             obj.insert("next_hops".to_string(), json!(resolution_next_hops));
         }
-        Ok(value)
+        value
+    };
+    if let Some(r) = &substitution {
+        r.annotate_response(&requested_qualname, &mut value);
     }
+    Ok(value)
 }
 
 pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Result<Value> {
