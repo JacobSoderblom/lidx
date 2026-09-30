@@ -259,3 +259,145 @@ fn unused_imports_parenthesized_from_import_binds_aliases() {
         "other_alias is never used, got: {unused:?}"
     );
 }
+
+// ---- Issue #242: value uses (no edge emitted) must count as usage ----
+
+/// All six false-positive shapes from the report, plus one genuinely
+/// unused import that must still be flagged.
+#[test]
+fn unused_imports_counts_python_value_uses_and_still_flags_unused() {
+    let src = "\
+import dlt
+from a import RunLifeCycleState
+from b import InputKind
+from c import dpb_runtime
+from d import advanced_dataproduct
+from e import ALL_DATASOURCES
+from f import ValidationOption
+from g import PipelineSpec
+
+
+@dlt.table(name=\"x\")
+def go(obj):
+    states = (
+        RunLifeCycleState.TERMINATED,
+        RunLifeCycleState.SKIPPED,
+    )
+    spec = make(kind=InputKind.Datasource)
+    dpb_runtime.run(advanced_dataproduct)
+    dpb_runtime.run(*ALL_DATASOURCES)
+    obj.bk_dup(ValidationOption.Flag)
+    return states, spec
+";
+    let (_tmp, mut indexer) = temp_indexer(&[("app.py", src)]);
+    indexer.reindex().unwrap();
+    let unused = unused_import_qualnames(&mut indexer);
+    for used in [
+        "dlt",
+        "a.RunLifeCycleState",
+        "b.InputKind",
+        "c.dpb_runtime",
+        "d.advanced_dataproduct",
+        "e.ALL_DATASOURCES",
+        "f.ValidationOption",
+    ] {
+        assert!(
+            !unused.iter().any(|q| q == used),
+            "{used} is used: {unused:?}"
+        );
+    }
+    assert!(
+        unused.iter().any(|q| q == "g.PipelineSpec"),
+        "PipelineSpec is unused and must be flagged: {unused:?}"
+    );
+}
+
+#[test]
+fn unused_imports_counts_membership_bare_expr_and_fstring_uses() {
+    let src = "\
+from m import Kind, Flag, Other, Name
+
+def f(x):
+    if x in (Kind.A, Kind.B):
+        pass
+    Flag
+    return f\"hello {Name.value!r} and {{Other}}\"
+";
+    let (_tmp, mut indexer) = temp_indexer(&[("app.py", src)]);
+    indexer.reindex().unwrap();
+    let unused = unused_import_qualnames(&mut indexer);
+    for used in ["m.Kind", "m.Flag", "m.Name"] {
+        assert!(
+            !unused.iter().any(|q| q == used),
+            "{used} is used: {unused:?}"
+        );
+    }
+    // `{{Other}}` is an escaped literal, not an interpolation.
+    assert!(unused.iter().any(|q| q == "m.Other"), "{unused:?}");
+}
+
+#[test]
+fn unused_imports_token_scan_alias_and_whole_identifier() {
+    let src = "\
+import x as y
+import p as q
+from m import InputKind
+from n import Foo
+
+def f():
+    InputKindOther = 1
+    return y.go(), InputKindOther
+";
+    let (_tmp, mut indexer) = temp_indexer(&[("app.py", src)]);
+    indexer.reindex().unwrap();
+    let unused = unused_import_qualnames(&mut indexer);
+    assert!(!unused.iter().any(|q| q == "x"), "y is used: {unused:?}");
+    assert!(unused.iter().any(|q| q == "p"), "q unused: {unused:?}");
+    assert!(
+        unused.iter().any(|q| q == "m.InputKind"),
+        "InputKindOther must not count as InputKind: {unused:?}"
+    );
+}
+
+#[test]
+fn unused_imports_ignores_names_in_import_block_strings_and_comments() {
+    let src = "\
+import os
+import os.path as osp
+from typing import (
+    List,  # os used here? no
+)
+from pkg import Ghost
+
+# Ghost in a comment isn't's a use
+DOC = \"Ghost in a string\"
+'''
+Ghost in a docstring, os too
+'''
+
+def f():
+    return List
+";
+    let (_tmp, mut indexer) = temp_indexer(&[("app.py", src)]);
+    indexer.reindex().unwrap();
+    let unused = unused_import_qualnames(&mut indexer);
+    assert!(unused.iter().any(|q| q == "os"), "{unused:?}");
+    assert!(unused.iter().any(|q| q == "pkg.Ghost"), "{unused:?}");
+    assert!(!unused.iter().any(|q| q == "typing.List"), "{unused:?}");
+}
+
+/// Non-Python behavior is unchanged: a JS import mentioned only in a
+/// string/comment is still reported (the token scan is Python-only).
+#[test]
+fn unused_imports_token_scan_is_python_only() {
+    let (_tmp, mut indexer) = temp_indexer(&[
+        (
+            "a.ts",
+            "import { thing } from './b';\nexport const x = 1;\n",
+        ),
+        ("b.ts", "export const thing = 1;\n"),
+    ]);
+    indexer.reindex().unwrap();
+    let unused = unused_import_qualnames(&mut indexer);
+    assert!(unused.iter().any(|q| q == "./b"), "{unused:?}");
+}

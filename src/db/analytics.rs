@@ -4,6 +4,7 @@ use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_
 use crate::model::{DuplicateGroup, Edge, Symbol, SymbolComplexity, SymbolCoupling};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 // Issue #134 follow-up: module identity used to be computed twice in
 // `top_fan_in_by_module` -- once here via a raw-SQL "first path segment"
@@ -636,13 +637,18 @@ impl Db {
     /// occurring as a token in a same-file symbol's `signature` -- the
     /// annotation-only case (`def f(x: Optional[int])`), which never emits
     /// any edge at all; (4) a module-level `__all__` re-export of that name
-    /// (`python::emit_module_export_edges`, `MODULE_EXPORT_KIND`).
+    /// (`python::emit_module_export_edges`, `MODULE_EXPORT_KIND`); and, for
+    /// Python files only (issue #242), (5) a whole-identifier scan of the
+    /// file's code (`py_names`) -- value uses such as decorators, arguments
+    /// and attribute reads emit no edge -- excluding import statements,
+    /// comments and strings (f-string interpolations count).
     pub fn unused_imports(
         &self,
         limit: usize,
         languages: Option<&[String]>,
         paths: Option<&[String]>,
         graph_version: i64,
+        repo_root: &Path,
     ) -> Result<Vec<Edge>> {
         let mut full_sql = String::from(
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
@@ -755,6 +761,8 @@ impl Db {
             .collect();
         let usage = self.file_usage_signals(&file_ids, graph_version)?;
 
+        // Issue #242: per-file Python name scans, read lazily and cached.
+        let mut py_names: HashMap<String, Option<HashSet<String>>> = HashMap::new();
         let mut results = Vec::new();
         for (edge, file_id) in candidates {
             if results.len() >= limit {
@@ -772,6 +780,19 @@ impl Db {
                 .as_deref()
                 .unwrap_or_else(|| qualname_trailing_name(target_qualname));
             if import_alias_used(alias, edge.target_symbol_id, file_id, &usage) {
+                continue;
+            }
+            if is_python_path(&edge.file_path)
+                && py_names
+                    .entry(edge.file_path.clone())
+                    .or_insert_with(|| {
+                        std::fs::read_to_string(repo_root.join(&edge.file_path))
+                            .ok()
+                            .map(|src| super::py_names::used_names(&src))
+                    })
+                    .as_ref()
+                    .is_some_and(|names| names.contains(alias))
+            {
                 continue;
             }
             results.push(edge);
@@ -1037,6 +1058,10 @@ fn import_alias_used(
         .signatures
         .iter()
         .any(|signature| signature_mentions(signature, alias))
+}
+
+fn is_python_path(path: &str) -> bool {
+    path.ends_with(".py") || path.ends_with(".pyi")
 }
 
 /// Whether `alias` occurs as a whole identifier token in `signature` (e.g.
