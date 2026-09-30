@@ -183,8 +183,17 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
 /// gives the referenced file. A reference escaping the repo root keeps its
 /// leading `..`, so it names the path and matches no symbol.
 pub fn module_ref_target(file_rel_path: &str, raw: &str) -> String {
+    // An absolute path is not repo-relative: keep it verbatim (it matches no
+    // symbol and the unresolved reason names it) instead of dropping the root.
+    if raw.starts_with('/') || raw.starts_with('\\') {
+        return raw.to_string();
+    }
     let dir = Path::new(file_rel_path).parent().unwrap_or(Path::new(""));
     let joined = crate::util::normalize_path(&dir.join(raw));
+    // `a/..` collapses to the directory itself, which names no module file.
+    if joined == "." {
+        return raw.to_string();
+    }
     canonical_module_path(&joined).unwrap_or(joined)
 }
 

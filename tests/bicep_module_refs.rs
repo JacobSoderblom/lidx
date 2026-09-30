@@ -3,8 +3,7 @@
 //! module qualname (`..` collapsed, `.bicep`/`.bicepparam` stripped).
 
 use lidx::indexer::Indexer;
-use lidx::indexer::bicep::{BicepExtractor, module_name_from_rel_path, module_ref_target};
-use lidx::indexer::extract::LanguageExtractor;
+use lidx::indexer::bicep::{module_name_from_rel_path, module_ref_target};
 use rusqlite::params;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -134,6 +133,7 @@ fn missing_target_is_unresolved_and_names_path() {
         unresolved[0].0.contains("infra/modules/ghost"),
         "{unresolved:?}"
     );
+    assert_eq!(unresolved[0].1, "no_candidates");
 }
 
 #[test]
@@ -151,6 +151,7 @@ fn reference_escaping_repo_root_is_unresolved() {
     let unresolved = fx.unresolved();
     assert_eq!(unresolved.len(), 1, "{unresolved:?}");
     assert!(unresolved[0].0.contains("../x"), "{unresolved:?}");
+    assert_eq!(unresolved[0].1, "no_candidates");
 }
 
 #[test]
@@ -177,7 +178,43 @@ fn target_and_module_qualname_share_one_normalisation() {
     // An escaping reference keeps its leading `..`, so it names the path and
     // cannot equal any in-repo module qualname.
     assert_eq!(module_ref_target("main.bicep", "../x.bicep"), "../x");
-    let _ = BicepExtractor::new()
-        .unwrap()
-        .module_name_from_rel_path("a.bicep");
+    // `a/..` and absolute references keep the raw text and match nothing.
+    assert_eq!(module_ref_target("main.bicep", "a/.."), "a/..");
+    assert_eq!(
+        module_ref_target("a/main.bicep", "/infra/y.bicep"),
+        "/infra/y.bicep"
+    );
+}
+
+#[test]
+fn absolute_reference_is_unresolved() {
+    let fx = index(&[
+        (
+            "main.bicep",
+            "module abs '/infra/y.bicep' = {\n  name: 'a'\n}\n",
+        ),
+        ("infra/y.bicep", MODULE),
+    ]);
+    assert!(fx.resolved().is_empty(), "{:?}", fx.resolved());
+    let unresolved = fx.unresolved();
+    assert_eq!(unresolved.len(), 1, "{unresolved:?}");
+    assert!(unresolved[0].0.contains("/infra/y"), "{unresolved:?}");
+    assert_eq!(unresolved[0].1, "no_candidates");
+}
+
+#[test]
+fn registry_reference_and_using_none_make_no_file_edge() {
+    let fx = index(&[
+        (
+            "main.bicep",
+            "module reg 'br:example.azurecr.io/bicep/mod:v1' = {\n  name: 'r'\n}\n",
+        ),
+        ("p.bicepparam", "using none\n\nparam a = 'x'\n"),
+    ]);
+    assert!(fx.resolved().is_empty(), "{:?}", fx.resolved());
+    assert!(
+        fx.unresolved().iter().all(|(n, _)| !n.ends_with(".bicep")),
+        "{:?}",
+        fx.unresolved()
+    );
 }

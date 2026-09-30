@@ -19,6 +19,12 @@ pub fn normalize_rel_path(repo_root: &Path, path: &Path) -> Result<String> {
     Ok(normalize_path(rel))
 }
 
+/// Lexically normalises `path` to a `/`-joined string: `.` is dropped and
+/// `a/..` collapses. A `..` with nothing to pop is kept (`../x`), so callers
+/// can detect a path escaping its base. An empty result is `"."`. No
+/// filesystem access, symlinks are not resolved. Callers audited for #228:
+/// `normalize_rel_path` and `search.rs` pass strip_prefix'd paths (no `..`),
+/// the JS resolver collapses before calling, Bicep relies on the collapsing.
 pub fn normalize_path(path: &Path) -> String {
     let mut parts = Vec::new();
     for comp in path.components() {
