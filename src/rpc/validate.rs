@@ -144,6 +144,7 @@ mod tests {
             dry_run: None,
             strategy: None,
             common: super::super::CommonParams::default(),
+            extra: Default::default(),
         }
     }
 

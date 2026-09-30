@@ -52,7 +52,7 @@ impl SectionBudget {
 
 pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let raw_params = params.clone();
-    let params: ExplainSymbolParams = serde_json::from_value(params)?;
+    let params: ExplainSymbolParams = super::parse_params("explain_symbol", params)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
 
     // ponytail: 200_000 is a hard ceiling on the internal section budget, not a
@@ -1086,7 +1086,7 @@ fn cross_boundary_refs(
 // ---------------------------------------------------------------------------
 
 pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: OrientParams = serde_json::from_value(params)?;
+    let params: OrientParams = super::parse_params("orient", params)?;
     let view = params.view.as_deref().unwrap_or("all");
     let ctx = HandlerContext::new(indexer, params.common)?;
 
@@ -1197,7 +1197,7 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
 }
 
 pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: RepoMapParams = serde_json::from_value(params)?;
+    let params: RepoMapParams = super::parse_params("repo_map", params)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
     let max_bytes = params.max_bytes.unwrap_or(8000).clamp(1000, 50000);
 
@@ -1270,7 +1270,7 @@ pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Va
 }
 
 pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: DeadSymbolsParams = serde_json::from_value(params)?;
+    let params: DeadSymbolsParams = super::parse_params("dead_symbols", params)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
     let limit = params.limit.unwrap_or(50);
     let include_unused_imports = params.include_unused_imports.unwrap_or(true);
@@ -1322,7 +1322,7 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
 }
 
 pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: TopComplexityParams = serde_json::from_value(params)?;
+    let params: TopComplexityParams = super::parse_params("top_complexity", params)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
     let limit = params.limit.unwrap_or(10);
     let min_complexity = params.min_complexity.unwrap_or(1);
@@ -1416,7 +1416,7 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
 }
 
 pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: ContextParams = serde_json::from_value(params)?;
+    let params: ContextParams = super::parse_params("context", params)?;
     let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
     let file_ctx = crate::context::build_file_context(
         indexer.db(),
@@ -1466,7 +1466,7 @@ fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
 
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let raw_params = params.clone();
-    let params: TraceFlowParams = serde_json::from_value(params)?;
+    let params: TraceFlowParams = super::parse_params("trace_flow", params)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
     let max_hops = params.max_hops.unwrap_or(5).min(10);
     let include_snippets = params.include_snippets.unwrap_or(true);
@@ -1888,7 +1888,7 @@ fn batch_error_entry(
 
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let raw_params = params.clone();
-    let params: AnalyzeImpactParams = serde_json::from_value(params)?;
+    let params: AnalyzeImpactParams = super::parse_params("analyze_impact", params)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
     // Issue #81 (R3): validated once here, ahead of both the batch path
     // (`build_impact_config`) and the single-seed path below -- both read
@@ -2317,7 +2317,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
 }
 
 pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: AnalyzeDiffParams = serde_json::from_value(params)?;
+    let params: AnalyzeDiffParams = super::parse_params("analyze_diff", params)?;
     // analyze_diff.paths means "changed files", not a search-path filter
     let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
     let languages = scan::normalize_language_filter(params.languages.as_deref())?;
@@ -2775,7 +2775,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 // ---------------------------------------------------------------------------
 
 pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: RgParams = serde_json::from_value(params)?;
+    let params: RgParams = super::parse_params("search", params)?;
     super::validate::validate_pattern_length(&params.query, "search_rg")?;
     let limit = params.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
     let context_lines = normalize_rg_context(params.context_lines);
@@ -2903,7 +2903,7 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
 // ---------------------------------------------------------------------------
 
 pub(super) fn handle_reindex(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: ReindexParams = serde_json::from_value(params)?;
+    let params: ReindexParams = super::parse_params("reindex", params)?;
     let stats = indexer.reindex()?;
 
     // Optionally force another repair pass after reindexing, beyond the one
@@ -2975,7 +2975,7 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
     const MAX_SEEDS: usize = 100;
     const MAX_BYTES_HARD_CAP: usize = 2_000_000; // 2MB
 
-    let params: GatherContextParams = serde_json::from_value(params)?;
+    let params: GatherContextParams = super::parse_params("gather_context", params)?;
 
     // Validate parameters
     let validation = super::validate::validate_gather_context_params(&params);
@@ -3033,7 +3033,7 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
 }
 
 pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: OnboardParams = serde_json::from_value(params)?;
+    let params: OnboardParams = super::parse_params("onboard", params)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
 
     // 1. Repo overview (compact)

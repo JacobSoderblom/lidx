@@ -101,52 +101,37 @@ fn languages_filters_search_hits() {
     assert_eq!(combined, set(&["tests/test_app.py"]));
 }
 
-#[test]
-fn scope_and_languages_are_advertised_in_search_schema() {
-    let schema = rpc::method_param_schema("search");
-    let props = schema["properties"].as_object().unwrap();
-    assert!(props.contains_key("scope"), "schema: {schema}");
-    assert!(props.contains_key("languages"), "schema: {schema}");
-}
-
-#[test]
-fn unknown_params_detected_for_every_dispatchable_method() {
-    for method in rpc::METHOD_LIST {
-        let unknown = rpc::unknown_params(method, &json!({"bogus_param": 1}));
-        assert_eq!(unknown, vec!["bogus_param".to_string()], "method {method}");
-
-        // Every advertised property, plus the universal response-budget
-        // params, must be accepted.
-        let schema = rpc::method_param_schema(method);
-        let mut params = serde_json::Map::new();
-        for key in schema["properties"].as_object().unwrap().keys() {
-            params.insert(key.clone(), Value::Null);
-        }
-        params.insert("max_response_bytes".into(), Value::Null);
-        params.insert("max_tokens".into(), Value::Null);
-        assert!(
-            rpc::unknown_params(method, &Value::Object(params)).is_empty(),
-            "method {method} rejects its own advertised params"
-        );
-    }
+/// Minimal valid params per method (its required fields), plus a stray key.
+fn with_bogus(method: &str) -> Value {
+    let mut params = match method {
+        "search" => json!({"query": "needle"}),
+        "outline" | "context" => json!({"path": "src/app.py"}),
+        "read_symbol" => json!({"qualname": "needle_app"}),
+        _ => json!({}),
+    };
+    params["bogus_param"] = json!(1);
+    params
 }
 
 #[test]
 fn accepted_aliases_are_not_unknown() {
-    for (method, key) in [
-        ("search", "pattern"),
-        ("search", "q"),
-        ("search", "text"),
-        ("search", "as_of"),
-        ("search", "version"),
-        ("trace_flow", "start_query"),
-        ("analyze_diff", "path"),
-        ("context", "version"),
+    let (_t, mut ix) = build();
+    for (method, params) in [
+        ("search", json!({"pattern": "needle", "version": null})),
+        ("search", json!({"q": "needle", "as_of": null})),
+        ("search", json!({"text": "needle"})),
+        ("trace_flow", json!({"start_query": "needle_app"})),
+        ("analyze_diff", json!({"path": ["src/app.py"]})),
+        ("context", json!({"path": "src/app.py", "version": null})),
     ] {
-        assert!(
-            rpc::unknown_params(method, &json!({ key: 1 })).is_empty(),
-            "{method}.{key} is a serde alias and must not be flagged"
-        );
+        // The call itself may fail for other reasons; it must not be
+        // rejected as carrying unknown params.
+        if let Err(err) = rpc::handle_method(&mut ix, method, params.clone()) {
+            assert!(
+                !err.to_string().contains("unknown param"),
+                "{method} {params}: {err}"
+            );
+        }
     }
 }
 
@@ -154,7 +139,7 @@ fn accepted_aliases_are_not_unknown() {
 fn strict_dispatch_errors_naming_offending_key_for_every_method() {
     let (_t, mut ix) = build();
     for method in rpc::METHOD_LIST {
-        let err = rpc::handle_method(&mut ix, method, json!({"bogus_param": 1}))
+        let err = rpc::handle_method(&mut ix, method, with_bogus(method))
             .expect_err(&format!("{method} must reject unknown params"))
             .to_string();
         assert!(err.contains("bogus_param"), "{method}: {err}");

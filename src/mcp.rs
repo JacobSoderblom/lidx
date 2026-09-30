@@ -210,7 +210,8 @@ fn initialize_result(message: &Value) -> Value {
     \n\
     Edge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, \
     HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, \
-    USES, XREF, MODULE_FILE, IMPORTS_FILE. Scope values (`search` param `scope`): code, docs, tests, examples, all.",
+    USES, XREF, MODULE_FILE, IMPORTS_FILE. Scope values (`search` param `scope`): code, docs, tests, examples, all. \
+    Params a method does not accept are ignored, not fatal: the result then carries `_meta.ignored_params` and a trailing text block naming them.",
             other_methods = other_methods_list()
         ),
     })
@@ -331,8 +332,8 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
     // report what was ignored instead of failing.
     match rpc::handle_method_lenient(indexer, &method, call_params) {
         Ok((result, ignored)) => {
-            let result = with_ignored_params(result, ignored);
-            jsonrpc_result(id, call_result_ok(result, text_mode, include_structured))
+            let payload = call_result_ok(result, text_mode, include_structured);
+            jsonrpc_result(id, with_ignored_params(payload, &ignored, text_mode))
         }
         Err(err) => jsonrpc_result(
             id,
@@ -341,23 +342,29 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
     }
 }
 
-/// Attach `ignored_params` to a result. Absent when nothing was ignored, so
-/// well-formed requests get byte-identical responses. A bare-array result is
-/// wrapped as `{"items": [...]}` (the same shape `structuredContent` uses).
-fn with_ignored_params(result: Value, ignored: Vec<String>) -> Value {
+/// Report ignored params without touching the result's own shape: the
+/// tool result gains `_meta.ignored_params` and (unless `text_mode` is
+/// `none`) one extra trailing text block so a model that only reads text
+/// still sees it. `structuredContent` and the first content block stay
+/// exactly as for a well-formed call, and nothing is added when nothing was
+/// ignored.
+fn with_ignored_params(mut payload: Value, ignored: &[String], text_mode: TextMode) -> Value {
     if ignored.is_empty() {
-        return result;
+        return payload;
     }
-    let mut obj = match ensure_object_response(result) {
-        Value::Object(map) => map,
-        other => {
-            let mut map = serde_json::Map::new();
-            map.insert("result".to_string(), other);
-            map
-        }
-    };
-    obj.insert("ignored_params".to_string(), json!(ignored));
-    Value::Object(obj)
+    payload["_meta"] = json!({ "ignored_params": ignored });
+    if !matches!(text_mode, TextMode::None)
+        && let Some(content) = payload["content"].as_array_mut()
+    {
+        content.push(json!({
+            "type": "text",
+            "text": format!(
+                "ignored_params: {} (not accepted by this method; the call ran without them)",
+                ignored.join(", ")
+            )
+        }));
+    }
+    payload
 }
 
 const MAX_RESPONSE_BYTES: usize = 512_000; // 500KB hard cap
@@ -705,39 +712,79 @@ mod tests {
         }
     }
 
-    #[test]
-    fn mcp_unknown_param_succeeds_and_is_listed_as_ignored() {
-        let (mut state, _repo) = mcp_state("ignored");
-        let ok = call_tool(&mut state, "search", json!({"query": "needle"}));
-        assert_eq!(ok["isError"], false, "{ok}");
-        assert!(
-            ok["structuredContent"].get("ignored_params").is_none(),
-            "no ignored_params expected for valid request: {ok}"
-        );
-        assert!(
-            !ok["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("ignored_params")
-        );
+    fn full_response(state: &mut State, method: &str, params: Value) -> Value {
+        let msg = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "lidx", "arguments": {
+                "method": method, "params": params, "include_structured": true
+            }}
+        });
+        handle_message(msg, state).unwrap()
+    }
 
-        let res = call_tool(
+    #[test]
+    fn well_formed_call_response_is_unchanged() {
+        let (mut state, _repo) = mcp_state("shape");
+        let resp = full_response(&mut state, "search", json!({"query": "needle"}));
+        let hit = json!({
+            "line": 1,
+            "line_text": "def needle():",
+            "next_hops": [{
+                "description": "Outline app.py",
+                "method": "outline",
+                "params": {"path": "app.py"}
+            }],
+            "path": "app.py"
+        });
+        let expected = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{"type": "text", "text": json!([hit.clone()]).to_string()}],
+                "isError": false,
+                "structuredContent": {"items": [hit]}
+            }
+        });
+        assert_eq!(resp, expected);
+    }
+
+    #[test]
+    fn stray_param_on_list_result_keeps_shape_and_reports_ignored() {
+        let (mut state, _repo) = mcp_state("stray");
+        let clean = full_response(&mut state, "search", json!({"query": "needle"}));
+        let stray = full_response(
             &mut state,
             "search",
             json!({"query": "needle", "bogus_param": 1}),
         );
-        assert_eq!(res["isError"], false, "{res}");
-        assert_eq!(
-            res["structuredContent"]["ignored_params"],
-            json!(["bogus_param"]),
-            "{res}"
-        );
+        let (clean, stray) = (&clean["result"], &stray["result"]);
+        assert_eq!(stray["isError"], false, "{stray}");
+        // The result itself is untouched: still a bare array in the first
+        // text block and the same structuredContent.
+        assert_eq!(stray["content"][0], clean["content"][0]);
         assert!(
-            res["content"][0]["text"]
+            stray["content"][0]["text"]
                 .as_str()
                 .unwrap()
-                .contains("bogus_param")
+                .starts_with('[')
         );
+        assert_eq!(stray["structuredContent"], clean["structuredContent"]);
+        // The ignored param is reported beside it.
+        assert_eq!(stray["_meta"]["ignored_params"], json!(["bogus_param"]));
+        let extra = stray["content"][1]["text"].as_str().unwrap();
+        assert!(extra.contains("bogus_param"), "{extra}");
+        assert_eq!(stray["content"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn stray_param_on_object_result_keeps_shape() {
+        let (mut state, _repo) = mcp_state("strayobj");
+        let clean = full_response(&mut state, "onboard", json!({}));
+        let stray = full_response(&mut state, "onboard", json!({"bogus_param": 1}));
+        let (clean, stray) = (&clean["result"], &stray["result"]);
+        assert_eq!(stray["content"][0], clean["content"][0]);
+        assert_eq!(stray["structuredContent"], clean["structuredContent"]);
+        assert_eq!(stray["_meta"]["ignored_params"], json!(["bogus_param"]));
     }
 
     #[test]
@@ -750,7 +797,9 @@ mod tests {
         );
         assert_eq!(res["isError"], true, "{res}");
         let text = res["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("tests") && text.contains("code"), "{text}");
+        for v in ["code", "docs", "tests", "examples", "all"] {
+            assert!(text.contains(v), "error should list '{v}': {text}");
+        }
     }
 
     #[test]
