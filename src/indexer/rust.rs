@@ -844,14 +844,16 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // are symbols, are pinned per item by `walk_declaration_list`.
 
     let mut grpc_service = None;
+    let mut trait_qualname = None;
     if let Some(trait_node) = node.child_by_field_name("trait") {
         let trait_name = normalize_type_path(&node_text(trait_node, source));
         if !trait_name.is_empty() {
-            let trait_qualname = qualify_trait_name(ctx, &trait_name);
+            let qualname = qualify_trait_name(ctx, &trait_name);
+            trait_qualname = Some(qualname.clone());
             output.edges.push(EdgeInput {
                 kind: "IMPLEMENTS".to_string(),
                 source_qualname: Some(type_qualname.clone()),
-                target_qualname: Some(trait_qualname),
+                target_qualname: Some(qualname),
                 detail: None,
                 evidence_snippet: None,
                 ..Default::default()
@@ -872,9 +874,7 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // directly — but an inherent impl's methods keep their own `pub`/
     // private status as normal. See `Context::in_trait_scope`.
     next_ctx.in_trait_scope = is_trait_impl;
-    next_ctx.in_trait_impl = node
-        .child_by_field_name("trait")
-        .map(|t| qualify_trait_name(ctx, &normalize_type_path(&node_text(t, source))));
+    next_ctx.in_trait_impl = trait_qualname;
     next_ctx.impl_identity = impl_identity(node, source);
     walk_node(body, &next_ctx, source, output);
 }
@@ -3325,9 +3325,6 @@ const PRELUDE_TRAITS: &[(&str, &str)] = &[
     ("Ord", "std::cmp::Ord"),
     ("ToOwned", "std::borrow::ToOwned"),
     ("ToString", "std::string::ToString"),
-    ("Fn", "std::ops::Fn"),
-    ("FnMut", "std::ops::FnMut"),
-    ("FnOnce", "std::ops::FnOnce"),
 ];
 
 /// Trait names declared directly in `scope` (a file root or `mod` body),

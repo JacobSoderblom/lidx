@@ -111,6 +111,12 @@ const FILES: &[(&str, &str)] = &[
         "src/unknown.rs",
         "pub struct U;\nimpl Mystery for U { fn go(&self) {} }\n",
     ),
+    ("src/other.rs", "pub fn go() {}\n"),
+    (
+        "src/shown.rs",
+        "pub struct S;\nimpl Display for S { fn fmt(&self) {} }\n",
+    ),
+    ("lib/foo.py", "class Foo(lib.Foo):\n    pass\n"),
 ];
 
 #[test]
@@ -198,6 +204,46 @@ fn unknown_bare_trait_is_not_module_qualified() {
         !unresolved.iter().any(|n| n.contains("unknown::Mystery")),
         "{unresolved:?}"
     );
+}
+
+#[test]
+fn unknown_trait_method_edge_does_not_bind_to_unrelated_name() {
+    let (_t, ix) = index(FILES);
+    for e in implements(&ix, "crate::unknown::U::go") {
+        assert!(
+            e.2.as_deref().is_none_or(|t| t.starts_with("ext:")),
+            "bound to unrelated repo symbol: {e:?}"
+        );
+    }
+}
+
+#[test]
+fn display_without_use_stays_unresolved_not_module_qualified() {
+    let (_t, ix) = index(FILES);
+    let edges = implements(&ix, "crate::shown::S");
+    assert!(edges.is_empty(), "{edges:?}");
+    let unresolved = unresolved_names(&ix);
+    assert!(unresolved.iter().any(|n| n == "Display"), "{unresolved:?}");
+    assert!(
+        !unresolved.iter().any(|n| n.contains("shown::Display")),
+        "{unresolved:?}"
+    );
+}
+
+#[test]
+fn python_class_extending_same_named_qualified_base_is_not_a_self_edge() {
+    let (_t, ix) = index(FILES);
+    assert_no_self_edges(&ix, "python");
+    let conn = ix.db().read_conn().unwrap();
+    let n: i64 = conn
+        .prepare(
+            "SELECT COUNT(*) FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+             WHERE s.name = 'Foo' AND e.target_symbol_id = s.id",
+        )
+        .unwrap()
+        .query_row([], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0);
 }
 
 #[test]
