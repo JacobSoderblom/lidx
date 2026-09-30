@@ -2320,7 +2320,7 @@ fn resolved(target_id: i64, kind: ResolutionKind) -> Resolution {
 /// commit_sha, trace_id, span_id, event_ts, receiver_type, bare_call,
 /// call_shape, graph_version, receiver_scope, deferred_kind, deferred. Used by `Db::insert_edges` (an edge's first resolution
 /// attempt), `reconcile_unresolved_reference_store` (an edge that went
-/// NULL-target with no row yet), and `Db::carry_forward_files` (carrying an
+/// NULL-target with no row yet), and `Db::carry_forward_references` (carrying an
 /// already-unresolved reference into the new graph version).
 pub(crate) const UNRESOLVED_REFERENCE_INSERT_SQL: &str = "INSERT INTO unresolved_references
      (edge_id, source_symbol_id, file_id, edge_kind, reference_name, name_tail,
@@ -2726,7 +2726,7 @@ impl Db {
     /// no `unresolved_references` row -- because it never got one in the
     /// first place. Two ways that happens:
     ///
-    /// - `Db::carry_forward_files` copies an unchanged file's edges into
+    /// - `Db::carry_forward_references` copies an unchanged file's edges into
     ///   the new graph version, but not their store rows, so a
     ///   carried-forward edge that was already unresolved arrives with no
     ///   row to match it.
@@ -3533,7 +3533,7 @@ impl Db {
     /// pruning then either: yesterday's stubs already reflect yesterday's
     /// callers.
     ///
-    /// `Db::carry_forward_files` unconditionally copies every stub forward
+    /// `Db::carry_forward_references` unconditionally copies every stub forward
     /// into a new graph_version regardless of whether its callers were
     /// among the carried-forward files (simplest way to guarantee a stub a
     /// carried edge still targets exists there for its stable_id-based

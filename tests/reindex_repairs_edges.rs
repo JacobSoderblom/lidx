@@ -54,7 +54,7 @@ fn setup_repo(fixture: &str) -> (PathBuf, PathBuf) {
 ///   immediately (both symbol rows exist before edges are processed).
 /// - caller.py is edited (its hash changes) while helper.py is untouched. A
 ///   second `reindex()` re-parses caller.py but carries helper.py's rows
-///   forward via `carry_forward_files`, which — per `reindex`'s own ordering
+///   forward via `carry_forward_references`, which — per `reindex`'s own ordering
 ///   comment — runs *after* the fresh-file edge loop. At the moment caller's
 ///   new CALLS edge is inserted, helper.greet does not yet have a row under
 ///   the new graph version, so the reference stays unresolved -- issue #79
@@ -248,7 +248,7 @@ fn reindex_resolves_import_candidate_into_carried_forward_file_after_repair() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
-/// `Db::carry_forward_files` copies a carried-forward file's edges by
+/// `Db::carry_forward_references` copies a carried-forward file's edges by
 /// `stable_id`-matching each endpoint into the new graph version, leaving an
 /// endpoint NULL when its old target's `stable_id` has no match there (its
 /// own doc's "ponytail" note) -- the same shape a rename/deletion elsewhere

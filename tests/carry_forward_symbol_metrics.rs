@@ -58,7 +58,7 @@ fn metrics_count_at_version(db: &lidx::db::Db, graph_version: i64) -> i64 {
         .unwrap()
 }
 
-/// Regression test for the carry-forward metrics-loss bug: `carry_forward_files`
+/// Regression test for the carry-forward metrics-loss bug: `carry_forward_references`
 /// copies an unchanged file's `symbols`/`edges` into the new graph version with
 /// fresh symbol ids, but `symbol_metrics` is keyed by `symbol_id` with
 /// `ON DELETE CASCADE`. Left uncopied, a warm reindex (every file carried

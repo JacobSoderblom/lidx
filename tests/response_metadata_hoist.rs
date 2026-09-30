@@ -220,7 +220,7 @@ fn git_commit_all(repo_root: &std::path::Path, message: &str) -> String {
     lidx::util::git_head_sha(repo_root).expect("HEAD sha after commit")
 }
 
-/// Regression: `Db::carry_forward_files` stamps a carried-forward file's
+/// Regression: `Db::carry_forward_references` stamps a carried-forward file's
 /// symbols with the *new* `graph_version` but keeps their *original*
 /// `commit_sha` (see its doc comment in `src/db/mod.rs`) -- so a normal
 /// reindex spanning two commits, where one file is unchanged and another is

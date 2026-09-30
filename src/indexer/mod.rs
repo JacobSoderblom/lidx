@@ -564,7 +564,7 @@ impl Indexer {
         // symbol or they resolve differently from a fresh index (lost alias
         // targets, ambiguity collapsing to a bare-name bind). Carried *edges*
         // still wait until after the fresh-file edge loop below.
-        let carried_symbols = self.db.carry_forward_symbols(
+        let symbols_carried = self.db.carry_forward_symbols(
             &carry_forward_ids,
             previous_graph_version,
             self.graph_version,
@@ -634,15 +634,13 @@ impl Indexer {
         // re-parsed file already have their new-version symbol row. Their
         // symbols were carried earlier (see above), before resolution.
         if !carry_forward_ids.is_empty() {
-            let (carried_stubs, carried_edges) = self.db.carry_forward_edges(
-                &carry_forward_ids,
-                previous_graph_version,
-                self.graph_version,
-            )?;
-            let carried_symbols = carried_symbols + carried_stubs;
+            let files = symbols_carried.file_count();
+            let symbols = symbols_carried.symbols;
+            let refs = self.db.carry_forward_references(symbols_carried)?;
             eprintln!(
-                "lidx: carried forward {} unchanged file(s): {carried_symbols} symbol(s), {carried_edges} edge(s)",
-                carry_forward_ids.len()
+                "lidx: carried forward {files} unchanged file(s): {} symbol(s), {} edge(s)",
+                symbols + refs.stubs,
+                refs.edges
             );
         }
 
@@ -659,7 +657,7 @@ impl Indexer {
 
         // Repair pass: re-resolve NULL edge targets by qualname, same as the
         // incremental (sync_abs_paths) path already does. Runs after both the
-        // fresh-file edge loop and carry_forward_files (and after xref, so
+        // fresh-file edge loop and carry_forward_references (and after xref, so
         // XREF/ROUTE edges get the same treatment) so every current-version
         // symbol this reindex will produce already exists to resolve against;
         // runs before prune_and_maybe_vacuum so nothing is wasted repairing
@@ -671,9 +669,9 @@ impl Indexer {
         // this version's NULL-target edges -- issue #79 means that's a Bridge Edge kind
         // row exclusively (every other kind's unresolved reference lives only in the
         // `unresolved_references` store, which carry-forward always copies as-is, so it
-        // can't develop this kind of hole; see `Db::carry_forward_files`). That COUNT is
+        // can't develop this kind of hole; see `Db::carry_forward_references`). That COUNT is
         // what distinguishes a truly idle warm reindex (nothing to do, stay fast) from one
-        // carrying forward a degraded Bridge Edge kind: carry_forward_files re-links every
+        // carrying forward a degraded Bridge Edge kind: carry_forward_references re-links every
         // edge by stable_id into the new version and leaves target_symbol_id NULL wherever
         // that lookup misses (a deleted/renamed target, or a target manually NULLed out by
         // outside SQL), so a degraded index's holes are visible in the *new* graph_version's
@@ -714,7 +712,7 @@ impl Indexer {
             // Issue #78/#79: reconcile first -- catches an edge that went
             // NULL only after it was first resolved (a deleted/renamed
             // target, or `unbind_edges_for_qualnames`), or a
-            // `carry_forward_files` edge whose store row it couldn't carry
+            // `carry_forward_references` edge whose store row it couldn't carry
             // forward (an endpoint with no `stable_id` match) -- so it gets
             // a shot at every symbol that exists so far before falling to a
             // store row. Then targeted, store-driven retry (see the

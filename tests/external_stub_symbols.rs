@@ -296,7 +296,7 @@ fn incremental_go_tier6_stub_rebinds_once_the_real_package_is_added() {
 }
 
 /// A stub is not owned by any scanned file, so `Indexer::reindex`'s
-/// carry-forward-unchanged-files path (`Db::carry_forward_files`) never
+/// carry-forward-unchanged-files path (`Db::carry_forward_references`) never
 /// sees it directly through `caller.py`'s own file id -- it must still
 /// survive into the new graph_version when `caller.py` itself is
 /// unchanged and only carried forward, not re-parsed.

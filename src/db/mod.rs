@@ -87,7 +87,7 @@ pub struct Db {
 }
 
 /// Number of most-recent graph versions whose `symbols`/`edges` rows survive
-/// `prune_old_graph_versions`. `carry_forward_files` (reindex's unchanged-file
+/// `prune_old_graph_versions`. `carry_forward_symbols`/`carry_forward_references` (reindex's unchanged-file
 /// fast path) is the only code that ever reads a `graph_version` other than
 /// "current" for symbol/edge rows, and it only ever reads one version back
 /// (`previous_graph_version`); the historical-impact, co-change and git-mining
@@ -104,7 +104,40 @@ pub const DEFAULT_GRAPH_VERSION_RETENTION: i64 = 3;
 /// shouldn't pay that cost every time.
 const VACUUM_RECLAIM_THRESHOLD_BYTES: i64 = 10 * 1024 * 1024;
 
-/// One `carry_forward_files` `unresolved_references` row awaiting remap to
+/// Token returned by `Db::carry_forward_symbols`: proof the symbol phase of
+/// carry-forward ran, and the arguments `Db::carry_forward_references` needs
+/// for the second phase. Only `carry_forward_symbols` can build one, so the
+/// phases can't run out of order (issue #258).
+#[must_use = "pass to Db::carry_forward_references after the fresh-file edge writes"]
+pub struct SymbolsCarried<'a> {
+    file_ids: &'a [i64],
+    from_version: i64,
+    to_version: i64,
+    /// Symbols copied into `to_version`.
+    pub symbols: usize,
+}
+
+impl SymbolsCarried<'_> {
+    fn placeholders(&self) -> String {
+        vec!["?"; self.file_ids.len()].join(",")
+    }
+
+    /// Number of unchanged files being carried forward.
+    pub fn file_count(&self) -> usize {
+        self.file_ids.len()
+    }
+}
+
+/// What `Db::carry_forward_references` copied.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ReferencesCarried {
+    /// External stub symbols copied.
+    pub stubs: usize,
+    /// Edges copied.
+    pub edges: usize,
+}
+
+/// One `carry_forward_references` `unresolved_references` row awaiting remap to
 /// `to_version`'s edge/symbol ids -- a named struct rather than a tuple,
 /// since it's wide enough to trip `clippy::type_complexity` (same reasoning
 /// as `resolver::StoreRetryRow`/`NullTargetEdgeRow`).
@@ -361,39 +394,30 @@ impl Db {
     /// `files.id` doesn't change across versions, so an unchanged file's existing
     /// row is already correctly attached.
     ///
-    /// Split in two (issue #258): `carry_forward_symbols` must run before any
-    /// edge in the reindex is resolved, so resolution sees every symbol of
-    /// `to_version` (candidate sets and ambiguity verdicts then match a fresh
-    /// index); `carry_forward_edges` must run after every fresh-file edge write
-    /// and after all `to_version` symbols exist. This wrapper runs both back to
-    /// back for callers that need no interleaving.
-    ///
-    /// Returns `(symbols_copied, edges_copied)`.
-    pub fn carry_forward_files(
+    /// Split in two (issue #258), phase order enforced by the type system:
+    /// `carry_forward_symbols` must run before any edge in the reindex is
+    /// resolved, so resolution sees every symbol of `to_version` (candidate
+    /// sets and ambiguity verdicts then match a fresh index). It returns a
+    /// `SymbolsCarried` token, which `carry_forward_references` consumes, so
+    /// the second phase can't run first. Callers run `carry_forward_references`
+    /// only after every fresh-file edge write.
+    pub fn carry_forward_symbols<'a>(
         &self,
-        file_ids: &[i64],
+        file_ids: &'a [i64],
         from_version: i64,
         to_version: i64,
-    ) -> Result<(usize, usize)> {
-        let symbols = self.carry_forward_symbols(file_ids, from_version, to_version)?;
-        let (stubs, edges) = self.carry_forward_edges(file_ids, from_version, to_version)?;
-        Ok((symbols + stubs, edges))
-    }
-
-    /// Symbol half of carry-forward: copy the files' symbols into `to_version`
-    /// (preserving `stable_id`). Run before resolving any re-parsed file's
-    /// references. Returns the number of symbols copied.
-    pub fn carry_forward_symbols(
-        &self,
-        file_ids: &[i64],
-        from_version: i64,
-        to_version: i64,
-    ) -> Result<usize> {
-        if file_ids.is_empty() {
-            return Ok(0);
+    ) -> Result<SymbolsCarried<'a>> {
+        let carried = SymbolsCarried {
+            file_ids,
+            from_version,
+            to_version,
+            symbols: 0,
+        };
+        if carried.file_ids.is_empty() {
+            return Ok(carried);
         }
         let conn = self.conn();
-        let placeholders = vec!["?"; file_ids.len()].join(",");
+        let placeholders = carried.placeholders();
         let sql = format!(
             "INSERT INTO symbols
                 (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
@@ -408,40 +432,55 @@ impl Db {
         for id in file_ids {
             params.push(Box::new(*id));
         }
-        Ok(conn.execute(
+        let symbols = conn.execute(
             &sql,
             rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-        )?)
+        )?;
+        Ok(SymbolsCarried { symbols, ..carried })
     }
 
-    /// Edge half of carry-forward: external stubs, edges, `symbol_metrics` and
-    /// stored unresolved references, remapped by `stable_id` onto the symbols
-    /// `carry_forward_symbols` already copied. Run only after every fresh-file
-    /// edge write, so carried edges are copied after them (a carried edge whose
-    /// target lives in a re-parsed file needs that file's new symbol row).
-    ///
-    /// Returns `(stubs_copied, edges_copied)`.
-    pub fn carry_forward_edges(
+    /// Second phase of carry-forward: external stubs, edges (with Bridge Edge
+    /// re-linking), `symbol_metrics` and stored unresolved references,
+    /// remapped by `stable_id` onto the symbols `carry_forward_symbols`
+    /// already copied. Run only after every fresh-file edge write, so carried
+    /// edges are copied after them (a carried edge whose target lives in a
+    /// re-parsed file needs that file's new symbol row).
+    pub fn carry_forward_references(
         &self,
-        file_ids: &[i64],
-        from_version: i64,
-        to_version: i64,
-    ) -> Result<(usize, usize)> {
+        carried: SymbolsCarried<'_>,
+    ) -> Result<ReferencesCarried> {
+        let SymbolsCarried {
+            file_ids,
+            from_version,
+            to_version,
+            ..
+        } = carried;
         if file_ids.is_empty() {
-            return Ok((0, 0));
+            return Ok(ReferencesCarried::default());
         }
 
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let placeholders = vec!["?"; file_ids.len()].join(",");
+        let placeholders = carried.placeholders();
 
         // Issue #80: external stub symbols (`kind = 'external'`) aren't
         // owned by any of `file_ids` -- they all live on the one synthetic
-        // external pseudo-file, so `carry_forward_symbols` never carries
-        // them. Carry every stub in `from_version` forward unconditionally.
-        // `ON CONFLICT DO NOTHING` makes this a no-op wherever the fresh-file
-        // edge loop already created the same qualname's stub. A stub with no
-        // surviving caller is swept by `Db::prune_orphan_external_symbols`.
+        // external pseudo-file (`Resolver::external_file_id`), never a
+        // scanned repo file -- so `carry_forward_symbols`' per-file copy never
+        // carries them forward. But an edge from one of these carried files
+        // into a stub, copied by `edges_sql` below, still needs that stub to
+        // already exist in `to_version` for its stable_id-based remap to
+        // find. Carry every stub in `from_version` forward unconditionally
+        // (not just ones these particular files call): cheap (stubs are
+        // few), and simpler than computing which ones this batch's carried
+        // edges actually still reference. `ON CONFLICT DO NOTHING` against
+        // the `(graph_version, qualname)` partial unique index (schema
+        // v20) makes this a no-op wherever `Indexer::reindex`'s fresh-file
+        // edge loop -- which runs before this function -- already created
+        // the same qualname's stub. A stub with no surviving caller after
+        // this reindex is swept by `Db::prune_orphan_external_symbols` in
+        // the repair pass, same as a fresh reindex would simply never have
+        // created it.
         let stubs_copied = tx.execute(
             "INSERT INTO symbols
                 (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
@@ -821,7 +860,10 @@ impl Db {
         }
 
         tx.commit()?;
-        Ok((stubs_copied, edges_copied))
+        Ok(ReferencesCarried {
+            stubs: stubs_copied,
+            edges: edges_copied,
+        })
     }
 
     /// Delete `symbols`/`edges` rows for every graph version older than the
@@ -835,7 +877,7 @@ impl Db {
     /// `edge_id` cascades when its edge is deleted above, but a pending
     /// (non-Bridge-Edge-kind) row has `edge_id = NULL` (issue #79's
     /// self-contained store) and no edge to cascade from, and
-    /// `carry_forward_files` copies every pending row forward into each new
+    /// `carry_forward_references` copies every pending row forward into each new
     /// version -- without this, pruned versions' pending rows would never be
     /// reclaimed and the store would grow unbounded across reindexes.
     ///
@@ -2698,7 +2740,7 @@ mod tests {
 
     /// Regression guard for the whole *class* of bug behind the
     /// `receiver_type`/`resolution_kind` data-loss fix above (and, before
-    /// that, `symbol_metrics` being dropped wholesale): `carry_forward_files`
+    /// that, `symbol_metrics` being dropped wholesale): `carry_forward_references`
     /// names its copied columns explicitly in Rust-side SQL, so a column
     /// added to `symbols`/`edges`/`symbol_metrics` after the fact is silently
     /// NOT copied unless someone remembers to also update this unrelated
@@ -2710,10 +2752,10 @@ mod tests {
     /// for each table — except a small, explicit, commented allowlist — runs
     /// a real carry-forward, and asserts every one of those columns' values
     /// survived onto the new graph version. A newly added column that
-    /// `carry_forward_files` doesn't copy comes back NULL and fails loudly,
+    /// `carry_forward_references` doesn't copy comes back NULL and fails loudly,
     /// naming exactly the table and column at fault.
     #[test]
-    fn carry_forward_files_copies_every_non_exempt_column() {
+    fn carry_forward_copies_every_non_exempt_column() {
         // Columns intentionally excluded from the generic sentinel-and-verify
         // sweep below. Each entry is exempt for a specific, different reason
         // -- none of them are "silently dropped", they just aren't a literal
@@ -2748,7 +2790,7 @@ mod tests {
                     "file_id",
                     // Remapped via a `stable_id` lookup into the new version's
                     // symbols (see the "ponytail" comment on
-                    // `carry_forward_files`), not a literal copy of the old
+                    // `carry_forward_references`), not a literal copy of the old
                     // id -- an endpoint with no match is intentionally carried
                     // as NULL. Binding correctness for these is covered by the
                     // dangling-edges query elsewhere, not this test.
@@ -2821,7 +2863,7 @@ mod tests {
             .unwrap();
 
         // Stamp a unique, non-NULL sentinel into every non-exempt column of
-        // the one row on each table, so a column `carry_forward_files`
+        // the one row on each table, so a column `carry_forward_references`
         // silently drops comes back NULL instead of "not obviously wrong".
         for table in ["symbols", "edges", "symbol_metrics"] {
             for column in table_columns(&db, table) {
@@ -2838,7 +2880,9 @@ mod tests {
             }
         }
 
-        db.carry_forward_files(&[file_id], 1, 2).unwrap();
+        let ids = [file_id];
+        let carried = db.carry_forward_symbols(&ids, 1, 2).unwrap();
+        db.carry_forward_references(carried).unwrap();
 
         let new_symbol_id: i64 = db
             .conn()
@@ -2847,7 +2891,7 @@ mod tests {
                 params![file_id],
                 |row| row.get(0),
             )
-            .expect("carry_forward_files must copy the symbols row to the new graph version");
+            .expect("carry_forward_references must copy the symbols row to the new graph version");
         let new_edge_id: i64 = db
             .conn()
             .query_row(
@@ -2855,7 +2899,7 @@ mod tests {
                 params![file_id],
                 |row| row.get(0),
             )
-            .expect("carry_forward_files must copy the edges row to the new graph version");
+            .expect("carry_forward_references must copy the edges row to the new graph version");
         let new_metrics_id: i64 = db
             .conn()
             .query_row(
@@ -2864,7 +2908,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect(
-                "carry_forward_files must copy the symbol_metrics row to the new graph version",
+                "carry_forward_references must copy the symbol_metrics row to the new graph version",
             );
 
         let new_row_ids: &[(&str, i64)] = &[
@@ -2889,10 +2933,10 @@ mod tests {
                     .unwrap();
                 assert_eq!(
                     actual, expected,
-                    "carry_forward_files did not copy `{table}.{column}` into the new graph \
+                    "carry_forward_references did not copy `{table}.{column}` into the new graph \
                      version (found {actual:?}, expected the source row's value {expected:?}). \
                      Add `{column}` to both the INSERT column list and the SELECT in \
-                     Db::carry_forward_files's `{table}` copy -- or, if `{column}` must \
+                     Db::carry_forward_references's `{table}` copy -- or, if `{column}` must \
                      genuinely never be carried forward, add it to this test's `exempt` list \
                      with a comment explaining why."
                 );
@@ -2914,7 +2958,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 actual_file_id, file_id,
-                "carry_forward_files did not preserve `{table}.file_id` on the copied row"
+                "carry_forward_references did not preserve `{table}.file_id` on the copied row"
             );
         }
     }

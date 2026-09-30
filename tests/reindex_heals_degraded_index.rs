@@ -65,7 +65,7 @@ fn setup_repo(fixture: &str) -> (PathBuf, PathBuf) {
 ///   manual DB surgery) — not something `reindex` itself would do, but exactly the shape of
 ///   state a degraded index is in.
 /// - A third `reindex()`, again with zero file changes, carries the degraded edge forward
-///   into graph version 3. `carry_forward_files` re-links each edge by stable_id; when the
+///   into graph version 3. `carry_forward_references` re-links each edge by stable_id; when the
 ///   old target_symbol_id is already NULL there is nothing to look up, so the NULL — and the
 ///   edge's stale `target_qualname` — propagate into version 3 untouched.
 /// - Without this fix, that NULL is now permanent: `stats.indexed`/`deleted` are `0` on every

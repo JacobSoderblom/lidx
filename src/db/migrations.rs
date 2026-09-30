@@ -343,7 +343,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // dotted `X.method()` call whose receiver import-resolves gets
         // any). Previously a transient, unpersisted field: an edge whose
         // import tier failed only because its target file hadn't been
-        // carried forward yet (see `carry_forward_files`, which runs after
+        // carried forward yet (see `carry_forward_references`, which runs after
         // the fresh-file edge loop during an incremental reindex) was
         // stamped `receiver_type=''` and then permanently skipped by
         // `resolve_null_target_edges`, since that repair pass had no
@@ -484,7 +484,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // instead of leaving the reference unresolved. One stub per
         // `(graph_version, qualname)`, reused across every call site that
         // shares it (`Resolver::resolve_external_stub`) and copied forward
-        // wholesale on every reindex (`Db::carry_forward_files`) so a
+        // wholesale on every reindex (`Db::carry_forward_references`) so a
         // carried-forward edge's stable_id-based remap always finds its
         // target. This partial unique index is what makes both of those
         // idempotent: an `INSERT ... ON CONFLICT DO NOTHING` against the
