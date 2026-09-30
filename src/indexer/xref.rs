@@ -74,7 +74,7 @@ fn collect_xref_edges(
     source: &str,
     graph_version: i64,
 ) -> Result<Vec<EdgeInput>> {
-    let literals = scan_string_literals(source);
+    let literals = scan_string_literals_for(source, &file.language);
     if literals.is_empty() {
         return Ok(Vec::new());
     }
@@ -620,7 +620,111 @@ struct StringLiteral {
     end_byte: i64,
 }
 
+/// How a lone `'` is read in a language.
+#[derive(Clone, Copy, PartialEq)]
+enum SingleQuote {
+    /// `'...'` is a string (TS/JS, SQL, Bicep, ...).
+    StringDelimiter,
+    /// `'x'` / `'\n'` is a char literal and is not a string; a stray `'` is skipped.
+    CharLiteral,
+    /// Like `CharLiteral`, but a lone `'a` is a lifetime or loop label.
+    CharOrLifetime,
+}
+
+/// Comment and non-string quote syntax of one language, used to keep
+/// comments and char literals from being read as string content.
+struct CommentSyntax {
+    line_comments: &'static [&'static str],
+    /// `/* ... */` block comments.
+    block_comments: bool,
+    /// Whether block comments nest (Rust, PostgreSQL, T-SQL).
+    nested_block_comments: bool,
+    single_quote: SingleQuote,
+    /// JS/TS lexing: `/regex/` literals and `${}`-nesting template literals.
+    js_lexing: bool,
+    /// A `#` line comment needs whitespace or line start before it (YAML,
+    /// where `a#b` is text). Python allows `x = 1#c`.
+    hash_needs_boundary: bool,
+}
+
+const SLASH_COMMENTS: CommentSyntax = CommentSyntax {
+    line_comments: &["//"],
+    block_comments: true,
+    nested_block_comments: false,
+    single_quote: SingleQuote::StringDelimiter,
+    js_lexing: false,
+    hash_needs_boundary: false,
+};
+
+/// Comment syntax for `language`, or `None` when literals are scanned with
+/// the plain quote scanner.
+///
+/// Python has a `#` profile so a comment apostrophe never opens a literal;
+/// its docstring and comment filters (`is_python_docstring`,
+/// `is_in_python_comment`) still run after scanning.
+///
+/// Languages that deliberately have no profile:
+/// - `markdown`: prose has no comment syntax; its quotes are ordinary text.
+/// - `lua`: not an indexed language (no entry in `scan.rs`), so no id reaches
+///   this function.
+fn comment_syntax(language: &str) -> Option<&'static CommentSyntax> {
+    const CSHARP: CommentSyntax = CommentSyntax {
+        single_quote: SingleQuote::CharLiteral,
+        ..SLASH_COMMENTS
+    };
+    const RUST: CommentSyntax = CommentSyntax {
+        nested_block_comments: true,
+        single_quote: SingleQuote::CharOrLifetime,
+        ..SLASH_COMMENTS
+    };
+    const JS: CommentSyntax = CommentSyntax {
+        js_lexing: true,
+        ..SLASH_COMMENTS
+    };
+    const SQL: CommentSyntax = CommentSyntax {
+        line_comments: &["--"],
+        ..SLASH_COMMENTS
+    };
+    const NESTED_SQL: CommentSyntax = CommentSyntax {
+        nested_block_comments: true,
+        ..SQL
+    };
+    const YAML: CommentSyntax = CommentSyntax {
+        line_comments: &["#"],
+        block_comments: false,
+        hash_needs_boundary: true,
+        ..SLASH_COMMENTS
+    };
+    const PYTHON: CommentSyntax = CommentSyntax {
+        hash_needs_boundary: false,
+        ..YAML
+    };
+    match language {
+        "csharp" | "go" => Some(&CSHARP),
+        "rust" => Some(&RUST),
+        "typescript" | "tsx" | "javascript" => Some(&JS),
+        "proto" | "bicep" => Some(&SLASH_COMMENTS),
+        "sql" => Some(&SQL),
+        "postgres" | "tsql" => Some(&NESTED_SQL),
+        "yaml" => Some(&YAML),
+        "python" => Some(&PYTHON),
+        _ => None,
+    }
+}
+
 fn scan_string_literals(source: &str) -> Vec<StringLiteral> {
+    scan_literals(source, None)
+}
+
+/// Literal scan that respects the comment syntax of `language`.
+fn scan_string_literals_for(source: &str, language: &str) -> Vec<StringLiteral> {
+    scan_literals(source, comment_syntax(language))
+}
+
+/// The single literal scanner. Without a `syntax` every quote opens a
+/// literal; with one, comments, char literals, lifetimes and regex literals
+/// are skipped so their quotes cannot open a phantom string.
+fn scan_literals(source: &str, syntax: Option<&CommentSyntax>) -> Vec<StringLiteral> {
     let bytes = source.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -631,6 +735,35 @@ fn scan_string_literals(source: &str) -> Vec<StringLiteral> {
             i += 1;
             continue;
         }
+        if let Some(syntax) = syntax {
+            if let Some(next) = skip_comment(bytes, i, syntax, &mut line) {
+                i = next;
+                continue;
+            }
+            if let Some(next) = skip_non_string_quote(source, i, syntax) {
+                i = next;
+                continue;
+            }
+            if syntax.js_lexing {
+                if let Some(next) = skip_regex_literal(bytes, i) {
+                    i = next;
+                    continue;
+                }
+                if bytes[i] == b'`'
+                    && let Some((literal, next, next_line)) = scan_js_template(source, i, line)
+                {
+                    out.push(literal);
+                    i = next;
+                    line = next_line;
+                    continue;
+                }
+            }
+            // A prefix letter glued to an identifier (`bar"`) is no string prefix.
+            if i > 0 && is_ident_byte(bytes[i - 1]) && !matches!(bytes[i], b'"' | b'`' | b'\'') {
+                i += 1;
+                continue;
+            }
+        }
         if let Some((literal, next_i, next_line)) = scan_literal_at(source, bytes, i, line) {
             out.push(literal);
             i = next_i;
@@ -640,6 +773,230 @@ fn scan_string_literals(source: &str) -> Vec<StringLiteral> {
         i += 1;
     }
     out
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// If a comment starts at `i`, returns the index just past it and advances
+/// `line` over any newlines it contains (a line comment stops before `\n`).
+fn skip_comment(bytes: &[u8], i: usize, syntax: &CommentSyntax, line: &mut i64) -> Option<usize> {
+    let rest = &bytes[i..];
+    for marker in syntax.line_comments {
+        // `#` starts a comment only at a word boundary (`a#b` in YAML is text).
+        let boundary_ok = !syntax.hash_needs_boundary
+            || *marker != "#"
+            || i == 0
+            || bytes[i - 1].is_ascii_whitespace();
+        if rest.starts_with(marker.as_bytes()) && boundary_ok {
+            let len = rest.iter().position(|&c| c == b'\n').unwrap_or(rest.len());
+            return Some(i + len);
+        }
+    }
+    if !syntax.block_comments || !rest.starts_with(b"/*") {
+        return None;
+    }
+    let mut depth = 1;
+    let mut j = i + 2;
+    while j < bytes.len() && depth > 0 {
+        if bytes[j] == b'\n' {
+            *line += 1;
+            j += 1;
+        } else if bytes[j..].starts_with(b"*/") {
+            depth -= 1;
+            j += 2;
+        } else if syntax.nested_block_comments && bytes[j..].starts_with(b"/*") {
+            depth += 1;
+            j += 2;
+        } else {
+            j += 1;
+        }
+    }
+    Some(j)
+}
+
+/// Skips char literals (`'x'`, `'\u{1F600}'`, `b'x'`) and lifetimes (`'a`)
+/// for languages where `'` does not delimit strings. Returns the resume index.
+fn skip_non_string_quote(source: &str, i: usize, syntax: &CommentSyntax) -> Option<usize> {
+    if syntax.single_quote == SingleQuote::StringDelimiter {
+        return None;
+    }
+    let bytes = source.as_bytes();
+    // `b'x'` byte literal: the prefix is skipped, the quote is handled next.
+    if bytes[i] == b'b'
+        && bytes.get(i + 1) == Some(&b'\'')
+        && (i == 0 || !is_ident_byte(bytes[i - 1]))
+    {
+        return Some(i + 1);
+    }
+    if bytes[i] != b'\'' {
+        return None;
+    }
+    Some(char_literal_end(source, i).unwrap_or(i + 1))
+}
+
+/// End (exclusive) of a char literal opening at `idx`, or `None` when the
+/// quote is a lifetime, label or stray tick.
+fn char_literal_end(source: &str, idx: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut j = idx + 1;
+    let first = source.get(j..)?.chars().next()?;
+    j += first.len_utf8();
+    if first == '\\' {
+        // Escape: one escaped char, then the digits of `\xNN`, `\uNNNN`, `\u{...}`.
+        let escaped = source.get(j..)?.chars().next()?;
+        j += escaped.len_utf8();
+        if matches!(escaped, 'u' | 'U' | 'x') {
+            if bytes.get(j) == Some(&b'{') {
+                j += bytes[j..].iter().position(|&c| c == b'}')? + 1;
+            } else {
+                while bytes.get(j).is_some_and(u8::is_ascii_hexdigit) {
+                    j += 1;
+                }
+            }
+        }
+    } else if first == '\n' || first == '\'' {
+        return None;
+    }
+    (bytes.get(j) == Some(&b'\'')).then_some(j + 1)
+}
+
+/// True when a `/` at `i` begins a JS regex literal rather than a division,
+/// judged by the previous significant token.
+fn skip_regex_literal(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes[i] != b'/' || matches!(bytes.get(i + 1), Some(b'/') | Some(b'*') | None) {
+        return None;
+    }
+    let prev = bytes[..i].iter().rposition(|c| !c.is_ascii_whitespace());
+    let starts_expression = match prev {
+        None => true,
+        Some(p) if is_ident_byte(bytes[p]) => {
+            let word_start = bytes[..=p]
+                .iter()
+                .rposition(|&c| !is_ident_byte(c))
+                .map_or(0, |q| q + 1);
+            matches!(
+                &bytes[word_start..=p],
+                b"return"
+                    | b"typeof"
+                    | b"case"
+                    | b"in"
+                    | b"of"
+                    | b"delete"
+                    | b"void"
+                    | b"throw"
+                    | b"new"
+                    | b"else"
+                    | b"do"
+                    | b"yield"
+                    | b"await"
+            )
+        }
+        Some(p) => matches!(
+            bytes[p],
+            b'(' | b','
+                | b'='
+                | b':'
+                | b'['
+                | b'!'
+                | b'&'
+                | b'|'
+                | b'?'
+                | b'{'
+                | b'}'
+                | b';'
+                | b'+'
+                | b'-'
+                | b'*'
+                | b'%'
+                | b'<'
+                | b'>'
+                | b'~'
+                | b'^'
+        ),
+    };
+    if !starts_expression {
+        return None;
+    }
+    let mut j = i + 1;
+    let mut in_class = false;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\n' => return None,
+            b'\\' => j += 1,
+            b'[' => in_class = true,
+            b']' => in_class = false,
+            b'/' if !in_class => return Some(j + 1),
+            _ => {}
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Scans a JS/TS template literal opening at `idx`, including `${ ... }`
+/// holes that may contain strings, comments and nested templates.
+fn scan_js_template(source: &str, idx: usize, line: i64) -> Option<(StringLiteral, usize, i64)> {
+    let bytes = source.as_bytes();
+    let close = template_close(bytes, idx)?;
+    let newlines = bytes[idx..close].iter().filter(|&&c| c == b'\n').count() as i64;
+    let literal = build_literal(source, idx, close, line, line + newlines, 1)?;
+    Some((literal, close + 1, line + newlines))
+}
+
+/// Index of the backtick closing the template opened at `open`.
+fn template_close(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut i = open + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'`' => return Some(i),
+            b'$' if bytes.get(i + 1) == Some(&b'{') => i = template_hole_end(bytes, i + 2)?,
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Index just past the `}` closing a `${` hole whose body starts at `start`.
+fn template_hole_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 1;
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            b'`' => i = template_close(bytes, i)?,
+            quote @ (b'\'' | b'"') => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote && bytes[i] != b'\n' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
+                    i += 1;
+                }
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 fn scan_literal_at(
@@ -1094,6 +1451,179 @@ mod tests {
         assert!(is_in_python_comment(src, &lits[0]));
         assert!(!is_in_python_comment(src, &lits[1]));
         assert!(!is_in_python_comment(src, &lits[2]));
+    }
+
+    fn texts(src: &str, lang: &str) -> Vec<String> {
+        scan_string_literals_for(src, lang)
+            .into_iter()
+            .map(|l| l.text)
+            .collect()
+    }
+
+    /// Fixtures tag every comment with `CMT`. No literal may contain a tagged
+    /// comment, so both whole-line and trailing comments are caught.
+    fn assert_no_literal_swallows_comment(src: &str, lang: &str) {
+        for lit in scan_string_literals_for(src, lang) {
+            let span = &src[lit.start_byte as usize..lit.end_byte as usize];
+            assert!(
+                !span.contains("CMT"),
+                "{lang}: literal swallowed a comment: {span:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn csharp_comment_apostrophe_does_not_open_literal() {
+        let src = "// CMT the proc's own SELECT\nvar r = SecretHandler;\nint x = 1; // CMT it's\nvar s = \"it's done\";\n";
+        assert_eq!(texts(src, "csharp"), vec!["it's done"]);
+        assert_no_literal_swallows_comment(src, "csharp");
+        let block = "/* CMT don't \" */\nvar r = SecretHandler;\nvar s = \"Real\";\n";
+        assert_eq!(texts(block, "csharp"), vec!["Real"]);
+        assert_no_literal_swallows_comment(block, "csharp");
+    }
+
+    #[test]
+    fn csharp_string_forms_and_char_literals() {
+        let src = "var a = @\"say \"\"hi\"\" DataProxy\";\nvar c = '\"';\nvar d = '\\'';\nvar e = '\\u0041';\nvar r = \"\"\"\nraw \"quoted\" Thing\n\"\"\";\n";
+        let t = texts(src, "csharp");
+        assert_eq!(t.len(), 2, "{t:?}");
+        assert!(t[0].contains("DataProxy"));
+        assert!(t[1].contains("raw \"quoted\" Thing"));
+        let interp = "var a = $@\"x \"\"{y}\"\" Alpha\";\nvar b = $\"\"\"\nq \"z\" {v} Beta\n\"\"\";\nvar c = @$\"Gamma \"\"q\"\"\";\n";
+        let t = texts(interp, "csharp");
+        assert_eq!(t.len(), 3, "{t:?}");
+        assert!(t[0].contains("Alpha") && t[1].contains("Beta") && t[2].contains("Gamma"));
+    }
+
+    #[test]
+    fn comment_markers_inside_strings_are_not_comments() {
+        let cases = [
+            ("csharp", "var u = \"http://x\"; var v = \"Real\";\n"),
+            ("rust", "let u = \"a // b\"; let v = \"Real\";\n"),
+            ("typescript", "const u = \"a // b\"; const v = 'Real';\n"),
+            ("go", "u := \"a // b\"; v := \"Real\"\n"),
+            ("sql", "SELECT 'a -- b', 'Real';\n"),
+        ];
+        for (lang, src) in cases {
+            let t = texts(src, lang);
+            assert_eq!(t.last().map(String::as_str), Some("Real"), "{lang}: {t:?}");
+            assert_eq!(t.len(), 2, "{lang}: {t:?}");
+        }
+        for (lang, src) in [
+            ("csharp", "var u = \"/* x\"; var v = \"Real\"; // CMT\n"),
+            ("rust", "let u = \"/* x\"; let v = \"Real\";\n"),
+            ("typescript", "const u = '/* x'; const v = \"Real\";\n"),
+            ("sql", "SELECT '/* x', 'Real';\n"),
+        ] {
+            let t = texts(src, lang);
+            assert_eq!(t.len(), 2, "{lang}: {t:?}");
+            assert_eq!(t[1], "Real");
+        }
+    }
+
+    #[test]
+    fn rust_lifetimes_and_comments_do_not_open_literals() {
+        let src = "// CMT it's a helper\nfn f<'a>(x: &'a str) -> &'static str {\n    let _m = CancellationRegistry;\n    let c = 'x'; // CMT don't\n    let q = '\"';\n    \"real\"\n}\n";
+        assert_eq!(texts(src, "rust"), vec!["real"]);
+        assert_no_literal_swallows_comment(src, "rust");
+        let nested = "/* CMT a /* don't */ still \" */\nlet s = \"ok\";\n";
+        assert_eq!(texts(nested, "rust"), vec!["ok"]);
+        let label = "'outer: loop { break 'outer; } let s = \"lab\";\n";
+        assert_eq!(texts(label, "rust"), vec!["lab"]);
+    }
+
+    #[test]
+    fn rust_string_and_char_forms() {
+        let raw = "let s = r#\"has \"quote\" inside\"#;\n";
+        assert_eq!(texts(raw, "rust"), vec!["has \"quote\" inside"]);
+        let raw2 = "let s = r##\"a \"# b\"##; let t = \"after\";\n";
+        assert_eq!(texts(raw2, "rust"), vec!["a \"# b", "after"]);
+        let bytes = "let a = br\"raw \\ bytes\"; let b = b'x'; let s = \"after\";\n";
+        assert_eq!(texts(bytes, "rust"), vec!["raw \\ bytes", "after"]);
+        let chars = "let a = '\\u{1F600}'; let b = '\\''; let c = '\\\\'; let d = '\"'; let s = \"after\";\n";
+        assert_eq!(texts(chars, "rust"), vec!["after"]);
+    }
+
+    #[test]
+    fn typescript_and_javascript_comments_and_templates() {
+        for lang in ["typescript", "tsx", "javascript"] {
+            let src = "// CMT don't\nconst r = SecretHandler;\nconst n = 1; // CMT it's\n/* CMT isn't \" */\nconst t = `tpl ${x} it's`;\nconst s = 'real';\n";
+            assert_eq!(texts(src, lang), vec!["tpl ${x} it's", "real"], "{lang}");
+            assert_no_literal_swallows_comment(src, lang);
+        }
+    }
+
+    #[test]
+    fn typescript_regex_literals_and_nested_templates() {
+        for lang in ["typescript", "javascript"] {
+            let re =
+                "const a = x.replace(/'/g, ''); const b = /[\"'`]/.test(y); const c = \"real\";\n";
+            assert_eq!(texts(re, lang), vec!["", "real"], "{lang}");
+            let div = "const q = a / b; const r = c / d; const s = 'real';\n";
+            assert_eq!(texts(div, lang), vec!["real"], "{lang}");
+            let nested = "const t = `a ${ `b ${ \"c`\" } d` } e`; const s = 'real';\n";
+            assert_eq!(
+                texts(nested, lang),
+                vec!["a ${ `b ${ \"c`\" } d` } e", "real"],
+                "{lang}"
+            );
+            let obj = "const t = `x ${ {a: 1}.a } y`; const s = 'real';\n";
+            assert_eq!(
+                texts(obj, lang),
+                vec!["x ${ {a: 1}.a } y", "real"],
+                "{lang}"
+            );
+        }
+    }
+
+    #[test]
+    fn go_comments_runes_and_raw_strings() {
+        let src = "// CMT don't\nx := SecretHandler\n/* CMT it's */\nr := '\\''\ns := `raw \"q\"`\nt := \"real\" // CMT it's\n";
+        assert_eq!(texts(src, "go"), vec!["raw \"q\"", "real"]);
+        assert_no_literal_swallows_comment(src, "go");
+    }
+
+    #[test]
+    fn sql_dash_and_block_comments() {
+        let src = "-- CMT the proc's SELECT\nSELECT SecretHandler; -- CMT it's\n/* CMT don't */\nSELECT 'real';\n";
+        assert_eq!(texts(src, "sql"), vec!["real"]);
+        assert_no_literal_swallows_comment(src, "sql");
+        let nested = "/* CMT a /* b */ don't */ SELECT 'real';\n";
+        assert_eq!(texts(nested, "postgres"), vec!["real"]);
+        assert_eq!(texts(nested, "tsql"), vec!["real"]);
+    }
+
+    #[test]
+    fn python_comment_apostrophes_do_not_desync_later_literals() {
+        let src = "# CMT it's\nx = 1  # CMT don't\ny = \"it's\"\nz = \"\"\"doc # not a comment\"\"\"\nw = f\"Real\"\n";
+        assert_eq!(
+            texts(src, "python"),
+            vec!["it's", "\"\"doc # not a comment", "Real"]
+        );
+        assert_no_literal_swallows_comment(src, "python");
+    }
+
+    #[test]
+    fn bicep_and_yaml_comments() {
+        let bicep = "// CMT it's\nparam a string = 'real'\n/* CMT don't */\n";
+        assert_eq!(texts(bicep, "bicep"), vec!["real"]);
+        let yaml = "# CMT it's\nkey: \"real\" # CMT don't\nurl: a#b'c'\n";
+        assert_eq!(texts(yaml, "yaml"), vec!["real", "c"]);
+        assert_no_literal_swallows_comment(yaml, "yaml");
+    }
+
+    #[test]
+    fn unprofiled_languages_use_plain_scanning() {
+        assert!(comment_syntax("markdown").is_none());
+        assert_eq!(texts("it's \"a\"", "markdown").len(), 1);
+    }
+
+    #[test]
+    fn genuine_literals_still_yield_xref_tokens() {
+        let src = "// CMT it's\nvar s = \"DataProxy.Query\";\n";
+        let t = texts(src, "csharp");
+        assert_eq!(t, vec!["DataProxy.Query"]);
+        assert!(!extract_tokens(&t[0]).is_empty());
     }
 
     #[test]

@@ -86,6 +86,7 @@ pub fn module_symbol_with_span(
         end_byte,
         signature: None,
         docstring,
+        identity: None,
     }
 }
 

@@ -3,7 +3,7 @@
 //! This module implements confidence propagation, decay, and fusion algorithms
 //! for combining evidence from multiple sources.
 
-use crate::impact::types::{ConfidenceScore, ImpactSource};
+use crate::impact::types::{ConfidenceScore, ImpactSource, TestStrategy};
 
 /// Distance-based confidence decay factor
 /// Confidence decays as: base_confidence * (DECAY_FACTOR ^ distance)
@@ -102,16 +102,18 @@ pub fn confidence_from_source(source: &ImpactSource) -> ConfidenceScore {
             let base = 0.95;
             apply_distance_decay(base, *distance)
         }
-        ImpactSource::TestLink { strategy, .. } => {
-            // Test link confidence depends on strategy
-            match strategy.as_str() {
-                "call" => 0.95,
-                "call_via_interface" => 0.7,
-                "import" => 0.7,
-                "naming" => 0.6,
-                "proximity" => 0.4,
-                _ => 0.5, // Unknown strategy
-            }
+        ImpactSource::TestLink {
+            strategy, distance, ..
+        } => {
+            // Confidence depends on how the test reaches the seed, decayed by
+            // the hops beyond the minimum for that strategy (a dispatch hop
+            // through the interface method is inherent to `call_via_interface`).
+            let (base, min_distance) = match strategy {
+                TestStrategy::Call | TestStrategy::Graph => (0.95, 1),
+                TestStrategy::Import => (0.7, 1),
+                TestStrategy::CallViaInterface => (0.7, 2),
+            };
+            apply_distance_decay(base, distance.saturating_sub(min_distance))
         }
         ImpactSource::CoChange { frequency, .. } => {
             // Co-change confidence is the frequency itself
@@ -212,16 +214,26 @@ mod tests {
     #[test]
     fn confidence_from_test_link() {
         let source = ImpactSource::TestLink {
-            strategy: "call".to_string(),
+            strategy: TestStrategy::Call,
             test_type: "unit".to_string(),
+            distance: 1,
         };
         assert_eq!(confidence_from_source(&source), 0.95);
 
         let source2 = ImpactSource::TestLink {
-            strategy: "import".to_string(),
+            strategy: TestStrategy::Import,
             test_type: "integration".to_string(),
+            distance: 1,
         };
         assert_eq!(confidence_from_source(&source2), 0.7);
+
+        // Extra hops decay the score.
+        let source3 = ImpactSource::TestLink {
+            strategy: TestStrategy::Graph,
+            test_type: "unit".to_string(),
+            distance: 3,
+        };
+        assert!((confidence_from_source(&source3) - 0.7695).abs() < 0.001);
     }
 
     #[test]
@@ -243,8 +255,9 @@ mod tests {
                 resolution_kind: None,
             },
             ImpactSource::TestLink {
-                strategy: "call".to_string(),
+                strategy: TestStrategy::Call,
                 test_type: "unit".to_string(),
+                distance: 1,
             },
         ];
         let result = fuse_evidence(&sources);

@@ -113,6 +113,59 @@ pub(super) fn call_reaches_impl_sql(ce: &str) -> String {
     )
 }
 
+/// SQL: symbol `alias` carries `modifier` in the space-separated
+/// `symbols.visibility` list (`private`, `static`, `override`), recorded by
+/// the extractors (issue #238).
+pub(super) fn has_modifier_sql(alias: &str, modifier: &str) -> String {
+    format!("((' ' || COALESCE({alias}.visibility, '') || ' ') LIKE '% {modifier} %')")
+}
+
+/// SQL: the C# member `m`'s containing type has an EXTENDS/IMPLEMENTS
+/// reference that never resolved to an in-repo type (an external base or
+/// interface), so the framework may call the member (issue #238).
+pub(super) fn external_base_member_sql(m: &str, gv: i64) -> String {
+    format!(
+        "EXISTS (
+           SELECT 1 FROM edges xc
+           JOIN unresolved_references xr ON xr.source_symbol_id = xc.source_symbol_id
+           WHERE xc.target_symbol_id = {m}.id
+             AND xc.kind = 'CONTAINS'
+             AND xc.graph_version = {gv}
+             AND xr.edge_kind IN ('EXTENDS', 'IMPLEMENTS')
+             AND xr.graph_version = {gv})"
+    )
+}
+
+/// SQL: the type `t` has a live member anywhere below it in the CONTAINS
+/// tree (nested types included; issue #238). Live means an incoming
+/// non-structural edge, an `override`, or a `const` / non-private `static`
+/// field -- a field read leaves no edge, so its use cannot be disproved.
+pub(super) fn live_nested_member_sql(t: &str, gv: i64) -> String {
+    let is_override = has_modifier_sql("m", "override");
+    let is_static = has_modifier_sql("m", "static");
+    format!(
+        "EXISTS (
+           WITH RECURSIVE nested(id) AS (
+             SELECT ce.target_symbol_id FROM edges ce
+             WHERE ce.source_symbol_id = {t}.id AND ce.kind = 'CONTAINS'
+               AND ce.graph_version = {gv} AND ce.target_symbol_id IS NOT NULL
+             UNION
+             SELECT ce.target_symbol_id FROM edges ce
+             JOIN nested n ON ce.source_symbol_id = n.id
+             WHERE ce.kind = 'CONTAINS' AND ce.graph_version = {gv}
+               AND ce.target_symbol_id IS NOT NULL
+           )
+           SELECT 1 FROM nested n JOIN symbols m ON m.id = n.id
+           WHERE EXISTS (
+                   SELECT 1 FROM edges me
+                   WHERE me.target_symbol_id = m.id
+                     AND me.kind NOT IN ('CONTAINS', 'MODULE_FILE')
+                     AND me.graph_version = {gv})
+              OR {is_override}
+              OR (m.kind = 'field' AND {is_static}))"
+    )
+}
+
 /// `member` (alias `m`) declared on class `c` as an explicit interface
 /// implementation (`C.<Iface>.<name>`, issue #181): its qualname is the
 /// class's, a `.`, an identity segment, `.` and the member's own name.

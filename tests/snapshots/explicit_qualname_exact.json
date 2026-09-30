@@ -1,0 +1,433 @@
+{
+  "analyze_impact": {
+    "affected": [
+      {
+        "confidence": 0.8549999594688416,
+        "distance": 1,
+        "path": {
+          "steps": [
+            {
+              "edge_kind": "EXTENDS",
+              "from_symbol": "pkg.core.Greeter",
+              "resolution_kind": "bare_name",
+              "to_symbol": "pkg.core.Base"
+            }
+          ]
+        },
+        "relationship": "DIRECT",
+        "symbol": {
+          "file_path": "pkg/core.py",
+          "kind": "class",
+          "name": "Base",
+          "qualname": "pkg.core.Base",
+          "start_line": 6
+        }
+      },
+      {
+        "confidence": 0.8549999594688416,
+        "distance": 1,
+        "path": {
+          "steps": [
+            {
+              "edge_kind": "CONTAINS",
+              "from_symbol": "pkg.core.Greeter",
+              "resolution_kind": "exact",
+              "to_symbol": "pkg.core.Greeter.greet"
+            }
+          ]
+        },
+        "relationship": "DIRECT",
+        "symbol": {
+          "file_path": "pkg/core.py",
+          "kind": "method",
+          "name": "greet",
+          "qualname": "pkg.core.Greeter.greet",
+          "signature": "(self, name: str) -> str",
+          "start_line": 11
+        }
+      },
+      {
+        "confidence": 0.8549999594688416,
+        "distance": 1,
+        "path": {
+          "steps": [
+            {
+              "edge_kind": "CALLS",
+              "from_symbol": "pkg.core.make_greeter",
+              "resolution_kind": "exact",
+              "to_symbol": "pkg.core.Greeter"
+            }
+          ]
+        },
+        "relationship": "DIRECT",
+        "symbol": {
+          "file_path": "pkg/core.py",
+          "kind": "function",
+          "name": "make_greeter",
+          "qualname": "pkg.core.make_greeter",
+          "signature": "()",
+          "start_line": 15
+        }
+      },
+      {
+        "confidence": 0.7694999575614929,
+        "distance": 2,
+        "path": {
+          "steps": [
+            {
+              "edge_kind": "IMPORTS",
+              "from_symbol": "app",
+              "resolution_kind": "exact",
+              "to_symbol": "pkg.core.Greeter"
+            },
+            {
+              "edge_kind": "CONTAINS",
+              "from_symbol": "app",
+              "resolution_kind": "exact",
+              "to_symbol": "app.run"
+            }
+          ]
+        },
+        "relationship": "INDIRECT_2",
+        "symbol": {
+          "file_path": "app.py",
+          "kind": "function",
+          "name": "run",
+          "qualname": "app.run",
+          "signature": "()",
+          "start_line": 3
+        }
+      },
+      {
+        "confidence": 0.6925498843193054,
+        "distance": 3,
+        "path": {
+          "steps": [
+            {
+              "edge_kind": "IMPORTS",
+              "from_symbol": "app",
+              "resolution_kind": "exact",
+              "to_symbol": "pkg.core.Greeter"
+            },
+            {
+              "edge_kind": "IMPORTS_FILE",
+              "from_symbol": "app",
+              "resolution_kind": "import",
+              "to_symbol": "pkg.core"
+            },
+            {
+              "edge_kind": "IMPORTS",
+              "from_symbol": "pkg.core",
+              "resolution_kind": "two_segment",
+              "to_symbol": "pkg.utils.Helper"
+            }
+          ]
+        },
+        "relationship": "INDIRECT_3",
+        "symbol": {
+          "file_path": "pkg/utils.py",
+          "kind": "class",
+          "name": "Helper",
+          "qualname": "pkg.utils.Helper",
+          "start_line": 4
+        }
+      }
+    ],
+    "config": {
+      "direction": "both",
+      "include_tests": false,
+      "limit": 500,
+      "max_depth": 3,
+      "relationship_types": []
+    },
+    "layers": {
+      "direct": {
+        "enabled": true,
+        "result_count": 9,
+        "truncated": false
+      },
+      "historical": {
+        "enabled": true,
+        "result_count": 0,
+        "truncated": false
+      },
+      "test": {
+        "enabled": true,
+        "result_count": 0,
+        "truncated": false
+      }
+    },
+    "lower_bound": {
+      "is_lower_bound": true,
+      "unresolved_count": 2
+    },
+    "next_hops": [
+      {
+        "description": "Retry excluding heuristic name-fallback edges (bare_name, two_segment) for a higher-confidence impact set",
+        "method": "analyze_impact",
+        "params": {
+          "direction": "both",
+          "exclude_resolution_kinds": [
+            "bare_name",
+            "two_segment"
+          ],
+          "qualname": "pkg.core.Greeter"
+        }
+      }
+    ],
+    "seeds": [
+      {
+        "file_path": "pkg/core.py",
+        "kind": "class",
+        "name": "Greeter",
+        "qualname": "pkg.core.Greeter",
+        "start_line": 9
+      }
+    ],
+    "summary": {
+      "by_distance": {
+        "1": 3,
+        "2": 1,
+        "3": 1
+      },
+      "by_file": [
+        {
+          "path": "pkg/core.py",
+          "symbol_count": 3,
+          "symbols": [
+            "pkg.core.Base",
+            "pkg.core.Greeter.greet",
+            "pkg.core.make_greeter"
+          ]
+        },
+        {
+          "path": "app.py",
+          "symbol_count": 1,
+          "symbols": [
+            "app.run"
+          ]
+        },
+        {
+          "path": "pkg/utils.py",
+          "symbol_count": 1,
+          "symbols": [
+            "pkg.utils.Helper"
+          ]
+        }
+      ],
+      "by_relationship": {
+        "DIRECT": 3,
+        "INDIRECT_2": 1,
+        "INDIRECT_3": 1
+      },
+      "total_affected": 5
+    },
+    "test_layer": {
+      "empty": true,
+      "next_hops": [
+        {
+          "description": "Inspect the seed's callers and tests directly; unresolved calls do not appear as graph edges",
+          "method": "explain_symbol",
+          "params": {
+            "sections": [
+              "tests"
+            ]
+          }
+        },
+        {
+          "description": "Search for 'Greeter' in test code -- textual matches are candidates to verify, not graph evidence",
+          "method": "search",
+          "params": {
+            "query": "Greeter"
+          }
+        },
+        {
+          "description": "Retry with a deeper traversal (max_depth was 3)",
+          "method": "analyze_impact",
+          "params": {
+            "max_depth": 10
+          }
+        }
+      ],
+      "reason": "No test reaches the seed through graph edges within 3 hops. Tests are reported only when a resolved edge path connects them to the seed (never by name similarity), so this reflects resolution coverage -- calls that could not be resolved, dynamic dispatch, or cross-language calls -- and does not mean the code is untested."
+    },
+    "truncated": false
+  },
+  "explain_symbol": {
+    "budget": {
+      "budget_bytes": 40000,
+      "truncated": false
+    },
+    "callees": [],
+    "callees_total": 0,
+    "callers": [
+      {
+        "edge_kind": "CALLS",
+        "evidence": "Greeter()",
+        "resolution_kind": "exact",
+        "symbol": {
+          "end_byte": 276,
+          "end_col": 21,
+          "end_line": 16,
+          "file_path": "pkg/core.py",
+          "kind": "function",
+          "name": "make_greeter",
+          "qualname": "pkg.core.make_greeter",
+          "signature": "()",
+          "stable_id": "sym_e46a9028f5860068",
+          "start_byte": 236,
+          "start_col": 1,
+          "start_line": 15
+        }
+      }
+    ],
+    "callers_total": 1,
+    "graph_version": 2,
+    "implements": [
+      {
+        "end_byte": 96,
+        "end_col": 9,
+        "end_line": 7,
+        "file_path": "pkg/core.py",
+        "kind": "class",
+        "name": "Base",
+        "qualname": "pkg.core.Base",
+        "stable_id": "sym_4d2b5721c4578e3d",
+        "start_byte": 76,
+        "start_col": 1,
+        "start_line": 6
+      }
+    ],
+    "implements_total": 1,
+    "next_hops": [
+      {
+        "description": "Explore full graph neighborhood via impact analysis",
+        "method": "analyze_impact",
+        "params": {
+          "direction": "both"
+        }
+      },
+      {
+        "description": "Assemble full context",
+        "method": "gather_context",
+        "params": {
+          "max_bytes": 80000,
+          "seeds": [
+            {
+              "qualname": "pkg.core.Greeter",
+              "type": "symbol"
+            }
+          ]
+        }
+      },
+      {
+        "description": "Read exact source of Greeter",
+        "method": "read_symbol",
+        "params": {
+          "qualname": "pkg.core.Greeter"
+        }
+      }
+    ],
+    "source": "class Greeter(Base):\n    \"\"\"Greeter doc.\"\"\"\n    def greet(self, name: str) -> str:\n        \"Greets someone.\"\n        return f\"Hi {name}\"",
+    "symbol": {
+      "docstring": "Greeter doc.",
+      "end_byte": 234,
+      "end_col": 28,
+      "end_line": 13,
+      "file_path": "pkg/core.py",
+      "kind": "class",
+      "name": "Greeter",
+      "qualname": "pkg.core.Greeter",
+      "stable_id": "sym_a0a5c8865ba45b19",
+      "start_byte": 98,
+      "start_col": 1,
+      "start_line": 9
+    },
+    "tests": [],
+    "tests_total": 0,
+    "warnings": [
+      "No test-scope files exist in this index, so the empty tests list doesn't mean this symbol is untested -- it means lidx found no files it classifies as tests (tests are detected by file path, so tests living inline in an otherwise-non-test file, e.g. Rust's #[cfg(test)] modules, won't count)."
+    ]
+  },
+  "orient": {
+    "focus_symbol": {
+      "file_path": "pkg/core.py",
+      "kind": "class",
+      "name": "Greeter",
+      "qualname": "pkg.core.Greeter"
+    },
+    "keys": [
+      "focus_symbol",
+      "map",
+      "module_edges",
+      "modules",
+      "overview"
+    ]
+  },
+  "read_symbol": {
+    "end_line": 13,
+    "kind": "class",
+    "path": "pkg/core.py",
+    "qualname": "pkg.core.Greeter",
+    "source": "9: class Greeter(Base):\n10:     \"\"\"Greeter doc.\"\"\"\n11:     def greet(self, name: str) -> str:\n12:         \"Greets someone.\"\n13:         return f\"Hi {name}\"",
+    "stale": false,
+    "start_line": 9
+  },
+  "trace_flow": {
+    "budget": {
+      "budget_bytes": 30000,
+      "truncated": false
+    },
+    "graph_version": 2,
+    "lower_bound": {
+      "is_lower_bound": false,
+      "unresolved_count": 0
+    },
+    "next_hops": [
+      {
+        "description": "Try analyze_impact on Greeter (finds consumers via CONFIG/DI edges)",
+        "method": "analyze_impact",
+        "params": {
+          "direction": "upstream",
+          "kinds": [
+            "CONFIG_BIND",
+            "CONFIG_SOURCE",
+            "CONFIG_READ",
+            "CALLS"
+          ]
+        }
+      },
+      {
+        "description": "Re-trace with CONFIG edges only (useful for config/property symbols)",
+        "method": "trace_flow",
+        "params": {
+          "include_snippets": true,
+          "kinds": [
+            "CONFIG_SOURCE",
+            "CONFIG_READ",
+            "CONFIG_BIND"
+          ],
+          "start_qualname": "pkg.core.Greeter"
+        }
+      }
+    ],
+    "paths_found": 0,
+    "reached_target": false,
+    "start": {
+      "docstring": "Greeter doc.",
+      "end_byte": 234,
+      "end_col": 28,
+      "end_line": 13,
+      "file_path": "pkg/core.py",
+      "kind": "class",
+      "name": "Greeter",
+      "qualname": "pkg.core.Greeter",
+      "stable_id": "sym_a0a5c8865ba45b19",
+      "start_byte": 98,
+      "start_col": 1,
+      "start_line": 9
+    },
+    "trace": [],
+    "truncated": false
+  }
+}

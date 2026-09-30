@@ -109,8 +109,10 @@ pub enum ImpactSource {
     },
     /// Test relationship
     TestLink {
-        strategy: String,  // "import", "call", "call_via_interface", "naming", "proximity"
+        strategy: TestStrategy,
         test_type: String, // "unit", "integration", "e2e"
+        /// Graph hops from the test to the seed (>= 1).
+        distance: usize,
     },
     /// Historical co-change pattern
     CoChange {
@@ -118,6 +120,33 @@ pub enum ImpactSource {
         co_change_count: usize,
         last_cochange: Option<String>, // ISO timestamp
     },
+}
+
+/// How a test reaches the seed through the graph (serialized as the
+/// snake_case name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestStrategy {
+    /// The test imports the seed.
+    Import,
+    /// The test calls the seed directly.
+    Call,
+    /// The test calls the interface method the seed implements.
+    CallViaInterface,
+    /// Any other graph path (transitive callers, bridged edges, ...).
+    Graph,
+}
+
+impl TestStrategy {
+    /// The single mapping from the edge a test hangs off the seed by to a
+    /// strategy; only a first-hop edge earns a specific label.
+    pub fn from_edge_kind(kind: &str) -> Self {
+        match kind {
+            "IMPORTS" => Self::Import,
+            "CALLS" => Self::Call,
+            _ => Self::Graph,
+        }
+    }
 }
 
 /// How a symbol was reached: (parent id, edge kind, resolution kind of the
@@ -298,6 +327,10 @@ pub struct BatchImpactEntry {
     /// Present only when seed resolution failed; contains next_hops and a message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery: Option<serde_json::Value>,
+    /// Present only when the TEST layer ran and found no test reaching the
+    /// seed through the graph: the reason and follow-up queries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_layer: Option<serde_json::Value>,
 }
 
 /// Result of batch impact analysis (multiple seeds in one call)

@@ -1,5 +1,7 @@
 use crate::indexer::extract::SymbolInput;
-use crate::indexer::stable_id::compute_stable_symbol_id;
+use crate::indexer::stable_id::{
+    StableIdCollision, compute_stable_symbol_id, disambiguate_collisions,
+};
 use crate::model::Symbol;
 use std::collections::HashMap;
 
@@ -14,6 +16,11 @@ pub struct SymbolDiff {
     pub deleted: Vec<String>,
     /// Symbols that exist and are unchanged (skip database write)
     pub unchanged: Vec<SymbolInput>,
+    /// Groups of new symbols that shared one stable id and were told apart by
+    /// an ordinal instead of being dropped (issue #212). Empty in the normal
+    /// case; a non-empty value means the identity scheme has a gap worth
+    /// fixing for that construct.
+    pub collisions: Vec<StableIdCollision>,
 }
 
 /// Compare old symbols (from database) against new symbols (just extracted)
@@ -42,7 +49,14 @@ pub struct SymbolDiff {
 ///    - If stable_id in old and content same → unchanged
 /// 3. For each old symbol:
 ///    - If stable_id not in new → deleted
-pub fn compute_symbol_diff(old_symbols: Vec<Symbol>, new_symbols: Vec<SymbolInput>) -> SymbolDiff {
+pub fn compute_symbol_diff(
+    old_symbols: Vec<Symbol>,
+    mut new_symbols: Vec<SymbolInput>,
+) -> SymbolDiff {
+    // Keyed by stable id below, so two symbols sharing one would silently
+    // overwrite each other (issue #212): tell them apart first.
+    let collisions = disambiguate_collisions(&mut new_symbols);
+
     // Build map of old symbols keyed by stable_id
     let old_map: HashMap<String, Symbol> = old_symbols
         .into_iter()
@@ -61,7 +75,10 @@ pub fn compute_symbol_diff(old_symbols: Vec<Symbol>, new_symbols: Vec<SymbolInpu
         })
         .collect();
 
-    let mut diff = SymbolDiff::default();
+    let mut diff = SymbolDiff {
+        collisions,
+        ..SymbolDiff::default()
+    };
 
     // Find added, modified, and unchanged symbols
     for (stable_id, new_sym) in &new_map {
@@ -259,6 +276,7 @@ mod tests {
             end_byte,
             signature: sig.clone(),
             docstring: docstring.map(String::from),
+            identity: None,
         };
         let stable_id = compute_stable_symbol_id(&input);
 
@@ -307,6 +325,7 @@ mod tests {
             end_byte,
             signature: sig,
             docstring: docstring.map(String::from),
+            identity: None,
         }
     }
 
@@ -693,6 +712,58 @@ new mode 100755
         assert_eq!(files[0].added_ranges[0].start_line, 7);
         assert_eq!(files[0].added_ranges[0].line_count, 1);
     }
+
+    /// Issue #212: two new symbols that hash identically must both be kept
+    /// (previously the `HashMap` collect silently dropped one) and the
+    /// collision reported.
+    #[test]
+    fn test_stable_id_collision_is_reported_not_dropped() {
+        let a = make_new_symbol("m.dup", 1, 3, 0, 30, None, None);
+        let b = make_new_symbol("m.dup", 10, 12, 100, 130, None, None);
+        assert_eq!(compute_stable_symbol_id(&a), compute_stable_symbol_id(&b));
+
+        let diff = compute_symbol_diff(vec![], vec![a, b]);
+
+        assert_eq!(diff.added.len(), 2, "both twins kept: {diff:?}");
+        assert_eq!(diff.collisions.len(), 1);
+        assert_eq!(diff.collisions[0].qualname, "m.dup");
+        assert_eq!(diff.collisions[0].count, 2);
+        let ids: std::collections::HashSet<_> =
+            diff.added.iter().map(compute_stable_symbol_id).collect();
+        assert_eq!(ids.len(), 2, "twins get distinct stable ids");
+    }
+
+    /// The ordinal depends on declaration order among twins only, not on
+    /// lines, so a line-shifting resync keeps every id (both twins are
+    /// `modified`, none added or deleted).
+    #[test]
+    fn test_collision_ids_are_stable_across_line_shifts() {
+        let first = compute_symbol_diff(
+            vec![],
+            vec![
+                make_new_symbol("m.dup", 1, 3, 0, 30, None, None),
+                make_new_symbol("m.dup", 10, 12, 100, 130, None, None),
+            ],
+        );
+        let old: Vec<Symbol> = first
+            .added
+            .iter()
+            .map(|s| {
+                let mut sym = make_old_symbol("m.dup", s.start_line, s.end_line, 0, 0, None, None);
+                sym.stable_id = Some(compute_stable_symbol_id(s));
+                sym
+            })
+            .collect();
+        let second = compute_symbol_diff(
+            old,
+            vec![
+                make_new_symbol("m.dup", 4, 6, 40, 70, None, None),
+                make_new_symbol("m.dup", 20, 22, 200, 230, None, None),
+            ],
+        );
+        assert!(second.added.is_empty() && second.deleted.is_empty());
+        assert_eq!(second.modified.len(), 2);
+    }
 }
 
 // Integration tests (require database)
@@ -723,6 +794,7 @@ mod integration_tests {
             end_byte: (line + 5) * 100,
             signature: Some(sig.to_string()),
             docstring: None,
+            identity: None,
         }
     }
 
@@ -949,6 +1021,7 @@ mod integration_tests {
             start_byte: 0,
             end_byte: 1000,
             docstring: None,
+            identity: None,
         }];
 
         let symbols2 = vec![SymbolInput {
@@ -963,6 +1036,7 @@ mod integration_tests {
             start_byte: 0,
             end_byte: 1000,
             docstring: None,
+            identity: None,
         }];
 
         let diff = compute_symbol_diff(vec![], symbols1);
@@ -1010,6 +1084,7 @@ mod integration_tests {
                 start_byte: 0,
                 end_byte: 500,
                 docstring: None,
+                identity: None,
             },
             SymbolInput {
                 kind: "function".to_string(),
@@ -1023,6 +1098,7 @@ mod integration_tests {
                 start_byte: 1000,
                 end_byte: 1500,
                 docstring: None,
+                identity: None,
             },
         ];
 
@@ -1117,6 +1193,7 @@ mod integration_tests {
             start_byte: 0,
             end_byte: 10,
             docstring: None,
+            identity: None,
         }];
 
         let diff = compute_symbol_diff(vec![], symbols);
@@ -1170,6 +1247,7 @@ mod integration_tests {
             start_byte: 0,
             end_byte: 500,
             docstring: Some("Old docstring".to_string()),
+            identity: None,
         }];
         db.insert_symbols(file_id, "test.py", &symbols, graph_version, None)
             .unwrap();
@@ -1189,6 +1267,7 @@ mod integration_tests {
             start_byte: 0,
             end_byte: 500,
             docstring: Some("New docstring".to_string()),
+            identity: None,
         }];
 
         let diff = compute_symbol_diff(existing, new_symbols);
