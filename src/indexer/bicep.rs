@@ -154,8 +154,6 @@ impl LanguageExtractor for BicepExtractor {
         _module_name: &str,
         edges: &mut Vec<EdgeInput>,
     ) {
-        let file_dir = Path::new(file_rel_path).parent().unwrap_or(Path::new(""));
-
         for edge in edges.iter_mut() {
             if edge.kind != "IMPORTS_FILE" {
                 continue;
@@ -168,9 +166,7 @@ impl LanguageExtractor for BicepExtractor {
                 continue;
             }
             let raw = target.trim_matches('\'').trim_matches('"');
-            let resolved = file_dir.join(raw);
-            let normalized = crate::util::normalize_path(&resolved);
-            edge.target_qualname = Some(normalized);
+            edge.target_qualname = Some(module_ref_target(file_rel_path, raw));
         }
     }
 }
@@ -178,15 +174,27 @@ impl LanguageExtractor for BicepExtractor {
 // --- Public helpers ---
 
 pub fn module_name_from_rel_path(rel_path: &str) -> String {
-    let path = Path::new(rel_path);
-    let mut parts: Vec<String> = path
+    canonical_module_path(rel_path).unwrap_or_else(|| "bicep".to_string())
+}
+
+/// The module qualname a `module`/`using` reference `raw` (relative to the
+/// file at `file_rel_path`) must equal: the joined path, `..`/`.` collapsed,
+/// extension stripped -- the same canonical form `module_name_from_rel_path`
+/// gives the referenced file. A reference escaping the repo root keeps its
+/// leading `..`, so it names the path and matches no symbol.
+pub fn module_ref_target(file_rel_path: &str, raw: &str) -> String {
+    let dir = Path::new(file_rel_path).parent().unwrap_or(Path::new(""));
+    let joined = crate::util::normalize_path(&dir.join(raw));
+    canonical_module_path(&joined).unwrap_or(joined)
+}
+
+/// Strips the final component's extension (`.bicep`/`.bicepparam`).
+fn canonical_module_path(rel_path: &str) -> Option<String> {
+    let mut parts: Vec<String> = Path::new(rel_path)
         .components()
         .filter_map(|comp| comp.as_os_str().to_str().map(|s| s.to_string()))
         .collect();
-    if parts.is_empty() {
-        return "bicep".to_string();
-    }
-    let file = parts.pop().unwrap_or_default();
+    let file = parts.pop()?;
     let stem = Path::new(&file)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -195,11 +203,7 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
     if !stem.is_empty() {
         parts.push(stem);
     }
-    if parts.is_empty() {
-        "bicep".to_string()
-    } else {
-        parts.join("/")
-    }
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 // --- Parser types ---
