@@ -67,6 +67,45 @@ public class Derived : Base
 "#,
     ),
     (
+        "Logger.cs",
+        r#"namespace App;
+public class LoggerOnly
+{
+    private static readonly object _log = new object();
+    public void Unused() { }
+}
+"#,
+    ),
+    (
+        "Controllers.cs",
+        r#"using Ext;
+namespace App;
+public class Ctl : ControllerBase
+{
+    private void Helper() { }
+    public void Action() { }
+}
+public class Expl : IFoo
+{
+    void IFoo.Bar() { }
+}
+"#,
+    ),
+    (
+        "Shapes.cs",
+        r#"namespace App;
+public record Rec(int X)
+{
+    public static int Make() { return 1; }
+    public int Spare() { return 2; }
+}
+public interface IThing
+{
+    int Do();
+}
+"#,
+    ),
+    (
         "Program.cs",
         r#"namespace App;
 public class Program
@@ -76,6 +115,11 @@ public class Program
         var n = Helpers.Twice(2);
         var c = Constants.Name;
         b.Run();
+        var r = Rec.Make();
+    }
+    public static void UseThing(IThing t)
+    {
+        t.Do();
     }
 }
 "#,
@@ -157,20 +201,6 @@ fn overrides_and_external_base_members_are_not_dead() {
 }
 
 #[test]
-fn override_modifier_is_stored_in_the_index() {
-    let (root, ix) = setup();
-    let db = ix.db();
-    let gv = db.current_graph_version().unwrap();
-    let vis = db
-        .symbol_visibility("App.FakeCredential.GetToken", gv)
-        .unwrap();
-    let plain = db.symbol_visibility("App.Helpers.Twice", gv).unwrap();
-    let _ = std::fs::remove_dir_all(&root);
-    assert!(vis.unwrap_or_default().split(' ').any(|m| m == "override"));
-    assert!(!plain.unwrap_or_default().contains("override"));
-}
-
-#[test]
 fn limit_returns_a_full_page_of_genuine_results() {
     let (root, mut ix) = setup();
     let all = dead(&mut ix, serde_json::json!({"limit": 1000}));
@@ -179,4 +209,65 @@ fn limit_returns_a_full_page_of_genuine_results() {
     let _ = std::fs::remove_dir_all(&root);
     assert_eq!(page.len(), 3, "{page:?}");
     assert_eq!(page, all[..3].to_vec());
+}
+
+#[test]
+fn private_static_field_does_not_keep_a_type_alive() {
+    let (root, mut ix) = setup();
+    let names = dead(&mut ix, serde_json::json!({}));
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(names.contains(&"App.LoggerOnly".into()), "{names:?}");
+    assert!(names.contains(&"App.LoggerOnly.Unused".into()), "{names:?}");
+}
+
+#[test]
+fn external_base_exemption_spares_only_non_private_members() {
+    let (root, mut ix) = setup();
+    let names = dead(&mut ix, serde_json::json!({}));
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(names.contains(&"App.Ctl.Helper".into()), "{names:?}");
+    assert!(!names.contains(&"App.Ctl.Action".into()), "{names:?}");
+}
+
+#[test]
+fn explicit_external_interface_implementation_is_not_dead() {
+    let (root, mut ix) = setup();
+    let names = dead(&mut ix, serde_json::json!({}));
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        !names.iter().any(|q| q.starts_with("App.Expl.")),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn record_and_interface_with_used_members_are_not_dead() {
+    let (root, mut ix) = setup();
+    let names = dead(&mut ix, serde_json::json!({}));
+    let _ = std::fs::remove_dir_all(&root);
+    for q in ["App.Rec", "App.Rec.Make", "App.IThing", "App.IThing.Do"] {
+        assert!(!names.contains(&q.to_string()), "{q}: {names:?}");
+    }
+    assert!(names.contains(&"App.Rec.Spare".into()), "{names:?}");
+}
+
+#[test]
+fn in_repo_base_member_callers_resolve() {
+    let (root, mut ix) = setup();
+    let names = dead(&mut ix, serde_json::json!({}));
+    // The call `b.Run()` must resolve to `Base.Run` (so it is live by its
+    // caller, not merely exempt), and `Derived.Run` is its override.
+    let callers = rpc::handle_method(
+        &mut ix,
+        "explain_symbol",
+        serde_json::json!({"query": "App.Base.Run"}),
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(!names.contains(&"App.Base.Run".into()), "{names:?}");
+    assert!(!names.contains(&"App.Derived.Run".into()), "{names:?}");
+    assert!(
+        callers.to_string().contains("App.Program.Entry"),
+        "Base.Run callers did not resolve: {callers}"
+    );
 }

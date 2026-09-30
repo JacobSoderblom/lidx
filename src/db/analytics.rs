@@ -506,6 +506,10 @@ impl Db {
         );
         let gv = graph_version;
         let call_reaches = super::graph_query::call_reaches_impl_sql("ce");
+        let is_override = super::graph_query::has_modifier_sql("s", "override");
+        let is_private = super::graph_query::has_modifier_sql("s", "private");
+        let external_base = super::graph_query::external_base_member_sql("s", gv);
+        let live_member = super::graph_query::live_nested_member_sql("s", gv);
         let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                           s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                           s.graph_version, s.commit_sha, s.stable_id
@@ -562,48 +566,14 @@ impl Db {
                            AND ur.graph_version = ?
                        )
                      ))
-                     -- Issue #238: an `override` is reached through its base
-                     -- member, which the framework (or a base-typed caller)
-                     -- invokes; the `override` modifier is stored in
-                     -- `symbols.visibility` by the C# extractor.
-                     AND NOT (s.kind IN ('method', 'function')
-                       AND (' ' || COALESCE(s.visibility, '') || ' ') LIKE '% override %')
-                     -- Issue #238: a C# member of a type whose base class or
-                     -- interface is external (an unresolved EXTENDS/IMPLEMENTS
-                     -- reference) may implement a member the framework calls.
-                     AND NOT (s.kind = 'method' AND f.language = 'csharp' AND EXISTS (
-                       SELECT 1 FROM edges ce
-                       JOIN unresolved_references ur ON ur.source_symbol_id = ce.source_symbol_id
-                       WHERE ce.target_symbol_id = s.id
-                         AND ce.kind = 'CONTAINS'
-                         AND ce.graph_version = {gv}
-                         AND ur.edge_kind IN ('EXTENDS', 'IMPLEMENTS')
-                         AND ur.graph_version = {gv}
-                     ))
-                     -- Issue #238: liveness propagates up containment. A type
-                     -- is not dead while anything nested in it (found by the
-                     -- `qualname.` prefix range, so nested types count too)
-                     -- has an incoming reference, is an `override`, or is a
-                     -- `const`/`static` field -- a field read leaves no edge,
-                     -- so its use cannot be disproved.
-                     AND NOT (s.kind IN ('class', 'struct') AND EXISTS (
-                       SELECT 1 FROM symbols m
-                       WHERE m.graph_version = {gv}
-                         AND m.qualname > s.qualname || '.'
-                         AND m.qualname < s.qualname || '/'
-                         AND m.id != s.id
-                         AND (
-                           EXISTS (
-                             SELECT 1 FROM edges me
-                             WHERE me.target_symbol_id = m.id
-                               AND me.kind NOT IN ('CONTAINS', 'MODULE_FILE')
-                               AND me.graph_version = {gv}
-                           )
-                           OR (' ' || COALESCE(m.visibility, '') || ' ') LIKE '% override %'
-                           OR (m.kind = 'field'
-                               AND (' ' || COALESCE(m.visibility, '') || ' ') LIKE '% static %')
-                         )
-                     ))");
+                     -- Issue #238: overrides, framework-called members of a C#
+                     -- type with an external base, and types with a live
+                     -- member are not dead (see the helpers' docs).
+                     AND NOT (s.kind IN ('method', 'function') AND {is_override})
+                     AND NOT (s.kind = 'method' AND f.language = 'csharp'
+                              AND NOT {is_private} AND {external_base})
+                     AND NOT (s.kind IN ('class', 'struct', 'record', 'interface')
+                              AND {live_member})");
 
         let mut full_sql = sql;
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![

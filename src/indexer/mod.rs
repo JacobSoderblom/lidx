@@ -11,7 +11,7 @@ use std::time::Instant;
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 7;
+pub const EXTRACTOR_VERSION: i64 = 8;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -569,7 +569,7 @@ impl Indexer {
                 *file_id,
                 self.graph_version,
                 &extracted.private_qualnames,
-                &extracted.static_qualnames,
+                &extracted.static_member_qualnames,
                 &extracted.override_symbols,
             )?;
         }
@@ -833,7 +833,7 @@ impl Indexer {
             file_id,
             self.graph_version,
             &extracted.private_qualnames,
-            &extracted.static_qualnames,
+            &extracted.static_member_qualnames,
             &extracted.override_symbols,
         )?;
 

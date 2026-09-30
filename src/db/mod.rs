@@ -1614,11 +1614,11 @@ impl Db {
         file_id: i64,
         graph_version: i64,
         private_qualnames: &[String],
-        static_qualnames: &[String],
+        static_member_qualnames: &[String],
         override_symbols: &[(String, i64)],
     ) -> Result<()> {
         if private_qualnames.is_empty()
-            && static_qualnames.is_empty()
+            && static_member_qualnames.is_empty()
             && override_symbols.is_empty()
         {
             self.conn().execute(
@@ -1630,7 +1630,7 @@ impl Db {
         }
         // `visibility` is a space-separated modifier list: `private`, `static`.
         let private_ph = vec!["?"; private_qualnames.len()].join(",");
-        let static_ph = vec!["?"; static_qualnames.len()].join(",");
+        let static_ph = vec!["?"; static_member_qualnames.len()].join(",");
         // Overloads share a qualname, so an override is keyed by its line too.
         let override_test = if override_symbols.is_empty() {
             "0".to_string()
@@ -1650,7 +1650,7 @@ impl Db {
         );
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = private_qualnames
             .iter()
-            .chain(static_qualnames)
+            .chain(static_member_qualnames)
             .map(|q| Box::new(q.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
         for (qualname, line) in override_symbols {
@@ -1764,21 +1764,6 @@ impl Db {
             )
             .optional()
             .map_err(Into::into)
-    }
-
-    /// The space-separated modifier list stored in `symbols.visibility`
-    /// (`private`, `static`, `override`) for the first symbol named
-    /// `qualname`, or `None` when it has no recorded modifiers.
-    pub fn symbol_visibility(&self, qualname: &str, graph_version: i64) -> Result<Option<String>> {
-        Ok(self
-            .read_conn()?
-            .query_row(
-                "SELECT visibility FROM symbols WHERE qualname = ? AND graph_version = ? LIMIT 1",
-                params![qualname, graph_version],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()?
-            .flatten())
     }
 
     /// Every symbol sharing `qualname` (an overload set, e.g. C# methods

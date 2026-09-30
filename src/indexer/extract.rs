@@ -447,11 +447,12 @@ pub struct ExtractedFile {
     /// sites). Empty for languages with no recorded visibility rule
     /// (Python) or a derived one that needs no storage (Go: capitalization).
     pub private_qualnames: Vec<String>,
-    /// Qualnames of methods this extractor recorded as `static` (C#: every
-    /// same-qualname overload is). Recorded into `symbols.visibility` next
+    /// Qualnames of methods and fields this extractor recorded as `static`
+    /// (C#: every same-qualname method overload is; a field only when
+    /// `const` or a non-private `static`, issue #238). Recorded into `symbols.visibility` next
     /// to `private` by `Db::set_private_symbols`; only the C# deferred
     /// `Type.Method()` receiver reads it.
-    pub static_qualnames: Vec<String>,
+    pub static_member_qualnames: Vec<String>,
     /// JS/TS only: hash of the file's export surface (see
     /// `javascript::export_surface_hash`), stored so a later sync can tell a
     /// body-only edit from one that changes what importers resolve.
