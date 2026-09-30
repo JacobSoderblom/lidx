@@ -392,3 +392,172 @@ spec:
         "expected CONFIG_SOURCE for secret://datamgr-secrets"
     );
 }
+
+// --- Span accuracy (#229) ---
+
+const SPAN_FIXTURE: &str = r#"apiVersion: v1
+kind: Service
+metadata:
+  name: svc
+---
+# second document
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: datamgr
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: generate-cert
+          image: busybox
+          env:
+            - name: Database__ConnectionString
+              value: init
+      containers:
+        - name: datamgr
+          image: datamgr:1
+          env:
+            - name: Database__ConnectionString
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: conn
+            - name: LOG_LEVEL
+              value: info
+"#;
+
+fn lines_of(source: &str, start: i64, end: i64) -> String {
+    source
+        .lines()
+        .skip((start - 1) as usize)
+        .take((end - start + 1) as usize)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn extract_span_fixture() -> lidx::indexer::extract::ExtractedFile {
+    let mut extractor = YamlExtractor::new().unwrap();
+    extractor.extract(SPAN_FIXTURE, "k8s/spans").unwrap()
+}
+
+#[test]
+fn spans_never_exceed_file_length() {
+    let total = SPAN_FIXTURE.lines().count() as i64;
+    let out = extract_span_fixture();
+    for s in &out.symbols {
+        assert!(s.end_line <= total, "{} ends at {}", s.qualname, s.end_line);
+        assert!(s.end_byte <= SPAN_FIXTURE.len() as i64);
+    }
+    for e in &out.edges {
+        if let Some(end) = e.evidence_end_line {
+            assert!(end <= total, "edge ends at {end}");
+        }
+    }
+}
+
+#[test]
+fn container_spans_are_distinct_and_narrow() {
+    let out = extract_span_fixture();
+    let find = |name: &str| {
+        out.symbols
+            .iter()
+            .find(|s| s.kind == "container" && s.name == name)
+            .unwrap()
+    };
+    let init = find("generate-cert");
+    let main = find("datamgr");
+    assert!(init.end_line < main.start_line, "spans overlap");
+    let init_text = lines_of(SPAN_FIXTURE, init.start_line, init.end_line);
+    assert!(init_text.contains("generate-cert") && !init_text.contains("datamgr:1"));
+    assert!(init_text.trim_start().starts_with("- name: generate-cert"));
+    let main_text = lines_of(SPAN_FIXTURE, main.start_line, main.end_line);
+    assert!(main_text.contains("LOG_LEVEL") && !main_text.contains("generate-cert"));
+    // byte range matches the line range
+    let bytes = &SPAN_FIXTURE[main.start_byte as usize..main.end_byte as usize];
+    assert!(bytes.contains("datamgr:1") && !bytes.contains("busybox"));
+}
+
+#[test]
+fn second_document_spans_are_absolute() {
+    let out = extract_span_fixture();
+    let dep = out.symbols.iter().find(|s| s.kind == "deployment").unwrap();
+    assert_eq!(dep.start_line, 7);
+    assert!(
+        SPAN_FIXTURE
+            .lines()
+            .nth(6)
+            .unwrap()
+            .starts_with("apiVersion: apps/v1")
+    );
+    assert_eq!(dep.end_line, SPAN_FIXTURE.lines().count() as i64);
+}
+
+#[test]
+fn module_span_unchanged() {
+    let out = extract_span_fixture();
+    let module = out.symbols.iter().find(|s| s.kind == "module").unwrap();
+    assert_eq!(module.start_line, 1);
+    assert_eq!(module.end_line, SPAN_FIXTURE.lines().count() as i64);
+}
+
+#[test]
+fn env_edges_have_per_entry_evidence() {
+    let out = extract_span_fixture();
+    let init_q = "k8s://default/deployment/datamgr/container/generate-cert";
+    let main_q = "k8s://default/deployment/datamgr/container/datamgr";
+    let env_edges = |q: &str| -> Vec<_> {
+        out.edges
+            .iter()
+            .filter(|e| {
+                e.source_qualname.as_deref() == Some(q)
+                    && e.target_qualname.as_deref() == Some("env://DATABASE__CONNECTIONSTRING")
+            })
+            .collect()
+    };
+    let init_edges = env_edges(init_q);
+    let main_edges = env_edges(main_q);
+    assert_eq!(init_edges.len(), 1);
+    assert_eq!(main_edges.len(), 1);
+    let (a, b) = (init_edges[0], main_edges[0]);
+    assert_ne!(a.evidence_start_line, b.evidence_start_line);
+    let a_text = lines_of(
+        SPAN_FIXTURE,
+        a.evidence_start_line.unwrap(),
+        a.evidence_end_line.unwrap(),
+    );
+    assert!(a_text.contains("value: init") && !a_text.contains("secretKeyRef"));
+    let b_text = lines_of(
+        SPAN_FIXTURE,
+        b.evidence_start_line.unwrap(),
+        b.evidence_end_line.unwrap(),
+    );
+    assert!(b_text.contains("secretKeyRef") && !b_text.contains("LOG_LEVEL"));
+    assert!(
+        a.evidence_snippet
+            .as_deref()
+            .is_some_and(|s| s.contains("Database__ConnectionString"))
+    );
+    assert!(b.evidence_snippet.as_deref().is_some_and(|s| !s.is_empty()));
+
+    // CONFIG_READ from secretKeyRef covers just the secretKeyRef block
+    let read = out
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CONFIG_READ" && e.target_qualname.as_deref() == Some("secret://db-secret")
+        })
+        .unwrap();
+    let read_text = lines_of(
+        SPAN_FIXTURE,
+        read.evidence_start_line.unwrap(),
+        read.evidence_end_line.unwrap(),
+    );
+    assert!(read_text.trim_start().starts_with("secretKeyRef:"));
+    assert!(read_text.contains("key: conn") && !read_text.contains("LOG_LEVEL"));
+    assert!(
+        read.evidence_snippet
+            .as_deref()
+            .is_some_and(|s| s.contains("secretKeyRef"))
+    );
+}
