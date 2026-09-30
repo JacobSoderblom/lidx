@@ -712,7 +712,7 @@ mod tests {
                 start_byte: 0,
                 end_byte: 0,
                 signature: Some("x".repeat(200)), // Large signature
-                docstring: Some("y".repeat(500)), // Large docstring,
+                docstring: Some("y".repeat(500)), // Large docstring
                 identity: None,
             }],
             modified: vec![],

@@ -5,8 +5,9 @@ use crate::db::resolver::{
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    CallShape, DeferredArgument, DeferredBase, DeferredMarker, DeferredReturn, EdgeInput,
-    ExtractedFile, MAX_DEFERRED_DEPTH, ReceiverType, SymbolInput, TypeScope, pin_edges_to_symbols,
+    CallShape, DeclIdentity, DeferredArgument, DeferredBase, DeferredMarker, DeferredReturn,
+    EdgeInput, ExtractedFile, MAX_DEFERRED_DEPTH, ReceiverType, SymbolInput, TypeScope,
+    pinning_new_edges,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -533,7 +534,7 @@ fn walk_compilation_unit(node: Node<'_>, ctx: &Context, source: &str, output: &m
 }
 
 /// Number of type parameters a type or method declares (`Box<T, U>` is 2).
-fn generic_arity(node: Node<'_>, _source: &str) -> usize {
+fn generic_arity(node: Node<'_>) -> usize {
     let mut cursor = node.walk();
     let list = node.child_by_field_name("type_parameters").or_else(|| {
         node.named_children(&mut cursor)
@@ -551,37 +552,21 @@ fn generic_arity(node: Node<'_>, _source: &str) -> usize {
 /// Declaration identity: the generic arity of every enclosing type plus, for
 /// a type or method, its own. `None` when nothing is generic, so ordinary
 /// symbols keep their ids (issue #212).
-fn identity(ctx: &Context, own: Option<usize>) -> Option<String> {
+fn identity(ctx: &Context, own: Option<usize>) -> Option<DeclIdentity> {
     let arities: Vec<usize> = ctx.generic_arities.iter().copied().chain(own).collect();
-    arities.iter().any(|a| *a > 0).then(|| {
-        let parts: Vec<String> = arities.iter().map(|a| a.to_string()).collect();
-        format!("generic:{}", parts.join("/"))
+    arities.iter().any(|a| *a > 0).then(|| DeclIdentity {
+        generic_arities: arities,
+        ..DeclIdentity::default()
     })
 }
 
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    if !matches!(
-        node.kind(),
-        "class_declaration"
-            | "struct_declaration"
-            | "interface_declaration"
-            | "record_declaration"
-            | "enum_declaration"
-            | "property_declaration"
-            | "event_declaration"
-            | "event_field_declaration"
-            | "field_declaration"
-    ) {
-        return walk_node_inner(node, ctx, source, output);
-    }
     // Same-qualname declarations (`Box<T>` / `Box<T, U>`, issue #212) each
-    // keep their own outgoing and CONTAINS edges.
-    let (first_symbol, first_edge) = (output.symbols.len(), output.edges.len());
-    walk_node_inner(node, ctx, source, output);
-    pin_edges_to_symbols(
-        &output.symbols[first_symbol..],
-        &mut output.edges[first_edge..],
-    );
+    // keep their own outgoing and CONTAINS edges. Wrapping every node
+    // (rather than listing declaration kinds) means a new declaration kind
+    // is covered without touching this; a node that emits no symbol costs
+    // two length reads.
+    pinning_new_edges(output, |output| walk_node_inner(node, ctx, source, output));
 }
 
 fn walk_node_inner(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -757,7 +742,7 @@ fn handle_type(
         end_byte,
         signature,
         docstring: None,
-        identity: identity(ctx, Some(generic_arity(node, source))),
+        identity: identity(ctx, Some(generic_arity(node))),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -788,7 +773,7 @@ fn handle_type(
         combine_route_prefix(ctx.route_prefix.as_deref(), class_prefix.as_deref());
     let mut next_ctx = ctx.clone();
     next_ctx.type_stack.push(name);
-    next_ctx.generic_arities.push(generic_arity(node, source));
+    next_ctx.generic_arities.push(generic_arity(node));
     next_ctx.current_scope = qualname;
     next_ctx.route_prefix = combined_prefix;
     next_ctx.grpc_service = grpc_service_info.map(|(service, _)| service);
@@ -898,7 +883,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         end_byte,
         signature,
         docstring: None,
-        identity: identity(ctx, Some(generic_arity(node, source))),
+        identity: identity(ctx, Some(generic_arity(node))),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),

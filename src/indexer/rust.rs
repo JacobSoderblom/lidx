@@ -4,8 +4,8 @@ use crate::db::resolver::{
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    DeferredMarker, DeferredSource, EdgeInput, ExtractedFile, ReceiverType, RustDeferred, Step,
-    SymbolInput, pin_edges_to_symbols,
+    DeclIdentity, DeferredMarker, DeferredSource, EdgeInput, ExtractedFile, ImplIdentity,
+    ReceiverType, RustDeferred, Step, SymbolInput, pinning_new_edges,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -108,23 +108,22 @@ struct Context {
     /// outermost first. Part of a symbol's identity (issue #212): the two
     /// arms of a `cfg` switch are two symbols.
     cfg_chain: Vec<String>,
-    /// `impl Trait for Type` identity for methods inside such a block, so an
-    /// inherent method and a trait-impl method of the same name differ.
-    impl_identity: Option<String>,
+    /// The `impl` block a method sits in (trait, self type, generics, where
+    /// clause), so an inherent and a trait-impl method, or methods of two
+    /// differently-parameterized impls, of the same name differ.
+    impl_identity: Option<ImplIdentity>,
 }
 
 impl Context {
     /// Declaration identity for a symbol defined in this context, `None`
-    /// for the ordinary case (no `cfg`, not in a trait impl).
-    fn identity(&self) -> Option<String> {
-        let mut parts = Vec::new();
-        if !self.cfg_chain.is_empty() {
-            parts.push(format!("cfg:{}", self.cfg_chain.join("&")));
-        }
-        if let Some(imp) = &self.impl_identity {
-            parts.push(imp.clone());
-        }
-        (!parts.is_empty()).then(|| parts.join("|"))
+    /// for the ordinary case (no `cfg`, not in a distinguishing impl).
+    fn identity(&self) -> Option<DeclIdentity> {
+        let identity = DeclIdentity {
+            cfg: self.cfg_chain.clone(),
+            impl_block: self.impl_identity.clone(),
+            ..DeclIdentity::default()
+        };
+        (!identity.is_empty()).then_some(identity)
     }
 
     fn with_cfg(&self, attrs: &[Node<'_>], source: &str) -> Context {
@@ -134,15 +133,18 @@ impl Context {
     }
 }
 
+/// `text` with every whitespace character removed: the normal form for
+/// attribute and type text that goes into a declaration's identity.
+fn strip_whitespace(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 /// `cfg(..)` predicates of `#[cfg(..)]` attribute items, whitespace removed.
 fn cfg_predicates(attrs: &[Node<'_>], source: &str) -> Vec<String> {
     attrs
         .iter()
         .filter_map(|attr| {
-            let text: String = node_text(*attr, source)
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect();
+            let text = strip_whitespace(&node_text(*attr, source));
             let inner = text.strip_prefix("#[")?.strip_suffix(']')?;
             inner
                 .strip_prefix("cfg(")
@@ -424,21 +426,20 @@ fn walk_declaration_list(node: Node<'_>, ctx: &Context, source: &str, output: &m
             pending_attrs.push(child);
             continue;
         }
-        let (first_symbol, first_edge) = (output.symbols.len(), output.edges.len());
         // `cfg` attributes on any item make its symbols (and everything
         // inside it) distinct from a same-named twin under another `cfg`.
         let item_ctx = ctx.with_cfg(&pending_attrs, source);
-        if child.kind() == "function_item" {
-            handle_function_with_attributes(child, &item_ctx, source, output, &pending_attrs);
-        } else {
-            walk_node(child, &item_ctx, source, output);
-        }
+        // Declarations sharing a qualname each keep their own edges,
+        // including those emitted before the symbol itself (route
+        // attributes) since the whole item is inside the pinned slice.
+        pinning_new_edges(output, |output| {
+            if child.kind() == "function_item" {
+                handle_function_with_attributes(child, &item_ctx, source, output, &pending_attrs);
+            } else {
+                walk_node(child, &item_ctx, source, output);
+            }
+        });
         pending_attrs.clear();
-        // Declarations sharing a qualname each keep their own edges.
-        pin_edges_to_symbols(
-            &output.symbols[first_symbol..],
-            &mut output.edges[first_edge..],
-        );
     }
 }
 
@@ -829,6 +830,12 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     }
     let type_qualname = qualify_type_name(&ctx.module, &type_name);
     let is_trait_impl = node.child_by_field_name("trait").is_some();
+    // The IMPLEMENTS edge below is emitted at impl level, before the body's
+    // items, with the *type* as its source. It cannot be pinned to a twin:
+    // the type is declared elsewhere (a `cfg`-twinned struct has no way to
+    // say which arm this impl belongs to), and an impl block is not itself
+    // a symbol. It keeps resolving by qualname; the methods inside, which
+    // are symbols, are pinned per item by `walk_declaration_list`.
 
     let mut grpc_service = None;
     if let Some(trait_node) = node.child_by_field_name("trait") {
@@ -862,16 +869,35 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     next_ctx.in_trait_impl = node
         .child_by_field_name("trait")
         .map(|t| qualify_type_name(&ctx.module, &normalize_type_path(&node_text(t, source))));
-    // Inherent and trait-impl methods of one type may share name and
-    // signature; the trait (with its generic arguments) tells them apart.
-    next_ctx.impl_identity = node.child_by_field_name("trait").map(|t| {
-        let text: String = node_text(t, source)
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        format!("impl:{text}")
-    });
+    next_ctx.impl_identity = impl_identity(node, source);
     walk_node(body, &next_ctx, source, output);
+}
+
+/// Identity of an `impl` block for its methods' stable ids. Every trait impl
+/// has one; an inherent impl only when it is parameterized (generics, a
+/// `where` clause, or a generic self type), so ordinary `impl S { .. }`
+/// methods keep the ids they always had.
+fn impl_identity(node: Node<'_>, source: &str) -> Option<ImplIdentity> {
+    let text_of = |n: Node<'_>| strip_whitespace(&node_text(n, source));
+    let trait_ty = node.child_by_field_name("trait").map(text_of);
+    let self_ty = node.child_by_field_name("type").map(text_of)?;
+    let generics = node
+        .child_by_field_name("type_parameters")
+        .map(text_of)
+        .unwrap_or_default();
+    let mut cursor = node.walk();
+    let where_clause = node
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "where_clause")
+        .map(text_of)
+        .unwrap_or_default();
+    let parameterized = !generics.is_empty() || !where_clause.is_empty() || self_ty.contains('<');
+    (trait_ty.is_some() || parameterized).then_some(ImplIdentity {
+        trait_ty,
+        self_ty,
+        generics,
+        where_clause,
+    })
 }
 
 fn handle_use(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {

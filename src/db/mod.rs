@@ -1690,11 +1690,17 @@ impl Db {
         &mut self,
         file_id: i64,
         metrics: &[SymbolMetricsInput],
-        symbol_map: &HashMap<String, i64>,
+        symbols: &[Symbol],
     ) -> Result<usize> {
         if metrics.is_empty() {
             return Ok(0);
         }
+        // Keyed by (qualname, start byte), not qualname alone: declarations
+        // sharing a qualname (C# overloads, cfg twins) each own their metric.
+        let by_span: HashMap<(&str, i64), i64> = symbols
+            .iter()
+            .map(|s| ((s.qualname.as_str(), s.start_byte), s.id))
+            .collect();
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let mut count = 0;
@@ -1710,7 +1716,8 @@ impl Db {
                     duplication_hash = excluded.duplication_hash",
             )?;
             for metric in metrics {
-                let Some(symbol_id) = symbol_map.get(&metric.qualname) else {
+                let Some(symbol_id) = by_span.get(&(metric.qualname.as_str(), metric.start_byte))
+                else {
                     continue;
                 };
                 stmt.execute(params![
@@ -2793,11 +2800,12 @@ mod tests {
 
         let metrics = vec![SymbolMetricsInput {
             qualname: "carry_guard.fn".to_string(),
+            start_byte: inserted[0].start_byte,
             loc: 5,
             complexity: 2,
             duplication_hash: Some("duphash".to_string()),
         }];
-        db.insert_symbol_metrics(file_id, &metrics, &symbol_map)
+        db.insert_symbol_metrics(file_id, &metrics, &inserted)
             .unwrap();
 
         // Stamp a unique, non-NULL sentinel into every non-exempt column of

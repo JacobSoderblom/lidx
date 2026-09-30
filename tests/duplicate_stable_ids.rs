@@ -444,3 +444,240 @@ fn database_indexed_with_old_ids_reindexes_cleanly() {
         .unwrap();
     assert!(resolved >= 1, "caller edge must stay resolved");
 }
+
+fn rpc(ix: &mut Indexer, method: &str, params: serde_json::Value) -> serde_json::Value {
+    lidx::rpc::handle_method(ix, method, params).unwrap()
+}
+
+#[test]
+fn outline_and_read_symbol_return_every_twin() {
+    let (_t, _r, _db, mut ix) = indexed(&[("Box.cs", CSHARP), ("src/lib.rs", RUST)]);
+
+    // outline lists each declaration with its own span.
+    let outline = rpc(&mut ix, "outline", serde_json::json!({"path": "Box.cs"}));
+    let boxes: Vec<(i64, i64)> = outline["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["qualname"] == "N.Box" && e["kind"] == "class")
+        .map(|e| {
+            (
+                e["start_line"].as_i64().unwrap(),
+                e["end_line"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(boxes, vec![(3, 8), (10, 13), (15, 18)], "{outline}");
+    let outline = rpc(
+        &mut ix,
+        "outline",
+        serde_json::json!({"path": "src/lib.rs"}),
+    );
+    let fixes = outline["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["qualname"] == "crate::fix_path_env")
+        .count();
+    assert_eq!(fixes, 2, "{outline}");
+
+    // read_symbol by qualname returns all of them, each with span and source.
+    let read = rpc(
+        &mut ix,
+        "read_symbol",
+        serde_json::json!({"qualname": "N.Box"}),
+    );
+    assert_eq!(read["overloaded"], true, "{read}");
+    assert_eq!(read["count"], 3);
+    let lines: Vec<i64> = read["overloads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["start_line"].as_i64().unwrap())
+        .collect();
+    assert_eq!(lines, vec![3, 10, 15]);
+
+    let read = rpc(
+        &mut ix,
+        "read_symbol",
+        serde_json::json!({"qualname": "crate::fix_path_env"}),
+    );
+    assert_eq!(read["overloaded"], true, "{read}");
+    assert_eq!(read["count"], 2);
+    let sources: Vec<String> = read["overloads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["source"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        sources.iter().any(|s| s.contains("helper();")),
+        "the real macos body is readable: {read}"
+    );
+
+    let read = rpc(
+        &mut ix,
+        "read_symbol",
+        serde_json::json!({"qualname": "crate::S::new"}),
+    );
+    assert_eq!(read["count"], 2, "{read}");
+}
+
+#[test]
+fn metrics_belong_to_their_own_twin() {
+    let (_t, _r, db, ix) = indexed(&[("Box.cs", CSHARP), ("src/lib.rs", RUST)]);
+    let gv = version(&ix);
+    let conn = open(&db);
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.qualname, s.start_line, m.loc
+             FROM symbol_metrics m JOIN symbols s ON s.id = m.symbol_id
+             WHERE s.graph_version = ?
+               AND s.qualname IN ('crate::fix_path_env', 'N.Box.Put', 'crate::S::new')
+             ORDER BY s.qualname, s.start_line",
+        )
+        .unwrap();
+    let rows: Vec<(String, i64, i64)> = stmt
+        .query_map([gv], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("N.Box.Put".to_string(), 6, 1),
+            ("N.Box.Put".to_string(), 7, 1),
+            ("crate::S::new".to_string(), 16, 4),
+            ("crate::S::new".to_string(), 37, 4),
+            ("crate::fix_path_env".to_string(), 6, 3),
+            ("crate::fix_path_env".to_string(), 11, 1),
+        ],
+        "each twin/overload has its own metric row"
+    );
+}
+
+/// Extracts `source` and returns each `m` method's identity.
+fn method_identities(source: &str) -> Vec<lidx::indexer::extract::SymbolInput> {
+    use lidx::indexer::extract::LanguageExtractor;
+    let mut extractor = lidx::indexer::rust::RustExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "crate").unwrap();
+    extracted
+        .symbols
+        .into_iter()
+        .filter(|s| s.name == "m")
+        .collect()
+}
+
+#[test]
+fn impl_blocks_differing_in_generics_or_where_do_not_fall_to_dup() {
+    let src = r#"
+pub struct S<T>(T);
+pub trait Tr { fn m(&self); }
+
+impl<T> Tr for S<T> { fn m(&self) {} }
+impl Tr for S<u8> { fn m(&self) {} }
+impl<T> Tr for S<T> where T: Copy { fn m(&self) {} }
+impl<T> Tr for S<T> where T: Clone { fn m(&self) {} }
+impl<T> S<T> { pub fn m(&self) {} }
+impl S<u16> { pub fn m(&self) {} }
+"#;
+    let methods = method_identities(src);
+    // Six impl methods plus the trait's own declaration.
+    assert_eq!(methods.len(), 7);
+    assert!(
+        methods
+            .iter()
+            .all(|s| s.identity.as_ref().is_none_or(|i| i.dup.is_none())),
+        "identity alone tells these apart: {methods:#?}"
+    );
+    let ids: std::collections::BTreeSet<String> =
+        methods.iter().map(compute_stable_symbol_id).collect();
+    assert_eq!(ids.len(), 7, "distinct stable ids");
+
+    // And they survive indexing as six rows with no collision fallback.
+    let (_t, _r, db, ix) = indexed(&[("src/lib.rs", src)]);
+    let syms = symbols(&db, version(&ix), "src/lib.rs");
+    assert_eq!(
+        syms.iter().filter(|s| s.qualname == "crate::S::m").count(),
+        6
+    );
+    assert_distinct_ids(&syms);
+}
+
+#[test]
+fn a_pipe_inside_a_cfg_predicate_cannot_alias_another_identity() {
+    use lidx::indexer::extract::DeclIdentity;
+    let base = SymbolInput {
+        kind: "function".into(),
+        name: "f".into(),
+        qualname: "crate::f".into(),
+        start_line: 1,
+        start_col: 0,
+        end_line: 1,
+        end_col: 0,
+        start_byte: 0,
+        end_byte: 0,
+        signature: None,
+        docstring: None,
+        identity: None,
+    };
+    let with = |cfg: &[&str]| SymbolInput {
+        identity: Some(DeclIdentity {
+            cfg: cfg.iter().map(|s| s.to_string()).collect(),
+            ..DeclIdentity::default()
+        }),
+        ..base.clone()
+    };
+    assert_ne!(
+        compute_stable_symbol_id(&with(&["a|b"])),
+        compute_stable_symbol_id(&with(&["a", "b"]))
+    );
+    assert_ne!(
+        compute_stable_symbol_id(&with(&["a&b"])),
+        compute_stable_symbol_id(&with(&["a", "b"]))
+    );
+    // An ordinary symbol's id is what origin/main computed: hash of
+    // qualname, NUL, signature (none), NUL, kind.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"crate::f\0\0function");
+    assert_eq!(
+        compute_stable_symbol_id(&base),
+        format!("sym_{}", &hasher.finalize().to_hex()[..16])
+    );
+}
+
+#[test]
+fn twin_route_handlers_each_keep_their_own_route_edge() {
+    let src = r#"use actix_web::get;
+
+#[cfg(unix)]
+#[get("/unix")]
+pub async fn handler() {}
+
+#[cfg(not(unix))]
+#[get("/other")]
+pub async fn handler() {}
+"#;
+    let (_t, _r, db, ix) = indexed(&[("src/lib.rs", src)]);
+    let gv = version(&ix);
+    let conn = open(&db);
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.start_line, e.target_qualname
+             FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+             WHERE e.kind = 'HTTP_ROUTE' AND s.qualname = 'crate::handler'
+               AND e.graph_version = ? ORDER BY s.start_line",
+        )
+        .unwrap();
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([gv], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_ne!(rows[0].0, rows[1].0, "routes belong to different twins");
+    assert!(
+        rows[0].1.contains("unix") && rows[1].1.contains("other"),
+        "{rows:?}"
+    );
+}

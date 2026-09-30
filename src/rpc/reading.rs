@@ -660,11 +660,15 @@ fn build_symbol_entry(
     Ok(entry)
 }
 
-/// The C# overload set behind `qn`: every non-external symbol sharing that
-/// exact qualname, when there are several and all are C# methods. Empty
-/// otherwise -- other languages' duplicate qualnames (Python property
-/// setters, `@overload`, TS overload signatures) keep the single-symbol shape.
-fn csharp_overloads(indexer: &Indexer, qn: &str, graph_version: i64) -> Result<Vec<Symbol>> {
+/// The overload set behind `qn`: every non-external symbol sharing that
+/// exact qualname, when there are several and they are all C# or all Rust
+/// declarations. That covers C# method overloads plus the same-qualname
+/// declarations issue #212 keeps apart (generic-arity types, `cfg` twins,
+/// inherent and trait-impl methods): a read must list each one with its
+/// own span, never silently pick one. Empty otherwise -- other languages'
+/// duplicate qualnames (Python property setters, `@overload`, TS overload
+/// signatures) keep the single-symbol shape.
+fn overloaded_symbols(indexer: &Indexer, qn: &str, graph_version: i64) -> Result<Vec<Symbol>> {
     let overloads: Vec<Symbol> = indexer
         .db()
         .get_symbols_by_qualname(qn, graph_version)?
@@ -674,11 +678,22 @@ fn csharp_overloads(indexer: &Indexer, qn: &str, graph_version: i64) -> Result<V
     let all_csharp_methods = overloads
         .iter()
         .all(|s| s.kind == "method" && s.file_path.ends_with(".cs"));
-    Ok(if overloads.len() > 1 && all_csharp_methods {
-        overloads
-    } else {
-        Vec::new()
-    })
+    // Twins are declarations of one file; a namespace or partial type spread
+    // over several files is not a twin set.
+    let one_file = overloads
+        .iter()
+        .all(|s| s.file_path == overloads[0].file_path);
+    let twins_in_file = one_file
+        && overloads
+            .iter()
+            .all(|s| s.file_path.ends_with(".cs") || s.file_path.ends_with(".rs"));
+    Ok(
+        if overloads.len() > 1 && (all_csharp_methods || twins_in_file) {
+            overloads
+        } else {
+            Vec::new()
+        },
+    )
 }
 
 /// The `overloaded` response object shared by the `qualname`, `qualnames` and
@@ -728,10 +743,12 @@ fn overload_entries(
         let entry = build_symbol_entry(indexer, symbol, skeleton, context_lines, graph_version)?;
         let len = serde_json::to_string(&entry).map(|s| s.len()).unwrap_or(0);
         if !entries.is_empty() && used + len > max_bytes {
+            // Twins can share qualname and signature: the line tells them apart.
             omitted.push(format!(
-                "{}{}",
+                "{}{}@L{}",
                 symbol.qualname,
-                symbol.signature.as_deref().unwrap_or_default()
+                symbol.signature.as_deref().unwrap_or_default(),
+                symbol.start_line
             ));
             continue;
         }
@@ -804,7 +821,7 @@ fn handle_read_symbol_multi(
             continue;
         }
         // An overloaded C# qualname contributes one entry per overload.
-        let overloads = csharp_overloads(indexer, qn, graph_version)?;
+        let overloads = overloaded_symbols(indexer, qn, graph_version)?;
         let built: Result<Vec<Value>> = if overloads.is_empty() {
             let found = indexer.db().get_symbol_by_qualname(qn, graph_version)?;
             let symbol = match found {
@@ -928,7 +945,7 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
         .min(200_000);
     if let Some(qn) = &params.qualname {
-        let overloads = csharp_overloads(indexer, qn, graph_version)?;
+        let overloads = overloaded_symbols(indexer, qn, graph_version)?;
         if !overloads.is_empty() {
             return overload_response(
                 indexer,
@@ -1005,7 +1022,7 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
     }
 
     // A `query` that lands on an overloaded C# method reads all overloads.
-    let overloads = csharp_overloads(indexer, &symbol.qualname, graph_version)?;
+    let overloads = overloaded_symbols(indexer, &symbol.qualname, graph_version)?;
     if !overloads.is_empty() {
         return overload_response(
             indexer,

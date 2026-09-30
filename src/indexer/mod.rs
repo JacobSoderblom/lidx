@@ -610,7 +610,7 @@ impl Indexer {
                 self.db.upsert_file_metrics(file_id, metrics)?;
             }
             self.db
-                .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbol_map)?;
+                .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbols)?;
 
             stats.indexed += 1;
             stats.symbols += diff.added.len() + diff.modified.len() + diff.unchanged.len();
@@ -886,7 +886,7 @@ impl Indexer {
             self.db.upsert_file_metrics(file_id, metrics)?;
         }
         self.db
-            .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbol_map)?;
+            .insert_symbol_metrics(file_id, &extracted.symbol_metrics, symbols)?;
 
         Ok((symbols.len(), edges_count))
     }
