@@ -589,21 +589,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
 
     if existing < 25 {
-        // Issue #254: `unresolved_references.source_symbol_id` has a foreign
-        // key (ON DELETE SET NULL) but no index. When deleting symbols for
-        // pruning old graph versions, SQLite must full-table-scan the
-        // unresolved_references table (~40k rows) for each symbol deletion
-        // (~18k deletions), making the prune O(symbols * rows) instead of
-        // O(rows affected). An index makes the lookup O(log N), proportional
-        // to rows actually affected.
-        // The edges table already has indexes on both source_symbol_id and
-        // target_symbol_id, so this migrates the unresolved_references table
-        // to match.
-        eprintln!("migration 25: adding index on unresolved_references(source_symbol_id)");
-        conn.execute(
+        // Issue #254: each FK on `unresolved_references` needs an index on
+        // its referencing column, or every parent delete (a graph-version
+        // prune deletes ~18k symbols) full-scans the table. `edge_id` is
+        // covered by its UNIQUE autoindex and `edges` already indexes all
+        // three of its FK columns; these two were the gaps.
+        eprintln!("migration 25: indexing unresolved_references FK columns");
+        conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_unresolved_references_source
-                ON unresolved_references(source_symbol_id)",
-            [],
+                ON unresolved_references(source_symbol_id);
+             CREATE INDEX IF NOT EXISTS idx_unresolved_references_file
+                ON unresolved_references(file_id);",
         )?;
     }
 
@@ -1905,197 +1901,37 @@ mod tests {
         assert_eq!(violations, 0);
     }
 
+    /// Query-plan `detail` strings (column 3 of `EXPLAIN QUERY PLAN`).
+    fn query_plan(conn: &Connection, sql: &str) -> Vec<String> {
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn index_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
     #[test]
-    fn index_on_unresolved_references_source_symbol_id_exists_after_migration() {
+    fn migration_25_indexes_unresolved_references_fk_columns_on_an_old_db() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        open_v18_db(&conn);
+        assert!(!index_exists(&conn, "idx_unresolved_references_source"));
+        assert!(!index_exists(&conn, "idx_unresolved_references_file"));
 
-        // Create a minimal v24 database
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS graph_versions (
-                id INTEGER PRIMARY KEY,
-                created INTEGER NOT NULL,
-                commit_sha TEXT
-            );
-            CREATE TABLE IF NOT EXISTS files (
-                id INTEGER PRIMARY KEY,
-                path TEXT NOT NULL UNIQUE,
-                hash TEXT NOT NULL,
-                language TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                modified INTEGER NOT NULL,
-                deleted_version INTEGER
-            );
-            CREATE TABLE IF NOT EXISTS symbols (
-                id INTEGER PRIMARY KEY,
-                file_id INTEGER NOT NULL,
-                kind TEXT NOT NULL,
-                name TEXT NOT NULL,
-                qualname TEXT NOT NULL,
-                start_line INTEGER NOT NULL,
-                start_col INTEGER NOT NULL,
-                end_line INTEGER NOT NULL,
-                end_col INTEGER NOT NULL,
-                start_byte INTEGER NOT NULL,
-                end_byte INTEGER NOT NULL,
-                signature TEXT,
-                docstring TEXT,
-                graph_version INTEGER NOT NULL DEFAULT 1,
-                commit_sha TEXT,
-                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS unresolved_references (
-                id INTEGER PRIMARY KEY,
-                edge_id INTEGER NOT NULL UNIQUE,
-                source_symbol_id INTEGER,
-                file_id INTEGER NOT NULL,
-                edge_kind TEXT NOT NULL,
-                reference_name TEXT,
-                name_tail TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                import_candidates TEXT,
-                graph_version INTEGER NOT NULL,
-                FOREIGN KEY(edge_id) REFERENCES edges(id) ON DELETE CASCADE,
-                FOREIGN KEY(source_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL,
-                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
-            );
-            CREATE INDEX IF NOT EXISTS idx_unresolved_references_name
-                ON unresolved_references(reference_name);
-            CREATE INDEX IF NOT EXISTS idx_unresolved_references_name_tail
-                ON unresolved_references(name_tail);
-            CREATE INDEX IF NOT EXISTS idx_unresolved_references_gv
-                ON unresolved_references(graph_version);
-            CREATE INDEX IF NOT EXISTS idx_unresolved_references_reason
-                ON unresolved_references(reason);
-            CREATE TABLE IF NOT EXISTS edges (
-                id INTEGER PRIMARY KEY,
-                file_id INTEGER NOT NULL,
-                source_symbol_id INTEGER,
-                target_symbol_id INTEGER,
-                kind TEXT NOT NULL,
-                target_qualname TEXT,
-                detail TEXT,
-                evidence_snippet TEXT,
-                evidence_start_line INTEGER,
-                evidence_end_line INTEGER,
-                confidence REAL,
-                graph_version INTEGER NOT NULL DEFAULT 1,
-                commit_sha TEXT,
-                trace_id TEXT,
-                span_id TEXT,
-                event_ts INTEGER,
-                receiver_type TEXT,
-                resolution_kind TEXT,
-                import_candidates TEXT,
-                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
-            );
-            INSERT INTO meta (key, value) VALUES ('schema_version', '24');
-            ",
-        )
-        .unwrap();
-
-        // Verify the index does not exist before migration
-        let has_index_before: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_unresolved_references_source'",
-                [],
-                |row| {
-                    let count: i64 = row.get(0)?;
-                    Ok(count > 0)
-                },
-            )
-            .unwrap();
-        assert!(!has_index_before, "index should not exist before migration");
-
-        // Verify the query plan before migration uses SCAN (not index)
-        let mut stmt_before = conn
-            .prepare("EXPLAIN QUERY PLAN SELECT id FROM unresolved_references WHERE source_symbol_id = 123")
-            .unwrap();
-        let mut query_plan_before = String::new();
-        let rows = stmt_before
-            .query_map([], |row| {
-                // Try to get all columns as strings to see the query plan
-                let mut plan = String::new();
-                for i in 0..8 {
-                    if let Ok(val) = row.get::<_, String>(i) {
-                        plan.push_str(&val);
-                        plan.push(' ');
-                    }
-                }
-                Ok(plan)
-            })
-            .unwrap();
-        for row in rows {
-            let plan = row.unwrap();
-            query_plan_before.push_str(&plan);
-            query_plan_before.push('|');
-        }
-        assert!(
-            query_plan_before.contains("SCAN unresolved_references"),
-            "query should SCAN before index exists, but got: {}",
-            query_plan_before
-        );
-
-        // Run migration
         migrate(&conn).unwrap();
 
-        // Verify the index exists after migration
-        let has_index_after: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_unresolved_references_source'",
-                [],
-                |row| {
-                    let count: i64 = row.get(0)?;
-                    Ok(count > 0)
-                },
-            )
-            .unwrap();
-        assert!(
-            has_index_after,
-            "index idx_unresolved_references_source should exist after migration"
-        );
-
-        // Verify the query plan after migration uses the index
-        let mut stmt_after = conn
-            .prepare("EXPLAIN QUERY PLAN SELECT id FROM unresolved_references WHERE source_symbol_id = 123")
-            .unwrap();
-        let mut query_plan_after = String::new();
-        let rows = stmt_after
-            .query_map([], |row| {
-                // Try to get all columns as strings to see the query plan
-                let mut plan = String::new();
-                for i in 0..8 {
-                    if let Ok(val) = row.get::<_, String>(i) {
-                        plan.push_str(&val);
-                        plan.push(' ');
-                    }
-                }
-                Ok(plan)
-            })
-            .unwrap();
-        for row in rows {
-            let plan = row.unwrap();
-            query_plan_after.push_str(&plan);
-            query_plan_after.push('|');
-        }
-        assert!(
-            !query_plan_after.contains("SCAN unresolved_references"),
-            "query should not SCAN after index exists, but got: {}",
-            query_plan_after
-        );
-        assert!(
-            query_plan_after.contains("SEARCH")
-                || query_plan_after.contains("idx_unresolved_references_source"),
-            "query should use index after migration, but got: {}",
-            query_plan_after
-        );
-
-        // Verify schema version updated
+        assert!(index_exists(&conn, "idx_unresolved_references_source"));
+        assert!(index_exists(&conn, "idx_unresolved_references_file"));
         let version: String = conn
             .query_row(
                 "SELECT value FROM meta WHERE key = 'schema_version'",
@@ -2103,6 +1939,67 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "25");
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn unresolved_references_fk_lookups_use_an_index_not_a_scan() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        for (column, index) in [
+            ("source_symbol_id", "idx_unresolved_references_source"),
+            ("file_id", "idx_unresolved_references_file"),
+        ] {
+            let plan = query_plan(
+                &conn,
+                &format!("SELECT id FROM unresolved_references WHERE {column} = 123"),
+            );
+            assert!(
+                plan.iter()
+                    .any(|d| d.contains("SEARCH") && d.contains(index)),
+                "{column} lookup must SEARCH {index}, got {plan:?}"
+            );
+        }
+    }
+
+    /// Every FK's referencing column must lead some index, or each parent
+    /// delete (a graph-version prune) full-scans the child table. SQLite's
+    /// own FK enforcement does exactly that lookup.
+    #[test]
+    fn every_fk_column_on_edges_and_unresolved_references_is_indexed() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        for table in ["edges", "unresolved_references"] {
+            let mut fks = conn
+                .prepare(&format!(
+                    "SELECT \"from\" FROM pragma_foreign_key_list('{table}')"
+                ))
+                .unwrap();
+            let columns: Vec<String> = fks
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert!(!columns.is_empty(), "{table} should declare foreign keys");
+            for column in columns {
+                let covered: i64 = conn
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM pragma_index_list('{table}') il
+                             JOIN pragma_index_info(il.name) ii
+                             WHERE ii.seqno = 0 AND ii.name = ?"
+                        ),
+                        [&column],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(
+                    covered > 0,
+                    "{table}.{column} has a foreign key but no index leading with it"
+                );
+            }
+        }
     }
 }
