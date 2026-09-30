@@ -142,8 +142,7 @@ fn resource_to_symbols(
     );
     let docstring = build_docstring(&resource.labels, &resource.annotations);
 
-    let doc_span = doc_span(doc);
-    let span = root.span(doc_span);
+    let span = root.span(doc_span(doc));
 
     let symbol = SymbolInput {
         kind: kind_lower.clone(),
@@ -760,7 +759,11 @@ fn doc_span(doc: &YamlDocument) -> Span {
 }
 
 fn parse_tree(parser: &mut Parser, text: &str) -> Option<Tree> {
-    parser.parse(text, None)
+    // A tree with syntax errors may be misshapen; navigating it could land on
+    // the wrong node, so treat it as absent and use the whole-document span.
+    parser
+        .parse(text, None)
+        .filter(|t| !t.root_node().has_error())
 }
 
 /// A position in a document's syntax tree, navigated by key / index in step

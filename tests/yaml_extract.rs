@@ -561,3 +561,91 @@ fn env_edges_have_per_entry_evidence() {
             .is_some_and(|s| s.contains("secretKeyRef"))
     );
 }
+
+fn container_spans(source: &str) -> Vec<(String, i64, i64)> {
+    let mut extractor = YamlExtractor::new().unwrap();
+    let out = extractor.extract(source, "k8s/x").unwrap();
+    out.symbols
+        .iter()
+        .filter(|s| s.kind == "container")
+        .map(|s| (s.qualname.clone(), s.start_line, s.end_line))
+        .collect()
+}
+
+#[test]
+fn crlf_line_endings_keep_spans_in_bounds() {
+    let src = SPAN_FIXTURE.replace('\n', "\r\n");
+    let total = src.lines().count() as i64;
+    let mut extractor = YamlExtractor::new().unwrap();
+    let out = extractor.extract(&src, "k8s/crlf").unwrap();
+    for s in &out.symbols {
+        assert!(
+            s.end_line <= total && s.end_byte <= src.len() as i64,
+            "{s:?}"
+        );
+    }
+    let main = out
+        .symbols
+        .iter()
+        .find(|s| s.qualname == "k8s://default/deployment/datamgr/container/datamgr")
+        .unwrap();
+    assert_eq!(main.start_line, 21);
+    assert!(main.end_line < total + 1);
+    assert!(main.start_line > 1);
+}
+
+#[test]
+fn anchor_and_merge_key_containers_stay_in_document() {
+    let src = "\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anch
+spec:
+  template:
+    spec:
+      containers:
+        - &base
+          name: a
+          image: x
+        - <<: *base
+          name: b
+";
+    let total = src.lines().count() as i64;
+    let spans = container_spans(src);
+    assert!(!spans.is_empty());
+    for (_, s, e) in spans {
+        assert!(1 <= s && s <= e && e <= total);
+    }
+}
+
+#[test]
+fn flow_style_env_gets_narrow_evidence() {
+    let src = "\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flow
+spec:
+  template:
+    spec:
+      containers:
+        - name: c
+          image: x
+          env: [{name: Database__ConnectionString, value: v}]
+";
+    let mut extractor = YamlExtractor::new().unwrap();
+    let out = extractor.extract(src, "k8s/flow").unwrap();
+    let edge = out
+        .edges
+        .iter()
+        .find(|e| e.target_qualname.as_deref() == Some("env://DATABASE__CONNECTIONSTRING"))
+        .expect("env edge");
+    assert_eq!(edge.evidence_start_line, Some(11));
+    assert_eq!(edge.evidence_end_line, Some(11));
+    assert!(
+        edge.evidence_snippet
+            .as_deref()
+            .is_some_and(|s| !s.is_empty())
+    );
+}
