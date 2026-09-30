@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 24;
+pub const SCHEMA_VERSION: i64 = 25;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -585,6 +585,25 @@ pub fn migrate(conn: &Connection) -> Result<()> {
              CREATE INDEX IF NOT EXISTS idx_unresolved_deferred_sites
                 ON unresolved_references(graph_version, edge_kind)
                 WHERE deferred_kind IS NOT NULL;",
+        )?;
+    }
+
+    if existing < 25 {
+        // Issue #254: `unresolved_references.source_symbol_id` has a foreign
+        // key (ON DELETE SET NULL) but no index. When deleting symbols for
+        // pruning old graph versions, SQLite must full-table-scan the
+        // unresolved_references table (~40k rows) for each symbol deletion
+        // (~18k deletions), making the prune O(symbols * rows) instead of
+        // O(rows affected). An index makes the lookup O(log N), proportional
+        // to rows actually affected.
+        // The edges table already has indexes on both source_symbol_id and
+        // target_symbol_id, so this migrates the unresolved_references table
+        // to match.
+        eprintln!("migration 25: adding index on unresolved_references(source_symbol_id)");
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_unresolved_references_source
+                ON unresolved_references(source_symbol_id)",
+            [],
         )?;
     }
 
@@ -1884,5 +1903,206 @@ mod tests {
             })
             .unwrap();
         assert_eq!(violations, 0);
+    }
+
+    #[test]
+    fn index_on_unresolved_references_source_symbol_id_exists_after_migration() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+
+        // Create a minimal v24 database
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS graph_versions (
+                id INTEGER PRIMARY KEY,
+                created INTEGER NOT NULL,
+                commit_sha TEXT
+            );
+            CREATE TABLE IF NOT EXISTS files (
+                id INTEGER PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                hash TEXT NOT NULL,
+                language TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                modified INTEGER NOT NULL,
+                deleted_version INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS symbols (
+                id INTEGER PRIMARY KEY,
+                file_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                qualname TEXT NOT NULL,
+                start_line INTEGER NOT NULL,
+                start_col INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                end_col INTEGER NOT NULL,
+                start_byte INTEGER NOT NULL,
+                end_byte INTEGER NOT NULL,
+                signature TEXT,
+                docstring TEXT,
+                graph_version INTEGER NOT NULL DEFAULT 1,
+                commit_sha TEXT,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS unresolved_references (
+                id INTEGER PRIMARY KEY,
+                edge_id INTEGER NOT NULL UNIQUE,
+                source_symbol_id INTEGER,
+                file_id INTEGER NOT NULL,
+                edge_kind TEXT NOT NULL,
+                reference_name TEXT,
+                name_tail TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                import_candidates TEXT,
+                graph_version INTEGER NOT NULL,
+                FOREIGN KEY(edge_id) REFERENCES edges(id) ON DELETE CASCADE,
+                FOREIGN KEY(source_symbol_id) REFERENCES symbols(id) ON DELETE SET NULL,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_unresolved_references_name
+                ON unresolved_references(reference_name);
+            CREATE INDEX IF NOT EXISTS idx_unresolved_references_name_tail
+                ON unresolved_references(name_tail);
+            CREATE INDEX IF NOT EXISTS idx_unresolved_references_gv
+                ON unresolved_references(graph_version);
+            CREATE INDEX IF NOT EXISTS idx_unresolved_references_reason
+                ON unresolved_references(reason);
+            CREATE TABLE IF NOT EXISTS edges (
+                id INTEGER PRIMARY KEY,
+                file_id INTEGER NOT NULL,
+                source_symbol_id INTEGER,
+                target_symbol_id INTEGER,
+                kind TEXT NOT NULL,
+                target_qualname TEXT,
+                detail TEXT,
+                evidence_snippet TEXT,
+                evidence_start_line INTEGER,
+                evidence_end_line INTEGER,
+                confidence REAL,
+                graph_version INTEGER NOT NULL DEFAULT 1,
+                commit_sha TEXT,
+                trace_id TEXT,
+                span_id TEXT,
+                event_ts INTEGER,
+                receiver_type TEXT,
+                resolution_kind TEXT,
+                import_candidates TEXT,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+            INSERT INTO meta (key, value) VALUES ('schema_version', '24');
+            ",
+        )
+        .unwrap();
+
+        // Verify the index does not exist before migration
+        let has_index_before: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_unresolved_references_source'",
+                [],
+                |row| {
+                    let count: i64 = row.get(0)?;
+                    Ok(count > 0)
+                },
+            )
+            .unwrap();
+        assert!(!has_index_before, "index should not exist before migration");
+
+        // Verify the query plan before migration uses SCAN (not index)
+        let mut stmt_before = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT id FROM unresolved_references WHERE source_symbol_id = 123")
+            .unwrap();
+        let mut query_plan_before = String::new();
+        let rows = stmt_before
+            .query_map([], |row| {
+                // Try to get all columns as strings to see the query plan
+                let mut plan = String::new();
+                for i in 0..8 {
+                    if let Ok(val) = row.get::<_, String>(i) {
+                        plan.push_str(&val);
+                        plan.push(' ');
+                    }
+                }
+                Ok(plan)
+            })
+            .unwrap();
+        for row in rows {
+            let plan = row.unwrap();
+            query_plan_before.push_str(&plan);
+            query_plan_before.push('|');
+        }
+        assert!(
+            query_plan_before.contains("SCAN unresolved_references"),
+            "query should SCAN before index exists, but got: {}",
+            query_plan_before
+        );
+
+        // Run migration
+        migrate(&conn).unwrap();
+
+        // Verify the index exists after migration
+        let has_index_after: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_unresolved_references_source'",
+                [],
+                |row| {
+                    let count: i64 = row.get(0)?;
+                    Ok(count > 0)
+                },
+            )
+            .unwrap();
+        assert!(
+            has_index_after,
+            "index idx_unresolved_references_source should exist after migration"
+        );
+
+        // Verify the query plan after migration uses the index
+        let mut stmt_after = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT id FROM unresolved_references WHERE source_symbol_id = 123")
+            .unwrap();
+        let mut query_plan_after = String::new();
+        let rows = stmt_after
+            .query_map([], |row| {
+                // Try to get all columns as strings to see the query plan
+                let mut plan = String::new();
+                for i in 0..8 {
+                    if let Ok(val) = row.get::<_, String>(i) {
+                        plan.push_str(&val);
+                        plan.push(' ');
+                    }
+                }
+                Ok(plan)
+            })
+            .unwrap();
+        for row in rows {
+            let plan = row.unwrap();
+            query_plan_after.push_str(&plan);
+            query_plan_after.push('|');
+        }
+        assert!(
+            !query_plan_after.contains("SCAN unresolved_references"),
+            "query should not SCAN after index exists, but got: {}",
+            query_plan_after
+        );
+        assert!(
+            query_plan_after.contains("SEARCH")
+                || query_plan_after.contains("idx_unresolved_references_source"),
+            "query should use index after migration, but got: {}",
+            query_plan_after
+        );
+
+        // Verify schema version updated
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "25");
     }
 }
