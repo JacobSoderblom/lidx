@@ -62,6 +62,9 @@ struct GrpcService {
 struct Context {
     module: String,
     class_stack: Vec<String>,
+    /// How many leading `class_stack` entries are TS namespaces rather than
+    /// classes (`namespace A.B {}` pushes two).
+    ns_depth: usize,
     fn_depth: usize,
     current_scope: String,
     route_prefix: Option<String>,
@@ -337,6 +340,10 @@ pub fn resolve_import_file_edges(
 /// Name of the default export in `chase_export` lookups.
 const DEFAULT_EXPORT: &str = "default";
 
+/// Name of the symbol an anonymous default export (`export default () => ..`,
+/// `export default class {}`, `export default { .. }`) is indexed under.
+const ANON_DEFAULT: &str = "default";
+
 type ExportCache = HashMap<String, Option<Rc<FileExports>>>;
 
 thread_local! {
@@ -462,8 +469,14 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
                     stmt.child_by_field_name("value")
                         .filter(|v| v.kind() == "identifier")
                 });
-            if let Some(n) = named {
-                out.default_local = Some(node_text(n, &source));
+            match named {
+                Some(n) => out.default_local = Some(node_text(n, &source)),
+                // `export default <expr>` / `export default function () {}`:
+                // the symbol `handle_anonymous_default` emits.
+                None if stmt.child_by_field_name("value").is_some() => {
+                    out.default_local = Some(ANON_DEFAULT.to_string());
+                }
+                None => {}
             }
         }
         let mut c = stmt.walk();
@@ -1207,6 +1220,7 @@ fn extract_with_parser(
     let ctx = Context {
         module: module_name.to_string(),
         class_stack: Vec::new(),
+        ns_depth: 0,
         fn_depth: 0,
         current_scope: module_name.to_string(),
         route_prefix: None,
@@ -1264,6 +1278,7 @@ fn mark_unexported_private(
         .iter()
         .filter(|s| {
             s.kind != "module"
+                && s.name != ANON_DEFAULT
                 && s.qualname == build_qualname(module_name, &[], &s.name)
                 && !exports.names.contains(&s.name)
         })
@@ -1439,7 +1454,12 @@ fn declared_names(decl: Node<'_>, source: &str, out: &mut HashSet<String>) {
         }
         _ => {
             if let Some(name) = decl.child_by_field_name("name") {
-                out.insert(node_text(name, source));
+                let text = node_text(name, source);
+                // `namespace A.B {}` declares `A`.
+                match (name.kind(), text.split_once('.')) {
+                    ("nested_identifier", Some((head, _))) => out.insert(head.to_string()),
+                    _ => out.insert(text),
+                };
             }
         }
     }
@@ -1608,6 +1628,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             handle_interface(node, ctx, source, output);
             return;
         }
+        "internal_module" | "module" => {
+            handle_namespace(node, ctx, source, output);
+            return;
+        }
         "type_alias_declaration" => {
             handle_named_item(node, ctx, source, output, "type");
             return;
@@ -1626,6 +1650,9 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         }
         "export_statement" | "export_declaration" => {
             handle_import(node, ctx, source, output, false);
+            if handle_anonymous_default(node, ctx, source, output) {
+                return;
+            }
         }
         _ => {}
     }
@@ -1637,14 +1664,20 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
 }
 
 fn handle_class(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    if ctx.fn_depth > 0 {
-        return;
-    }
     let Some(name_node) = node.child_by_field_name("name") else {
         return;
     };
-    let name = node_text(name_node, source);
-    if name.is_empty() {
+    handle_class_named(node, ctx, source, output, node_text(name_node, source));
+}
+
+fn handle_class_named(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+    name: String,
+) {
+    if ctx.fn_depth > 0 || name.is_empty() {
         return;
     }
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
@@ -1736,7 +1769,9 @@ fn handle_interface(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
         Some(value) => value,
         None => return,
     };
-    for target in collect_clause_targets_from(node, "extends_clause", source) {
+    // tree-sitter-typescript names an interface's heritage `extends_type_clause`
+    // (a class's is `extends_clause` inside `class_heritage`).
+    for target in collect_clause_targets_from(node, "extends_type_clause", source) {
         if target.is_empty() {
             continue;
         }
@@ -1805,7 +1840,15 @@ fn clause_targets(node: Node<'_>, source: &str) -> Vec<String> {
         if kind == "type_arguments" || kind == "type_parameters" {
             continue;
         }
-        let name = node_text(child, source);
+        // `B<T>` targets `B`.
+        let name = if kind == "generic_type" {
+            child
+                .child_by_field_name("name")
+                .map(|n| node_text(n, source))
+                .unwrap_or_default()
+        } else {
+            node_text(child, source)
+        };
         if !name.is_empty() {
             targets.push(name);
         }
@@ -1816,8 +1859,104 @@ fn clause_targets(node: Node<'_>, source: &str) -> Vec<String> {
 fn walk_class_body(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        if child.kind() == "method_definition" {
-            handle_method(child, ctx, source, output);
+        match child.kind() {
+            "method_definition" | "abstract_method_signature" => {
+                handle_method(child, ctx, source, output);
+            }
+            "public_field_definition" | "field_definition" => {
+                handle_field(child, ctx, source, output);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn push_field(
+    node: Node<'_>,
+    name: String,
+    private: bool,
+    ctx: &Context,
+    output: &mut ExtractedFile,
+) {
+    if name.is_empty() {
+        return;
+    }
+    let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    if private {
+        output.private_qualnames.push(qualname.clone());
+    }
+    output.symbols.push(SymbolInput {
+        kind: "field".to_string(),
+        name,
+        qualname: qualname.clone(),
+        start_line,
+        start_col,
+        end_line,
+        end_col,
+        start_byte,
+        end_byte,
+        signature: None,
+        docstring: None,
+        identity: None,
+    });
+    output.edges.push(EdgeInput {
+        kind: "CONTAINS".to_string(),
+        source_qualname: Some(container_qualname(&ctx.module, &ctx.class_stack)),
+        target_qualname: Some(qualname),
+        detail: None,
+        evidence_snippet: None,
+        ..Default::default()
+    });
+}
+
+/// A class property declaration (`readonly`, `?`, `static` and `#private`
+/// included).
+fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    // A computed key (`[Symbol.iterator] = ..`) has no stable name.
+    if name_node.kind() == "computed_property_name" {
+        return;
+    }
+    let name = node_text(name_node, source);
+    push_field(node, name, is_private_member(node, source), ctx, output);
+}
+
+/// `constructor(private x: T, readonly y: U)`: each parameter carrying an
+/// accessibility modifier or `readonly` also declares a field.
+fn handle_parameter_properties(
+    ctor: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let Some(params) = ctor.child_by_field_name("parameters") else {
+        return;
+    };
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        if !matches!(param.kind(), "required_parameter" | "optional_parameter") {
+            continue;
+        }
+        let mut c = param.walk();
+        let (mut is_property, mut private) = (false, false);
+        for child in param.children(&mut c) {
+            match child.kind() {
+                "accessibility_modifier" => {
+                    is_property = true;
+                    private = node_text(child, source) == "private";
+                }
+                "readonly" => is_property = true,
+                _ => {}
+            }
+        }
+        let Some(pattern) = param.child_by_field_name("pattern") else {
+            continue;
+        };
+        if is_property && pattern.kind() == "identifier" {
+            push_field(param, node_text(pattern, source), private, ctx, output);
         }
     }
 }
@@ -3750,7 +3889,16 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     let Some(name_node) = node.child_by_field_name("name") else {
         return;
     };
-    let name = node_text(name_node, source);
+    handle_function_named(node, ctx, source, output, node_text(name_node, source));
+}
+
+fn handle_function_named(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+    name: String,
+) {
     if name.is_empty() {
         return;
     }
@@ -3774,7 +3922,7 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
-        source_qualname: Some(ctx.module.clone()),
+        source_qualname: Some(container_qualname(&ctx.module, &ctx.class_stack)),
         target_qualname: Some(qualname),
         detail: None,
         evidence_snippet: None,
@@ -3843,6 +3991,9 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     for edge in method_route_edges(node, &qualname, ctx, source) {
         output.edges.push(edge);
     }
+    if name == "constructor" {
+        handle_parameter_properties(node, ctx, source, output);
+    }
     if let Some(body) = node.child_by_field_name("body") {
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
@@ -3850,6 +4001,123 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
+}
+
+/// `namespace A.B { .. }` / `module M { .. }` / `declare module "x" { .. }`:
+/// a `namespace` symbol per name segment (merged declarations share one),
+/// with the body's members qualified through it.
+fn handle_namespace(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    if ctx.fn_depth > 0 {
+        return;
+    }
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let raw = node_text(name_node, source);
+    let segments: Vec<String> = if name_node.kind() == "string" {
+        vec![unquote_string_literal(&raw).unwrap_or(raw)]
+    } else {
+        raw.split('.').map(|s| s.trim().to_string()).collect()
+    };
+    let mut next_ctx = ctx.clone();
+    for segment in segments.into_iter().filter(|s| !s.is_empty()) {
+        let qualname = build_qualname(&ctx.module, &next_ctx.class_stack, &segment);
+        if !output.symbols.iter().any(|s| s.qualname == qualname) {
+            let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+            output.symbols.push(SymbolInput {
+                kind: "namespace".to_string(),
+                name: segment.clone(),
+                qualname: qualname.clone(),
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+                start_byte,
+                end_byte,
+                signature: None,
+                docstring: None,
+                identity: None,
+            });
+            output.edges.push(EdgeInput {
+                kind: "CONTAINS".to_string(),
+                source_qualname: Some(container_qualname(&ctx.module, &next_ctx.class_stack)),
+                target_qualname: Some(qualname.clone()),
+                detail: None,
+                evidence_snippet: None,
+                ..Default::default()
+            });
+        }
+        next_ctx.class_stack.push(segment);
+        next_ctx.ns_depth += 1;
+        next_ctx.current_scope = qualname;
+    }
+    if let Some(body) = node.child_by_field_name("body") {
+        let mut cursor = body.walk();
+        for child in body.named_children(&mut cursor) {
+            walk_node(child, &next_ctx, source, output);
+        }
+    }
+}
+
+/// `export default <anonymous function/class/expression>`: indexes it as the
+/// symbol `ANON_DEFAULT` so an importer of the default can resolve to it.
+/// Returns `true` when the statement was fully handled.
+fn handle_anonymous_default(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) -> bool {
+    if ctx.fn_depth > 0 || !ctx.class_stack.is_empty() {
+        return false;
+    }
+    let mut cursor = node.walk();
+    let is_default = node.children(&mut cursor).any(|c| c.kind() == "default");
+    let Some(value) = node.child_by_field_name("value") else {
+        return false;
+    };
+    // `export default Foo;` re-exports a named local.
+    if !is_default || value.kind() == "identifier" {
+        return false;
+    }
+    let qualname = build_qualname(&ctx.module, &ctx.class_stack, ANON_DEFAULT);
+    match value.kind() {
+        "function_expression" | "function" | "generator_function" | "arrow_function" => {
+            handle_function_named(value, ctx, source, output, ANON_DEFAULT.to_string());
+        }
+        "class" => {
+            handle_class_named(value, ctx, source, output, ANON_DEFAULT.to_string());
+        }
+        _ => {
+            let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+            output.symbols.push(SymbolInput {
+                kind: "const".to_string(),
+                name: ANON_DEFAULT.to_string(),
+                qualname: qualname.clone(),
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+                start_byte,
+                end_byte,
+                signature: None,
+                docstring: None,
+                identity: None,
+            });
+            output.edges.push(EdgeInput {
+                kind: "CONTAINS".to_string(),
+                source_qualname: Some(ctx.module.clone()),
+                target_qualname: Some(qualname.clone()),
+                detail: None,
+                evidence_snippet: None,
+                ..Default::default()
+            });
+            let mut next_ctx = ctx.clone();
+            next_ctx.fn_owner = Some(qualname);
+            walk_node(value, &next_ctx, source, output);
+        }
+    }
+    true
 }
 
 fn handle_named_item(
@@ -3882,7 +4150,7 @@ fn handle_named_item(
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
-        source_qualname: Some(ctx.module.clone()),
+        source_qualname: Some(container_qualname(&ctx.module, &ctx.class_stack)),
         target_qualname: Some(qualname.clone()),
         detail: None,
         evidence_snippet: None,
@@ -3897,7 +4165,7 @@ fn handle_variable_declaration(
     source: &str,
     output: &mut ExtractedFile,
 ) {
-    if !ctx.class_stack.is_empty() || is_local_declaration(node) {
+    if ctx.class_stack.len() > ctx.ns_depth || is_local_declaration(node) {
         return;
     }
     let decl_kind = declaration_keyword(node, source);
@@ -3942,7 +4210,7 @@ fn handle_variable_declaration(
             });
             output.edges.push(EdgeInput {
                 kind: "CONTAINS".to_string(),
-                source_qualname: Some(ctx.module.clone()),
+                source_qualname: Some(container_qualname(&ctx.module, &ctx.class_stack)),
                 target_qualname: Some(qualname),
                 detail: None,
                 evidence_snippet: None,
