@@ -368,7 +368,7 @@ fn indexed_outline(
 /// file's size; the response is still subject to the default response byte
 /// cap like any other method (see `handle_method`'s `effective_max`).
 pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Value> {
-    let params: OutlineParams = serde_json::from_value(params)?;
+    let params: OutlineParams = super::parse_params("outline", params)?;
     let path = params.path.trim();
     if path.is_empty() {
         anyhow::bail!("outline requires a non-empty 'path'");
@@ -886,7 +886,7 @@ fn handle_read_symbol_multi(
 /// either mode (see `build_symbol_entry`).
 pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let raw_params = params.clone();
-    let params: ReadSymbolParams = serde_json::from_value(params)?;
+    let params: ReadSymbolParams = super::parse_params("read_symbol", params)?;
     let selectors_given = [
         params.qualname.is_some(),
         params.query.is_some(),
