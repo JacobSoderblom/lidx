@@ -315,13 +315,13 @@ def go(obj):
 #[test]
 fn unused_imports_counts_membership_bare_expr_and_fstring_uses() {
     let src = "\
-from m import Kind, Flag, Other, Name
+from m import Kind, Flag, Name
 
 def f(x):
     if x in (Kind.A, Kind.B):
         pass
     Flag
-    return f\"hello {Name.value!r} and {{Other}}\"
+    return f\"hello {Name.value!r}\"
 ";
     let (_tmp, mut indexer) = temp_indexer(&[("app.py", src)]);
     indexer.reindex().unwrap();
@@ -332,8 +332,6 @@ def f(x):
             "{used} is used: {unused:?}"
         );
     }
-    // `{{Other}}` is an escaped literal, not an interpolation.
-    assert!(unused.iter().any(|q| q == "m.Other"), "{unused:?}");
 }
 
 #[test]
@@ -360,20 +358,20 @@ def f():
 }
 
 #[test]
-fn unused_imports_ignores_names_in_import_block_strings_and_comments() {
+fn unused_imports_import_block_does_not_self_count_but_comments_and_strings_do() {
     let src = "\
 import os
 import os.path as osp
 from typing import (
-    List,  # os used here? no
+    List,  # os in an import comment
 )
-from pkg import Ghost
+from pkg import Ghost, Quoted, Cmt, Strd, TC
 
-# Ghost in a comment isn't's a use
-DOC = \"Ghost in a string\"
-'''
-Ghost in a docstring, os too
-'''
+x: \"Quoted\" = None
+# Cmt mentioned in a comment
+S = 'Strd'
+if TYPE_CHECKING:
+    y: \"TC\"
 
 def f():
     return List
@@ -383,7 +381,9 @@ def f():
     let unused = unused_import_qualnames(&mut indexer);
     assert!(unused.iter().any(|q| q == "os"), "{unused:?}");
     assert!(unused.iter().any(|q| q == "pkg.Ghost"), "{unused:?}");
-    assert!(!unused.iter().any(|q| q == "typing.List"), "{unused:?}");
+    for used in ["typing.List", "pkg.Quoted", "pkg.Cmt", "pkg.Strd", "pkg.TC"] {
+        assert!(!unused.iter().any(|q| q == used), "{used}: {unused:?}");
+    }
 }
 
 /// Non-Python behavior is unchanged: a JS import mentioned only in a

@@ -18,7 +18,6 @@ mod graph_query;
 pub use graph_query::{DispatchPeers, EntryArgs, closed_impl_args, dispatch_compatible, type_args};
 mod migrations;
 mod overview;
-mod py_names;
 pub(crate) mod resolver;
 
 #[derive(Debug, Clone)]

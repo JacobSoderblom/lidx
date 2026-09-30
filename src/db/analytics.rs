@@ -639,9 +639,9 @@ impl Db {
     /// any edge at all; (4) a module-level `__all__` re-export of that name
     /// (`python::emit_module_export_edges`, `MODULE_EXPORT_KIND`); and, for
     /// Python files only (issue #242), (5) a whole-identifier scan of the
-    /// file's code (`py_names`) -- value uses such as decorators, arguments
-    /// and attribute reads emit no edge -- excluding import statements,
-    /// comments and strings (f-string interpolations count).
+    /// file's code (`indexer::python::file_identifiers`) -- value uses such as decorators, arguments
+    /// and attribute reads emit no edge -- excluding import statements only
+    /// (comments and strings count as mentions).
     pub fn unused_imports(
         &self,
         limit: usize,
@@ -655,7 +655,7 @@ impl Db {
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
                     e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
-                    e.resolution_kind, e.file_id
+                    e.resolution_kind, e.file_id, f.language
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE e.kind = 'IMPORTS'
@@ -696,7 +696,7 @@ impl Db {
                     ur.reference_name, ur.detail, ur.evidence_snippet,
                     ur.evidence_start_line, ur.evidence_end_line, ur.confidence,
                     ur.graph_version, ur.commit_sha, ur.trace_id, ur.span_id, ur.event_ts,
-                    NULL, ur.file_id
+                    NULL, ur.file_id, f.language
              FROM unresolved_references ur
              JOIN files f ON ur.file_id = f.id
              WHERE ur.edge_kind = 'IMPORTS'
@@ -741,11 +741,12 @@ impl Db {
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&full_sql)?;
-        let candidates: Vec<(Edge, i64)> = stmt
+        let candidates: Vec<(Edge, i64, String)> = stmt
             .query_map(&*params, |row| {
                 let edge = edge_from_row(row)?;
                 let file_id: i64 = row.get(17)?;
-                Ok((edge, file_id))
+                let language: String = row.get(18)?;
+                Ok((edge, file_id, language))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
@@ -755,7 +756,7 @@ impl Db {
 
         let file_ids: Vec<i64> = candidates
             .iter()
-            .map(|(_, file_id)| *file_id)
+            .map(|(_, file_id, _)| *file_id)
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
@@ -764,7 +765,7 @@ impl Db {
         // Issue #242: per-file Python name scans, read lazily and cached.
         let mut py_names: HashMap<String, Option<HashSet<String>>> = HashMap::new();
         let mut results = Vec::new();
-        for (edge, file_id) in candidates {
+        for (edge, file_id, language) in candidates {
             if results.len() >= limit {
                 break;
             }
@@ -782,16 +783,15 @@ impl Db {
             if import_alias_used(alias, edge.target_symbol_id, file_id, &usage) {
                 continue;
             }
-            if is_python_path(&edge.file_path)
+            // Issue #242: an unreadable file counts as used (safe direction).
+            if language == "python"
                 && py_names
                     .entry(edge.file_path.clone())
                     .or_insert_with(|| {
-                        std::fs::read_to_string(repo_root.join(&edge.file_path))
-                            .ok()
-                            .map(|src| super::py_names::used_names(&src))
+                        crate::indexer::python::file_identifiers(repo_root, &edge.file_path)
                     })
                     .as_ref()
-                    .is_some_and(|names| names.contains(alias))
+                    .is_none_or(|names| names.contains(alias))
             {
                 continue;
             }
@@ -1058,10 +1058,6 @@ fn import_alias_used(
         .signatures
         .iter()
         .any(|signature| signature_mentions(signature, alias))
-}
-
-fn is_python_path(path: &str) -> bool {
-    path.ends_with(".py") || path.ends_with(".pyi")
 }
 
 /// Whether `alias` occurs as a whole identifier token in `signature` (e.g.
