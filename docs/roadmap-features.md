@@ -257,7 +257,7 @@ This is low-hanging fruit: the data already exists in the graph. It requires onl
 
 2. **`unused_imports` method.** Find IMPORTS edges where the target symbol has no CALLS edges from the importing file. These are imports that were added but never used, or were used but the usage was later removed.
 
-3. **`orphan_tests` method.** Find test functions (detected via `test_detection.rs`) whose target symbol (the function being tested, inferred from naming convention or CALLS edges) no longer exists in the graph. These are tests for deleted code.
+3. **`orphan_tests` method.** Find test functions (detected via `test_detection.rs`) whose target symbol (the function being tested, inferred by `orphan_tests`' own name-pattern helper; naming inference is not used for impact analysis, see #231) no longer exists in the graph. These are tests for deleted code.
 
 4. **Integration with `repo_insights`.** Add a `staleness` section to `repo_insights` output: count of dead symbols, unused imports, and orphan tests. This gives a quick health check without requiring separate method calls.
 

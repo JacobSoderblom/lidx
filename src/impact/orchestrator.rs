@@ -6,7 +6,10 @@
 use crate::db::Db;
 use crate::impact::confidence::fuse_evidence;
 use crate::impact::config::MultiLayerConfig;
-use crate::impact::layers::{HistoricalImpactLayer, TestImpactLayer, analyze_direct_impact_scoped};
+use crate::impact::layers::test::TRAVERSAL_LIMIT;
+use crate::impact::layers::{
+    HistoricalImpactLayer, TestImpactLayer, TraversalDirection, analyze_direct_impact_scoped,
+};
 use crate::impact::types::{
     ImpactEntry, ImpactSource, ImpactSummary, LayerMetadata, LayerResult, LayerStats, ParentLink,
     PathStep, UnifiedImpactResult,
@@ -414,7 +417,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
 
         // Layer 2: Test impact
         if self.config.test.enabled {
-            match self.run_test_layer(seed_ids, graph_version) {
+            match self.run_test_layer(seed_ids, &layer_results, graph_version) {
                 Ok(result) => {
                     layer_metadata.test = Some(LayerStats {
                         enabled: true,
@@ -594,13 +597,50 @@ impl<'a> MultiLayerOrchestrator<'a> {
     }
 
     /// Run Layer 2: Test impact
-    fn run_test_layer(&self, seed_ids: &[i64], graph_version: i64) -> Result<LayerResult> {
+    ///
+    /// When the direct layer already ran the traversal the test layer would
+    /// run (see [`Self::reusable_direct`]), its result is reused instead of
+    /// a second BFS; otherwise the test layer traverses upstream itself.
+    fn run_test_layer(
+        &self,
+        seed_ids: &[i64],
+        layer_results: &[LayerResult],
+        graph_version: i64,
+    ) -> Result<LayerResult> {
         let test_layer = TestImpactLayer::new(self.db).with_max_depth(self.config.direct.max_depth);
-        test_layer.analyze(
-            seed_ids,
-            &self.config.direct.exclude_resolution_kinds,
-            graph_version,
-        )
+        match self.reusable_direct(layer_results, seed_ids) {
+            Some(direct) => test_layer.analyze_traversal(direct, graph_version),
+            None => test_layer.analyze(
+                seed_ids,
+                &self.config.direct.exclude_resolution_kinds,
+                graph_version,
+            ),
+        }
+    }
+
+    /// The direct layer's result, when it is exactly the traversal the test
+    /// layer needs: upstream, same depth, every edge kind, test files
+    /// included, no language or config-URI scoping, and finished within the
+    /// test layer's own traversal cap (so the two BFS runs cannot differ).
+    fn reusable_direct<'r>(
+        &self,
+        layer_results: &'r [LayerResult],
+        seed_ids: &[i64],
+    ) -> Option<&'r LayerResult> {
+        let direct = &self.config.direct;
+        let same_traversal = direct.enabled
+            && TraversalDirection::from(direct.direction.as_str()) == TraversalDirection::Upstream
+            && direct.kinds.is_empty()
+            && direct.include_tests
+            && direct.languages.is_none()
+            && direct.seed_config_uri.is_none();
+        if !same_traversal {
+            return None;
+        }
+        layer_results
+            .iter()
+            .find(|r| r.layer_name == "direct")
+            .filter(|r| !r.truncated && r.impacts.len() + seed_ids.len() < TRAVERSAL_LIMIT)
     }
 
     /// Run Layer 3: Historical impact (co-change patterns)
@@ -635,10 +675,14 @@ impl<'a> MultiLayerOrchestrator<'a> {
                 truncation_reason = layer_result.truncation_reason.clone();
             }
             for (child, links) in &layer_result.alt_parents {
-                merged_alts
-                    .entry(*child)
-                    .or_default()
-                    .extend(links.iter().cloned());
+                // Layers can share a traversal (test layer reusing or
+                // repeating the direct layer's), so skip links already kept.
+                let kept = merged_alts.entry(*child).or_default();
+                for link in links {
+                    if !kept.contains(link) {
+                        kept.push(link.clone());
+                    }
+                }
             }
 
             for (child, parent_info) in &layer_result.parent_map {

@@ -603,6 +603,20 @@ mod tests {
     }
 
     #[test]
+    fn call_result_ok_default_text_mode_keeps_test_layer() {
+        // Issue #231: the empty-TEST-layer explanation is part of the text
+        // an MCP client reads in the default (compact) text mode.
+        let result = json!({
+            "affected": [],
+            "test_layer": {"empty": true, "reason": "r", "next_hops": [{"method": "search"}]}
+        });
+        let out = call_result_ok(result, text_mode_from_args(&json!({})), false);
+        let text = out["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"test_layer\""), "{text}");
+        assert!(text.contains("\"next_hops\""), "{text}");
+    }
+
+    #[test]
     fn call_result_ok_omits_structured_content_by_default() {
         // Issue #66: a tool call that never sets `include_structured` --
         // the common case -- must not carry structuredContent at all, while

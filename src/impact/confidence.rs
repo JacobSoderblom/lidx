@@ -3,7 +3,7 @@
 //! This module implements confidence propagation, decay, and fusion algorithms
 //! for combining evidence from multiple sources.
 
-use crate::impact::types::{ConfidenceScore, ImpactSource};
+use crate::impact::types::{ConfidenceScore, ImpactSource, TestStrategy};
 
 /// Distance-based confidence decay factor
 /// Confidence decays as: base_confidence * (DECAY_FACTOR ^ distance)
@@ -108,11 +108,10 @@ pub fn confidence_from_source(source: &ImpactSource) -> ConfidenceScore {
             // Confidence depends on how the test reaches the seed, decayed by
             // the hops beyond the minimum for that strategy (a dispatch hop
             // through the interface method is inherent to `call_via_interface`).
-            let (base, min_distance) = match strategy.as_str() {
-                "call" | "graph" => (0.95, 1),
-                "import" => (0.7, 1),
-                "call_via_interface" => (0.7, 2),
-                _ => (0.5, 1), // Unknown strategy
+            let (base, min_distance) = match strategy {
+                TestStrategy::Call | TestStrategy::Graph => (0.95, 1),
+                TestStrategy::Import => (0.7, 1),
+                TestStrategy::CallViaInterface => (0.7, 2),
             };
             apply_distance_decay(base, distance.saturating_sub(min_distance))
         }
@@ -215,14 +214,14 @@ mod tests {
     #[test]
     fn confidence_from_test_link() {
         let source = ImpactSource::TestLink {
-            strategy: "call".to_string(),
+            strategy: TestStrategy::Call,
             test_type: "unit".to_string(),
             distance: 1,
         };
         assert_eq!(confidence_from_source(&source), 0.95);
 
         let source2 = ImpactSource::TestLink {
-            strategy: "import".to_string(),
+            strategy: TestStrategy::Import,
             test_type: "integration".to_string(),
             distance: 1,
         };
@@ -230,7 +229,7 @@ mod tests {
 
         // Extra hops decay the score.
         let source3 = ImpactSource::TestLink {
-            strategy: "graph".to_string(),
+            strategy: TestStrategy::Graph,
             test_type: "unit".to_string(),
             distance: 3,
         };
@@ -256,7 +255,7 @@ mod tests {
                 resolution_kind: None,
             },
             ImpactSource::TestLink {
-                strategy: "call".to_string(),
+                strategy: TestStrategy::Call,
                 test_type: "unit".to_string(),
                 distance: 1,
             },

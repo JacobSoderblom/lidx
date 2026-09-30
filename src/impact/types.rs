@@ -109,7 +109,7 @@ pub enum ImpactSource {
     },
     /// Test relationship
     TestLink {
-        strategy: String,  // "import", "call", "call_via_interface", "graph"
+        strategy: TestStrategy,
         test_type: String, // "unit", "integration", "e2e"
         /// Graph hops from the test to the seed (>= 1).
         distance: usize,
@@ -120,6 +120,33 @@ pub enum ImpactSource {
         co_change_count: usize,
         last_cochange: Option<String>, // ISO timestamp
     },
+}
+
+/// How a test reaches the seed through the graph (serialized as the
+/// snake_case name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestStrategy {
+    /// The test imports the seed.
+    Import,
+    /// The test calls the seed directly.
+    Call,
+    /// The test calls the interface method the seed implements.
+    CallViaInterface,
+    /// Any other graph path (transitive callers, bridged edges, ...).
+    Graph,
+}
+
+impl TestStrategy {
+    /// The single mapping from the edge a test hangs off the seed by to a
+    /// strategy; only a first-hop edge earns a specific label.
+    pub fn from_edge_kind(kind: &str) -> Self {
+        match kind {
+            "IMPORTS" => Self::Import,
+            "CALLS" => Self::Call,
+            _ => Self::Graph,
+        }
+    }
 }
 
 /// How a symbol was reached: (parent id, edge kind, resolution kind of the

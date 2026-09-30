@@ -1893,12 +1893,13 @@ fn batch_error_entry(
 /// holds no such path -- not that the code is untested. `None` when the
 /// layer was disabled, errored, or reported at least one test.
 fn empty_test_layer_note(
-    layers: &crate::impact::types::LayerMetadata,
-    seed_id: Option<i64>,
-    seed_name: Option<&str>,
-    max_depth: usize,
+    result: &crate::impact::types::UnifiedImpactResult,
+    seed_ids: &[i64],
 ) -> Option<serde_json::Value> {
-    let stats = layers.test.as_ref()?;
+    let seed_id = seed_ids.first().copied();
+    let seed_name = result.seeds.first().map(|s| s.name.as_str());
+    let max_depth = result.config.max_depth;
+    let stats = result.layers.test.as_ref()?;
     if !stats.enabled || stats.error.is_some() || stats.result_count > 0 {
         return None;
     }
@@ -1989,12 +1990,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                         for fi in &result.summary.by_file {
                             all_files.insert(fi.path.clone());
                         }
-                        let test_layer = empty_test_layer_note(
-                            &result.layers,
-                            seed_ids.first().copied(),
-                            result.seeds.first().map(|s| s.name.as_str()),
-                            result.config.max_depth,
-                        );
+                        let test_layer = empty_test_layer_note(&result, &seed_ids);
                         crate::impact::types::BatchImpactEntry {
                             seed_qualname: qn.clone(),
                             test_layer,
@@ -2202,12 +2198,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         ctx.graph_version,
     )?;
 
-    let test_layer_note = empty_test_layer_note(
-        &result.layers,
-        seed_ids.first().copied(),
-        result.seeds.first().map(|s| s.name.as_str()),
-        result.config.max_depth,
-    );
+    let test_layer_note = empty_test_layer_note(&result, &seed_ids);
 
     // Issue #81: suggest the filtered/unfiltered counterpart of this call,
     // where useful -- never both, since asking for the opposite of a filter
