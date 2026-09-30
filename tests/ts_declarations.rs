@@ -257,3 +257,173 @@ fn outline_lists_new_symbols() {
         assert!(q.contains(&want), "missing {want}: {q:?}");
     }
 }
+
+#[test]
+fn namespace_then_same_named_class_or_function_has_unique_qualnames() {
+    for src in [
+        "namespace Foo { export const a = 1; }\nclass Foo {}\n",
+        "namespace Foo { export const a = 1; }\nfunction Foo() {}\n",
+        "class Foo {}\nnamespace Foo { export const a = 1; }\n",
+        "function Foo() {}\nnamespace Foo { export const a = 1; }\n",
+    ] {
+        let f = extract(src, "m");
+        let q = qualnames(&f);
+        assert_eq!(
+            q.iter().filter(|s| *s == "m.Foo").count(),
+            1,
+            "{src}: {q:?}"
+        );
+        assert!(q.contains(&"m.Foo.a".to_string()), "{src}: {q:?}");
+        let contains = f
+            .edges
+            .iter()
+            .filter(|e| {
+                e.kind == "CONTAINS"
+                    && e.source_qualname.as_deref() == Some("m")
+                    && e.target_qualname.as_deref() == Some("m.Foo")
+            })
+            .count();
+        assert_eq!(contains, 1, "{src}");
+    }
+}
+
+#[test]
+fn bare_call_in_namespace_still_resolves_module_level_helper() {
+    let edges = indexed_edges(
+        &[(
+            "a.ts",
+            "function helper() {}\nnamespace NS {\n  export function a() { helper(); }\n}\n",
+        )],
+        "CALLS",
+    );
+    assert!(
+        edges.contains(&("a.NS.a".into(), "a.helper".into())),
+        "{edges:?}"
+    );
+}
+
+#[test]
+fn bare_call_in_namespace_prefers_namespace_sibling() {
+    let edges = indexed_edges(
+        &[(
+            "a.ts",
+            "function helper() {}\nnamespace NS {\n  function helper() {}\n  export function a() { helper(); }\n}\n",
+        )],
+        "CALLS",
+    );
+    assert!(
+        edges.contains(&("a.NS.a".into(), "a.NS.helper".into())),
+        "{edges:?}"
+    );
+}
+
+#[test]
+fn arrow_const_in_namespace_attributes_calls() {
+    let edges = indexed_edges(
+        &[(
+            "a.ts",
+            "function target() {}\nnamespace NS {\n  export const h = () => { target(); };\n}\n",
+        )],
+        "CALLS",
+    );
+    assert!(
+        edges.contains(&("a.NS.h".into(), "a.target".into())),
+        "{edges:?}"
+    );
+}
+
+#[test]
+fn declare_module_string_name_qualifies_members() {
+    let f = extract("declare module \"x/y\" { export class K {} }\n", "m");
+    assert_eq!(sym_kind(&f, "m.x/y"), Some("namespace"));
+    assert_eq!(sym_kind(&f, "m.x/y.K"), Some("class"));
+}
+
+#[test]
+fn imported_namespace_member_call_resolves() {
+    let edges = indexed_edges(
+        &[
+            (
+                "lib.ts",
+                "export namespace NS { export function fn() {} }\n",
+            ),
+            (
+                "use.ts",
+                "import { NS } from './lib';\nexport function go() { NS.fn(); }\n",
+            ),
+        ],
+        "CALLS",
+    );
+    assert!(
+        edges.contains(&("use.go".into(), "lib.NS.fn".into())),
+        "{edges:?}"
+    );
+}
+
+#[test]
+fn reexported_anonymous_default_resolves() {
+    let edges = indexed_edges(
+        &[
+            ("x.ts", "export default function () { return 1; }\n"),
+            ("re.ts", "export { default } from './x';\n"),
+            (
+                "use.ts",
+                "import w from './re';\nexport function go() { return w(); }\n",
+            ),
+        ],
+        "CALLS",
+    );
+    assert!(
+        edges.contains(&("use.go".into(), "x.default".into())),
+        "{edges:?}"
+    );
+}
+
+#[test]
+fn interface_in_namespace_extends_sibling() {
+    let edges = indexed_edges(
+        &[(
+            "a.ts",
+            "namespace NS {\n  export interface Base {}\n  export interface Child extends Base {}\n}\n",
+        )],
+        "EXTENDS",
+    );
+    assert!(
+        edges.contains(&("a.NS.Child".into(), "a.NS.Base".into())),
+        "{edges:?}"
+    );
+}
+
+#[test]
+fn class_generic_heritage_strips_type_arguments() {
+    let f = extract(
+        "class Base<T> {}\ninterface I<T> {}\nclass C extends Base<string> implements I<number> {}\n",
+        "m",
+    );
+    let of = |kind: &str| -> Vec<&str> {
+        f.edges
+            .iter()
+            .filter(|e| e.kind == kind && e.source_qualname.as_deref() == Some("m.C"))
+            .filter_map(|e| e.target_qualname.as_deref())
+            .collect()
+    };
+    assert_eq!(of("EXTENDS"), vec!["Base"]);
+    assert_eq!(of("IMPLEMENTS"), vec!["I"]);
+}
+
+#[test]
+fn javascript_class_fields_and_anonymous_default() {
+    use lidx::indexer::javascript::JavascriptExtractor;
+    let f = JavascriptExtractor::new()
+        .unwrap()
+        .extract(
+            "export default class {\n  count = 0;\n  static s = 1;\n  #p = 2;\n  run() {}\n}\n",
+            "m",
+        )
+        .unwrap();
+    assert_eq!(sym_kind(&f, "m.default"), Some("class"));
+    assert_eq!(sym_kind(&f, "m.default.count"), Some("field"));
+    assert_eq!(sym_kind(&f, "m.default.s"), Some("field"));
+    assert_eq!(sym_kind(&f, "m.default.#p"), Some("field"));
+    assert_eq!(sym_kind(&f, "m.default.run"), Some("method"));
+}

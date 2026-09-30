@@ -337,12 +337,10 @@ pub fn resolve_import_file_edges(
     edges.extend(resolved);
 }
 
-/// Name of the default export in `chase_export` lookups.
+/// Name of the default export in `chase_export` lookups, and of the symbol an
+/// anonymous default export (`export default () => ..`, `export default
+/// class {}`, `export default { .. }`) is indexed under.
 const DEFAULT_EXPORT: &str = "default";
-
-/// Name of the symbol an anonymous default export (`export default () => ..`,
-/// `export default class {}`, `export default { .. }`) is indexed under.
-const ANON_DEFAULT: &str = "default";
 
 type ExportCache = HashMap<String, Option<Rc<FileExports>>>;
 
@@ -474,7 +472,7 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
                 // `export default <expr>` / `export default function () {}`:
                 // the symbol `handle_anonymous_default` emits.
                 None if stmt.child_by_field_name("value").is_some() => {
-                    out.default_local = Some(ANON_DEFAULT.to_string());
+                    out.default_local = Some(DEFAULT_EXPORT.to_string());
                 }
                 None => {}
             }
@@ -1233,11 +1231,48 @@ fn extract_with_parser(
         import_bindings: Rc::new(collect_import_bindings(root, source)),
     };
     walk_node(root, &ctx, source, &mut output);
+    dedup_namespace_symbols(&mut output);
     mark_unexported_private(root, source, module_name, &mut output);
     output.export_surface = Some(crate::indexer::scan::hash_i64(
         exports_from_root(root, source).surface_text().as_bytes(),
     ));
     Ok(output)
+}
+
+/// `namespace Foo {}` merges with a same-named class/function/etc. (TS
+/// declaration merging), so when one of those exists the namespace symbol
+/// and its CONTAINS edge are dropped, leaving one symbol per qualname
+/// whichever came first.
+fn dedup_namespace_symbols(output: &mut ExtractedFile) {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut dup_ns: HashSet<String> = HashSet::new();
+    for s in output.symbols.iter().filter(|s| s.kind != "namespace") {
+        seen.insert(s.qualname.clone());
+    }
+    for s in output.symbols.iter().filter(|s| s.kind == "namespace") {
+        if seen.contains(&s.qualname) {
+            dup_ns.insert(s.qualname.clone());
+        }
+    }
+    if dup_ns.is_empty() {
+        return;
+    }
+    output
+        .symbols
+        .retain(|s| !(s.kind == "namespace" && dup_ns.contains(&s.qualname)));
+    // The namespace's CONTAINS duplicates the merged symbol's own.
+    let mut kept: HashSet<(Option<String>, Option<String>)> = HashSet::new();
+    output.edges.retain(|e| {
+        if e.kind != "CONTAINS"
+            || !e
+                .target_qualname
+                .as_ref()
+                .is_some_and(|t| dup_ns.contains(t))
+        {
+            return true;
+        }
+        kept.insert((e.source_qualname.clone(), e.target_qualname.clone()))
+    });
 }
 
 /// Exports found in a file: the local names exported, whether the file is a
@@ -1278,7 +1313,7 @@ fn mark_unexported_private(
         .iter()
         .filter(|s| {
             s.kind != "module"
-                && s.name != ANON_DEFAULT
+                && s.name != DEFAULT_EXPORT
                 && s.qualname == build_qualname(module_name, &[], &s.name)
                 && !exports.names.contains(&s.name)
         })
@@ -1564,12 +1599,12 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         // declarator `handle_variable_declaration` emitted a symbol for.
         // Walk its initializer with that symbol pending as the owner of
         // any function found inside (see `Context::fn_owner`). Only at
-        // module scope: a handler const inside a component/function body
+        // module (or namespace) scope: a handler const inside a component/function body
         // stays attributed to that component, like it does for a
         // `function` declaration. Destructuring (`const {a} = f()`) has no
         // single owner, so it's left alone.
-        if ctx.current_scope == ctx.module
-            && ctx.class_stack.is_empty()
+        if ctx.class_stack.len() <= ctx.ns_depth
+            && ctx.current_scope == container_qualname(&ctx.module, &ctx.class_stack)
             && let Some(name_node) = node.child_by_field_name("name")
             && name_node.kind() == "identifier"
             && let Some(value) = node.child_by_field_name("value")
@@ -1913,7 +1948,12 @@ fn push_field(
 /// A class property declaration (`readonly`, `?`, `static` and `#private`
 /// included).
 fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    let Some(name_node) = node.child_by_field_name("name") else {
+    // TS `public_field_definition` names it `name`; JS `field_definition`
+    // `property`.
+    let Some(name_node) = node
+        .child_by_field_name("name")
+        .or_else(|| node.child_by_field_name("property"))
+    else {
         return;
     };
     // A computed key (`[Symbol.iterator] = ..`) has no stable name.
@@ -4060,7 +4100,7 @@ fn handle_namespace(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
 }
 
 /// `export default <anonymous function/class/expression>`: indexes it as the
-/// symbol `ANON_DEFAULT` so an importer of the default can resolve to it.
+/// symbol `DEFAULT_EXPORT` so an importer of the default can resolve to it.
 /// Returns `true` when the statement was fully handled.
 fn handle_anonymous_default(
     node: Node<'_>,
@@ -4080,19 +4120,19 @@ fn handle_anonymous_default(
     if !is_default || value.kind() == "identifier" {
         return false;
     }
-    let qualname = build_qualname(&ctx.module, &ctx.class_stack, ANON_DEFAULT);
+    let qualname = build_qualname(&ctx.module, &ctx.class_stack, DEFAULT_EXPORT);
     match value.kind() {
         "function_expression" | "function" | "generator_function" | "arrow_function" => {
-            handle_function_named(value, ctx, source, output, ANON_DEFAULT.to_string());
+            handle_function_named(value, ctx, source, output, DEFAULT_EXPORT.to_string());
         }
         "class" => {
-            handle_class_named(value, ctx, source, output, ANON_DEFAULT.to_string());
+            handle_class_named(value, ctx, source, output, DEFAULT_EXPORT.to_string());
         }
         _ => {
             let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
             output.symbols.push(SymbolInput {
                 kind: "const".to_string(),
-                name: ANON_DEFAULT.to_string(),
+                name: DEFAULT_EXPORT.to_string(),
                 qualname: qualname.clone(),
                 start_line,
                 start_col,
