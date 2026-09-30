@@ -8,7 +8,7 @@ use lidx::indexer::{EXTRACTOR_VERSION, Indexer};
 use std::path::Path;
 
 /// Recorded alongside `EXTRACTOR_VERSION`; update both together.
-const RECORDED_HASH: &str = "55e7f347c578acb06d696ddb56658930d30661675f72a151219b4c20889c453e";
+const RECORDED_HASH: &str = "61d8ef24be8f9d201faf3cabd808493ff1c3970b965e3eff6e43d216326a828b";
 
 fn collect(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {

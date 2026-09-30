@@ -1289,6 +1289,7 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
             ctx.languages.as_deref(),
             ctx.paths.as_deref(),
             ctx.graph_version,
+            indexer.repo_root(),
         )?
     } else {
         vec![]
