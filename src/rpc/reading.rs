@@ -977,7 +977,7 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         }
     };
 
-    let symbol = match resolution {
+    let resolved = match resolution {
         crate::resolve::QueryResolution::Ambiguous(candidates) => {
             let query_text = params
                 .qualname
@@ -994,9 +994,33 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
                 "candidates": candidates_json,
             }));
         }
-        crate::resolve::QueryResolution::Found(symbol) => symbol,
+        crate::resolve::QueryResolution::Found(resolved) => resolved,
     };
 
+    // Issue #235: disclose how the symbol was resolved (fuzzy fallback etc.).
+    let mut response = read_resolved_symbol(
+        indexer,
+        &resolved.symbol,
+        skeleton,
+        context_lines,
+        max_bytes,
+        graph_version,
+    )?;
+    resolved.annotate(&mut response);
+    Ok(response)
+}
+
+/// Builds the `read_symbol` response for one already-resolved symbol: the
+/// external-stub bail, C# overload fan-out, the single entry, and the
+/// over-budget `omitted` header.
+fn read_resolved_symbol(
+    indexer: &Indexer,
+    symbol: &Symbol,
+    skeleton: bool,
+    context_lines: usize,
+    max_bytes: usize,
+    graph_version: i64,
+) -> Result<Value> {
     if symbol.is_external() {
         anyhow::bail!(
             "symbol not found: '{}' is an external stub with no indexed source",
@@ -1018,7 +1042,7 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         );
     }
 
-    let entry = build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version)?;
+    let entry = build_symbol_entry(indexer, symbol, skeleton, context_lines, graph_version)?;
 
     // A single symbol's response is otherwise uncapped (the outer generic
     // response-size cap can't safely shrink a plain object with no array
@@ -1045,7 +1069,7 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
                     "description": "Outline the file to pick a narrower symbol to read",
                 }),
             ],
-            ..ReadSymbolEntry::omitted_header(&symbol, stale, entry_size)
+            ..ReadSymbolEntry::omitted_header(symbol, stale, entry_size)
         };
         return Ok(serde_json::to_value(header)?);
     }

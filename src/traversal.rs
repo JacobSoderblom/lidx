@@ -1332,7 +1332,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
 
         let config = TraceConfig {
@@ -1363,7 +1364,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = vec![target.id];
 
         let config = TraceConfig {
@@ -1392,7 +1394,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
 
         let config = TraceConfig {
@@ -1432,7 +1435,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
 
         let config = TraceConfig {
@@ -1457,7 +1461,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
 
         let deep_config = TraceConfig {
@@ -1505,7 +1510,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = vec![start.id];
 
         let config = TraceConfig {
@@ -1535,7 +1541,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
 
         let config_full = TraceConfig {
@@ -1587,7 +1594,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
 
         let config = TraceConfig {
@@ -1619,7 +1627,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
 
         let config = TraceConfig {
@@ -1654,7 +1663,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = crate::resolve::expand_seeds(indexer.db(), start.id, gv).unwrap();
 
         let config = TraceConfig {
@@ -1696,7 +1706,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = vec![start.id];
 
         let config = TraceConfig {
@@ -1725,7 +1736,8 @@ mod tests {
             None,
             gv,
         )
-        .unwrap();
+        .unwrap()
+        .symbol;
         let seeds = vec![leaf.id];
 
         let down_config = TraceConfig {

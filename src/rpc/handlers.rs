@@ -141,7 +141,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     } else {
         anyhow::bail!("explain_symbol requires id, qualname, or query");
     };
-    let symbol = match crate::resolve::resolve_or_recovery(
+    let resolved = match crate::resolve::resolve_or_recovery(
         indexer.db(),
         sym_ref,
         ctx.languages.as_deref(),
@@ -149,9 +149,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         "explain_symbol",
         &raw_params,
     )? {
-        Ok(sym) => sym,
+        Ok(resolved) => resolved,
         Err(payload) => return Ok(payload),
     };
+    let symbol = resolved.symbol.clone();
 
     // 2. Budget allocation: percentages below are shares of max_bytes (30%
     // source, 20% callers, 20% callees, 10% tests, 10% implements) - FIX #4.
@@ -965,7 +966,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     // onto every nested symbol -- the main `symbol`, each `ExplainRef.symbol`
     // in `callers`/`callees`/`tests`, and each entry of `implements` -- since
     // the top-level `graph_version` field above is already present.
-    Ok(serde_json::to_value(&result)?)
+    let mut response = serde_json::to_value(&result)?;
+    // Issue #235: disclose how the symbol was resolved (fuzzy fallback etc.).
+    resolved.annotate(&mut response);
+    Ok(response)
 }
 
 /// Client side of each bridge pair (see `bridge_complement`): the kinds an
@@ -1091,7 +1095,7 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
     let ctx = HandlerContext::new(indexer, params.common)?;
 
     // Resolve optional focus symbol via resolve module
-    let focus_sym = if let Some(ref qn) = params.focus_qualname {
+    let focus_sym: Option<crate::resolve::Resolved> = if let Some(ref qn) = params.focus_qualname {
         Some(crate::resolve::resolve_symbol(
             indexer.db(),
             crate::resolve::SymbolRef::Qualname(qn.clone()),
@@ -1180,7 +1184,9 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
     }
 
     // Include focus symbol metadata when provided
-    if let Some(sym) = focus_sym {
+    let mut focus_resolution = None;
+    if let Some(resolved) = focus_sym {
+        let sym = &resolved.symbol;
         result.insert(
             "focus_symbol".to_string(),
             json!({
@@ -1191,9 +1197,15 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
                 "file_path": sym.file_path,
             }),
         );
+        focus_resolution = Some(resolved);
     }
 
-    Ok(Value::Object(result))
+    let mut response = Value::Object(result);
+    // Issue #235: disclosure sits at the top level, like every other method.
+    if let Some(resolved) = focus_resolution {
+        resolved.annotate(&mut response);
+    }
+    Ok(response)
 }
 
 pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Value> {
@@ -1529,7 +1541,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     } else {
         anyhow::bail!("trace_flow requires start_id, start_qualname, or query");
     };
-    let start = match crate::resolve::resolve_or_recovery(
+    let resolved = match crate::resolve::resolve_or_recovery(
         indexer.db(),
         start_ref,
         ctx.languages.as_deref(),
@@ -1537,9 +1549,10 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         "trace_flow",
         &raw_params,
     )? {
-        Ok(sym) => sym,
+        Ok(resolved) => resolved,
         Err(payload) => return Ok(payload),
     };
+    let start = resolved.symbol.clone();
 
     // Resolve optional end symbol
     let end_id = if let Some(id) = params.end_id {
@@ -1756,6 +1769,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     if compact_mode {
         value = super::compact::apply_compact_format(value);
     }
+    resolved.annotate(&mut value);
     Ok(value)
 }
 
@@ -1888,6 +1902,22 @@ fn batch_error_entry(
 }
 
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let mut resolution = None;
+    let mut response = analyze_impact_inner(indexer, params, &mut resolution)?;
+    // Issue #235: one annotation covers every exit path of the handler.
+    if let Some(resolved) = resolution {
+        resolved.annotate(&mut response);
+    }
+    Ok(response)
+}
+
+/// Body of `handle_analyze_impact`. Reports through `resolution` how the seed
+/// symbol was resolved, when it was resolved from an id/qualname/query.
+fn analyze_impact_inner(
+    indexer: &mut Indexer,
+    params: Value,
+    resolution: &mut Option<crate::resolve::Resolved>,
+) -> Result<Value> {
     let raw_params = params.clone();
     let params: AnalyzeImpactParams = super::parse_params("analyze_impact", params)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
@@ -2049,7 +2079,7 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
                 "analyze_impact requires id, qualname, or query"
             ));
         };
-        let symbol = match crate::resolve::resolve_or_recovery(
+        let resolved = match crate::resolve::resolve_or_recovery(
             indexer.db(),
             sym_ref,
             ctx.languages.as_deref(),
@@ -2057,9 +2087,11 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
             "analyze_impact",
             &raw_params,
         )? {
-            Ok(sym) => sym,
+            Ok(resolved) => resolved,
             Err(payload) => return Ok(payload),
         };
+        let symbol = resolved.symbol.clone();
+        *resolution = Some(resolved);
 
         // Property→parent expansion: if the seed is a property/field/attribute/const,
         // also add the parent class so CONFIG_BIND consumers are reachable
