@@ -107,16 +107,16 @@ pub fn serve(repo_root: PathBuf, db_path: PathBuf, watch_config: watch::WatchCon
             continue;
         }
 
-        let responses = match serde_json::from_str::<Value>(&line) {
+        let response = match serde_json::from_str::<Value>(&line) {
             Ok(value) => handle_message(value, &mut state),
-            Err(err) => vec![jsonrpc_error(
+            Err(err) => Some(jsonrpc_error(
                 Value::Null,
                 -32700,
                 &format!("parse error: {err}"),
-            )],
+            )),
         };
 
-        for payload in responses {
+        if let Some(payload) = response {
             writeln!(stdout, "{}", serde_json::to_string(&payload)?)?;
             stdout.flush()?;
         }
@@ -125,49 +125,24 @@ pub fn serve(repo_root: PathBuf, db_path: PathBuf, watch_config: watch::WatchCon
     Ok(())
 }
 
-fn handle_message(message: Value, state: &mut State) -> Vec<Value> {
+/// One input line yields at most one output line: a batch yields a single
+/// response array, and only notifications (or an all-notification batch)
+/// yield nothing.
+fn handle_message(message: Value, state: &mut State) -> Option<Value> {
     match message {
-        Value::Array(arr) => {
-            // Handle batch request
-            if arr.is_empty() {
-                // Empty batch is invalid
-                return vec![jsonrpc_error(
-                    Value::Null,
-                    -32600,
-                    "invalid request: empty batch",
-                )];
-            }
-
-            let mut responses = Vec::new();
-            for element in arr {
-                if let Some(resp) = handle_single_message(element, state) {
-                    responses.push(resp);
-                }
-            }
-
-            // If all elements were notifications, return no response
-            if responses.is_empty() {
-                Vec::new()
-            } else {
-                vec![Value::Array(responses)]
-            }
+        Value::Array(items) if items.is_empty() => Some(jsonrpc_error(
+            Value::Null,
+            -32600,
+            "invalid request: empty batch",
+        )),
+        Value::Array(items) => {
+            let responses: Vec<Value> = items
+                .into_iter()
+                .filter_map(|item| handle_single_message(item, state))
+                .collect();
+            (!responses.is_empty()).then_some(Value::Array(responses))
         }
-        Value::Object(_) => {
-            // Single object request
-            if let Some(resp) = handle_single_message(message, state) {
-                vec![resp]
-            } else {
-                Vec::new()
-            }
-        }
-        _ => {
-            // Non-object, non-array JSON value (scalar)
-            vec![jsonrpc_error(
-                Value::Null,
-                -32600,
-                "invalid request: expected object or array",
-            )]
-        }
+        other => handle_single_message(other, state),
     }
 }
 
@@ -784,16 +759,14 @@ mod tests {
                 "method": method, "params": params, "include_structured": true
             }}
         });
-        let responses = handle_message(msg, state);
-        responses.first().unwrap()["result"].clone()
+        handle_message(msg, state).unwrap()["result"].clone()
     }
 
     #[test]
     fn tools_list_advertises_search_scope() {
         let (mut state, _repo) = mcp_state("toolslist");
         let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
-        let responses = handle_message(msg, &mut state);
-        let resp = responses.first().unwrap();
+        let resp = handle_message(msg, &mut state).unwrap();
         let variants = resp["result"]["tools"][0]["inputSchema"]["properties"]["params"]["oneOf"]
             .as_array()
             .unwrap();
@@ -813,8 +786,7 @@ mod tests {
                 "method": method, "params": params, "include_structured": true
             }}
         });
-        let responses = handle_message(msg, state);
-        responses.first().unwrap().clone()
+        handle_message(msg, state).unwrap()
     }
 
     #[test]
@@ -913,230 +885,102 @@ mod tests {
         }
     }
 
+    fn assert_invalid_request(resp: &Value) {
+        assert_eq!(resp["id"], Value::Null);
+        assert_eq!(resp["error"]["code"], -32600);
+    }
+
     #[test]
-    fn scalar_values_produce_invalid_request_with_null_id() {
+    fn scalars_and_empty_array_produce_invalid_request_with_null_id() {
         let (mut state, _repo) = mcp_state("scalars");
-
-        // Test integer scalar
-        let resps = handle_message(json!(42), &mut state);
-        assert_eq!(resps.len(), 1, "integer scalar should produce one response");
-        let resp = &resps[0];
-        assert_eq!(resp["id"], Value::Null);
-        assert_eq!(resp["error"]["code"], -32600);
-
-        // Test string scalar
-        let resps = handle_message(json!("hello"), &mut state);
-        assert_eq!(resps.len(), 1, "string scalar should produce one response");
-        let resp = &resps[0];
-        assert_eq!(resp["id"], Value::Null);
-        assert_eq!(resp["error"]["code"], -32600);
-
-        // Test boolean scalar
-        let resps = handle_message(json!(true), &mut state);
-        assert_eq!(resps.len(), 1, "boolean scalar should produce one response");
-        let resp = &resps[0];
-        assert_eq!(resp["id"], Value::Null);
-        assert_eq!(resp["error"]["code"], -32600);
-
-        // Test null scalar
-        let resps = handle_message(Value::Null, &mut state);
-        assert_eq!(resps.len(), 1, "null scalar should produce one response");
-        let resp = &resps[0];
-        assert_eq!(resp["id"], Value::Null);
-        assert_eq!(resp["error"]["code"], -32600);
+        for input in [
+            json!(42),
+            json!("hello"),
+            json!(true),
+            Value::Null,
+            json!([]),
+        ] {
+            let resp = handle_message(input.clone(), &mut state)
+                .unwrap_or_else(|| panic!("{input} must not be silent"));
+            assert_invalid_request(&resp);
+        }
     }
 
     #[test]
-    fn empty_array_produces_invalid_request() {
-        let (mut state, _repo) = mcp_state("empty_array");
-        let resps = handle_message(json!([]), &mut state);
-        assert_eq!(resps.len(), 1, "empty array should produce one response");
-        let resp = &resps[0];
-        assert_eq!(resp["id"], Value::Null);
-        assert_eq!(resp["error"]["code"], -32600);
-    }
-
-    #[test]
-    fn batch_of_two_valid_requests() {
+    fn batch_of_two_valid_requests_returns_one_array_in_order() {
         let (mut state, _repo) = mcp_state("batch_valid");
         let batch = json!([
             {"jsonrpc": "2.0", "id": 1, "method": "ping"},
             {"jsonrpc": "2.0", "id": 2, "method": "ping"}
         ]);
-        let resps = handle_message(batch, &mut state);
-        assert_eq!(
-            resps.len(),
-            1,
-            "batch should produce one response (which is an array)"
-        );
-        let resp = &resps[0];
-        assert!(resp.is_array(), "batch response should be array");
-        let arr = resp.as_array().unwrap();
-        assert_eq!(arr.len(), 2, "batch should return 2 responses");
+        let resp = handle_message(batch, &mut state).unwrap();
+        let arr = resp.as_array().expect("batch response is an array");
+        assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["id"], 1);
         assert_eq!(arr[1]["id"], 2);
-        assert!(
-            arr[0]["result"].is_object(),
-            "both should be successful pings"
-        );
-        assert!(arr[1]["result"].is_object());
+        assert!(arr.iter().all(|r| r["result"].is_object()));
     }
 
     #[test]
-    fn batch_mixing_valid_and_invalid_elements() {
+    fn batch_with_invalid_elements_answers_every_request() {
         let (mut state, _repo) = mcp_state("batch_mixed");
         let batch = json!([
             {"jsonrpc": "2.0", "id": 1, "method": "ping"},
-            {"invalid": "not a request"}
-        ]);
-        let resps = handle_message(batch, &mut state);
-        assert_eq!(
-            resps.len(),
-            1,
-            "batch should produce one response (which is an array)"
-        );
-        let resp = &resps[0];
-        assert!(resp.is_array(), "batch response should be array");
-        let arr = resp.as_array().unwrap();
-        assert_eq!(arr.len(), 2, "batch should return 2 responses");
-        assert_eq!(arr[0]["id"], 1);
-        assert!(arr[0]["result"].is_object(), "first should succeed");
-        assert_eq!(arr[1]["id"], Value::Null);
-        assert_eq!(
-            arr[1]["error"]["code"], -32600,
-            "second should be invalid request"
-        );
-    }
-
-    #[test]
-    fn batch_of_only_notifications_produces_no_output() {
-        let (mut state, _repo) = mcp_state("batch_notif");
-        let batch = json!([
-            {"jsonrpc": "2.0", "method": "ping"},
+            {"invalid": "not a request"},
+            42,
+            [],
             {"jsonrpc": "2.0", "method": "ping"}
         ]);
-        let resps = handle_message(batch, &mut state);
-        assert!(
-            resps.is_empty(),
-            "batch of only notifications should produce no output"
-        );
-    }
-
-    #[test]
-    fn single_notification_produces_no_output() {
-        let (mut state, _repo) = mcp_state("single_notif");
-        let notif = json!({"jsonrpc": "2.0", "method": "ping"});
-        let resps = handle_message(notif, &mut state);
-        assert!(
-            resps.is_empty(),
-            "single notification should produce no output"
-        );
-    }
-
-    #[test]
-    fn unknown_tool_returns_invalid_params_error_code() {
-        let (mut state, _repo) = mcp_state("unknown_tool");
-        let msg = json!({
-            "jsonrpc": "2.0",
-            "id": 6,
-            "method": "tools/call",
-            "params": {
-                "name": "nope",
-                "arguments": {}
-            }
-        });
-        let resps = handle_message(msg, &mut state);
-        let resp = &resps[0];
-        // Should be -32602 (Invalid params) not -32601 (Method not found)
-        assert_eq!(
-            resp["error"]["code"], -32602,
-            "unknown tool name should be invalid params"
-        );
-    }
-
-    #[test]
-    fn unknown_method_returns_method_not_found_error_code() {
-        let (mut state, _repo) = mcp_state("unknown_method");
-        let msg = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "nope/nope"
-        });
-        let resps = handle_message(msg, &mut state);
-        let resp = &resps[0];
-        assert_eq!(
-            resp["error"]["code"], -32601,
-            "unknown method should be method not found"
-        );
-    }
-
-    #[test]
-    fn every_non_notification_input_yields_one_response() {
-        // This test drives the entire test matrix through handle_message
-        // and counts that each non-notification produces exactly one response
-        let (mut state, _repo) = mcp_state("matrix");
-
-        let test_cases = vec![
-            (json!(42), true, "integer scalar"),
-            (json!("hello"), true, "string scalar"),
-            (json!(true), true, "boolean scalar"),
-            (Value::Null, true, "null scalar"),
-            (json!([]), true, "empty array"),
-            (
-                json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
-                true,
-                "valid request",
-            ),
-            (
-                json!({"jsonrpc": "2.0", "method": "ping"}),
-                false,
-                "notification",
-            ),
-            (
-                json!([
-                    {"jsonrpc": "2.0", "id": 2, "method": "ping"},
-                    {"jsonrpc": "2.0", "method": "ping"}
-                ]),
-                true,
-                "batch with notification",
-            ),
-        ];
-
-        for (input, expect_response, desc) in test_cases {
-            let resps = handle_message(input, &mut state);
-            if expect_response {
-                assert!(!resps.is_empty(), "{} should produce response", desc);
-                assert_eq!(
-                    resps.len(),
-                    1,
-                    "{} should produce exactly one response",
-                    desc
-                );
-            } else {
-                assert!(resps.is_empty(), "{} should produce no response", desc);
-            }
+        let resp = handle_message(batch, &mut state).unwrap();
+        let arr = resp.as_array().unwrap();
+        // The trailing notification is the only element without a response.
+        assert_eq!(arr.len(), 4);
+        assert!(arr[0]["result"].is_object());
+        for bad in &arr[1..] {
+            assert_invalid_request(bad);
         }
     }
 
     #[test]
-    fn valid_single_object_requests_are_byte_identical() {
-        // A normal ping request should produce the exact same response
-        // before and after our changes
-        let (mut state, _repo) = mcp_state("identical");
-        let msg = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "ping"
-        });
-        let resps = handle_message(msg, &mut state);
-        let resp = &resps[0];
-        let resp_str = serde_json::to_string(&resp).unwrap();
+    fn notifications_alone_or_in_a_batch_produce_no_output() {
+        let (mut state, _repo) = mcp_state("notif");
+        let notif = json!({"jsonrpc": "2.0", "method": "ping"});
+        assert!(handle_message(notif.clone(), &mut state).is_none());
+        assert!(handle_message(json!([notif.clone(), notif]), &mut state).is_none());
+    }
 
-        // The response should have the right structure
-        assert_eq!(resp["jsonrpc"], "2.0");
-        assert_eq!(resp["id"], 1);
+    #[test]
+    fn explicit_null_id_is_answered_but_missing_id_is_not() {
+        let (mut state, _repo) = mcp_state("null_id");
+        let with_null = json!({"jsonrpc": "2.0", "id": null, "method": "ping"});
+        let resp = handle_message(with_null, &mut state).expect("null id is a request");
+        assert_eq!(resp["id"], Value::Null);
         assert!(resp["result"].is_object());
-        // And be parseable back as JSON
-        assert!(serde_json::from_str::<Value>(&resp_str).is_ok());
+        let missing = json!({"jsonrpc": "2.0", "method": "ping"});
+        assert!(handle_message(missing, &mut state).is_none());
+    }
+
+    #[test]
+    fn unknown_tool_is_invalid_params_and_unknown_method_is_not_found() {
+        let (mut state, _repo) = mcp_state("codes");
+        let tool = json!({"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+            "params": {"name": "nope", "arguments": {}}});
+        let resp = handle_message(tool, &mut state).unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["id"], 6);
+        let method = json!({"jsonrpc": "2.0", "id": 1, "method": "nope/nope"});
+        let resp = handle_message(method, &mut state).unwrap();
+        assert_eq!(resp["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn valid_single_request_is_byte_identical() {
+        let (mut state, _repo) = mcp_state("identical");
+        let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "ping"});
+        let resp = handle_message(msg, &mut state).unwrap();
+        assert_eq!(
+            serde_json::to_string(&resp).unwrap(),
+            r#"{"id":1,"jsonrpc":"2.0","result":{}}"#
+        );
     }
 }

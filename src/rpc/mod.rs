@@ -429,102 +429,47 @@ pub fn serve(repo_root: PathBuf, db_path: PathBuf, watch_config: watch::WatchCon
             continue;
         }
 
-        // Parse to Value first to handle all JSON types and extract id properly
-        let responses = match serde_json::from_str::<Value>(&line) {
-            Ok(value) => handle_json_value(&mut app, value),
-            Err(err) => vec![format::error_response(
-                Value::Null,
-                &format!("parse error: {err}"),
-            )],
+        let response = match parse_request_line(&line) {
+            Ok(request) => app.handle_request(request),
+            Err(response) => response,
         };
 
-        for response in responses {
-            writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
-            stdout.flush()?;
-        }
+        writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
+        stdout.flush()?;
     }
 
     Ok(())
 }
 
-fn handle_json_value(app: &mut App, value: Value) -> Vec<RpcResponse> {
-    match value {
-        Value::Array(arr) => {
-            // Handle batch request
-            if arr.is_empty() {
-                // Empty batch is invalid per JSON-RPC 2.0
-                return vec![format::error_response(
-                    Value::Null,
-                    "invalid request: empty batch",
-                )];
-            }
-
-            let mut responses = Vec::new();
-            for element in arr {
-                if let Some(response) = handle_single_request(app, element) {
-                    responses.push(response);
-                }
-            }
-
-            // If all elements were notifications (no responses), return nothing
-            // Otherwise return array of responses
-            if responses.is_empty() {
-                Vec::new()
-            } else {
-                // For batch responses, wrap in a single response with the array
-                // Actually, JSON-RPC 2.0 batches return array of responses directly
-                // But our RpcResponse struct doesn't support this
-                // So we need to return the responses as-is
-                responses
-            }
+/// Turn one input line into a request, or the error response to send instead.
+/// Parses to `Value` first so the `id` of an object that fails to deserialize
+/// is still echoed; non-object input gets `id: null`.
+fn parse_request_line(line: &str) -> std::result::Result<RpcRequest, RpcResponse> {
+    let value = serde_json::from_str::<Value>(line)
+        .map_err(|err| format::error_response(Value::Null, &format!("invalid request: {err}")))?;
+    let id = match &value {
+        Value::Object(map) => map.get("id").cloned().unwrap_or(Value::Null),
+        Value::Array(items) if items.is_empty() => {
+            return Err(format::error_response(
+                Value::Null,
+                "invalid request: empty array",
+            ));
         }
-        Value::Object(_) => {
-            // Single object request
-            if let Some(response) = handle_single_request(app, value) {
-                vec![response]
-            } else {
-                Vec::new()
-            }
+        Value::Array(_) => {
+            return Err(format::error_response(
+                Value::Null,
+                "invalid request: batches are not supported",
+            ));
         }
         _ => {
-            // Non-object, non-array JSON value (scalar)
-            vec![format::error_response(
+            return Err(format::error_response(
                 Value::Null,
-                "invalid request: expected object or array",
-            )]
+                "invalid request: expected a JSON object",
+            ));
         }
-    }
-}
-
-fn handle_single_request(app: &mut App, message: Value) -> Option<RpcResponse> {
-    let id = message.get("id").cloned();
-    let method = message.get("method").and_then(|value| value.as_str());
-
-    // If there's no method, it's an invalid request
-    if method.is_none() {
-        // Return error with id if present, or id: null if not
-        let response_id = id.unwrap_or(Value::Null);
-        return Some(format::error_response(
-            response_id,
-            "invalid request: missing method",
-        ));
-    }
-
-    // Try to deserialize into RpcRequest
-    match serde_json::from_value::<RpcRequest>(message) {
-        Ok(request) => {
-            let response = app.handle_request(request);
-            Some(response)
-        }
-        Err(_) => {
-            // Failed to deserialize into RpcRequest (missing required fields)
-            let response_id = id.unwrap_or(Value::Null);
-            Some(format::error_response(
-                response_id,
-                "invalid request: invalid format",
-            ))
-        }
-    }
+    };
+    serde_json::from_value::<RpcRequest>(value)
+        .map_err(|err| format::error_response(id, &format!("invalid request: {err}")))
 }
 
 pub fn call(
@@ -1067,6 +1012,8 @@ fn infer_language(file_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{Value, json};
+
     // --- Schema generation tests ---
 
     #[test]
@@ -1461,5 +1408,68 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn line_error(line: &str) -> Value {
+        match super::parse_request_line(line) {
+            Ok(_) => panic!("expected an error for {line}"),
+            Err(resp) => serde_json::to_value(resp).unwrap(),
+        }
+    }
+
+    #[test]
+    fn missing_method_echoes_id() {
+        let resp = line_error(r#"{"id":3}"#);
+        assert_eq!(resp["id"], json!(3));
+        let msg = resp["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("missing field `method`"), "{msg}");
+    }
+
+    #[test]
+    fn missing_method_without_id_uses_null_id() {
+        assert_eq!(line_error(r#"{"params":{}}"#)["id"], Value::Null);
+    }
+
+    #[test]
+    fn empty_array_gets_clear_message_and_null_id() {
+        let resp = line_error("[]");
+        assert_eq!(resp["id"], Value::Null);
+        assert_eq!(resp["error"]["message"], "invalid request: empty array");
+    }
+
+    #[test]
+    fn non_empty_array_and_scalars_are_rejected_with_null_id() {
+        for line in [r#"[{"id":1,"method":"ping"}]"#, "42", r#""hi""#, "null"] {
+            let resp = line_error(line);
+            assert_eq!(resp["id"], Value::Null, "{line}");
+            assert!(
+                resp["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("invalid request: "),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn syntax_error_keeps_invalid_request_prefix() {
+        let resp = line_error("{not json");
+        assert_eq!(resp["id"], Value::Null);
+        assert!(
+            resp["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("invalid request: ")
+        );
+    }
+
+    #[test]
+    fn valid_request_parses() {
+        let req = super::parse_request_line(r#"{"id":2,"method":"nope"}"#)
+            .ok()
+            .unwrap();
+        assert_eq!(req.id, json!(2));
+        assert_eq!(req.method, "nope");
     }
 }
