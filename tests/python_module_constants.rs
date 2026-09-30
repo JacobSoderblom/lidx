@@ -178,3 +178,33 @@ fn lidx_edges(indexer: &Indexer, gv: i64) -> Vec<(String, String, Option<String>
         .map(|e| (e.source_qualname, e.kind, e.target_qualname))
         .collect()
 }
+
+#[test]
+fn def_or_class_after_assignment_yields_one_symbol_of_the_definition() {
+    let source = "handler = None\nX = 1\n\ndef handler():\n    pass\n\nclass X:\n    pass\n";
+    let mut extractor = PythonExtractor::new().unwrap();
+    let out = extractor.extract(source, "m").unwrap();
+    for (q, kind) in [("m.handler", "function"), ("m.X", "class")] {
+        let hits: Vec<_> = out.symbols.iter().filter(|s| s.qualname == q).collect();
+        assert_eq!(hits.len(), 1, "{q}: {hits:?}");
+        assert_eq!(hits[0].kind, kind);
+        let contains = out
+            .edges
+            .iter()
+            .filter(|e| e.kind == "CONTAINS" && e.target_qualname.as_deref() == Some(q))
+            .count();
+        assert_eq!(contains, 1, "{q}");
+    }
+}
+
+#[test]
+fn assignment_after_def_yields_no_duplicate() {
+    let q = qualnames("def handler():\n    pass\n\nhandler = 1\n");
+    assert!(q.is_empty(), "{q:?}");
+}
+
+#[test]
+fn assignment_to_imported_name_does_not_shadow_the_import() {
+    let q = qualnames("try:\n    import ujson\nexcept ImportError:\n    ujson = None\n");
+    assert!(q.is_empty(), "{q:?}");
+}
