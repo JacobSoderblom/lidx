@@ -1766,6 +1766,21 @@ impl Db {
             .map_err(Into::into)
     }
 
+    /// The space-separated modifier list stored in `symbols.visibility`
+    /// (`private`, `static`, `override`) for the first symbol named
+    /// `qualname`, or `None` when it has no recorded modifiers.
+    pub fn symbol_visibility(&self, qualname: &str, graph_version: i64) -> Result<Option<String>> {
+        Ok(self
+            .read_conn()?
+            .query_row(
+                "SELECT visibility FROM symbols WHERE qualname = ? AND graph_version = ? LIMIT 1",
+                params![qualname, graph_version],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     /// Every symbol sharing `qualname` (an overload set, e.g. C# methods
     /// with different parameter lists), in source order.
     pub fn get_symbols_by_qualname(

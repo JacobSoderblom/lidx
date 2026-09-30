@@ -410,7 +410,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             let declared = output
                 .symbols
                 .iter()
-                .filter(|s| s.kind == "method" && s.qualname == *q)
+                .filter(|s| matches!(s.kind.as_str(), "method" | "field") && s.qualname == *q)
                 .count();
             if statics.iter().filter(|o| *o == q).count() == declared
                 && !output.static_qualnames.contains(q)
@@ -1379,12 +1379,25 @@ fn walk_initializer(
 }
 
 fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    // `const` is implicitly static. Recorded so `dead_symbols` can tell a
+    // constants holder from a type with only instance state (#238): a
+    // static-field read leaves no edge.
+    let is_static = has_modifier(node, source, "static") || has_modifier(node, source, "const");
+    let first_symbol = output.symbols.len();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() != "variable_declaration" {
             continue;
         }
         handle_variable_declaration(child, ctx, source, output);
+    }
+    if is_static {
+        let fields: Vec<String> = output.symbols[first_symbol..]
+            .iter()
+            .filter(|s| s.kind == "field")
+            .map(|s| s.qualname.clone())
+            .collect();
+        output.static_qualnames.extend(fields);
     }
 }
 
