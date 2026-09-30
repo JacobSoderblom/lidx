@@ -134,7 +134,7 @@ fn fresh_summary(files: &[(&str, &str)]) -> Vec<UnresolvedReferenceSummary> {
         .unwrap()
 }
 
-/// `Db::carry_forward_files` copies an unchanged file's edges into the new
+/// `Db::carry_forward_references` copies an unchanged file's edges into the new
 /// graph version wholesale, but not their `unresolved_references` rows --
 /// so a permanently-unresolved call carried forward this way used to vanish
 /// from the store even though the edge it describes is still exactly as
@@ -142,7 +142,7 @@ fn fresh_summary(files: &[(&str, &str)]) -> Vec<UnresolvedReferenceSummary> {
 /// forward while `b.py` is edited (forcing a real reparse rather than a
 /// carry-forward) so the reindex takes the carry-forward path at all.
 #[test]
-fn carry_forward_files_preserves_unresolved_reference_row() {
+fn carry_forward_references_preserves_unresolved_reference_row() {
     let a_py = "def caller():\n    nowhere()\n";
     let (_tmp, repo_root, mut indexer) =
         indexed_tree(&[("a.py", a_py), ("b.py", "def x():\n    pass\n")]);
@@ -189,7 +189,7 @@ fn carry_forward_files_preserves_unresolved_reference_row() {
 /// against the `unresolved_edge_floor` recorded by the previous reindex --
 /// and a permanently-unresolved call's carried-forward edge contributes the
 /// same count both times, so that gate stays false and the repair pass never
-/// runs at all. Without `carry_forward_files` copying the store row itself,
+/// runs at all. Without `carry_forward_references` copying the store row itself,
 /// the row silently disappears even though the edge it describes is exactly
 /// as unresolved as before.
 #[test]

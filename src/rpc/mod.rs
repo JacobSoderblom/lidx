@@ -734,7 +734,7 @@ fn dispatch_method(indexer: &mut Indexer, method: &str, params: Value) -> Result
 /// `graph_version` and `commit_sha` are each collected and compared
 /// separately. A method's entries are all stamped with the same
 /// `graph_version` within a single response, so that field hoists whenever
-/// it's found. `commit_sha` is not as reliable: `Db::carry_forward_files`
+/// it's found. `commit_sha` is not as reliable: `Db::carry_forward_references`
 /// bumps a carried-forward file's `graph_version` to the new one but keeps
 /// its *original* `commit_sha`, so a response spanning a reindex across two
 /// commits (one file unchanged, another re-parsed) can legitimately mix two

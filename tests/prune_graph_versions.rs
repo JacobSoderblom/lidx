@@ -184,7 +184,7 @@ fn unresolved_reference_count_at_version(db: &lidx::db::Db, graph_version: i64) 
 /// edge to cascade-delete through when their graph version is pruned --
 /// unlike a Bridge Edge kind row, which still keeps its placeholder edge and
 /// so is cleaned up for free by the `edges` delete above it. Without an
-/// explicit delete, `carry_forward_files` copying every pending row forward
+/// explicit delete, `carry_forward_references` copying every pending row forward
 /// on each reindex would grow the store without bound even though
 /// `prune_old_graph_versions` is bounding `symbols`/`edges` correctly.
 #[test]

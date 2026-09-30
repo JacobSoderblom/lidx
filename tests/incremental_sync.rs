@@ -2041,3 +2041,291 @@ fn csharp_scoped_interface_receiver_survives_carry_forward() {
         .unwrap();
     assert_eq!(resolved, 1, "the scoped call binds to the interface member");
 }
+
+// Issue #258: an incremental reindex must resolve a re-parsed file's
+// references against the complete new-version symbol set (carried symbols
+// included), so it lands on exactly the graph a fresh index of the same tree
+// produces -- edges and stored unresolved references alike.
+
+type UnresolvedRow = (String, String, Option<String>, String);
+
+fn unresolved_snapshot(indexer: &Indexer) -> std::collections::BTreeSet<UnresolvedRow> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(s.qualname, ''), ur.edge_kind, ur.reference_name, ur.reason
+             FROM unresolved_references ur
+             LEFT JOIN symbols s ON s.id = ur.source_symbol_id
+             WHERE ur.graph_version = ?",
+        )
+        .unwrap();
+    stmt.query_map([gv], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// A reference is never both a bound edge and a stored unresolved row. A
+/// reference is identified by its source symbol, edge kind and evidence line
+/// (the columns both tables share), not by its target name, so an aliased
+/// reference (`th()` -> `thing`) is covered too.
+fn assert_no_edge_and_unresolved_overlap(indexer: &Indexer) {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let both: Vec<(String, String, Option<i64>)> = conn
+        .prepare(
+            "SELECT s.qualname, ur.edge_kind, ur.evidence_start_line
+             FROM unresolved_references ur
+             JOIN symbols s ON s.id = ur.source_symbol_id
+             JOIN edges e ON e.source_symbol_id = ur.source_symbol_id
+                         AND e.kind = ur.edge_kind
+                         AND e.evidence_start_line IS ur.evidence_start_line
+                         AND e.target_symbol_id IS NOT NULL
+             WHERE ur.graph_version = ? AND e.graph_version = ?",
+        )
+        .unwrap()
+        .query_map([gv, gv], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        both.is_empty(),
+        "reference(s) recorded as both edge and unresolved row: {both:?}"
+    );
+}
+
+fn fresh_graph(
+    files: &[(&str, String)],
+) -> (
+    std::collections::BTreeSet<EdgeKey>,
+    std::collections::BTreeSet<UnresolvedRow>,
+) {
+    let borrowed: Vec<(&str, &str)> = files.iter().map(|(p, c)| (*p, c.as_str())).collect();
+    let (_t, _root, indexer) = indexed_tree("fresh-258", &borrowed);
+    let gv = indexer.db().current_graph_version().unwrap();
+    (
+        golden::snapshot_edges(indexer.db(), gv).unwrap(),
+        unresolved_snapshot(&indexer),
+    )
+}
+
+/// Index `files`, then touch `touch` twice (two successive incremental
+/// reindexes, each with different content), asserting after each that the
+/// graph equals a fresh index of the same tree. Returns the final indexer.
+fn assert_touch_matches_fresh(
+    files: &[(&str, &str)],
+    touch: &str,
+    comment: &str,
+) -> (tempfile::TempDir, Indexer) {
+    let (tmp, root, mut indexer) = indexed_tree("touch-258", files);
+    for round in 1..=2 {
+        let original = files.iter().find(|(p, _)| *p == touch).unwrap().1;
+        let edited = format!("{original}\n{comment} touched {round}\n");
+        common::write_files(&root, &[(touch, edited.as_str())]);
+        indexer.reindex().unwrap();
+
+        let finals: Vec<(&str, String)> = files
+            .iter()
+            .map(|(p, c)| {
+                (
+                    *p,
+                    if *p == touch {
+                        edited.clone()
+                    } else {
+                        c.to_string()
+                    },
+                )
+            })
+            .collect();
+        assert_no_edge_and_unresolved_overlap(&indexer);
+        let (fresh_edges, fresh_unresolved) = fresh_graph(&finals);
+        let gv = indexer.db().current_graph_version().unwrap();
+        let edges = golden::snapshot_edges(indexer.db(), gv).unwrap();
+        assert_eq!(edges, fresh_edges, "edges differ after touch round {round}");
+        assert_eq!(
+            unresolved_snapshot(&indexer),
+            fresh_unresolved,
+            "unresolved references differ after touch round {round}"
+        );
+        common::assert_no_dangling_edge_targets(indexer.db());
+    }
+    (tmp, indexer)
+}
+
+const ALIAS_FILES: &[(&str, &str)] = &[
+    ("pkgqa/__init__.py", ""),
+    (
+        "pkgqa/mod.py",
+        "def thing():\n    return 1\n\n\ndef helper():\n    return 2\n",
+    ),
+    (
+        "pkgqa/user.py",
+        "from pkgqa.mod import thing as th\nfrom pkgqa import mod as m\n\n\ndef go():\n    th()\n    m.helper()\n",
+    ),
+];
+
+#[test]
+fn reindex_touching_alias_importer_matches_fresh_and_keeps_alias_edge() {
+    let (_tmp, mut indexer) = assert_touch_matches_fresh(ALIAS_FILES, "pkgqa/user.py", "#");
+    let gv = indexer.db().current_graph_version().unwrap();
+    let edges = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        edges.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "pkgqa.user.go"
+            && e.target_qualname.as_deref() == Some("pkgqa.mod.thing")),
+        "aliased call edge missing: {edges:#?}"
+    );
+    let out = lidx::rpc::handle_method(
+        &mut indexer,
+        "explain_symbol",
+        serde_json::json!({"qualname": "pkgqa.mod.thing"}),
+    )
+    .unwrap();
+    let total = out
+        .get("callers_total")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| panic!("no callers_total in {out}"));
+    assert!(total > 0, "explain_symbol callers_total is 0: {out}");
+}
+
+const DP: &str = "def _dataproduct():\n    return 1\n";
+
+fn ambiguity_files() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "tests/test_a.py",
+            format!("{DP}\n\nclass TestA:\n    def test_one(self):\n        _dataproduct()\n"),
+        ),
+        ("tests/test_b.py", DP.to_string()),
+        (
+            "tests/test_c.py",
+            "class TestC:\n    def test_three(self):\n        _dataproduct()\n".to_string(),
+        ),
+    ]
+}
+
+fn ambiguity_case(touch: &str) -> (tempfile::TempDir, Indexer) {
+    let files = ambiguity_files();
+    let borrowed: Vec<(&str, &str)> = files.iter().map(|(p, c)| (*p, c.as_str())).collect();
+    assert_touch_matches_fresh(&borrowed, touch, "#")
+}
+
+fn assert_bare_calls_stay_ambiguous(indexer: &Indexer) {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let edges = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        !edges.iter().any(|e| e.kind == "CALLS"
+            && e.target_qualname.is_some()
+            && e.source_qualname.contains("test_")),
+        "bare call bound despite two candidates: {edges:#?}"
+    );
+    let ambiguous = unresolved_snapshot(indexer)
+        .into_iter()
+        .filter(|r| r.1 == "CALLS" && r.3 == "ambiguous")
+        .count();
+    assert_eq!(ambiguous, 2, "one ambiguous row per bare call expected");
+}
+
+#[test]
+fn reindex_touching_file_with_one_of_two_candidates_matches_fresh() {
+    let (_tmp, indexer) = ambiguity_case("tests/test_a.py");
+    assert_bare_calls_stay_ambiguous(&indexer);
+}
+
+#[test]
+fn reindex_touching_other_candidate_file_matches_fresh() {
+    let (_tmp, indexer) = ambiguity_case("tests/test_b.py");
+    assert_bare_calls_stay_ambiguous(&indexer);
+}
+
+#[test]
+fn reindex_touching_file_with_neither_candidate_matches_fresh() {
+    let (_tmp, indexer) = ambiguity_case("tests/test_c.py");
+    assert_bare_calls_stay_ambiguous(&indexer);
+}
+
+/// The issue's literal two-file ambiguity fixture: two `_dataproduct`
+/// definitions, one bare call. Exactly one ambiguous row, no bound edge.
+fn literal_ambiguity_case(touch: &str) {
+    let files = [
+        (
+            "tests/test_a.py",
+            format!("{DP}\n\nclass TestA:\n    def test_one(self):\n        _dataproduct()\n"),
+        ),
+        ("tests/test_b.py", DP.to_string()),
+    ];
+    let borrowed: Vec<(&str, &str)> = files.iter().map(|(p, c)| (*p, c.as_str())).collect();
+    let (_tmp, indexer) = assert_touch_matches_fresh(&borrowed, touch, "#");
+    let gv = indexer.db().current_graph_version().unwrap();
+    let edges = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        !edges
+            .iter()
+            .any(|e| e.kind == "CALLS" && e.target_qualname.is_some()),
+        "bare call bound despite two candidates: {edges:#?}"
+    );
+    let ambiguous: Vec<_> = unresolved_snapshot(&indexer)
+        .into_iter()
+        .filter(|r| r.1 == "CALLS" && r.3 == "ambiguous")
+        .collect();
+    assert_eq!(ambiguous.len(), 1, "{ambiguous:?}");
+}
+
+#[test]
+fn reindex_two_file_ambiguity_touching_caller_file_keeps_one_ambiguous_row() {
+    literal_ambiguity_case("tests/test_a.py");
+}
+
+#[test]
+fn reindex_two_file_ambiguity_touching_other_file_keeps_one_ambiguous_row() {
+    literal_ambiguity_case("tests/test_b.py");
+}
+
+#[test]
+fn reindex_touching_csharp_caller_of_unchanged_file_matches_fresh() {
+    let files = [
+        (
+            "Util.cs",
+            "namespace App { public class Util { public static void Help() { } } }\n",
+        ),
+        (
+            "Caller.cs",
+            "namespace App { public class Caller { public void Go() { Util.Help(); } } }\n",
+        ),
+    ];
+    let (_tmp, indexer) = assert_touch_matches_fresh(&files, "Caller.cs", "//");
+    let gv = indexer.db().current_graph_version().unwrap();
+    let edges = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        edges.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "App.Caller.Go"
+            && e.target_qualname.as_deref() == Some("App.Util.Help")),
+        "cross-file C# call edge missing: {edges:#?}"
+    );
+}
+
+/// The overlap invariant must actually fire: fabricate an unresolved row for a
+/// reference that also has a bound edge (aliased call `th()` -> `thing`, whose
+/// `name_tail` differs from the target's name) and expect the check to panic.
+#[test]
+#[should_panic(expected = "recorded as both edge and unresolved row")]
+fn overlap_invariant_detects_a_bound_reference_that_is_also_unresolved() {
+    let (_tmp, root, indexer) = indexed_tree("overlap-258", ALIAS_FILES);
+    assert_no_edge_and_unresolved_overlap(&indexer);
+    let conn = rusqlite::Connection::open(root.join(".lidx").join(".lidx.sqlite")).unwrap();
+    let inserted = conn
+        .execute(
+            "INSERT INTO unresolved_references
+                (source_symbol_id, file_id, edge_kind, reference_name, name_tail, reason,
+                 evidence_start_line, graph_version)
+             SELECT e.source_symbol_id, e.file_id, e.kind, 'th', 'th', 'no_candidates',
+                    e.evidence_start_line, e.graph_version
+             FROM edges e JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind = 'CALLS' AND t.qualname = 'pkgqa.mod.thing'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(inserted, 1);
+    assert_no_edge_and_unresolved_overlap(&indexer);
+}
