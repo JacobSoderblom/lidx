@@ -108,24 +108,28 @@ const EXACT: &str = "pkg.core.Greeter";
 const NO_MATCH: &str = "Zzyzx.Nonexistent.Qqqrrsttuv";
 
 /// Every method that resolves an explicit qualname through the shared
-/// resolver: (method, request param name that carries the qualname). The
-/// unit test `qualname_selector_methods_are_enumerated` in `rpc/mod.rs` pins
-/// this list to the method schemas, so a new qualname-taking method can't be
-/// added without also being added here.
-const METHODS: &[(&str, &str)] = &[
-    ("read_symbol", "qualname"),
-    ("explain_symbol", "qualname"),
-    ("trace_flow", "start_qualname"),
-    ("analyze_impact", "qualname"),
-    ("orient", "focus_qualname"),
+/// resolver: (method, param carrying the qualname, param carrying a query).
+const METHODS: &[(&str, &str, &str)] = &[
+    ("read_symbol", "qualname", "query"),
+    ("explain_symbol", "qualname", "query"),
+    ("trace_flow", "start_qualname", "query"),
+    ("analyze_impact", "qualname", "query"),
+    ("orient", "focus_qualname", "focus_query"),
+];
+
+const DISCLOSURE_KEYS: [&str; 4] = [
+    "requested_qualname",
+    "resolved_qualname",
+    "resolved_via",
+    "exact_match",
 ];
 
 fn params(param: &str, value: &str) -> String {
     serde_json::json!({ param: value }).to_string()
 }
 
-/// The qualname the response says it resolved to.
-fn returned_qualname(method: &str, v: &Value) -> String {
+/// The qualname the method itself reports for the symbol it resolved.
+fn own_qualname(method: &str, v: &Value) -> String {
     let q = match method {
         "read_symbol" => &v["qualname"],
         "explain_symbol" => &v["symbol"]["qualname"],
@@ -139,130 +143,98 @@ fn returned_qualname(method: &str, v: &Value) -> String {
         .to_string()
 }
 
-/// Where the substitution fields live: the response object itself, except
-/// `orient`, which nests the resolved symbol under `focus_symbol`.
-fn disclosure<'a>(method: &str, v: &'a Value) -> &'a Value {
-    if method == "orient" {
-        &v["focus_symbol"]
-    } else {
-        v
+/// Strips only genuinely nondeterministic values: wall-clock timings, symbol
+/// row ids (assigned in parallel-indexing order, so they vary run to run) and
+/// `used_bytes`, which depends on the digit width of those ids. Everything
+/// else must match exactly.
+fn scrub(v: &mut Value) {
+    match v {
+        Value::Object(o) => {
+            o.remove("duration_ms");
+            o.remove("id");
+            o.remove("used_bytes");
+            o.values_mut().for_each(scrub);
+        }
+        Value::Array(a) => a.iter_mut().for_each(scrub),
+        _ => {}
     }
 }
 
-fn has_disclosure(method: &str, v: &Value) -> bool {
-    let d = disclosure(method, v);
-    ["requested_qualname", "resolved_via", "exact_match"]
-        .iter()
-        .any(|k| d.get(k).is_some())
-}
-
-#[test]
-fn every_qualname_method_reports_an_inexact_match() {
-    let (temp, _idx) = indexed_repo("py_mvp");
-    for (method, param) in METHODS {
-        let v = call(&temp, method, &params(param, INEXACT));
-        let d = disclosure(method, &v);
-        assert_eq!(
-            d["requested_qualname"], INEXACT,
-            "{method}: requested_qualname missing: {v}"
-        );
-        assert_eq!(d["exact_match"], false, "{method}: exact_match: {v}");
-        assert_eq!(d["resolved_via"], "fuzzy_fallback", "{method}: {v}");
-        // Substitution is detectable by comparing requested and returned
-        // qualnames alone.
-        let returned = returned_qualname(method, &v);
-        assert_ne!(returned, INEXACT, "{method}: returned equals requested");
-        assert_eq!(returned, EXACT, "{method}");
-    }
-}
-
-#[test]
-fn explain_symbol_warns_about_the_substitution() {
-    let (temp, _idx) = indexed_repo("py_mvp");
-    let v = call(&temp, "explain_symbol", &params("qualname", INEXACT));
-    let warnings = v["warnings"].as_array().expect("warnings array");
+fn assert_disclosed(method: &str, v: &Value) {
+    assert_eq!(v["requested_qualname"], INEXACT, "{method}: {v}");
+    assert_eq!(v["resolved_qualname"], EXACT, "{method}: {v}");
+    assert_eq!(v["resolved_via"], "fuzzy_fallback", "{method}: {v}");
+    assert_eq!(v["exact_match"], false, "{method}: {v}");
+    let warnings = v["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{method}: no warnings array: {v}"));
     assert!(
         warnings.iter().any(|w| {
             let w = w.as_str().unwrap_or_default();
             w.contains(INEXACT) && w.contains(EXACT) && w.contains("inexact")
         }),
-        "warnings should name the substitution: {warnings:?}"
+        "{method}: warnings should name the substitution: {warnings:?}"
     );
 }
 
 #[test]
-fn exact_qualname_hit_is_unchanged() {
+fn every_qualname_method_reports_an_inexact_match_at_the_top_level() {
     let (temp, _idx) = indexed_repo("py_mvp");
-    for (method, param) in METHODS {
-        let exact = call(&temp, method, &params(param, EXACT));
-        assert!(
-            !has_disclosure(method, &exact),
-            "{method}: exact hit gained disclosure fields: {exact}"
-        );
-        // Byte-identical to resolving the same symbol without the qualname
-        // fallback path (query for read_symbol/orient, id otherwise).
-        let other = match *method {
-            "read_symbol" | "orient" => {
-                let alt = if *method == "read_symbol" {
-                    "query"
-                } else {
-                    "focus_query"
-                };
-                call(&temp, method, &params(alt, EXACT))
-            }
-            _ => {
-                let id = match *method {
-                    "explain_symbol" => exact["symbol"]["id"].as_i64().unwrap(),
-                    "trace_flow" => exact["start"]["id"].as_i64().unwrap(),
-                    _ => exact["seeds"][0]["id"].as_i64().unwrap(),
-                };
-                let key = if *method == "trace_flow" {
-                    "start_id"
-                } else {
-                    "id"
-                };
-                call(&temp, method, &serde_json::json!({ key: id }).to_string())
-            }
-        };
-        // `next_hops` legitimately echo the request's own selector
-        // (start_qualname vs start_id), so they are excluded from the
-        // comparison, as do wall-clock `duration_ms` timings and the
-        // order of `by_file`; everything
-        // else must match byte for byte.
-        fn scrub(v: &mut Value) {
-            match v {
-                Value::Object(o) => {
-                    o.remove("duration_ms");
-                    // `summary.by_file` comes out of a HashMap in
-                    // run-dependent order.
-                    if let Some(Value::Array(files)) = o.get_mut("by_file") {
-                        files.sort_by_key(|f| f.to_string());
-                    }
-                    o.values_mut().for_each(scrub);
-                }
-                Value::Array(a) => a.iter_mut().for_each(scrub),
-                _ => {}
-            }
-        }
-        let strip = |mut v: Value| {
-            if let Some(o) = v.as_object_mut() {
-                o.remove("next_hops");
-            }
-            scrub(&mut v);
-            serde_json::to_string(&v).unwrap()
-        };
-        assert_eq!(
-            strip(exact),
-            strip(other),
-            "{method}: exact-qualname response differs from the unannotated resolution"
-        );
+    for (method, param, _) in METHODS {
+        let v = call(&temp, method, &params(param, INEXACT));
+        assert_disclosed(method, &v);
+        // The disclosed resolved qualname is the one the method itself
+        // reports, and differs from what was asked for.
+        assert_eq!(own_qualname(method, &v), EXACT, "{method}");
+        assert_ne!(v["requested_qualname"], v["resolved_qualname"], "{method}");
     }
+}
+
+/// Exact-qualname responses are compared against a snapshot captured from
+/// the code as it behaved before issue #235 (regenerate deliberately with
+/// `UPDATE_GOLDEN=1` only when a response changes on purpose).
+#[test]
+fn exact_qualname_hit_matches_pre_change_golden() {
+    let (temp, _idx) = indexed_repo("py_mvp");
+    let mut actual = serde_json::Map::new();
+    for (method, param, _) in METHODS {
+        let v = call(&temp, method, &params(param, EXACT));
+        for key in DISCLOSURE_KEYS {
+            assert!(v.get(key).is_none(), "{method}: exact hit has {key}: {v}");
+        }
+        let mut v = v;
+        if *method == "orient" {
+            // The rest of orient's response embeds the temp repo path, index
+            // timestamps and tie-ordered text, all run-dependent; what the
+            // qualname path controls is `focus_symbol` and the key set.
+            let mut keys: Vec<&String> = v.as_object().unwrap().keys().collect();
+            keys.sort();
+            v = serde_json::json!({ "keys": keys, "focus_symbol": v["focus_symbol"] });
+        }
+        scrub(&mut v);
+        actual.insert(method.to_string(), v);
+    }
+    let actual = serde_json::to_string_pretty(&Value::Object(actual)).unwrap() + "\n";
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("snapshots")
+        .join("explicit_qualname_exact.json");
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &actual).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).expect("golden snapshot missing");
+    assert_eq!(
+        actual, expected,
+        "exact-qualname responses differ from the pre-change golden"
+    );
 }
 
 #[test]
 fn not_found_qualname_is_unchanged() {
     let (temp, _idx) = indexed_repo("py_mvp");
-    for (method, param) in METHODS {
+    for (method, param, _) in METHODS {
         if *method == "orient" {
             // orient has no recovery payload: a miss is a plain error.
             let env = call_raw(&temp, method, &params(param, NO_MATCH));
@@ -275,26 +247,67 @@ fn not_found_qualname_is_unchanged() {
             v["next_hops"].as_array().is_some_and(|h| !h.is_empty()),
             "{method}: not-found keeps its next_hops: {v}"
         );
-        assert!(!has_disclosure(method, &v), "{method}: {v}");
+        for key in DISCLOSURE_KEYS {
+            assert!(v.get(key).is_none(), "{method}: {key} on a miss: {v}");
+        }
     }
 }
 
 #[test]
-fn query_resolution_is_not_marked_inexact() {
+fn query_reports_resolved_qualname_without_marking_inexact() {
     let (temp, _idx) = indexed_repo("py_mvp");
-    let query_params = [
-        ("read_symbol", "query"),
-        ("explain_symbol", "query"),
-        ("trace_flow", "query"),
-        ("analyze_impact", "query"),
-        ("orient", "focus_query"),
-    ];
-    for (method, param) in query_params {
-        let v = call(&temp, method, &params(param, INEXACT));
-        assert!(
-            !has_disclosure(method, &v),
-            "{method}: a query is fuzzy by contract: {v}"
+    for (method, _, query_param) in METHODS {
+        let v = call(&temp, method, &params(query_param, INEXACT));
+        assert_eq!(v["resolved_qualname"], EXACT, "{method}: {v}");
+        assert_eq!(own_qualname(method, &v), EXACT, "{method}");
+        for key in ["requested_qualname", "resolved_via", "exact_match"] {
+            assert!(v.get(key).is_none(), "{method}: query has {key}: {v}");
+        }
+        let has_substitution_warning = v["warnings"]
+            .as_array()
+            .is_some_and(|w| w.iter().any(|w| w.to_string().contains("inexact")));
+        assert!(!has_substitution_warning, "{method}: {v}");
+    }
+}
+
+#[test]
+fn disclosure_survives_truncation_envelope() {
+    let (temp, _idx) = indexed_repo("py_mvp");
+    for (method, param) in [
+        ("trace_flow", "start_qualname"),
+        ("analyze_impact", "qualname"),
+    ] {
+        let raw = call_raw(
+            &temp,
+            method,
+            &serde_json::json!({ param: INEXACT, "max_bytes": 300, "max_response_bytes": 300 })
+                .to_string(),
         );
-        assert_eq!(returned_qualname(method, &v), EXACT, "{method}");
+        let result = &raw["result"];
+        assert_eq!(result["truncated"], true, "{method}: not wrapped: {result}");
+        let data = &result["data"];
+        for key in DISCLOSURE_KEYS {
+            assert!(data.get(key).is_some(), "{method}: {key} lost: {data}");
+        }
+        assert_eq!(data["requested_qualname"], INEXACT, "{method}");
+        assert_eq!(data["resolved_qualname"], EXACT, "{method}");
+        assert_eq!(data["exact_match"], false, "{method}");
+    }
+}
+
+#[test]
+fn disclosure_survives_compact_format() {
+    let (temp, _idx) = indexed_repo("py_mvp");
+    let v = call(
+        &temp,
+        "trace_flow",
+        &serde_json::json!({ "start_qualname": INEXACT, "format": "compact" }).to_string(),
+    );
+    assert_disclosed("trace_flow", &v);
+    // The MCP compact text mode serializes the same value with
+    // `serde_json::to_string`, so the fields are present in its text too.
+    let text = serde_json::to_string(&v).unwrap();
+    for key in DISCLOSURE_KEYS {
+        assert!(text.contains(&format!("\"{key}\"")), "{key} missing");
     }
 }

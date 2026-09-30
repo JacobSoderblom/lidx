@@ -152,12 +152,6 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         Ok(resolved) => resolved,
         Err(payload) => return Ok(payload),
     };
-    // Issue #235: an explicit qualname that missed and was answered by the
-    // fuzzy fallback must say so, not pose as an exact hit.
-    let requested_qualname = params.qualname.clone().unwrap_or_default();
-    if let Some(w) = resolved.substitution_warning(&requested_qualname) {
-        warnings.push(w);
-    }
     let symbol = resolved.symbol.clone();
 
     // 2. Budget allocation: percentages below are shares of max_bytes (30%
@@ -973,7 +967,8 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     // in `callers`/`callees`/`tests`, and each entry of `implements` -- since
     // the top-level `graph_version` field above is already present.
     let mut response = serde_json::to_value(&result)?;
-    resolved.annotate_response(&requested_qualname, &mut response);
+    // Issue #235: disclose how the symbol was resolved (fuzzy fallback etc.).
+    resolved.annotate(&mut response);
     Ok(response)
 }
 
@@ -1189,24 +1184,28 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
     }
 
     // Include focus symbol metadata when provided
+    let mut focus_resolution = None;
     if let Some(resolved) = focus_sym {
         let sym = &resolved.symbol;
-        let mut focus = json!({
-            "id": sym.id,
-            "name": sym.name,
-            "qualname": sym.qualname,
-            "kind": sym.kind,
-            "file_path": sym.file_path,
-        });
-        // Issue #235: disclose a focus_qualname that was fuzzy-substituted.
-        resolved.annotate_response(
-            params.focus_qualname.as_deref().unwrap_or_default(),
-            &mut focus,
+        result.insert(
+            "focus_symbol".to_string(),
+            json!({
+                "id": sym.id,
+                "name": sym.name,
+                "qualname": sym.qualname,
+                "kind": sym.kind,
+                "file_path": sym.file_path,
+            }),
         );
-        result.insert("focus_symbol".to_string(), focus);
+        focus_resolution = Some(resolved);
     }
 
-    Ok(Value::Object(result))
+    let mut response = Value::Object(result);
+    // Issue #235: disclosure sits at the top level, like every other method.
+    if let Some(resolved) = focus_resolution {
+        resolved.annotate(&mut response);
+    }
+    Ok(response)
 }
 
 pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Value> {
@@ -1552,8 +1551,6 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         Ok(resolved) => resolved,
         Err(payload) => return Ok(payload),
     };
-    // Issue #235: a start_qualname answered by the fuzzy fallback is disclosed.
-    let requested_qualname = params.start_qualname.clone().unwrap_or_default();
     let start = resolved.symbol.clone();
 
     // Resolve optional end symbol
@@ -1771,7 +1768,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     if compact_mode {
         value = super::compact::apply_compact_format(value);
     }
-    resolved.annotate_response(&requested_qualname, &mut value);
+    resolved.annotate(&mut value);
     Ok(value)
 }
 
@@ -1904,6 +1901,22 @@ fn batch_error_entry(
 }
 
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
+    let mut resolution = None;
+    let mut response = analyze_impact_inner(indexer, params, &mut resolution)?;
+    // Issue #235: one annotation covers every exit path of the handler.
+    if let Some(resolved) = resolution {
+        resolved.annotate(&mut response);
+    }
+    Ok(response)
+}
+
+/// Body of `handle_analyze_impact`. Reports through `resolution` how the seed
+/// symbol was resolved, when it was resolved from an id/qualname/query.
+fn analyze_impact_inner(
+    indexer: &mut Indexer,
+    params: Value,
+    resolution: &mut Option<crate::resolve::Resolved>,
+) -> Result<Value> {
     let raw_params = params.clone();
     let params: AnalyzeImpactParams = serde_json::from_value(params)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
@@ -2051,8 +2064,6 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
     // Resolve symbol by id, qualname, or fuzzy query (skip if config URI already resolved).
     // For qualname/query we catch resolution failure and return a structured recovery payload
     // instead of propagating a flat error — giving the caller actionable next_hops.
-    let requested_qualname = params.qualname.clone().unwrap_or_default();
-    let mut substitution: Option<crate::resolve::Resolved> = None;
     let seed_ids = if !seed_ids.is_empty() {
         seed_ids
     } else {
@@ -2078,11 +2089,8 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
             Ok(resolved) => resolved,
             Err(payload) => return Ok(payload),
         };
-        // Issue #235: remember a fuzzy fallback so the response can disclose it.
         let symbol = resolved.symbol.clone();
-        if resolved.via.is_inexact() {
-            substitution = Some(resolved);
-        }
+        *resolution = Some(resolved);
 
         // Property→parent expansion: if the seed is a property/field/attribute/const,
         // also add the parent class so CONFIG_BIND consumers are reachable
@@ -2326,25 +2334,18 @@ pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Res
         if let Some(obj) = value.as_object_mut() {
             obj.insert("next_hops".to_string(), json!(next_hops));
         }
-        if let Some(r) = &substitution {
-            r.annotate_response(&requested_qualname, &mut value);
-        }
         return Ok(value);
     }
 
-    let mut value = if resolution_next_hops.is_empty() {
-        json!(result)
+    if resolution_next_hops.is_empty() {
+        Ok(json!(result))
     } else {
         let mut value = serde_json::to_value(&result)?;
         if let Some(obj) = value.as_object_mut() {
             obj.insert("next_hops".to_string(), json!(resolution_next_hops));
         }
-        value
-    };
-    if let Some(r) = &substitution {
-        r.annotate_response(&requested_qualname, &mut value);
+        Ok(value)
     }
-    Ok(value)
 }
 
 pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Result<Value> {

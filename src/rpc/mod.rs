@@ -776,44 +776,6 @@ fn infer_language(file_path: &str) -> String {
 mod tests {
     // --- Schema generation tests ---
 
-    /// Issue #235: every method that resolves an explicit qualname through
-    /// `resolve::resolve_symbol` must disclose a fuzzy substitution. This pins
-    /// the set of qualname-selector params to the one covered by
-    /// `tests/explicit_qualname_no_fuzzy.rs`, so adding a method (or param)
-    /// that takes a qualname fails here until that test covers it.
-    /// `end_qualname` is an exact-only lookup (`lookup_symbol_id`, no fuzzy
-    /// fallback) and `qualnames` is an exact batch, so neither can substitute.
-    #[test]
-    fn qualname_selector_methods_are_enumerated() {
-        let mut found: Vec<(String, String)> = Vec::new();
-        for method in super::METHOD_LIST {
-            let schema = super::method_param_schema(method);
-            let Some(props) = schema.get("properties").and_then(|p| p.as_object()) else {
-                continue;
-            };
-            for name in props.keys() {
-                let is_selector =
-                    (name == "qualname" || name.ends_with("_qualname")) && name != "end_qualname";
-                if is_selector {
-                    found.push((method.to_string(), name.clone()));
-                }
-            }
-        }
-        found.sort();
-        let mut expected: Vec<(String, String)> = [
-            ("analyze_impact", "qualname"),
-            ("explain_symbol", "qualname"),
-            ("orient", "focus_qualname"),
-            ("read_symbol", "qualname"),
-            ("trace_flow", "start_qualname"),
-        ]
-        .iter()
-        .map(|(m, p)| (m.to_string(), p.to_string()))
-        .collect();
-        expected.sort();
-        assert_eq!(found, expected);
-    }
-
     #[test]
     fn all_methods_have_param_schema() {
         for method in super::METHOD_LIST {

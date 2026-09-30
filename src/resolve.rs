@@ -50,26 +50,19 @@ impl std::fmt::Display for SymbolNotFound {
 impl std::error::Error for SymbolNotFound {}
 
 /// How a `SymbolRef` was turned into a symbol. Lets a handler tell an exact
-/// hit from a silent substitution (issue #235).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// hit from a silent substitution (issue #235). Serializes as the
+/// `resolved_via` value handlers emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ResolvedVia {
-    /// `SymbolRef::Id` lookup.
-    Id,
-    /// `SymbolRef::Qualname` that matched a symbol's qualname exactly.
-    Exact,
-    /// `SymbolRef::Qualname` whose exact lookup missed and was answered by
-    /// the fuzzy query fallback -- the symbol is *not* the one asked for.
-    FuzzyFallback,
+    /// An id lookup, or a qualname that matched a symbol's qualname exactly.
+    Direct,
     /// `SymbolRef::Query`: fuzzy is the contract, so this is not a
     /// substitution.
     Query,
-}
-
-impl ResolvedVia {
-    /// True only for a fuzzy fallback after an exact-qualname miss.
-    pub fn is_inexact(self) -> bool {
-        self == ResolvedVia::FuzzyFallback
-    }
+    /// `SymbolRef::Qualname` whose exact lookup missed and was answered by
+    /// the fuzzy query fallback -- the symbol is *not* the one asked for.
+    FuzzyFallback,
 }
 
 /// A resolved symbol together with how it was found.
@@ -77,32 +70,55 @@ impl ResolvedVia {
 pub struct Resolved {
     pub symbol: Symbol,
     pub via: ResolvedVia,
+    /// The qualname the caller asked for; set only for `SymbolRef::Qualname`.
+    requested_qualname: Option<String>,
 }
 
 impl Resolved {
-    /// Human-readable warning for a substituted qualname; `None` for an
-    /// exact hit, id or query resolution.
-    pub fn substitution_warning(&self, requested: &str) -> Option<String> {
-        self.via.is_inexact().then(|| {
-            format!(
-                "qualname '{}' not found; resolved by fuzzy match to '{}' (inexact match)",
-                requested, self.symbol.qualname
-            )
-        })
+    fn direct(symbol: Symbol) -> Self {
+        Self {
+            symbol,
+            via: ResolvedVia::Direct,
+            requested_qualname: None,
+        }
     }
 
-    /// Stamps `requested_qualname`, `resolved_via` and `exact_match: false`
-    /// onto a JSON object response when the match was a fuzzy fallback. An
-    /// exact hit (or any non-object value) is left byte-for-byte unchanged.
-    /// The returned qualname is the response's own `qualname`/`symbol.qualname`.
-    pub fn annotate_response(&self, requested: &str, response: &mut Value) {
-        if !self.via.is_inexact() {
+    /// Discloses how the symbol was chosen on a JSON object response, at the
+    /// top level and identically for every method:
+    /// - exact qualname / id: untouched (the response stays byte-identical);
+    /// - query: `resolved_qualname`;
+    /// - fuzzy fallback for an explicit qualname: `requested_qualname`,
+    ///   `resolved_qualname`, `resolved_via`, `exact_match: false`, and an
+    ///   entry in the `warnings` array (created if absent).
+    ///
+    /// Comparing `requested_qualname` with `resolved_qualname` alone detects
+    /// a substitution.
+    pub fn annotate(&self, response: &mut Value) {
+        let Some(obj) = response.as_object_mut() else {
             return;
-        }
-        if let Some(obj) = response.as_object_mut() {
-            obj.insert("requested_qualname".to_string(), json!(requested));
-            obj.insert("resolved_via".to_string(), json!("fuzzy_fallback"));
-            obj.insert("exact_match".to_string(), json!(false));
+        };
+        let resolved = &self.symbol.qualname;
+        match (self.via, &self.requested_qualname) {
+            (ResolvedVia::Direct, _) => {}
+            (ResolvedVia::Query, _) => {
+                obj.insert("resolved_qualname".to_string(), json!(resolved));
+            }
+            (ResolvedVia::FuzzyFallback, requested) => {
+                let requested = requested.as_deref().unwrap_or_default();
+                obj.insert("requested_qualname".to_string(), json!(requested));
+                obj.insert("resolved_qualname".to_string(), json!(resolved));
+                obj.insert("resolved_via".to_string(), json!(self.via));
+                obj.insert("exact_match".to_string(), json!(false));
+                let warning = format!(
+                    "qualname '{requested}' not found; resolved by fuzzy match to '{resolved}' (inexact match)"
+                );
+                match obj.get_mut("warnings").and_then(Value::as_array_mut) {
+                    Some(list) => list.push(json!(warning)),
+                    None => {
+                        obj.insert("warnings".to_string(), json!([warning]));
+                    }
+                }
+            }
         }
     }
 }
@@ -124,21 +140,32 @@ pub fn resolve_symbol(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<Resolved> {
-    let resolved = |symbol, via| Resolved { symbol, via };
     match reference {
         SymbolRef::Id(id) => db
             .get_symbol_by_id(id)?
-            .map(|sym| resolved(sym, ResolvedVia::Id))
+            .map(Resolved::direct)
             .ok_or_else(|| anyhow::anyhow!("symbol not found: id={}", id)),
 
-        SymbolRef::Qualname(ref qn) => match db.get_symbol_by_qualname(qn, graph_version)? {
-            Some(sym) => Ok(resolved(sym, ResolvedVia::Exact)),
-            None => resolve_by_query(db, qn, languages, graph_version)
-                .map(|sym| resolved(sym, ResolvedVia::FuzzyFallback)),
+        SymbolRef::Qualname(qn) => match db.get_symbol_by_qualname(&qn, graph_version)? {
+            Some(sym) => Ok(Resolved::direct(sym)),
+            None => {
+                let symbol = resolve_by_query(db, &qn, languages, graph_version)?;
+                Ok(Resolved {
+                    symbol,
+                    via: ResolvedVia::FuzzyFallback,
+                    requested_qualname: Some(qn),
+                })
+            }
         },
 
-        SymbolRef::Query(ref query) => resolve_by_query(db, query, languages, graph_version)
-            .map(|sym| resolved(sym, ResolvedVia::Query)),
+        SymbolRef::Query(ref query) => {
+            let symbol = resolve_by_query(db, query, languages, graph_version)?;
+            Ok(Resolved {
+                symbol,
+                via: ResolvedVia::Query,
+                requested_qualname: None,
+            })
+        }
     }
 }
 
@@ -158,19 +185,18 @@ pub fn resolve_symbol_with_candidates(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<QueryResolution> {
-    let (query, via) = match reference {
+    let (query, via, requested_qualname) = match reference {
         SymbolRef::Id(_) => {
             let resolved = resolve_symbol(db, reference, languages, graph_version)?;
             return Ok(QueryResolution::Found(Box::new(resolved)));
         }
         SymbolRef::Qualname(qn) => {
             if let Some(symbol) = db.get_symbol_by_qualname(&qn, graph_version)? {
-                let via = ResolvedVia::Exact;
-                return Ok(QueryResolution::Found(Box::new(Resolved { symbol, via })));
+                return Ok(QueryResolution::Found(Box::new(Resolved::direct(symbol))));
             }
-            (qn, ResolvedVia::FuzzyFallback)
+            (qn.clone(), ResolvedVia::FuzzyFallback, Some(qn))
         }
-        SymbolRef::Query(query) => (query, ResolvedVia::Query),
+        SymbolRef::Query(query) => (query, ResolvedVia::Query, None),
     };
 
     let (trimmed, candidates) = trimmed_query_candidates(db, &query, languages, graph_version)?;
@@ -178,7 +204,11 @@ pub fn resolve_symbol_with_candidates(
         return Ok(QueryResolution::Ambiguous(tied));
     }
     let symbol = resolve_after_candidates(db, &query, candidates, graph_version)?;
-    Ok(QueryResolution::Found(Box::new(Resolved { symbol, via })))
+    Ok(QueryResolution::Found(Box::new(Resolved {
+        symbol,
+        via,
+        requested_qualname,
+    })))
 }
 
 /// Trims `query`, bails with a consistent "no symbol found" error if that
@@ -848,37 +878,61 @@ mod tests {
             .symbol
             .id;
 
-        assert_eq!(via(SymbolRef::Id(id)), ResolvedVia::Id);
+        assert_eq!(via(SymbolRef::Id(id)), ResolvedVia::Direct);
         assert_eq!(
             via(SymbolRef::Qualname("pkg.core.Greeter".into())),
-            ResolvedVia::Exact
+            ResolvedVia::Direct
         );
         assert_eq!(
             via(SymbolRef::Qualname("Greeter".into())),
             ResolvedVia::FuzzyFallback
         );
         assert_eq!(via(SymbolRef::Query("Greeter".into())), ResolvedVia::Query);
-        assert!(ResolvedVia::FuzzyFallback.is_inexact());
-        assert!(!ResolvedVia::Exact.is_inexact());
-        assert!(!ResolvedVia::Query.is_inexact());
 
         // The candidates entry point reports the same provenance.
         let found = |r: SymbolRef| match resolve_symbol_with_candidates(db, r, None, gv).unwrap() {
-            QueryResolution::Found(r) => r.via,
+            QueryResolution::Found(r) => *r,
             QueryResolution::Ambiguous(_) => panic!("unexpected tie"),
         };
         assert_eq!(
-            found(SymbolRef::Qualname("pkg.core.Greeter".into())),
-            ResolvedVia::Exact
+            found(SymbolRef::Qualname("pkg.core.Greeter".into())).via,
+            ResolvedVia::Direct
         );
+        let fuzzy = found(SymbolRef::Qualname("Greeter".into()));
+        assert_eq!(fuzzy.via, ResolvedVia::FuzzyFallback);
+        assert_eq!(fuzzy.requested_qualname.as_deref(), Some("Greeter"));
         assert_eq!(
-            found(SymbolRef::Qualname("Greeter".into())),
-            ResolvedVia::FuzzyFallback
-        );
-        assert_eq!(
-            found(SymbolRef::Query("Greeter".into())),
+            found(SymbolRef::Query("Greeter".into())).via,
             ResolvedVia::Query
         );
+    }
+
+    #[test]
+    fn annotate_discloses_by_resolution_kind() {
+        let (_temp, indexer) = indexed_repo("py_mvp");
+        let db = indexer.db();
+        let gv = db.current_graph_version().unwrap();
+        let annotated = |r: SymbolRef| {
+            let mut v = json!({"k": 1});
+            resolve_symbol(db, r, None, gv).unwrap().annotate(&mut v);
+            v
+        };
+
+        assert_eq!(
+            annotated(SymbolRef::Qualname("pkg.core.Greeter".into())),
+            json!({"k": 1}),
+            "exact hit is untouched"
+        );
+        assert_eq!(
+            annotated(SymbolRef::Query("Greeter".into())),
+            json!({"k": 1, "resolved_qualname": "pkg.core.Greeter"})
+        );
+        let fuzzy = annotated(SymbolRef::Qualname("Greeter".into()));
+        assert_eq!(fuzzy["requested_qualname"], "Greeter");
+        assert_eq!(fuzzy["resolved_qualname"], "pkg.core.Greeter");
+        assert_eq!(fuzzy["resolved_via"], "fuzzy_fallback");
+        assert_eq!(fuzzy["exact_match"], false);
+        assert_eq!(fuzzy["warnings"].as_array().unwrap().len(), 1);
     }
 
     #[test]

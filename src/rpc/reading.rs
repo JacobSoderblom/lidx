@@ -997,9 +997,7 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         crate::resolve::QueryResolution::Found(resolved) => resolved,
     };
 
-    // Issue #235: an explicit `qualname` answered by the fuzzy fallback
-    // discloses the substitution (`requested_qualname`, `resolved_via`,
-    // `exact_match: false`); an exact hit or a `query` read is untouched.
+    // Issue #235: disclose how the symbol was resolved (fuzzy fallback etc.).
     let mut response = read_resolved_symbol(
         indexer,
         &resolved.symbol,
@@ -1008,10 +1006,7 @@ pub(super) fn handle_read_symbol(indexer: &mut Indexer, params: Value) -> Result
         max_bytes,
         graph_version,
     )?;
-    resolved.annotate_response(
-        params.qualname.as_deref().unwrap_or_default(),
-        &mut response,
-    );
+    resolved.annotate(&mut response);
     Ok(response)
 }
 
