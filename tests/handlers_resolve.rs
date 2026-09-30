@@ -211,16 +211,21 @@ fn unknown_language_returns_error() {
 }
 
 #[test]
-fn explain_symbol_ignores_stray_path_keys() {
+fn explain_symbol_rejects_stray_path_keys() {
     let (temp, _indexer) = indexed_repo("py_mvp");
-    // explain_symbol does not support path filters; a stray `path` key must be
-    // ignored (serde unknown-field behavior), not normalized or rejected.
-    let result = call(
-        &temp,
-        "explain_symbol",
+    // explain_symbol does not support path filters; a stray `path` key is no
+    // longer silently dropped (issue #213): the strict CLI/RPC surface
+    // rejects it by name instead of pretending the filter applied.
+    let err = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "explain_symbol".to_string(),
         r#"{"query":"Greeter","path":"does/not/exist","paths":["nope"]}"#,
-    );
-    assert_eq!(result["symbol"]["name"].as_str().unwrap(), "Greeter");
+        "1",
+    )
+    .expect_err("stray path keys must be rejected");
+    let message = err.to_string();
+    assert!(message.contains("path, paths"), "{message}");
 }
 
 // ---------------------------------------------------------------------------

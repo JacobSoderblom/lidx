@@ -292,6 +292,13 @@ pub fn scan_repo_with_options(repo_root: &Path, options: ScanOptions) -> Result<
         let entry = match entry {
             Ok(value) => value,
             Err(err) => {
+                // An error on the root itself means nothing was scanned; carrying
+                // on would look like "every file was deleted". Entries below the
+                // root stay best-effort (e.g. files vanishing mid-walk).
+                if err.depth() == Some(0) || !repo_root.is_dir() {
+                    return Err(anyhow::Error::new(err)
+                        .context(format!("walk repo root {}", repo_root.display())));
+                }
                 eprintln!("walk error: {err}");
                 continue;
             }

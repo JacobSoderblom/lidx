@@ -13,6 +13,54 @@ pub struct SymbolInput {
     pub end_byte: i64,
     pub signature: Option<String>,
     pub docstring: Option<String>,
+    /// Declaration properties that make two symbols with the same
+    /// `(qualname, signature, kind)` different symbols yet are not part of
+    /// either. Hashed into the stable id only when present (and non-empty),
+    /// so a symbol without one keeps the id it always had. Never positional.
+    pub identity: Option<DeclIdentity>,
+}
+
+/// What distinguishes one declaration from a same-named twin (issue #212).
+/// Hashed field by field (see `stable_id`), never joined into a string, so
+/// no field's contents can alias another's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeclIdentity {
+    /// C#: generic arity of each enclosing type, outermost first, then the
+    /// declaration's own when it is a type or method. Empty when nothing in
+    /// the chain is generic.
+    pub generic_arities: Vec<usize>,
+    /// Rust: normalized `#[cfg(..)]` predicates of the item and its
+    /// enclosing items, outermost first.
+    pub cfg: Vec<String>,
+    /// Rust: the `impl` block a method belongs to.
+    pub impl_block: Option<ImplIdentity>,
+    /// Ordinal among declarations that still collided after every field
+    /// above (`stable_id::disambiguate_collisions`).
+    pub dup: Option<usize>,
+}
+
+impl DeclIdentity {
+    pub fn is_empty(&self) -> bool {
+        self.generic_arities.is_empty()
+            && self.cfg.is_empty()
+            && self.impl_block.is_none()
+            && self.dup.is_none()
+    }
+}
+
+/// A Rust `impl` block's own identity: `impl<T> Tr for S<T> where T: X` and
+/// `impl Tr for S<u8>` define same-named methods on one type.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImplIdentity {
+    /// The implemented trait (with generic arguments); `None` for an
+    /// inherent impl.
+    pub trait_ty: Option<String>,
+    /// The self type as written, whitespace removed.
+    pub self_ty: String,
+    /// The block's own generic parameters, whitespace removed.
+    pub generics: String,
+    /// The `where` clause, whitespace removed.
+    pub where_clause: String,
 }
 
 /// Inferred type of a method call's receiver (e.g. the `store` in
@@ -491,6 +539,56 @@ pub trait LanguageExtractor {
         _edges: &mut Vec<EdgeInput>,
     ) {
         // default no-op
+    }
+}
+
+/// Pins the not-yet-pinned edges emitted from (or `CONTAINS`-targeting) each
+/// of `symbols` to that symbol's span, so declarations that share a qualname
+/// (Rust `cfg` twins, an inherent and a trait-impl method, issue #212) each
+/// keep their own outgoing edges instead of resolving to whichever the
+/// qualname lookup picks. `edges` is the slice emitted alongside `symbols`.
+/// Of several symbols sharing a qualname the first claims the still-unpinned
+/// edges; twins' own edges were already pinned by the (inner) item they
+/// were emitted in.
+pub fn pin_edges_to_symbols(symbols: &[SymbolInput], edges: &mut [EdgeInput]) {
+    if symbols.is_empty() {
+        return;
+    }
+    let mut by_qualname: std::collections::HashMap<&str, i64> =
+        std::collections::HashMap::with_capacity(symbols.len());
+    for symbol in symbols {
+        by_qualname
+            .entry(symbol.qualname.as_str())
+            .or_insert(symbol.start_byte);
+    }
+    for edge in edges.iter_mut() {
+        if edge.source_start_byte.is_none()
+            && let Some(source) = edge.source_qualname.as_deref()
+            && let Some(start) = by_qualname.get(source)
+        {
+            edge.source_start_byte = Some(*start);
+        }
+        if edge.target_start_byte.is_none()
+            && edge.kind == "CONTAINS"
+            && let Some(target) = edge.target_qualname.as_deref()
+            && let Some(start) = by_qualname.get(target)
+        {
+            edge.target_start_byte = Some(*start);
+        }
+    }
+}
+
+/// Runs `walk` (one declaration's extraction), then pins the symbols and
+/// edges it emitted with `pin_edges_to_symbols`. The one place the
+/// "snapshot lengths, walk, pin the new slice" pattern lives.
+pub fn pinning_new_edges(output: &mut ExtractedFile, walk: impl FnOnce(&mut ExtractedFile)) {
+    let (first_symbol, first_edge) = (output.symbols.len(), output.edges.len());
+    walk(output);
+    if output.symbols.len() > first_symbol {
+        pin_edges_to_symbols(
+            &output.symbols[first_symbol..],
+            &mut output.edges[first_edge..],
+        );
     }
 }
 

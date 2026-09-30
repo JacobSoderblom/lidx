@@ -1,4 +1,4 @@
-use crate::indexer::extract::SymbolInput;
+use crate::indexer::extract::{DeclIdentity, SymbolInput};
 use blake3::Hasher;
 
 /// Compute a stable symbol ID from content only (NO LINE NUMBERS).
@@ -56,12 +56,136 @@ pub fn compute_stable_symbol_id(symbol: &SymbolInput) -> String {
     // Include kind for disambiguation (function vs class with same name)
     hasher.update(symbol.kind.as_bytes());
 
+    // Declaration identity (generic arity, cfg, impl block, collision
+    // ordinal). Absent for the common case, so existing ids are unchanged.
+    if let Some(identity) = symbol.identity.as_ref().filter(|i| !i.is_empty()) {
+        hasher.update(b"\x00");
+        hash_identity(&mut hasher, identity);
+    }
+
     // DO NOT include start_line, end_line, start_byte, end_byte
     // These change when blank lines are added or code is moved!
 
     let hash = hasher.finalize();
     // Use first 64 bits (16 hex characters) of hash
     format!("sym_{}", &hash.to_hex()[..16])
+}
+
+fn hash_str(hasher: &mut Hasher, value: &str) {
+    hasher.update(&(value.len() as u64).to_le_bytes());
+    hasher.update(value.as_bytes());
+}
+
+/// Hashes every identity field with a tag and explicit lengths, so the
+/// contents of one field can never be read as another (a `|` inside a cfg
+/// predicate is just a byte).
+fn hash_identity(hasher: &mut Hasher, identity: &DeclIdentity) {
+    hasher.update(b"A");
+    hasher.update(&(identity.generic_arities.len() as u64).to_le_bytes());
+    for arity in &identity.generic_arities {
+        hasher.update(&(*arity as u64).to_le_bytes());
+    }
+    hasher.update(b"C");
+    hasher.update(&(identity.cfg.len() as u64).to_le_bytes());
+    for predicate in &identity.cfg {
+        hash_str(hasher, predicate);
+    }
+    hasher.update(b"I");
+    match &identity.impl_block {
+        None => {
+            hasher.update(b"0");
+        }
+        Some(block) => {
+            hasher.update(b"1");
+            match &block.trait_ty {
+                None => {
+                    hasher.update(b"0");
+                }
+                Some(trait_ty) => {
+                    hasher.update(b"1");
+                    hash_str(hasher, trait_ty);
+                }
+            }
+            hash_str(hasher, &block.self_ty);
+            hash_str(hasher, &block.generics);
+            hash_str(hasher, &block.where_clause);
+        }
+    }
+    hasher.update(b"D");
+    match identity.dup {
+        None => {
+            hasher.update(b"0");
+        }
+        Some(n) => {
+            hasher.update(b"1");
+            hasher.update(&(n as u64).to_le_bytes());
+        }
+    }
+}
+
+/// One group of symbols that hashed to the same stable id before
+/// disambiguation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StableIdCollision {
+    /// Qualname shared by the colliding declarations.
+    pub qualname: String,
+    /// Kind shared by the colliding declarations.
+    pub kind: String,
+    /// How many declarations shared the id (always >= 2).
+    pub count: usize,
+}
+
+/// Guarantees every symbol in `symbols` (one file's) has a distinct stable
+/// id, without ever dropping one. A symbol whose id is already taken by an
+/// earlier symbol gets a `dup` ordinal in its identity (1 for the second
+/// twin, 2 for the third, ...) and the collision is returned so callers can
+/// surface it; empty when every id was already unique.
+///
+/// Churn trade-off, stated plainly: the ordinal is the twin's position
+/// among its twins in declaration order, the only thing left to tell
+/// truly indistinguishable declarations apart. It is independent of line
+/// numbers (blank lines, moving the group, reformatting never change it),
+/// but reordering the twins among themselves, or inserting a new twin ahead
+/// of existing ones, hands the ids over: the first twin always keeps the
+/// plain id and later ones shift. That is why extractors should encode
+/// whatever really differs (generic arity, `cfg`, impl block) in
+/// `identity` first, and why this only backs them up.
+pub fn disambiguate_collisions(symbols: &mut [SymbolInput]) -> Vec<StableIdCollision> {
+    use std::collections::{HashMap, HashSet};
+    let mut taken: HashSet<String> = HashSet::with_capacity(symbols.len());
+    let mut twins_seen: HashMap<String, usize> = HashMap::new();
+    let mut group_of: HashMap<String, usize> = HashMap::new();
+    let mut groups: Vec<StableIdCollision> = Vec::new();
+    for symbol in symbols.iter_mut() {
+        let base = compute_stable_symbol_id(symbol);
+        if taken.insert(base.clone()) {
+            continue;
+        }
+        let mut ordinal = twins_seen.get(&base).copied().unwrap_or(0) + 1;
+        let original = symbol.identity.clone();
+        loop {
+            let mut identity = original.clone().unwrap_or_default();
+            identity.dup = Some(ordinal);
+            symbol.identity = Some(identity);
+            if taken.insert(compute_stable_symbol_id(symbol)) {
+                break;
+            }
+            ordinal += 1;
+        }
+        twins_seen.insert(base.clone(), ordinal);
+        match group_of.get(&base) {
+            Some(&g) => groups[g].count += 1,
+            None => {
+                group_of.insert(base, groups.len());
+                groups.push(StableIdCollision {
+                    qualname: symbol.qualname.clone(),
+                    kind: symbol.kind.clone(),
+                    count: 2,
+                });
+            }
+        }
+    }
+    groups
 }
 
 #[cfg(test)]
@@ -90,6 +214,7 @@ mod tests {
             end_byte: 100,
             signature: signature.map(String::from),
             docstring: None,
+            identity: None,
         }
     }
 
@@ -226,5 +351,44 @@ mod tests {
 
         assert_eq!(id1, id2);
         assert_eq!(id2, id3);
+    }
+
+    /// Documents the `dup` fallback's ordering behavior: ids follow the
+    /// declaration-order position among twins, not the line.
+    #[test]
+    fn dup_ordinals_follow_declaration_order_not_lines() {
+        let ids = |lines: [i64; 3]| -> Vec<String> {
+            let mut symbols: Vec<SymbolInput> = lines
+                .iter()
+                .map(|l| make_test_symbol("m.dup", Some("()"), "function", *l))
+                .collect();
+            let collisions = disambiguate_collisions(&mut symbols);
+            assert_eq!(collisions.len(), 1);
+            assert_eq!(collisions[0].count, 3);
+            symbols.iter().map(compute_stable_symbol_id).collect()
+        };
+        let base = compute_stable_symbol_id(&make_test_symbol("m.dup", Some("()"), "function", 1));
+
+        let first = ids([1, 10, 20]);
+        assert_eq!(first[0], base, "first twin keeps the plain id");
+        assert_eq!(
+            first.iter().collect::<std::collections::HashSet<_>>().len(),
+            3
+        );
+
+        // Shifting every line (blank lines above): no churn.
+        assert_eq!(ids([5, 14, 30]), first);
+
+        // Identity among identical twins is only the slot: a fourth twin
+        // anywhere in the group takes the last slot, so existing slots keep
+        // their ids; reordering *distinguishable* twins is not possible here
+        // (they would not collide).
+        let mut four: Vec<SymbolInput> = [1, 2, 10, 20]
+            .iter()
+            .map(|l| make_test_symbol("m.dup", Some("()"), "function", *l))
+            .collect();
+        disambiguate_collisions(&mut four);
+        let four_ids: Vec<String> = four.iter().map(compute_stable_symbol_id).collect();
+        assert_eq!(&four_ids[..3], &first[..3], "existing slots keep ids");
     }
 }

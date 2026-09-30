@@ -55,6 +55,9 @@ pub enum Command {
         /// Include files ignored by .gitignore.
         #[arg(long)]
         no_ignore: bool,
+        /// Allow a scan that finds zero files (empties the existing index).
+        #[arg(long)]
+        allow_empty: bool,
     },
     /// Show changed files compared to DB state.
     ChangedFiles {
@@ -135,4 +138,20 @@ pub enum Command {
         #[arg(long)]
         skip_hooks: bool,
     },
+}
+
+impl Command {
+    /// The `--repo` path of any subcommand (every subcommand takes one).
+    pub fn repo(&self) -> &std::path::Path {
+        match self {
+            Command::Serve { repo, .. }
+            | Command::Reindex { repo, .. }
+            | Command::ChangedFiles { repo, .. }
+            | Command::Overview { repo, .. }
+            | Command::Request { repo, .. }
+            | Command::McpServe { repo, .. }
+            | Command::Context { repo, .. }
+            | Command::Init { repo, .. } => repo,
+        }
+    }
 }

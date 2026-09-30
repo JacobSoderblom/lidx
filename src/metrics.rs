@@ -12,6 +12,9 @@ pub struct FileMetricsInput {
 #[derive(Debug, Clone)]
 pub struct SymbolMetricsInput {
     pub qualname: String,
+    /// Start byte of the symbol: with `qualname`, identifies the exact
+    /// symbol when several declarations share a qualname (issue #212).
+    pub start_byte: i64,
     pub loc: i64,
     pub complexity: i64,
     pub duplication_hash: Option<String>,
@@ -87,6 +90,7 @@ pub fn compute_symbol_metrics(
         let duplication_hash = duplication_hash(&snippet);
         metrics.push(SymbolMetricsInput {
             qualname: symbol.qualname.clone(),
+            start_byte: symbol.start_byte,
             loc,
             complexity,
             duplication_hash,
