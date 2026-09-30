@@ -429,16 +429,102 @@ pub fn serve(repo_root: PathBuf, db_path: PathBuf, watch_config: watch::WatchCon
             continue;
         }
 
-        let response = match serde_json::from_str::<RpcRequest>(&line) {
-            Ok(request) => app.handle_request(request),
-            Err(err) => format::error_response(Value::Null, &format!("invalid request: {err}")),
+        // Parse to Value first to handle all JSON types and extract id properly
+        let responses = match serde_json::from_str::<Value>(&line) {
+            Ok(value) => handle_json_value(&mut app, value),
+            Err(err) => vec![format::error_response(
+                Value::Null,
+                &format!("parse error: {err}"),
+            )],
         };
 
-        writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
-        stdout.flush()?;
+        for response in responses {
+            writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
+            stdout.flush()?;
+        }
     }
 
     Ok(())
+}
+
+fn handle_json_value(app: &mut App, value: Value) -> Vec<RpcResponse> {
+    match value {
+        Value::Array(arr) => {
+            // Handle batch request
+            if arr.is_empty() {
+                // Empty batch is invalid per JSON-RPC 2.0
+                return vec![format::error_response(
+                    Value::Null,
+                    "invalid request: empty batch",
+                )];
+            }
+
+            let mut responses = Vec::new();
+            for element in arr {
+                if let Some(response) = handle_single_request(app, element) {
+                    responses.push(response);
+                }
+            }
+
+            // If all elements were notifications (no responses), return nothing
+            // Otherwise return array of responses
+            if responses.is_empty() {
+                Vec::new()
+            } else {
+                // For batch responses, wrap in a single response with the array
+                // Actually, JSON-RPC 2.0 batches return array of responses directly
+                // But our RpcResponse struct doesn't support this
+                // So we need to return the responses as-is
+                responses
+            }
+        }
+        Value::Object(_) => {
+            // Single object request
+            if let Some(response) = handle_single_request(app, value) {
+                vec![response]
+            } else {
+                Vec::new()
+            }
+        }
+        _ => {
+            // Non-object, non-array JSON value (scalar)
+            vec![format::error_response(
+                Value::Null,
+                "invalid request: expected object or array",
+            )]
+        }
+    }
+}
+
+fn handle_single_request(app: &mut App, message: Value) -> Option<RpcResponse> {
+    let id = message.get("id").cloned();
+    let method = message.get("method").and_then(|value| value.as_str());
+
+    // If there's no method, it's an invalid request
+    if method.is_none() {
+        // Return error with id if present, or id: null if not
+        let response_id = id.unwrap_or(Value::Null);
+        return Some(format::error_response(
+            response_id,
+            "invalid request: missing method",
+        ));
+    }
+
+    // Try to deserialize into RpcRequest
+    match serde_json::from_value::<RpcRequest>(message) {
+        Ok(request) => {
+            let response = app.handle_request(request);
+            Some(response)
+        }
+        Err(_) => {
+            // Failed to deserialize into RpcRequest (missing required fields)
+            let response_id = id.unwrap_or(Value::Null);
+            Some(format::error_response(
+                response_id,
+                "invalid request: invalid format",
+            ))
+        }
+    }
 }
 
 pub fn call(
