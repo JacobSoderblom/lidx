@@ -303,7 +303,15 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
         .unwrap_or_else(|| json!({}));
     let text_mode = text_mode_from_args(&arguments);
     let include_structured = include_structured_from_args(&arguments);
-    let (repo_root, db_path) = repo_and_db(&arguments, &state.defaults);
+    let (repo_root, db_path) = match repo_and_db(&arguments, &state.defaults) {
+        Ok(value) => value,
+        Err(err) => {
+            return jsonrpc_result(
+                id,
+                call_result_error(&format!("{err:#}"), text_mode, include_structured),
+            );
+        }
+    };
     let set_default = arguments
         .get("set_default")
         .and_then(|value| value.as_bool())
@@ -439,7 +447,7 @@ fn jsonrpc_error(id: Value, code: i64, message: &str) -> Value {
     })
 }
 
-fn repo_and_db(arguments: &Value, defaults: &Defaults) -> (PathBuf, PathBuf) {
+fn repo_and_db(arguments: &Value, defaults: &Defaults) -> anyhow::Result<(PathBuf, PathBuf)> {
     let repo_override = arguments
         .get("repo")
         .and_then(|value| value.as_str())
@@ -450,13 +458,18 @@ fn repo_and_db(arguments: &Value, defaults: &Defaults) -> (PathBuf, PathBuf) {
         .and_then(|value| value.as_str())
         .map(PathBuf::from);
 
+    // A request-supplied repo is untrusted input: validate before any DB path
+    // is derived so `Db::new` can never create directories for a bad repo.
+    if let Some(repo) = &repo_override {
+        crate::indexer::validate_repo_root(repo)?;
+    }
     let repo_root = repo_override.unwrap_or_else(|| defaults.repo_root.clone());
     let db_path = match db_override {
         Some(path) => path,
         None if has_repo_override => default_db_path(&repo_root),
         None => defaults.db_path.clone(),
     };
-    (repo_root, db_path)
+    Ok((repo_root, db_path))
 }
 
 fn default_db_path(repo: &Path) -> PathBuf {
@@ -557,7 +570,7 @@ mod tests {
             db_path: PathBuf::from("/repo/.lidx/.lidx.sqlite"),
         };
         let args = json!({});
-        let (repo, db) = repo_and_db(&args, &defaults);
+        let (repo, db) = repo_and_db(&args, &defaults).unwrap();
         assert_eq!(repo, PathBuf::from("/repo"));
         assert_eq!(db, PathBuf::from("/repo/.lidx/.lidx.sqlite"));
     }
@@ -568,10 +581,11 @@ mod tests {
             repo_root: PathBuf::from("/repo"),
             db_path: PathBuf::from("/repo/.lidx/.lidx.sqlite"),
         };
-        let args = json!({ "repo": "/other" });
-        let (repo, db) = repo_and_db(&args, &defaults);
-        assert_eq!(repo, PathBuf::from("/other"));
-        assert_eq!(db, PathBuf::from("/other/.lidx/.lidx.sqlite"));
+        let other = temp_dir("override");
+        let args = json!({ "repo": other });
+        let (repo, db) = repo_and_db(&args, &defaults).unwrap();
+        assert_eq!(repo, other);
+        assert_eq!(db, other.join(".lidx").join(".lidx.sqlite"));
     }
 
     #[test]
@@ -580,10 +594,25 @@ mod tests {
             repo_root: PathBuf::from("/repo"),
             db_path: PathBuf::from("/repo/.lidx/.lidx.sqlite"),
         };
-        let args = json!({ "repo": "/other", "db": "/tmp/custom.sqlite" });
-        let (repo, db) = repo_and_db(&args, &defaults);
-        assert_eq!(repo, PathBuf::from("/other"));
+        let other = temp_dir("override-db");
+        let args = json!({ "repo": other, "db": "/tmp/custom.sqlite" });
+        let (repo, db) = repo_and_db(&args, &defaults).unwrap();
+        assert_eq!(repo, other);
         assert_eq!(db, PathBuf::from("/tmp/custom.sqlite"));
+    }
+
+    #[test]
+    fn repo_and_db_rejects_missing_repo_without_creating_dirs() {
+        let defaults = Defaults {
+            repo_root: PathBuf::from("/repo"),
+            db_path: PathBuf::from("/repo/.lidx/.lidx.sqlite"),
+        };
+        let parent = temp_dir("missing-parent");
+        let missing = parent.join("typo");
+        let args = json!({ "repo": missing });
+        let err = repo_and_db(&args, &defaults).unwrap_err();
+        assert!(format!("{err:#}").contains("typo"), "{err:#}");
+        assert!(!missing.exists());
     }
 
     #[test]
