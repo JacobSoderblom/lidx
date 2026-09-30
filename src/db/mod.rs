@@ -1567,22 +1567,6 @@ impl Db {
                     },
                     None => resolution,
                 };
-                // A speculative edge keeps only an in-repo target: drop one
-                // bound to an external stub, and the stub if nothing else
-                // points at it.
-                if edge.drop_if_unresolved
-                    && let resolver::Resolution::Resolved {
-                        target_id,
-                        kind: resolver::ResolutionKind::External { .. },
-                    } = resolution
-                {
-                    tx.execute(
-                        "DELETE FROM symbols WHERE id = ? AND kind = 'external'
-                           AND NOT EXISTS (SELECT 1 FROM edges WHERE target_symbol_id = ?)",
-                        params![target_id, target_id],
-                    )?;
-                    continue;
-                }
 
                 // Issue #79: `is_bridge_edge_kind`'s kind is always written,
                 // resolved or not -- see its doc for why that's not one
@@ -1636,8 +1620,7 @@ impl Db {
                     None
                 };
 
-                if !edge.drop_if_unresolved
-                    && let Some(reason) = resolution.unresolved_reason()
+                if let Some(reason) = resolution.unresolved_reason()
                     && let Some((reference_name, name_tail)) =
                         resolver::store_reference_name_and_tail(
                             edge.target_qualname.as_deref(),
@@ -2503,7 +2486,6 @@ mod tests {
             import_candidates: Vec::new(),
             bare_call: false,
             call_shape: None,
-            drop_if_unresolved: false,
             source_start_byte: None,
             target_start_byte: None,
         }
@@ -3993,7 +3975,6 @@ mod tests {
             import_candidates: Vec::new(),
             bare_call: false,
             call_shape: None,
-            drop_if_unresolved: false,
             source_start_byte: None,
             target_start_byte: None,
         }];
@@ -4397,7 +4378,6 @@ mod tests {
             import_candidates: Vec::new(),
             bare_call: false,
             call_shape: None,
-            drop_if_unresolved: false,
             source_start_byte: None,
             target_start_byte: None,
         }];
@@ -4449,7 +4429,6 @@ mod tests {
                 import_candidates: Vec::new(),
                 bare_call: false,
                 call_shape: None,
-                drop_if_unresolved: false,
                 source_start_byte: None,
                 target_start_byte: None,
             },
@@ -4469,7 +4448,6 @@ mod tests {
                 import_candidates: Vec::new(),
                 bare_call: false,
                 call_shape: None,
-                drop_if_unresolved: false,
                 source_start_byte: None,
                 target_start_byte: None,
             },
@@ -4680,7 +4658,6 @@ mod tests {
             import_candidates: Vec::new(),
             bare_call: false,
             call_shape: None,
-            drop_if_unresolved: false,
             source_start_byte: None,
             target_start_byte: None,
         }];
@@ -4743,7 +4720,6 @@ mod tests {
                 import_candidates: Vec::new(),
                 bare_call: false,
                 call_shape: None,
-                drop_if_unresolved: false,
                 source_start_byte: None,
                 target_start_byte: None,
             },
@@ -4763,7 +4739,6 @@ mod tests {
                 import_candidates: Vec::new(),
                 bare_call: false,
                 call_shape: None,
-                drop_if_unresolved: false,
                 source_start_byte: None,
                 target_start_byte: None,
             },

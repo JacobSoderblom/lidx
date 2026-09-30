@@ -719,7 +719,6 @@ fn handle_member_read(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
         import_candidates: import_qualified_candidates(&ty, &name, ctx),
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
-        drop_if_unresolved: true,
         ..Default::default()
     });
 }

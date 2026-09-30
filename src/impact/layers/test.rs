@@ -261,7 +261,6 @@ mod tests {
             import_candidates: Vec::new(),
             bare_call: false,
             call_shape: None,
-            drop_if_unresolved: false,
             source_start_byte: None,
             target_start_byte: None,
         };
@@ -335,7 +334,6 @@ mod tests {
             import_candidates: Vec::new(),
             bare_call: false,
             call_shape: None,
-            drop_if_unresolved: false,
             source_start_byte: None,
             target_start_byte: None,
         };

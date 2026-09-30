@@ -355,7 +355,7 @@ fn conversion_operator_names_contain_no_dot() {
 }
 
 #[test]
-fn member_reads_skip_nameof_and_qualified_names_and_leave_no_noise() {
+fn member_reads_skip_nameof_and_qualified_names_and_never_bind_external_stubs() {
     let fx = setup();
     let conn = fx.indexer.db().read_conn().unwrap();
     // Only the `Color.Red.ToString()` read survives, resolved; the `nameof`
@@ -374,16 +374,15 @@ fn member_reads_skip_nameof_and_qualified_names_and_leave_no_noise() {
         .map(|r| r.unwrap())
         .collect();
     assert_eq!(targets, vec![Some("N.Color.Red".to_string())]);
-    let unresolved: usize = conn
+    // Unresolved reads stay retryable but never bind to `ext:` stubs.
+    let stubs: usize = conn
         .query_row(
-            "SELECT COUNT(*) FROM unresolved_references ur
-             JOIN symbols s ON s.id = ur.source_symbol_id
-             WHERE ur.edge_kind = 'USES' AND s.qualname = 'X.Conv.Go'",
+            "SELECT COUNT(*) FROM symbols WHERE kind = 'external' AND qualname LIKE 'ext:%UtcNow'",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(unresolved, 0);
+    assert_eq!(stubs, 0);
 }
 
 #[test]

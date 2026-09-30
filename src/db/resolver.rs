@@ -1335,7 +1335,7 @@ impl<'c> Resolver<'c> {
             // import known not to resolve here -- "calls into imports known
             // to resolve outside the repo (standard library, third-party
             // packages)".
-            None if refuse_names => {
+            None if refuse_names && !never_external(r) => {
                 self.stub_resolution(r.target_qualname, r.import_candidates, r.bare_call, false)
             }
             // A builtin/unresolved receiver type with no import involved at
@@ -1359,6 +1359,7 @@ impl<'c> Resolver<'c> {
             // `is_known_external_fallback`.
             None => {
                 let is_external = match r.target_qualname {
+                    Some(_) if never_external(r) => false,
                     Some(qn) => self.is_known_external_fallback(r.source_lang, qn)?,
                     None => false,
                 };
@@ -2328,6 +2329,14 @@ impl<'c> Resolver<'c> {
 /// The single synthetic file every external stub symbol belongs to --
 /// see `Resolver::external_file_id`.
 pub(crate) const EXTERNAL_FILE_PATH: &str = "<external>";
+
+/// C# `Type.Member` reads (the only C# `USES` edges, issue #247) are
+/// speculative: most hit framework members (`DateTime.UtcNow`), so binding
+/// them to `ext:` stubs is pure noise. They stay unresolved (and retryable)
+/// until an in-repo target appears.
+fn never_external(r: &Reference<'_>) -> bool {
+    r.edge_kind == "USES" && r.source_lang == "csharp"
+}
 
 /// The stub qualname for a known-external outcome (issue #80): `ext:` plus
 /// the reference's own text.
