@@ -701,6 +701,9 @@ fn handle_member_read(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
     if !ty.starts_with(char::is_uppercase) || !name.starts_with(char::is_uppercase) {
         return;
     }
+    if is_qualified_name_prefix(node) || is_inside_nameof(node, source) {
+        return;
+    }
     let receiver_type = infer_receiver_type(node, source, ctx);
     if receiver_type != ReceiverType::NotTracked || ctx.local_types.contains_key(ty.as_str()) {
         return;
@@ -716,8 +719,42 @@ fn handle_member_read(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
         import_candidates: import_qualified_candidates(&ty, &name, ctx),
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
+        drop_if_unresolved: true,
         ..Default::default()
     });
+}
+
+/// `System.Console` in `System.Console.Out`: the receiver of a further
+/// un-invoked PascalCase member read is a qualified name, not a `Type.Member`
+/// read. (`Color.Red.ToString()` is invoked, so `Color.Red` still counts.)
+fn is_qualified_name_prefix(node: Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    if parent.kind() != "member_access_expression"
+        || parent.child_by_field_name("expression") != Some(node)
+    {
+        return false;
+    }
+    let invoked = parent.parent().is_some_and(|gp| {
+        gp.kind() == "invocation_expression" && gp.child_by_field_name("function") == Some(parent)
+    });
+    !invoked
+}
+
+/// Inside `nameof(...)`, where `Type.Member` is a name, not a read.
+fn is_inside_nameof(node: Node<'_>, source: &str) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if n.kind() == "invocation_expression"
+            && n.child_by_field_name("function")
+                .is_some_and(|f| f.kind() == "identifier" && node_text(f, source) == "nameof")
+        {
+            return true;
+        }
+        cur = n.parent();
+    }
+    false
 }
 
 fn handle_namespace(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -1274,7 +1311,16 @@ fn handle_enum_member(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
         return;
     }
     let qualname = build_qualname(ctx, &name);
-    push_member(node, ctx, output, "const", name, qualname.clone(), None);
+    push_member(
+        node,
+        ctx,
+        output,
+        "const",
+        name,
+        qualname.clone(),
+        None,
+        None,
+    );
     walk_initializer(node, &qualname, ctx, source, output);
 }
 
@@ -1306,7 +1352,7 @@ fn handle_record_parameters(
             continue;
         }
         let qualname = build_qualname(ctx, &name);
-        push_member(param, ctx, output, "property", name, qualname, None);
+        push_member(param, ctx, output, "property", name, qualname, None, None);
     }
 }
 
@@ -1324,7 +1370,16 @@ fn handle_delegate(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     }
     let qualname = build_qualname(ctx, &name);
     let signature = special_member_signature(node, source);
-    push_member(node, ctx, output, "delegate", name, qualname, signature);
+    push_member(
+        node,
+        ctx,
+        output,
+        "delegate",
+        name,
+        qualname,
+        signature,
+        Some(generic_arity(node)),
+    );
 }
 
 /// Indexers (`this[]`), operators (`operator +`), conversion operators
@@ -1352,7 +1407,9 @@ fn handle_special_member(node: Node<'_>, ctx: &Context, source: &str, output: &m
                 .split_whitespace()
                 .map(str::to_string)
                 .collect();
-            (format!("{direction} operator {}", ty.join(" ")), "method")
+            // No '.' in a name: parent lookups split the qualname on it.
+            let ty = ty.join(" ").replace('.', "_");
+            (format!("{direction} operator {ty}"), "method")
         }
         _ => {
             let Some(op) = node.child_by_field_name("operator") else {
@@ -1368,7 +1425,16 @@ fn handle_special_member(node: Node<'_>, ctx: &Context, source: &str, output: &m
     if has_modifier(node, source, "override") {
         output.override_symbols.push((qualname.clone(), start_line));
     }
-    push_member(node, ctx, output, kind, name, qualname.clone(), signature);
+    push_member(
+        node,
+        ctx,
+        output,
+        kind,
+        name,
+        qualname.clone(),
+        signature,
+        None,
+    );
     walk_parameter_defaults(node, &qualname, ctx, source, output);
     let mut next_ctx = ctx.clone();
     next_ctx.fn_depth += 1;
@@ -1403,6 +1469,7 @@ fn special_member_signature(node: Node<'_>, source: &str) -> Option<String> {
 
 /// Emit one member symbol spanning `node` plus the `CONTAINS` edge from its
 /// declaring type or namespace.
+#[allow(clippy::too_many_arguments)]
 fn push_member(
     node: Node<'_>,
     ctx: &Context,
@@ -1411,6 +1478,7 @@ fn push_member(
     name: String,
     qualname: String,
     signature: Option<String>,
+    own_arity: Option<usize>,
 ) {
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     output.symbols.push(SymbolInput {
@@ -1425,7 +1493,7 @@ fn push_member(
         end_byte,
         signature,
         docstring: None,
-        identity: identity(ctx, None),
+        identity: identity(ctx, own_arity),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -1531,32 +1599,12 @@ fn push_event(
     qualname: String,
     is_override: bool,
 ) {
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     if is_override {
-        output.override_symbols.push((qualname.clone(), start_line));
+        output
+            .override_symbols
+            .push((qualname.clone(), span(node).0));
     }
-    output.symbols.push(SymbolInput {
-        kind: "event".to_string(),
-        name,
-        qualname: qualname.clone(),
-        start_line,
-        start_col,
-        end_line,
-        end_col,
-        start_byte,
-        end_byte,
-        signature: None,
-        docstring: None,
-        identity: identity(ctx, None),
-    });
-    output.edges.push(EdgeInput {
-        kind: "CONTAINS".to_string(),
-        source_qualname: Some(container_qualname(ctx)),
-        target_qualname: Some(qualname),
-        detail: None,
-        evidence_snippet: None,
-        ..Default::default()
-    });
+    push_member(node, ctx, output, "event", name, qualname, None, None);
 }
 
 /// Walk a property/event's accessor bodies (`get`/`set`/`init`/`add`/

@@ -490,6 +490,12 @@ pub struct EdgeInput {
     /// Argument count / object-creation marker; see `CallShape`. Only the
     /// C# extractor sets it. `None` = no arity signal (resolve as before).
     pub call_shape: Option<CallShape>,
+    /// True for a speculative edge (C# `Type.Member` reads) that should leave
+    /// no `unresolved_references` row when it finds no in-repo target: most
+    /// such reads hit framework members (`DateTime.UtcNow`) and would only
+    /// add noise. The cost is that a target added later by an incremental
+    /// reindex of another file is not retried.
+    pub drop_if_unresolved: bool,
 }
 
 #[derive(Debug, Default)]

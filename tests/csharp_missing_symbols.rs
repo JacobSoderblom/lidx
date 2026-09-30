@@ -43,6 +43,42 @@ namespace M
 }
 "#;
 
+const EXTRA: &str = r#"using N;
+using System;
+namespace X
+{
+    public delegate void H<T>(T a);
+    public delegate void H<T, U>(T a, U b);
+
+    public class Conv
+    {
+        public static explicit operator System.Int32(Conv c) => 0;
+        public static implicit operator List<System.Int32>(Conv c) => null;
+
+        public void Go()
+        {
+            var a = nameof(Color.Red);
+            var t = System.Console.Out;
+            var n = System.Threading.CancellationToken.None;
+            var d = DateTime.UtcNow;
+            var c = Color.Red.ToString();
+        }
+    }
+}
+"#;
+
+const PLAIN: &str = r#"namespace Q
+{
+    public class A
+    {
+        public int F;
+        public void M() { }
+        public int P { get; set; }
+        public event System.EventHandler E;
+    }
+}
+"#;
+
 struct Fixture {
     dir: PathBuf,
     indexer: Indexer,
@@ -66,6 +102,8 @@ fn setup() -> Fixture {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("Svc.cs"), SVC).unwrap();
     std::fs::write(dir.join("Painter.cs"), USER).unwrap();
+    std::fs::write(dir.join("Extra.cs"), EXTRA).unwrap();
+    std::fs::write(dir.join("Plain.cs"), PLAIN).unwrap();
     let db_path = dir.join(".lidx").join(".lidx.sqlite");
     let mut indexer = Indexer::new(dir.clone(), db_path).unwrap();
     indexer.reindex().unwrap();
@@ -291,4 +329,103 @@ fn enum_member_reference_from_another_file_resolves_to_the_member() {
         )
         .unwrap();
     assert_eq!(n, 1);
+}
+
+#[test]
+fn generic_delegates_of_different_arity_stay_distinct() {
+    let fx = setup();
+    assert_eq!(symbols(&fx, "X.H").len(), 2);
+    let conn = fx.indexer.db().read_conn().unwrap();
+    let ids: usize = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT stable_id) FROM symbols
+             WHERE qualname = 'X.H' AND graph_version = ?",
+            params![fx.gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(ids, 2);
+}
+
+#[test]
+fn conversion_operator_names_contain_no_dot() {
+    let fx = setup();
+    only(&fx, "X.Conv.explicit operator System_Int32");
+    only(&fx, "X.Conv.implicit operator List<System_Int32>");
+}
+
+#[test]
+fn member_reads_skip_nameof_and_qualified_names_and_leave_no_noise() {
+    let fx = setup();
+    let conn = fx.indexer.db().read_conn().unwrap();
+    // Only the `Color.Red.ToString()` read survives, resolved; the `nameof`
+    // one, `System.Console.Out` and `DateTime.UtcNow` emit nothing.
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.qualname FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind = 'USES' AND s.qualname = 'X.Conv.Go' AND e.graph_version = ?",
+        )
+        .unwrap();
+    let targets: Vec<Option<String>> = stmt
+        .query_map(params![fx.gv], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(targets, vec![Some("N.Color.Red".to_string())]);
+    let unresolved: usize = conn
+        .query_row(
+            "SELECT COUNT(*) FROM unresolved_references ur
+             JOIN symbols s ON s.id = ur.source_symbol_id
+             WHERE ur.edge_kind = 'USES' AND s.qualname = 'X.Conv.Go'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unresolved, 0);
+}
+
+#[test]
+fn operators_and_finalizers_are_not_dead_symbols() {
+    let mut fx = setup();
+    let result = rpc::handle_method(
+        &mut fx.indexer,
+        "dead_symbols",
+        serde_json::json!({"include_unused_imports": false, "include_orphan_tests": false}),
+    )
+    .unwrap();
+    let names: Vec<String> = result["dead_symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["qualname"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        !names
+            .iter()
+            .any(|q| q.contains("operator ") || q.contains("~Svc")),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn ordinary_file_symbols_are_unchanged() {
+    let fx = setup();
+    let conn = fx.indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.qualname FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE f.path = 'Plain.cs' AND s.graph_version = ? ORDER BY s.qualname",
+        )
+        .unwrap();
+    let names: Vec<String> = stmt
+        .query_map(params![fx.gv], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["Plain", "Q", "Q.A", "Q.A.E", "Q.A.F", "Q.A.M", "Q.A.P"]
+    );
 }
