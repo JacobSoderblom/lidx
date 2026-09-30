@@ -389,6 +389,13 @@ impl TypeScope {
 pub struct CallShape {
     pub arg_count: u32,
     pub is_new: bool,
+    /// An unqualified C# call inside a type body: it has an implicit
+    /// receiver (`this`, or the type itself in a static context), so the
+    /// enclosing type's own members and base chain are searched before any
+    /// name-wide lookup. Persisted as `"this:<n>"`. Never set together with
+    /// `is_new` (an object creation has no receiver concept), so the
+    /// encoding has one prefix at most; `encode` gives `is_new` precedence.
+    pub implicit_this: bool,
 }
 
 impl CallShape {
@@ -396,6 +403,8 @@ impl CallShape {
     pub fn encode(self) -> String {
         if self.is_new {
             format!("new:{}", self.arg_count)
+        } else if self.implicit_this {
+            format!("this:{}", self.arg_count)
         } else {
             self.arg_count.to_string()
         }
@@ -403,13 +412,16 @@ impl CallShape {
 
     /// Inverse of `encode`; `None` for text that isn't a valid shape.
     pub fn decode(raw: &str) -> Option<Self> {
-        let (is_new, count) = match raw.strip_prefix("new:") {
-            Some(rest) => (true, rest),
-            None => (false, raw),
-        };
+        let (is_new, implicit_this, count) =
+            match (raw.strip_prefix("new:"), raw.strip_prefix("this:")) {
+                (Some(rest), _) => (true, false, rest),
+                (_, Some(rest)) => (false, true, rest),
+                _ => (false, false, raw),
+            };
         Some(Self {
             arg_count: count.parse().ok()?,
             is_new,
+            implicit_this,
         })
     }
 }

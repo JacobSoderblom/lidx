@@ -1604,6 +1604,32 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return;
     }
+    // An unqualified call inside a type body has an implicit receiver (see
+    // `CallShape::implicit_this`). A local function is no symbol, so a call
+    // to one binds to nothing: it must not fall on to a same-named member.
+    let implicit_this = node.kind() == "invocation_expression"
+        && !ctx.type_stack.is_empty()
+        && target_node.is_some_and(|target| match target.kind() {
+            "identifier" => true,
+            // `this.Foo()` names the same receiver explicitly.
+            "member_access_expression" => {
+                target
+                    .child_by_field_name("expression")
+                    .is_some_and(|e| e.kind() == "this")
+                    && target
+                        .child_by_field_name("name")
+                        .is_some_and(|n| n.kind() == "identifier")
+            }
+            _ => false,
+        });
+    let bare_identifier = target_node.is_some_and(|target| target.kind() == "identifier");
+    if bare_identifier && implicit_this && calls_local_function(node, &raw, source) {
+        return;
+    }
+    // Invoking a delegate held in a local or parameter is no method call.
+    if bare_identifier && ctx.local_types.contains_key(raw.as_str()) {
+        return;
+    }
     let receiver_type = target_node.map_or(ReceiverType::NotTracked, |target| {
         infer_receiver_type(target, source, ctx)
     });
@@ -1698,9 +1724,58 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         bare_call: node.kind() == "invocation_expression"
             && target_node.is_some_and(|target| target.kind() == "identifier")
             && ctx.type_stack.is_empty(),
-        call_shape: Some(call_shape(node)),
+        call_shape: Some(CallShape {
+            implicit_this,
+            ..call_shape(node)
+        }),
         ..Default::default()
     });
+}
+
+/// Whether `name` is a local function declared in a block enclosing `node`
+/// (within its own method, including from inside a lambda body, whose blocks
+/// are ancestors like any other): C# binds an unqualified call to it first.
+/// A local function is not an indexed symbol, so the caller drops the edge
+/// altogether rather than let it bind to a same-named member (deliberate:
+/// no edge is more honest than a wrong one).
+fn calls_local_function(node: Node<'_>, name: &str, source: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        // The enclosing member or type declaration bounds the search: a
+        // local function is only visible inside the member that declares
+        // it. (Not a `_declaration` suffix test: `variable_declaration`
+        // sits inside method bodies.)
+        if matches!(
+            ancestor.kind(),
+            "method_declaration"
+                | "constructor_declaration"
+                | "destructor_declaration"
+                | "operator_declaration"
+                | "conversion_operator_declaration"
+                | "accessor_declaration"
+                | "property_declaration"
+                | "indexer_declaration"
+                | "event_declaration"
+                | "field_declaration"
+                | "class_declaration"
+                | "struct_declaration"
+                | "record_declaration"
+                | "interface_declaration"
+        ) {
+            return false;
+        }
+        let mut cursor = ancestor.walk();
+        if ancestor.named_children(&mut cursor).any(|child| {
+            is_local_function_node(child.kind())
+                && child
+                    .child_by_field_name("name")
+                    .is_some_and(|n| node_text(n, source) == name)
+        }) {
+            return true;
+        }
+        current = ancestor.parent();
+    }
+    false
 }
 
 /// The argument count / object-creation marker of a call or `new` node.
@@ -1723,6 +1798,7 @@ fn call_shape(node: Node<'_>) -> CallShape {
     CallShape {
         arg_count,
         is_new: node.kind() != "invocation_expression",
+        implicit_this: false,
     }
 }
 

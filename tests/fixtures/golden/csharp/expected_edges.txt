@@ -74,4 +74,4 @@ Golden.Downstream.Downstream.UseEntry CALLS Golden.App.Caller.Entry receiver_typ
 # body has an implicit `this` receiver in C# -- it must not be treated as
 # a bare (receiver-less) call. Before the fix, the bare-call guard wrongly
 # refused this. ---
-Golden.ImplicitThis.Derived.Run CALLS Golden.ImplicitThis.Base.ImplicitHelper bare_name
+Golden.ImplicitThis.Derived.Run CALLS Golden.ImplicitThis.Base.ImplicitHelper inherited
