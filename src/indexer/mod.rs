@@ -233,7 +233,18 @@ impl Indexer {
         self.sync_abs_paths(&abs_paths)
     }
 
+    /// Incremental sync of `paths` into the current graph version. Takes the
+    /// reindex lock (issue #250) so it cannot interleave with a reindex, and
+    /// fails with [`crate::db::ReindexBusy`] when one is running.
     pub fn sync_abs_paths(&mut self, paths: &[PathBuf]) -> Result<SyncStats> {
+        let _lock = self.db.try_lock_reindex()?;
+        // A reindex in another process may have promoted a new version since
+        // this indexer last looked.
+        self.adopt_completed_version()?;
+        self.sync_abs_paths_locked(paths)
+    }
+
+    fn sync_abs_paths_locked(&mut self, paths: &[PathBuf]) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
         let mut touched = false;
         let mut indexed_files = Vec::new();
@@ -433,17 +444,26 @@ impl Indexer {
     /// `reindex_locked`. The new graph version is built while the last
     /// completed one stays current, and is promoted only at the end; on any
     /// error this indexer goes back to the completed version.
-    fn reindex_impl(&mut self, allow_empty: bool) -> Result<IndexStats> {
-        let lock = self.db.try_lock_reindex()?;
-        // A long-lived indexer's version may be stale: another process can
-        // have completed a reindex since it was constructed.
+    /// Point this indexer at the last completed graph version. A long-lived
+    /// indexer's version may be stale (another process can have completed a
+    /// reindex since it was constructed) or may name an abandoned `building`
+    /// one after a failed run.
+    fn adopt_completed_version(&mut self) -> Result<i64> {
         let completed = self.db.current_graph_version()?;
         self.graph_version = completed;
         self.commit_sha = self.db.graph_version_commit(completed)?;
+        Ok(completed)
+    }
+
+    fn reindex_impl(&mut self, allow_empty: bool) -> Result<IndexStats> {
+        let lock = self.db.try_lock_reindex()?;
+        let completed = self.adopt_completed_version()?;
         let result = self.reindex_locked(allow_empty, &lock);
         if result.is_err() {
-            self.graph_version = completed;
-            self.commit_sha = self.db.graph_version_commit(completed)?;
+            // Best effort: never let a failure here replace the original error.
+            if let Err(err) = self.adopt_completed_version() {
+                eprintln!("lidx: could not restore completed graph version {completed}: {err}");
+            }
         }
         result
     }

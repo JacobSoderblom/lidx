@@ -115,6 +115,177 @@ fn readers_never_see_a_partial_version_as_current() {
     );
 }
 
+fn explain(indexer: &mut Indexer, qualname: &str) -> String {
+    lidx::rpc::handle_method(
+        indexer,
+        "explain_symbol",
+        serde_json::json!({ "qualname": qualname }),
+    )
+    .unwrap()
+    .to_string()
+}
+
+/// `explain` output without the byte-budget accounting, which is not stable.
+fn explain_stable(indexer: &mut Indexer, qualname: &str) -> serde_json::Value {
+    let mut v: serde_json::Value = serde_json::from_str(&explain(indexer, qualname)).unwrap();
+    v.as_object_mut().unwrap().remove("budget");
+    v
+}
+
+fn cli_reindex(repo_root: &Path, db_path: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_lidx"));
+    cmd.args(["reindex", "--repo"])
+        .arg(repo_root)
+        .arg("--db")
+        .arg(db_path);
+    cmd
+}
+
+fn building_versions(db_path: &Path) -> i64 {
+    // The database may not exist yet while the child is starting.
+    let Ok(conn) =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return 0;
+    };
+    conn.query_row(
+        "SELECT COUNT(*) FROM graph_versions WHERE status = 'building'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+/// Spawn `lidx reindex` and wait until it is demonstrably mid-run (it has
+/// allocated its `building` version but not finished).
+fn spawn_reindex_mid_run(repo_root: &Path, db_path: &Path) -> std::process::Child {
+    let mut child = cli_reindex(repo_root, db_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while building_versions(db_path) == 0 {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "reindex finished before it could be interrupted; fixture too small"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "reindex never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    child
+}
+
+/// A real `lidx reindex` process is SIGKILLed mid-run: the completed version
+/// stays current and queryable, and the next reindex reclaims the leftovers.
+#[test]
+fn sigkilled_reindex_process_leaves_completed_version_and_next_run_reclaims() {
+    let (repo_root, db_path) = setup_big_repo(1500);
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let done = indexer.db().current_graph_version().unwrap();
+    let before = counts(indexer.db());
+    let explain_before = explain_stable(&mut indexer, "mod_5.func_5");
+    // Force the child to re-extract everything so it runs long enough.
+    std::fs::write(repo_root.join("mod_0.py"), "def func_0(x):\n    return x\n").unwrap();
+    for i in 1..1500 {
+        let path = repo_root.join(format!("mod_{i}.py"));
+        let mut body = std::fs::read_to_string(&path).unwrap();
+        body.push_str("\n# touched\n");
+        std::fs::write(path, body).unwrap();
+    }
+
+    let mut child = spawn_reindex_mid_run(&repo_root, &db_path);
+    child.kill().unwrap(); // SIGKILL on unix
+    child.wait().unwrap();
+    assert!(building_versions(&db_path) > 0, "kill left no building row");
+
+    // The previous version is still current and answers queries.
+    let reader = Db::new(&db_path).unwrap();
+    assert_eq!(reader.current_graph_version().unwrap(), done);
+    assert_eq!(counts(&reader).1, before.1);
+    drop(reader);
+    assert_eq!(explain_stable(&mut indexer, "mod_5.func_5"), explain_before);
+
+    // No manual cleanup: the next run reclaims the abandoned version.
+    drop(indexer);
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    assert_eq!(building_versions(&db_path), 0);
+    assert_eq!(counts(indexer.db()), fresh_counts(&repo_root));
+}
+
+/// The lock is held by a real process: a second run refuses (exit 75) while it
+/// lives, and proceeds once it is killed, leaving no stale lock behind.
+#[test]
+fn lock_held_by_a_real_process_is_released_when_it_dies() {
+    let (repo_root, db_path) = setup_big_repo(1500);
+    let mut holder = spawn_reindex_mid_run(&repo_root, &db_path);
+
+    let refused = cli_reindex(&repo_root, &db_path).output().unwrap();
+    assert_eq!(
+        refused.status.code(),
+        Some(75),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains(&holder.id().to_string()),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+
+    let mut indexer = Indexer::new(repo_root.clone(), db_path).unwrap();
+    indexer.reindex().unwrap();
+    assert_eq!(counts(indexer.db()), fresh_counts(&repo_root));
+}
+
+/// Incremental sync shares the reindex lock and adopts a version another
+/// process completed since this indexer was built.
+#[test]
+fn incremental_sync_takes_the_lock_and_adopts_the_completed_version() {
+    let (repo_root, db_path) = setup_big_repo(10);
+    let mut stale = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    stale.reindex().unwrap();
+    let old = stale.graph_version();
+
+    // Another process completes a newer version behind this indexer's back.
+    let mut other = Indexer::new(repo_root.clone(), db_path).unwrap();
+    other.reindex().unwrap();
+    assert!(other.graph_version() > old);
+
+    std::fs::write(repo_root.join("mod_2.py"), "def only_one():\n    pass\n").unwrap();
+    let lock = other.db().try_lock_reindex().unwrap();
+    let err = stale.sync_rel_paths(&["mod_2.py".to_string()]).unwrap_err();
+    assert!(
+        err.downcast_ref::<lidx::db::ReindexBusy>().is_some(),
+        "{err}"
+    );
+    drop(lock);
+
+    stale.sync_rel_paths(&["mod_2.py".to_string()]).unwrap();
+    assert_eq!(stale.graph_version(), other.graph_version());
+    let (_, symbols, _) = counts(stale.db());
+    let names: i64 = stale
+        .db()
+        .read_conn()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM symbols WHERE graph_version = ? AND name = 'only_one'",
+            [stale.graph_version()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(names, 1);
+    assert!(symbols > 0);
+}
+
 fn fresh_counts(repo_root: &Path) -> (i64, i64, i64) {
     let db_path = repo_root.join(".lidx-fresh").join(".lidx.sqlite");
     let mut indexer = Indexer::new(repo_root.to_path_buf(), db_path).unwrap();
@@ -244,6 +415,9 @@ fn killed_reindex_leaves_previous_version_queryable_and_is_reclaimed() {
     let done = db.current_graph_version().unwrap();
     let before = counts(db);
     let overview_before = db.repo_overview(repo_root.clone(), None, done).unwrap();
+    let explain_before = explain_stable(&mut indexer, "mod_5.func_5");
+    assert!(explain_before.to_string().contains("func_5"));
+    let db = indexer.db();
 
     // The edit, and the dying reindex's partial work on it.
     let edited = "def brand_new(x):\n    return x\n";
@@ -254,7 +428,6 @@ fn killed_reindex_leaves_previous_version_queryable_and_is_reclaimed() {
         .unwrap();
     let _ = db.carry_forward_symbols(&[1, 2], done, building).unwrap();
     db.mark_file_deleted("mod_4.py", building).unwrap();
-    drop(indexer);
 
     // A reader (new process) still sees the completed version.
     let reader = Db::new(&db_path).unwrap();
@@ -266,6 +439,10 @@ fn killed_reindex_leaves_previous_version_queryable_and_is_reclaimed() {
         serde_json::to_value(&overview_before).unwrap()
     );
     drop(reader);
+
+    // explain_symbol still answers from the completed version, even through
+    // the indexer that was live when the run died.
+    assert_eq!(explain_stable(&mut indexer, "mod_5.func_5"), explain_before);
 
     // The next reindex needs no manual cleanup, sees the edit, and reclaims.
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();

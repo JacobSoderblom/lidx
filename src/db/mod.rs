@@ -80,6 +80,11 @@ pub struct DbDigest {
     pub edges: TableDigest,
 }
 
+/// `graph_versions.status` of a version a reindex is still populating.
+const GV_BUILDING: &str = "building";
+/// `graph_versions.status` of a fully populated version.
+const GV_COMPLETE: &str = "complete";
+
 /// Proof the holder may reindex this database; released on drop (including
 /// on error paths and panics). See [`Db::try_lock_reindex`].
 #[must_use = "the reindex lock is released when this guard is dropped"]
@@ -940,8 +945,8 @@ impl Db {
 
         let boundary: Option<i64> = tx
             .query_row(
-                "SELECT id FROM graph_versions WHERE status = 'complete' ORDER BY id DESC LIMIT 1 OFFSET ?",
-                params![keep - 1],
+                "SELECT id FROM graph_versions WHERE status = ? ORDER BY id DESC LIMIT 1 OFFSET ?",
+                params![GV_COMPLETE, keep - 1],
                 |row| row.get(0),
             )
             .optional()?;
@@ -951,8 +956,8 @@ impl Db {
         };
 
         let versions_pruned: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM graph_versions WHERE id < ? AND status = 'complete'",
-            params![boundary],
+            "SELECT COUNT(*) FROM graph_versions WHERE id < ? AND status = ?",
+            params![boundary, GV_COMPLETE],
             |row| row.get(0),
         )?;
         let edges_deleted = tx.execute(
@@ -2137,8 +2142,8 @@ impl Db {
             .as_secs() as i64;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO graph_versions (created, commit_sha, status) VALUES (?, ?, 'building')",
-            params![created, commit_sha],
+            "INSERT INTO graph_versions (created, commit_sha, status) VALUES (?, ?, ?)",
+            params![created, commit_sha, GV_BUILDING],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -2148,8 +2153,8 @@ impl Db {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let updated = tx.execute(
-            "UPDATE graph_versions SET status = 'complete' WHERE id = ?",
-            params![id],
+            "UPDATE graph_versions SET status = ? WHERE id = ?",
+            params![GV_COMPLETE, id],
         )?;
         if updated == 0 {
             anyhow::bail!("cannot promote unknown graph version {id}");
@@ -2163,7 +2168,8 @@ impl Db {
         Ok(())
     }
 
-    /// Allocate and immediately promote an (empty) version.
+    /// Allocate and immediately promote an (empty) version (test fixtures).
+    #[cfg(test)]
     pub fn create_graph_version(&self, commit_sha: Option<&str>) -> Result<i64> {
         let id = self.allocate_graph_version(commit_sha)?;
         self.promote_graph_version(id)?;
@@ -2178,9 +2184,8 @@ impl Db {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let ids: Vec<i64> = {
-            let mut stmt =
-                tx.prepare("SELECT id FROM graph_versions WHERE status != 'complete'")?;
-            stmt.query_map([], |row| row.get(0))?
+            let mut stmt = tx.prepare("SELECT id FROM graph_versions WHERE status != ?")?;
+            stmt.query_map(params![GV_COMPLETE], |row| row.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
         for id in &ids {
@@ -2246,13 +2251,13 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT id, created, commit_sha
              FROM graph_versions
-             WHERE status = 'complete'
+             WHERE status = ?
              ORDER BY id DESC
              LIMIT ? OFFSET ?",
         )?;
         let limit = limit as i64;
         let offset = offset as i64;
-        let rows = stmt.query_map(params![limit, offset], |row| {
+        let rows = stmt.query_map(params![GV_COMPLETE, limit, offset], |row| {
             Ok(GraphVersion {
                 id: row.get(0)?,
                 created: row.get(1)?,
