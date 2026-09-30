@@ -368,6 +368,7 @@ mod tests {
             end_byte: 10,
             signature: None,
             docstring: None,
+            identity: None,
         }
     }
 

@@ -30,7 +30,7 @@ pub fn validate_repo_root(repo: &Path) -> Result<PathBuf> {
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 6;
+pub const EXTRACTOR_VERSION: i64 = 7;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -573,6 +573,7 @@ impl Indexer {
                 .db
                 .get_symbols_for_file(&file.rel_path, self.graph_version)?;
             let diff = differ::compute_symbol_diff(existing_symbols, extracted.symbols.clone());
+            warn_stable_id_collisions(&file.rel_path, &diff);
 
             // Upsert file to get file_id
             let file_id = self.db.upsert_file(
@@ -659,7 +660,7 @@ impl Indexer {
                 self.db.upsert_file_metrics(file_id, metrics)?;
             }
             self.db
-                .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbol_map)?;
+                .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbols)?;
 
             stats.indexed += 1;
             stats.symbols += diff.added.len() + diff.modified.len() + diff.unchanged.len();
@@ -838,6 +839,7 @@ impl Indexer {
 
         // Compute diff between old and new symbols
         let diff = differ::compute_symbol_diff(existing_symbols, extracted.symbols.clone());
+        warn_stable_id_collisions(&file.rel_path, &diff);
 
         // Phase 3: Log diff statistics
         if !diff.added.is_empty() || !diff.modified.is_empty() || !diff.deleted.is_empty() {
@@ -934,7 +936,7 @@ impl Indexer {
             self.db.upsert_file_metrics(file_id, metrics)?;
         }
         self.db
-            .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbol_map)?;
+            .insert_symbol_metrics(file_id, &extracted.symbol_metrics, symbols)?;
 
         Ok((symbols.len(), edges_count))
     }
@@ -1011,5 +1013,18 @@ impl Indexer {
                 .set_meta_i64(&js_stale::export_surface_key(&file.rel_path), surface)?;
         }
         Ok(extracted)
+    }
+}
+
+/// A stable-id collision is never resolved by dropping a symbol (issue #212):
+/// the differ tells the twins apart by ordinal. Say so, since it means the
+/// identity scheme cannot yet distinguish these declarations by themselves.
+fn warn_stable_id_collisions(rel_path: &str, diff: &differ::SymbolDiff) {
+    for collision in &diff.collisions {
+        eprintln!(
+            "lidx: warning: {} declarations of {} {} in {rel_path} share one stable id; \
+             kept all, disambiguated by declaration order",
+            collision.count, collision.kind, collision.qualname
+        );
     }
 }

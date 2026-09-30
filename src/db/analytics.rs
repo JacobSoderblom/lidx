@@ -1100,6 +1100,7 @@ mod tests {
             end_byte: 50,
             signature: None,
             docstring: None,
+            identity: None,
         }
     }
 

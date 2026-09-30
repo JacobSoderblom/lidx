@@ -368,6 +368,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                     end_byte,
                     signature: None,
                     docstring,
+                    identity: None,
                 });
                 let parent = container_qualname(&ctx.module, &ctx.class_stack);
                 output.edges.push(EdgeInput {
@@ -449,6 +450,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                     end_byte,
                     signature,
                     docstring,
+                    identity: None,
                 });
                 let parent = container_qualname(&ctx.module, &ctx.class_stack);
                 output.edges.push(EdgeInput {

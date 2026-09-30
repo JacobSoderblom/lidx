@@ -1985,6 +1985,7 @@ mod null_target_regression_tests {
             end_byte: 100,
             signature: None,
             docstring: None,
+            identity: None,
         }
     }
 

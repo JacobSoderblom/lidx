@@ -26,6 +26,7 @@ fn sym(name: &str, line: i64) -> SymbolInput {
         end_byte: 100,
         signature: None,
         docstring: None,
+        identity: None,
     }
 }
 
