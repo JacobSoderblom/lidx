@@ -17,7 +17,7 @@ use crate::watch;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -56,6 +56,9 @@ struct ReindexParams {
     /// beyond the one reindex already runs when it detects work to do.
     resolve_edges: Option<bool>,
     mine_git: Option<bool>,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -64,6 +67,9 @@ struct TopComplexityParams {
     min_complexity: Option<i64>,
     #[serde(flatten)]
     common: CommonParams,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -72,6 +78,9 @@ struct RepoMapParams {
     max_bytes: Option<usize>,
     #[serde(flatten)]
     common: CommonParams,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -84,6 +93,9 @@ struct DeadSymbolsParams {
     include_orphan_tests: Option<bool>,
     #[serde(flatten)]
     common: CommonParams,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 // Active param structs used by the remaining methods
@@ -114,6 +126,9 @@ struct AnalyzeImpactParams {
     min_confidence: Option<f32>,
     #[serde(flatten)]
     common: LangVersionParams,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -133,6 +148,9 @@ struct AnalyzeDiffParams {
     languages: Option<Vec<String>>,
     #[serde(alias = "as_of", alias = "version")]
     graph_version: Option<i64>,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -151,14 +169,25 @@ struct RgParams {
     hidden: Option<bool>,
     no_ignore: Option<bool>,
     follow: Option<bool>,
+    /// Restrict hits to files of this scope: "code" (excludes tests, docs and
+    /// examples), "docs", "tests", "examples" or "all" (default)
+    scope: Option<crate::search::SearchScope>,
+    /// Language filter (e.g. ["rust", "python"]): only hits in files of these languages
+    languages: Option<Vec<String>>,
     #[serde(alias = "as_of", alias = "version")]
     graph_version: Option<i64>,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, Default, schemars::JsonSchema)]
 struct OnboardParams {
     #[serde(flatten)]
     common: LangVersionParams,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -173,6 +202,9 @@ struct OrientParams {
     focus_query: Option<String>,
     #[serde(flatten)]
     common: CommonParams,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -199,6 +231,9 @@ struct GatherContextParams {
     strategy: Option<String>,
     #[serde(flatten)]
     common: CommonParams,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -247,6 +282,9 @@ struct ExplainSymbolParams {
     min_resolution: Option<String>,
     #[serde(flatten)]
     common: LangVersionParams,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -274,6 +312,9 @@ struct TraceFlowParams {
     max_bytes: Option<usize>,
     #[serde(flatten)]
     common: LangVersionParams,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -285,6 +326,9 @@ struct ContextParams {
     /// Graph version to query (defaults to current)
     #[serde(alias = "as_of", alias = "version")]
     graph_version: Option<i64>,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 /// Params for `outline`: a compact, no-bodies skeleton of a file's symbols.
@@ -299,6 +343,9 @@ struct OutlineParams {
     /// in this file); a method inside a class is depth 1, and so on. Default:
     /// unlimited (all depths included).
     max_depth: Option<usize>,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 /// Params for `read_symbol`: fetch a symbol's exact source from disk.
@@ -336,6 +383,9 @@ struct ReadSymbolParams {
     /// exceed this, only its header fields are returned with `omitted: true`
     /// -- a symbol is never cut mid-body.
     max_bytes: Option<usize>,
+    #[serde(flatten)]
+    #[schemars(skip)]
+    extra: HashMap<String, Value>,
 }
 
 /// Hard cap on result count to prevent huge responses that blow LLM context windows.
@@ -402,7 +452,18 @@ pub fn call(
     let id = format::parse_value(id_raw);
     let mut app = App::new(repo_root, db_path, scan::ScanOptions::default())?;
     let request = RpcRequest { id, method, params };
-    let response = app.handle_request(request);
+    let id = request.id.clone();
+    let response = match app.run(request) {
+        Ok(value) => RpcResponse {
+            id,
+            result: Some(value),
+            error: None,
+        },
+        // Unknown params fail the process (nonzero exit) instead of hiding in
+        // a successful-looking response envelope.
+        Err(err) if err.downcast_ref::<UnknownParamsError>().is_some() => return Err(err),
+        Err(err) => format::error_response(id, &err.to_string()),
+    };
     Ok(serde_json::to_string(&response)?)
 }
 
@@ -416,11 +477,13 @@ impl App {
         Ok(Self { indexer })
     }
 
+    fn run(&mut self, req: RpcRequest) -> Result<Value> {
+        handle_method(&mut self.indexer, &req.method, req.params)
+    }
+
     fn handle_request(&mut self, req: RpcRequest) -> RpcResponse {
         let id = req.id.clone();
-        let result = handle_method(&mut self.indexer, &req.method, req.params);
-
-        match result {
+        match self.run(req) {
             Ok(value) => RpcResponse {
                 id,
                 result: Some(value),
@@ -436,7 +499,151 @@ impl App {
 /// Methods that manage their own budgets or intentionally return large content are exempt.
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 30_000;
 
+/// What to do with params a handler's params struct did not recognize.
+enum UnknownMode {
+    /// Reject the request (CLI, raw RPC).
+    Strict,
+    /// Run anyway, collecting the names (MCP).
+    Collect(Vec<String>),
+}
+
+thread_local! {
+    static UNKNOWN_MODE: std::cell::RefCell<UnknownMode> =
+        const { std::cell::RefCell::new(UnknownMode::Strict) };
+}
+
+/// Params keys the deserialized params struct did not consume. Every params
+/// struct ends with `#[serde(flatten)] extra: HashMap<..>`, so serde itself
+/// (aliases and flattened sub-structs included) decides what is unknown.
+pub(super) trait ParamsExtra {
+    fn extra(&self) -> &HashMap<String, Value>;
+}
+
+macro_rules! params_extra {
+    ($($ty:ident),* $(,)?) => {
+        $(impl ParamsExtra for $ty {
+            fn extra(&self) -> &HashMap<String, Value> {
+                &self.extra
+            }
+        })*
+    };
+}
+
+params_extra!(
+    ReindexParams,
+    TopComplexityParams,
+    RepoMapParams,
+    DeadSymbolsParams,
+    AnalyzeImpactParams,
+    AnalyzeDiffParams,
+    RgParams,
+    OnboardParams,
+    OrientParams,
+    GatherContextParams,
+    ExplainSymbolParams,
+    TraceFlowParams,
+    ContextParams,
+    OutlineParams,
+    ReadSymbolParams,
+);
+
+/// Returned (inside `anyhow::Error`) when a strict entry point sees a param
+/// its method does not accept.
+#[derive(Debug)]
+pub struct UnknownParamsError(String);
+
+impl std::fmt::Display for UnknownParamsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UnknownParamsError {}
+
+/// The one place params are deserialized and unknown keys are policed.
+/// Strict mode errors naming the keys before the handler does any work;
+/// collect mode records them for the caller and carries on.
+pub(super) fn parse_params<T>(method: &str, params: Value) -> Result<T>
+where
+    T: serde::de::DeserializeOwned + ParamsExtra + schemars::JsonSchema,
+{
+    let parsed: T = serde_json::from_value(params)?;
+    let mut unknown: Vec<String> = parsed
+        .extra()
+        .keys()
+        .filter(|key| !format::RESPONSE_BUDGET_PARAMS.contains(&key.as_str()))
+        .cloned()
+        .collect();
+    if unknown.is_empty() {
+        return Ok(parsed);
+    }
+    unknown.sort();
+    UNKNOWN_MODE.with(|mode| match &mut *mode.borrow_mut() {
+        UnknownMode::Collect(ignored) => {
+            ignored.extend(unknown);
+            Ok(parsed)
+        }
+        UnknownMode::Strict => {
+            let schema = schema::schema_value::<T>();
+            let mut valid: Vec<&str> = schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .map(|p| p.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            valid.sort_unstable();
+            Err(UnknownParamsError(format!(
+                "unknown param(s) for method '{method}': {}. Valid params: {}",
+                unknown.join(", "),
+                valid.join(", ")
+            ))
+            .into())
+        }
+    })
+}
+
+/// Restores the previous unknown-param mode on drop.
+struct ModeGuard(Option<UnknownMode>);
+
+impl ModeGuard {
+    fn enter(mode: UnknownMode) -> Self {
+        Self(Some(
+            UNKNOWN_MODE.with(|m| std::mem::replace(&mut *m.borrow_mut(), mode)),
+        ))
+    }
+
+    /// Leaves the mode and returns the collected names (empty for strict).
+    fn finish(mut self) -> Vec<String> {
+        let prev = self.0.take().unwrap_or(UnknownMode::Strict);
+        match UNKNOWN_MODE.with(|m| std::mem::replace(&mut *m.borrow_mut(), prev)) {
+            UnknownMode::Collect(ignored) => ignored,
+            UnknownMode::Strict => Vec::new(),
+        }
+    }
+}
+
+/// Strict dispatch (CLI, raw RPC): an unknown param is an error, raised
+/// while the handler parses its params, before it does any work.
 pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Result<Value> {
+    let guard = ModeGuard::enter(UnknownMode::Strict);
+    let result = dispatch_method(indexer, method, params);
+    guard.finish();
+    result
+}
+
+/// Lenient dispatch (MCP): runs the method with unknown params ignored and
+/// returns their names so the caller can surface them.
+pub fn handle_method_lenient(
+    indexer: &mut Indexer,
+    method: &str,
+    params: Value,
+) -> Result<(Value, Vec<String>)> {
+    let guard = ModeGuard::enter(UnknownMode::Collect(Vec::new()));
+    let result = dispatch_method(indexer, method, params);
+    let ignored = guard.finish();
+    Ok((result?, ignored))
+}
+
+fn dispatch_method(indexer: &mut Indexer, method: &str, params: Value) -> Result<Value> {
     let start = Instant::now();
     let max_response_bytes = format::extract_max_response_bytes(method, &params);
     let value = match method {
@@ -1132,6 +1339,39 @@ mod tests {
                     "{} ignores '{}', so its schema must not advertise it",
                     method,
                     key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_advertised_param_is_accepted_by_every_method() {
+        use super::{Indexer, METHOD_LIST, Value, handle_method, json, method_param_schema};
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("app.py"), "def needle():\n    pass\n").unwrap();
+        let db = tmp.path().join(".lidx").join(".lidx.sqlite");
+        let mut indexer = Indexer::new(tmp.path().to_path_buf(), db).unwrap();
+        indexer.reindex().unwrap();
+        for method in METHOD_LIST {
+            let schema = method_param_schema(method);
+            let mut params = serde_json::Map::new();
+            for key in schema["properties"].as_object().unwrap().keys() {
+                params.insert(key.clone(), Value::Null);
+            }
+            // Required fields cannot be null.
+            match *method {
+                "search" => params.insert("query".into(), json!("needle")),
+                "outline" | "context" => params.insert("path".into(), json!("app.py")),
+                _ => None,
+            };
+            params.insert("max_response_bytes".into(), Value::Null);
+            params.insert("max_tokens".into(), Value::Null);
+            // The handler may fail for other reasons (e.g. nothing to
+            // resolve); it must never reject a param its own schema lists.
+            if let Err(err) = handle_method(&mut indexer, method, Value::Object(params)) {
+                assert!(
+                    !err.to_string().contains("unknown param"),
+                    "{method} rejected an advertised param: {err}"
                 );
             }
         }

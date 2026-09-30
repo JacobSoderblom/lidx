@@ -10,6 +10,9 @@ fn default_db_path(repo: &Path) -> PathBuf {
 fn main() -> Result<()> {
     let args = cli::Args::parse();
 
+    // Trust-boundary check: runs before any DB connection or directory creation.
+    indexer::validate_repo_root(args.command.repo())?;
+
     match args.command {
         cli::Command::Serve {
             repo,
@@ -34,6 +37,7 @@ fn main() -> Result<()> {
             repo,
             db,
             no_ignore,
+            allow_empty,
         } => {
             let db_path = db.unwrap_or_else(|| default_db_path(&repo));
             let mut indexer = indexer::Indexer::new_with_options(
@@ -41,7 +45,7 @@ fn main() -> Result<()> {
                 db_path,
                 indexer::scan::ScanOptions::new(no_ignore),
             )?;
-            let stats = indexer.reindex()?;
+            let stats = indexer.reindex_with_options(allow_empty)?;
             println!("{}", serde_json::to_string_pretty(&stats)?);
             Ok(())
         }
