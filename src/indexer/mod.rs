@@ -558,6 +558,18 @@ impl Indexer {
             self.db.update_files_symbols_batch(&batch)?;
         }
 
+        // Issue #258: carry unchanged files' *symbols* forward now, before any
+        // edge is resolved. Resolution filters candidates on the new graph
+        // version, so a re-parsed file's references must see every carried
+        // symbol or they resolve differently from a fresh index (lost alias
+        // targets, ambiguity collapsing to a bare-name bind). Carried *edges*
+        // still wait until after the fresh-file edge loop below.
+        let carried_symbols = self.db.carry_forward_symbols(
+            &carry_forward_ids,
+            previous_graph_version,
+            self.graph_version,
+        )?;
+
         // Mark every file's private/unexported symbols in its own pass,
         // before any edge in this reindex is resolved. Must not be
         // interleaved with the edge loop below: a cross-file candidate's
@@ -616,15 +628,18 @@ impl Indexer {
             stats.edges += edges_count;
         }
 
-        // Carry forward unchanged files' symbols/edges into the new graph version.
-        // Must run after the fresh-file edge loop above, so cross-file edge targets
-        // that land in a re-parsed file already have their new-version symbol row.
+        // Carry forward unchanged files' edges (and metrics, stubs, stored
+        // unresolved references) into the new graph version. Must run after the
+        // fresh-file edge loop above, so cross-file edge targets that land in a
+        // re-parsed file already have their new-version symbol row. Their
+        // symbols were carried earlier (see above), before resolution.
         if !carry_forward_ids.is_empty() {
-            let (carried_symbols, carried_edges) = self.db.carry_forward_files(
+            let (carried_stubs, carried_edges) = self.db.carry_forward_edges(
                 &carry_forward_ids,
                 previous_graph_version,
                 self.graph_version,
             )?;
+            let carried_symbols = carried_symbols + carried_stubs;
             eprintln!(
                 "lidx: carried forward {} unchanged file(s): {carried_symbols} symbol(s), {carried_edges} edge(s)",
                 carry_forward_ids.len()

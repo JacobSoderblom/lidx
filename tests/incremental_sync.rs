@@ -2041,3 +2041,200 @@ fn csharp_scoped_interface_receiver_survives_carry_forward() {
         .unwrap();
     assert_eq!(resolved, 1, "the scoped call binds to the interface member");
 }
+
+// Issue #258: an incremental reindex must resolve a re-parsed file's
+// references against the complete new-version symbol set (carried symbols
+// included), so it lands on exactly the graph a fresh index of the same tree
+// produces -- edges and stored unresolved references alike.
+
+type UnresolvedRow = (String, String, Option<String>, String);
+
+fn unresolved_snapshot(indexer: &Indexer) -> std::collections::BTreeSet<UnresolvedRow> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT COALESCE(s.qualname, ''), ur.edge_kind, ur.reference_name, ur.reason
+             FROM unresolved_references ur
+             LEFT JOIN symbols s ON s.id = ur.source_symbol_id
+             WHERE ur.graph_version = ?",
+        )
+        .unwrap();
+    stmt.query_map([gv], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// A reference is never both a bound edge and a stored unresolved row.
+fn assert_no_edge_and_unresolved_overlap(indexer: &Indexer) {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let both: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT s.qualname, ur.name_tail
+             FROM unresolved_references ur
+             JOIN symbols s ON s.id = ur.source_symbol_id
+             JOIN edges e ON e.source_symbol_id = ur.source_symbol_id
+                         AND e.kind = ur.edge_kind
+                         AND e.target_symbol_id IS NOT NULL
+             JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE ur.graph_version = ? AND e.graph_version = ?
+               AND t.name = ur.name_tail",
+        )
+        .unwrap()
+        .query_map([gv, gv], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        both.is_empty(),
+        "reference(s) recorded as both edge and unresolved row: {both:?}"
+    );
+}
+
+fn fresh_graph(
+    files: &[(&str, String)],
+) -> (
+    std::collections::BTreeSet<EdgeKey>,
+    std::collections::BTreeSet<UnresolvedRow>,
+) {
+    let borrowed: Vec<(&str, &str)> = files.iter().map(|(p, c)| (*p, c.as_str())).collect();
+    let (_t, _root, indexer) = indexed_tree("fresh-258", &borrowed);
+    let gv = indexer.db().current_graph_version().unwrap();
+    (
+        golden::snapshot_edges(indexer.db(), gv).unwrap(),
+        unresolved_snapshot(&indexer),
+    )
+}
+
+/// Index `files`, then touch `touch` twice (two successive incremental
+/// reindexes, each with different content), asserting after each that the
+/// graph equals a fresh index of the same tree. Returns the final indexer.
+fn assert_touch_matches_fresh(files: &[(&str, &str)], touch: &str) -> (tempfile::TempDir, Indexer) {
+    let (tmp, root, mut indexer) = indexed_tree("touch-258", files);
+    for round in 1..=2 {
+        let original = files.iter().find(|(p, _)| *p == touch).unwrap().1;
+        let edited = format!("{original}\n# touched {round}\n");
+        common::write_files(&root, &[(touch, edited.as_str())]);
+        indexer.reindex().unwrap();
+
+        let finals: Vec<(&str, String)> = files
+            .iter()
+            .map(|(p, c)| {
+                (
+                    *p,
+                    if *p == touch {
+                        edited.clone()
+                    } else {
+                        c.to_string()
+                    },
+                )
+            })
+            .collect();
+        let (fresh_edges, fresh_unresolved) = fresh_graph(&finals);
+        let gv = indexer.db().current_graph_version().unwrap();
+        let edges = golden::snapshot_edges(indexer.db(), gv).unwrap();
+        assert_eq!(edges, fresh_edges, "edges differ after touch round {round}");
+        assert_eq!(
+            unresolved_snapshot(&indexer),
+            fresh_unresolved,
+            "unresolved references differ after touch round {round}"
+        );
+        assert_no_edge_and_unresolved_overlap(&indexer);
+        common::assert_no_dangling_edge_targets(indexer.db());
+    }
+    (tmp, indexer)
+}
+
+const ALIAS_FILES: &[(&str, &str)] = &[
+    ("pkgqa/__init__.py", ""),
+    (
+        "pkgqa/mod.py",
+        "def thing():\n    return 1\n\n\ndef helper():\n    return 2\n",
+    ),
+    (
+        "pkgqa/user.py",
+        "from pkgqa.mod import thing as th\nfrom pkgqa import mod as m\n\n\ndef go():\n    th()\n    m.helper()\n",
+    ),
+];
+
+#[test]
+fn reindex_touching_alias_importer_matches_fresh_and_keeps_alias_edge() {
+    let (_tmp, mut indexer) = assert_touch_matches_fresh(ALIAS_FILES, "pkgqa/user.py");
+    let gv = indexer.db().current_graph_version().unwrap();
+    let edges = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        edges.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "pkgqa.user.go"
+            && e.target_qualname.as_deref() == Some("pkgqa.mod.thing")),
+        "aliased call edge missing: {edges:#?}"
+    );
+    let out = lidx::rpc::handle_method(
+        &mut indexer,
+        "explain_symbol",
+        serde_json::json!({"qualname": "pkgqa.mod.thing"}),
+    )
+    .unwrap();
+    let total = out
+        .get("callers_total")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_else(|| panic!("no callers_total in {out}"));
+    assert!(total > 0, "explain_symbol callers_total is 0: {out}");
+}
+
+const DP: &str = "def _dataproduct():\n    return 1\n";
+
+fn ambiguity_files() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "tests/test_a.py",
+            format!("{DP}\n\nclass TestA:\n    def test_one(self):\n        _dataproduct()\n"),
+        ),
+        ("tests/test_b.py", DP.to_string()),
+        (
+            "tests/test_c.py",
+            "class TestC:\n    def test_three(self):\n        _dataproduct()\n".to_string(),
+        ),
+    ]
+}
+
+fn ambiguity_case(touch: &str) -> (tempfile::TempDir, Indexer) {
+    let files = ambiguity_files();
+    let borrowed: Vec<(&str, &str)> = files.iter().map(|(p, c)| (*p, c.as_str())).collect();
+    assert_touch_matches_fresh(&borrowed, touch)
+}
+
+fn assert_bare_calls_stay_ambiguous(indexer: &Indexer) {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let edges = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        !edges.iter().any(|e| e.kind == "CALLS"
+            && e.target_qualname.is_some()
+            && e.source_qualname.contains("test_")),
+        "bare call bound despite two candidates: {edges:#?}"
+    );
+    let ambiguous = unresolved_snapshot(indexer)
+        .into_iter()
+        .filter(|r| r.1 == "CALLS" && r.3 == "ambiguous")
+        .count();
+    assert_eq!(ambiguous, 2, "one ambiguous row per bare call expected");
+}
+
+#[test]
+fn reindex_touching_file_with_one_of_two_candidates_matches_fresh() {
+    let (_tmp, indexer) = ambiguity_case("tests/test_a.py");
+    assert_bare_calls_stay_ambiguous(&indexer);
+}
+
+#[test]
+fn reindex_touching_other_candidate_file_matches_fresh() {
+    let (_tmp, indexer) = ambiguity_case("tests/test_b.py");
+    assert_bare_calls_stay_ambiguous(&indexer);
+}
+
+#[test]
+fn reindex_touching_file_with_neither_candidate_matches_fresh() {
+    let (_tmp, indexer) = ambiguity_case("tests/test_c.py");
+    assert_bare_calls_stay_ambiguous(&indexer);
+}

@@ -361,13 +361,67 @@ impl Db {
     /// `files.id` doesn't change across versions, so an unchanged file's existing
     /// row is already correctly attached.
     ///
-    /// Callers must run this only after every `to_version` symbol write for this
-    /// reindex has happened, including freshly re-parsed files — a carried edge
-    /// whose target lives in a re-parsed file won't resolve until that file's new
-    /// symbol row exists.
+    /// Split in two (issue #258): `carry_forward_symbols` must run before any
+    /// edge in the reindex is resolved, so resolution sees every symbol of
+    /// `to_version` (candidate sets and ambiguity verdicts then match a fresh
+    /// index); `carry_forward_edges` must run after every fresh-file edge write
+    /// and after all `to_version` symbols exist. This wrapper runs both back to
+    /// back for callers that need no interleaving.
     ///
     /// Returns `(symbols_copied, edges_copied)`.
     pub fn carry_forward_files(
+        &self,
+        file_ids: &[i64],
+        from_version: i64,
+        to_version: i64,
+    ) -> Result<(usize, usize)> {
+        let symbols = self.carry_forward_symbols(file_ids, from_version, to_version)?;
+        let (stubs, edges) = self.carry_forward_edges(file_ids, from_version, to_version)?;
+        Ok((symbols + stubs, edges))
+    }
+
+    /// Symbol half of carry-forward: copy the files' symbols into `to_version`
+    /// (preserving `stable_id`). Run before resolving any re-parsed file's
+    /// references. Returns the number of symbols copied.
+    pub fn carry_forward_symbols(
+        &self,
+        file_ids: &[i64],
+        from_version: i64,
+        to_version: i64,
+    ) -> Result<usize> {
+        if file_ids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn();
+        let placeholders = vec!["?"; file_ids.len()].join(",");
+        let sql = format!(
+            "INSERT INTO symbols
+                (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                 start_byte, end_byte, signature, docstring, graph_version, commit_sha, stable_id, visibility)
+             SELECT file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                    start_byte, end_byte, signature, docstring, ?, commit_sha, stable_id, visibility
+             FROM symbols
+             WHERE graph_version = ? AND file_id IN ({placeholders})"
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(to_version), Box::new(from_version)];
+        for id in file_ids {
+            params.push(Box::new(*id));
+        }
+        Ok(conn.execute(
+            &sql,
+            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+        )?)
+    }
+
+    /// Edge half of carry-forward: external stubs, edges, `symbol_metrics` and
+    /// stored unresolved references, remapped by `stable_id` onto the symbols
+    /// `carry_forward_symbols` already copied. Run only after every fresh-file
+    /// edge write, so carried edges are copied after them (a carried edge whose
+    /// target lives in a re-parsed file needs that file's new symbol row).
+    ///
+    /// Returns `(stubs_copied, edges_copied)`.
+    pub fn carry_forward_edges(
         &self,
         file_ids: &[i64],
         from_version: i64,
@@ -381,45 +435,13 @@ impl Db {
         let tx = conn.transaction()?;
         let placeholders = vec!["?"; file_ids.len()].join(",");
 
-        let symbols_copied = {
-            let sql = format!(
-                "INSERT INTO symbols
-                    (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
-                     start_byte, end_byte, signature, docstring, graph_version, commit_sha, stable_id, visibility)
-                 SELECT file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
-                        start_byte, end_byte, signature, docstring, ?, commit_sha, stable_id, visibility
-                 FROM symbols
-                 WHERE graph_version = ? AND file_id IN ({placeholders})"
-            );
-            let mut params: Vec<Box<dyn rusqlite::ToSql>> =
-                vec![Box::new(to_version), Box::new(from_version)];
-            for id in file_ids {
-                params.push(Box::new(*id));
-            }
-            tx.execute(
-                &sql,
-                rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
-            )?
-        };
-
         // Issue #80: external stub symbols (`kind = 'external'`) aren't
         // owned by any of `file_ids` -- they all live on the one synthetic
-        // external pseudo-file (`Resolver::external_file_id`), never a
-        // scanned repo file -- so the per-file copy above never carries
-        // them forward. But an edge from one of these carried files into a
-        // stub, copied by `edges_sql` below, still needs that stub to
-        // already exist in `to_version` for its stable_id-based remap to
-        // find. Carry every stub in `from_version` forward unconditionally
-        // (not just ones these particular files call): cheap (stubs are
-        // few), and simpler than computing which ones this batch's carried
-        // edges actually still reference. `ON CONFLICT DO NOTHING` against
-        // the `(graph_version, qualname)` partial unique index (schema
-        // v20) makes this a no-op wherever `Indexer::reindex`'s fresh-file
-        // edge loop -- which runs before this function -- already created
-        // the same qualname's stub in `to_version`. A stub with no
-        // surviving caller after this reindex is swept by
-        // `Db::prune_orphan_external_symbols` in the repair pass, same as
-        // a fresh reindex would simply never have created it.
+        // external pseudo-file, so `carry_forward_symbols` never carries
+        // them. Carry every stub in `from_version` forward unconditionally.
+        // `ON CONFLICT DO NOTHING` makes this a no-op wherever the fresh-file
+        // edge loop already created the same qualname's stub. A stub with no
+        // surviving caller is swept by `Db::prune_orphan_external_symbols`.
         let stubs_copied = tx.execute(
             "INSERT INTO symbols
                 (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
@@ -431,7 +453,6 @@ impl Db {
              ON CONFLICT DO NOTHING",
             params![to_version, from_version],
         )?;
-        let symbols_copied = symbols_copied + stubs_copied;
 
         // Issue #79: whether any of these carried files have a *Bridge Edge
         // kind* stored unresolved reference to carry forward -- the only
@@ -800,7 +821,7 @@ impl Db {
         }
 
         tx.commit()?;
-        Ok((symbols_copied, edges_copied))
+        Ok((stubs_copied, edges_copied))
     }
 
     /// Delete `symbols`/`edges` rows for every graph version older than the
