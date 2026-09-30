@@ -226,4 +226,15 @@ mod tests {
         assert_eq!(apply_compact_format(json!(null)), json!(null));
         assert_eq!(apply_compact_format(json!(true)), json!(true));
     }
+
+    #[test]
+    fn apply_compact_keeps_unrelated_top_level_keys() {
+        // analyze_impact's `test_layer` explanation must survive compaction.
+        let val = json!({
+            "affected": [],
+            "test_layer": {"empty": true, "reason": "r", "next_hops": [{"method": "search"}]}
+        });
+        let result = apply_compact_format(val.clone());
+        assert_eq!(result["test_layer"], val["test_layer"]);
+    }
 }

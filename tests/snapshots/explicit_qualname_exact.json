@@ -222,6 +222,35 @@
       },
       "total_affected": 5
     },
+    "test_layer": {
+      "empty": true,
+      "next_hops": [
+        {
+          "description": "Inspect the seed's callers and tests directly; unresolved calls do not appear as graph edges",
+          "method": "explain_symbol",
+          "params": {
+            "sections": [
+              "tests"
+            ]
+          }
+        },
+        {
+          "description": "Search for 'Greeter' in test code -- textual matches are candidates to verify, not graph evidence",
+          "method": "search",
+          "params": {
+            "query": "Greeter"
+          }
+        },
+        {
+          "description": "Retry with a deeper traversal (max_depth was 3)",
+          "method": "analyze_impact",
+          "params": {
+            "max_depth": 10
+          }
+        }
+      ],
+      "reason": "No test reaches the seed through graph edges within 3 hops. Tests are reported only when a resolved edge path connects them to the seed (never by name similarity), so this reflects resolution coverage -- calls that could not be resolved, dynamic dispatch, or cross-language calls -- and does not mean the code is untested."
+    },
     "truncated": false
   },
   "explain_symbol": {

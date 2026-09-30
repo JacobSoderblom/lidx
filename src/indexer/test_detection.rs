@@ -227,54 +227,6 @@ fn is_test_directory(path_lower: &str) -> bool {
     })
 }
 
-/// Extract test name from a test symbol
-///
-/// Examples:
-/// - `test_calculate` -> `calculate`
-/// - `TestCalculate` -> `Calculate`
-/// - `calculateSpec` -> `calculate`
-pub fn extract_test_target_name(test_name: &str) -> Option<String> {
-    let lower = test_name.to_lowercase();
-
-    // Pattern: test_something -> something
-    if let Some(stripped) = lower.strip_prefix("test_") {
-        return Some(stripped.to_string());
-    }
-
-    // Pattern: something_test -> something
-    if let Some(stripped) = lower.strip_suffix("_test") {
-        return Some(stripped.to_string());
-    }
-
-    // Pattern: testSomething -> Something (camelCase)
-    if test_name.starts_with("test") && test_name.len() > 4 {
-        let target = &test_name[4..]; // Skip "test"
-        if target.chars().next().is_some_and(|c| c.is_uppercase()) {
-            return Some(target.to_string());
-        }
-    }
-
-    // Pattern: TestSomething -> Something (PascalCase)
-    if test_name.starts_with("Test") && test_name.len() > 4 {
-        let target = &test_name[4..]; // Skip "Test"
-        return Some(target.to_string());
-    }
-
-    // Pattern: somethingTest -> something (camelCase)
-    if test_name.ends_with("Test") && test_name.len() > 4 {
-        let target = &test_name[..test_name.len() - 4]; // Remove "Test"
-        return Some(target.to_string());
-    }
-
-    // Pattern: somethingSpec -> something
-    if lower.ends_with("spec") && test_name.len() > 4 {
-        let target = &test_name[..test_name.len() - 4]; // Remove "Spec"
-        return Some(target.to_string());
-    }
-
-    None
-}
-
 /// Classify test type based on file path and symbol properties
 ///
 /// Returns "unit", "integration", or "e2e"
@@ -483,31 +435,6 @@ mod tests {
         assert!(!is_test_file("src/Latest.java"));
         assert!(!is_test_file("src/attestation.rs"));
         assert!(!is_test_file("src/protest/mod.rs"));
-    }
-
-    #[test]
-    fn test_extract_test_target_name() {
-        assert_eq!(
-            extract_test_target_name("test_calculate"),
-            Some("calculate".to_string())
-        );
-        assert_eq!(
-            extract_test_target_name("TestCalculate"),
-            Some("Calculate".to_string())
-        );
-        assert_eq!(
-            extract_test_target_name("calculateTest"),
-            Some("calculate".to_string())
-        );
-        assert_eq!(
-            extract_test_target_name("calculate_test"),
-            Some("calculate".to_string())
-        );
-        assert_eq!(
-            extract_test_target_name("calculateSpec"),
-            Some("calculate".to_string())
-        );
-        assert_eq!(extract_test_target_name("calculate"), None);
     }
 
     #[test]

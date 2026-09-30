@@ -395,13 +395,34 @@ fn tests_through_interface_are_marked_via_interface() {
         .unwrap()
         .unwrap();
     let evidence = &result.evidence[&test_sym.id];
-    let has = |wanted: &str| {
+    use lidx::impact::types::TestStrategy;
+    let has = |wanted: TestStrategy| {
         evidence.iter().any(|e| {
-            matches!(e, lidx::impact::types::ImpactSource::TestLink { strategy, .. } if strategy == wanted)
+            matches!(e, lidx::impact::types::ImpactSource::TestLink { strategy, .. } if *strategy == wanted)
         })
     };
-    assert!(has("call_via_interface"), "{evidence:?}");
-    assert!(!has("call"), "{evidence:?}");
+    assert!(has(TestStrategy::CallViaInterface), "{evidence:?}");
+    assert!(!has(TestStrategy::Call), "{evidence:?}");
+
+    // The reported test carries the path that reaches the implementation.
+    let r = call(
+        &repo,
+        &db,
+        "analyze_impact",
+        json!({"qualname": IMPL_M, "direction": "upstream", "max_depth": 3}),
+    );
+    let entry = r["affected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["symbol"]["qualname"] == TEST_QN)
+        .unwrap_or_else(|| panic!("test missing from analyze_impact: {r}"));
+    let steps = entry["path"]["steps"].as_array().expect("path.steps");
+    assert!(!steps.is_empty(), "{entry}");
+    // Steps run root-to-leaf: the seed-side step first, the test's own step
+    // last.
+    assert_eq!(steps[0]["to_symbol"], IMPL_M, "{entry}");
+    assert_eq!(steps.last().unwrap()["from_symbol"], TEST_QN, "{entry}");
 }
 
 /// explain_symbol marks refs that exist only through interface dispatch:

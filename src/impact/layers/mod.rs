@@ -9,6 +9,6 @@ pub mod direct;
 pub mod historical;
 pub mod test;
 
-pub use direct::{analyze_direct_impact, analyze_direct_impact_scoped};
+pub use direct::{TraversalDirection, analyze_direct_impact, analyze_direct_impact_scoped};
 pub use historical::HistoricalImpactLayer;
 pub use test::TestImpactLayer;

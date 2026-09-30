@@ -908,7 +908,7 @@ Symbols that are "entry points" and should not be flagged as dead:
 **Files changed:**
 - `src/db/mod.rs` -- Add `orphan_tests(limit, languages, paths, graph_version) -> Result<Vec<Symbol>>`:
   1. Find all test symbols (using `is_test_symbol` heuristic via name pattern)
-  2. For each test, extract target name via `extract_test_target_name()`
+  2. For each test, extract the target name via `extract_target_name()` (a private helper in `src/db/mod.rs`; the shared `extract_test_target_name()` was removed in #231 when the impact TEST layer dropped name inference)
   3. Check if a symbol with that name exists in the graph
   4. If not, the test is an orphan
 
@@ -918,7 +918,8 @@ fn orphan_tests(limit, languages, paths, graph_version) -> Result<Vec<Symbol>> {
     let test_symbols = find_test_symbols(limit * 3, languages, paths, graph_version)?;
     let mut orphans = Vec::new();
     for test in test_symbols {
-        if let Some(target_name) = extract_test_target_name(&test.name) {
+        let target_name = extract_target_name(&test.name);
+        if !target_name.is_empty() {
             let exists = find_symbols(&target_name, 1, languages, graph_version)?;
             if exists.is_empty() {
                 orphans.push(test);
@@ -954,7 +955,7 @@ fn orphan_tests(limit, languages, paths, graph_version) -> Result<Vec<Symbol>> {
 |------|-----------|------------|
 | High false positive rate on dead_symbols (exported symbols appear dead) | High | The entry point exclusion list handles most cases. For languages with module-level exports (JS/TS), check if symbol is in a file matching `index.{ts,js}` or has `export` in signature. Target: < 20% false positive rate. |
 | unused_imports query is slow (NOT EXISTS subquery) | Low | Both `edges.file_id` and `edges.target_qualname` are indexed. The query touches edges table twice but with index support. |
-| extract_test_target_name fails for non-standard naming | Medium | This is a heuristic. The existing implementation in `test_detection.rs` handles `test_foo`, `TestFoo`, `FooSpec` patterns. Unknown patterns are skipped (not reported as orphan). |
+| extract_target_name fails for non-standard naming | Medium | This is a heuristic, local to `orphan_tests` (`src/db/mod.rs`). It handles `test_foo`, `TestFoo`, `FooSpec` patterns. Unknown patterns are skipped (not reported as orphan). Name inference is not used for impact analysis: the TEST layer reports only graph-reachable tests (#231). |
 
 ### Testing Strategy
 
@@ -1053,4 +1054,4 @@ Epics 2, 4, 5, 6, 7 require no schema changes -- they use existing tables.
 
 2. **Git mining trigger (Epic 3):** Should mining happen automatically on `reindex`, or only when explicitly requested via `mine_git: true`? **Recommendation:** Explicit opt-in initially. Auto-mine when co_changes table is empty and git repo is detected.
 
-3. **Orphan test heuristic quality (Epic 7):** The `extract_test_target_name()` function may miss non-standard naming patterns. **Recommendation:** Accept the limitation. Document the supported patterns. Offer `pattern` param for custom regex in future iteration.
+3. **Orphan test heuristic quality (Epic 7):** The `extract_target_name()` helper in `orphan_tests` may miss non-standard naming patterns. **Recommendation:** Accept the limitation. Document the supported patterns. Offer `pattern` param for custom regex in future iteration.

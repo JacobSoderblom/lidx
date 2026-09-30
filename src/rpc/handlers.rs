@@ -1872,6 +1872,7 @@ fn batch_error_entry(
 ) -> crate::impact::types::BatchImpactEntry {
     crate::impact::types::BatchImpactEntry {
         seed_qualname: qn.to_string(),
+        test_layer: None,
         seeds: vec![],
         affected: vec![],
         summary: crate::impact::types::ImpactSummary {
@@ -1899,6 +1900,63 @@ fn batch_error_entry(
         },
         recovery,
     }
+}
+
+/// Explanation attached to an `analyze_impact` response whose TEST layer ran
+/// and found nothing (issue #231). The layer reports a test only when it
+/// reaches the seed through graph edges, so an empty layer says the graph
+/// holds no such path -- not that the code is untested. `None` when the
+/// layer was disabled, errored, or reported at least one test.
+fn empty_test_layer_note(
+    result: &crate::impact::types::UnifiedImpactResult,
+    seed_ids: &[i64],
+) -> Option<serde_json::Value> {
+    let seed_id = seed_ids.first().copied();
+    let seed_name = result.seeds.first().map(|s| s.name.as_str());
+    let max_depth = result.config.max_depth;
+    let stats = result.layers.test.as_ref()?;
+    if !stats.enabled || stats.error.is_some() || stats.result_count > 0 {
+        return None;
+    }
+    let mut next_hops: Vec<serde_json::Value> = Vec::new();
+    let mut explain = serde_json::Map::new();
+    if let Some(id) = seed_id {
+        explain.insert("id".to_string(), json!(id));
+    }
+    explain.insert("sections".to_string(), json!(["tests"]));
+    next_hops.push(json!({
+        "method": "explain_symbol",
+        "params": explain,
+        "description": "Inspect the seed's callers and tests directly; unresolved calls do not appear as graph edges",
+    }));
+    if let Some(name) = seed_name {
+        next_hops.push(json!({
+            "method": "search",
+            "params": {"query": name},
+            "description": format!(
+                "Search for '{name}' in test code -- textual matches are candidates to verify, not graph evidence"
+            ),
+        }));
+    }
+    if max_depth < 10 {
+        let mut deeper = serde_json::Map::new();
+        if let Some(id) = seed_id {
+            deeper.insert("id".to_string(), json!(id));
+        }
+        deeper.insert("max_depth".to_string(), json!(10));
+        next_hops.push(json!({
+            "method": "analyze_impact",
+            "params": deeper,
+            "description": format!("Retry with a deeper traversal (max_depth was {max_depth})"),
+        }));
+    }
+    Some(json!({
+        "empty": true,
+        "reason": format!(
+            "No test reaches the seed through graph edges within {max_depth} hops. Tests are reported only when a resolved edge path connects them to the seed (never by name similarity), so this reflects resolution coverage -- calls that could not be resolved, dynamic dispatch, or cross-language calls -- and does not mean the code is untested."
+        ),
+        "next_hops": next_hops,
+    }))
 }
 
 pub(super) fn handle_analyze_impact(indexer: &mut Indexer, params: Value) -> Result<Value> {
@@ -1963,8 +2021,10 @@ fn analyze_impact_inner(
                         for fi in &result.summary.by_file {
                             all_files.insert(fi.path.clone());
                         }
+                        let test_layer = empty_test_layer_note(&result, &seed_ids);
                         crate::impact::types::BatchImpactEntry {
                             seed_qualname: qn.clone(),
+                            test_layer,
                             seeds: result.seeds,
                             affected: result.affected,
                             summary: result.summary,
@@ -2171,6 +2231,8 @@ fn analyze_impact_inner(
         ctx.graph_version,
     )?;
 
+    let test_layer_note = empty_test_layer_note(&result, &seed_ids);
+
     // Issue #81: suggest the filtered/unfiltered counterpart of this call,
     // where useful -- never both, since asking for the opposite of a filter
     // that wasn't applied is a no-op. Merged into whichever next_hops list
@@ -2334,16 +2396,24 @@ fn analyze_impact_inner(
         let mut value = serde_json::to_value(&result)?;
         if let Some(obj) = value.as_object_mut() {
             obj.insert("next_hops".to_string(), json!(next_hops));
+            if let Some(note) = test_layer_note {
+                obj.insert("test_layer".to_string(), note);
+            }
         }
         return Ok(value);
     }
 
-    if resolution_next_hops.is_empty() {
+    if resolution_next_hops.is_empty() && test_layer_note.is_none() {
         Ok(json!(result))
     } else {
         let mut value = serde_json::to_value(&result)?;
         if let Some(obj) = value.as_object_mut() {
-            obj.insert("next_hops".to_string(), json!(resolution_next_hops));
+            if !resolution_next_hops.is_empty() {
+                obj.insert("next_hops".to_string(), json!(resolution_next_hops));
+            }
+            if let Some(note) = test_layer_note {
+                obj.insert("test_layer".to_string(), note);
+            }
         }
         Ok(value)
     }
