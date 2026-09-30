@@ -74,7 +74,7 @@ fn collect_xref_edges(
     source: &str,
     graph_version: i64,
 ) -> Result<Vec<EdgeInput>> {
-    let literals = scan_string_literals(source);
+    let literals = scan_string_literals_for(source, &file.language);
     if literals.is_empty() {
         return Ok(Vec::new());
     }
@@ -642,6 +642,141 @@ fn scan_string_literals(source: &str) -> Vec<StringLiteral> {
     out
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum CharLit {
+    /// `'` always opens a string.
+    None,
+    /// `'x'` / `'\n'` are char literals; anything else is skipped.
+    CStyle,
+    /// Like `CStyle`, but a lone `'a` is a lifetime or loop label.
+    Rust,
+}
+
+struct CommentSyntax {
+    line: &'static [&'static str],
+    nested_block: bool,
+    chars: CharLit,
+}
+
+fn comment_syntax(language: &str) -> Option<CommentSyntax> {
+    let (line, nested_block, chars): (&'static [&'static str], bool, CharLit) = match language {
+        "csharp" => (&["//"], false, CharLit::CStyle),
+        "go" => (&["//"], false, CharLit::CStyle),
+        "rust" => (&["//"], true, CharLit::Rust),
+        "typescript" | "tsx" | "javascript" | "proto" => (&["//"], false, CharLit::None),
+        "sql" | "postgres" | "tsql" => (&["--"], false, CharLit::None),
+        _ => return None,
+    };
+    Some(CommentSyntax {
+        line,
+        nested_block,
+        chars,
+    })
+}
+
+/// Comment-aware literal scan. Languages without a comment profile (Python
+/// has its own post-scan filters) fall back to the plain quote scanner.
+fn scan_string_literals_for(source: &str, language: &str) -> Vec<StringLiteral> {
+    let Some(syntax) = comment_syntax(language) else {
+        return scan_string_literals(source);
+    };
+    let bytes = source.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut line = 1;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\n' {
+            line += 1;
+            i += 1;
+            continue;
+        }
+        if syntax
+            .line
+            .iter()
+            .any(|m| bytes[i..].starts_with(m.as_bytes()))
+        {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i..].starts_with(b"/*") {
+            let mut depth = 1;
+            i += 2;
+            while i < bytes.len() && depth > 0 {
+                if bytes[i] == b'\n' {
+                    line += 1;
+                    i += 1;
+                } else if bytes[i..].starts_with(b"*/") {
+                    depth -= 1;
+                    i += 2;
+                } else if syntax.nested_block && bytes[i..].starts_with(b"/*") {
+                    depth += 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        let prev_is_ident = i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        if syntax.chars != CharLit::None {
+            // `b'x'` byte literal: skip the prefix, the quote is handled below.
+            if b == b'b' && !prev_is_ident && bytes.get(i + 1) == Some(&b'\'') {
+                i += 1;
+                continue;
+            }
+            if b == b'\'' {
+                i = skip_char_or_lifetime(source, i);
+                continue;
+            }
+        }
+        // A prefix letter glued to an identifier (`bar"`) is not a string prefix.
+        if prev_is_ident && b != b'"' && b != b'`' && b != b'\'' {
+            i += 1;
+            continue;
+        }
+        if let Some((literal, next_i, next_line)) = scan_literal_at(source, bytes, i, line) {
+            out.push(literal);
+            i = next_i;
+            line = next_line;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Skips a `'x'` / `'\n'` / `'\u{1F600}'` char literal, or a lone lifetime
+/// tick. Returns the index to resume scanning at.
+fn skip_char_or_lifetime(source: &str, idx: usize) -> usize {
+    let bytes = source.as_bytes();
+    if bytes.get(idx + 1) == Some(&b'\\') {
+        let end = (idx + 12).min(bytes.len());
+        if let Some(off) = bytes[idx + 2..end].iter().position(|&c| c == b'\'') {
+            // `'\''` escapes the quote itself: the first `'` found is escaped.
+            let close = idx + 2 + off;
+            if close == idx + 3
+                && let Some(off2) = bytes[close + 1..end.max(close + 1)]
+                    .iter()
+                    .position(|&c| c == b'\'')
+            {
+                return close + 1 + off2 + 1;
+            }
+            return close + 1;
+        }
+        return idx + 1;
+    }
+    if let Some(ch) = source.get(idx + 1..).and_then(|r| r.chars().next()) {
+        let after = idx + 1 + ch.len_utf8();
+        if ch != '\n' && bytes.get(after) == Some(&b'\'') {
+            return after + 1;
+        }
+    }
+    idx + 1
+}
+
 fn scan_literal_at(
     source: &str,
     bytes: &[u8],
@@ -1094,6 +1229,87 @@ mod tests {
         assert!(is_in_python_comment(src, &lits[0]));
         assert!(!is_in_python_comment(src, &lits[1]));
         assert!(!is_in_python_comment(src, &lits[2]));
+    }
+
+    fn texts(src: &str, lang: &str) -> Vec<String> {
+        scan_string_literals_for(src, lang)
+            .into_iter()
+            .map(|l| l.text)
+            .collect()
+    }
+
+    /// No literal may span a line that holds a comment marker.
+    fn assert_no_literal_crosses_comment(src: &str, lang: &str, marker: &str) {
+        for lit in scan_string_literals_for(src, lang) {
+            for (n, l) in src.lines().enumerate() {
+                let n = n as i64 + 1;
+                if n >= lit.start_line && n <= lit.end_line && l.trim_start().starts_with(marker) {
+                    panic!("literal {:?} crosses comment line {}", lit.text, n);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn csharp_comment_apostrophe_does_not_open_literal() {
+        let src = "// the proc's own SELECT\nvar r = SecretHandler;\nvar s = \"it's done\";\n";
+        assert_eq!(texts(src, "csharp"), vec!["it's done"]);
+        assert_no_literal_crosses_comment(src, "csharp", "//");
+        let block = "/* don't \" */\nvar r = SecretHandler;\nvar s = \"Real\";\n";
+        assert_eq!(texts(block, "csharp"), vec!["Real"]);
+    }
+
+    #[test]
+    fn csharp_verbatim_raw_and_char_literals() {
+        let src = "var a = @\"say \"\"hi\"\" DataProxy\";\nvar c = '\"';\nvar d = '\\'';\nvar r = \"\"\"\nraw \"quoted\" Thing\n\"\"\";\n";
+        let t = texts(src, "csharp");
+        assert_eq!(t.len(), 2, "{t:?}");
+        assert!(t[0].contains("DataProxy"));
+        assert!(t[1].contains("raw \"quoted\" Thing"));
+    }
+
+    #[test]
+    fn rust_lifetimes_and_comments_do_not_open_literals() {
+        let src = "// it's a helper\nfn f<'a>(x: &'a str) -> &'static str {\n    let _m = CancellationRegistry;\n    let c = 'x';\n    let q = '\"';\n    \"real\"\n}\n";
+        assert_eq!(texts(src, "rust"), vec!["real"]);
+        assert_no_literal_crosses_comment(src, "rust", "//");
+        let nested = "/* a /* don't */ still \" */\nlet s = \"ok\";\n";
+        assert_eq!(texts(nested, "rust"), vec!["ok"]);
+        let raw = "let s = r#\"has \"quote\" inside\"#;\n";
+        assert_eq!(texts(raw, "rust"), vec!["has \"quote\" inside"]);
+        let bytes = "let b = b'x'; let s = \"after\";\n";
+        assert_eq!(texts(bytes, "rust"), vec!["after"]);
+    }
+
+    #[test]
+    fn typescript_and_javascript_comments_and_templates() {
+        for lang in ["typescript", "tsx", "javascript"] {
+            let src = "// don't\nconst r = SecretHandler;\n/* isn't \" */\nconst t = `tpl ${x} it's`;\nconst s = 'real';\n";
+            assert_eq!(texts(src, lang), vec!["tpl ${x} it's", "real"], "{lang}");
+            assert_no_literal_crosses_comment(src, lang, "//");
+        }
+    }
+
+    #[test]
+    fn go_comments_runes_and_raw_strings() {
+        let src = "// don't\nx := SecretHandler\n/* it's */\nr := '\\''\ns := `raw \"q\"`\nt := \"real\"\n";
+        assert_eq!(texts(src, "go"), vec!["raw \"q\"", "real"]);
+        assert_no_literal_crosses_comment(src, "go", "//");
+    }
+
+    #[test]
+    fn sql_dash_and_block_comments() {
+        let src = "-- the proc's SELECT\nSELECT SecretHandler;\n/* don't */\nSELECT 'real';\n";
+        assert_eq!(texts(src, "sql"), vec!["real"]);
+        assert_no_literal_crosses_comment(src, "sql", "--");
+    }
+
+    #[test]
+    fn genuine_literals_still_yield_xref_tokens() {
+        let src = "// it's\nvar s = \"DataProxy.Query\";\n";
+        let t = texts(src, "csharp");
+        assert_eq!(t, vec!["DataProxy.Query"]);
+        assert!(!extract_tokens(&t[0]).is_empty());
     }
 
     #[test]
