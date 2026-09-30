@@ -229,3 +229,128 @@ fn local_function_shadows_inherited_method() {
         "a local function shadows the base method"
     );
 }
+
+#[test]
+fn explain_symbol_on_base_method_lists_subclass_caller() {
+    let mut f = index(&[
+        ("A_base.cs", MSSQL_BASE),
+        ("B_common.cs", COMMON_BASE),
+        ("C_team.cs", TEAM_REPO),
+    ]);
+    let out = lidx::rpc::handle_method(
+        &mut f.indexer,
+        "explain_symbol",
+        serde_json::json!({"qualname": "Dpb.DataMgr.Database.MssqlRepositoryBase.QueryAsync"}),
+    )
+    .unwrap()
+    .to_string();
+    assert!(
+        out.contains("MssqlTeamRepository.Get"),
+        "subclass caller missing: {out}"
+    );
+}
+
+#[test]
+fn nested_type_binds_own_base_then_outer_static_members() {
+    let outer = "namespace App { public class Outer {
+    static int OuterStatic() { return 1; }
+    public class NBase { protected int Inh() { return 1; } }
+    public class Inner : NBase { public int Get() { return Inh() + OuterStatic(); } } } }";
+    let distractor = "namespace Other { public class X {
+    public int Inh() { return 2; } public static int OuterStatic() { return 3; } } }";
+    both_orders(distractor, &[("B_outer.cs", outer)], |f| {
+        let mut got = f.targets("App.Outer.Inner.Get");
+        got.sort();
+        assert_eq!(got, vec!["App.Outer.NBase.Inh", "App.Outer.OuterStatic"]);
+    });
+}
+
+#[test]
+fn generic_base_class_resolves_inherited_call() {
+    let base = "namespace App { public class Base<T> { protected int Shared() { return 1; } } public class Foo { } }";
+    let repo = "using Dpb.Common.Database;
+namespace App { public class Repo : Base<Foo> { public int Get() { return Shared(); } } }";
+    let other = "namespace Other { public class X { public int Shared() { return 2; } } }";
+    both_orders(base, &[("B_repo.cs", repo), ("C_other.cs", other)], |f| {
+        assert_eq!(f.targets("App.Repo.Get"), vec!["App.Base.Shared"]);
+    });
+}
+
+#[test]
+fn partial_class_split_across_files_resolves_inherited_call() {
+    let base = "namespace App { public class Base { protected int Shared() { return 1; } } }";
+    let part1 =
+        "namespace App { public partial class Repo : Base { public int A() { return 1; } } }";
+    let part2 =
+        "namespace App { public partial class Repo { public int Get() { return Shared(); } } }";
+    let other = "namespace Other { public class X { public int Shared() { return 2; } } }";
+    both_orders(
+        base,
+        &[
+            ("B_p1.cs", part1),
+            ("C_p2.cs", part2),
+            ("D_other.cs", other),
+        ],
+        |f| assert_eq!(f.targets("App.Repo.Get"), vec!["App.Base.Shared"]),
+    );
+    // The part declaring the base list sorted after the part that calls.
+    let files = [
+        ("A_p2.cs", part2),
+        ("B_p1.cs", part1),
+        ("C_other.cs", other),
+        ("D_base.cs", base),
+    ];
+    assert_eq!(
+        index(&files).targets("App.Repo.Get"),
+        vec!["App.Base.Shared"]
+    );
+}
+
+#[test]
+fn bare_delegate_call_does_not_bind_unrelated_method() {
+    let other = "namespace Other { public class X { public void handler() { } public void cb() { } public void onDone() { } } }";
+    let repo = "using System;
+namespace App { public class Repo {
+    private Action handler;
+    public void Go(Action cb) { onDone(); handler(); cb(); Action local = null; local(); }
+    private Action onDone; } }";
+    both_orders(other, &[("B_repo.cs", repo)], |f| {
+        // A delegate field may be the target (its own symbol); a method of
+        // an unrelated type, or a parameter/local, never is.
+        let got = f.targets("App.Repo.Go");
+        assert!(
+            got.iter().all(|t| t.starts_with("App.Repo.")),
+            "delegate invocations bound to an unrelated method: {got:?}"
+        );
+    });
+}
+
+#[test]
+fn explicit_this_and_base_calls_resolve_inherited_method() {
+    let base = "namespace App { public class Base { protected int Shared() { return 1; } } }";
+    let repo = "using Dpb.Common.Database;
+namespace App { public class Repo : Base {
+    public int ViaThis() { return this.Shared(); }
+    public int ViaBase() { return base.Shared(); } } }";
+    let other = "namespace Other { public class X { public int Shared() { return 2; } } }";
+    both_orders(base, &[("B_repo.cs", repo), ("C_other.cs", other)], |f| {
+        assert_eq!(f.targets("App.Repo.ViaThis"), vec!["App.Base.Shared"]);
+        assert_eq!(f.targets("App.Repo.ViaBase"), vec!["App.Base.Shared"]);
+    });
+}
+
+#[test]
+fn local_function_inside_lambda_and_declaration_initializer_shadows_base() {
+    let src = "using System;
+namespace App { public class Base { protected int Q() { return 1; } }
+    public class Repo : Base {
+        public void InLambda() { Action a = () => { int Q() { return 2; } var x = Q(); }; }
+        public int InInitializer() { int Q() { return 2; } int r = Q(); return r; } } }";
+    let f = index(&[("Repo.cs", src)]);
+    for caller in ["App.Repo.InLambda", "App.Repo.InInitializer"] {
+        assert!(
+            !f.targets(caller).contains(&"App.Base.Q".to_string()),
+            "{caller}: local function must shadow the base method"
+        );
+    }
+}

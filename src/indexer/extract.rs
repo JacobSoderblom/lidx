@@ -344,7 +344,9 @@ pub struct CallShape {
     /// An unqualified C# call inside a type body: it has an implicit
     /// receiver (`this`, or the type itself in a static context), so the
     /// enclosing type's own members and base chain are searched before any
-    /// name-wide lookup. Persisted as `"this:<n>"`.
+    /// name-wide lookup. Persisted as `"this:<n>"`. Never set together with
+    /// `is_new` (an object creation has no receiver concept), so the
+    /// encoding has one prefix at most; `encode` gives `is_new` precedence.
     pub implicit_this: bool,
 }
 

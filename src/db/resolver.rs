@@ -1276,30 +1276,45 @@ impl<'c> Resolver<'c> {
             r.receiver_type
         };
 
-        // An unqualified C# call inside a type body binds to the enclosing
-        // type's own member, then its base chain, before any name-wide
-        // lookup lets a same-named method elsewhere make it ambiguous. The
-        // extractor's `Container.name` target text carries the type.
-        let implicit = match (r.call_shape, r.target_qualname, receiver_type) {
+        let caller = CallerContext {
+            file_path: r.source_file_path,
+            qualname: r.source_qualname,
+        };
+        // An unqualified call with an implicit receiver (`CallShape::implicit_this`,
+        // set by an extractor whose language gives such a call an enclosing
+        // type) binds to that type's own member, then its base chain, before
+        // any name-wide lookup lets a same-named symbol elsewhere make it
+        // ambiguous. The extractor's `Container<sep>name` target text
+        // carries the enclosing type.
+        let implicit_receiver = match (r.call_shape, r.target_qualname, receiver_type) {
             (Some(shape), Some(qn), None) if shape.implicit_this && r.edge_kind == "CALLS" => {
-                qn.rsplit_once('.').map(|(container, _)| (qn, container))
+                last_qualname_separator(qn)
+                    .and_then(|start| qn[..start].strip_suffix(primary_separator(r.source_lang)))
+                    .map(|container| (qn, container))
             }
             _ => None,
         };
-        if let Some((qn, container)) = implicit {
-            let found = self.resolve_by_name(
-                qn,
-                Some(container),
-                r.edge_kind,
-                r.source_lang,
-                CallerContext {
-                    file_path: r.source_file_path,
-                    qualname: r.source_qualname,
-                },
-                r.bare_call,
-            )?;
-            if let Some((id, kind)) = found {
-                return Ok(resolved(id, kind));
+        // Innermost type first (own members, then its base chain), then each
+        // lexically enclosing type (a nested type sees its outer type's
+        // members), like the language's own name lookup.
+        if let Some((qn, mut container)) = implicit_receiver {
+            loop {
+                if let Some((id, kind)) = self.resolve_by_name(
+                    qn,
+                    Some(container),
+                    r.edge_kind,
+                    r.source_lang,
+                    caller,
+                    r.bare_call,
+                )? {
+                    return Ok(resolved(id, kind));
+                }
+                match last_qualname_separator(container).and_then(|start| {
+                    container[..start].strip_suffix(primary_separator(r.source_lang))
+                }) {
+                    Some(outer) => container = outer,
+                    None => break,
+                }
             }
         }
 
@@ -1309,10 +1324,7 @@ impl<'c> Resolver<'c> {
                 receiver_type,
                 r.edge_kind,
                 r.source_lang,
-                CallerContext {
-                    file_path: r.source_file_path,
-                    qualname: r.source_qualname,
-                },
+                caller,
                 r.bare_call,
             )?,
             None => None,
@@ -1677,6 +1689,7 @@ impl<'c> Resolver<'c> {
                 {
                     return Ok(Some((id, ResolutionKind::ReceiverType)));
                 }
+                let full_type = known_type;
                 let known_type = known_type.rsplit('.').next().unwrap_or(known_type);
                 let seed = format!("{known_type}{}{method}", primary_separator(source_lang));
                 let Some((seg, dot, colons)) = two_segment_qualname_patterns(&seed) else {
@@ -1695,7 +1708,13 @@ impl<'c> Resolver<'c> {
                 // The receiver's own type declares no matching method (or
                 // the match there was itself ambiguous) — walk its ancestors.
                 Ok(self
-                    .resolve_via_inheritance(known_type, method, source_lang, edge_kind, caller)?
+                    .resolve_via_inheritance(
+                        (full_type, known_type),
+                        method,
+                        source_lang,
+                        edge_kind,
+                        caller,
+                    )?
                     .map(|id| (id, ResolutionKind::Inherited)))
             }
 
@@ -1872,19 +1891,36 @@ impl<'c> Resolver<'c> {
     /// `MAX_INHERITANCE_DEPTH`.
     fn resolve_via_inheritance(
         &mut self,
-        known_type: &str,
+        (full_type, known_type): (&str, &str),
         method: &str,
         source_lang: &str,
         edge_kind: &str,
         caller: CallerContext<'_>,
     ) -> Result<Option<i64>> {
-        let Some(root_id) = self.resolve_type_symbol(known_type, source_lang, caller.file_path)?
-        else {
-            return Ok(None);
+        // A type declared in several files (a C# `partial` class) has one
+        // symbol per part, each carrying only its own base list: every part
+        // of the exactly-named type is a root. Otherwise the bare type name.
+        let gv = self.graph_version;
+        let parts: Vec<i64> = if full_type.contains('.') || full_type.contains("::") {
+            query_exact_candidates(&mut self.exact, full_type, gv, caller.file_path)?
+                .into_iter()
+                .filter(|c| matches!(c.kind.as_str(), "class" | "struct" | "record" | "interface"))
+                .map(|c| c.id)
+                .collect()
+        } else {
+            Vec::new()
         };
-
-        let mut frontier = vec![root_id];
-        let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::from([root_id]);
+        let mut frontier = if parts.len() > 1 {
+            parts
+        } else {
+            let Some(root_id) =
+                self.resolve_type_symbol(known_type, source_lang, caller.file_path)?
+            else {
+                return Ok(None);
+            };
+            vec![root_id]
+        };
+        let mut seen: std::collections::HashSet<i64> = frontier.iter().copied().collect();
 
         for _ in 0..MAX_INHERITANCE_DEPTH {
             // This level's direct ancestors, in declaration order, across
