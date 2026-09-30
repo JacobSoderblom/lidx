@@ -28,7 +28,7 @@ use blake3::Hasher;
 ///     kind: "function".to_string(),
 ///     start_line: 10,  // Different line number
 ///     // ... other fields
-/// };
+///, identity: None, };
 ///
 /// let sym2 = SymbolInput {
 ///     qualname: "MyClass.authenticate".to_string(),
@@ -36,7 +36,7 @@ use blake3::Hasher;
 ///     kind: "function".to_string(),
 ///     start_line: 20,  // Different line number (blank line added)
 ///     // ... other fields
-/// };
+///, identity: None, };
 ///
 /// assert_eq!(compute_stable_symbol_id(&sym1), compute_stable_symbol_id(&sym2));
 /// ```
@@ -56,12 +56,76 @@ pub fn compute_stable_symbol_id(symbol: &SymbolInput) -> String {
     // Include kind for disambiguation (function vs class with same name)
     hasher.update(symbol.kind.as_bytes());
 
+    // Declaration identity (generic arity, cfg, impl block, collision
+    // ordinal). Absent for the common case, so existing ids are unchanged.
+    if let Some(identity) = &symbol.identity {
+        hasher.update(b"\x00");
+        hasher.update(identity.as_bytes());
+    }
+
     // DO NOT include start_line, end_line, start_byte, end_byte
     // These change when blank lines are added or code is moved!
 
     let hash = hasher.finalize();
     // Use first 64 bits (16 hex characters) of hash
     format!("sym_{}", &hash.to_hex()[..16])
+}
+
+/// One group of symbols that hashed to the same stable id before
+/// disambiguation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StableIdCollision {
+    pub qualname: String,
+    pub kind: String,
+    /// How many declarations shared the id (always >= 2).
+    pub count: usize,
+}
+
+/// Guarantees every symbol in `symbols` (one file's) has a distinct stable
+/// id, without ever dropping one. A symbol whose id is already taken by an
+/// earlier symbol gets a `dup<N>` ordinal in its `identity` (N = its
+/// position among the twins, in declaration order), which is deterministic
+/// and independent of line numbers. Returns one entry per colliding group so
+/// callers can surface it; empty when every id was already unique.
+pub fn disambiguate_collisions(symbols: &mut [SymbolInput]) -> Vec<StableIdCollision> {
+    use std::collections::HashMap;
+    let mut seen: HashMap<String, usize> = HashMap::with_capacity(symbols.len());
+    let mut groups: Vec<StableIdCollision> = Vec::new();
+    let mut group_of: HashMap<String, usize> = HashMap::new();
+    for symbol in symbols.iter_mut() {
+        let base = compute_stable_symbol_id(symbol);
+        let mut id = base.clone();
+        let mut ordinal = *seen.get(&base).unwrap_or(&0);
+        if ordinal > 0 {
+            let original = symbol.identity.clone();
+            loop {
+                let tagged = match &original {
+                    Some(existing) => format!("{existing}|dup{ordinal}"),
+                    None => format!("dup{ordinal}"),
+                };
+                symbol.identity = Some(tagged);
+                id = compute_stable_symbol_id(symbol);
+                if !seen.contains_key(&id) {
+                    break;
+                }
+                ordinal += 1;
+            }
+            match group_of.get(&base) {
+                Some(&g) => groups[g].count += 1,
+                None => {
+                    group_of.insert(base.clone(), groups.len());
+                    groups.push(StableIdCollision {
+                        qualname: symbol.qualname.clone(),
+                        kind: symbol.kind.clone(),
+                        count: 2,
+                    });
+                }
+            }
+        }
+        *seen.entry(base).or_insert(0) += 1;
+        seen.insert(id, 1);
+    }
+    groups
 }
 
 #[cfg(test)]
@@ -90,6 +154,7 @@ mod tests {
             end_byte: 100,
             signature: signature.map(String::from),
             docstring: None,
+            identity: None,
         }
     }
 

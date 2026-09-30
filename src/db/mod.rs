@@ -2377,6 +2377,7 @@ mod tests {
             end_byte: 100,
             signature: signature.map(String::from),
             docstring: None,
+            identity: None,
         }
     }
 
@@ -2959,6 +2960,7 @@ mod tests {
                 end_byte: 100,
                 signature: Some("(z: float) -> None".to_string()),
                 docstring: Some("This is a docstring".to_string()),
+                identity: None,
             },
         ];
 

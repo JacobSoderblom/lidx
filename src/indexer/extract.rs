@@ -13,6 +13,13 @@ pub struct SymbolInput {
     pub end_byte: i64,
     pub signature: Option<String>,
     pub docstring: Option<String>,
+    /// Declaration properties that make two symbols with the same
+    /// `(qualname, signature, kind)` different symbols yet are not part of
+    /// either: C# generic arity, Rust `cfg` attributes and trait-impl
+    /// identity, or a `dup` ordinal from `stable_id::disambiguate_collisions`.
+    /// Hashed into the stable id only when present, so a symbol without one
+    /// keeps the id it always had. Never positional.
+    pub identity: Option<String>,
 }
 
 /// Inferred type of a method call's receiver (e.g. the `store` in
@@ -479,6 +486,29 @@ pub trait LanguageExtractor {
         _edges: &mut Vec<EdgeInput>,
     ) {
         // default no-op
+    }
+}
+
+/// Pins the not-yet-pinned edges emitted from (or `CONTAINS`-targeting) each
+/// of `symbols` to that symbol's span, so declarations that share a qualname
+/// (Rust `cfg` twins, an inherent and a trait-impl method, issue #212) each
+/// keep their own outgoing edges instead of resolving to whichever the
+/// qualname lookup picks. `edges` is the slice emitted alongside `symbols`.
+pub fn pin_edges_to_symbols(symbols: &[SymbolInput], edges: &mut [EdgeInput]) {
+    for symbol in symbols {
+        for edge in edges.iter_mut() {
+            if edge.source_start_byte.is_none()
+                && edge.source_qualname.as_deref() == Some(symbol.qualname.as_str())
+            {
+                edge.source_start_byte = Some(symbol.start_byte);
+            }
+            if edge.target_start_byte.is_none()
+                && edge.kind == "CONTAINS"
+                && edge.target_qualname.as_deref() == Some(symbol.qualname.as_str())
+            {
+                edge.target_start_byte = Some(symbol.start_byte);
+            }
+        }
     }
 }
 

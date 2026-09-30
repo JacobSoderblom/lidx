@@ -269,6 +269,7 @@ mod tests {
                 end_byte: 0,
                 signature: Some("() -> None".to_string()),
                 docstring: Some(format!("Docstring for func{}", i)),
+                identity: None,
             });
         }
 
@@ -302,6 +303,7 @@ mod tests {
             end_byte: 0,
             signature: Some("() -> None".to_string()),
             docstring: Some("Test function".to_string()),
+            identity: None,
         });
 
         writer.add(FileDiff {
@@ -340,6 +342,7 @@ mod tests {
                 end_byte: 0,
                 signature: Some("() -> None".to_string()),
                 docstring: Some("Test function".to_string()),
+                identity: None,
             }],
             modified: vec![SymbolInput {
                 kind: "function".to_string(),
@@ -353,9 +356,11 @@ mod tests {
                 end_byte: 0,
                 signature: Some("() -> None".to_string()),
                 docstring: Some("Test function 2".to_string()),
+                identity: None,
             }],
             deleted: vec!["sym_abc123".to_string(), "sym_def456".to_string()],
             unchanged: vec![],
+            collisions: Vec::new(),
         };
 
         let memory = BatchWriter::estimate_diff_memory(&diff);
@@ -389,10 +394,12 @@ mod tests {
                 end_byte: 0,
                 signature: Some("()".to_string()),
                 docstring: None,
+                identity: None,
             }],
             modified: vec![],
             deleted: vec![],
             unchanged: vec![],
+            collisions: Vec::new(),
         };
 
         writer.add(FileDiff {
@@ -427,10 +434,12 @@ mod tests {
                     end_byte: 0,
                     signature: Some("()".to_string()),
                     docstring: None,
+                    identity: None,
                 }],
                 modified: vec![],
                 deleted: vec![],
                 unchanged: vec![],
+                collisions: Vec::new(),
             };
 
             writer.add(FileDiff {
@@ -458,6 +467,7 @@ mod tests {
                 modified: vec![],
                 deleted: vec![format!("sym_deleted{}_1", i), format!("sym_deleted{}_2", i)],
                 unchanged: vec![],
+                collisions: Vec::new(),
             };
 
             writer.add(FileDiff {
@@ -500,10 +510,12 @@ mod tests {
                     end_byte: 0,
                     signature: Some("()".to_string()),
                     docstring: None,
+                    identity: None,
                 }],
                 modified: vec![],
                 deleted: vec![],
                 unchanged: vec![],
+                collisions: Vec::new(),
             };
 
             writer.add(FileDiff {
@@ -548,10 +560,12 @@ mod tests {
                     end_byte: 0,
                     signature: Some("()".to_string()),
                     docstring: None,
+                    identity: None,
                 }],
                 modified: vec![],
                 deleted: vec![],
                 unchanged: vec![],
+                collisions: Vec::new(),
             },
             graph_version: 1,
             commit_sha: None,
@@ -575,9 +589,11 @@ mod tests {
                     end_byte: 0,
                     signature: Some("()".to_string()),
                     docstring: None,
+                    identity: None,
                 }],
                 deleted: vec![],
                 unchanged: vec![],
+                collisions: Vec::new(),
             },
             graph_version: 1,
             commit_sha: None,
@@ -592,6 +608,7 @@ mod tests {
                 modified: vec![],
                 deleted: vec!["sym_removed".to_string()],
                 unchanged: vec![],
+                collisions: Vec::new(),
             },
             graph_version: 1,
             commit_sha: None,
@@ -614,6 +631,7 @@ mod tests {
                     end_byte: 0,
                     signature: Some("()".to_string()),
                     docstring: None,
+                    identity: None,
                 }],
                 modified: vec![SymbolInput {
                     kind: "function".to_string(),
@@ -627,9 +645,11 @@ mod tests {
                     end_byte: 0,
                     signature: Some("()".to_string()),
                     docstring: None,
+                    identity: None,
                 }],
                 deleted: vec!["sym_mixed_deleted".to_string()],
                 unchanged: vec![],
+                collisions: Vec::new(),
             },
             graph_version: 1,
             commit_sha: None,
@@ -692,11 +712,13 @@ mod tests {
                 start_byte: 0,
                 end_byte: 0,
                 signature: Some("x".repeat(200)), // Large signature
-                docstring: Some("y".repeat(500)), // Large docstring
+                docstring: Some("y".repeat(500)), // Large docstring,
+                identity: None,
             }],
             modified: vec![],
             deleted: vec![],
             unchanged: vec![],
+            collisions: Vec::new(),
         };
 
         let estimated_before = writer.estimated_memory();

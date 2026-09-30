@@ -5,7 +5,7 @@ use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
     DeferredMarker, DeferredSource, EdgeInput, ExtractedFile, ReceiverType, RustDeferred, Step,
-    SymbolInput,
+    SymbolInput, pin_edges_to_symbols,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -104,6 +104,52 @@ struct Context {
     adts: Rc<Adts>,
     /// Same-file fn/method return types (`collect_returns`).
     returns: Rc<Returns>,
+    /// Normalized `#[cfg(..)]` predicates of every enclosing declaration,
+    /// outermost first. Part of a symbol's identity (issue #212): the two
+    /// arms of a `cfg` switch are two symbols.
+    cfg_chain: Vec<String>,
+    /// `impl Trait for Type` identity for methods inside such a block, so an
+    /// inherent method and a trait-impl method of the same name differ.
+    impl_identity: Option<String>,
+}
+
+impl Context {
+    /// Declaration identity for a symbol defined in this context, `None`
+    /// for the ordinary case (no `cfg`, not in a trait impl).
+    fn identity(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if !self.cfg_chain.is_empty() {
+            parts.push(format!("cfg:{}", self.cfg_chain.join("&")));
+        }
+        if let Some(imp) = &self.impl_identity {
+            parts.push(imp.clone());
+        }
+        (!parts.is_empty()).then(|| parts.join("|"))
+    }
+
+    fn with_cfg(&self, attrs: &[Node<'_>], source: &str) -> Context {
+        let mut next = self.clone();
+        next.cfg_chain.extend(cfg_predicates(attrs, source));
+        next
+    }
+}
+
+/// `cfg(..)` predicates of `#[cfg(..)]` attribute items, whitespace removed.
+fn cfg_predicates(attrs: &[Node<'_>], source: &str) -> Vec<String> {
+    attrs
+        .iter()
+        .filter_map(|attr| {
+            let text: String = node_text(*attr, source)
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let inner = text.strip_prefix("#[")?.strip_suffix(']')?;
+            inner
+                .strip_prefix("cfg(")
+                .and_then(|rest| rest.strip_suffix(')'))
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 pub struct RustExtractor {
@@ -190,6 +236,8 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             returns: Rc::new(collect_returns(root, source)),
             in_trait_scope: false,
             in_trait_impl: None,
+            cfg_chain: Vec::new(),
+            impl_identity: None,
         };
         walk_node(root, &ctx, source, &mut output);
         collect_uses(root, &ctx, source, &mut output, &mut HashSet::new());
@@ -376,15 +424,21 @@ fn walk_declaration_list(node: Node<'_>, ctx: &Context, source: &str, output: &m
             pending_attrs.push(child);
             continue;
         }
+        let (first_symbol, first_edge) = (output.symbols.len(), output.edges.len());
+        // `cfg` attributes on any item make its symbols (and everything
+        // inside it) distinct from a same-named twin under another `cfg`.
+        let item_ctx = ctx.with_cfg(&pending_attrs, source);
         if child.kind() == "function_item" {
-            handle_function_with_attributes(child, ctx, source, output, &pending_attrs);
-            pending_attrs.clear();
-            continue;
+            handle_function_with_attributes(child, &item_ctx, source, output, &pending_attrs);
+        } else {
+            walk_node(child, &item_ctx, source, output);
         }
-        if !pending_attrs.is_empty() {
-            pending_attrs.clear();
-        }
-        walk_node(child, ctx, source, output);
+        pending_attrs.clear();
+        // Declarations sharing a qualname each keep their own edges.
+        pin_edges_to_symbols(
+            &output.symbols[first_symbol..],
+            &mut output.edges[first_edge..],
+        );
     }
 }
 
@@ -416,6 +470,7 @@ fn handle_named_item(
             None
         },
         docstring: None,
+        identity: ctx.identity(),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -445,6 +500,7 @@ fn handle_trait(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         end_byte,
         signature: None,
         docstring: None,
+        identity: ctx.identity(),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -500,6 +556,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
         end_byte,
         signature: None,
         docstring: None,
+        identity: ctx.identity(),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -645,6 +702,7 @@ fn handle_function(
         end_byte,
         signature,
         docstring: None,
+        identity: ctx.identity(),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -670,6 +728,8 @@ fn handle_function(
     if let Some(body) = node.child_by_field_name("body") {
         let mut next_ctx = ctx.clone();
         next_ctx.current_scope = qualname;
+        // Items nested in a body are not part of the impl block.
+        next_ctx.impl_identity = None;
         let mut grpc_clients = ctx.grpc_clients.clone();
         grpc_clients.extend(collect_grpc_clients(body, source, &ctx.imports));
         next_ctx.grpc_clients = grpc_clients;
@@ -747,6 +807,7 @@ fn handle_function_signature(
         end_byte,
         signature,
         docstring: None,
+        identity: ctx.identity(),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -801,6 +862,15 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     next_ctx.in_trait_impl = node
         .child_by_field_name("trait")
         .map(|t| qualify_type_name(&ctx.module, &normalize_type_path(&node_text(t, source))));
+    // Inherent and trait-impl methods of one type may share name and
+    // signature; the trait (with its generic arguments) tells them apart.
+    next_ctx.impl_identity = node.child_by_field_name("trait").map(|t| {
+        let text: String = node_text(t, source)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        format!("impl:{text}")
+    });
     walk_node(body, &next_ctx, source, output);
 }
 
