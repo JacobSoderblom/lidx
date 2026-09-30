@@ -164,20 +164,15 @@ fn sql_comment_yields_no_phantom_xref() {
 }
 
 #[test]
-fn python_traps_still_yield_no_bogus_xref() {
-    let py = "class Svc:\n    def run(self):\n        \"\"\"Docstring mentioning SecretHandler.\"\"\"\n        # CMT the proc's own thing\n        r = CancellationRegistry\n        return \"it's done\"\n";
+fn python_comment_traps_yield_no_bogus_xref_and_later_literal_still_links() {
+    let py = "class Svc:\n    def run(self):\n        \"\"\"Docstring mentioning SecretHandler.\"\"\"\n        # CMT the proc's own thing\n        r = CancellationRegistry  # CMT trailing\n        return \"it's done\"\n\n    def real(self):\n        return \"DataProxy\"\n";
     let cs = "public class SecretHandler\n{\n}\n\npublic class CancellationRegistry\n{\n}\n\npublic class DataProxy\n{\n}\n";
     let (root, rows) = index(&[("svc.py", py), ("Targets.cs", cs)]);
     assert!(!targets_hit(&rows, "svc.py", "SecretHandler"));
     assert!(!targets_hit(&rows, "svc.py", "CancellationRegistry"));
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn python_real_literal_still_yields_xref() {
-    let py = "class Svc:\n    def real(self):\n        return \"DataProxy\"\n";
-    let cs = "public class DataProxy\n{\n}\n";
-    let (root, rows) = index(&[("svc.py", py), ("Targets.cs", cs)]);
-    assert!(targets_hit(&rows, "svc.py", "DataProxy"));
+    assert!(
+        targets_hit(&rows, "svc.py", "DataProxy"),
+        "later real literal lost its XREF after a comment apostrophe"
+    );
     let _ = std::fs::remove_dir_all(root);
 }

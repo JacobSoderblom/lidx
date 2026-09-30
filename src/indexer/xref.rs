@@ -642,6 +642,9 @@ struct CommentSyntax {
     single_quote: SingleQuote,
     /// JS/TS lexing: `/regex/` literals and `${}`-nesting template literals.
     js_lexing: bool,
+    /// A `#` line comment needs whitespace or line start before it (YAML,
+    /// where `a#b` is text). Python allows `x = 1#c`.
+    hash_needs_boundary: bool,
 }
 
 const SLASH_COMMENTS: CommentSyntax = CommentSyntax {
@@ -650,14 +653,17 @@ const SLASH_COMMENTS: CommentSyntax = CommentSyntax {
     nested_block_comments: false,
     single_quote: SingleQuote::StringDelimiter,
     js_lexing: false,
+    hash_needs_boundary: false,
 };
 
 /// Comment syntax for `language`, or `None` when literals are scanned with
 /// the plain quote scanner.
 ///
+/// Python has a `#` profile so a comment apostrophe never opens a literal;
+/// its docstring and comment filters (`is_python_docstring`,
+/// `is_in_python_comment`) still run after scanning.
+///
 /// Languages that deliberately have no profile:
-/// - `python`: `#` comments and docstrings are filtered after scanning
-///   (`is_in_python_comment`, `is_python_docstring`).
 /// - `markdown`: prose has no comment syntax; its quotes are ordinary text.
 /// - `lua`: not an indexed language (no entry in `scan.rs`), so no id reaches
 ///   this function.
@@ -686,7 +692,12 @@ fn comment_syntax(language: &str) -> Option<&'static CommentSyntax> {
     const YAML: CommentSyntax = CommentSyntax {
         line_comments: &["#"],
         block_comments: false,
+        hash_needs_boundary: true,
         ..SLASH_COMMENTS
+    };
+    const PYTHON: CommentSyntax = CommentSyntax {
+        hash_needs_boundary: false,
+        ..YAML
     };
     match language {
         "csharp" | "go" => Some(&CSHARP),
@@ -696,6 +707,7 @@ fn comment_syntax(language: &str) -> Option<&'static CommentSyntax> {
         "sql" => Some(&SQL),
         "postgres" | "tsql" => Some(&NESTED_SQL),
         "yaml" => Some(&YAML),
+        "python" => Some(&PYTHON),
         _ => None,
     }
 }
@@ -773,7 +785,10 @@ fn skip_comment(bytes: &[u8], i: usize, syntax: &CommentSyntax, line: &mut i64) 
     let rest = &bytes[i..];
     for marker in syntax.line_comments {
         // `#` starts a comment only at a word boundary (`a#b` in YAML is text).
-        let boundary_ok = *marker != "#" || i == 0 || bytes[i - 1].is_ascii_whitespace();
+        let boundary_ok = !syntax.hash_needs_boundary
+            || *marker != "#"
+            || i == 0
+            || bytes[i - 1].is_ascii_whitespace();
         if rest.starts_with(marker.as_bytes()) && boundary_ok {
             let len = rest.iter().position(|&c| c == b'\n').unwrap_or(rest.len());
             return Some(i + len);
@@ -1579,6 +1594,16 @@ mod tests {
     }
 
     #[test]
+    fn python_comment_apostrophes_do_not_desync_later_literals() {
+        let src = "# CMT it's\nx = 1  # CMT don't\ny = \"it's\"\nz = \"\"\"doc # not a comment\"\"\"\nw = f\"Real\"\n";
+        assert_eq!(
+            texts(src, "python"),
+            vec!["it's", "\"\"doc # not a comment", "Real"]
+        );
+        assert_no_literal_swallows_comment(src, "python");
+    }
+
+    #[test]
     fn bicep_and_yaml_comments() {
         let bicep = "// CMT it's\nparam a string = 'real'\n/* CMT don't */\n";
         assert_eq!(texts(bicep, "bicep"), vec!["real"]);
@@ -1589,7 +1614,6 @@ mod tests {
 
     #[test]
     fn unprofiled_languages_use_plain_scanning() {
-        assert!(comment_syntax("python").is_none());
         assert!(comment_syntax("markdown").is_none());
         assert_eq!(texts("it's \"a\"", "markdown").len(), 1);
     }
