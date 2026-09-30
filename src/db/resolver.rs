@@ -98,6 +98,9 @@ pub(crate) struct Reference<'a> {
     /// file (issue #75 follow-up, finding D). `None` when the caller
     /// itself didn't resolve to a symbol.
     pub source_qualname: Option<&'a str>,
+    /// The calling symbol's own id (`edges.source_symbol_id`). The guarded
+    /// name fallback never binds an edge to its own source (issue #244).
+    pub source_symbol_id: Option<i64>,
     /// `EdgeInput::bare_call` — true for a genuinely bare identifier call
     /// (`foo()`), gating the guarded name-fallback tier's method-kind
     /// exclusion. Meaningless (ignored) for any `edge_kind` other than
@@ -743,6 +746,9 @@ struct FallbackGuard {
     /// Refuse a `method`-kind candidate — set for a bare (receiver-less)
     /// `CALLS` edge; see `EdgeInput::bare_call`.
     exclude_method: bool,
+    /// Refuse the candidate that is the reference's own source symbol: a
+    /// self-referential edge is never meaningful (issue #244).
+    exclude_self: bool,
     /// Refuse a cross-file candidate the language's `VisibilityRule`
     /// deems not visible.
     enforce_visibility: bool,
@@ -753,6 +759,7 @@ impl FallbackGuard {
     /// resolution) and `resolve_type_symbol`'s type-name lookups.
     const NONE: FallbackGuard = FallbackGuard {
         exclude_method: false,
+        exclude_self: false,
         enforce_visibility: false,
     };
 }
@@ -766,6 +773,7 @@ impl FallbackGuard {
 struct CallerContext<'a> {
     file_path: &'a str,
     qualname: Option<&'a str>,
+    symbol_id: Option<i64>,
 }
 
 /// `Resolver`'s symbol index for one language (`DeclarationIndex`).
@@ -1150,6 +1158,7 @@ impl<'c> Resolver<'c> {
                 CallerContext {
                     file_path: r.source_file_path,
                     qualname: r.source_qualname,
+                    symbol_id: r.source_symbol_id,
                 },
                 r.bare_call,
             )?,
@@ -1279,6 +1288,7 @@ impl<'c> Resolver<'c> {
         let caller = CallerContext {
             file_path: r.source_file_path,
             qualname: r.source_qualname,
+            symbol_id: r.source_symbol_id,
         };
         // An unqualified call with an implicit receiver (`CallShape::implicit_this`,
         // set by an extractor whose language gives such a call an enclosing
@@ -1608,6 +1618,9 @@ impl<'c> Resolver<'c> {
             }
             // `SAME_LANG_SQL` already excludes `method`-kind rows when
             // `guard.exclude_method` — every row reaching here is kind-eligible.
+            if guard.exclude_self && caller.symbol_id == Some(id) {
+                return Ok(false);
+            }
             if is_fixture_path(&file_path) && !is_fixture_path(caller.file_path) {
                 return Ok(false);
             }
@@ -1727,6 +1740,7 @@ impl<'c> Resolver<'c> {
                 // never restricts them (see `EdgeInput::bare_call`).
                 let guard = FallbackGuard {
                     exclude_method: edge_kind == "CALLS" && bare_call,
+                    exclude_self: true,
                     enforce_visibility: true,
                 };
                 if let Some((seg, dot, colons)) = two_segment_qualname_patterns(target_qualname)
@@ -1875,6 +1889,7 @@ impl<'c> Resolver<'c> {
             CallerContext {
                 file_path: source_file_path,
                 qualname: None,
+                symbol_id: None,
             },
             name,
         )
@@ -2444,6 +2459,7 @@ impl ReferenceContext {
         &self,
         resolver: &mut Resolver<'_>,
         symbol_map: &HashMap<String, i64>,
+        source_symbol_id: Option<i64>,
     ) -> Result<Resolution> {
         let import_candidates = self
             .import_candidates
@@ -2466,6 +2482,7 @@ impl ReferenceContext {
                 source_lang: &self.source_lang,
                 source_file_path: &self.file_path,
                 source_qualname: self.source_qualname.as_deref(),
+                source_symbol_id,
                 bare_call: self.bare_call,
                 call_shape: self.call_shape.as_deref().and_then(CallShape::decode),
             },
@@ -2896,7 +2913,9 @@ impl Db {
                     .ctx
                     .edge_id
                     .expect("NullTargetEdgeRow always has an edge_id");
-                let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
+                let resolution =
+                    row.ctx
+                        .resolve(&mut resolver, &empty_symbol_map, row.source_symbol_id)?;
                 match resolution {
                     Resolution::Resolved { target_id, kind } => {
                         update_edge.execute(params![
@@ -3184,7 +3203,9 @@ impl Db {
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &candidates {
-                let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
+                let resolution =
+                    row.ctx
+                        .resolve(&mut resolver, &empty_symbol_map, row.source_symbol_id)?;
                 if let Resolution::Resolved { target_id, kind } = resolution {
                     match row.ctx.edge_id {
                         Some(edge_id) => {
@@ -3344,6 +3365,7 @@ impl Db {
         struct StubEdgeRow {
             edge_id: i64,
             target_symbol_id: i64,
+            source_symbol_id: Option<i64>,
             ctx: ReferenceContext,
         }
 
@@ -3352,7 +3374,7 @@ impl Db {
                 "SELECT e.id, e.target_symbol_id, e.kind, e.target_qualname,
                         e.receiver_type, e.import_candidates, e.bare_call,
                         COALESCE(f.language, 'unknown'), f.path, src.qualname, e.call_shape,
-                        e.receiver_scope, e.deferred_kind, e.deferred
+                        e.receiver_scope, e.deferred_kind, e.deferred, e.source_symbol_id
                  FROM edges e
                  {extra_join}
                  JOIN files f ON f.id = e.file_id
@@ -3363,6 +3385,7 @@ impl Db {
                 Ok(StubEdgeRow {
                     edge_id: row.get(0)?,
                     target_symbol_id: row.get(1)?,
+                    source_symbol_id: row.get(14)?,
                     ctx: ReferenceContext {
                         edge_id: Some(row.get(0)?),
                         edge_kind: row.get(2)?,
@@ -3389,7 +3412,10 @@ impl Db {
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &rows {
-                match row.ctx.resolve(&mut resolver, &empty_symbol_map)? {
+                match row
+                    .ctx
+                    .resolve(&mut resolver, &empty_symbol_map, row.source_symbol_id)?
+                {
                     Resolution::Resolved { target_id, kind }
                         if target_id != row.target_symbol_id =>
                     {
@@ -3789,6 +3815,7 @@ fn derive_rpc_calls<'a>(
                     source_lang: &site.lang,
                     source_file_path: &site.path,
                     source_qualname: None,
+                    source_symbol_id: None,
                     bare_call: false,
                     call_shape: None,
                 },
@@ -4364,6 +4391,7 @@ mod tests {
             source_lang,
             source_file_path,
             source_qualname,
+            source_symbol_id: None,
             bare_call,
             call_shape: None,
         }

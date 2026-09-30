@@ -1555,6 +1555,7 @@ impl Db {
                         source_lang: &source_lang,
                         source_file_path: &source_file_path,
                         source_qualname: edge.source_qualname.as_deref(),
+                        source_symbol_id: source_id,
                         bare_call: edge.bare_call,
                         call_shape: edge.call_shape,
                     },
@@ -1568,6 +1569,15 @@ impl Db {
                     None => resolution,
                 };
 
+                // Issue #244: a non-`CALLS` edge from a symbol to itself is
+                // never meaningful (a recursive call is), so it is dropped
+                // whichever tier produced it.
+                if edge.kind != "CALLS"
+                    && source_id.is_some()
+                    && resolution.target_id() == source_id
+                {
+                    continue;
+                }
                 // Issue #79: `is_bridge_edge_kind`'s kind is always written,
                 // resolved or not -- see its doc for why that's not one
                 // uniform reason (the three actual Bridge Edge pairs need
