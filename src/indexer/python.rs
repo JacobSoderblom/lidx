@@ -476,6 +476,13 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             }
             return;
         }
+        "expression_statement" => {
+            if ctx.fn_depth == 0
+                && let Some(assignment) = node.named_child(0).filter(|c| c.kind() == "assignment")
+            {
+                emit_assignment_symbols(node, assignment, ctx, source, output);
+            }
+        }
         "import_statement" | "import_from_statement" => {
             if ctx.fn_depth == 0 {
                 let module = ctx.module.clone();
@@ -511,6 +518,68 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         walk_node(child, ctx, source, output);
+    }
+}
+
+/// Emit one `const` (ALL_CAPS name) or `variable` symbol per name bound by a
+/// module- or class-level assignment (issue #203): plain, annotated, bare
+/// annotation, tuple/list unpacking and chained (`A = B = 1`) targets.
+/// Attribute/subscript targets bind no name and are skipped; augmented
+/// assignments are a different node kind and never reach here. A name
+/// already emitted in this file (reassignment, or a same-named def/class)
+/// keeps its first symbol.
+fn emit_assignment_symbols(
+    stmt: Node<'_>,
+    assignment: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut names: Vec<(String, LocalType)> = Vec::new();
+    let mut current = Some(assignment);
+    while let Some(node) = current {
+        if node.kind() != "assignment" {
+            break;
+        }
+        if let Some(left) = node.child_by_field_name("left") {
+            collect_pattern_identifiers(left, source, &mut names);
+        }
+        current = node.child_by_field_name("right");
+    }
+    if names.is_empty() {
+        return;
+    }
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(stmt);
+    let parent = container_qualname(&ctx.module, &ctx.class_stack);
+    for (name, _) in names {
+        let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
+        if output.symbols.iter().any(|s| s.qualname == qualname) {
+            continue;
+        }
+        let is_const =
+            name.chars().any(|c| c.is_alphabetic()) && !name.chars().any(|c| c.is_lowercase());
+        output.symbols.push(SymbolInput {
+            kind: if is_const { "const" } else { "variable" }.to_string(),
+            name,
+            qualname: qualname.clone(),
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+            start_byte,
+            end_byte,
+            signature: None,
+            docstring: None,
+            identity: None,
+        });
+        output.edges.push(EdgeInput {
+            kind: "CONTAINS".to_string(),
+            source_qualname: Some(parent.clone()),
+            target_qualname: Some(qualname),
+            detail: None,
+            evidence_snippet: None,
+            ..Default::default()
+        });
     }
 }
 
