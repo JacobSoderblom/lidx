@@ -120,44 +120,142 @@ pub struct DiffHunk {
 }
 
 /// Represents a changed file with its line ranges extracted from a unified diff.
+///
+/// All line numbers are new-side (post-edit) line numbers, matching the
+/// indexed symbol spans.  Ranges are derived from the per-line `+`/`-`/space
+/// markers of each hunk body, never from the hunk header, so unchanged
+/// context lines are never reported as changes.
 #[derive(Debug, Clone)]
 pub struct ChangedFile {
     pub path: String,
+    /// Runs of added (`+`) lines.  Runs are split by removed lines, so a
+    /// symbol inside a single run is entirely new.
     pub changed_ranges: Vec<DiffHunk>,
+    /// Same runs as `changed_ranges` (every `+` line is both added and changed).
     pub added_ranges: Vec<DiffHunk>,
+    /// Old-side header ranges (`-start,count`), kept as-is.
     pub deleted_ranges: Vec<DiffHunk>,
+    /// Removed lines have no new-side line number.  Each entry `p` means
+    /// lines were removed between new-side lines `p` and `p + 1`
+    /// (`p == 0` when removed at the very top of the file).
+    pub deletion_points: Vec<i64>,
+}
+
+impl ChangedFile {
+    pub fn new(path: String) -> Self {
+        Self {
+            path,
+            changed_ranges: Vec::new(),
+            added_ranges: Vec::new(),
+            deleted_ranges: Vec::new(),
+            deletion_points: Vec::new(),
+        }
+    }
+
+    /// True when the diff recorded at least one added or removed line.
+    pub fn has_line_changes(&self) -> bool {
+        !self.changed_ranges.is_empty() || !self.deletion_points.is_empty()
+    }
+
+    /// Does a symbol spanning `start..=end` overlap an added line, or contain
+    /// a deletion (removed lines between two lines that are both inside it)?
+    pub fn touches(&self, start: i64, end: i64) -> bool {
+        self.changed_ranges.iter().any(|h| {
+            let hunk_end = h.start_line + h.line_count - 1;
+            start <= hunk_end && end >= h.start_line
+        }) || self.deletion_points.iter().any(|&p| start <= p && p < end)
+    }
+
+    /// Is the symbol `start..=end` entirely made of added lines?
+    pub fn fully_added(&self, start: i64, end: i64) -> bool {
+        self.added_ranges.iter().any(|h| {
+            let hunk_end = h.start_line + h.line_count - 1;
+            start >= h.start_line && end <= hunk_end
+        })
+    }
 }
 
 /// Parse a unified diff string into per-file changed line ranges.
 ///
 /// Handles both `+++ b/path` (git format) and `+++ path` (plain unified diff).
-/// Files with `+++ /dev/null` (deleted files) are skipped.
+/// Files with `+++ /dev/null` (deleted files) are skipped.  Works for any
+/// context width, including `-U0`.
 pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
     let mut files = Vec::new();
     let mut current_file: Option<ChangedFile> = None;
+    // Hunk-body state: lines still expected on each side, the next new-side
+    // line number, and the open run of `+` lines (start, count).
+    let mut old_left = 0i64;
+    let mut new_left = 0i64;
+    let mut new_line = 0i64;
+    let mut run: Option<(i64, i64)> = None;
+
+    fn flush(file: &mut Option<ChangedFile>, run: &mut Option<(i64, i64)>) {
+        if let (Some(f), Some((start, count))) = (file.as_mut(), run.take()) {
+            f.added_ranges.push(DiffHunk {
+                start_line: start,
+                line_count: count,
+            });
+            f.changed_ranges.push(DiffHunk {
+                start_line: start,
+                line_count: count,
+            });
+        }
+    }
 
     for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            // Never valid hunk-body content; recover from a truncated hunk.
+            old_left = 0;
+            new_left = 0;
+        }
+        if old_left > 0 || new_left > 0 {
+            // Inside a hunk body: the header counts tell us how many lines
+            // belong to it, so body lines like `--- x` / `+++ x` are not
+            // mistaken for file headers.
+            match line.as_bytes().first() {
+                Some(b'+') => {
+                    match run.as_mut() {
+                        Some((_, count)) => *count += 1,
+                        None => run = Some((new_line, 1)),
+                    }
+                    new_line += 1;
+                    new_left -= 1;
+                }
+                Some(b'-') => {
+                    flush(&mut current_file, &mut run);
+                    if let Some(f) = current_file.as_mut() {
+                        let p = new_line - 1;
+                        if f.deletion_points.last() != Some(&p) {
+                            f.deletion_points.push(p);
+                        }
+                    }
+                    old_left -= 1;
+                }
+                Some(b'\\') => {} // "\ No newline at end of file"
+                _ => {
+                    // Context line (a space, or an empty line whose trailing
+                    // space was stripped).
+                    flush(&mut current_file, &mut run);
+                    new_line += 1;
+                    old_left -= 1;
+                    new_left -= 1;
+                }
+            }
+            continue;
+        }
+        flush(&mut current_file, &mut run);
         if let Some(rest) = line.strip_prefix("+++ b/") {
             if let Some(file) = current_file.take() {
                 files.push(file);
             }
-            current_file = Some(ChangedFile {
-                path: rest.to_string(),
-                changed_ranges: Vec::new(),
-                added_ranges: Vec::new(),
-                deleted_ranges: Vec::new(),
-            });
+            current_file = Some(ChangedFile::new(rest.to_string()));
         } else if let Some(rest) = line.strip_prefix("+++ ") {
             if let Some(file) = current_file.take() {
                 files.push(file);
             }
             if !rest.starts_with("/dev/null") {
-                current_file = Some(ChangedFile {
-                    path: rest.to_string(),
-                    changed_ranges: Vec::new(),
-                    added_ranges: Vec::new(),
-                    deleted_ranges: Vec::new(),
-                });
+                current_file = Some(ChangedFile::new(rest.to_string()));
             }
         } else if line.starts_with("@@ ") {
             // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
@@ -167,7 +265,6 @@ pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
             {
                 let parts: Vec<&str> = ranges.split_whitespace().collect();
 
-                // Parse old range (deleted lines)
                 if let Some(old_part) = parts.first()
                     && let Some(old_range) = old_part.strip_prefix('-')
                     && let Some((start, count)) = parse_hunk_range(old_range)
@@ -176,26 +273,22 @@ pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
                         start_line: start,
                         line_count: count,
                     });
+                    old_left = count;
                 }
 
-                // Parse new range (added/modified lines)
                 if let Some(new_part) = parts.get(1)
                     && let Some(new_range) = new_part.strip_prefix('+')
                     && let Some((start, count)) = parse_hunk_range(new_range)
                 {
-                    file.added_ranges.push(DiffHunk {
-                        start_line: start,
-                        line_count: count,
-                    });
-                    // Also add to changed_ranges as any hunk represents a change
-                    file.changed_ranges.push(DiffHunk {
-                        start_line: start,
-                        line_count: count,
-                    });
+                    new_left = count;
+                    // Git reports the start of an empty range as the line
+                    // before it; `new_line` is only used once lines follow.
+                    new_line = if count == 0 { start + 1 } else { start };
                 }
             }
         }
     }
+    flush(&mut current_file, &mut run);
 
     if let Some(file) = current_file {
         files.push(file);
@@ -548,16 +641,18 @@ mod tests {
 diff --git a/src/foo.rs b/src/foo.rs
 --- a/src/foo.rs
 +++ b/src/foo.rs
-@@ -10,5 +12,7 @@ fn bar() {
+@@ -10,2 +12,3 @@ fn bar() {
  context
 +added line
+ tail
 ";
         let files = parse_diff_with_ranges(diff);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "src/foo.rs");
         assert_eq!(files[0].added_ranges.len(), 1);
-        assert_eq!(files[0].added_ranges[0].start_line, 12);
-        assert_eq!(files[0].added_ranges[0].line_count, 7);
+        // Context lines are not changes: only the `+` line at new line 13.
+        assert_eq!(files[0].added_ranges[0].start_line, 13);
+        assert_eq!(files[0].added_ranges[0].line_count, 1);
         assert_eq!(files[0].deleted_ranges.len(), 1);
         assert_eq!(files[0].deleted_ranges[0].start_line, 10);
     }
@@ -604,10 +699,10 @@ diff --git a/bar.py b/bar.py
         let diff = "\
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -1,3 +1,4 @@
+@@ -1,1 +1,2 @@
  a
 +b
-@@ -20,2 +21,3 @@
+@@ -20,1 +21,3 @@
  x
 +y
 +z
@@ -615,8 +710,9 @@ diff --git a/bar.py b/bar.py
         let files = parse_diff_with_ranges(diff);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].changed_ranges.len(), 2);
-        assert_eq!(files[0].added_ranges[0].start_line, 1);
-        assert_eq!(files[0].added_ranges[1].start_line, 21);
+        assert_eq!(files[0].added_ranges[0].start_line, 2);
+        assert_eq!(files[0].added_ranges[1].start_line, 22);
+        assert_eq!(files[0].added_ranges[1].line_count, 2);
     }
 
     #[test]
@@ -669,6 +765,9 @@ diff --git a/new_file.rs b/new_file.rs
 @@ -0,0 +1,5 @@
 +line1
 +line2
++line3
++line4
++line5
 ";
         let files = parse_diff_with_ranges(diff);
         assert_eq!(files.len(), 1);
@@ -703,7 +802,8 @@ new mode 100755
 --- a/f.rs
 +++ b/f.rs
 @@ -5 +7 @@
- line
+-old
++new
 ";
         let files = parse_diff_with_ranges(diff);
         assert_eq!(files.len(), 1);
@@ -711,6 +811,88 @@ new mode 100755
         assert_eq!(files[0].deleted_ranges[0].line_count, 1);
         assert_eq!(files[0].added_ranges[0].start_line, 7);
         assert_eq!(files[0].added_ranges[0].line_count, 1);
+        assert_eq!(files[0].deletion_points, vec![6]);
+    }
+
+    #[test]
+    fn parse_diff_context_only_hunk_has_no_changes() {
+        let diff = "\
+--- a/f.rs
++++ b/f.rs
+@@ -1,2 +1,2 @@
+ a
+ b
+";
+        let files = parse_diff_with_ranges(diff);
+        assert!(!files[0].has_line_changes());
+    }
+
+    #[test]
+    fn parse_diff_u0_and_wide_context_agree() {
+        let u0 = "\
+--- a/f.py
++++ b/f.py
+@@ -4,0 +5,2 @@
++x
++y
+";
+        let wide = "\
+--- a/f.py
++++ b/f.py
+@@ -1,6 +1,8 @@
+ 1
+ 2
+ 3
+ 4
++x
++y
+ 5
+ 6
+";
+        let a = &parse_diff_with_ranges(u0)[0];
+        let b = &parse_diff_with_ranges(wide)[0];
+        assert_eq!(a.added_ranges[0].start_line, b.added_ranges[0].start_line);
+        assert_eq!(a.added_ranges[0].line_count, b.added_ranges[0].line_count);
+    }
+
+    #[test]
+    fn parse_diff_deletion_point_and_no_newline_marker() {
+        let diff = "\
+--- a/f.py
++++ b/f.py
+@@ -1,4 +1,2 @@
+ a
+-b
+-c
+ d
+\\ No newline at end of file
+";
+        let f = &parse_diff_with_ranges(diff)[0];
+        assert_eq!(f.deletion_points, vec![1]);
+        assert!(f.added_ranges.is_empty());
+        // Deletion between lines 1 and 2: a symbol spanning 1..=2 is touched,
+        // one ending at 1 or starting at 2 is not.
+        assert!(f.touches(1, 2));
+        assert!(!f.touches(1, 1));
+        assert!(!f.touches(2, 2));
+    }
+
+    #[test]
+    fn parse_diff_body_lines_resembling_headers_are_content() {
+        // A removed SQL comment line "-- x" appears as "--- x"; an added
+        // "++ y" appears as "+++ y".
+        let diff = "\
+--- a/f.sql
++++ b/f.sql
+@@ -1,2 +1,2 @@
+--- x
++++ y
+ keep
+";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "f.sql");
+        assert_eq!(files[0].added_ranges[0].start_line, 1);
     }
 
     /// Issue #212: two new symbols that hash identically must both be kept
