@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 pub(crate) use compact::compact_symbol_value;
-pub(crate) use schema::method_param_schema;
+pub use schema::method_param_schema;
 
 #[derive(Deserialize)]
 struct RpcRequest {
@@ -151,6 +151,11 @@ struct RgParams {
     hidden: Option<bool>,
     no_ignore: Option<bool>,
     follow: Option<bool>,
+    /// Restrict hits to files of this scope: "code" (excludes tests, docs and
+    /// examples), "docs", "tests", "examples" or "all" (default)
+    scope: Option<crate::search::SearchScope>,
+    /// Language filter (e.g. ["rust", "python"]): only hits in files of these languages
+    languages: Option<Vec<String>>,
     #[serde(alias = "as_of", alias = "version")]
     graph_version: Option<i64>,
 }
@@ -399,6 +404,9 @@ pub fn call(
     id_raw: &str,
 ) -> Result<String> {
     let params: Value = serde_json::from_str(params_raw).with_context(|| "parse params JSON")?;
+    // Fail the process (nonzero exit) on unknown params rather than
+    // reporting them inside a successful-looking response envelope.
+    check_no_unknown_params(&method, &params)?;
     let id = format::parse_value(id_raw);
     let mut app = App::new(repo_root, db_path, scan::ScanOptions::default())?;
     let request = RpcRequest { id, method, params };
@@ -436,7 +444,97 @@ impl App {
 /// Methods that manage their own budgets or intentionally return large content are exempt.
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 30_000;
 
+/// Serde aliases some params types accept, as `(alias, canonical field)`.
+/// schemars does not advertise aliases, so unknown-param detection needs its
+/// own list; an alias is only accepted for a method whose schema has the
+/// canonical field. `tests::alias_table_covers_every_serde_alias` keeps this
+/// in sync with the `#[serde(alias = ...)]` attributes in this file.
+const PARAM_ALIASES: &[(&str, &str)] = &[
+    ("as_of", "graph_version"),
+    ("version", "graph_version"),
+    ("pattern", "query"),
+    ("text", "query"),
+    ("q", "query"),
+    ("start_query", "query"),
+    ("path", "paths"),
+];
+
+/// Params read by the dispatcher itself for every method (response budget).
+const UNIVERSAL_PARAMS: &[&str] = &["max_response_bytes", "max_bytes", "max_tokens"];
+
+/// Keys in `params` that the method's registered schema (plus known aliases)
+/// does not accept, sorted. Empty for non-object params and for methods that
+/// are not dispatchable (those fail later with "unknown method").
+pub fn unknown_params(method: &str, params: &Value) -> Vec<String> {
+    let Some(obj) = params.as_object() else {
+        return Vec::new();
+    };
+    if !METHOD_LIST.contains(&method) {
+        return Vec::new();
+    }
+    let schema = method_param_schema(method);
+    let props = schema.get("properties").and_then(Value::as_object);
+    let declared = |key: &str| props.is_some_and(|p| p.contains_key(key));
+    let mut unknown: Vec<String> = obj
+        .keys()
+        .filter(|key| {
+            let key = key.as_str();
+            !(declared(key)
+                || UNIVERSAL_PARAMS.contains(&key)
+                || PARAM_ALIASES
+                    .iter()
+                    .any(|(alias, canonical)| *alias == key && declared(canonical)))
+        })
+        .cloned()
+        .collect();
+    unknown.sort();
+    unknown
+}
+
+fn unknown_params_message(method: &str, unknown: &[String]) -> String {
+    let schema = method_param_schema(method);
+    let mut valid: Vec<&str> = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|p| p.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    valid.sort_unstable();
+    format!(
+        "unknown param(s) for method '{method}': {}. Valid params: {}",
+        unknown.join(", "),
+        valid.join(", ")
+    )
+}
+
+fn check_no_unknown_params(method: &str, params: &Value) -> Result<()> {
+    let unknown = unknown_params(method, params);
+    if unknown.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(unknown_params_message(method, &unknown)))
+    }
+}
+
+/// Strict dispatch (CLI, raw RPC): unknown params are an error, checked
+/// before the method runs so a rejected request has no side effects.
 pub fn handle_method(indexer: &mut Indexer, method: &str, params: Value) -> Result<Value> {
+    check_no_unknown_params(method, &params)?;
+    dispatch_method(indexer, method, params)
+}
+
+/// Lenient dispatch (MCP): runs the method with the unknown params ignored
+/// and returns their names so the caller can surface them.
+pub fn handle_method_lenient(
+    indexer: &mut Indexer,
+    method: &str,
+    params: Value,
+) -> Result<(Value, Vec<String>)> {
+    let ignored = unknown_params(method, &params);
+    let value = dispatch_method(indexer, method, params)?;
+    Ok((value, ignored))
+}
+
+fn dispatch_method(indexer: &mut Indexer, method: &str, params: Value) -> Result<Value> {
     let start = Instant::now();
     let max_response_bytes = format::extract_max_response_bytes(method, &params);
     let value = match method {
@@ -1135,5 +1233,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn alias_table_covers_every_serde_alias() {
+        let src = include_str!("mod.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        let mut found = 0;
+        for line in prod.lines() {
+            let line = line.trim();
+            if !line.starts_with("#[serde(") {
+                continue;
+            }
+            for part in line.split("alias = \"").skip(1) {
+                let alias = part.split('"').next().unwrap();
+                found += 1;
+                assert!(
+                    super::PARAM_ALIASES.iter().any(|(a, _)| *a == alias),
+                    "serde alias '{alias}' is missing from PARAM_ALIASES"
+                );
+            }
+        }
+        assert!(found > 0, "expected to find serde aliases");
     }
 }

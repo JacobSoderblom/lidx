@@ -210,7 +210,7 @@ fn initialize_result(message: &Value) -> Value {
     \n\
     Edge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, \
     HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, \
-    USES, XREF, MODULE_FILE, IMPORTS_FILE. Scope values: code, docs, tests, examples, all.",
+    USES, XREF, MODULE_FILE, IMPORTS_FILE. Scope values (`search` param `scope`): code, docs, tests, examples, all.",
             other_methods = other_methods_list()
         ),
     })
@@ -327,13 +327,37 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
         }
     };
 
-    match rpc::handle_method(indexer, &method, call_params) {
-        Ok(result) => jsonrpc_result(id, call_result_ok(result, text_mode, include_structured)),
+    // Unknown params must not cost an agent its turn: run the method and
+    // report what was ignored instead of failing.
+    match rpc::handle_method_lenient(indexer, &method, call_params) {
+        Ok((result, ignored)) => {
+            let result = with_ignored_params(result, ignored);
+            jsonrpc_result(id, call_result_ok(result, text_mode, include_structured))
+        }
         Err(err) => jsonrpc_result(
             id,
             call_result_error(&err.to_string(), text_mode, include_structured),
         ),
     }
+}
+
+/// Attach `ignored_params` to a result. Absent when nothing was ignored, so
+/// well-formed requests get byte-identical responses. A bare-array result is
+/// wrapped as `{"items": [...]}` (the same shape `structuredContent` uses).
+fn with_ignored_params(result: Value, ignored: Vec<String>) -> Value {
+    if ignored.is_empty() {
+        return result;
+    }
+    let mut obj = match ensure_object_response(result) {
+        Value::Object(map) => map,
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("result".to_string(), other);
+            map
+        }
+    };
+    obj.insert("ignored_params".to_string(), json!(ignored));
+    Value::Object(obj)
 }
 
 const MAX_RESPONSE_BYTES: usize = 512_000; // 500KB hard cap
@@ -641,5 +665,107 @@ mod tests {
             .unwrap();
         let _ = state.get_indexer(repo_root, db_path).unwrap();
         assert_eq!(state.indexers.len(), 1);
+    }
+
+    fn mcp_state(label: &str) -> (State, PathBuf) {
+        let repo = temp_dir(label);
+        std::fs::write(repo.join("app.py"), "def needle():\n    pass\n").unwrap();
+        let defaults = Defaults {
+            repo_root: repo.clone(),
+            db_path: default_db_path(&repo),
+        };
+        let watch_config = watch::WatchConfig::new(watch::WatchMode::Off, 0, 0, 0, false);
+        (State::new(defaults, watch_config), repo)
+    }
+
+    fn call_tool(state: &mut State, method: &str, params: Value) -> Value {
+        let msg = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "lidx", "arguments": {
+                "method": method, "params": params, "include_structured": true
+            }}
+        });
+        handle_message(msg, state).unwrap()["result"].clone()
+    }
+
+    #[test]
+    fn tools_list_advertises_search_scope() {
+        let (mut state, _repo) = mcp_state("toolslist");
+        let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        let resp = handle_message(msg, &mut state).unwrap();
+        let variants = resp["result"]["tools"][0]["inputSchema"]["properties"]["params"]["oneOf"]
+            .as_array()
+            .unwrap();
+        let search = variants.iter().find(|v| v["title"] == "search").unwrap();
+        let scope = &search["properties"]["scope"];
+        assert!(scope.is_object(), "search schema lacks scope: {search}");
+        let text = scope.to_string();
+        for v in ["code", "docs", "tests", "examples", "all"] {
+            assert!(text.contains(v), "scope schema missing {v}: {text}");
+        }
+    }
+
+    #[test]
+    fn mcp_unknown_param_succeeds_and_is_listed_as_ignored() {
+        let (mut state, _repo) = mcp_state("ignored");
+        let ok = call_tool(&mut state, "search", json!({"query": "needle"}));
+        assert_eq!(ok["isError"], false, "{ok}");
+        assert!(
+            ok["structuredContent"].get("ignored_params").is_none(),
+            "no ignored_params expected for valid request: {ok}"
+        );
+        assert!(
+            !ok["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("ignored_params")
+        );
+
+        let res = call_tool(
+            &mut state,
+            "search",
+            json!({"query": "needle", "bogus_param": 1}),
+        );
+        assert_eq!(res["isError"], false, "{res}");
+        assert_eq!(
+            res["structuredContent"]["ignored_params"],
+            json!(["bogus_param"]),
+            "{res}"
+        );
+        assert!(
+            res["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("bogus_param")
+        );
+    }
+
+    #[test]
+    fn mcp_invalid_scope_is_error_listing_valid_values() {
+        let (mut state, _repo) = mcp_state("badscope");
+        let res = call_tool(
+            &mut state,
+            "search",
+            json!({"query": "needle", "scope": "bogus"}),
+        );
+        assert_eq!(res["isError"], true, "{res}");
+        let text = res["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("tests") && text.contains("code"), "{text}");
+    }
+
+    #[test]
+    fn instructions_scope_values_are_all_accepted_by_search() {
+        let init = initialize_result(&json!({}));
+        let instructions = init["instructions"].as_str().unwrap();
+        let line = instructions
+            .split("Scope values")
+            .nth(1)
+            .expect("instructions mention scope values");
+        let list = line.split('.').next().unwrap();
+        let schema = rpc::method_param_schema("search").to_string();
+        for v in ["code", "docs", "tests", "examples", "all"] {
+            assert!(list.contains(v), "instructions should list {v}: {list}");
+            assert!(schema.contains(v), "search schema should accept {v}");
+        }
     }
 }

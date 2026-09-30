@@ -2794,6 +2794,8 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
         follow: params.follow.unwrap_or(false),
         globs,
         paths,
+        scope: params.scope,
+        languages: scan::normalize_language_filter(params.languages.as_deref())?,
     };
     let mut results = search_rg(indexer.repo_root(), &params.query, limit, options)?;
     for hit in &mut results {
