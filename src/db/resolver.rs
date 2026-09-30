@@ -1276,6 +1276,33 @@ impl<'c> Resolver<'c> {
             r.receiver_type
         };
 
+        // An unqualified C# call inside a type body binds to the enclosing
+        // type's own member, then its base chain, before any name-wide
+        // lookup lets a same-named method elsewhere make it ambiguous. The
+        // extractor's `Container.name` target text carries the type.
+        let implicit = match (r.call_shape, r.target_qualname, receiver_type) {
+            (Some(shape), Some(qn), None) if shape.implicit_this && r.edge_kind == "CALLS" => {
+                qn.rsplit_once('.').map(|(container, _)| (qn, container))
+            }
+            _ => None,
+        };
+        if let Some((qn, container)) = implicit {
+            let found = self.resolve_by_name(
+                qn,
+                Some(container),
+                r.edge_kind,
+                r.source_lang,
+                CallerContext {
+                    file_path: r.source_file_path,
+                    qualname: r.source_qualname,
+                },
+                r.bare_call,
+            )?;
+            if let Some((id, kind)) = found {
+                return Ok(resolved(id, kind));
+            }
+        }
+
         let found = match r.target_qualname {
             Some(qn) => self.resolve_by_name(
                 qn,
@@ -4593,6 +4620,7 @@ mod tests {
         r.call_shape = Some(crate::indexer::extract::CallShape {
             arg_count: 2,
             is_new: false,
+            implicit_this: false,
         });
         let resolution = resolver.resolve(&r, &symbol_map).unwrap();
         assert!(

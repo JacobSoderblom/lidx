@@ -1554,6 +1554,15 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return;
     }
+    // An unqualified call inside a type body has an implicit receiver (see
+    // `CallShape::implicit_this`). A local function is no symbol, so a call
+    // to one binds to nothing: it must not fall on to a same-named member.
+    let implicit_this = node.kind() == "invocation_expression"
+        && !ctx.type_stack.is_empty()
+        && target_node.is_some_and(|target| target.kind() == "identifier");
+    if implicit_this && calls_local_function(node, &raw, source) {
+        return;
+    }
     let receiver_type = target_node.map_or(ReceiverType::NotTracked, |target| {
         infer_receiver_type(target, source, ctx)
     });
@@ -1648,9 +1657,34 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         bare_call: node.kind() == "invocation_expression"
             && target_node.is_some_and(|target| target.kind() == "identifier")
             && ctx.type_stack.is_empty(),
-        call_shape: Some(call_shape(node)),
+        call_shape: Some(CallShape {
+            implicit_this,
+            ..call_shape(node)
+        }),
         ..Default::default()
     });
+}
+
+/// Whether `name` is a local function declared in a block enclosing `node`
+/// (within its own method): C# binds an unqualified call to it first.
+fn calls_local_function(node: Node<'_>, name: &str, source: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        if ancestor.kind().ends_with("_declaration") {
+            return false;
+        }
+        let mut cursor = ancestor.walk();
+        if ancestor.named_children(&mut cursor).any(|child| {
+            is_local_function_node(child.kind())
+                && child
+                    .child_by_field_name("name")
+                    .is_some_and(|n| node_text(n, source) == name)
+        }) {
+            return true;
+        }
+        current = ancestor.parent();
+    }
+    false
 }
 
 /// The argument count / object-creation marker of a call or `new` node.
@@ -1673,6 +1707,7 @@ fn call_shape(node: Node<'_>) -> CallShape {
     CallShape {
         arg_count,
         is_new: node.kind() != "invocation_expression",
+        implicit_this: false,
     }
 }
 
