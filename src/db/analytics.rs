@@ -4,6 +4,7 @@ use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_
 use crate::model::{DuplicateGroup, Edge, Symbol, SymbolComplexity, SymbolCoupling};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 // Issue #134 follow-up: module identity used to be computed twice in
 // `top_fan_in_by_module` -- once here via a raw-SQL "first path segment"
@@ -648,20 +649,25 @@ impl Db {
     /// occurring as a token in a same-file symbol's `signature` -- the
     /// annotation-only case (`def f(x: Optional[int])`), which never emits
     /// any edge at all; (4) a module-level `__all__` re-export of that name
-    /// (`python::emit_module_export_edges`, `MODULE_EXPORT_KIND`).
+    /// (`python::emit_module_export_edges`, `MODULE_EXPORT_KIND`); and, for
+    /// Python files only (issue #242), (5) a whole-identifier scan of the
+    /// file's code (`indexer::python::file_identifiers`) -- value uses such as decorators, arguments
+    /// and attribute reads emit no edge -- excluding import statements only
+    /// (comments and strings count as mentions).
     pub fn unused_imports(
         &self,
         limit: usize,
         languages: Option<&[String]>,
         paths: Option<&[String]>,
         graph_version: i64,
+        repo_root: &Path,
     ) -> Result<Vec<Edge>> {
         let mut full_sql = String::from(
             "SELECT e.id, f.path, e.kind, e.source_symbol_id, e.target_symbol_id,
                     e.target_qualname, e.detail, e.evidence_snippet,
                     e.evidence_start_line, e.evidence_end_line, e.confidence,
                     e.graph_version, e.commit_sha, e.trace_id, e.span_id, e.event_ts,
-                    e.resolution_kind, e.file_id
+                    e.resolution_kind, e.file_id, f.language
              FROM edges e
              JOIN files f ON e.file_id = f.id
              WHERE e.kind = 'IMPORTS'
@@ -702,7 +708,7 @@ impl Db {
                     ur.reference_name, ur.detail, ur.evidence_snippet,
                     ur.evidence_start_line, ur.evidence_end_line, ur.confidence,
                     ur.graph_version, ur.commit_sha, ur.trace_id, ur.span_id, ur.event_ts,
-                    NULL, ur.file_id
+                    NULL, ur.file_id, f.language
              FROM unresolved_references ur
              JOIN files f ON ur.file_id = f.id
              WHERE ur.edge_kind = 'IMPORTS'
@@ -747,11 +753,12 @@ impl Db {
 
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&full_sql)?;
-        let candidates: Vec<(Edge, i64)> = stmt
+        let candidates: Vec<(Edge, i64, String)> = stmt
             .query_map(&*params, |row| {
                 let edge = edge_from_row(row)?;
                 let file_id: i64 = row.get(17)?;
-                Ok((edge, file_id))
+                let language: String = row.get(18)?;
+                Ok((edge, file_id, language))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
@@ -761,14 +768,16 @@ impl Db {
 
         let file_ids: Vec<i64> = candidates
             .iter()
-            .map(|(_, file_id)| *file_id)
+            .map(|(_, file_id, _)| *file_id)
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
         let usage = self.file_usage_signals(&file_ids, graph_version)?;
 
+        // Issue #242: per-file Python name scans, read lazily and cached.
+        let mut py_names: HashMap<String, Option<HashSet<String>>> = HashMap::new();
         let mut results = Vec::new();
-        for (edge, file_id) in candidates {
+        for (edge, file_id, language) in candidates {
             if results.len() >= limit {
                 break;
             }
@@ -784,6 +793,18 @@ impl Db {
                 .as_deref()
                 .unwrap_or_else(|| qualname_trailing_name(target_qualname));
             if import_alias_used(alias, edge.target_symbol_id, file_id, &usage) {
+                continue;
+            }
+            // Issue #242: an unreadable file counts as used (safe direction).
+            if language == "python"
+                && py_names
+                    .entry(edge.file_path.clone())
+                    .or_insert_with(|| {
+                        crate::indexer::python::file_identifiers(repo_root, &edge.file_path)
+                    })
+                    .as_ref()
+                    .is_none_or(|names| names.contains(alias))
+            {
                 continue;
             }
             results.push(edge);
@@ -1091,6 +1112,7 @@ mod tests {
             end_byte: 50,
             signature: None,
             docstring: None,
+            identity: None,
         }
     }
 

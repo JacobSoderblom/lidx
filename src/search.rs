@@ -10,7 +10,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which class of files a search is restricted to. Deserialized straight from
+/// the `search` method's `scope` param, so values outside this set are
+/// rejected (serde names the valid ones) rather than coerced to a default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum SearchScope {
     Code,
     Docs,
@@ -926,6 +930,10 @@ pub struct RgSearchOptions {
     pub follow: bool,
     pub globs: Vec<String>,
     pub paths: Vec<PathBuf>,
+    /// Keep only hits in files of this scope (`None` == all).
+    pub scope: Option<SearchScope>,
+    /// Keep only hits in files of these (already normalized) languages.
+    pub languages: Option<Vec<String>>,
 }
 
 /// Clamps an optional context-lines value to the range `0..=50`.
@@ -1068,6 +1076,15 @@ pub fn search_rg(
             .and_then(|v| v["start"].as_u64())
             .map(|v| v as usize + 1)
             .unwrap_or(1);
+        if !scope_allows(&path, options.scope, false, None) {
+            continue;
+        }
+        if let Some(langs) = &options.languages {
+            let path_lang = scan::language_for_path(Path::new(&path));
+            if path_lang.is_none_or(|lang| !langs.iter().any(|l| l == lang)) {
+                continue;
+            }
+        }
         hits.push(GrepHit {
             path,
             line: line_number,

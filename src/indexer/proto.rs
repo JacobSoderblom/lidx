@@ -245,6 +245,7 @@ fn symbol_from_span(
         end_byte: end_token.end_byte,
         signature: None,
         docstring: None,
+        identity: None,
     }
 }
 

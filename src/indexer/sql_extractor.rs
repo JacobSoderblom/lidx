@@ -109,6 +109,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 end_byte,
                 signature: None,
                 docstring: None,
+                identity: None,
             });
             output.edges.push(EdgeInput {
                 kind: "CONTAINS".to_string(),
@@ -638,6 +639,7 @@ fn extract_do_blocks(source: &str, module_name: &str, output: &mut ExtractedFile
                     end_byte: abs_idx as i64,
                     signature: None,
                     docstring: None,
+                    identity: None,
                 });
 
                 output.edges.push(EdgeInput {
@@ -760,6 +762,7 @@ fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut Extracted
             end_byte: end_byte as i64,
             signature: None,
             docstring: None,
+            identity: None,
         });
         output.edges.push(EdgeInput {
             kind: "CONTAINS".to_string(),
