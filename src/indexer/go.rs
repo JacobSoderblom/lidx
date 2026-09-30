@@ -257,6 +257,7 @@ fn handle_function(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
         end_byte,
         signature,
         docstring: None,
+        identity: None,
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -312,6 +313,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         end_byte,
         signature,
         docstring: None,
+        identity: None,
     });
 
     if let Some(ref rtype) = receiver_type {
@@ -397,6 +399,7 @@ fn handle_type_spec(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
         end_byte,
         signature: None,
         docstring: None,
+        identity: None,
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -436,6 +439,7 @@ fn handle_const_declaration(
                 end_byte,
                 signature: None,
                 docstring: None,
+                identity: None,
             });
             output.edges.push(EdgeInput {
                 kind: "CONTAINS".to_string(),
@@ -477,6 +481,7 @@ fn handle_var_declaration(node: Node<'_>, ctx: &Context, source: &str, output: &
                 end_byte,
                 signature: None,
                 docstring: None,
+                identity: None,
             });
             output.edges.push(EdgeInput {
                 kind: "CONTAINS".to_string(),

@@ -5,8 +5,9 @@ use crate::db::resolver::{
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
-    CallShape, DeferredArgument, DeferredBase, DeferredMarker, DeferredReturn, EdgeInput,
-    ExtractedFile, MAX_DEFERRED_DEPTH, ReceiverType, SymbolInput, TypeScope,
+    CallShape, DeclIdentity, DeferredArgument, DeferredBase, DeferredMarker, DeferredReturn,
+    EdgeInput, ExtractedFile, MAX_DEFERRED_DEPTH, ReceiverType, SymbolInput, TypeScope,
+    pinning_new_edges,
 };
 use crate::indexer::http;
 use crate::indexer::proto;
@@ -42,6 +43,9 @@ struct Context {
     module: String,
     namespace_stack: Vec<String>,
     type_stack: Vec<String>,
+    /// Generic arity of each enclosing type, outermost first (part of a
+    /// symbol's identity: `Box<T>` and `Box<T, U>` are different types).
+    generic_arities: Vec<usize>,
     fn_depth: usize,
     current_scope: String,
     route_prefix: Option<String>,
@@ -373,6 +377,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             module: module_name.to_string(),
             namespace_stack: Vec::new(),
             type_stack: Vec::new(),
+            generic_arities: Vec::new(),
             fn_depth: 0,
             current_scope: module_name.to_string(),
             route_prefix: None,
@@ -405,17 +410,17 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
         }
         // A qualname shared by overloads counts as static only when every
         // one of them is.
-        let statics = std::mem::take(&mut output.static_qualnames);
+        let statics = std::mem::take(&mut output.static_member_qualnames);
         for q in &statics {
             let declared = output
                 .symbols
                 .iter()
-                .filter(|s| s.kind == "method" && s.qualname == *q)
+                .filter(|s| matches!(s.kind.as_str(), "method" | "field") && s.qualname == *q)
                 .count();
             if statics.iter().filter(|o| *o == q).count() == declared
-                && !output.static_qualnames.contains(q)
+                && !output.static_member_qualnames.contains(q)
             {
-                output.static_qualnames.push(q.clone());
+                output.static_member_qualnames.push(q.clone());
             }
         }
         Ok(output)
@@ -499,6 +504,7 @@ fn walk_compilation_unit(node: Node<'_>, ctx: &Context, source: &str, output: &m
                 end_byte: span.5,
                 signature: None,
                 docstring: None,
+                identity: None,
             });
             output.edges.push(EdgeInput {
                 kind: "CONTAINS".to_string(),
@@ -527,7 +533,43 @@ fn walk_compilation_unit(node: Node<'_>, ctx: &Context, source: &str, output: &m
     }
 }
 
+/// Number of type parameters a type or method declares (`Box<T, U>` is 2).
+fn generic_arity(node: Node<'_>) -> usize {
+    let mut cursor = node.walk();
+    let list = node.child_by_field_name("type_parameters").or_else(|| {
+        node.named_children(&mut cursor)
+            .find(|c| c.kind() == "type_parameter_list")
+    });
+    let Some(list) = list else {
+        return 0;
+    };
+    let mut inner = list.walk();
+    list.named_children(&mut inner)
+        .filter(|c| c.kind() == "type_parameter")
+        .count()
+}
+
+/// Declaration identity: the generic arity of every enclosing type plus, for
+/// a type or method, its own. `None` when nothing is generic, so ordinary
+/// symbols keep their ids (issue #212).
+fn identity(ctx: &Context, own: Option<usize>) -> Option<DeclIdentity> {
+    let arities: Vec<usize> = ctx.generic_arities.iter().copied().chain(own).collect();
+    arities.iter().any(|a| *a > 0).then(|| DeclIdentity {
+        generic_arities: arities,
+        ..DeclIdentity::default()
+    })
+}
+
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    // Same-qualname declarations (`Box<T>` / `Box<T, U>`, issue #212) each
+    // keep their own outgoing and CONTAINS edges. Wrapping every node
+    // (rather than listing declaration kinds) means a new declaration kind
+    // is covered without touching this; a node that emits no symbol costs
+    // two length reads.
+    pinning_new_edges(output, |output| walk_node_inner(node, ctx, source, output));
+}
+
+fn walk_node_inner(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     if matches!(
         node.kind(),
         "invocation_expression"
@@ -640,6 +682,7 @@ fn handle_namespace(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
         end_byte: span.5,
         signature: None,
         docstring: None,
+        identity: None,
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -699,6 +742,7 @@ fn handle_type(
         end_byte,
         signature,
         docstring: None,
+        identity: identity(ctx, Some(generic_arity(node))),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -729,6 +773,7 @@ fn handle_type(
         combine_route_prefix(ctx.route_prefix.as_deref(), class_prefix.as_deref());
     let mut next_ctx = ctx.clone();
     next_ctx.type_stack.push(name);
+    next_ctx.generic_arities.push(generic_arity(node));
     next_ctx.current_scope = qualname;
     next_ctx.route_prefix = combined_prefix;
     next_ctx.grpc_service = grpc_service_info.map(|(service, _)| service);
@@ -820,7 +865,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         output.private_qualnames.push(qualname.clone());
     }
     if has_modifier(node, source, "static") {
-        output.static_qualnames.push(qualname.clone());
+        output.static_member_qualnames.push(qualname.clone());
     }
     if has_modifier(node, source, "override") {
         output.override_symbols.push((qualname.clone(), start_line));
@@ -838,6 +883,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         end_byte,
         signature,
         docstring: None,
+        identity: identity(ctx, Some(generic_arity(node))),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -1092,6 +1138,7 @@ fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
         end_byte,
         signature: signature.clone(),
         docstring: None,
+        identity: identity(ctx, None),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -1175,6 +1222,7 @@ fn handle_property(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
         end_byte,
         signature: None,
         docstring: None,
+        identity: identity(ctx, None),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -1256,6 +1304,7 @@ fn push_event(
         end_byte,
         signature: None,
         docstring: None,
+        identity: identity(ctx, None),
     });
     output.edges.push(EdgeInput {
         kind: "CONTAINS".to_string(),
@@ -1379,12 +1428,29 @@ fn walk_initializer(
 }
 
 fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    // `const` is implicitly static. Recorded so `dead_symbols` can tell a
+    // constants holder from a type with only instance state (#238): a
+    // static-field read leaves no edge.
+    let non_private = ["public", "internal", "protected"]
+        .iter()
+        .any(|m| has_modifier(node, source, m));
+    let is_static = has_modifier(node, source, "const")
+        || (has_modifier(node, source, "static") && non_private);
+    let first_symbol = output.symbols.len();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() != "variable_declaration" {
             continue;
         }
         handle_variable_declaration(child, ctx, source, output);
+    }
+    if is_static {
+        let fields: Vec<String> = output.symbols[first_symbol..]
+            .iter()
+            .filter(|s| s.kind == "field")
+            .map(|s| s.qualname.clone())
+            .collect();
+        output.static_member_qualnames.extend(fields);
     }
 }
 
@@ -1420,6 +1486,7 @@ fn handle_variable_declaration(
             end_byte,
             signature: None,
             docstring: None,
+            identity: identity(ctx, None),
         });
         output.edges.push(EdgeInput {
             kind: "CONTAINS".to_string(),
@@ -1554,6 +1621,32 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return;
     }
+    // An unqualified call inside a type body has an implicit receiver (see
+    // `CallShape::implicit_this`). A local function is no symbol, so a call
+    // to one binds to nothing: it must not fall on to a same-named member.
+    let implicit_this = node.kind() == "invocation_expression"
+        && !ctx.type_stack.is_empty()
+        && target_node.is_some_and(|target| match target.kind() {
+            "identifier" => true,
+            // `this.Foo()` names the same receiver explicitly.
+            "member_access_expression" => {
+                target
+                    .child_by_field_name("expression")
+                    .is_some_and(|e| e.kind() == "this")
+                    && target
+                        .child_by_field_name("name")
+                        .is_some_and(|n| n.kind() == "identifier")
+            }
+            _ => false,
+        });
+    let bare_identifier = target_node.is_some_and(|target| target.kind() == "identifier");
+    if bare_identifier && implicit_this && calls_local_function(node, &raw, source) {
+        return;
+    }
+    // Invoking a delegate held in a local or parameter is no method call.
+    if bare_identifier && ctx.local_types.contains_key(raw.as_str()) {
+        return;
+    }
     let receiver_type = target_node.map_or(ReceiverType::NotTracked, |target| {
         infer_receiver_type(target, source, ctx)
     });
@@ -1648,9 +1741,58 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         bare_call: node.kind() == "invocation_expression"
             && target_node.is_some_and(|target| target.kind() == "identifier")
             && ctx.type_stack.is_empty(),
-        call_shape: Some(call_shape(node)),
+        call_shape: Some(CallShape {
+            implicit_this,
+            ..call_shape(node)
+        }),
         ..Default::default()
     });
+}
+
+/// Whether `name` is a local function declared in a block enclosing `node`
+/// (within its own method, including from inside a lambda body, whose blocks
+/// are ancestors like any other): C# binds an unqualified call to it first.
+/// A local function is not an indexed symbol, so the caller drops the edge
+/// altogether rather than let it bind to a same-named member (deliberate:
+/// no edge is more honest than a wrong one).
+fn calls_local_function(node: Node<'_>, name: &str, source: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        // The enclosing member or type declaration bounds the search: a
+        // local function is only visible inside the member that declares
+        // it. (Not a `_declaration` suffix test: `variable_declaration`
+        // sits inside method bodies.)
+        if matches!(
+            ancestor.kind(),
+            "method_declaration"
+                | "constructor_declaration"
+                | "destructor_declaration"
+                | "operator_declaration"
+                | "conversion_operator_declaration"
+                | "accessor_declaration"
+                | "property_declaration"
+                | "indexer_declaration"
+                | "event_declaration"
+                | "field_declaration"
+                | "class_declaration"
+                | "struct_declaration"
+                | "record_declaration"
+                | "interface_declaration"
+        ) {
+            return false;
+        }
+        let mut cursor = ancestor.walk();
+        if ancestor.named_children(&mut cursor).any(|child| {
+            is_local_function_node(child.kind())
+                && child
+                    .child_by_field_name("name")
+                    .is_some_and(|n| node_text(n, source) == name)
+        }) {
+            return true;
+        }
+        current = ancestor.parent();
+    }
+    false
 }
 
 /// The argument count / object-creation marker of a call or `new` node.
@@ -1673,6 +1815,7 @@ fn call_shape(node: Node<'_>) -> CallShape {
     CallShape {
         arg_count,
         is_new: node.kind() != "invocation_expression",
+        implicit_this: false,
     }
 }
 
@@ -7222,7 +7365,7 @@ public class Box<T> {
         assert_eq!(sig("Get").as_deref(), Some("() -> T"));
         assert_eq!(sig("Map").as_deref(), Some("(int x) -> U"));
         assert_eq!(sig("Plain").as_deref(), Some("() -> Store"));
-        let mut statics = file.static_qualnames.clone();
+        let mut statics = file.static_member_qualnames.clone();
         statics.sort();
         assert_eq!(statics, vec!["module.Box.Plain", "module.Box.Twice"]);
         assert_eq!(

@@ -210,7 +210,8 @@ fn initialize_result(message: &Value) -> Value {
     \n\
     Edge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, \
     HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, \
-    USES, XREF, MODULE_FILE, IMPORTS_FILE. Scope values: code, docs, tests, examples, all.",
+    USES, XREF, MODULE_FILE, IMPORTS_FILE. Scope values (`search` param `scope`): code, docs, tests, examples, all. \
+    Params a method does not accept are ignored, not fatal: the result then carries `_meta.ignored_params` and a trailing text block naming them.",
             other_methods = other_methods_list()
         ),
     })
@@ -302,7 +303,15 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
         .unwrap_or_else(|| json!({}));
     let text_mode = text_mode_from_args(&arguments);
     let include_structured = include_structured_from_args(&arguments);
-    let (repo_root, db_path) = repo_and_db(&arguments, &state.defaults);
+    let (repo_root, db_path) = match repo_and_db(&arguments, &state.defaults) {
+        Ok(value) => value,
+        Err(err) => {
+            return jsonrpc_result(
+                id,
+                call_result_error(&format!("{err:#}"), text_mode, include_structured),
+            );
+        }
+    };
     let set_default = arguments
         .get("set_default")
         .and_then(|value| value.as_bool())
@@ -327,13 +336,43 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
         }
     };
 
-    match rpc::handle_method(indexer, &method, call_params) {
-        Ok(result) => jsonrpc_result(id, call_result_ok(result, text_mode, include_structured)),
+    // Unknown params must not cost an agent its turn: run the method and
+    // report what was ignored instead of failing.
+    match rpc::handle_method_lenient(indexer, &method, call_params) {
+        Ok((result, ignored)) => {
+            let payload = call_result_ok(result, text_mode, include_structured);
+            jsonrpc_result(id, with_ignored_params(payload, &ignored, text_mode))
+        }
         Err(err) => jsonrpc_result(
             id,
             call_result_error(&err.to_string(), text_mode, include_structured),
         ),
     }
+}
+
+/// Report ignored params without touching the result's own shape: the
+/// tool result gains `_meta.ignored_params` and (unless `text_mode` is
+/// `none`) one extra trailing text block so a model that only reads text
+/// still sees it. `structuredContent` and the first content block stay
+/// exactly as for a well-formed call, and nothing is added when nothing was
+/// ignored.
+fn with_ignored_params(mut payload: Value, ignored: &[String], text_mode: TextMode) -> Value {
+    if ignored.is_empty() {
+        return payload;
+    }
+    payload["_meta"] = json!({ "ignored_params": ignored });
+    if !matches!(text_mode, TextMode::None)
+        && let Some(content) = payload["content"].as_array_mut()
+    {
+        content.push(json!({
+            "type": "text",
+            "text": format!(
+                "ignored_params: {} (not accepted by this method; the call ran without them)",
+                ignored.join(", ")
+            )
+        }));
+    }
+    payload
 }
 
 const MAX_RESPONSE_BYTES: usize = 512_000; // 500KB hard cap
@@ -408,7 +447,7 @@ fn jsonrpc_error(id: Value, code: i64, message: &str) -> Value {
     })
 }
 
-fn repo_and_db(arguments: &Value, defaults: &Defaults) -> (PathBuf, PathBuf) {
+fn repo_and_db(arguments: &Value, defaults: &Defaults) -> anyhow::Result<(PathBuf, PathBuf)> {
     let repo_override = arguments
         .get("repo")
         .and_then(|value| value.as_str())
@@ -419,13 +458,18 @@ fn repo_and_db(arguments: &Value, defaults: &Defaults) -> (PathBuf, PathBuf) {
         .and_then(|value| value.as_str())
         .map(PathBuf::from);
 
+    // A request-supplied repo is untrusted input: validate before any DB path
+    // is derived so `Db::new` can never create directories for a bad repo.
+    if let Some(repo) = &repo_override {
+        crate::indexer::validate_repo_root(repo)?;
+    }
     let repo_root = repo_override.unwrap_or_else(|| defaults.repo_root.clone());
     let db_path = match db_override {
         Some(path) => path,
         None if has_repo_override => default_db_path(&repo_root),
         None => defaults.db_path.clone(),
     };
-    (repo_root, db_path)
+    Ok((repo_root, db_path))
 }
 
 fn default_db_path(repo: &Path) -> PathBuf {
@@ -526,7 +570,7 @@ mod tests {
             db_path: PathBuf::from("/repo/.lidx/.lidx.sqlite"),
         };
         let args = json!({});
-        let (repo, db) = repo_and_db(&args, &defaults);
+        let (repo, db) = repo_and_db(&args, &defaults).unwrap();
         assert_eq!(repo, PathBuf::from("/repo"));
         assert_eq!(db, PathBuf::from("/repo/.lidx/.lidx.sqlite"));
     }
@@ -537,10 +581,11 @@ mod tests {
             repo_root: PathBuf::from("/repo"),
             db_path: PathBuf::from("/repo/.lidx/.lidx.sqlite"),
         };
-        let args = json!({ "repo": "/other" });
-        let (repo, db) = repo_and_db(&args, &defaults);
-        assert_eq!(repo, PathBuf::from("/other"));
-        assert_eq!(db, PathBuf::from("/other/.lidx/.lidx.sqlite"));
+        let other = temp_dir("override");
+        let args = json!({ "repo": other });
+        let (repo, db) = repo_and_db(&args, &defaults).unwrap();
+        assert_eq!(repo, other);
+        assert_eq!(db, other.join(".lidx").join(".lidx.sqlite"));
     }
 
     #[test]
@@ -549,10 +594,25 @@ mod tests {
             repo_root: PathBuf::from("/repo"),
             db_path: PathBuf::from("/repo/.lidx/.lidx.sqlite"),
         };
-        let args = json!({ "repo": "/other", "db": "/tmp/custom.sqlite" });
-        let (repo, db) = repo_and_db(&args, &defaults);
-        assert_eq!(repo, PathBuf::from("/other"));
+        let other = temp_dir("override-db");
+        let args = json!({ "repo": other, "db": "/tmp/custom.sqlite" });
+        let (repo, db) = repo_and_db(&args, &defaults).unwrap();
+        assert_eq!(repo, other);
         assert_eq!(db, PathBuf::from("/tmp/custom.sqlite"));
+    }
+
+    #[test]
+    fn repo_and_db_rejects_missing_repo_without_creating_dirs() {
+        let defaults = Defaults {
+            repo_root: PathBuf::from("/repo"),
+            db_path: PathBuf::from("/repo/.lidx/.lidx.sqlite"),
+        };
+        let parent = temp_dir("missing-parent");
+        let missing = parent.join("typo");
+        let args = json!({ "repo": missing });
+        let err = repo_and_db(&args, &defaults).unwrap_err();
+        assert!(format!("{err:#}").contains("typo"), "{err:#}");
+        assert!(!missing.exists());
     }
 
     #[test]
@@ -655,5 +715,149 @@ mod tests {
             .unwrap();
         let _ = state.get_indexer(repo_root, db_path).unwrap();
         assert_eq!(state.indexers.len(), 1);
+    }
+
+    fn mcp_state(label: &str) -> (State, PathBuf) {
+        let repo = temp_dir(label);
+        std::fs::write(repo.join("app.py"), "def needle():\n    pass\n").unwrap();
+        let defaults = Defaults {
+            repo_root: repo.clone(),
+            db_path: default_db_path(&repo),
+        };
+        let watch_config = watch::WatchConfig::new(watch::WatchMode::Off, 0, 0, 0, false);
+        (State::new(defaults, watch_config), repo)
+    }
+
+    fn call_tool(state: &mut State, method: &str, params: Value) -> Value {
+        let msg = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "lidx", "arguments": {
+                "method": method, "params": params, "include_structured": true
+            }}
+        });
+        handle_message(msg, state).unwrap()["result"].clone()
+    }
+
+    #[test]
+    fn tools_list_advertises_search_scope() {
+        let (mut state, _repo) = mcp_state("toolslist");
+        let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        let resp = handle_message(msg, &mut state).unwrap();
+        let variants = resp["result"]["tools"][0]["inputSchema"]["properties"]["params"]["oneOf"]
+            .as_array()
+            .unwrap();
+        let search = variants.iter().find(|v| v["title"] == "search").unwrap();
+        let scope = &search["properties"]["scope"];
+        assert!(scope.is_object(), "search schema lacks scope: {search}");
+        let text = scope.to_string();
+        for v in ["code", "docs", "tests", "examples", "all"] {
+            assert!(text.contains(v), "scope schema missing {v}: {text}");
+        }
+    }
+
+    fn full_response(state: &mut State, method: &str, params: Value) -> Value {
+        let msg = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "lidx", "arguments": {
+                "method": method, "params": params, "include_structured": true
+            }}
+        });
+        handle_message(msg, state).unwrap()
+    }
+
+    #[test]
+    fn well_formed_call_response_is_unchanged() {
+        let (mut state, _repo) = mcp_state("shape");
+        let resp = full_response(&mut state, "search", json!({"query": "needle"}));
+        let hit = json!({
+            "line": 1,
+            "line_text": "def needle():",
+            "next_hops": [{
+                "description": "Outline app.py",
+                "method": "outline",
+                "params": {"path": "app.py"}
+            }],
+            "path": "app.py"
+        });
+        let expected = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{"type": "text", "text": json!([hit.clone()]).to_string()}],
+                "isError": false,
+                "structuredContent": {"items": [hit]}
+            }
+        });
+        assert_eq!(resp, expected);
+    }
+
+    #[test]
+    fn stray_param_on_list_result_keeps_shape_and_reports_ignored() {
+        let (mut state, _repo) = mcp_state("stray");
+        let clean = full_response(&mut state, "search", json!({"query": "needle"}));
+        let stray = full_response(
+            &mut state,
+            "search",
+            json!({"query": "needle", "bogus_param": 1}),
+        );
+        let (clean, stray) = (&clean["result"], &stray["result"]);
+        assert_eq!(stray["isError"], false, "{stray}");
+        // The result itself is untouched: still a bare array in the first
+        // text block and the same structuredContent.
+        assert_eq!(stray["content"][0], clean["content"][0]);
+        assert!(
+            stray["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with('[')
+        );
+        assert_eq!(stray["structuredContent"], clean["structuredContent"]);
+        // The ignored param is reported beside it.
+        assert_eq!(stray["_meta"]["ignored_params"], json!(["bogus_param"]));
+        let extra = stray["content"][1]["text"].as_str().unwrap();
+        assert!(extra.contains("bogus_param"), "{extra}");
+        assert_eq!(stray["content"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn stray_param_on_object_result_keeps_shape() {
+        let (mut state, _repo) = mcp_state("strayobj");
+        let clean = full_response(&mut state, "onboard", json!({}));
+        let stray = full_response(&mut state, "onboard", json!({"bogus_param": 1}));
+        let (clean, stray) = (&clean["result"], &stray["result"]);
+        assert_eq!(stray["content"][0], clean["content"][0]);
+        assert_eq!(stray["structuredContent"], clean["structuredContent"]);
+        assert_eq!(stray["_meta"]["ignored_params"], json!(["bogus_param"]));
+    }
+
+    #[test]
+    fn mcp_invalid_scope_is_error_listing_valid_values() {
+        let (mut state, _repo) = mcp_state("badscope");
+        let res = call_tool(
+            &mut state,
+            "search",
+            json!({"query": "needle", "scope": "bogus"}),
+        );
+        assert_eq!(res["isError"], true, "{res}");
+        let text = res["content"][0]["text"].as_str().unwrap();
+        for v in ["code", "docs", "tests", "examples", "all"] {
+            assert!(text.contains(v), "error should list '{v}': {text}");
+        }
+    }
+
+    #[test]
+    fn instructions_scope_values_are_all_accepted_by_search() {
+        let init = initialize_result(&json!({}));
+        let instructions = init["instructions"].as_str().unwrap();
+        let line = instructions
+            .split("Scope values")
+            .nth(1)
+            .expect("instructions mention scope values");
+        let list = line.split('.').next().unwrap();
+        let schema = rpc::method_param_schema("search").to_string();
+        for v in ["code", "docs", "tests", "examples", "all"] {
+            assert!(list.contains(v), "instructions should list {v}: {list}");
+            assert!(schema.contains(v), "search schema should accept {v}");
+        }
     }
 }

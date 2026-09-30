@@ -3,15 +3,34 @@ use crate::db::{Db, FileRecord};
 use crate::indexer::extract::ExtractedFile;
 use crate::metrics;
 use crate::model::{ChangedFilesResult, IndexStats};
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// Check that `repo` exists and is a directory, returning its canonical path.
+///
+/// This is the single trust-boundary check for user-supplied repo roots. It
+/// must run before any database connection is opened or any directory is
+/// created, so an invalid path can never materialise `<repo>/.lidx`.
+pub fn validate_repo_root(repo: &Path) -> Result<PathBuf> {
+    let metadata = std::fs::metadata(repo).with_context(|| {
+        format!(
+            "repo root does not exist or is inaccessible: {}",
+            repo.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        bail!("repo root is not a directory: {}", repo.display());
+    }
+    std::fs::canonicalize(repo)
+        .with_context(|| format!("canonicalize repo root {}", repo.display()))
+}
 
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 6;
+pub const EXTRACTOR_VERSION: i64 = 7;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -88,7 +107,7 @@ impl Indexer {
         db_path: PathBuf,
         scan_options: scan::ScanOptions,
     ) -> Result<Self> {
-        let repo_root = std::fs::canonicalize(&repo_root).unwrap_or(repo_root);
+        let repo_root = validate_repo_root(&repo_root)?;
         let db = Db::new(&db_path)?;
         let graph_version = db.current_graph_version()?;
         let commit_sha = db.graph_version_commit(graph_version)?;
@@ -389,14 +408,45 @@ impl Indexer {
         Ok(stats)
     }
 
+    /// Reindex the repository without the empty-scan guard.
+    ///
+    /// Internal callers (watch, RPC handlers, init) use this: their repo root
+    /// was validated at startup, and a walk error on a vanished root is fatal
+    /// in the scanner. Only the `lidx reindex` CLI applies the guard, through
+    /// [`Indexer::reindex_with_options`].
     pub fn reindex(&mut self) -> Result<IndexStats> {
+        self.reindex_impl(true)
+    }
+
+    /// Reindex the repository, refusing a destructive empty scan.
+    ///
+    /// Unless `allow_empty` is true, a scan that finds zero files is refused
+    /// with an error naming the previous indexed file count and the scanned
+    /// count (0). The refusal happens before any database write, so the index
+    /// and graph version are left untouched. Pass `allow_empty = true` to
+    /// legitimately index an empty repository or empty an existing index.
+    pub fn reindex_with_options(&mut self, allow_empty: bool) -> Result<IndexStats> {
+        self.reindex_impl(allow_empty)
+    }
+
+    fn reindex_impl(&mut self, allow_empty: bool) -> Result<IndexStats> {
         let started = Instant::now();
         let previous_graph_version = self.graph_version;
         let commit_sha = crate::util::git_head_sha(&self.repo_root);
-        self.graph_version = self.db.create_graph_version(commit_sha.as_deref())?;
-        self.commit_sha = commit_sha;
         let scanned = scan::scan_repo_with_options(&self.repo_root, self.scan_options)?;
         let existing = self.db.list_files(previous_graph_version)?;
+        if scanned.is_empty() && !allow_empty {
+            bail!(
+                "refusing to reindex {}: scan found {} file(s) but the previous index has {}. \
+                 This usually means the repo path is wrong, moved or emptied; \
+                 pass --allow-empty to proceed",
+                self.repo_root.display(),
+                scanned.len(),
+                existing.len()
+            );
+        }
+        self.graph_version = self.db.create_graph_version(commit_sha.as_deref())?;
+        self.commit_sha = commit_sha;
         let mut existing_map: HashMap<String, FileRecord> = HashMap::new();
         for record in existing {
             existing_map.insert(record.path.clone(), record);
@@ -523,6 +573,7 @@ impl Indexer {
                 .db
                 .get_symbols_for_file(&file.rel_path, self.graph_version)?;
             let diff = differ::compute_symbol_diff(existing_symbols, extracted.symbols.clone());
+            warn_stable_id_collisions(&file.rel_path, &diff);
 
             // Upsert file to get file_id
             let file_id = self.db.upsert_file(
@@ -569,7 +620,7 @@ impl Indexer {
                 *file_id,
                 self.graph_version,
                 &extracted.private_qualnames,
-                &extracted.static_qualnames,
+                &extracted.static_member_qualnames,
                 &extracted.override_symbols,
             )?;
         }
@@ -609,7 +660,7 @@ impl Indexer {
                 self.db.upsert_file_metrics(file_id, metrics)?;
             }
             self.db
-                .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbol_map)?;
+                .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbols)?;
 
             stats.indexed += 1;
             stats.symbols += diff.added.len() + diff.modified.len() + diff.unchanged.len();
@@ -788,6 +839,7 @@ impl Indexer {
 
         // Compute diff between old and new symbols
         let diff = differ::compute_symbol_diff(existing_symbols, extracted.symbols.clone());
+        warn_stable_id_collisions(&file.rel_path, &diff);
 
         // Phase 3: Log diff statistics
         if !diff.added.is_empty() || !diff.modified.is_empty() || !diff.deleted.is_empty() {
@@ -833,7 +885,7 @@ impl Indexer {
             file_id,
             self.graph_version,
             &extracted.private_qualnames,
-            &extracted.static_qualnames,
+            &extracted.static_member_qualnames,
             &extracted.override_symbols,
         )?;
 
@@ -884,7 +936,7 @@ impl Indexer {
             self.db.upsert_file_metrics(file_id, metrics)?;
         }
         self.db
-            .insert_symbol_metrics(file_id, &extracted.symbol_metrics, &symbol_map)?;
+            .insert_symbol_metrics(file_id, &extracted.symbol_metrics, symbols)?;
 
         Ok((symbols.len(), edges_count))
     }
@@ -961,5 +1013,18 @@ impl Indexer {
                 .set_meta_i64(&js_stale::export_surface_key(&file.rel_path), surface)?;
         }
         Ok(extracted)
+    }
+}
+
+/// A stable-id collision is never resolved by dropping a symbol (issue #212):
+/// the differ tells the twins apart by ordinal. Say so, since it means the
+/// identity scheme cannot yet distinguish these declarations by themselves.
+fn warn_stable_id_collisions(rel_path: &str, diff: &differ::SymbolDiff) {
+    for collision in &diff.collisions {
+        eprintln!(
+            "lidx: warning: {} declarations of {} {} in {rel_path} share one stable id; \
+             kept all, disambiguated by declaration order",
+            collision.count, collision.kind, collision.qualname
+        );
     }
 }
