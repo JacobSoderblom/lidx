@@ -153,6 +153,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
             let db_path = self.db.db_path().to_path_buf();
             let seed_ids = seed_ids.to_vec();
             let exclude_resolution_kinds = self.config.direct.exclude_resolution_kinds.clone();
+            let max_depth = self.config.direct.max_depth;
             let metadata = Arc::clone(&layer_metadata);
             let results = Arc::clone(&layer_results);
 
@@ -176,7 +177,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
                     }
                 };
 
-                let test_layer = TestImpactLayer::new(&db);
+                let test_layer = TestImpactLayer::new(&db).with_max_depth(max_depth);
                 match test_layer.analyze(&seed_ids, &exclude_resolution_kinds, graph_version) {
                     Ok(result) => {
                         let mut meta = metadata.lock().unwrap();
@@ -594,7 +595,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
 
     /// Run Layer 2: Test impact
     fn run_test_layer(&self, seed_ids: &[i64], graph_version: i64) -> Result<LayerResult> {
-        let test_layer = TestImpactLayer::new(self.db);
+        let test_layer = TestImpactLayer::new(self.db).with_max_depth(self.config.direct.max_depth);
         test_layer.analyze(
             seed_ids,
             &self.config.direct.exclude_resolution_kinds,
@@ -689,7 +690,8 @@ impl<'a> MultiLayerOrchestrator<'a> {
                 let distance = evidence
                     .iter()
                     .filter_map(|e| match e {
-                        ImpactSource::DirectEdge { distance, .. } => Some(*distance),
+                        ImpactSource::DirectEdge { distance, .. }
+                        | ImpactSource::TestLink { distance, .. } => Some(*distance),
                         _ => None,
                     })
                     .min()

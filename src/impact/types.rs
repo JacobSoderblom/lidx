@@ -109,8 +109,10 @@ pub enum ImpactSource {
     },
     /// Test relationship
     TestLink {
-        strategy: String,  // "import", "call", "call_via_interface", "naming", "proximity"
+        strategy: String,  // "import", "call", "call_via_interface", "graph"
         test_type: String, // "unit", "integration", "e2e"
+        /// Graph hops from the test to the seed (>= 1).
+        distance: usize,
     },
     /// Historical co-change pattern
     CoChange {
@@ -298,6 +300,10 @@ pub struct BatchImpactEntry {
     /// Present only when seed resolution failed; contains next_hops and a message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery: Option<serde_json::Value>,
+    /// Present only when the TEST layer ran and found no test reaching the
+    /// seed through the graph: the reason and follow-up queries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_layer: Option<serde_json::Value>,
 }
 
 /// Result of batch impact analysis (multiple seeds in one call)

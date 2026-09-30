@@ -102,16 +102,19 @@ pub fn confidence_from_source(source: &ImpactSource) -> ConfidenceScore {
             let base = 0.95;
             apply_distance_decay(base, *distance)
         }
-        ImpactSource::TestLink { strategy, .. } => {
-            // Test link confidence depends on strategy
-            match strategy.as_str() {
-                "call" => 0.95,
-                "call_via_interface" => 0.7,
-                "import" => 0.7,
-                "naming" => 0.6,
-                "proximity" => 0.4,
-                _ => 0.5, // Unknown strategy
-            }
+        ImpactSource::TestLink {
+            strategy, distance, ..
+        } => {
+            // Confidence depends on how the test reaches the seed, decayed by
+            // the hops beyond the minimum for that strategy (a dispatch hop
+            // through the interface method is inherent to `call_via_interface`).
+            let (base, min_distance) = match strategy.as_str() {
+                "call" | "graph" => (0.95, 1),
+                "import" => (0.7, 1),
+                "call_via_interface" => (0.7, 2),
+                _ => (0.5, 1), // Unknown strategy
+            };
+            apply_distance_decay(base, distance.saturating_sub(min_distance))
         }
         ImpactSource::CoChange { frequency, .. } => {
             // Co-change confidence is the frequency itself
@@ -214,14 +217,24 @@ mod tests {
         let source = ImpactSource::TestLink {
             strategy: "call".to_string(),
             test_type: "unit".to_string(),
+            distance: 1,
         };
         assert_eq!(confidence_from_source(&source), 0.95);
 
         let source2 = ImpactSource::TestLink {
             strategy: "import".to_string(),
             test_type: "integration".to_string(),
+            distance: 1,
         };
         assert_eq!(confidence_from_source(&source2), 0.7);
+
+        // Extra hops decay the score.
+        let source3 = ImpactSource::TestLink {
+            strategy: "graph".to_string(),
+            test_type: "unit".to_string(),
+            distance: 3,
+        };
+        assert!((confidence_from_source(&source3) - 0.7695).abs() < 0.001);
     }
 
     #[test]
@@ -245,6 +258,7 @@ mod tests {
             ImpactSource::TestLink {
                 strategy: "call".to_string(),
                 test_type: "unit".to_string(),
+                distance: 1,
             },
         ];
         let result = fuse_evidence(&sources);
