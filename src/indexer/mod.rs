@@ -620,7 +620,7 @@ impl Indexer {
                 *file_id,
                 self.graph_version,
                 &extracted.private_qualnames,
-                &extracted.static_qualnames,
+                &extracted.static_member_qualnames,
                 &extracted.override_symbols,
             )?;
         }
@@ -885,7 +885,7 @@ impl Indexer {
             file_id,
             self.graph_version,
             &extracted.private_qualnames,
-            &extracted.static_qualnames,
+            &extracted.static_member_qualnames,
             &extracted.override_symbols,
         )?;
 

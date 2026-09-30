@@ -507,6 +507,10 @@ impl Db {
         );
         let gv = graph_version;
         let call_reaches = super::graph_query::call_reaches_impl_sql("ce");
+        let is_override = super::graph_query::has_modifier_sql("s", "override");
+        let is_private = super::graph_query::has_modifier_sql("s", "private");
+        let external_base = super::graph_query::external_base_member_sql("s", gv);
+        let live_member = super::graph_query::live_nested_member_sql("s", gv);
         let sql = format!("SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
                           s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
                           s.graph_version, s.commit_sha, s.stable_id
@@ -562,7 +566,15 @@ impl Db {
                            AND ur.edge_kind = 'IMPLEMENTS'
                            AND ur.graph_version = ?
                        )
-                     ))");
+                     ))
+                     -- Issue #238: overrides, framework-called members of a C#
+                     -- type with an external base, and types with a live
+                     -- member are not dead (see the helpers' docs).
+                     AND NOT (s.kind IN ('method', 'function') AND {is_override})
+                     AND NOT (s.kind = 'method' AND f.language = 'csharp'
+                              AND NOT {is_private} AND {external_base})
+                     AND NOT (s.kind IN ('class', 'struct', 'record', 'interface')
+                              AND {live_member})");
 
         let mut full_sql = sql;
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![

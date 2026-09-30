@@ -410,17 +410,17 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
         }
         // A qualname shared by overloads counts as static only when every
         // one of them is.
-        let statics = std::mem::take(&mut output.static_qualnames);
+        let statics = std::mem::take(&mut output.static_member_qualnames);
         for q in &statics {
             let declared = output
                 .symbols
                 .iter()
-                .filter(|s| s.kind == "method" && s.qualname == *q)
+                .filter(|s| matches!(s.kind.as_str(), "method" | "field") && s.qualname == *q)
                 .count();
             if statics.iter().filter(|o| *o == q).count() == declared
-                && !output.static_qualnames.contains(q)
+                && !output.static_member_qualnames.contains(q)
             {
-                output.static_qualnames.push(q.clone());
+                output.static_member_qualnames.push(q.clone());
             }
         }
         Ok(output)
@@ -865,7 +865,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         output.private_qualnames.push(qualname.clone());
     }
     if has_modifier(node, source, "static") {
-        output.static_qualnames.push(qualname.clone());
+        output.static_member_qualnames.push(qualname.clone());
     }
     if has_modifier(node, source, "override") {
         output.override_symbols.push((qualname.clone(), start_line));
@@ -1428,12 +1428,29 @@ fn walk_initializer(
 }
 
 fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    // `const` is implicitly static. Recorded so `dead_symbols` can tell a
+    // constants holder from a type with only instance state (#238): a
+    // static-field read leaves no edge.
+    let non_private = ["public", "internal", "protected"]
+        .iter()
+        .any(|m| has_modifier(node, source, m));
+    let is_static = has_modifier(node, source, "const")
+        || (has_modifier(node, source, "static") && non_private);
+    let first_symbol = output.symbols.len();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() != "variable_declaration" {
             continue;
         }
         handle_variable_declaration(child, ctx, source, output);
+    }
+    if is_static {
+        let fields: Vec<String> = output.symbols[first_symbol..]
+            .iter()
+            .filter(|s| s.kind == "field")
+            .map(|s| s.qualname.clone())
+            .collect();
+        output.static_member_qualnames.extend(fields);
     }
 }
 
@@ -7348,7 +7365,7 @@ public class Box<T> {
         assert_eq!(sig("Get").as_deref(), Some("() -> T"));
         assert_eq!(sig("Map").as_deref(), Some("(int x) -> U"));
         assert_eq!(sig("Plain").as_deref(), Some("() -> Store"));
-        let mut statics = file.static_qualnames.clone();
+        let mut statics = file.static_member_qualnames.clone();
         statics.sort();
         assert_eq!(statics, vec!["module.Box.Plain", "module.Box.Twice"]);
         assert_eq!(
