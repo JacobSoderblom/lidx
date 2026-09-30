@@ -20,6 +20,12 @@ const METHODS_WITH_OWN_MAX_BYTES: &[&str] = &[
     "read_symbol",
 ];
 
+/// Param names the dispatcher reads for every method (see
+/// `extract_max_response_bytes`); they are never "unknown" even when a
+/// method's own params struct has no field for them.
+pub(super) const RESPONSE_BUDGET_PARAMS: [&str; 3] =
+    ["max_response_bytes", "max_bytes", "max_tokens"];
+
 /// Extract the response byte budget from params. Supports three names:
 /// `max_response_bytes` (preferred, most explicit), `max_bytes` (alias --
 /// this is what fixes analyze_impact silently ignoring `max_bytes`, since it

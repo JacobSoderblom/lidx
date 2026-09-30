@@ -493,9 +493,9 @@ where
 }
 
 /// Issue #63: per-scope file counts for `repo_overview`, reusing
-/// `search::scope_allows` -- the same query-time classifier the `search`
-/// method's `scope` param uses -- rather than introducing a stored scope
-/// column. Runs the classifier in-process over a file set the caller
+/// `search::scope_allows` -- the one query-time classifier, also applied to
+/// hits by the `search` method's `scope` param (issue #213) -- rather than
+/// introducing a stored scope column. Runs the classifier in-process over a file set the caller
 /// already fetched via `file_paths_for_version` (issue #69: `repo_overview`
 /// shares that one query with its own `files` count instead of each
 /// running a separate copy of the same WHERE clause).
