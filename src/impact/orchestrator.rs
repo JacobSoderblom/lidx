@@ -793,16 +793,19 @@ impl<'a> MultiLayerOrchestrator<'a> {
                     path,
                     confidence: Some(confidence),
                     also_via,
+                    file_level: crate::indexer::test_detection::is_file_level_test(symbol),
                 });
             }
         }
 
         // Filter out module/namespace-level symbols that add noise
+        // (a JS/TS test file's module is kept: it is the test).
         affected.retain(|entry| {
-            !matches!(
-                entry.symbol.kind.as_str(),
-                "module" | "namespace" | "package"
-            )
+            entry.file_level
+                || !matches!(
+                    entry.symbol.kind.as_str(),
+                    "module" | "namespace" | "package"
+                )
         });
 
         // Sort by distance, then by qualname for determinism

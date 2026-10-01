@@ -194,6 +194,7 @@ pub fn analyze_impact(
                 path,
                 confidence: Some(*confidence),
                 also_via: Vec::new(),
+                file_level: false,
             });
         }
     }

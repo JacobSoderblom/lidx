@@ -89,7 +89,7 @@ impl Db {
     pub fn list_symbol_refs(&self, graph_version: i64) -> Result<Vec<SymbolRefRecord>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT s.id, s.name, s.qualname, s.kind, f.language, f.path
+            "SELECT s.id, s.name, s.qualname, s.kind, f.language, f.path, s.visibility
              FROM symbols s
              JOIN files f ON s.file_id = f.id
              WHERE s.graph_version = ?
@@ -104,6 +104,7 @@ impl Db {
                 kind: row.get(3)?,
                 language: row.get(4)?,
                 path: row.get(5)?,
+                visibility: row.get(6)?,
             })
         })?;
         let mut records = Vec::new();

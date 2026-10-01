@@ -6,6 +6,9 @@ use anyhow::Result;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
 
+/// Edge kind for SQL foreign-key `REFERENCES` clauses.
+pub const REFERENCES_KIND: &str = "REFERENCES";
+
 #[derive(Clone)]
 struct Context {
     module: String,
@@ -158,7 +161,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                     let refs = extract_foreign_key_references(&node_text_str);
                     for target_table in refs {
                         output.edges.push(EdgeInput {
-                            kind: "REFERENCES".to_string(),
+                            kind: REFERENCES_KIND.to_string(),
                             source_qualname: Some(qualname_owned.clone()),
                             target_qualname: Some(target_table),
                             detail: Some("foreign key".to_string()),

@@ -1,8 +1,8 @@
 use crate::db::Db;
 use crate::indexer::channel::{boundary_type_for_kind, bridge_complement};
 use crate::indexer::config::{
-    BridgeOutcome, BridgeTarget, CAP_TRUNCATION_REASON, ConfigScope, Entry, config_edge_allowed,
-    prefer_same_service,
+    BridgeOutcome, BridgeTarget, CAP_TRUNCATION_REASON, CROSS_SERVICE_KIND, ConfigScope, Entry,
+    config_edge_allowed, prefer_same_service,
 };
 use crate::indexer::scan::language_for_path;
 use crate::model::{Edge, Symbol, TraceHop};
@@ -423,14 +423,20 @@ pub fn trace_flow(
                         )
                         .unwrap_or_default();
                     let b_type = boundary_type_for_kind(edge_kind);
-                    for bridged_edge in prefer_same_service(tq, origin_path, &bridged) {
+                    for (bridged_edge, speculative) in
+                        prefer_same_service(tq, origin_path, &bridged)
+                    {
                         let Some(bridged_id) = bridged_edge.source_symbol_id else {
                             continue;
                         };
                         let make_hop = |bridged_sym: &Symbol| {
                             let prev_lang = detect_language(&prev_file);
                             let next_lang = detect_language(&bridged_sym.file_path);
-                            let b_detail = build_boundary_detail(b_type, &prev_lang, &next_lang);
+                            let mut b_detail =
+                                build_boundary_detail(b_type, &prev_lang, &next_lang);
+                            if speculative {
+                                b_detail.push_str(" (speculative: other service)");
+                            }
                             TraceHop {
                                 symbol: bridged_sym.clone(),
                                 edge_kind: bridged_edge.kind.clone(),
@@ -445,7 +451,11 @@ pub fn trace_flow(
                                 boundary_type: Some(b_type.to_string()),
                                 boundary_detail: Some(b_detail),
                                 protocol_context: extract_protocol_context(bridged_edge),
-                                resolution_kind: bridged_edge.resolution_kind.clone(),
+                                resolution_kind: if speculative {
+                                    Some(CROSS_SERVICE_KIND.to_string())
+                                } else {
+                                    bridged_edge.resolution_kind.clone()
+                                },
                             }
                         };
                         let admission = match scope.admit_bridged(bridge, bridged_id, || {
