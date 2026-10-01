@@ -270,32 +270,22 @@ fn dead_symbols_includes_unused_helper() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// Issue #241: `limit:0` is unusable input -- it must error rather than
+/// return empty arrays that read as "no dead symbols".
 #[test]
-fn dead_symbols_limit_zero_returns_empty() {
+fn dead_symbols_limit_zero_is_rejected() {
     let (repo_root, db_path) = setup_repo("dead_symbols");
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer.reindex().unwrap();
 
-    let result = rpc::handle_method(
+    let err = rpc::handle_method(
         &mut indexer,
         "dead_symbols",
         serde_json::json!({"limit": 0}),
     )
-    .unwrap();
-
-    let ds_len = result["dead_symbols"].as_array().unwrap().len();
-    assert_eq!(
-        ds_len, 0,
-        "With limit=0, dead_symbols array should be empty, got {}",
-        ds_len
-    );
-
-    let ui_len = result["unused_imports"].as_array().unwrap().len();
-    assert_eq!(
-        ui_len, 0,
-        "With limit=0, unused_imports array should be empty, got {}",
-        ui_len
-    );
+    .expect_err("limit:0 must be an error")
+    .to_string();
+    assert!(err.contains("limit") && err.contains("at least 1"), "{err}");
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }

@@ -62,6 +62,13 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let requested_max_bytes = params.max_bytes;
     let max_bytes = requested_max_bytes.unwrap_or(40_000).min(200_000);
     let max_bytes_clamped = requested_max_bytes.is_some_and(|v| v != max_bytes);
+    super::validate::require_at_least_one("max_refs", params.max_refs)?;
+    super::validate::require_one_of(
+        "format",
+        params.format.as_deref(),
+        super::validate::EXPLAIN_FORMATS,
+    )?;
+    super::validate::require_at_least_one("max_bytes", params.max_bytes)?;
     let max_refs = params.max_refs.unwrap_or(10);
 
     // Normalize sections: resolve aliases and warn on unknowns
@@ -882,7 +889,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     }
 
     // 10. Apply format: "signatures" — strip symbols to compact form
-    let format = params.format.as_deref().unwrap_or("full");
+    let format = params
+        .format
+        .as_deref()
+        .unwrap_or(super::validate::FORMAT_FULL);
     let strip_to_compact = |refs: &mut Vec<ExplainRef>| {
         for r in refs.iter_mut() {
             r.symbol.docstring = None;
@@ -894,7 +904,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             r.symbol.end_col = 0;
         }
     };
-    if format == "signatures" {
+    if format == super::validate::FORMAT_SIGNATURES {
         if let Some(ref mut c) = callers {
             strip_to_compact(c);
         }
@@ -1091,7 +1101,13 @@ fn cross_boundary_refs(
 
 pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: OrientParams = super::parse_params("orient", params)?;
-    let view = params.view.as_deref().unwrap_or("all");
+    use super::validate::{VIEW_ALL, VIEW_MAP, VIEW_MODULES, VIEW_OVERVIEW};
+    super::validate::require_one_of(
+        "view",
+        params.view.as_deref(),
+        super::validate::ORIENT_VIEWS,
+    )?;
+    let view = params.view.as_deref().unwrap_or(VIEW_ALL);
     let ctx = HandlerContext::new(indexer, params.common)?;
 
     // Resolve optional focus symbol via resolve module
@@ -1115,9 +1131,9 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
 
     let mut result = serde_json::Map::new();
 
-    let include_overview = matches!(view, "all" | "overview");
-    let include_map = matches!(view, "all" | "map");
-    let include_modules = matches!(view, "all" | "modules");
+    let include_overview = matches!(view, VIEW_ALL | VIEW_OVERVIEW);
+    let include_map = matches!(view, VIEW_ALL | VIEW_MAP);
+    let include_modules = matches!(view, VIEW_ALL | VIEW_MODULES);
 
     if include_overview {
         let overview = indexer.db().repo_overview(
@@ -1288,6 +1304,7 @@ pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Va
 
 pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: DeadSymbolsParams = super::parse_params("dead_symbols", params)?;
+    super::validate::require_at_least_one("limit", params.limit)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
     let limit = params.limit.unwrap_or(50);
     let include_unused_imports = params.include_unused_imports.unwrap_or(true);
@@ -1341,6 +1358,7 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
 
 pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: TopComplexityParams = super::parse_params("top_complexity", params)?;
+    super::validate::require_at_least_one("limit", params.limit)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
     let limit = params.limit.unwrap_or(10);
     let min_complexity = params.min_complexity.unwrap_or(1);
@@ -1375,16 +1393,9 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
             )?
             .is_empty();
         let mut next_hops: Vec<serde_json::Value> = Vec::new();
-        // `limit:0` empties `results` unconditionally (`LIMIT 0`), regardless
-        // of whether any symbol actually clears `min_complexity` -- only
-        // diagnose "below threshold" when the limit itself isn't already
-        // sufficient to explain the empty result.
-        let warnings: Vec<String> = if limit == 0 {
-            vec![
-                "limit:0 was requested, so no results can be returned regardless of scope -- retry with a positive limit to see results."
-                    .to_string(),
-            ]
-        } else if metrics_exist {
+        // `limit:0` is rejected up front, so an empty ranking here is never
+        // the limit's doing.
+        let warnings: Vec<String> = if metrics_exist {
             if min_complexity > 1 {
                 let mut retry_params = serde_json::Map::new();
                 retry_params.insert("min_complexity".to_string(), json!(1));
@@ -1435,15 +1446,24 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
 
 pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: ContextParams = super::parse_params("context", params)?;
+    super::validate::require_one_of(
+        "format",
+        params.format.as_deref(),
+        super::validate::CONTEXT_FORMATS,
+    )?;
+    let repo_root = indexer.repo_root().clone();
+    let validated =
+        super::validate::validate_repo_path("context", indexer.db(), &repo_root, &params.path)?;
+    let path = validated.path;
     let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
     let file_ctx = crate::context::build_file_context(
         indexer.db(),
         indexer.repo_root(),
-        &params.path,
+        path,
         ctx.graph_version,
     )?;
     match params.format.as_deref() {
-        Some("json") => Ok(crate::context::format_json(&file_ctx)),
+        Some(super::validate::FORMAT_JSON) => Ok(crate::context::format_json(&file_ctx)),
         _ => Ok(json!({ "context": crate::context::format_text(&file_ctx) })),
     }
 }
@@ -1485,12 +1505,19 @@ fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let raw_params = params.clone();
     let params: TraceFlowParams = super::parse_params("trace_flow", params)?;
+    super::validate::require_at_least_one("max_hops", params.max_hops)?;
+    super::validate::require_at_least_one("max_bytes", params.max_bytes)?;
+    super::validate::require_one_of(
+        "format",
+        params.format.as_deref(),
+        super::validate::TRACE_FORMATS,
+    )?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
     let max_hops = params.max_hops.unwrap_or(5).min(10);
     let include_snippets = params.include_snippets.unwrap_or(true);
     let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
     let trace_offset = params.trace_offset.unwrap_or(0);
-    let compact_mode = params.format.as_deref() == Some("compact");
+    let compact_mode = params.format.as_deref() == Some(super::validate::FORMAT_COMPACT);
     let direction = match params.direction.as_deref().unwrap_or("downstream") {
         "upstream" => crate::traversal::TraceDirection::Upstream,
         _ => crate::traversal::TraceDirection::Downstream,
@@ -1983,6 +2010,9 @@ fn analyze_impact_inner(
 ) -> Result<Value> {
     let raw_params = params.clone();
     let params: AnalyzeImpactParams = super::parse_params("analyze_impact", params)?;
+    super::validate::require_at_least_one("limit", params.limit)?;
+    super::validate::require_at_least_one("max_depth", params.max_depth)?;
+    super::validate::require_unit_interval("min_confidence", params.min_confidence)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
     // Issue #81 (R3): validated once here, ahead of both the batch path
     // (`build_impact_config`) and the single-seed path below -- both read
@@ -2426,6 +2456,8 @@ fn analyze_impact_inner(
 
 pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: AnalyzeDiffParams = super::parse_params("analyze_diff", params)?;
+    super::validate::require_at_least_one("max_depth", params.max_depth)?;
+    super::validate::require_at_least_one("max_bytes", params.max_bytes)?;
     // analyze_diff.paths means "changed files", not a search-path filter
     let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
     let languages = scan::normalize_language_filter(params.languages.as_deref())?;
@@ -2884,6 +2916,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: RgParams = super::parse_params("search", params)?;
     super::validate::validate_pattern_length(&params.query, "search_rg")?;
+    super::validate::require_at_least_one("limit", params.limit)?;
     let limit = params.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
     let context_lines = normalize_rg_context(params.context_lines);
     let include_text = params.include_text.unwrap_or(true);
@@ -3114,9 +3147,9 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
             .iter()
             .all(|seed| matches!(seed, ContextSeed::Symbol { .. }));
         if all_symbol_seeds && !params.seeds.is_empty() {
-            Some("symbol".to_string())
+            Some(gather_context::STRATEGY_SYMBOL.to_string())
         } else {
-            Some("file".to_string())
+            Some(gather_context::STRATEGY_FILE.to_string())
         }
     });
 
