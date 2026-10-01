@@ -120,6 +120,22 @@ fn config_uris(
         .collect()
 }
 
+/// Whether `id`, reached by bridging `key` of `uri`, pairs with that key.
+pub(crate) fn bridged_accepts_key(
+    db: &Db,
+    id: i64,
+    uri: &str,
+    key: Option<&str>,
+    languages: Option<&[String]>,
+    graph_version: i64,
+) -> bool {
+    let Some(key) = key else { return true };
+    let edges = db
+        .edges_for_symbol(id, languages, graph_version)
+        .unwrap_or_default();
+    ConfigScope::accepts_key(&edges, uri, key)
+}
+
 /// Content-based tie-break for two arrivals at the same (node, entry) pair
 /// and level: independent of edge ids and processing order.
 type TieKey = (String, String, Option<String>, Option<String>, String);
@@ -312,7 +328,9 @@ pub fn trace_flow(
 
             let next_id = if is_upstream {
                 if edge.target_symbol_id == Some(current_id) || edge.target_symbol_id.is_none() {
-                    edge.source_symbol_id
+                    // An outgoing edge with an unresolved target is not an
+                    // incoming one: its source is `current_id` itself.
+                    edge.source_symbol_id.filter(|s| *s != current_id)
                 } else {
                     continue;
                 }
@@ -326,12 +344,9 @@ pub fn trace_flow(
             if let Some(ref tq) = edge.target_qualname
                 && bridge_complement(&edge.kind).is_some()
             {
-                bridge_targets.push(BridgeTarget {
-                    uri: tq.clone(),
-                    edge_kind: edge.kind.clone(),
-                    origin_path: edge.file_path.clone(),
-                    source_id: current_id,
-                });
+                bridge_targets.extend(ConfigScope::bridges_for(
+                    &entry, &edges, edge, tq, current_id,
+                ));
             }
 
             // `next_id` is None when the write path left this edge's
@@ -425,13 +440,15 @@ pub fn trace_flow(
 
         if !reached_target && !truncated {
             bridge_targets.sort();
-            for BridgeTarget {
-                uri: tq,
-                edge_kind,
-                origin_path,
-                ..
-            } in &bridge_targets
-            {
+            for bridge in &bridge_targets {
+                let BridgeTarget {
+                    uri: tq,
+                    edge_kind,
+                    origin_path,
+                    source_id,
+                    key,
+                    ..
+                } = bridge;
                 if let Some(complement_kinds) = bridge_complement(edge_kind) {
                     let bridged = db
                         .edges_by_target_qualname_and_kinds(
@@ -446,6 +463,18 @@ pub fn trace_flow(
                         let Some(bridged_id) = bridged_edge.source_symbol_id else {
                             continue;
                         };
+                        if scope.is_u_turn(*source_id, bridged_id)
+                            || !bridged_accepts_key(
+                                db,
+                                bridged_id,
+                                tq,
+                                key.as_deref(),
+                                languages,
+                                graph_version,
+                            )
+                        {
+                            continue;
+                        }
                         let make_hop = |bridged_sym: &Symbol| {
                             let prev_lang = detect_language(&prev_file);
                             let next_lang = detect_language(&bridged_sym.file_path);
@@ -467,13 +496,15 @@ pub fn trace_flow(
                                 resolution_kind: bridged_edge.resolution_kind.clone(),
                             }
                         };
-                        let Some(admission) = scope.admit_bridge(bridged_id, edge_kind, tq, || {
-                            config_uris(db, bridged_id, languages, graph_version)
-                        }) else {
+                        let Some(admission) =
+                            scope.admit_bridge(bridged_id, edge_kind, tq, key.as_deref(), || {
+                                config_uris(db, bridged_id, languages, graph_version)
+                            })
+                        else {
                             let pair = (
                                 bridged_id,
                                 if is_config_edge_kind(edge_kind) {
-                                    Entry::Uri(tq.clone())
+                                    Entry::scoped(tq, key.as_deref())
                                 } else {
                                     Entry::Unscoped
                                 },
@@ -487,6 +518,7 @@ pub fn trace_flow(
                             }
                             continue;
                         };
+                        scope.note_bridge(bridge, bridged_id);
                         visited.insert(bridged_id);
                         if let Ok(Some(bridged_sym)) = db.get_symbol_by_id(bridged_id) {
                             let hop = make_hop(&bridged_sym);
@@ -630,7 +662,9 @@ fn has_further_edges(
         }
 
         let next_id = if is_upstream {
-            if edge.target_symbol_id == Some(id) || edge.target_symbol_id.is_none() {
+            if (edge.target_symbol_id == Some(id) || edge.target_symbol_id.is_none())
+                && edge.source_symbol_id != Some(id)
+            {
                 edge.source_symbol_id
             } else {
                 continue;

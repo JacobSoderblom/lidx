@@ -600,11 +600,32 @@ fn extract_secret_provider_edges(
             if let Some(secret_name) = so.get("secretName").and_then(|v| v.as_str())
                 && let Some(secret_uri) = config::normalize_secret_name(secret_name)
             {
+                // secretObjects[].data[]: objectName -> key it is synced as
+                // (`key` defaults to the objectName).
+                let mapping: Vec<serde_json::Value> = so
+                    .get("data")
+                    .and_then(|d| d.as_sequence())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|d| {
+                        let object_name = d.get("objectName")?.as_str()?;
+                        let key = d.get("key").and_then(|k| k.as_str()).unwrap_or(object_name);
+                        Some(serde_json::json!({
+                            "objectName": object_name,
+                            "secretName": secret_name,
+                            "key": key,
+                        }))
+                    })
+                    .collect();
+                let mut extra = serde_json::json!({ "provider": "csi-secrets-store" });
+                if !mapping.is_empty() {
+                    extra["mapping"] = mapping.into();
+                }
                 let detail = config::build_config_source_detail(
                     "secret",
                     &secret_uri,
                     secret_name,
-                    Some(&serde_json::json!({ "provider": "csi-secrets-store" })),
+                    Some(&extra),
                 );
                 push_evidence(
                     output,

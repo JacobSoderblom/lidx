@@ -200,13 +200,15 @@ fn resolve_bridge_targets(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<bool> {
-    for BridgeTarget {
-        uri: tq,
-        edge_kind,
-        origin_path,
-        source_id,
-    } in bridge_targets
-    {
+    for bridge in bridge_targets {
+        let BridgeTarget {
+            uri: tq,
+            edge_kind,
+            origin_path,
+            source_id,
+            key,
+            ..
+        } = bridge;
         if let Some(complement_kinds) = crate::indexer::channel::bridge_complement(edge_kind) {
             let bridged = db
                 .edges_by_target_qualname_and_kinds(tq, complement_kinds, languages, graph_version)
@@ -215,11 +217,26 @@ fn resolve_bridge_targets(
                 let Some(bridged_id) = bridged_edge.source_symbol_id else {
                     continue;
                 };
-                let Some(admission) = scope.admit_bridge(bridged_id, edge_kind, tq, || {
-                    config_uris(db, bridged_id, languages, graph_version)
-                }) else {
+                if scope.is_u_turn(*source_id, bridged_id)
+                    || !crate::traversal::bridged_accepts_key(
+                        db,
+                        bridged_id,
+                        tq,
+                        key.as_deref(),
+                        languages,
+                        graph_version,
+                    )
+                {
+                    continue;
+                }
+                let Some(admission) =
+                    scope.admit_bridge(bridged_id, edge_kind, tq, key.as_deref(), || {
+                        config_uris(db, bridged_id, languages, graph_version)
+                    })
+                else {
                     continue;
                 };
+                scope.note_bridge(bridge, bridged_id);
                 visited.insert(bridged_id);
                 cache_symbols(
                     db,
@@ -477,12 +494,13 @@ pub fn analyze_direct_impact_scoped(
                     if let Some(ref tq) = edge.target_qualname
                         && crate::indexer::channel::bridge_complement(&edge.kind).is_some()
                     {
-                        bridge_targets.push(BridgeTarget {
-                            uri: tq.clone(),
-                            edge_kind: edge.kind.clone(),
-                            origin_path: edge.file_path.clone(),
-                            source_id: *current_id,
-                        });
+                        bridge_targets.extend(ConfigScope::bridges_for(
+                            entry,
+                            edges,
+                            edge,
+                            tq,
+                            *current_id,
+                        ));
                     }
 
                     let Some(next_id) = resolve_next_id(edge, *current_id, direction) else {
