@@ -19,12 +19,25 @@ pub fn normalize_rel_path(repo_root: &Path, path: &Path) -> Result<String> {
     Ok(normalize_path(rel))
 }
 
+/// Lexically normalises `path` to a `/`-joined string: `.` is dropped and
+/// `a/..` collapses. A `..` with nothing to pop is kept (`../x`), so callers
+/// can detect a path escaping its base. An empty result is `"."`. No
+/// filesystem access, symlinks are not resolved. Callers audited for #228:
+/// `normalize_rel_path` and `search.rs` pass strip_prefix'd paths (no `..`),
+/// the JS resolver collapses before calling, Bicep relies on the collapsing.
 pub fn normalize_path(path: &Path) -> String {
     let mut parts = Vec::new();
     for comp in path.components() {
         match comp {
             Component::Normal(os) => parts.push(os.to_string_lossy().to_string()),
-            Component::ParentDir => parts.push("..".to_string()),
+            // Collapse `a/..`; a `..` with nothing to pop (a leading one, or
+            // one after another) is kept so an escape stays visible.
+            Component::ParentDir => match parts.last().map(String::as_str) {
+                Some("..") | None => parts.push("..".to_string()),
+                Some(_) => {
+                    parts.pop();
+                }
+            },
             Component::CurDir => {}
             _ => {}
         }
@@ -233,4 +246,25 @@ pub fn resolve_repo_path_for_op(
     }
     let rel = normalize_rel_path(&root, &abs)?;
     Ok((abs, rel))
+}
+
+#[cfg(test)]
+mod normalize_path_tests {
+    use super::normalize_path;
+    use std::path::Path;
+
+    #[test]
+    fn collapses_parent_and_current_dir() {
+        assert_eq!(normalize_path(Path::new("a/b/../c")), "a/c");
+        assert_eq!(normalize_path(Path::new("a/./b")), "a/b");
+        assert_eq!(normalize_path(Path::new("a/b/../../c")), "c");
+        assert_eq!(normalize_path(Path::new("a/..")), ".");
+    }
+
+    #[test]
+    fn keeps_escaping_parent_dirs() {
+        assert_eq!(normalize_path(Path::new("../x")), "../x");
+        assert_eq!(normalize_path(Path::new("a/../../x")), "../x");
+        assert_eq!(normalize_path(Path::new("../../x")), "../../x");
+    }
 }

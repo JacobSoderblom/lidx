@@ -80,6 +80,53 @@ pub struct DbDigest {
     pub edges: TableDigest,
 }
 
+/// `graph_versions.status` of a version a reindex is still populating.
+const GV_BUILDING: &str = "building";
+/// `graph_versions.status` of a fully populated version.
+const GV_COMPLETE: &str = "complete";
+
+/// Proof the holder may reindex this database; released on drop (including
+/// on error paths and panics). See [`Db::try_lock_reindex`].
+#[must_use = "the reindex lock is released when this guard is dropped"]
+pub struct ReindexLock {
+    _file: std::fs::File,
+}
+
+impl Drop for ReindexLock {
+    fn drop(&mut self) {
+        // Unlock explicitly: a concurrent `fork` (e.g. spawning `git`) can
+        // briefly hold a duplicate of this descriptor, and closing ours alone
+        // would not release the lock until that child execs.
+        let _ = self._file.unlock();
+    }
+}
+
+/// Another process holds the reindex lock (issue #250).
+#[derive(Debug)]
+pub struct ReindexBusy {
+    pub holder_pid: Option<u32>,
+    pub lock_path: PathBuf,
+}
+
+impl std::fmt::Display for ReindexBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "another reindex is already running against this database"
+        )?;
+        if let Some(pid) = self.holder_pid {
+            write!(f, " (pid {pid})")?;
+        }
+        write!(
+            f,
+            "; nothing was modified. Retry when it finishes (lock: {})",
+            self.lock_path.display()
+        )
+    }
+}
+
+impl std::error::Error for ReindexBusy {}
+
 pub struct Db {
     db_path: PathBuf,
     write_conn: Arc<Mutex<Connection>>,
@@ -898,8 +945,8 @@ impl Db {
 
         let boundary: Option<i64> = tx
             .query_row(
-                "SELECT id FROM graph_versions ORDER BY id DESC LIMIT 1 OFFSET ?",
-                params![keep - 1],
+                "SELECT id FROM graph_versions WHERE status = ? ORDER BY id DESC LIMIT 1 OFFSET ?",
+                params![GV_COMPLETE, keep - 1],
                 |row| row.get(0),
             )
             .optional()?;
@@ -909,8 +956,8 @@ impl Db {
         };
 
         let versions_pruned: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM graph_versions WHERE id < ?",
-            params![boundary],
+            "SELECT COUNT(*) FROM graph_versions WHERE id < ? AND status = ?",
+            params![boundary, GV_COMPLETE],
             |row| row.get(0),
         )?;
         let edges_deleted = tx.execute(
@@ -2085,18 +2132,119 @@ impl Db {
         Ok(value.flatten())
     }
 
-    pub fn create_graph_version(&self, commit_sha: Option<&str>) -> Result<i64> {
+    /// Allocate a new graph version in the `building` state. It is not
+    /// current: `current_graph_version` keeps reporting the last completed
+    /// version until `promote_graph_version` runs, so readers and any other
+    /// reindex never see a half-populated version (issue #250).
+    pub fn allocate_graph_version(&self, commit_sha: Option<&str>) -> Result<i64> {
         let created = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        self.conn().execute(
-            "INSERT INTO graph_versions (created, commit_sha) VALUES (?, ?)",
-            params![created, commit_sha],
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO graph_versions (created, commit_sha, status) VALUES (?, ?, ?)",
+            params![created, commit_sha, GV_BUILDING],
         )?;
-        let id = self.conn().last_insert_rowid();
-        self.set_meta_i64("graph_version", id)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Mark a `building` version complete and make it current, atomically.
+    pub fn promote_graph_version(&self, id: i64) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let updated = tx.execute(
+            "UPDATE graph_versions SET status = ? WHERE id = ?",
+            params![GV_COMPLETE, id],
+        )?;
+        if updated == 0 {
+            anyhow::bail!("cannot promote unknown graph version {id}");
+        }
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('graph_version', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![id.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Allocate and immediately promote an (empty) version (test fixtures).
+    #[cfg(test)]
+    pub fn create_graph_version(&self, commit_sha: Option<&str>) -> Result<i64> {
+        let id = self.allocate_graph_version(commit_sha)?;
+        self.promote_graph_version(id)?;
         Ok(id)
+    }
+
+    /// Delete every version left `building` by a reindex that died before
+    /// promoting it (rows in `symbols`, `edges`, `unresolved_references`, and
+    /// the `graph_versions` row). Requires the reindex lock as proof no live
+    /// reindex owns a `building` version. Returns the versions reclaimed.
+    pub fn reclaim_abandoned_graph_versions(&self, _lock: &ReindexLock) -> Result<usize> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let ids: Vec<i64> = {
+            let mut stmt = tx.prepare("SELECT id FROM graph_versions WHERE status != ?")?;
+            stmt.query_map(params![GV_COMPLETE], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        for id in &ids {
+            tx.execute("DELETE FROM edges WHERE graph_version = ?", params![id])?;
+            tx.execute("DELETE FROM symbols WHERE graph_version = ?", params![id])?;
+            tx.execute(
+                "DELETE FROM unresolved_references WHERE graph_version = ?",
+                params![id],
+            )?;
+            tx.execute("DELETE FROM graph_versions WHERE id = ?", params![id])?;
+            // Undo the file deletions it recorded: the completed version
+            // still contains those files.
+            tx.execute(
+                "UPDATE files SET deleted_version = NULL WHERE deleted_version = ?",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(ids.len())
+    }
+
+    /// Take the reindex lock, or fail with [`ReindexBusy`] (downcastable from
+    /// the returned `anyhow::Error`) when another process holds it. The lock
+    /// is an OS advisory lock on a sidecar file, so the kernel drops it when
+    /// its holder dies: a killed reindex never leaves a stale lock behind.
+    pub fn try_lock_reindex(&self) -> Result<ReindexLock> {
+        use std::io::{Read, Seek, Write};
+        let mut lock_path = self.db_path.clone().into_os_string();
+        lock_path.push(".reindex.lock");
+        let lock_path = PathBuf::from(lock_path);
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .with_context(|| format!("open reindex lock {}", lock_path.display()))?;
+        match file.try_lock() {
+            Ok(()) => {
+                file.set_len(0)?;
+                file.rewind()?;
+                write!(file, "{}", std::process::id())?;
+                file.flush()?;
+                Ok(ReindexLock { _file: file })
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let mut contents = String::new();
+                let _ = file.read_to_string(&mut contents);
+                Err(ReindexBusy {
+                    holder_pid: contents.trim().parse().ok(),
+                    lock_path,
+                }
+                .into())
+            }
+            Err(std::fs::TryLockError::Error(err)) => {
+                Err(err).with_context(|| format!("lock {}", lock_path.display()))
+            }
+        }
     }
 
     pub fn list_graph_versions(&self, limit: usize, offset: usize) -> Result<Vec<GraphVersion>> {
@@ -2104,12 +2252,13 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT id, created, commit_sha
              FROM graph_versions
+             WHERE status = ?
              ORDER BY id DESC
              LIMIT ? OFFSET ?",
         )?;
         let limit = limit as i64;
         let offset = offset as i64;
-        let rows = stmt.query_map(params![limit, offset], |row| {
+        let rows = stmt.query_map(params![GV_COMPLETE, limit, offset], |row| {
             Ok(GraphVersion {
                 id: row.get(0)?,
                 created: row.get(1)?,
