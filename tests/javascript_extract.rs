@@ -1046,3 +1046,89 @@ async function main() {
         call.target_qualname
     );
 }
+
+fn rpc_calls_for(source: &str) -> Vec<lidx::indexer::extract::EdgeInput> {
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    extracted
+        .edges
+        .into_iter()
+        .filter(|e| e.kind == "RPC_CALL")
+        .collect()
+}
+
+#[test]
+fn builtin_and_library_constructors_are_not_grpc_clients() {
+    let source = r#"
+import sql from 'mssql';
+import { Repository } from './repo';
+import { Client } from 'pg';
+
+function run() {
+    const m = new Map<string, string>();
+    m.set('a', 'b');
+    const s = new Set([1]);
+    s.has(1);
+    const d = new Date();
+    d.getTime();
+    const p = new Promise((r) => r(1));
+    p.then(() => {});
+    const e = new Error('x');
+    e.toString();
+    const r = new RegExp('a');
+    r.test('a');
+    const u = new URL('http://x');
+    u.toString();
+    const q = new sql.Request();
+    q.input('a', 1);
+    const repo = new Repository();
+    repo.find();
+    const pg = new Client();
+    pg.connect();
+    new Map().get('k');
+    new sql.Request().query('x');
+}
+"#;
+    let calls = rpc_calls_for(source);
+    assert!(calls.is_empty(), "no RPC_CALL expected, got {calls:?}");
+}
+
+#[test]
+fn grpc_clients_with_positive_evidence_still_emit_rpc_call() {
+    let source = r#"
+import * as pb from './greeter_grpc_pb';
+import { FooServiceClient } from './foo_grpc_pb';
+const grpc = require('@grpc/grpc-js');
+const protoLoader = require('@grpc/proto-loader');
+const { BarClient } = require('./bar_grpc_pb');
+const pkgDef = protoLoader.loadSync('x.proto');
+const hello = grpc.loadPackageDefinition(pkgDef).helloworld;
+
+function run() {
+    const a = new FooServiceClient('h');
+    a.doFoo({});
+    const b = new pb.GreeterClient('h');
+    b.sayHello({});
+    const c = new BarClient('h');
+    c.doBar({});
+    const d = new hello.Greeter('h', grpc.credentials.createInsecure());
+    d.sayHi({});
+}
+"#;
+    let calls = rpc_calls_for(source);
+    let targets: Vec<_> = calls
+        .iter()
+        .filter_map(|e| e.target_qualname.clone())
+        .collect();
+    for want in [
+        "/fooservice/dofoo",
+        "/greeter/sayhello",
+        "/bar/dobar",
+        "/hello.greeter/sayhi",
+    ] {
+        assert!(
+            targets.iter().any(|t| t == want),
+            "missing {want} in {targets:?}"
+        );
+    }
+}

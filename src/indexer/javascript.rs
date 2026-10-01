@@ -77,6 +77,8 @@ struct Context {
     /// the normalized static base path, when there is one.
     axios_instances: Rc<HashMap<String, Option<String>>>,
     grpc_clients: HashMap<String, GrpcService>,
+    /// Names that count as positive gRPC evidence for `new Ctor(..)` (#204).
+    grpc_evidence: Rc<GrpcEvidence>,
     /// Types of locally-bound names (parameters + `const`/`let`/`var`
     /// declarations) within the *current* function body only — see
     /// `infer_local_types`. Reset fresh on every function/method entry;
@@ -1218,7 +1220,8 @@ fn extract_with_parser(
     output
         .edges
         .extend(next_api_route_edges(module_name, root, source));
-    let grpc_clients = collect_grpc_clients(root, source);
+    let grpc_evidence = Rc::new(collect_grpc_evidence(root, source));
+    let grpc_clients = collect_grpc_clients(root, source, &grpc_evidence);
     let ctx = Context {
         string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
             crate::indexer::string_consts::ConstLang::JavaScript,
@@ -1234,6 +1237,7 @@ fn extract_with_parser(
         router_aliases: Vec::new(),
         axios_instances: Rc::new(collect_axios_instances(root, source)),
         grpc_clients,
+        grpc_evidence,
         local_types: Rc::new(infer_module_level_types(root, source)),
         class_attr_types: Rc::new(HashMap::new()),
         fn_owner: None,
@@ -1509,7 +1513,97 @@ fn declared_names(decl: Node<'_>, source: &str, out: &mut HashSet<String>) {
     }
 }
 
-fn collect_grpc_clients(root: Node<'_>, source: &str) -> HashMap<String, GrpcService> {
+/// Local names that make `new Ctor(..)` a gRPC client constructor (#204).
+#[derive(Default)]
+struct GrpcEvidence {
+    /// Locals bound (via `import` or `require`) to a gRPC-ish module: an
+    /// `@grpc/*` package, a generated `*_grpc_pb` / `*_pb` stub, a proto module.
+    modules: HashSet<String>,
+    /// Locals initialised from `loadPackageDefinition(..)`, i.e. the root of a
+    /// `@grpc/proto-loader` package tree.
+    proto_roots: HashSet<String>,
+}
+
+fn is_grpc_module_spec(spec: &str) -> bool {
+    let lower = spec.to_ascii_lowercase();
+    ["grpc", "proto", "_pb", "generated"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+fn collect_grpc_evidence(root: Node<'_>, source: &str) -> GrpcEvidence {
+    let mut evidence = GrpcEvidence::default();
+    for (local, (spec, _)) in collect_import_bindings(root, source) {
+        if is_grpc_module_spec(&spec) {
+            evidence.modules.insert(local);
+        }
+    }
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "variable_declarator"
+            && let (Some(name_node), Some(value_node)) = (
+                node.child_by_field_name("name"),
+                node.child_by_field_name("value"),
+            )
+        {
+            let value_text = node_text(value_node, source);
+            if name_node.kind() == "identifier" && value_text.contains("loadPackageDefinition") {
+                evidence.proto_roots.insert(node_text(name_node, source));
+            } else if let Some(spec) = require_specifier(value_node, source)
+                && is_grpc_module_spec(&spec)
+            {
+                let mut names = Vec::new();
+                collect_binding_names(name_node, source, &mut names);
+                evidence.modules.extend(names);
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    evidence
+}
+
+/// `require('spec')` -> `spec`.
+fn require_specifier(node: Node<'_>, source: &str) -> Option<String> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let func = node.child_by_field_name("function")?;
+    if node_text(func, source) != "require" {
+        return None;
+    }
+    let args = node.child_by_field_name("arguments")?;
+    let first = args.named_child(0)?;
+    unquote_string_literal(&node_text(first, source))
+}
+
+/// Whether `new <raw>(..)` constructs a gRPC client: a service under a
+/// proto-loader root or a conventional `proto.` / `pb.` root, or a
+/// `*Client` class bound from a gRPC-ish module. Anything else (`Map`,
+/// `sql.Request`, a user-defined `Repository`) gives no RPC edge (#204).
+fn grpc_constructor_has_evidence(raw: &str, evidence: &GrpcEvidence) -> bool {
+    let collapsed = collapse_call_target_whitespace(raw);
+    let mut parts = collapsed.split('.').filter(|p| !p.is_empty());
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    let last = collapsed.rsplit('.').next().unwrap_or("");
+    if collapsed.contains('.')
+        && (evidence.proto_roots.contains(first)
+            || matches!(first.to_ascii_lowercase().as_str(), "proto" | "pb"))
+    {
+        return true;
+    }
+    evidence.modules.contains(first) && last.len() > "Client".len() && last.ends_with("Client")
+}
+
+fn collect_grpc_clients(
+    root: Node<'_>,
+    source: &str,
+    evidence: &GrpcEvidence,
+) -> HashMap<String, GrpcService> {
     let mut clients = HashMap::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -1523,7 +1617,8 @@ fn collect_grpc_clients(root: Node<'_>, source: &str) -> HashMap<String, GrpcSer
             let Some(value_node) = node.child_by_field_name("value") else {
                 continue;
             };
-            let Some(service) = grpc_service_from_client_initializer(value_node, source) else {
+            let Some(service) = grpc_service_from_client_initializer(value_node, source, evidence)
+            else {
                 continue;
             };
             let name = node_text(name_node, source);
@@ -1540,7 +1635,11 @@ fn collect_grpc_clients(root: Node<'_>, source: &str) -> HashMap<String, GrpcSer
     clients
 }
 
-fn grpc_service_from_client_initializer(node: Node<'_>, source: &str) -> Option<GrpcService> {
+fn grpc_service_from_client_initializer(
+    node: Node<'_>,
+    source: &str,
+    evidence: &GrpcEvidence,
+) -> Option<GrpcService> {
     let mut current = node;
     loop {
         match current.kind() {
@@ -1570,6 +1669,9 @@ fn grpc_service_from_client_initializer(node: Node<'_>, source: &str) -> Option<
     }
     let target_node = call_target_node(current)?;
     let raw = node_text(target_node, source);
+    if !grpc_constructor_has_evidence(&raw, evidence) {
+        return None;
+    }
     grpc_service_from_path(&raw)
 }
 
@@ -2511,6 +2613,9 @@ fn grpc_service_for_receiver(node: Node<'_>, ctx: &Context, source: &str) -> Opt
     if node.kind() == "new_expression" {
         let constructor = call_target_node(node)?;
         let raw = node_text(constructor, source);
+        if !grpc_constructor_has_evidence(&raw, &ctx.grpc_evidence) {
+            return None;
+        }
         return grpc_service_from_path(&raw);
     }
     let receiver = node_text(node, source);
