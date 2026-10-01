@@ -59,10 +59,10 @@
 
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
-use crate::indexer::csharp::PARTIAL_TYPE_SIGNATURE;
 use crate::indexer::extract::{
     CallShape, DEFERRED_KIND_ARGUMENT, DEFERRED_KIND_RETURN, DeferredMarker, TypeScope,
 };
+use crate::model::{has_parameter_list, is_partial_signature};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
 use std::collections::HashMap;
@@ -1188,8 +1188,10 @@ impl<'c> Resolver<'c> {
             })?;
         // A type's own signature is its primary-constructor parameter list
         // (`record R(int A)`), which `..ctor` symbols don't cover.
+        // (Interfaces are `partial`-capable but have no constructors, so
+        // unlike `PARTIAL_TYPE_KINDS` they are excluded here.)
         if !matches!(kind.as_str(), "class" | "struct" | "record")
-            || signature.is_some_and(|s| s.starts_with('('))
+            || has_parameter_list(signature.as_deref())
         {
             return Ok(None);
         }
@@ -1243,6 +1245,12 @@ impl<'c> Resolver<'c> {
                 && let Some(id) = self.exact(qn, symbol_map, r.source_file_path, types_only)?
             {
                 return Ok(resolved(id, ResolutionKind::Exact));
+            }
+            // Issue #206: a C# `using` names one namespace. Two unrelated
+            // symbols sharing its qualname (e.g. a namespace and a class) are
+            // a genuine collision; a later tier must not pick one of them.
+            if r.edge_kind == "IMPORTS" && r.source_lang == "csharp" && self.saw_ambiguous {
+                return Ok(Resolution::Unresolved(UnresolvedReason::Ambiguous));
             }
             if !types_only
                 && let Some(id) = self.resolve_import(
@@ -1426,12 +1434,10 @@ impl<'c> Resolver<'c> {
             {
                 admitted = vec![*only];
             }
-            if admitted.len() > 1
-                && let Some(id) = canonical_multi_file(&admitted)
-            {
-                return Ok(Some(id));
-            }
             if admitted.len() > 1 {
+                if let Some(id) = canonical_multi_file(admitted.iter().copied()) {
+                    return Ok(Some(id));
+                }
                 self.saw_ambiguous = true;
             }
             return Ok(exactly_one(admitted.into_iter()).map(|c| c.id));
@@ -2593,48 +2599,43 @@ fn same_kind_min(candidates: &[(i64, &str)]) -> Option<i64> {
 fn collapse_exact_candidates(candidates: &[ExactCandidate]) -> Option<i64> {
     let first_file = candidates.first()?.file_id;
     if !candidates.iter().all(|c| c.file_id == first_file) {
-        return canonical_multi_file(&candidates.iter().collect::<Vec<_>>());
+        return canonical_multi_file(candidates.iter());
     }
     let by_kind: Vec<(i64, &str)> = candidates.iter().map(|c| (c.id, c.kind.as_str())).collect();
     same_kind_min(&by_kind)
 }
 
+/// The kinds a C# `partial` declaration can have (each can be split across
+/// files, so each is a candidate "one entity, many parts" kind).
+const PARTIAL_TYPE_KINDS: [&str; 4] = ["class", "struct", "record", "interface"];
+
 /// Issue #206: candidates in 2+ files that are parts of one entity rather
 /// than competing symbols -- every candidate a `namespace` (declared per
-/// file, defined to span files), or every one a `partial` type of one kind.
-/// Resolves to the part in the lexicographically first file (then lowest
-/// id), a canonical choice that depends on the tree, never on scan order.
-/// `None` for anything else: same-named but unrelated symbols stay ambiguous.
-fn canonical_multi_file(candidates: &[&ExactCandidate]) -> Option<i64> {
-    let first = candidates.first()?;
-    if !candidates.iter().all(|c| c.kind == first.kind) {
+/// file, defined to span files), or every one a type of one kind that is
+/// itself declared `partial`. Resolves to the part in the lexicographically
+/// first file (then lowest id), a canonical choice that depends on the tree,
+/// never on scan order. `None` for anything else: same-named but unrelated
+/// symbols (including a non-`partial` twin of a `partial` type) stay
+/// ambiguous.
+fn canonical_multi_file<'a>(
+    candidates: impl Iterator<Item = &'a ExactCandidate> + Clone,
+) -> Option<i64> {
+    let first = candidates.clone().next()?;
+    if candidates.clone().any(|c| c.kind != first.kind) {
         return None;
     }
     let one_entity = match first.kind.as_str() {
         "namespace" => true,
-        "class" | "struct" | "record" | "interface" => {
-            // At most one part (the one with a primary constructor) carries a
-            // parameter list instead of the `partial` marker.
-            let unmarked = candidates
-                .iter()
-                .filter(|c| c.signature.as_deref() != Some(PARTIAL_TYPE_SIGNATURE))
-                .count();
-            unmarked <= 1
-                && candidates.iter().all(|c| {
-                    c.signature
-                        .as_deref()
-                        .is_some_and(|s| s == PARTIAL_TYPE_SIGNATURE || s.starts_with('('))
-                })
-        }
+        kind if PARTIAL_TYPE_KINDS.contains(&kind) => candidates
+            .clone()
+            .all(|c| is_partial_signature(c.signature.as_deref())),
         _ => false,
     };
-    one_entity
-        .then(|| {
-            candidates
-                .iter()
-                .min_by(|a, b| (&a.path, a.id).cmp(&(&b.path, b.id)))
-        })
-        .flatten()
+    if !one_entity {
+        return None;
+    }
+    candidates
+        .min_by(|a, b| (&a.path, a.id).cmp(&(&b.path, b.id)))
         .map(|c| c.id)
 }
 

@@ -814,10 +814,6 @@ enum TypeKind {
     Enum,
 }
 
-/// The `signature` a `partial` C# type declaration (without a primary
-/// constructor) carries. See `handle_type`.
-pub const PARTIAL_TYPE_SIGNATURE: &str = "partial";
-
 fn handle_type(
     node: Node<'_>,
     ctx: &Context,
@@ -838,12 +834,13 @@ fn handle_type(
     }
     let qualname = build_qualname(ctx, &name);
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
-    // A `partial` type without a primary-constructor parameter list is
-    // marked so the resolver can tell its per-file parts (one entity) from
-    // two unrelated same-named types (issue #206).
-    let signature = type_signature(node, source).or_else(|| {
-        has_modifier(node, source, "partial").then(|| PARTIAL_TYPE_SIGNATURE.to_string())
-    });
+    // A `partial` type is marked in its stored signature so the resolver can
+    // tell its per-file parts (one entity) from unrelated same-named types
+    // (issue #206); `model::public_signature` hides the marker on read.
+    let signature = crate::model::type_signature_with_partial(
+        type_signature(node, source),
+        has_modifier(node, source, "partial"),
+    );
     output.symbols.push(SymbolInput {
         kind: kind.to_string(),
         name: name.clone(),

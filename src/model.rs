@@ -21,6 +21,52 @@ pub fn display_signature(signature: &str) -> std::borrow::Cow<'_, str> {
     format!("{}, …", &head[..cut]).into()
 }
 
+/// Prefix a C# `partial` type declaration's stored `signature` carries
+/// (`partial`, or `partial (int X)` with a primary constructor). It is
+/// resolver-only metadata (issue #206): `public_signature` strips it from
+/// every symbol read back out of the store.
+pub const PARTIAL_SIGNATURE_MARKER: &str = "partial";
+
+/// Stored signature for a C# type: `params` (a primary-constructor parameter
+/// list) with the partial marker added when `partial`.
+pub fn type_signature_with_partial(params: Option<String>, partial: bool) -> Option<String> {
+    match (params, partial) {
+        (Some(p), true) => Some(format!("{PARTIAL_SIGNATURE_MARKER} {p}")),
+        (None, true) => Some(PARTIAL_SIGNATURE_MARKER.to_string()),
+        (p, false) => p,
+    }
+}
+
+/// Whether a stored signature marks a `partial` type declaration.
+pub fn is_partial_signature(signature: Option<&str>) -> bool {
+    signature.is_some_and(|s| {
+        s == PARTIAL_SIGNATURE_MARKER
+            || s.strip_prefix(PARTIAL_SIGNATURE_MARKER)
+                .is_some_and(|rest| rest.starts_with(' '))
+    })
+}
+
+/// A type signature without the partial marker: `None` when nothing but the
+/// marker was stored.
+pub fn public_signature(signature: Option<String>) -> Option<String> {
+    let sig = signature?;
+    if !is_partial_signature(Some(&sig)) {
+        return Some(sig);
+    }
+    let rest = sig[PARTIAL_SIGNATURE_MARKER.len()..].trim();
+    (!rest.is_empty()).then(|| rest.to_string())
+}
+
+/// Whether a stored type signature carries a primary-constructor parameter
+/// list (`record R(int A)`), partial-marked or not.
+pub fn has_parameter_list(signature: Option<&str>) -> bool {
+    signature.is_some_and(|s| {
+        s.strip_prefix(PARTIAL_SIGNATURE_MARKER)
+            .map_or(s, str::trim_start)
+            .starts_with('(')
+    })
+}
+
 fn serialize_signature<S: serde::Serializer>(
     signature: &Option<String>,
     serializer: S,
