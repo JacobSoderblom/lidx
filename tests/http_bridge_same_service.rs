@@ -169,3 +169,129 @@ fn unique_route_in_another_service_still_bridges() {
         "a lone route must stay reachable: {got:?}"
     );
 }
+
+/// Index `files`, run `method`, and return the raw response text.
+fn call_raw(files: &[(&str, &str)], method: &str, params: serde_json::Value) -> String {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-http-bridge-")
+        .tempdir()
+        .unwrap();
+    common::write_files(tmp.path(), files);
+    let db = tmp.path().join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(tmp.path().to_path_buf(), db.clone()).unwrap();
+    indexer.reindex().unwrap();
+    rpc::call(
+        tmp.path().to_path_buf(),
+        db,
+        method.to_string(),
+        &params.to_string(),
+        "1",
+    )
+    .unwrap()
+}
+
+const MARKER: &str = "cross_service_http";
+
+fn trace(files: &[(&str, &str)], start: &str) -> String {
+    call_raw(
+        files,
+        "trace_flow",
+        serde_json::json!({
+            "start_qualname": start,
+            "max_hops": 2,
+            "kinds": ["CALLS", "HTTP_CALL", "HTTP_ROUTE"],
+        }),
+    )
+}
+
+fn impact(files: &[(&str, &str)], qualname: &str) -> String {
+    call_raw(
+        files,
+        "analyze_impact",
+        serde_json::json!({"qualname": qualname, "direction": "downstream", "max_depth": 3, "include_tests": true}),
+    )
+}
+
+#[test]
+fn speculative_fallback_is_marked_and_same_service_is_not() {
+    let fallback = [
+        ("py/orchestrator/tests/test_health_server.py", TEST),
+        ("py/a/src/a/health_server.py", SERVER),
+    ];
+    let same = [
+        ("py/orchestrator/src/orch/health_server.py", SERVER),
+        ("py/orchestrator/tests/test_health_server.py", TEST),
+    ];
+    let t = trace(&fallback, START);
+    assert!(t.contains("py/a/") && t.contains(MARKER), "{t}");
+    assert!(t.contains("speculative"), "{t}");
+    let t = trace(&same, START);
+    assert!(t.contains("_liveness") && !t.contains(MARKER), "{t}");
+    let i = impact(&fallback, START);
+    assert!(i.contains("py/a/") && i.contains(MARKER), "{i}");
+    let i = impact(&same, START);
+    assert!(i.contains("_liveness") && !i.contains(MARKER), "{i}");
+}
+
+const TS_CLIENT: &str = r#"
+export async function loadX() {
+  return fetch('/api/x');
+}
+"#;
+
+const PY_ROUTE: &str = r#"
+from aiohttp import web
+
+async def get_x(request):
+    return web.json_response({})
+
+def setup(app):
+    app.router.add_get("/api/x", get_x)
+"#;
+
+const CS_ROUTE: &str = r#"
+using Microsoft.AspNetCore.Mvc;
+namespace Api {
+  [ApiController]
+  public class XController : ControllerBase {
+    [HttpGet("/api/x")]
+    public IActionResult GetX() => Ok();
+  }
+}
+"#;
+
+#[test]
+fn frontend_fetch_bridges_to_single_backend_route() {
+    for (path, src, needle) in [
+        ("api/src/routes.py", PY_ROUTE, "get_x"),
+        ("api/src/XController.cs", CS_ROUTE, "GetX"),
+    ] {
+        let files = [("web/src/api.ts", TS_CLIENT), (path, src)];
+        let t = trace(&files, "web/src/api.loadX");
+        assert!(
+            t.contains(needle),
+            "trace_flow lost the bridge to {path}: {t}"
+        );
+        let i = impact(&files, "web/src/api.loadX");
+        assert!(
+            i.contains(needle),
+            "analyze_impact lost the bridge to {path}: {i}"
+        );
+    }
+}
+
+#[test]
+fn caller_in_neither_of_two_backends_gets_no_definite_bridge() {
+    let files = [
+        ("web/src/api.ts", TS_CLIENT),
+        ("api1/src/routes.py", PY_ROUTE),
+        ("api2/src/XController.cs", CS_ROUTE),
+    ];
+    let t = trace(&files, "web/src/api.loadX");
+    assert!(
+        !t.contains("get_x") && !t.contains("GetX"),
+        "definite bridge from ambiguous backends: {t}"
+    );
+    let i = impact(&files, "web/src/api.loadX");
+    assert!(!i.contains("get_x") && !i.contains("GetX"), "{i}");
+}

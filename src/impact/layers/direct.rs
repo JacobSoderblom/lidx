@@ -8,8 +8,8 @@ use crate::db::Db;
 use crate::impact::confidence::apply_distance_decay;
 use crate::impact::types::{ConfidenceScore, ImpactSource, LayerResult, ParentLink};
 use crate::indexer::config::{
-    BridgeTarget, CAP_TRUNCATION_REASON, ConfigScope, Entry, config_edge_allowed,
-    prefer_same_service,
+    BridgeTarget, CAP_TRUNCATION_REASON, CROSS_SERVICE_KIND, ConfigScope, Entry,
+    config_edge_allowed, prefer_same_service,
 };
 use crate::indexer::test_detection::is_test_file;
 use crate::model::{Edge, Symbol};
@@ -211,7 +211,7 @@ fn resolve_bridge_targets(
             let bridged = db
                 .edges_by_target_qualname_and_kinds(tq, complement_kinds, languages, graph_version)
                 .unwrap_or_default();
-            for bridged_edge in prefer_same_service(tq, origin_path, &bridged) {
+            for (bridged_edge, speculative) in prefer_same_service(tq, origin_path, &bridged) {
                 let Some(bridged_id) = bridged_edge.source_symbol_id else {
                     continue;
                 };
@@ -235,7 +235,11 @@ fn resolve_bridge_targets(
                 let link = (
                     *source_id,
                     edge_kind.clone(),
-                    bridged_edge.resolution_kind.clone(),
+                    if speculative {
+                        Some(CROSS_SERVICE_KIND.to_string())
+                    } else {
+                        bridged_edge.resolution_kind.clone()
+                    },
                     bridge_hop_is_reversed(edge_kind),
                 );
                 // A re-entry keeps the minimum distance and the first path;

@@ -303,66 +303,81 @@ pub fn config_edge_allowed(edge: &Edge, allowed: Option<&HashSet<String>>) -> bo
             .is_some_and(|tq| allowed.contains(tq))
 }
 
+/// `resolution_kind` stamped on an HTTP bridge hop that crossed into another
+/// service because it was the only one declaring the path (issue #233): a
+/// guess, distinguishable from a same-service bridge (spec criterion 7).
+pub const CROSS_SERVICE_KIND: &str = "cross_service_http";
+
 /// Narrow the complement edges of a bridge to the same service as the origin.
 /// `env://` bridges *prefer* it (with no match all are kept). HTTP bridges
 /// are stricter, because a bare path like `/health/live` is declared by many
 /// unrelated services: same-service routes win; with none, the routes are
 /// kept only when they all belong to one service (a unique target), else
-/// none (issue #233). Other bridges are returned unchanged.
-pub fn prefer_same_service<'a>(uri: &str, origin_path: &str, bridged: &'a [Edge]) -> Vec<&'a Edge> {
-    let all = || bridged.iter().collect::<Vec<_>>();
+/// none (issue #233). Each edge is paired with whether it is such a
+/// speculative cross-service fallback. Other bridges are returned unchanged.
+pub fn prefer_same_service<'a>(
+    uri: &str,
+    origin_path: &str,
+    bridged: &'a [Edge],
+) -> Vec<(&'a Edge, bool)> {
+    let all = |speculative: bool| bridged.iter().map(|e| (e, speculative)).collect();
     if !uri.starts_with("env://") {
         if bridged.is_empty() || !bridged.iter().all(|e| e.kind.starts_with("HTTP_")) {
-            return all();
+            return all(false);
         }
-        let origin = code_service_key(origin_path);
-        let same: Vec<&Edge> = bridged
+        let origin = service_root(origin_path);
+        let keys: Vec<String> = bridged.iter().map(|e| service_root(&e.file_path)).collect();
+        let same: Vec<(&Edge, bool)> = bridged
             .iter()
-            .filter(|e| code_service_key(&e.file_path) == origin)
+            .zip(&keys)
+            .filter(|(_, k)| **k == origin)
+            .map(|(e, _)| (e, false))
             .collect();
         if !same.is_empty() {
             return same;
         }
-        let first = code_service_key(&bridged[0].file_path);
-        let one_service = bridged
-            .iter()
-            .all(|e| code_service_key(&e.file_path) == first);
-        return if one_service { all() } else { Vec::new() };
+        return if keys.iter().all(|k| *k == keys[0]) {
+            all(true)
+        } else {
+            Vec::new()
+        };
     }
-    let same: Vec<&Edge> = bridged
+    let same: Vec<(&Edge, bool)> = bridged
         .iter()
         .filter(|e| same_service(origin_path, &e.file_path))
+        .map(|e| (e, false))
         .collect();
-    if same.is_empty() { all() } else { same }
+    if same.is_empty() { all(false) } else { same }
 }
 
-/// ponytail: code-to-code "service" identity for HTTP bridging is a path
-/// heuristic: the leading directories up to the first source/test layout
-/// directory (`py/orch/src/...` and `py/orch/tests/...` -> `py/orch`),
-/// capped at two components. Ceiling: a repo whose services sit three levels
-/// deep without a layout directory merges neighbours; one with a flat layout
-/// splits a service across `src`-less subpackages.
-fn code_service_key(path: &str) -> String {
-    const LAYOUT_DIRS: &[&str] = &[
-        "src",
-        "tests",
-        "test",
-        "__tests__",
-        "spec",
-        "lib",
-        "app",
-        "cmd",
-        "internal",
-        "pkg",
-    ];
+/// Service identity for a *code* path, used for HTTP code-vs-code narrowing.
+/// Not shared with `same_service`: that relates a manifest (identified by its
+/// deploy directory's name token) to code, and has no code-side root to
+/// compare; the two never apply to the same pair of paths. A single key cannot
+/// serve both relations. The root is the directories
+/// leading to the first source/test layout directory (`py/orch/src/...` and
+/// `py/orch/tests/...` -> `py/orch`; `services/team/foo/src/...` ->
+/// `services/team/foo`). A path that starts with a layout directory takes the
+/// next component too (`src/frontend/...` -> `src/frontend`), and a path with
+/// no layout directory is capped at two components. Ceiling: a flat layout
+/// splits a service across subpackages; every mis-key either merges or splits
+/// services, so the HTTP caller can only get its old behaviour (a bridge) or
+/// lose a speculative one.
+fn service_root(path: &str) -> String {
     let dirs: Vec<&str> = path.split('/').collect();
     let dirs = &dirs[..dirs.len().saturating_sub(1)];
-    dirs.iter()
-        .take(2)
-        .take_while(|d| !LAYOUT_DIRS.contains(d))
-        .copied()
-        .collect::<Vec<_>>()
-        .join("/")
+    let end = match dirs.iter().position(|d| is_layout_dir(d)) {
+        Some(0) => 2.min(dirs.len()),
+        Some(i) => i,
+        None => 2.min(dirs.len()),
+    };
+    dirs[..end].join("/")
+}
+
+fn is_layout_dir(d: &str) -> bool {
+    crate::indexer::test_detection::TEST_DIR_NAMES.contains(&d)
+        || d.starts_with("test_")
+        || matches!(d, "src" | "lib" | "app" | "cmd" | "internal" | "pkg")
 }
 
 const GENERIC_DIRS: &[&str] = &[
@@ -607,5 +622,24 @@ mod tests {
         assert!(same_service("svc/a/deploy.yaml", "svc/a/src/x.cs"));
         assert!(!same_service("deploy.yaml", "anything.cs"));
         assert!(!same_service("a/x.bicep", "b/y.cs"));
+    }
+
+    #[test]
+    fn service_root_keys() {
+        assert_eq!(service_root("py/orch/src/a/b.py"), "py/orch");
+        assert_eq!(service_root("py/orch/tests/t.py"), "py/orch");
+        assert_eq!(
+            service_root("services/team/foo/src/x.py"),
+            "services/team/foo"
+        );
+        assert_eq!(
+            service_root("services/team/bar/src/x.py"),
+            "services/team/bar"
+        );
+        assert_ne!(
+            service_root("src/frontend/a.ts"),
+            service_root("src/backend/a.py")
+        );
+        assert_eq!(service_root("x.py"), "");
     }
 }
