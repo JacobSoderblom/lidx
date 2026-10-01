@@ -1,4 +1,4 @@
-use super::{Db, edge_from_row, symbol_from_row};
+use super::{Db, RPC_NAME_ONLY_FILTER, edge_from_row, symbol_from_row};
 use crate::model::{Edge, EdgeSnapshotRow, INTERFACE_DISPATCH_KIND, Symbol};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
@@ -862,6 +862,7 @@ impl Db {
                AND e.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
+        sql.push_str(RPC_NAME_ONLY_FILTER);
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&id, &id, &graph_version, &graph_version];
         if let Some(languages) = languages
             && !languages.is_empty()
@@ -1039,6 +1040,7 @@ impl Db {
         // a real `.proto` RPC_ROUTE backs; repos with no RPC_ROUTE at all
         // (protos live elsewhere) keep the unguarded behaviour. Ceiling: a
         // route whose .proto isn't indexed is still exposed to that noise.
+        sql.push_str(RPC_NAME_ONLY_FILTER);
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&target_qualname as &dyn rusqlite::ToSql];
         for kind in kinds {
             params.push(kind as &dyn rusqlite::ToSql);
@@ -1135,6 +1137,7 @@ impl Db {
             placeholders, placeholders
         );
 
+        sql.push_str(RPC_NAME_ONLY_FILTER);
         let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
         // Add IDs twice (for source and target)
         for id in ids {
