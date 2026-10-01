@@ -1046,3 +1046,179 @@ async function main() {
         call.target_qualname
     );
 }
+
+fn rpc_calls_for(source: &str) -> Vec<lidx::indexer::extract::EdgeInput> {
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    extracted
+        .edges
+        .into_iter()
+        .filter(|e| e.kind == "RPC_CALL")
+        .collect()
+}
+
+#[test]
+fn builtin_and_library_constructors_are_not_grpc_clients() {
+    let source = r#"
+import sql from 'mssql';
+import { Repository } from './repo';
+import { Client } from 'pg';
+
+function run() {
+    const m = new Map<string, string>();
+    m.set('a', 'b');
+    const s = new Set([1]);
+    s.has(1);
+    const d = new Date();
+    d.getTime();
+    const p = new Promise((r) => r(1));
+    p.then(() => {});
+    const e = new Error('x');
+    e.toString();
+    const r = new RegExp('a');
+    r.test('a');
+    const u = new URL('http://x');
+    u.toString();
+    const q = new sql.Request();
+    q.input('a', 1);
+    const repo = new Repository();
+    repo.find();
+    const pg = new Client();
+    pg.connect();
+    new Map().get('k');
+    new sql.Request().query('x');
+}
+"#;
+    let calls = rpc_calls_for(source);
+    assert!(calls.is_empty(), "no RPC_CALL expected, got {calls:?}");
+}
+
+fn assert_rpc_targets(source: &str, wants: &[&str]) {
+    let targets: Vec<_> = rpc_calls_for(source)
+        .iter()
+        .filter_map(|e| e.target_qualname.clone())
+        .collect();
+    for want in wants {
+        assert!(
+            targets.iter().any(|t| t == want),
+            "missing {want} in {targets:?}"
+        );
+    }
+}
+
+#[test]
+fn grpc_client_from_stub_namespace_import_emits_rpc_call() {
+    let source = r#"
+import * as pb from './greeter_grpc_pb';
+function run() { const b = new pb.GreeterClient('h'); b.sayHello({}); }
+"#;
+    assert_rpc_targets(source, &["/greeter/sayhello"]);
+}
+
+#[test]
+fn grpc_client_named_import_from_grpc_pb_emits_rpc_call() {
+    let source = r#"
+import { FooServiceClient } from './foo_grpc_pb';
+function run() { const a = new FooServiceClient('h'); a.doFoo({}); }
+"#;
+    assert_rpc_targets(source, &["/fooservice/dofoo"]);
+}
+
+#[test]
+fn grpc_client_from_required_stub_emits_rpc_call() {
+    let source = r#"
+const { BarClient } = require('./bar_grpc_pb');
+function run() { const c = new BarClient('h'); c.doBar({}); }
+"#;
+    assert_rpc_targets(source, &["/bar/dobar"]);
+}
+
+#[test]
+fn grpc_client_under_load_package_definition_root_emits_rpc_call() {
+    let source = r#"
+const grpc = require('@grpc/grpc-js');
+const protoLoader = require('@grpc/proto-loader');
+const pkgDef = protoLoader.loadSync('x.proto');
+const hello = grpc.loadPackageDefinition(pkgDef).helloworld;
+function run() { const d = new hello.Greeter('h'); d.sayHi({}); }
+"#;
+    assert_rpc_targets(source, &["/hello.greeter/sayhi"]);
+}
+
+#[test]
+fn grpc_generic_client_constructor_local_emits_rpc_call_for_literal_service() {
+    let source = r#"
+import * as grpc from '@grpc/grpc-js';
+const Generic = grpc.makeGenericClientConstructor({}, 'Svc');
+function run() { const c = new Generic('h'); c.doGeneric({}); }
+"#;
+    assert_rpc_targets(source, &["/svc/dogeneric"]);
+}
+
+#[test]
+fn grpc_generic_client_from_service_local_emits_rpc_call() {
+    let source = r#"
+import * as grpc from '@grpc/grpc-js';
+const Gen2 = grpc.makeGenericClientFromService(svc as any, {});
+function run() { const d = new Gen2('h'); d.doGen2({}); }
+"#;
+    assert_rpc_targets(source, &["/gen2/dogen2"]);
+}
+
+#[test]
+fn ts_proto_client_impl_import_emits_name_only_rpc_call() {
+    let source = r#"
+import { UserServiceClientImpl } from './user';
+function run() { const a = new UserServiceClientImpl(rpc); a.getUser({}); }
+"#;
+    assert_rpc_targets(source, &["/userservice/getuser"]);
+}
+
+#[test]
+fn grpcish_module_accepts_any_capitalised_constructor() {
+    let source = r#"
+import { Greeter } from './generated/greeter';
+function run() { const h = new Greeter('h'); h.sayHi({}); }
+"#;
+    assert_rpc_targets(source, &["/greeter/sayhi"]);
+}
+
+#[test]
+fn neutral_module_client_is_flagged_name_only() {
+    let source = r#"
+import { OrderServiceClient } from './order';
+import { FooServiceClient } from './foo_grpc_pb';
+function run() {
+    const a = new OrderServiceClient('h'); a.placeOrder({});
+    const b = new FooServiceClient('h'); b.doFoo({});
+}
+"#;
+    let calls = rpc_calls_for(source);
+    let detail_of = |target: &str| -> String {
+        calls
+            .iter()
+            .find(|e| e.target_qualname.as_deref() == Some(target))
+            .and_then(|e| e.detail.clone())
+            .unwrap_or_else(|| panic!("missing {target}"))
+    };
+    assert!(detail_of("/orderservice/placeorder").contains("\"evidence\":\"name\""));
+    assert!(!detail_of("/fooservice/dofoo").contains("evidence"));
+}
+
+#[test]
+fn grpc_runtime_package_classes_and_create_client_are_not_clients() {
+    let source = r#"
+import * as grpc from '@grpc/grpc-js';
+import { Server } from '@grpc/grpc-js';
+import { createClient } from 'nice-grpc';
+import { UserService } from './gen/user';
+function run() {
+    const s = new Server(); s.start();
+    const k = new grpc.Client('h', creds); k.makeUnaryRequest();
+    const i = createClient(UserService, channel); i.getUser({});
+}
+
+"#;
+    let calls = rpc_calls_for(source);
+    assert!(calls.is_empty(), "no RPC_CALL expected, got {calls:?}");
+}

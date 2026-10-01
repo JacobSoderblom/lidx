@@ -66,20 +66,26 @@ pub fn write_files(root: &Path, files: &[(&str, &str)]) {
     }
 }
 
-/// `write_files` into a fresh temp dir (no checked-in fixture) followed by
-/// one full `reindex()`, returning its edge snapshot -- the synthetic-tree
+/// `write_files` into a fresh temp dir prefixed `prefix` (no checked-in
+/// fixture) followed by one full `reindex()`; returns `(guard, repo_root,
+/// db_path)` like `setup_repo`.
+pub fn index_repo(prefix: &str, files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
+    write_files(tmp.path(), files);
+    let root = tmp.path().to_path_buf();
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    (tmp, root, db_path)
+}
+
+/// `index_repo` returning the edge snapshot -- the synthetic-tree
 /// counterpart to `fresh_reindex_snapshot`, for scenarios with no fixture
 /// to copy at all. Keep the returned `TempDir` bound for as long as the
 /// snapshot (or anything derived from it) is needed.
 pub fn index_files(files: &[(&str, &str)]) -> (tempfile::TempDir, BTreeSet<EdgeKey>) {
-    let tmp = tempfile::Builder::new()
-        .prefix("lidx-sync-")
-        .tempdir()
-        .unwrap();
-    write_files(tmp.path(), files);
-    let db_path = tmp.path().join(".lidx").join(".lidx.sqlite");
-    let mut indexer = Indexer::new(tmp.path().to_path_buf(), db_path).unwrap();
-    indexer.reindex().unwrap();
+    let (tmp, root, db_path) = index_repo("lidx-sync-", files);
+    let indexer = Indexer::new(root, db_path).unwrap();
     let graph_version = indexer.db().current_graph_version().unwrap();
     let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
     (tmp, snapshot)
