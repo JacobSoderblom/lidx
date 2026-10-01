@@ -361,11 +361,18 @@ impl Db {
         Ok(result)
     }
 
-    /// Get inter-module edge counts (calls and imports)
+    /// Get inter-module edge counts (calls and imports).
+    ///
+    /// Issue #240: when `paths` is set, an edge is kept only if at least one
+    /// endpoint file lies inside the filtered set (an edge wholly outside it
+    /// describes a graph the caller did not ask about). Edges that cross the
+    /// filter boundary are kept so the caller can see what the subtree
+    /// depends on and what depends on it.
     pub fn module_edges(
         &self,
         depth: usize,
         languages: Option<&[String]>,
+        paths: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<ModuleEdgeCounts>> {
         let conn = self.read_conn()?;
@@ -415,8 +422,13 @@ impl Db {
 
         // Group by source module -> target module
         let mut edge_map: HashMap<(String, String), (usize, usize, usize)> = HashMap::new();
+        let prefixes = super::collect_path_prefixes(paths);
+        let in_filter = |path: &str| super::path_in_prefixes(&prefixes, path);
 
         for (kind, src_path, tgt_path_opt) in &rows {
+            if !in_filter(src_path) && !tgt_path_opt.as_deref().is_some_and(&in_filter) {
+                continue;
+            }
             let src_module = module_prefix(src_path, depth);
 
             if let Some(tgt_path) = tgt_path_opt {
@@ -1165,7 +1177,7 @@ mod tests {
     #[test]
     fn module_edges_empty() {
         let (db, _temp) = create_test_db();
-        assert!(db.module_edges(1, None, 1).unwrap().is_empty());
+        assert!(db.module_edges(1, None, None, 1).unwrap().is_empty());
     }
 
     #[test]
@@ -1191,7 +1203,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(db.module_edges(1, None, gv).unwrap().is_empty());
+        assert!(db.module_edges(1, None, None, gv).unwrap().is_empty());
     }
 
     #[test]
@@ -1232,7 +1244,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = db.module_edges(1, None, gv).unwrap();
+        let result = db.module_edges(1, None, None, gv).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "src/");
         assert_eq!(result[0].1, "lib/");
@@ -1285,7 +1297,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = db.module_edges(1, None, gv).unwrap();
+        let result = db.module_edges(1, None, None, gv).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].2, 1); // 1 call
         assert_eq!(result[0].3, 1); // 1 import
@@ -1320,7 +1332,7 @@ mod tests {
         sym_map.insert("b.g".to_string(), ins2[0].id);
         db.insert_edges(fid1, &[make_edge("XREF", "a.f", "b.g")], &sym_map, gv, None)
             .unwrap();
-        let result = db.module_edges(1, None, gv).unwrap();
+        let result = db.module_edges(1, None, None, gv).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].2, 0); // calls
         assert_eq!(result[0].4, 1); // xrefs
@@ -1373,7 +1385,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = db.module_edges(1, None, gv).unwrap();
+        let result = db.module_edges(1, None, None, gv).unwrap();
         assert_eq!(result.len(), 2);
         // a/->b/ (2 calls) should be first
         assert_eq!(result[0].2 + result[0].3, 2);
