@@ -775,13 +775,16 @@ fn resolve_by_query(
 }
 
 /// Expands a symbol into seed IDs for BFS traversal.
-/// For container symbols (class/module/resource), returns the symbol plus its members.
+/// For container symbols (class/struct/record/interface/module/resource), returns the symbol plus its members.
 pub fn expand_seeds(db: &Db, symbol_id: i64, graph_version: i64) -> Result<Vec<i64>> {
     let symbol = db
         .get_symbol_by_id(symbol_id)?
         .ok_or_else(|| anyhow::anyhow!("symbol not found: id={}", symbol_id))?;
 
-    let is_container = matches!(symbol.kind.as_str(), "class" | "module" | "resource");
+    let is_container = matches!(
+        symbol.kind.as_str(),
+        "class" | "struct" | "record" | "interface" | "module" | "resource"
+    );
     if !is_container {
         return Ok(vec![symbol_id]);
     }

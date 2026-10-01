@@ -2157,6 +2157,9 @@ fn analyze_impact_inner(
         vec![]
     };
 
+    // True when an upstream container seed was widened to its members (#249).
+    let mut container_seeded = false;
+
     // Resolve symbol by id, qualname, or fuzzy query (skip if config URI already resolved).
     // For qualname/query we catch resolution failure and return a structured recovery payload
     // instead of propagating a flat error — giving the caller actionable next_hops.
@@ -2201,6 +2204,21 @@ fn analyze_impact_inner(
             && !ids.contains(&parent.id)
         {
             ids.push(parent.id);
+        }
+        // Container→members expansion (issue #249): nothing calls a class
+        // itself, callers hit its constructors and methods. Upstream only --
+        // members as seeds would drag their callees into a downstream walk.
+        // Shares `trace_flow`'s helper so the two cannot drift.
+        if matches!(
+            crate::impact::TraversalDirection::from(params.direction.as_deref().unwrap_or("both")),
+            crate::impact::TraversalDirection::Upstream
+        ) {
+            for id in crate::resolve::expand_seeds(indexer.db(), symbol.id, ctx.graph_version)? {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                    container_seeded = true;
+                }
+            }
         }
         ids
     };
@@ -2377,7 +2395,11 @@ fn analyze_impact_inner(
             "downstream" | "down" | "callees" | "out" => Some("upstream"),
             _ => None,
         };
-        if let Some(alt) = alt_direction {
+        // A container whose members were all searched upstream is a genuine
+        // "nothing depends on this": the direction was not the problem
+        // (unless the direct layer was switched off, which is).
+        let searched_members = container_seeded && params.enable_direct != Some(false);
+        if let Some(alt) = alt_direction.filter(|alt| !(searched_members && *alt == "downstream")) {
             next_hops.push(json!({
                 "method": "analyze_impact",
                 "params": seed_params(alt),
