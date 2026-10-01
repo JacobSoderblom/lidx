@@ -520,6 +520,15 @@ fn recovery_search_term(trimmed: &str) -> String {
     token.chars().take(MAX_LEN_CHARS).collect()
 }
 
+/// Drops hops repeating an earlier hop's (method, params), keeping order.
+/// Params compare by value, so key order inside them does not matter.
+fn dedup_hops(hops: Vec<Value>) -> Vec<Value> {
+    let mut seen = std::collections::HashSet::new();
+    hops.into_iter()
+        .filter(|h| seen.insert((h["method"].to_string(), h["params"].to_string())))
+        .collect()
+}
+
 /// Method-specific param keys that identify a start/seed reference — stripped
 /// from a cloned caller-params object before a retry hop sets its own.
 fn start_ref_keys(method: &str) -> &'static [&'static str] {
@@ -655,13 +664,10 @@ pub fn build_resolution_recovery_payload(
         "description": format!("Text search for '{}' to find related symbols", search_term),
     }));
 
-    // Deduplicate: there may be overlap between method retries and explain hops.
-    // Keep insertion order; skip exact duplicates.
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let next_hops: Vec<Value> = next_hops
-        .into_iter()
-        .filter(|h| seen.insert(h.to_string()))
-        .collect();
+    // Deduplicate on (method, params): an explain hop and a retry hop can
+    // share both and differ only in description. Keep the first, so explain
+    // hops (pushed first) win.
+    let next_hops = dedup_hops(next_hops);
 
     let message = format!(
         "Symbol '{}' not found. {} suggestion(s), {} next hop(s) below.",
@@ -799,6 +805,23 @@ pub fn expand_seeds(db: &Db, symbol_id: i64, graph_version: i64) -> Result<Vec<i
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dedup_hops_ignores_description_and_key_order_but_keeps_distinct_params() {
+        let hops: Vec<Value> = [
+            r#"{"method":"explain_symbol","params":{"id":1,"format":"text"},"description":"Explain a"}"#,
+            r#"{"method":"explain_symbol","params":{"format":"text","id":1},"description":"Retry a"}"#,
+            r#"{"method":"explain_symbol","params":{"id":2},"description":"Explain b"}"#,
+        ]
+        .iter()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+        let descs: Vec<_> = dedup_hops(hops)
+            .iter()
+            .map(|h| h["description"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(descs, ["Explain a", "Explain b"]);
+    }
+
     use super::*;
     use crate::indexer::Indexer;
     use std::path::{Path, PathBuf};

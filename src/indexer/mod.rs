@@ -53,6 +53,7 @@ pub mod rust;
 pub mod scan;
 pub mod sql_extractor;
 pub mod stable_id;
+pub mod string_consts;
 pub mod test_detection;
 pub mod tree_helpers;
 pub mod xref;
