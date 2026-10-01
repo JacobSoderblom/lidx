@@ -59,6 +59,7 @@
 
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
+use crate::indexer::csharp::PARTIAL_TYPE_SIGNATURE;
 use crate::indexer::extract::{
     CallShape, DEFERRED_KIND_ARGUMENT, DEFERRED_KIND_RETURN, DeferredMarker, TypeScope,
 };
@@ -1187,7 +1188,9 @@ impl<'c> Resolver<'c> {
             })?;
         // A type's own signature is its primary-constructor parameter list
         // (`record R(int A)`), which `..ctor` symbols don't cover.
-        if !matches!(kind.as_str(), "class" | "struct" | "record") || signature.is_some() {
+        if !matches!(kind.as_str(), "class" | "struct" | "record")
+            || signature.is_some_and(|s| s.starts_with('('))
+        {
             return Ok(None);
         }
         let gv = self.graph_version;
@@ -1422,6 +1425,11 @@ impl<'c> Resolver<'c> {
                 }))
             {
                 admitted = vec![*only];
+            }
+            if admitted.len() > 1
+                && let Some(id) = canonical_multi_file(&admitted)
+            {
+                return Ok(Some(id));
             }
             if admitted.len() > 1 {
                 self.saw_ambiguous = true;
@@ -2585,16 +2593,56 @@ fn same_kind_min(candidates: &[(i64, &str)]) -> Option<i64> {
 fn collapse_exact_candidates(candidates: &[ExactCandidate]) -> Option<i64> {
     let first_file = candidates.first()?.file_id;
     if !candidates.iter().all(|c| c.file_id == first_file) {
-        return None;
+        return canonical_multi_file(&candidates.iter().collect::<Vec<_>>());
     }
     let by_kind: Vec<(i64, &str)> = candidates.iter().map(|c| (c.id, c.kind.as_str())).collect();
     same_kind_min(&by_kind)
+}
+
+/// Issue #206: candidates in 2+ files that are parts of one entity rather
+/// than competing symbols -- every candidate a `namespace` (declared per
+/// file, defined to span files), or every one a `partial` type of one kind.
+/// Resolves to the part in the lexicographically first file (then lowest
+/// id), a canonical choice that depends on the tree, never on scan order.
+/// `None` for anything else: same-named but unrelated symbols stay ambiguous.
+fn canonical_multi_file(candidates: &[&ExactCandidate]) -> Option<i64> {
+    let first = candidates.first()?;
+    if !candidates.iter().all(|c| c.kind == first.kind) {
+        return None;
+    }
+    let one_entity = match first.kind.as_str() {
+        "namespace" => true,
+        "class" | "struct" | "record" | "interface" => {
+            // At most one part (the one with a primary constructor) carries a
+            // parameter list instead of the `partial` marker.
+            let unmarked = candidates
+                .iter()
+                .filter(|c| c.signature.as_deref() != Some(PARTIAL_TYPE_SIGNATURE))
+                .count();
+            unmarked <= 1
+                && candidates.iter().all(|c| {
+                    c.signature
+                        .as_deref()
+                        .is_some_and(|s| s == PARTIAL_TYPE_SIGNATURE || s.starts_with('('))
+                })
+        }
+        _ => false,
+    };
+    one_entity
+        .then(|| {
+            candidates
+                .iter()
+                .min_by(|a, b| (&a.path, a.id).cmp(&(&b.path, b.id)))
+        })
+        .flatten()
+        .map(|c| c.id)
 }
 
 /// One `EXACT_SQL` row.
 struct ExactCandidate {
     id: i64,
     file_id: i64,
+    path: String,
     kind: String,
     signature: Option<String>,
 }
@@ -2740,6 +2788,7 @@ fn query_exact_candidates(
             ExactCandidate {
                 id: row.get(0)?,
                 file_id: row.get(1)?,
+                path: row.get(3)?,
                 kind: row.get(2)?,
                 signature: row.get(4)?,
             },
