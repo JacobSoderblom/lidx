@@ -1,7 +1,6 @@
 use anyhow::Result;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::fmt::Write;
 
 use crate::db::Db;
 use crate::model::Symbol;
@@ -19,11 +18,60 @@ pub struct RepoMapResult {
     pub modules: usize,
     pub symbols: usize,
     pub bytes: usize,
+    /// True when output was cut to honour `max_bytes`.
+    pub truncated: bool,
+}
+
+/// Appended when output was cut for budget so a short map is
+/// distinguishable from a complete one.
+const TRUNCATION_NOTE: &str = "\n_(truncated: max_bytes reached)_\n";
+
+/// Output buffer that never grows past the byte budget. Every write is
+/// all-or-nothing, so a cut always lands on a line boundary.
+struct BudgetedOutput {
+    buf: String,
+    /// Content limit; leaves room for `TRUNCATION_NOTE` when the budget
+    /// can afford one.
+    limit: usize,
+    truncated: bool,
+}
+
+impl BudgetedOutput {
+    fn new(budget: usize) -> Self {
+        let reserve = if budget >= TRUNCATION_NOTE.len() * 2 {
+            TRUNCATION_NOTE.len()
+        } else {
+            0
+        };
+        Self {
+            buf: String::new(),
+            limit: budget - reserve,
+            truncated: false,
+        }
+    }
+
+    /// Append `text` only if it fits. Once something has been refused,
+    /// everything after it is refused too, so output stays a clean prefix.
+    fn push(&mut self, text: &str) -> bool {
+        if self.truncated || self.buf.len() + text.len() > self.limit {
+            self.truncated = true;
+            return false;
+        }
+        self.buf.push_str(text);
+        true
+    }
+
+    fn finish(mut self, budget: usize) -> (String, bool) {
+        if self.truncated && self.buf.len() + TRUNCATION_NOTE.len() <= budget {
+            self.buf.push_str(TRUNCATION_NOTE);
+        }
+        (self.buf, self.truncated)
+    }
 }
 
 pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> {
     let budget = config.max_bytes;
-    let mut out = String::new();
+    let mut out = BudgetedOutput::new(budget);
     let mut total_symbols = 0;
 
     // Phase 1: Module summary from module_map(depth=1)
@@ -34,8 +82,8 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
         config.graph_version,
     )?;
 
-    writeln!(out, "# Architecture Overview\n")?;
-    writeln!(out, "## Modules")?;
+    out.push("# Architecture Overview\n\n");
+    out.push("## Modules\n");
     for m in &modules {
         let dominant_language = if m.languages.is_empty() {
             "unknown".to_string()
@@ -48,30 +96,39 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
         // on the same contract -- so it is not added again here. Issue
         // #134: doing so produced doubled separators like "py//" for any
         // module below the repo root.
-        writeln!(
-            out,
-            "- **{}** ({} files, {} symbols, {})",
+        let line = format!(
+            "- **{}** ({} files, {} symbols, {})\n",
             m.path, m.file_count, m.symbol_count, dominant_language
-        )?;
+        );
+        if !out.push(&line) {
+            break;
+        }
     }
 
     // Phase 2: Inter-module edges
-    if out.len() + 200 < budget {
-        let edges = db.module_edges(1, config.languages.as_deref(), config.graph_version)?;
+    if !out.truncated {
+        let edges = db.module_edges(
+            1,
+            config.languages.as_deref(),
+            config.paths.as_deref(),
+            config.graph_version,
+        )?;
         if !edges.is_empty() {
-            writeln!(out, "\n## Dependencies")?;
+            out.push("\n## Dependencies\n");
             for e in edges.iter().take(20) {
-                writeln!(
-                    out,
-                    "- {} → {} ({} calls, {} imports, {} xrefs)",
+                let line = format!(
+                    "- {} → {} ({} calls, {} imports, {} xrefs)\n",
                     e.0, e.1, e.2, e.3, e.4
-                )?;
+                );
+                if !out.push(&line) {
+                    break;
+                }
             }
         }
     }
 
     // Phase 3: Top symbols per module by fan-in
-    if out.len() + 200 < budget {
+    if !out.truncated {
         let fan_in_symbols = db.top_fan_in_by_module(
             10,
             config.languages.as_deref(),
@@ -86,19 +143,18 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
                 .push((sym, *count));
         }
 
-        writeln!(out, "\n## Key Symbols (by fan-in)")?;
+        out.push("\n## Key Symbols (by fan-in)\n");
         let mut sorted_modules: Vec<_> = by_module.keys().cloned().collect();
         sorted_modules.sort();
-        for module in sorted_modules {
-            if out.len() + 100 > budget {
-                break;
-            }
+        'modules: for module in sorted_modules {
             if let Some(syms) = by_module.get(&module) {
                 // `module` (from `top_fan_in_by_module`, now backed by the
                 // same `module_prefix()` as `module_summary`) already
                 // carries a trailing separator -- see the "## Modules"
                 // comment above -- so it is not added again here.
-                writeln!(out, "\n### {}", module)?;
+                if !out.push(&format!("\n### {}\n", module)) {
+                    break;
+                }
                 for (sym, count) in syms.iter().take(5) {
                     let line = format!(
                         "- {} **{}** `{}` (fan-in: {})\n",
@@ -107,10 +163,9 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
                         sym.signature.as_deref().unwrap_or(""),
                         count
                     );
-                    if out.len() + line.len() > budget {
-                        break;
+                    if !out.push(&line) {
+                        break 'modules;
                     }
-                    out.push_str(&line);
                     total_symbols += 1;
                 }
             }
@@ -118,27 +173,28 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
     }
 
     // Phase 4: Patterns (if budget remains)
-    if out.len() + 200 < budget {
+    if !out.truncated {
         let kinds = db.count_symbols_by_kind(
             config.languages.as_deref(),
             config.paths.as_deref(),
             config.graph_version,
         )?;
-        writeln!(out, "\n## Patterns")?;
+        out.push("\n## Patterns\n");
         for (kind, count) in &kinds {
-            if out.len() + 50 > budget {
+            if !out.push(&format!("- {}: {}\n", kind, count)) {
                 break;
             }
-            writeln!(out, "- {}: {}", kind, count)?;
         }
     }
 
-    let bytes = out.len();
+    let (text, truncated) = out.finish(budget);
+    let bytes = text.len();
     Ok(RepoMapResult {
-        text: out,
+        text,
         modules: modules.len(),
         symbols: total_symbols,
         bytes,
+        truncated,
     })
 }
 
@@ -365,5 +421,209 @@ mod tests {
              matching \"## Modules\":\n{}",
             result.text
         );
+    }
+
+    /// Index one function per `(dir, name)` and a CALLS edge per
+    /// `(src_name, dst_name)` pair, with each edge owned by its source file.
+    fn build_graph(db: &mut Db, gv: i64, funcs: &[(&str, &str)], calls: &[(&str, &str)]) {
+        let mut sym_map = HashMap::new();
+        let mut file_of = HashMap::new();
+        for (dir, name) in funcs {
+            let path = format!("{dir}/{name}.py");
+            let fid = db.upsert_file(&path, name, "python", 10, 0).unwrap();
+            let qual = format!("{dir}.{name}.{name}");
+            let ins = db
+                .insert_symbols(fid, &path, &[make_symbol(&qual, "function")], gv, None)
+                .unwrap();
+            sym_map.insert(name.to_string(), ins[0].id);
+            file_of.insert(name.to_string(), (fid, qual));
+        }
+        let qual_map: HashMap<String, i64> = file_of
+            .iter()
+            .map(|(name, (_, qual))| (qual.clone(), sym_map[name]))
+            .collect();
+        for (src, dst) in calls {
+            let (fid, sq) = &file_of[*src];
+            let (_, tq) = &file_of[*dst];
+            db.insert_edges(*fid, &[make_edge("CALLS", sq, tq)], &qual_map, gv, None)
+                .unwrap();
+        }
+    }
+
+    fn section<'a>(text: &'a str, header: &str) -> &'a str {
+        let start = text
+            .find(header)
+            .unwrap_or_else(|| panic!("no {header}:\n{text}"));
+        let rest = &text[start + header.len()..];
+        let end = rest.find("\n## ").unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    fn path_fixture() -> (Db, TempDir, i64) {
+        let (mut db, temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+        build_graph(
+            &mut db,
+            gv,
+            &[
+                ("dirA", "fa"),
+                ("dirB", "fb"),
+                ("dirB", "fb2"),
+                ("dirC", "fc"),
+                ("dirC", "fc2"),
+                ("dirC", "fc3"),
+            ],
+            &[
+                ("fa", "fb"),
+                ("fb", "fa"),
+                ("fb2", "fa"),
+                ("fc", "fb"),
+                ("fc2", "fb"),
+                ("fc3", "fb"),
+            ],
+        );
+        (db, temp, gv)
+    }
+
+    // Issue #240: Dependencies ignored the path filter. An edge with no
+    // endpoint inside the filter must not appear.
+    #[test]
+    fn dependencies_omit_edges_wholly_outside_path_filter() {
+        let (db, _temp, gv) = path_fixture();
+        let mut cfg = default_config(gv);
+        cfg.paths = Some(vec!["dirA".to_string()]);
+        let text = build_repo_map(&db, &cfg).unwrap().text;
+        let deps = section(&text, "## Dependencies");
+        assert!(!deps.contains("dirC/"), "outside edge leaked:\n{deps}");
+        // Unfiltered, the C -> B edge is present (the fixture is meaningful).
+        let all = build_repo_map(&db, &default_config(gv)).unwrap().text;
+        assert!(section(&all, "## Dependencies").contains("dirC/ → dirB/"));
+    }
+
+    // Issue #240: pins the chosen rule -- an edge with at least one endpoint
+    // inside the filter is kept (in -> out and out -> in).
+    #[test]
+    fn dependencies_keep_edges_crossing_path_filter_boundary() {
+        let (db, _temp, gv) = path_fixture();
+        let mut cfg = default_config(gv);
+        cfg.paths = Some(vec!["dirA".to_string()]);
+        let text = build_repo_map(&db, &cfg).unwrap().text;
+        let deps = section(&text, "## Dependencies");
+        assert!(deps.contains("dirA/ → dirB/"), "{deps}");
+        assert!(deps.contains("dirB/ → dirA/"), "{deps}");
+        assert_eq!(deps.matches("\n- ").count(), 2, "{deps}");
+    }
+
+    // Issue #240: every section honours the filter, asserted per section.
+    #[test]
+    fn every_section_honours_path_filter() {
+        let (db, _temp, gv) = path_fixture();
+        let mut cfg = default_config(gv);
+        cfg.paths = Some(vec!["dirA".to_string()]);
+        let text = build_repo_map(&db, &cfg).unwrap().text;
+        let modules = section(&text, "## Modules");
+        assert!(modules.contains("dirA/"), "{modules}");
+        assert!(
+            !modules.contains("dirB/") && !modules.contains("dirC/"),
+            "{modules}"
+        );
+        let deps = section(&text, "## Dependencies");
+        assert!(!deps.contains("dirC/"), "{deps}");
+        let keys = section(&text, "## Key Symbols (by fan-in)");
+        assert!(!keys.contains("dirB/") && !keys.contains("dirC/"), "{keys}");
+        assert!(!keys.contains("**fc**"), "{keys}");
+        let patterns = section(&text, "## Patterns");
+        assert!(patterns.contains("- function: 1"), "{patterns}");
+    }
+
+    fn big_fixture() -> (Db, TempDir, i64) {
+        let (mut db, temp) = create_test_db();
+        let gv = db.create_graph_version(None).unwrap();
+        let names: Vec<(String, String)> = (0..25)
+            .map(|i| (format!("module_dir_{i:02}"), format!("fn_{i:02}")))
+            .collect();
+        let funcs: Vec<(&str, &str)> = names
+            .iter()
+            .map(|(d, n)| (d.as_str(), n.as_str()))
+            .collect();
+        let calls: Vec<(&str, &str)> = (0..24).map(|i| (funcs[i].1, funcs[i + 1].1)).collect();
+        build_graph(&mut db, gv, &funcs, &calls);
+        (db, temp, gv)
+    }
+
+    // Issue #240: max_bytes is a hard ceiling, every cut lands on a line
+    // boundary, and the cut is reported.
+    #[test]
+    fn output_never_exceeds_max_bytes_and_reports_truncation() {
+        let (db, _temp, gv) = big_fixture();
+        let full = build_repo_map(&db, &default_config(gv)).unwrap();
+        assert!(!full.truncated);
+        assert!(full.bytes > 1000, "fixture too small: {}", full.bytes);
+        for budget in [0usize, 10, 40, 100, 250, 500, 1000, 1500] {
+            let mut cfg = default_config(gv);
+            cfg.max_bytes = budget;
+            let r = build_repo_map(&db, &cfg).unwrap();
+            assert!(
+                r.text.len() <= budget,
+                "budget {budget}: {} bytes",
+                r.text.len()
+            );
+            assert_eq!(r.bytes, r.text.len());
+            assert!(r.truncated, "budget {budget} should truncate");
+            assert!(
+                r.text.is_empty() || r.text.ends_with('\n'),
+                "budget {budget} cut mid-line: {:?}",
+                r.text
+            );
+            if budget >= 1000 {
+                assert!(
+                    r.text.contains("truncated"),
+                    "no marker at {budget}:\n{}",
+                    r.text
+                );
+            }
+        }
+    }
+
+    // Issue #240: a budget that only fits part of the Modules section yields
+    // whole lines only.
+    #[test]
+    fn partial_modules_section_has_only_complete_lines() {
+        let (db, _temp, gv) = big_fixture();
+        let mut cfg = default_config(gv);
+        cfg.max_bytes = 300;
+        let r = build_repo_map(&db, &cfg).unwrap();
+        assert!(r.truncated);
+        assert!(!section(&r.text, "## Modules").contains("## Dependencies"));
+        let listed = r.text.lines().filter(|l| l.starts_with("- **")).count();
+        assert!(listed > 0 && listed < 25, "{listed}:\n{}", r.text);
+        for l in r.text.lines().filter(|l| l.starts_with("- **")) {
+            assert!(l.ends_with(')'), "partial line {l:?}");
+        }
+        assert!(!r.text.contains("## Dependencies"));
+    }
+
+    // Issue #240: an unfiltered, generously budgeted map is unchanged.
+    #[test]
+    fn unfiltered_unbudgeted_output_is_unchanged() {
+        let (db, _temp, gv) = path_fixture();
+        let r = build_repo_map(&db, &default_config(gv)).unwrap();
+        assert!(!r.truncated);
+        let expected = "# Architecture Overview\n\n## Modules\n\
+- **dirC/** (3 files, 3 symbols, python)\n\
+- **dirB/** (2 files, 2 symbols, python)\n\
+- **dirA/** (1 files, 1 symbols, python)\n\
+\n## Dependencies\n\
+- dirC/ → dirB/ (3 calls, 0 imports, 0 xrefs)\n\
+- dirB/ → dirA/ (2 calls, 0 imports, 0 xrefs)\n\
+- dirA/ → dirB/ (1 calls, 0 imports, 0 xrefs)\n\
+\n## Key Symbols (by fan-in)\n\
+\n### dirA/\n\
+- function **fa** `` (fan-in: 2)\n\
+\n### dirB/\n\
+- function **fb** `` (fan-in: 4)\n\
+\n## Patterns\n\
+- function: 6\n";
+        assert_eq!(r.text, expected);
     }
 }

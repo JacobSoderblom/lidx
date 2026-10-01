@@ -1144,6 +1144,7 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
                 "modules": map_result.modules,
                 "symbols": map_result.symbols,
                 "bytes": map_result.bytes,
+                "truncated": map_result.truncated,
             }),
         );
     }
@@ -1165,10 +1166,12 @@ pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Valu
                 languages: m.languages,
             })
             .collect();
-        let edges =
-            indexer
-                .db()
-                .module_edges(depth, ctx.languages.as_deref(), ctx.graph_version)?;
+        let edges = indexer.db().module_edges(
+            depth,
+            ctx.languages.as_deref(),
+            ctx.paths.as_deref(),
+            ctx.graph_version,
+        )?;
         let module_edges: Vec<ModuleEdge> = edges
             .into_iter()
             .map(|(src, dst, calls, imports, xrefs)| ModuleEdge {
@@ -1263,6 +1266,7 @@ pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Va
             "modules": map_result.modules,
             "symbols": map_result.symbols,
             "bytes": map_result.bytes,
+            "truncated": map_result.truncated,
             "counts": {
                 "modules": map_result.modules,
                 "symbols": map_result.symbols,
@@ -1278,6 +1282,7 @@ pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Va
         "modules": map_result.modules,
         "symbols": map_result.symbols,
         "bytes": map_result.bytes,
+        "truncated": map_result.truncated,
     }))
 }
 
