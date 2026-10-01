@@ -1,4 +1,5 @@
 use serde_json::json;
+use std::collections::HashMap;
 
 pub const CHANNEL_PUBLISH_KIND: &str = "CHANNEL_PUBLISH";
 pub const CHANNEL_SUBSCRIBE_KIND: &str = "CHANNEL_SUBSCRIBE";
@@ -82,7 +83,7 @@ const SUBSCRIBE_METHODS: &[&str] = &[
 /// - `DATAPROXY_COMMANDS` → `channel://dataproxycommands`
 pub fn normalize_channel_name(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || !is_plausible_topic(trimmed) {
         return None;
     }
 
@@ -104,6 +105,131 @@ pub fn normalize_channel_name(raw: &str) -> Option<String> {
     }
 
     Some(format!("channel://{normalized}"))
+}
+
+/// A topic name never contains quote, bracket, or call-syntax characters.
+/// Source text like `"x"`, `Foo()` or `Arg.Any<string>()` is an expression,
+/// not a topic, so it is rejected rather than turned into a fabricated name.
+fn is_plausible_topic(s: &str) -> bool {
+    !s.chars().any(|ch| {
+        matches!(
+            ch,
+            '"' | '\'' | '`' | '(' | ')' | '<' | '>' | '{' | '}' | '[' | ']' | '\n' | '\r'
+        )
+    })
+}
+
+/// Value of a string-literal source text, for every quoting form the
+/// supported languages allow: single/double quotes, Python triple quotes and
+/// `r`/`u`/`b`/`f` prefixes, C# verbatim (`@"..."`), interpolated (`$"..."`)
+/// and raw (`"""..."""`) strings, Go/JS backtick strings, Rust `r#"..."#`.
+/// Interpolated/template strings with holes (`{`/`${`) are not static and
+/// yield `None`, as does anything that is not a single complete literal.
+pub fn string_literal_value(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let qpos = raw.find(['"', '\'', '`'])?;
+    let prefix = &raw[..qpos];
+    if !prefix.chars().all(|c| {
+        matches!(
+            c,
+            'r' | 'R' | 'u' | 'U' | 'b' | 'B' | 'f' | 'F' | '$' | '@' | '#'
+        )
+    }) {
+        return None;
+    }
+    let interpolated = prefix.contains(['f', 'F', '$']);
+    let hashes = prefix.chars().filter(|c| *c == '#').count();
+    let rest = &raw[qpos..];
+    let q = rest.chars().next()?;
+    let triple: String = std::iter::repeat_n(q, 3).collect();
+    let delim = if q != '`' && rest.starts_with(&triple) && rest.len() >= 6 {
+        triple
+    } else {
+        q.to_string()
+    };
+    let mut tail = rest.strip_suffix(&"#".repeat(hashes))?;
+    if tail.len() < delim.len() * 2 {
+        return None;
+    }
+    tail = tail.strip_suffix(delim.as_str())?;
+    let body = &tail[delim.len()..];
+    if body.is_empty() || body.contains(q) {
+        return None;
+    }
+    if (interpolated || q == '`') && body.contains('{') {
+        return None;
+    }
+    Some(body.to_string())
+}
+
+/// What the enclosing function says about a bare identifier used as a topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalBinding {
+    /// Not declared in the enclosing function: fall back to file constants.
+    NotLocal,
+    /// A parameter, reassigned, or otherwise not statically known.
+    Unknown,
+    /// Assigned exactly once, from this expression text.
+    Value(String),
+}
+
+/// Same-file string constants by simple name. Shared by channel topics and
+/// any other consumer that needs "this expression is really this string".
+pub type StringConsts = HashMap<String, String>;
+
+/// Resolve a topic expression to a normalized `channel://` name.
+///
+/// A topic is derived from a *value*: a string literal's content, or a
+/// same-file constant's value. A call, parameter, local with unknown value,
+/// interpolation with holes or mock matcher yields `None`; a name is never
+/// derived from expression text. An unresolved dotted/PascalCase member
+/// access (`Topics.Orders`, imported constant) keeps the container-prefix
+/// behaviour; a lowercase/underscore-leading identifier is a variable and is
+/// rejected.
+pub fn resolve_topic(raw: &str, consts: &StringConsts, local: &LocalBinding) -> Option<String> {
+    let raw = raw.trim();
+    if let Some(value) = string_literal_value(raw) {
+        return normalize_channel_name(&value);
+    }
+    if !is_identifier_path(raw) {
+        return None;
+    }
+    let simple = !raw.contains('.');
+    if simple {
+        match local {
+            LocalBinding::Unknown => return None,
+            LocalBinding::Value(expr) => {
+                let value = string_literal_value(expr).or_else(|| {
+                    let e = expr.trim();
+                    is_identifier_path(e)
+                        .then(|| consts.get(e.rsplit('.').next().unwrap_or(e)).cloned())
+                        .flatten()
+                })?;
+                return normalize_channel_name(&value);
+            }
+            LocalBinding::NotLocal => {}
+        }
+    }
+    let last = raw.rsplit('.').next().unwrap_or(raw);
+    if let Some(value) = consts.get(last) {
+        return normalize_channel_name(value);
+    }
+    if strip_topic_container(raw).len() != raw.len() {
+        return normalize_channel_name(raw);
+    }
+    if last.starts_with(|c: char| c.is_lowercase() || c == '_') {
+        return None;
+    }
+    normalize_channel_name(raw)
+}
+
+fn is_identifier_path(s: &str) -> bool {
+    !s.is_empty()
+        && s.split('.').all(|seg| {
+            let mut chars = seg.chars();
+            chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                && chars.all(|c| c.is_alphanumeric() || c == '_')
+        })
 }
 
 /// Strip known topic container prefix from a dotted expression.
@@ -290,6 +416,35 @@ mod tests {
     #[test]
     fn normalize_empty() {
         assert_eq!(normalize_channel_name(""), None);
+    }
+
+    #[test]
+    fn normalize_rejects_expression_text() {
+        for raw in ["\"orders\"", "Foo()", "Arg.Any<string>()", "'x'"] {
+            assert_eq!(normalize_channel_name(raw), None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn string_literal_forms() {
+        for (raw, want) in [
+            ("\"a\"", Some("a")),
+            ("'a'", Some("a")),
+            ("\"\"\"a\"\"\"", Some("a")),
+            ("'''a'''", Some("a")),
+            ("@\"a\"", Some("a")),
+            ("$\"a\"", Some("a")),
+            ("$\"a{x}\"", None),
+            ("f\"a{x}\"", None),
+            ("`a`", Some("a")),
+            ("`a${x}`", None),
+            ("r#\"a\"#", Some("a")),
+            ("topic", None),
+            ("f()", None),
+            ("\"a\" \"b\"", None),
+        ] {
+            assert_eq!(string_literal_value(raw).as_deref(), want, "{raw}");
+        }
     }
 
     #[test]
