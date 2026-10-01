@@ -281,3 +281,90 @@ fn context_rpc_method_missing_path_errors() {
         "missing-path error should mention 'path', got: {err}"
     );
 }
+
+#[test]
+fn context_caller_names_are_qualnames_not_ids() {
+    let temp = TempRepo::new("py_mvp");
+    let indexer = temp.index();
+    let db = indexer.db();
+    let gv = db.current_graph_version().unwrap();
+
+    // pkg/b.py defines helper() which is called by pkg/a.py
+    // pkg/a.py's call() function is the caller
+    let ctx = context::build_file_context(db, &temp.repo_root, "pkg/b.py", gv).unwrap();
+
+    // Verify callers are not printed as id:N
+    for caller in &ctx.cross_file_callers {
+        assert!(
+            !caller.symbol_name.starts_with("id:"),
+            "Caller symbol_name should not be an id, got: {}",
+            caller.symbol_name
+        );
+    }
+
+    // Verify the caller has a qualname (should contain a function name like call or pkg.a.call)
+    if !ctx.cross_file_callers.is_empty() {
+        let caller_name = &ctx.cross_file_callers[0].symbol_name;
+        assert!(
+            !caller_name.is_empty() && caller_name != "?" && !caller_name.starts_with("id:"),
+            "First caller should have a real qualname, got: {}",
+            caller_name
+        );
+    }
+}
+
+#[test]
+fn context_callee_names_match_resolved_symbols() {
+    let temp = TempRepo::new("py_mvp");
+    let indexer = temp.index();
+    let db = indexer.db();
+    let gv = db.current_graph_version().unwrap();
+
+    // app.py calls make_greeter() and greet() from pkg/core.py
+    let ctx = context::build_file_context(db, &temp.repo_root, "app.py", gv).unwrap();
+
+    // Verify callees are not just the raw guess "?"
+    for callee in &ctx.cross_file_callees {
+        assert!(
+            callee.symbol_name != "?",
+            "Callee should have a resolved qualname, got '?'"
+        );
+        // The qualname should be something like "make_greeter" or "Greeter.greet" or the full module path
+        assert!(
+            !callee.symbol_name.is_empty(),
+            "Callee symbol_name should not be empty"
+        );
+    }
+}
+
+#[test]
+fn context_qualnames_resolve_through_db_query() {
+    let temp = TempRepo::new("py_mvp");
+    let indexer = temp.index();
+    let db = indexer.db();
+    let gv = db.current_graph_version().unwrap();
+
+    // Get context for a file with cross-file references
+    let ctx = context::build_file_context(db, &temp.repo_root, "pkg/b.py", gv).unwrap();
+
+    // Verify all caller names can be resolved
+    for caller in &ctx.cross_file_callers {
+        let symbol_result = db.get_symbol_by_qualname(&caller.symbol_name, gv);
+        assert!(
+            symbol_result.is_ok() && symbol_result.unwrap().is_some(),
+            "Caller qualname should resolve: {}",
+            caller.symbol_name
+        );
+    }
+
+    // Verify all callee names can be resolved
+    let ctx2 = context::build_file_context(db, &temp.repo_root, "app.py", gv).unwrap();
+    for callee in &ctx2.cross_file_callees {
+        let symbol_result = db.get_symbol_by_qualname(&callee.symbol_name, gv);
+        assert!(
+            symbol_result.is_ok() && symbol_result.unwrap().is_some(),
+            "Callee qualname should resolve: {}",
+            callee.symbol_name
+        );
+    }
+}

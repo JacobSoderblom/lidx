@@ -90,7 +90,17 @@ pub fn build_file_context(
                 if let Some(src_id) = edge.source_symbol_id
                     && symbol_id_set.contains(&src_id)
                 {
-                    let name = edge.target_qualname.as_deref().unwrap_or("?").to_string();
+                    // Use the resolved symbol's qualname instead of the raw target_qualname
+                    let name = if let Some(tgt_id) = edge.target_symbol_id {
+                        db.get_symbol_by_id(tgt_id)
+                            .ok()
+                            .flatten()
+                            .map(|s| s.qualname)
+                            .unwrap_or_else(|| "?".to_string())
+                    } else {
+                        "?".to_string()
+                    };
+
                     // Resolve target file from target_symbol_id
                     let target_file = if let Some(tgt_id) = edge.target_symbol_id {
                         let file = target_file_cache
@@ -113,10 +123,16 @@ pub fn build_file_context(
                         Some(f) if f != file_path => f,
                         _ => continue,
                     };
+
+                    // Skip unresolved references (marked with "?")
+                    if name == "?" {
+                        continue;
+                    }
+
                     let key = (name.clone(), callee_file.clone());
                     if callee_seen.insert(key) && callees.len() < MAX_CALLEES {
                         callees.push(CrossRef {
-                            symbol_name: short_name(&name),
+                            symbol_name: name,
                             file_path: callee_file,
                         });
                     }
@@ -130,7 +146,19 @@ pub fn build_file_context(
                     && symbol_id_set.contains(&tgt_id)
                     && let Some(src_id) = edge.source_symbol_id
                 {
-                    let name = format!("id:{}", src_id);
+                    // Look up the source symbol's qualname instead of formatting id:N
+                    let name = db
+                        .get_symbol_by_id(src_id)
+                        .ok()
+                        .flatten()
+                        .map(|s| s.qualname)
+                        .unwrap_or_else(|| "?".to_string());
+
+                    // Skip unresolved references (marked with "?")
+                    if name == "?" {
+                        continue;
+                    }
+
                     let key = (name.clone(), edge.file_path.clone());
                     if caller_seen.insert(key) && callers.len() < MAX_CALLERS {
                         callers.push(CrossRef {
@@ -153,7 +181,7 @@ pub fn build_file_context(
                 let key = (name.clone(), edge.file_path.clone());
                 if xref_seen.insert(key) && xrefs.len() < MAX_XREFS {
                     xrefs.push(CrossRef {
-                        symbol_name: short_name(&name),
+                        symbol_name: name,
                         file_path: edge.file_path.clone(),
                     });
                 }
@@ -267,14 +295,4 @@ fn build_symbol_summary(symbols: &[Symbol]) -> String {
     }
 
     format!("{} symbols: {}", total, parts.join(", "))
-}
-
-fn short_name(qualname: &str) -> String {
-    // "pkg.core.Greeter.greet" → "Greeter.greet" (last 2 segments)
-    let parts: Vec<&str> = qualname.split('.').collect();
-    if parts.len() <= 2 {
-        qualname.to_string()
-    } else {
-        parts[parts.len() - 2..].join(".")
-    }
 }
