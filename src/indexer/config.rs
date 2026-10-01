@@ -377,6 +377,30 @@ fn same_service(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn normalize_env_var_name_rejects_expression_text() {
+        for bad in [
+            "a b", "\"X\"", "'X'", "f(x)", "x[0]", "{x}", "<x>", "a,b", "a+b", "`x`", "",
+        ] {
+            assert_eq!(normalize_env_var_name(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn normalize_env_var_name_accepts_real_names() {
+        for (raw, want) in [
+            ("DATABASE_URL", "env://DATABASE_URL"),
+            (
+                "Database__ConnectionString",
+                "env://DATABASE__CONNECTIONSTRING",
+            ),
+            ("my.var-1", "env://MY.VAR-1"),
+            ("  PADDED ", "env://PADDED"),
+        ] {
+            assert_eq!(normalize_env_var_name(raw).as_deref(), Some(want));
+        }
+    }
+
     use super::*;
 
     #[test]

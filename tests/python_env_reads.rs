@@ -89,6 +89,7 @@ fn no_env_uri_contains_expression_artefacts() {
     let src = r#"
 import os
 def f(p, q):
+    os.getenv("REAL_ONE")
     os.getenv(p)
     os.getenv(g("a"))
     os.getenv("a" + p)
@@ -98,7 +99,9 @@ def f(p, q):
     os.getenv(f"{p}")
     os.getenv(p, "default")
 "#;
-    for uri in env_targets(src) {
+    let uris = env_targets(src);
+    assert_eq!(uris, ["env://REAL_ONE"], "only the literal read may emit");
+    for uri in uris {
         let name = uri.strip_prefix("env://").unwrap();
         assert!(
             name.chars()
