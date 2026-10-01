@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 24;
+pub const SCHEMA_VERSION: i64 = 26;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -586,6 +586,33 @@ pub fn migrate(conn: &Connection) -> Result<()> {
                 ON unresolved_references(graph_version, edge_kind)
                 WHERE deferred_kind IS NOT NULL;",
         )?;
+    }
+
+    if existing < 25 {
+        // Issue #254: each FK on `unresolved_references` needs an index on
+        // its referencing column, or every parent delete (a graph-version
+        // prune deletes ~18k symbols) full-scans the table. `edge_id` is
+        // covered by its UNIQUE autoindex and `edges` already indexes all
+        // three of its FK columns; these two were the gaps.
+        eprintln!("migration 25: indexing unresolved_references FK columns");
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_unresolved_references_source
+                ON unresolved_references(source_symbol_id);
+             CREATE INDEX IF NOT EXISTS idx_unresolved_references_file
+                ON unresolved_references(file_id);",
+        )?;
+    }
+
+    if existing < 26 {
+        // Issue #250: a graph version is `building` until a reindex has fully
+        // populated it, and only then `complete` (and current). Every
+        // pre-existing row was made current at creation, so it is complete.
+        if !has_column(conn, "graph_versions", "status")? {
+            conn.execute(
+                "ALTER TABLE graph_versions ADD COLUMN status TEXT NOT NULL DEFAULT 'complete'",
+                [],
+            )?;
+        }
     }
 
     if existing < SCHEMA_VERSION {
@@ -1884,5 +1911,107 @@ mod tests {
             })
             .unwrap();
         assert_eq!(violations, 0);
+    }
+
+    /// Query-plan `detail` strings (column 3 of `EXPLAIN QUERY PLAN`).
+    fn query_plan(conn: &Connection, sql: &str) -> Vec<String> {
+        let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn index_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
+    #[test]
+    fn migration_25_indexes_unresolved_references_fk_columns_on_an_old_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        open_v18_db(&conn);
+        assert!(!index_exists(&conn, "idx_unresolved_references_source"));
+        assert!(!index_exists(&conn, "idx_unresolved_references_file"));
+
+        migrate(&conn).unwrap();
+
+        assert!(index_exists(&conn, "idx_unresolved_references_source"));
+        assert!(index_exists(&conn, "idx_unresolved_references_file"));
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn unresolved_references_fk_lookups_use_an_index_not_a_scan() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        for (column, index) in [
+            ("source_symbol_id", "idx_unresolved_references_source"),
+            ("file_id", "idx_unresolved_references_file"),
+        ] {
+            let plan = query_plan(
+                &conn,
+                &format!("SELECT id FROM unresolved_references WHERE {column} = 123"),
+            );
+            assert!(
+                plan.iter()
+                    .any(|d| d.contains("SEARCH") && d.contains(index)),
+                "{column} lookup must SEARCH {index}, got {plan:?}"
+            );
+        }
+    }
+
+    /// Every FK's referencing column must lead some index, or each parent
+    /// delete (a graph-version prune) full-scans the child table. SQLite's
+    /// own FK enforcement does exactly that lookup.
+    #[test]
+    fn every_fk_column_on_edges_and_unresolved_references_is_indexed() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        for table in ["edges", "unresolved_references"] {
+            let mut fks = conn
+                .prepare(&format!(
+                    "SELECT \"from\" FROM pragma_foreign_key_list('{table}')"
+                ))
+                .unwrap();
+            let columns: Vec<String> = fks
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert!(!columns.is_empty(), "{table} should declare foreign keys");
+            for column in columns {
+                let covered: i64 = conn
+                    .query_row(
+                        &format!(
+                            "SELECT COUNT(*) FROM pragma_index_list('{table}') il
+                             JOIN pragma_index_info(il.name) ii
+                             WHERE ii.seqno = 0 AND ii.name = ?"
+                        ),
+                        [&column],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(
+                    covered > 0,
+                    "{table}.{column} has a foreign key but no index leading with it"
+                );
+            }
+        }
     }
 }

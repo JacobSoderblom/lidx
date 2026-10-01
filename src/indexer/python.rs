@@ -11,6 +11,7 @@ use crate::indexer::tree_helpers::{
 use crate::util;
 use anyhow::Result;
 use serde_json::json;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
@@ -52,6 +53,12 @@ struct Context {
     /// `collect_import_bindings`). Set once and inherited unchanged through
     /// every `ctx.clone()`, mirroring C#'s `Context::imports`.
     imports: Rc<HashMap<String, Vec<String>>>,
+    /// Qualnames of module/class-scope symbols emitted so far in this file,
+    /// mapped to "was emitted by an assignment" (issue #203). Shared across
+    /// every `ctx.clone()`. Lets a later assignment skip a name already
+    /// declared, and lets a later `def`/`class` replace an earlier
+    /// assignment's placeholder symbol, so a qualname is never duplicated.
+    declared: Rc<RefCell<HashMap<String, bool>>>,
 }
 
 /// Locally-inferred type of a name bound within a single function body.
@@ -121,6 +128,7 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             local_types: Rc::new(infer_module_level_types(root, source)),
             class_attr_types: Rc::new(HashMap::new()),
             imports: Rc::new(collect_import_bindings(root, source)),
+            declared: Rc::new(RefCell::new(HashMap::new())),
         };
         walk_node(root, &ctx, source, &mut output);
         emit_module_export_edges(root, module_name, source, &mut output);
@@ -356,6 +364,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 let docstring = node
                     .child_by_field_name("body")
                     .and_then(|body| extract_docstring(body, source));
+                replace_assignment_symbol(ctx, &qualname, output);
                 output.symbols.push(SymbolInput {
                     kind: "class".to_string(),
                     name: name.clone(),
@@ -438,6 +447,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 } else {
                     "method"
                 };
+                replace_assignment_symbol(ctx, &qualname, output);
                 output.symbols.push(SymbolInput {
                     kind: kind.to_string(),
                     name: name.clone(),
@@ -476,6 +486,13 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             }
             return;
         }
+        "expression_statement" => {
+            if ctx.fn_depth == 0
+                && let Some(assignment) = node.named_child(0).filter(|c| c.kind() == "assignment")
+            {
+                emit_assignment_symbols(node, assignment, ctx, source, output);
+            }
+        }
         "import_statement" | "import_from_statement" => {
             if ctx.fn_depth == 0 {
                 let module = ctx.module.clone();
@@ -512,6 +529,99 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     for child in node.named_children(&mut cursor) {
         walk_node(child, ctx, source, output);
     }
+}
+
+/// A `def`/`class` at `qualname` supersedes an earlier assignment of the same
+/// name (`handler = None` then `def handler()`): drop the assignment's symbol
+/// and CONTAINS edge so the qualname stays unique, then record the name as
+/// declared by a definition.
+fn replace_assignment_symbol(ctx: &Context, qualname: &str, output: &mut ExtractedFile) {
+    let was_assignment = ctx
+        .declared
+        .borrow_mut()
+        .insert(qualname.to_string(), false)
+        == Some(true);
+    if was_assignment {
+        output.symbols.retain(|s| s.qualname != qualname);
+        output
+            .edges
+            .retain(|e| !(e.kind == "CONTAINS" && e.target_qualname.as_deref() == Some(qualname)));
+    }
+}
+
+/// Emit one `const` (ALL_CAPS name) or `variable` symbol per name bound by a
+/// module- or class-level assignment (issue #203): plain, annotated, bare
+/// annotation, tuple/list unpacking and chained (`A = B = 1`) targets.
+/// Attribute/subscript targets bind no name and are skipped; augmented
+/// assignments are a different node kind and never reach here. A reassigned
+/// name keeps its first symbol; a same-named def/class wins (see
+/// `replace_assignment_symbol`); a module-level name already bound by an
+/// import (`try: import x / except ImportError: x = None`) is skipped so the
+/// import target isn't shadowed by a variable symbol.
+fn emit_assignment_symbols(
+    stmt: Node<'_>,
+    assignment: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut names: Vec<(String, LocalType)> = Vec::new();
+    let mut current = Some(assignment);
+    while let Some(node) = current {
+        if node.kind() != "assignment" {
+            break;
+        }
+        if let Some(left) = node.child_by_field_name("left") {
+            collect_pattern_identifiers(left, source, &mut names);
+        }
+        current = node.child_by_field_name("right");
+    }
+    if names.is_empty() {
+        return;
+    }
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(stmt);
+    let parent = container_qualname(&ctx.module, &ctx.class_stack);
+    for (name, _) in names {
+        if ctx.class_stack.is_empty() && ctx.imports.contains_key(&name) {
+            continue;
+        }
+        let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
+        {
+            let mut declared = ctx.declared.borrow_mut();
+            if declared.contains_key(&qualname) {
+                continue;
+            }
+            declared.insert(qualname.clone(), true);
+        }
+        let is_const = is_const_name(&name);
+        output.symbols.push(SymbolInput {
+            kind: if is_const { "const" } else { "variable" }.to_string(),
+            name,
+            qualname: qualname.clone(),
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+            start_byte,
+            end_byte,
+            signature: None,
+            docstring: None,
+            identity: None,
+        });
+        output.edges.push(EdgeInput {
+            kind: "CONTAINS".to_string(),
+            source_qualname: Some(parent.clone()),
+            target_qualname: Some(qualname),
+            detail: None,
+            evidence_snippet: None,
+            ..Default::default()
+        });
+    }
+}
+
+/// ALL_CAPS (at least one letter, no lowercase) names are constants.
+fn is_const_name(name: &str) -> bool {
+    name.chars().any(|c| c.is_alphabetic()) && !name.chars().any(|c| c.is_lowercase())
 }
 
 fn walk_block(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {

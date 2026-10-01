@@ -1,15 +1,21 @@
 use crate::indexer::config::{self, CONFIG_READ_KIND, CONFIG_SOURCE_KIND};
 use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor, SymbolInput};
 use crate::indexer::tree_helpers::module_symbol_fallback;
+use crate::util;
 use anyhow::Result;
 use serde_yaml_ng::Value;
 use std::path::Path;
+use tree_sitter::{Node, Parser, Tree};
 
-pub struct YamlExtractor;
+pub struct YamlExtractor {
+    parser: Parser,
+}
 
 impl YamlExtractor {
     pub fn new() -> Result<Self> {
-        Ok(Self)
+        let mut parser = Parser::new();
+        parser.set_language(&tree_sitter_yaml::LANGUAGE.into())?;
+        Ok(Self { parser })
     }
 }
 
@@ -36,7 +42,17 @@ impl LanguageExtractor for YamlExtractor {
             let Some(resource) = parse_k8s_resource(&value) else {
                 continue;
             };
-            resource_to_symbols(&resource, &value, module_name, doc, source, &mut output);
+            let tree = parse_tree(&mut self.parser, &doc.text);
+            let root = Loc::root(tree.as_ref(), doc);
+            resource_to_symbols(
+                &resource,
+                &value,
+                module_name,
+                doc,
+                root,
+                source,
+                &mut output,
+            );
         }
 
         Ok(output)
@@ -111,6 +127,7 @@ fn resource_to_symbols(
     value: &Value,
     module_name: &str,
     doc: &YamlDocument,
+    root: Loc<'_>,
     source: &str,
     output: &mut ExtractedFile,
 ) {
@@ -125,18 +142,18 @@ fn resource_to_symbols(
     );
     let docstring = build_docstring(&resource.labels, &resource.annotations);
 
-    let (start_line, end_line, start_byte, end_byte) = doc_span(doc, source);
+    let span = root.span(doc_span(doc));
 
     let symbol = SymbolInput {
         kind: kind_lower.clone(),
         name: resource.name.clone(),
         qualname: qualname.clone(),
-        start_line,
+        start_line: span.start_line,
         start_col: 1,
-        end_line,
+        end_line: span.end_line,
         end_col: 1,
-        start_byte,
-        end_byte,
+        start_byte: span.start_byte,
+        end_byte: span.end_byte,
         signature: Some(signature),
         docstring,
         identity: None,
@@ -150,19 +167,20 @@ fn resource_to_symbols(
     });
 
     // Extract containers
-    let containers = find_containers(&kind_lower, value);
+    let containers = find_containers(&kind_lower, value, root);
     for container in containers {
         let container_qualname = format!("{}/container/{}", qualname, container.name);
+        let container_span = container.loc.span(span);
         let container_symbol = SymbolInput {
             kind: "container".to_string(),
             name: container.name.clone(),
             qualname: container_qualname.clone(),
-            start_line,
+            start_line: container_span.start_line,
             start_col: 1,
-            end_line,
+            end_line: container_span.end_line,
             end_col: 1,
-            start_byte,
-            end_byte,
+            start_byte: container_span.start_byte,
+            end_byte: container_span.end_byte,
             signature: container.image,
             docstring: None,
             identity: None,
@@ -179,15 +197,16 @@ fn resource_to_symbols(
         extract_config_edges(
             &container_qualname,
             &container.raw,
-            start_line,
-            end_line,
+            container.loc,
+            container_span,
+            source,
             output,
         );
     }
 
     // SecretProviderClass handling
     if resource.kind == "SecretProviderClass" {
-        extract_secret_provider_edges(&qualname, value, start_line, end_line, output);
+        extract_secret_provider_edges(&qualname, value, root, span, source, output);
     }
 }
 
@@ -226,50 +245,37 @@ fn build_docstring(
 
 // --- Container extraction ---
 
-struct ContainerInfo {
+struct ContainerInfo<'t> {
     name: String,
     image: Option<String>,
     raw: Value,
+    loc: Loc<'t>,
 }
 
-fn find_containers(kind: &str, value: &Value) -> Vec<ContainerInfo> {
-    let pod_spec = match kind {
-        "deployment" | "statefulset" | "daemonset" | "replicaset" => {
-            // spec.template.spec
-            value
-                .get("spec")
-                .and_then(|v| v.get("template"))
-                .and_then(|v| v.get("spec"))
+fn find_containers<'t>(kind: &str, value: &Value, root: Loc<'t>) -> Vec<ContainerInfo<'t>> {
+    // Path from the document root to the pod spec.
+    let path: &[&str] = match kind {
+        "deployment" | "statefulset" | "daemonset" | "replicaset" | "job" => {
+            &["spec", "template", "spec"]
         }
-        "job" => {
-            // spec.template.spec
-            value
-                .get("spec")
-                .and_then(|v| v.get("template"))
-                .and_then(|v| v.get("spec"))
-        }
-        "cronjob" => {
-            // spec.jobTemplate.spec.template.spec
-            value
-                .get("spec")
-                .and_then(|v| v.get("jobTemplate"))
-                .and_then(|v| v.get("spec"))
-                .and_then(|v| v.get("template"))
-                .and_then(|v| v.get("spec"))
-        }
-        "pod" => {
-            // spec
-            value.get("spec")
-        }
-        _ => None,
+        "cronjob" => &["spec", "jobTemplate", "spec", "template", "spec"],
+        "pod" => &["spec"],
+        _ => return Vec::new(),
     };
+    let mut pod_spec = Some(value);
+    let mut pod_loc = root;
+    for key in path {
+        pod_spec = pod_spec.and_then(|v| v.get(*key));
+        pod_loc = pod_loc.key(key);
+    }
     let Some(pod_spec) = pod_spec else {
         return Vec::new();
     };
     let mut containers = Vec::new();
     for key in &["containers", "initContainers"] {
         if let Some(list) = pod_spec.get(*key).and_then(|v| v.as_sequence()) {
-            for item in list {
+            let list_loc = pod_loc.key(key);
+            for (idx, item) in list.iter().enumerate() {
                 if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
                     let image = item
                         .get("image")
@@ -279,6 +285,7 @@ fn find_containers(kind: &str, value: &Value) -> Vec<ContainerInfo> {
                         name: name.to_string(),
                         image,
                         raw: item.clone(),
+                        loc: list_loc.idx(idx),
                     });
                 }
             }
@@ -295,8 +302,8 @@ fn find_containers(kind: &str, value: &Value) -> Vec<ContainerInfo> {
 fn emit_section_prefix_edges(
     container_qualname: &str,
     env_name: &str,
-    start_line: i64,
-    end_line: i64,
+    source: &str,
+    span: Span,
     output: &mut ExtractedFile,
 ) {
     let upper = env_name.to_uppercase();
@@ -312,15 +319,18 @@ fn emit_section_prefix_edges(
                 &env_name[..pos + idx],
                 None,
             );
-            output.edges.push(EdgeInput {
-                kind: CONFIG_SOURCE_KIND.to_string(),
-                source_qualname: Some(container_qualname.to_string()),
-                target_qualname: Some(section_uri),
-                detail: Some(detail),
-                evidence_start_line: Some(start_line),
-                evidence_end_line: Some(end_line),
-                ..Default::default()
-            });
+            push_evidence(
+                output,
+                source,
+                span,
+                EdgeInput {
+                    kind: CONFIG_SOURCE_KIND.to_string(),
+                    source_qualname: Some(container_qualname.to_string()),
+                    target_qualname: Some(section_uri),
+                    detail: Some(detail),
+                    ..Default::default()
+                },
+            );
         }
         pos += idx + 2; // skip past "__"
     }
@@ -329,13 +339,17 @@ fn emit_section_prefix_edges(
 fn extract_config_edges(
     container_qualname: &str,
     container_value: &Value,
-    start_line: i64,
-    end_line: i64,
+    container_loc: Loc<'_>,
+    container_span: Span,
+    source: &str,
     output: &mut ExtractedFile,
 ) {
     // Handle env[]
     if let Some(env_list) = container_value.get("env").and_then(|v| v.as_sequence()) {
-        for env_entry in env_list {
+        let env_loc = container_loc.key("env");
+        for (idx, env_entry) in env_list.iter().enumerate() {
+            let entry_loc = env_loc.idx(idx);
+            let span = entry_loc.span(container_span);
             let Some(env_name) = env_entry.get("name").and_then(|v| v.as_str()) else {
                 continue;
             };
@@ -362,40 +376,41 @@ fn extract_config_edges(
                             "key": secret_key,
                         })),
                     );
-                    output.edges.push(EdgeInput {
-                        kind: CONFIG_SOURCE_KIND.to_string(),
-                        source_qualname: Some(container_qualname.to_string()),
-                        target_qualname: Some(env_uri.clone()),
-                        detail: Some(detail),
-                        evidence_start_line: Some(start_line),
-                        evidence_end_line: Some(end_line),
-                        ..Default::default()
-                    });
-                    emit_section_prefix_edges(
-                        container_qualname,
-                        env_name,
-                        start_line,
-                        end_line,
+                    push_evidence(
                         output,
+                        source,
+                        span,
+                        EdgeInput {
+                            kind: CONFIG_SOURCE_KIND.to_string(),
+                            source_qualname: Some(container_qualname.to_string()),
+                            target_qualname: Some(env_uri.clone()),
+                            detail: Some(detail),
+                            ..Default::default()
+                        },
                     );
+                    emit_section_prefix_edges(container_qualname, env_name, source, span, output);
 
                     // CONFIG_READ: container → secret://secret-name
                     if let Some(secret_uri) = config::normalize_secret_name(secret_name) {
+                        let ref_span = entry_loc.key("valueFrom").pair("secretKeyRef").span(span);
                         let detail = config::build_config_read_detail(
                             "secret",
                             &secret_uri,
                             secret_name,
                             "kubernetes",
                         );
-                        output.edges.push(EdgeInput {
-                            kind: CONFIG_READ_KIND.to_string(),
-                            source_qualname: Some(container_qualname.to_string()),
-                            target_qualname: Some(secret_uri),
-                            detail: Some(detail),
-                            evidence_start_line: Some(start_line),
-                            evidence_end_line: Some(end_line),
-                            ..Default::default()
-                        });
+                        push_evidence(
+                            output,
+                            source,
+                            ref_span,
+                            EdgeInput {
+                                kind: CONFIG_READ_KIND.to_string(),
+                                source_qualname: Some(container_qualname.to_string()),
+                                target_qualname: Some(secret_uri),
+                                detail: Some(detail),
+                                ..Default::default()
+                            },
+                        );
                     }
                     continue;
                 }
@@ -413,22 +428,19 @@ fn extract_config_edges(
                             "key": cm_key,
                         })),
                     );
-                    output.edges.push(EdgeInput {
-                        kind: CONFIG_SOURCE_KIND.to_string(),
-                        source_qualname: Some(container_qualname.to_string()),
-                        target_qualname: Some(env_uri),
-                        detail: Some(detail),
-                        evidence_start_line: Some(start_line),
-                        evidence_end_line: Some(end_line),
-                        ..Default::default()
-                    });
-                    emit_section_prefix_edges(
-                        container_qualname,
-                        env_name,
-                        start_line,
-                        end_line,
+                    push_evidence(
                         output,
+                        source,
+                        span,
+                        EdgeInput {
+                            kind: CONFIG_SOURCE_KIND.to_string(),
+                            source_qualname: Some(container_qualname.to_string()),
+                            target_qualname: Some(env_uri),
+                            detail: Some(detail),
+                            ..Default::default()
+                        },
                     );
+                    emit_section_prefix_edges(container_qualname, env_name, source, span, output);
                     continue;
                 }
             }
@@ -436,60 +448,67 @@ fn extract_config_edges(
             // Plain env value (literal)
             if env_entry.get("value").is_some() {
                 let detail = config::build_config_source_detail("env", &env_uri, env_name, None);
-                output.edges.push(EdgeInput {
-                    kind: CONFIG_SOURCE_KIND.to_string(),
-                    source_qualname: Some(container_qualname.to_string()),
-                    target_qualname: Some(env_uri),
-                    detail: Some(detail),
-                    evidence_start_line: Some(start_line),
-                    evidence_end_line: Some(end_line),
-                    ..Default::default()
-                });
-                emit_section_prefix_edges(
-                    container_qualname,
-                    env_name,
-                    start_line,
-                    end_line,
+                push_evidence(
                     output,
+                    source,
+                    span,
+                    EdgeInput {
+                        kind: CONFIG_SOURCE_KIND.to_string(),
+                        source_qualname: Some(container_qualname.to_string()),
+                        target_qualname: Some(env_uri),
+                        detail: Some(detail),
+                        ..Default::default()
+                    },
                 );
+                emit_section_prefix_edges(container_qualname, env_name, source, span, output);
             }
         }
     }
 
     // Handle envFrom[]
     if let Some(env_from_list) = container_value.get("envFrom").and_then(|v| v.as_sequence()) {
-        for entry in env_from_list {
+        let env_from_loc = container_loc.key("envFrom");
+        for (idx, entry) in env_from_list.iter().enumerate() {
+            let entry_loc = env_from_loc.idx(idx);
             if let Some(secret_ref) = entry.get("secretRef")
                 && let Some(name) = secret_ref.get("name").and_then(|v| v.as_str())
                 && let Some(secret_uri) = config::normalize_secret_name(name)
             {
+                let span = entry_loc.pair("secretRef").span(container_span);
                 let detail =
                     config::build_config_read_detail("secret", &secret_uri, name, "kubernetes");
-                output.edges.push(EdgeInput {
-                    kind: CONFIG_READ_KIND.to_string(),
-                    source_qualname: Some(container_qualname.to_string()),
-                    target_qualname: Some(secret_uri),
-                    detail: Some(detail),
-                    evidence_start_line: Some(start_line),
-                    evidence_end_line: Some(end_line),
-                    ..Default::default()
-                });
+                push_evidence(
+                    output,
+                    source,
+                    span,
+                    EdgeInput {
+                        kind: CONFIG_READ_KIND.to_string(),
+                        source_qualname: Some(container_qualname.to_string()),
+                        target_qualname: Some(secret_uri),
+                        detail: Some(detail),
+                        ..Default::default()
+                    },
+                );
             }
             if let Some(cm_ref) = entry.get("configMapRef")
                 && let Some(name) = cm_ref.get("name").and_then(|v| v.as_str())
             {
+                let span = entry_loc.pair("configMapRef").span(container_span);
                 let uri = format!("configmap://{}", name.to_lowercase());
                 let detail =
                     config::build_config_read_detail("configmap", &uri, name, "kubernetes");
-                output.edges.push(EdgeInput {
-                    kind: CONFIG_READ_KIND.to_string(),
-                    source_qualname: Some(container_qualname.to_string()),
-                    target_qualname: Some(uri),
-                    detail: Some(detail),
-                    evidence_start_line: Some(start_line),
-                    evidence_end_line: Some(end_line),
-                    ..Default::default()
-                });
+                push_evidence(
+                    output,
+                    source,
+                    span,
+                    EdgeInput {
+                        kind: CONFIG_READ_KIND.to_string(),
+                        source_qualname: Some(container_qualname.to_string()),
+                        target_qualname: Some(uri),
+                        detail: Some(detail),
+                        ..Default::default()
+                    },
+                );
             }
         }
     }
@@ -498,8 +517,9 @@ fn extract_config_edges(
 fn extract_secret_provider_edges(
     qualname: &str,
     value: &Value,
-    start_line: i64,
-    end_line: i64,
+    root: Loc<'_>,
+    resource_span: Span,
+    source: &str,
     output: &mut ExtractedFile,
 ) {
     let spec = match value.get("spec") {
@@ -541,6 +561,11 @@ fn extract_secret_provider_edges(
                     _ => std::slice::from_ref(&objects_value),
                 }
             };
+        let span = root
+            .key("spec")
+            .key("parameters")
+            .pair("objects")
+            .span(resource_span);
         for item in items {
             if let Some(obj_name) = item.get("objectName").and_then(|v| v.as_str())
                 && let Some(secret_uri) = config::normalize_secret_name(obj_name)
@@ -551,22 +576,27 @@ fn extract_secret_provider_edges(
                     obj_name,
                     "csi-secrets-store",
                 );
-                output.edges.push(EdgeInput {
-                    kind: CONFIG_READ_KIND.to_string(),
-                    source_qualname: Some(qualname.to_string()),
-                    target_qualname: Some(secret_uri),
-                    detail: Some(detail),
-                    evidence_start_line: Some(start_line),
-                    evidence_end_line: Some(end_line),
-                    ..Default::default()
-                });
+                push_evidence(
+                    output,
+                    source,
+                    span,
+                    EdgeInput {
+                        kind: CONFIG_READ_KIND.to_string(),
+                        source_qualname: Some(qualname.to_string()),
+                        target_qualname: Some(secret_uri),
+                        detail: Some(detail),
+                        ..Default::default()
+                    },
+                );
             }
         }
     }
 
     // Parse spec.secretObjects[].secretName → CONFIG_SOURCE to secret://
     if let Some(secret_objects) = spec.get("secretObjects").and_then(|v| v.as_sequence()) {
-        for so in secret_objects {
+        let so_loc = root.key("spec").key("secretObjects");
+        for (idx, so) in secret_objects.iter().enumerate() {
+            let span = so_loc.idx(idx).span(resource_span);
             if let Some(secret_name) = so.get("secretName").and_then(|v| v.as_str())
                 && let Some(secret_uri) = config::normalize_secret_name(secret_name)
             {
@@ -576,15 +606,18 @@ fn extract_secret_provider_edges(
                     secret_name,
                     Some(&serde_json::json!({ "provider": "csi-secrets-store" })),
                 );
-                output.edges.push(EdgeInput {
-                    kind: CONFIG_SOURCE_KIND.to_string(),
-                    source_qualname: Some(qualname.to_string()),
-                    target_qualname: Some(secret_uri),
-                    detail: Some(detail),
-                    evidence_start_line: Some(start_line),
-                    evidence_end_line: Some(end_line),
-                    ..Default::default()
-                });
+                push_evidence(
+                    output,
+                    source,
+                    span,
+                    EdgeInput {
+                        kind: CONFIG_SOURCE_KIND.to_string(),
+                        source_qualname: Some(qualname.to_string()),
+                        target_qualname: Some(secret_uri),
+                        detail: Some(detail),
+                        ..Default::default()
+                    },
+                );
             }
         }
     }
@@ -687,13 +720,167 @@ fn find_line_end(source: &str, pos: usize) -> usize {
 
 // --- Span helpers ---
 
-fn doc_span(doc: &YamlDocument, _source: &str) -> (i64, i64, i64, i64) {
-    let start_line = doc.line_offset;
-    let line_count = doc.text.bytes().filter(|b| *b == b'\n').count() as i64;
-    let end_line = start_line + line_count.max(0);
-    let start_byte = doc.byte_offset as i64;
-    let end_byte = start_byte + doc.text.len() as i64;
-    (start_line, end_line, start_byte, end_byte)
+#[derive(Clone, Copy)]
+struct Span {
+    start_line: i64,
+    end_line: i64,
+    start_byte: i64,
+    end_byte: i64,
+}
+
+/// Span of `doc.text[start..end]` in absolute file coordinates. Surrounding
+/// whitespace is trimmed so the range covers only content lines (a trailing
+/// newline would otherwise count as an extra line).
+fn span_of_range(doc: &YamlDocument, start: usize, end: usize) -> Span {
+    let text = &doc.text;
+    let end = end.min(text.len());
+    let start = start.min(end);
+    let slice = &text[start..end];
+    let lead = slice.len() - slice.trim_start().len();
+    let start = start + lead;
+    let end = start + slice[lead..].trim_end().len();
+    let newlines = |upto: usize| {
+        text.as_bytes()[..upto]
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count() as i64
+    };
+    Span {
+        start_line: doc.line_offset + newlines(start),
+        end_line: doc.line_offset + newlines(end),
+        start_byte: (doc.byte_offset + start) as i64,
+        end_byte: (doc.byte_offset + end) as i64,
+    }
+}
+
+/// Fallback span covering the whole document's content.
+fn doc_span(doc: &YamlDocument) -> Span {
+    span_of_range(doc, 0, doc.text.len())
+}
+
+fn parse_tree(parser: &mut Parser, text: &str) -> Option<Tree> {
+    // A tree with syntax errors may be misshapen; navigating it could land on
+    // the wrong node, so treat it as absent and use the whole-document span.
+    parser
+        .parse(text, None)
+        .filter(|t| !t.root_node().has_error())
+}
+
+/// A position in a document's syntax tree, navigated by key / index in step
+/// with the `serde_yaml_ng::Value` the semantic extraction runs on. Spans come
+/// from the tree's own node ranges, so duplicate keys or values in different
+/// entries can never be confused. Every step is fallible; a lost path yields
+/// the caller's fallback span.
+#[derive(Clone, Copy)]
+struct Loc<'t> {
+    node: Option<Node<'t>>,
+    doc: Option<&'t YamlDocument>,
+}
+
+impl<'t> Loc<'t> {
+    fn root(tree: Option<&'t Tree>, doc: &'t YamlDocument) -> Self {
+        let stream = Loc {
+            node: tree.map(|t| t.root_node()),
+            doc: Some(doc),
+        };
+        // Start at the top-level value so leading comments are not part of it.
+        stream.with(stream.content())
+    }
+
+    fn with(self, node: Option<Node<'t>>) -> Self {
+        Loc { node, ..self }
+    }
+
+    /// The mapping node below this position, if any.
+    fn content(self) -> Option<Node<'t>> {
+        let mut node = self.node?;
+        loop {
+            match node.kind() {
+                "stream" | "document" | "block_node" | "flow_node" | "block_sequence_item" => {
+                    let mut cursor = node.walk();
+                    let next = node
+                        .named_children(&mut cursor)
+                        .find(|c| !matches!(c.kind(), "comment" | "anchor" | "tag"));
+                    match next {
+                        Some(n) => node = n,
+                        None => return Some(node),
+                    }
+                }
+                _ => return Some(node),
+            }
+        }
+    }
+
+    /// The `key: value` pair node for `key`.
+    fn pair(self, key: &str) -> Self {
+        let Some(map) = self.content() else {
+            return self.with(None);
+        };
+        let Some(doc) = self.doc else {
+            return self.with(None);
+        };
+        if !matches!(map.kind(), "block_mapping" | "flow_mapping") {
+            return self.with(None);
+        }
+        let mut cursor = map.walk();
+        let found = map
+            .named_children(&mut cursor)
+            .filter(|c| matches!(c.kind(), "block_mapping_pair" | "flow_pair"))
+            .find(|pair| {
+                pair.child_by_field_name("key")
+                    .and_then(|k| k.utf8_text(doc.text.as_bytes()).ok())
+                    .is_some_and(|k| k.trim_matches(|c| c == '"' || c == '\'') == key)
+            });
+        self.with(found)
+    }
+
+    /// The value node for `key`.
+    fn key(self, key: &str) -> Self {
+        let pair = self.pair(key);
+        let value = pair.node.and_then(|p| p.child_by_field_name("value"));
+        self.with(value)
+    }
+
+    /// The `idx`-th item of a sequence (for block sequences, including its dash).
+    fn idx(self, idx: usize) -> Self {
+        let Some(seq) = self.content() else {
+            return self.with(None);
+        };
+        let mut cursor = seq.walk();
+        let item = match seq.kind() {
+            "block_sequence" => seq
+                .named_children(&mut cursor)
+                .filter(|c| c.kind() == "block_sequence_item")
+                .nth(idx),
+            "flow_sequence" => seq
+                .named_children(&mut cursor)
+                .filter(|c| c.kind() != "comment")
+                .nth(idx),
+            _ => None,
+        };
+        self.with(item)
+    }
+
+    fn span(self, fallback: Span) -> Span {
+        match (self.node, self.doc) {
+            (Some(node), Some(doc)) => span_of_range(doc, node.start_byte(), node.end_byte()),
+            _ => fallback,
+        }
+    }
+}
+
+/// Push an edge whose evidence is the lines of `span`, with a snippet.
+fn push_evidence(output: &mut ExtractedFile, source: &str, span: Span, mut edge: EdgeInput) {
+    edge.evidence_start_line = Some(span.start_line);
+    edge.evidence_end_line = Some(span.end_line);
+    edge.evidence_snippet = util::edge_evidence_snippet(
+        source,
+        span.start_byte,
+        span.end_byte,
+        span.start_line,
+        span.end_line,
+    );
+    output.edges.push(edge);
 }
 
 pub fn module_name_from_rel_path(rel_path: &str) -> String {
