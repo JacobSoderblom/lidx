@@ -4,6 +4,13 @@ pub const CONFIG_SOURCE_KIND: &str = "CONFIG_SOURCE";
 pub const CONFIG_READ_KIND: &str = "CONFIG_READ";
 pub const CONFIG_BIND_KIND: &str = "CONFIG_BIND";
 
+/// Detail JSON keys of an SPC CONFIG_SOURCE edge's `secretObjects` mapping:
+/// written by the YAML extractor, read by `ConfigScope`.
+pub const SPC_MAPPING_FIELD: &str = "mapping";
+pub const SPC_OBJECT_NAME_FIELD: &str = "objectName";
+pub const SPC_SECRET_NAME_FIELD: &str = "secretName";
+pub const SPC_KEY_FIELD: &str = "key";
+
 /// Normalize an env var name to a canonical URI: `env://VARNAME`
 /// Trims whitespace, rejects empty, uppercases.
 pub fn normalize_env_var_name(raw: &str) -> Option<String> {
@@ -174,12 +181,12 @@ fn detail_json(e: &Edge) -> Option<serde_json::Value> {
 fn spc_mapping(e: &Edge) -> Vec<(String, String)> {
     detail_json(e)
         .and_then(|d| {
-            let m = d.get("mapping")?.as_array()?;
+            let m = d.get(SPC_MAPPING_FIELD)?.as_array()?;
             Some(
                 m.iter()
                     .filter_map(|m| {
-                        let obj = normalize_secret_name(m.get("objectName")?.as_str()?)?;
-                        Some((obj, m.get("key")?.as_str()?.to_string()))
+                        let obj = normalize_secret_name(m.get(SPC_OBJECT_NAME_FIELD)?.as_str()?)?;
+                        Some((obj, m.get(SPC_KEY_FIELD)?.as_str()?.to_string()))
                     })
                     .collect(),
             )
@@ -187,8 +194,15 @@ fn spc_mapping(e: &Edge) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// `(env URI, secret URI, key)` of a container's `secretKeyRef` env edge.
-fn env_pairing(e: &Edge) -> Option<(&str, String, String)> {
+/// A container's `secretKeyRef` env edge: env var URI, the secret URI it
+/// reads and the key within that secret (empty when unspecified).
+struct EnvPairing<'a> {
+    var: &'a str,
+    secret_uri: String,
+    key: String,
+}
+
+fn env_pairing(e: &Edge) -> Option<EnvPairing<'_>> {
     if e.kind != CONFIG_SOURCE_KIND {
         return None;
     }
@@ -197,7 +211,11 @@ fn env_pairing(e: &Edge) -> Option<(&str, String, String)> {
     let d = detail_json(e)?;
     let secret = d.get("secret")?.as_str()?.to_lowercase();
     let key = d.get("key").and_then(|k| k.as_str()).unwrap_or("");
-    Some((var, format!("secret://{secret}"), key.to_string()))
+    Some(EnvPairing {
+        var,
+        secret_uri: format!("secret://{secret}"),
+        key: key.to_string(),
+    })
 }
 
 /// Whether `var` is the entry's env var or one of its `__` section children.
@@ -206,6 +224,27 @@ fn env_related(entry_var: Option<&str>, var: &str) -> bool {
         let x = format!("env://{x}");
         var == x || var.strip_prefix(&x).is_some_and(|r| r.starts_with("__"))
     })
+}
+
+/// Every config URI `edges` (one node's) carry: the only URIs a config bridge
+/// can enter that node on.
+pub fn config_uris(edges: &[Edge]) -> BTreeSet<String> {
+    edges
+        .iter()
+        .filter(|e| is_config_kind(&e.kind))
+        .filter_map(|e| e.target_qualname.clone())
+        .collect()
+}
+
+/// Result of `ConfigScope::admit_bridged`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeOutcome {
+    /// A U-turn, or the node does not pair the bridge's key: ignore it.
+    Skipped,
+    /// The node was already reached under this entry (or hit the per-node
+    /// cap): nothing new to expand, but a shorter path may still replace it.
+    Refused,
+    Admitted(Admission),
 }
 
 /// A newly reached (node, entry) pair.
@@ -332,7 +371,12 @@ impl ConfigScope {
         let mut allowed = HashSet::from([uri.to_string()]);
         let entry_var = uri.strip_prefix("env://");
         for e in node_edges.iter().filter(|e| e.kind == CONFIG_SOURCE_KIND) {
-            if let Some((var, secret_uri, key)) = env_pairing(e) {
+            if let Some(EnvPairing {
+                var,
+                secret_uri,
+                key,
+            }) = env_pairing(e)
+            {
                 let key_ok = entry.key().is_none_or(|k| key.is_empty() || key == k);
                 if !((uri == secret_uri && key_ok) || env_related(entry_var, var)) {
                     continue;
@@ -367,9 +411,9 @@ impl ConfigScope {
     fn declared_keys(node_edges: &[Edge], uri: &str) -> HashSet<String> {
         let mut keys = HashSet::new();
         for e in node_edges.iter().filter(|e| e.kind == CONFIG_SOURCE_KIND) {
-            if let Some((_, secret_uri, key)) = env_pairing(e) {
-                if secret_uri == uri && !key.is_empty() {
-                    keys.insert(key);
+            if let Some(p) = env_pairing(e) {
+                if p.secret_uri == uri && !p.key.is_empty() {
+                    keys.insert(p.key);
                 }
             } else if e.target_qualname.as_deref() == Some(uri) {
                 keys.extend(spc_mapping(e).into_iter().map(|(_, k)| k));
@@ -400,16 +444,18 @@ impl ConfigScope {
             (CONFIG_READ_KIND, _) => node_edges
                 .iter()
                 .filter_map(env_pairing)
-                .filter(|(var, secret_uri, key)| {
-                    secret_uri == uri
-                        && !key.is_empty()
+                .filter(|p| {
+                    p.secret_uri == uri
+                        && !p.key.is_empty()
                         && match entry {
                             Entry::Unscoped => true,
-                            Entry::Uri(u) => u == uri || env_related(u.strip_prefix("env://"), var),
+                            Entry::Uri(u) => {
+                                u == uri || env_related(u.strip_prefix("env://"), p.var)
+                            }
                             Entry::Key(..) => true,
                         }
                 })
-                .map(|(_, _, key)| key)
+                .map(|p| p.key)
                 .collect(),
             (CONFIG_SOURCE_KIND, Entry::Uri(u)) => spc_mapping(edge)
                 .into_iter()
@@ -432,6 +478,43 @@ impl ConfigScope {
             vec![target(None)]
         } else {
             keys.into_iter().map(|k| target(Some(k))).collect()
+        }
+    }
+
+    /// Decide whether `bridge` may enter `to`, in one step: refuses a U-turn
+    /// and a node that does not pair the bridge's key, then admits the
+    /// (node, URI) pair and records the bridge. `load_edges` fetches `to`'s
+    /// edges; it runs at most once, and only when needed.
+    pub fn admit_bridged(
+        &mut self,
+        bridge: &BridgeTarget,
+        to: i64,
+        load_edges: impl FnOnce() -> Vec<Edge>,
+    ) -> BridgeOutcome {
+        if self.is_u_turn(bridge.source_id, to) {
+            return BridgeOutcome::Skipped;
+        }
+        let cell = std::cell::OnceCell::new();
+        let mut load = Some(load_edges);
+        let mut edges =
+            || -> &Vec<Edge> { cell.get_or_init(|| (load.take().expect("loaded once"))()) };
+        if let Some(key) = bridge.key.as_deref()
+            && !Self::accepts_key(edges(), &bridge.uri, key)
+        {
+            return BridgeOutcome::Skipped;
+        }
+        match self.admit_bridge(
+            to,
+            &bridge.edge_kind,
+            &bridge.uri,
+            bridge.key.as_deref(),
+            || config_uris(edges()),
+        ) {
+            Some(a) => {
+                self.note_bridge(bridge, to);
+                BridgeOutcome::Admitted(a)
+            }
+            None => BridgeOutcome::Refused,
         }
     }
 

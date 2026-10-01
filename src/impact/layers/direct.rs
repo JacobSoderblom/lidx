@@ -8,7 +8,7 @@ use crate::db::Db;
 use crate::impact::confidence::apply_distance_decay;
 use crate::impact::types::{ConfidenceScore, ImpactSource, LayerResult, ParentLink};
 use crate::indexer::config::{
-    BridgeTarget, CAP_TRUNCATION_REASON, ConfigScope, Entry, config_edge_allowed,
+    BridgeOutcome, BridgeTarget, CAP_TRUNCATION_REASON, ConfigScope, Entry, config_edge_allowed,
     prefer_same_service,
 };
 use crate::indexer::test_detection::is_test_file;
@@ -153,26 +153,6 @@ fn bridge_hop_is_reversed(edge_kind: &str) -> bool {
     )
 }
 
-/// Every config URI `id`'s own config edges carry (see `traversal`).
-fn config_uris(
-    db: &Db,
-    id: i64,
-    languages: Option<&[String]>,
-    graph_version: i64,
-) -> std::collections::BTreeSet<String> {
-    db.edges_for_symbol(id, languages, graph_version)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|e| {
-            matches!(
-                e.kind.as_str(),
-                "CONFIG_SOURCE" | "CONFIG_READ" | "CONFIG_BIND"
-            )
-        })
-        .filter_map(|e| e.target_qualname)
-        .collect()
-}
-
 /// One BFS frontier entry: a node to expand under `entry`.
 struct QueueItem {
     id: i64,
@@ -206,7 +186,6 @@ fn resolve_bridge_targets(
             edge_kind,
             origin_path,
             source_id,
-            key,
             ..
         } = bridge;
         if let Some(complement_kinds) = crate::indexer::channel::bridge_complement(edge_kind) {
@@ -217,26 +196,13 @@ fn resolve_bridge_targets(
                 let Some(bridged_id) = bridged_edge.source_symbol_id else {
                     continue;
                 };
-                if scope.is_u_turn(*source_id, bridged_id)
-                    || !crate::traversal::bridged_accepts_key(
-                        db,
-                        bridged_id,
-                        tq,
-                        key.as_deref(),
-                        languages,
-                        graph_version,
-                    )
-                {
-                    continue;
-                }
-                let Some(admission) =
-                    scope.admit_bridge(bridged_id, edge_kind, tq, key.as_deref(), || {
-                        config_uris(db, bridged_id, languages, graph_version)
-                    })
-                else {
-                    continue;
+                let admission = match scope.admit_bridged(bridge, bridged_id, || {
+                    db.edges_for_symbol(bridged_id, languages, graph_version)
+                        .unwrap_or_default()
+                }) {
+                    BridgeOutcome::Admitted(a) => a,
+                    BridgeOutcome::Skipped | BridgeOutcome::Refused => continue,
                 };
-                scope.note_bridge(bridge, bridged_id);
                 visited.insert(bridged_id);
                 cache_symbols(
                     db,

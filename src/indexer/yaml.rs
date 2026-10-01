@@ -608,18 +608,21 @@ fn extract_secret_provider_edges(
                     .into_iter()
                     .flatten()
                     .filter_map(|d| {
-                        let object_name = d.get("objectName")?.as_str()?;
-                        let key = d.get("key").and_then(|k| k.as_str()).unwrap_or(object_name);
+                        let object_name = d.get(config::SPC_OBJECT_NAME_FIELD)?.as_str()?;
+                        let key = d
+                            .get(config::SPC_KEY_FIELD)
+                            .and_then(|k| k.as_str())
+                            .unwrap_or(object_name);
                         Some(serde_json::json!({
-                            "objectName": object_name,
-                            "secretName": secret_name,
-                            "key": key,
+                            config::SPC_OBJECT_NAME_FIELD: object_name,
+                            config::SPC_SECRET_NAME_FIELD: secret_name,
+                            config::SPC_KEY_FIELD: key,
                         }))
                     })
                     .collect();
                 let mut extra = serde_json::json!({ "provider": "csi-secrets-store" });
                 if !mapping.is_empty() {
-                    extra["mapping"] = mapping.into();
+                    extra[config::SPC_MAPPING_FIELD] = mapping.into();
                 }
                 let detail = config::build_config_source_detail(
                     "secret",
