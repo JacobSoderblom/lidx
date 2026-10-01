@@ -361,6 +361,19 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
         self.extension_registry.borrow_mut().clear();
     }
 
+    fn seed_extension_methods(&mut self, methods: &[crate::indexer::extract::ExtensionMethodRow]) {
+        for method in methods {
+            let name = method.qualname.rsplit('.').next().unwrap_or("");
+            register_extension_method(
+                &self.extension_registry,
+                name,
+                &method.qualname,
+                method.namespace.clone(),
+                &method.signature,
+            );
+        }
+    }
+
     fn module_name_from_rel_path(&self, rel_path: &str) -> String {
         module_name_from_rel_path(rel_path)
     }
@@ -5105,35 +5118,77 @@ fn record_extension_method(
     if !has_modifier(node, source, "static") {
         return;
     }
-    let Some(params) = node.child_by_field_name("parameters") else {
+    let Some(signature) = method_signature(node, source) else {
         return;
     };
-    let mut cursor = params.walk();
-    let Some(first_param) = params
-        .named_children(&mut cursor)
-        .find(|c| c.kind() == "parameter")
-    else {
-        return;
-    };
-    if !has_modifier(first_param, source, "this") {
+    if !is_extension_signature(&signature) {
         return;
     }
-    let receiver_type = first_param
-        .child_by_field_name("type")
-        .map(|t| classify_annotation_raw(&node_text(t, source)))
-        .and_then(|ty| match ty {
-            LocalType::Known(name) => Some(name),
-            _ => None,
-        });
-    let namespace = ctx.namespace_stack.join(".");
-    ctx.extension_registry
+    register_extension_method(
+        &ctx.extension_registry,
+        name,
+        qualname,
+        ctx.namespace_stack.join("."),
+        &signature,
+    );
+}
+
+/// A C# method signature as stored (`method_signature`: the parameter list,
+/// then ` -> return`) starts with this exactly when the first parameter
+/// carries the `this` modifier, i.e. the method is an extension method. The
+/// one definition of "is an extension method" shared by the extractor's
+/// registry (`record_extension_method`) and by the SQL that re-seeds that
+/// registry from the stored graph (`EXTENSION_SIGNATURE_LIKE`).
+const EXTENSION_SIGNATURE_PREFIX: &str = "(this ";
+
+/// SQL `LIKE` pattern equivalent to `is_extension_signature` (the prefix has
+/// no wildcard characters).
+pub(crate) const EXTENSION_SIGNATURE_LIKE: &str = "(this %";
+
+pub(crate) fn is_extension_signature(signature: &str) -> bool {
+    signature.starts_with(EXTENSION_SIGNATURE_PREFIX)
+}
+
+/// The extended (`this`) parameter's type name of an extension method's
+/// `signature`, when it classifies as a concrete non-builtin type — `None`
+/// for a generic, builtin or otherwise unclassifiable shape.
+fn extension_receiver_type(signature: &str) -> Option<String> {
+    let mut rest = signature
+        .strip_prefix(EXTENSION_SIGNATURE_PREFIX)?
+        .trim_start();
+    // `this ref T x`, `this in T x`: the modifier is not part of the type.
+    while let Some((word, tail)) = rest.split_once(char::is_whitespace) {
+        if matches!(word, "ref" | "in" | "out" | "readonly" | "scoped") {
+            rest = tail.trim_start();
+        } else {
+            break;
+        }
+    }
+    // Generic, tuple and array shapes all collapse to `Other` in
+    // `classify_annotation_raw`, so the first whitespace-delimited token is
+    // enough to tell them apart from a plain (possibly qualified) name.
+    let ty = rest.split_whitespace().next()?;
+    match classify_annotation_raw(ty) {
+        LocalType::Known(name) => Some(name),
+        _ => None,
+    }
+}
+
+fn register_extension_method(
+    registry: &ExtensionRegistry,
+    name: &str,
+    qualname: &str,
+    namespace: String,
+    signature: &str,
+) {
+    registry
         .borrow_mut()
         .entry(name.to_string())
         .or_default()
         .push(ExtensionMethodEntry {
             qualname: qualname.to_string(),
             namespace,
-            receiver_type,
+            receiver_type: extension_receiver_type(signature),
         });
 }
 

@@ -277,7 +277,6 @@ impl Indexer {
         // insertion-only watermark would otherwise never notice.
         let mut any_symbols_deleted = false;
         javascript::clear_export_cache();
-        self.begin_extraction_run();
         // Hash-unchanged JS/TS files whose chased imports or alias config
         // changed must be re-extracted too. Computed before any deletion so
         // importers' edges still exist.
@@ -286,8 +285,9 @@ impl Indexer {
             .filter_map(|p| crate::util::normalize_rel_path(&self.repo_root, p).ok())
             .collect();
         let js_stale = self.js_stale();
-        let mut stale_js_files = js_stale.stale_js_files(&batch_rels, self.graph_version)?;
-        // ... and C# files whose project's `global using`s changed.
+        let mut stale_files = js_stale.stale_js_files(&batch_rels, self.graph_version)?;
+        // ... and C# files whose project's `global using`s changed or that
+        // call an extension method a changed file declares.
         let graph_version = self.graph_version;
         let live_csharp = |db: &Db| -> Result<Vec<String>> {
             Ok(db
@@ -297,27 +297,11 @@ impl Indexer {
                 .filter(|p| cs_globals::is_csharp_path(p))
                 .collect())
         };
-        let stale_cs = {
-            let db = &self.db;
-            let cs = cs_globals::CsGlobals {
-                db,
-                repo_root: &self.repo_root,
-            };
-            cs.prepare(&batch_rels, || live_csharp(db))?
-        };
-        self.cs_globals = None;
-        self.cs_projects.clear();
-        stale_js_files.extend(stale_cs);
-        // ... and C# callers of an extension method a changed file declares.
-        stale_js_files.extend(
-            cs_globals::CsGlobals {
-                db: &self.db,
-                repo_root: &self.repo_root,
-            }
-            .stale_extension_callers(&batch_rels, self.graph_version)?,
-        );
+        let stale_cs = self.stale_csharp_files(&batch_rels, graph_version, live_csharp)?;
+        stale_files.extend(stale_cs);
+        self.begin_extraction_run(&batch_rels, graph_version, true)?;
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
-        all_paths.extend(stale_js_files.iter().map(|rel| self.repo_root.join(rel)));
+        all_paths.extend(stale_files.iter().map(|rel| self.repo_root.join(rel)));
         for path in &all_paths {
             let rel_path = match crate::util::normalize_rel_path(&self.repo_root, path) {
                 Ok(value) => value,
@@ -341,7 +325,7 @@ impl Indexer {
             };
             if let Some(existing) = self.db.get_file_by_path(&scanned.rel_path)?
                 && existing.hash == scanned.hash
-                && !stale_js_files.contains(&scanned.rel_path)
+                && !stale_files.contains(&scanned.rel_path)
             {
                 stats.skipped += 1;
                 continue;
@@ -521,7 +505,6 @@ impl Indexer {
         // Hash-unchanged JS/TS files whose chased imports or alias config
         // changed are re-extracted too (see `js_stale`).
         javascript::clear_export_cache();
-        self.begin_extraction_run();
         let scanned_paths: HashSet<&str> = scanned.iter().map(|f| f.rel_path.as_str()).collect();
         let mut changed_paths: Vec<String> = scanned
             .iter()
@@ -539,7 +522,7 @@ impl Indexer {
                 .cloned(),
         );
         let js_stale = self.js_stale();
-        let mut stale_js_files = js_stale.stale_js_files(&changed_paths, previous_graph_version)?;
+        let mut stale_files = js_stale.stale_js_files(&changed_paths, previous_graph_version)?;
         // A tsconfig/jsconfig isn't an indexed file, so its edits show up
         // only as a fingerprint change (this also covers a package base in
         // node_modules, which sync doesn't watch): re-extract every JS/TS file.
@@ -550,7 +533,7 @@ impl Indexer {
             .collect();
         let config_fingerprint = js_stale.config_fingerprint(&js_paths);
         if self.db.get_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY)? != Some(config_fingerprint) {
-            stale_js_files.extend(js_paths);
+            stale_files.extend(js_paths);
         }
 
         // ... and C# files whose project's `global using`s changed.
@@ -565,15 +548,11 @@ impl Indexer {
         } else {
             changed_paths.clone()
         };
-        stale_js_files.extend(self.stale_csharp_files(&cs_changed, || Ok(scanned_csharp))?);
-        // ... and C# callers of an extension method a changed file declares.
-        stale_js_files.extend(
-            cs_globals::CsGlobals {
-                db: &self.db,
-                repo_root: &self.repo_root,
-            }
-            .stale_extension_callers(&changed_paths, previous_graph_version)?,
+        stale_files.extend(
+            self.stale_csharp_files(&cs_changed, previous_graph_version, |_| Ok(scanned_csharp))?,
         );
+        // A forced re-extraction visits every file, so it needs no seed.
+        self.begin_extraction_run(&changed_paths, previous_graph_version, !force_reextract)?;
 
         let mut seen = HashSet::new();
         let mut stats = IndexStats {
@@ -601,7 +580,7 @@ impl Indexer {
             if let Some(existing_record) = existing_map.get(&file.rel_path)
                 && existing_record.hash == file.hash
                 && !force_reextract
-                && !stale_js_files.contains(&file.rel_path)
+                && !stale_files.contains(&file.rel_path)
             {
                 // Unchanged: skip the parse (tree-sitter + symbol extraction is the
                 // expensive part) and carry the file's rows forward further down.
@@ -1035,15 +1014,26 @@ impl Indexer {
     fn stale_csharp_files(
         &mut self,
         changed: &[String],
-        all_csharp: impl FnOnce() -> Result<Vec<String>>,
+        graph_version: i64,
+        all_csharp: impl FnOnce(&Db) -> Result<Vec<String>>,
     ) -> Result<HashSet<String>> {
         self.cs_globals = None;
         self.cs_projects.clear();
+        let db = &self.db;
+        let mut stale = self.cs_globals_db().prepare(changed, || all_csharp(db))?;
+        // ... and C# callers of an extension method a changed file declares.
+        stale.extend(
+            self.cs_globals_db()
+                .stale_extension_callers(changed, graph_version)?,
+        );
+        Ok(stale)
+    }
+
+    fn cs_globals_db(&self) -> cs_globals::CsGlobals<'_> {
         cs_globals::CsGlobals {
             db: &self.db,
             repo_root: &self.repo_root,
         }
-        .prepare(changed, all_csharp)
     }
 
     fn js_stale(&self) -> js_stale::JsStale<'_> {
@@ -1054,11 +1044,27 @@ impl Indexer {
     }
 
     /// Reset every extractor's per-run cross-file state (see
-    /// `LanguageExtractor::begin_run`).
-    fn begin_extraction_run(&mut self) {
+    /// `LanguageExtractor::begin_run`), then, when `reseed`, re-register the
+    /// extension methods `graph_version` stores for the files outside
+    /// `changed` (the extractor re-registers `changed` ones itself), so the
+    /// registry covers the whole repository whichever files are extracted.
+    fn begin_extraction_run(
+        &mut self,
+        changed: &[String],
+        graph_version: i64,
+        reseed: bool,
+    ) -> Result<()> {
+        let methods = if reseed {
+            self.cs_globals_db()
+                .extension_methods(changed, graph_version)?
+        } else {
+            Vec::new()
+        };
         for extractor in self.extractors.values_mut() {
             extractor.begin_run();
+            extractor.seed_extension_methods(&methods);
         }
+        Ok(())
     }
 
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {
@@ -1069,13 +1075,7 @@ impl Indexer {
         let module_name = extractor.module_name_from_rel_path(&file.rel_path);
         if file.language == "csharp" {
             if self.cs_globals.is_none() {
-                self.cs_globals = Some(
-                    cs_globals::CsGlobals {
-                        db: &self.db,
-                        repo_root: &self.repo_root,
-                    }
-                    .by_project()?,
-                );
+                self.cs_globals = Some(self.cs_globals_db().by_project()?);
             }
             let project =
                 cs_globals::project_dir(&self.repo_root, &file.rel_path, &mut self.cs_projects);

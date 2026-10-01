@@ -7,7 +7,8 @@
 
 use crate::db::Db;
 use crate::indexer::csharp;
-use anyhow::Result;
+use crate::indexer::extract::ExtensionMethodRow;
+use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -177,12 +178,13 @@ impl CsGlobals<'_> {
             let mut stmt = conn.prepare(
                 "SELECT s.qualname FROM symbols s JOIN files f ON f.id = s.file_id
                  WHERE s.graph_version = ?1 AND f.path = ?2 AND s.kind = 'method'
-                   AND s.signature LIKE '%(this %'",
+                   AND s.signature LIKE ?3",
             )?;
             for path in changed.iter().filter(|p| is_csharp_path(p)) {
-                let rows = stmt.query_map(rusqlite::params![graph_version, path], |r| {
-                    r.get::<_, String>(0)
-                })?;
+                let rows = stmt.query_map(
+                    rusqlite::params![graph_version, path, csharp::EXTENSION_SIGNATURE_LIKE],
+                    |r| r.get::<_, String>(0),
+                )?;
                 for row in rows {
                     declared.insert(row?);
                 }
@@ -207,11 +209,76 @@ impl CsGlobals<'_> {
             if changed_set.contains(path.as_str()) {
                 continue;
             }
-            let names: Vec<String> = serde_json::from_str(&candidates).unwrap_or_default();
+            let names: Vec<String> = serde_json::from_str(&candidates)
+                .with_context(|| format!("decode import_candidates of an edge in {path}"))?;
             if names.iter().any(|n| declared.contains(n)) {
                 stale.insert(path);
             }
         }
         Ok(stale)
+    }
+
+    /// Every C# extension method stored at `graph_version`, except those
+    /// declared in the `changed` paths (edited, added or deleted files of
+    /// this run: the extractor re-registers the survivors itself). Feeds
+    /// `LanguageExtractor::seed_extension_methods` so the extension registry
+    /// covers the whole repository, not just the files extracted this run
+    /// (issue #256).
+    pub fn extension_methods(
+        &self,
+        changed: &[String],
+        graph_version: i64,
+    ) -> Result<Vec<ExtensionMethodRow>> {
+        let conn = self.db.read_conn()?;
+        let changed_set: HashSet<&str> = changed.iter().map(String::as_str).collect();
+        let mut stmt = conn.prepare(
+            "SELECT f.id, f.path, s.qualname, s.signature
+             FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.graph_version = ?1 AND f.language = 'csharp'
+               AND s.kind = 'method' AND s.signature LIKE ?2",
+        )?;
+        let methods: Vec<(i64, String, String, String)> = stmt
+            .query_map(
+                rusqlite::params![graph_version, csharp::EXTENSION_SIGNATURE_LIKE],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut namespaces: HashMap<i64, Vec<String>> = HashMap::new();
+        let mut ns_stmt = conn.prepare(
+            "SELECT qualname FROM symbols
+             WHERE graph_version = ?1 AND file_id = ?2 AND kind = 'namespace'",
+        )?;
+        let mut out = Vec::new();
+        for (file_id, path, qualname, signature) in methods {
+            if changed_set.contains(path.as_str()) || !csharp::is_extension_signature(&signature) {
+                continue;
+            }
+            if !namespaces.contains_key(&file_id) {
+                let names = ns_stmt
+                    .query_map(rusqlite::params![graph_version, file_id], |r| {
+                        r.get::<_, String>(0)
+                    })?
+                    .collect::<rusqlite::Result<_>>()?;
+                namespaces.insert(file_id, names);
+            }
+            // The declaring namespace is the longest namespace symbol of
+            // the file that prefixes the method's qualname.
+            let namespace = namespaces[&file_id]
+                .iter()
+                .filter(|ns| {
+                    qualname
+                        .strip_prefix(ns.as_str())
+                        .is_some_and(|r| r.starts_with('.'))
+                })
+                .max_by_key(|ns| ns.len())
+                .cloned()
+                .unwrap_or_default();
+            out.push(ExtensionMethodRow {
+                qualname,
+                namespace,
+                signature,
+            });
+        }
+        Ok(out)
     }
 }
