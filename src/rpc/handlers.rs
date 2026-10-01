@@ -3,6 +3,7 @@
 
 use super::reading::is_markdown_path;
 use super::*;
+use crate::indexer::test_detection::is_file_level_test;
 use crate::search::{
     RgSearchOptions, annotate_grep_hits, normalize_rg_context, resolve_rg_paths, search_rg,
 };
@@ -446,6 +447,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             protocol_context: None,
                             resolution_kind: edge.resolution_kind.clone(),
                             via_interface: via_interface_ids.contains(target_id),
+                            file_level: false,
                         });
                     }
                 }
@@ -561,6 +563,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                     protocol_context: None,
                                     resolution_kind: edge.resolution_kind.clone(),
                                     via_interface: edge.is_synthetic(),
+                                    file_level: false,
                                 });
                             }
                         }
@@ -609,6 +612,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                 protocol_context: None,
                                 resolution_kind: edge.resolution_kind.clone(),
                                 via_interface: edge.is_synthetic(),
+                                file_level: false,
                             });
                         }
                     }
@@ -687,6 +691,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     continue;
                 }
                 tests_budget.used += ref_bytes;
+                let file_level = is_file_level_test(&test_sym);
                 test_refs.push(ExplainRef {
                     symbol: test_sym,
                     evidence: edge.evidence_snippet.clone(),
@@ -694,6 +699,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     protocol_context: None,
                     resolution_kind: edge.resolution_kind.clone(),
                     via_interface,
+                    file_level,
                 });
                 if test_refs.len() >= max_refs {
                     still_adding = false;
@@ -719,7 +725,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 continue;
             }
             tests_budget.used += ref_bytes;
-            test_refs.push(r.clone());
+            let mut test_ref = r.clone();
+            test_ref.file_level = is_file_level_test(&r.symbol);
+            test_refs.push(test_ref);
             if test_refs.len() >= max_refs {
                 still_adding = false;
             }
@@ -1063,6 +1071,7 @@ fn cross_boundary_refs(
             Some(ExplainRef {
                 symbol: hop.symbol,
                 via_interface: false,
+                file_level: false,
                 evidence: hop.snippet,
                 edge_kind,
                 protocol_context: hop.protocol_context,
@@ -1083,6 +1092,7 @@ fn cross_boundary_refs(
                     refs.push(ExplainRef {
                         symbol: sym,
                         via_interface: false,
+                        file_level: false,
                         evidence: edge.evidence_snippet,
                         edge_kind: edge.kind,
                         protocol_context: None,
@@ -1504,7 +1514,9 @@ fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
 
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let raw_params = params.clone();
-    let params: TraceFlowParams = super::parse_params("trace_flow", params)?;
+    let mut params: TraceFlowParams = super::parse_params("trace_flow", params)?;
+    let direction = super::validate::normalize_direction(params.direction.as_deref(), false)?;
+    params.kinds = super::validate::normalize_kinds(params.kinds.as_deref())?;
     super::validate::require_at_least_one("max_hops", params.max_hops)?;
     super::validate::require_at_least_one("max_bytes", params.max_bytes)?;
     super::validate::require_one_of(
@@ -1518,8 +1530,8 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
     let trace_offset = params.trace_offset.unwrap_or(0);
     let compact_mode = params.format.as_deref() == Some(super::validate::FORMAT_COMPACT);
-    let direction = match params.direction.as_deref().unwrap_or("downstream") {
-        "upstream" => crate::traversal::TraceDirection::Upstream,
+    let direction = match direction {
+        Some(super::validate::DIR_UPSTREAM) => crate::traversal::TraceDirection::Upstream,
         _ => crate::traversal::TraceDirection::Downstream,
     };
     let allowed_kinds: Vec<String> = params
@@ -2055,7 +2067,10 @@ fn analyze_impact_inner(
     resolution: &mut Option<crate::resolve::Resolved>,
 ) -> Result<Value> {
     let raw_params = params.clone();
-    let params: AnalyzeImpactParams = super::parse_params("analyze_impact", params)?;
+    let mut params: AnalyzeImpactParams = super::parse_params("analyze_impact", params)?;
+    params.direction =
+        super::validate::normalize_direction(params.direction.as_deref(), true)?.map(String::from);
+    params.kinds = super::validate::normalize_kinds(params.kinds.as_deref())?;
     super::validate::require_at_least_one("limit", params.limit)?;
     super::validate::require_at_least_one("max_depth", params.max_depth)?;
     super::validate::require_unit_interval("min_confidence", params.min_confidence)?;

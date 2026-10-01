@@ -422,12 +422,14 @@ impl<'a> HistoricalImpactLayer<'a> {
 
         // Get direct neighbors (simplified - just 1 hop)
         for seed_id in seed_ids {
-            let mut stmt = conn.prepare(
+            let sql = format!(
                 "SELECT DISTINCT s.stable_id
                  FROM edges e
                  JOIN symbols s ON e.target_symbol_id = s.id
-                 WHERE e.source_symbol_id = ? AND e.graph_version = ? AND s.stable_id IS NOT NULL",
-            )?;
+                 WHERE e.source_symbol_id = ? AND e.graph_version = ? AND s.stable_id IS NOT NULL{}",
+                crate::db::RPC_NAME_ONLY_FILTER
+            );
+            let mut stmt = conn.prepare(&sql)?;
 
             let stable_ids = stmt.query_map(rusqlite::params![seed_id, graph_version], |row| {
                 row.get::<_, String>(0)

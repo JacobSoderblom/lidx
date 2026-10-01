@@ -47,6 +47,10 @@ pub struct ImpactEntry {
     /// a second config URI); `path` is the first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub also_via: Vec<ImpactPath>,
+    /// A JS/TS test attributed to a whole test file (its module symbol), not
+    /// one specific test -- see `test_detection::is_file_level_test`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub file_level: bool,
 }
 
 /// Impact grouped by file

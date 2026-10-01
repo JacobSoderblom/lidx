@@ -113,8 +113,9 @@ struct AnalyzeImpactParams {
     enable_historical: Option<bool>,
     /// Direct layer configuration
     max_depth: Option<usize>,
-    /// "upstream" (find consumers/callers), "downstream" (follow calls), or "both" (default). Use "upstream" for "what depends on this?"
+    /// "upstream" (find consumers/callers), "downstream" (follow calls), or "both" (default). Use "upstream" for "what depends on this?" Case-insensitive; aliases "up"/"callers" and "down"/"callees"; anything else is an error.
     direction: Option<String>,
+    /// Edge kinds to follow, upper-case names such as CALLS, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default: CALLS, RPC_IMPL
     kinds: Option<Vec<String>>,
     /// Resolution kinds to exclude from traversal, e.g. ["bare_name", "two_segment"]
     /// to exclude the guarded name-fallback tier's heuristic edges. Default: none excluded.
@@ -296,11 +297,11 @@ struct TraceFlowParams {
     query: Option<String>,
     end_id: Option<i64>,
     end_qualname: Option<String>,
-    /// "downstream" (follow calls) or "upstream" (follow callers). Default: "downstream"
+    /// "downstream" (follow calls) or "upstream" (follow callers). Default: "downstream". Case-insensitive; aliases "up"/"callers" and "down"/"callees"; anything else is an error.
     direction: Option<String>,
     /// Max hops (default: 5, max: 10)
     max_hops: Option<usize>,
-    /// Edge kinds to follow (default: ["CALLS", "RPC_IMPL"])
+    /// Edge kinds to follow, upper-case names such as CALLS, IMPORTS, EXTENDS, IMPLEMENTS, RPC_IMPL, RPC_CALL, HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, XREF (every indexed edge kind is accepted); matched case-insensitively, unknown kinds are an error. Default: CALLS, RPC_IMPL
     kinds: Option<Vec<String>>,
     /// Resolution kinds to exclude from traversal, e.g. ["bare_name", "two_segment"]
     /// to exclude the guarded name-fallback tier's heuristic edges. Default: none excluded.

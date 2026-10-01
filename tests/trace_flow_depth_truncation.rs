@@ -148,3 +148,64 @@ fn depth_that_exactly_covers_the_reachable_graph_is_not_truncated() {
         "a trace that exhausts the whole reachable graph exactly at max_hops must not be reported as truncated, got: {result:?}"
     );
 }
+
+fn setup_files(
+    files: &[(&str, &str)],
+) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-trace-flow-upstream-truncation-")
+        .tempdir()
+        .unwrap();
+    common::write_files(tmp.path(), files);
+    let repo_root = tmp.path().to_path_buf();
+    let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+    (tmp, repo_root, db_path)
+}
+
+const LEAF_SOURCE: &str = "def leaf():\n    return 1\n";
+// `mid` has outgoing edges with no resolved target: a call to an undefined
+// function and an env read (a NULL-target CONFIG_READ edge).
+const MID_SOURCE: &str = "import os\nfrom leaf import leaf\n\n\ndef mid():\n    os.environ[\"SOME_VAR\"]\n    undefined_thing()\n    return leaf()\n";
+const TOP_SOURCE: &str = "from mid import mid\n\n\ndef top():\n    return mid()\n";
+
+/// Upstream, `mid` is the last node within `max_hops: 1`. Its only other
+/// edges are outgoing and unresolved, which are not callers: the trace
+/// must not claim more graph lies beyond it.
+#[test]
+fn upstream_depth_cutoff_ignores_unresolved_outgoing_edges() {
+    let (_tmp, repo_root, db_path) =
+        setup_files(&[("leaf.py", LEAF_SOURCE), ("mid.py", MID_SOURCE)]);
+    let result = call(
+        repo_root,
+        db_path,
+        r#"{"start_qualname":"leaf.leaf","direction":"upstream","max_hops":1}"#,
+    );
+    let trace = result["trace"].as_array().expect("trace array");
+    assert_eq!(trace.len(), 1, "{result:?}");
+    assert_eq!(
+        result["truncated"],
+        Value::Bool(false),
+        "unresolved outgoing edges are not further callers: {result:?}"
+    );
+}
+
+/// Same shape, but `mid` has a real caller beyond the cutoff.
+#[test]
+fn upstream_depth_cutoff_with_a_real_caller_is_truncated() {
+    let (_tmp, repo_root, db_path) = setup_files(&[
+        ("leaf.py", LEAF_SOURCE),
+        ("mid.py", MID_SOURCE),
+        ("top.py", TOP_SOURCE),
+    ]);
+    let result = call(
+        repo_root,
+        db_path,
+        r#"{"start_qualname":"leaf.leaf","direction":"upstream","max_hops":1}"#,
+    );
+    let trace = result["trace"].as_array().expect("trace array");
+    assert_eq!(trace.len(), 1, "{result:?}");
+    assert_eq!(result["truncated"], Value::Bool(true), "{result:?}");
+}
