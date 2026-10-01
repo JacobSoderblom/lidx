@@ -382,9 +382,23 @@ impl Db {
         Ok(())
     }
 
-    pub fn delete_edges_by_kind(&self, kind: &str, graph_version: i64) -> Result<()> {
+    /// Delete every edge of `kind` in `graph_version`, plus that kind's
+    /// unresolved-reference store rows (pending rows have no edge to cascade
+    /// from, so a re-derivation would otherwise duplicate them -- issue #251).
+    pub fn delete_edges_and_references_by_kind(
+        &self,
+        kind: &str,
+        graph_version: i64,
+    ) -> Result<()> {
         self.conn().execute(
             "DELETE FROM edges WHERE kind = ? AND graph_version = ?",
+            params![kind, graph_version],
+        )?;
+        // Pending store rows (`edge_id` NULL, e.g. every ROUTE reference)
+        // have no edge to cascade from; without this a re-derivation of the
+        // kind adds a second copy beside the carried-forward one (issue #251).
+        self.conn().execute(
+            "DELETE FROM unresolved_references WHERE edge_kind = ? AND graph_version = ?",
             params![kind, graph_version],
         )?;
         Ok(())
@@ -765,7 +779,8 @@ impl Db {
                     ur.receiver_scope, ur.deferred_kind, ur.deferred
                  FROM unresolved_references ur
                  LEFT JOIN symbols os ON os.id = ur.source_symbol_id
-                 WHERE ur.edge_id IS NULL AND ur.graph_version = ? AND ur.file_id IN ({placeholders})"
+                 WHERE ur.edge_id IS NULL AND ur.graph_version = ? AND ur.file_id IN ({placeholders})
+                 ON CONFLICT DO NOTHING"
             );
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
                 Box::new(to_version),
@@ -2669,6 +2684,85 @@ mod tests {
                 ReceiverType::NotTracked,
             )
         }
+    }
+
+    /// Issue #251: two identical-looking Bridge Edge kind edges are two edges;
+    /// each keeps its own store row bound to it (the identity index only
+    /// covers pending rows), so neither loses its retry binding.
+    #[test]
+    fn identical_unresolved_bridge_edges_each_keep_a_bound_store_row() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("pkg/a.py", "h1", "python", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol(
+            "pkg.a.caller",
+            Some("def caller()"),
+            "function",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "pkg/a.py", &symbols, 1, None)
+            .unwrap();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        let edges = vec![
+            make_test_edge("HTTP_CALL", "pkg.a.caller", "/nowhere/x"),
+            make_test_edge("HTTP_CALL", "pkg.a.caller", "/nowhere/x"),
+        ];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+        let conn = db.read_conn().unwrap();
+        let edge_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE kind = 'HTTP_CALL'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let bound: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT edge_id) FROM unresolved_references
+                 WHERE edge_kind = 'HTTP_CALL' AND edge_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(edge_count, 2);
+        assert_eq!(bound, 2, "each edge must keep its own bound store row");
+    }
+
+    /// Issue #251: an identical pending reference inserted twice is stored once.
+    #[test]
+    fn identical_pending_references_are_merged_not_duplicated() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db.upsert_file("pkg/a.py", "h1", "python", 100, 0).unwrap();
+        let symbols = vec![make_test_symbol(
+            "pkg.a.caller",
+            Some("def caller()"),
+            "function",
+            1,
+        )];
+        let inserted = db
+            .insert_symbols(file_id, "pkg/a.py", &symbols, 1, None)
+            .unwrap();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        let edges = vec![make_test_edge("CALLS", "pkg.a.caller", "nowhere_at_all")];
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+        db.insert_edges(file_id, &edges, &symbol_map, 1, None)
+            .unwrap();
+        let rows: i64 = db
+            .read_conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM unresolved_references", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 
     #[test]

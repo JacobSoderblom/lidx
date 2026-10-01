@@ -1,7 +1,13 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 26;
+pub const SCHEMA_VERSION: i64 = 27;
+
+/// The identity columns of an `unresolved_references` row beyond
+/// `(graph_version, file_id)`, NULL-normalised so the unique index treats
+/// NULLs as equal (issue #251).
+const UNRESOLVED_IDENTITY_EXPRS: &str = "COALESCE(source_symbol_id, -1), edge_kind, \
+COALESCE(reference_name, ''), COALESCE(evidence_start_line, -1), COALESCE(evidence_end_line, -1)";
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -613,6 +619,31 @@ pub fn migrate(conn: &Connection) -> Result<()> {
                 [],
             )?;
         }
+    }
+
+    if existing < 27 {
+        // Issue #251: a reference's identity within a graph version is its
+        // file, source symbol, kind, name and evidence span. Before this,
+        // nothing enforced it, so carry-forward plus the cross-language link
+        // pass each contributed a row for the same pending ROUTE reference
+        // on every reindex. Collapse existing duplicate pending rows (keeping
+        // the oldest), then make the invariant structural with a unique
+        // index. The index is partial on `edge_id IS NULL`: a row bound to a
+        // Bridge Edge is already unique through `edge_id` itself, and two
+        // distinct identical-looking edges must each keep their own row.
+        eprintln!("migration 27: collapsing duplicate unresolved_references rows");
+        conn.execute_batch(&format!(
+            "DELETE FROM unresolved_references WHERE id IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY graph_version, file_id, {UNRESOLVED_IDENTITY_EXPRS}
+                        ORDER BY (edge_id IS NULL), id) AS rn
+                    FROM unresolved_references WHERE edge_id IS NULL)
+                WHERE rn > 1);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_unresolved_references_identity
+                ON unresolved_references(graph_version, file_id, {UNRESOLVED_IDENTITY_EXPRS})
+                WHERE edge_id IS NULL;"
+        ))?;
     }
 
     if existing < SCHEMA_VERSION {
@@ -1499,9 +1530,9 @@ mod tests {
             conn.execute(
                 "INSERT INTO unresolved_references
                     (id, file_id, edge_kind, reference_name, name_tail, reason, graph_version,
-                     receiver_type)
-                 VALUES (?, 1, 'CALLS', 'x', 'x', 'no_candidates', 1, ?)",
-                params![id, receiver],
+                     receiver_type, evidence_start_line)
+                 VALUES (?, 1, 'CALLS', 'x', 'x', 'no_candidates', 1, ?, ?)",
+                params![id, receiver, id],
             )
             .unwrap();
         }
@@ -1952,6 +1983,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn migration_27_collapses_duplicate_unresolved_rows_and_enforces_uniqueness() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        // Rewind to a pre-27 database that already holds duplicates.
+        conn.execute(
+            "INSERT INTO files (id, path, hash, language, size, modified)
+             VALUES (1, 'a.py', 'h', 'python', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "DROP INDEX idx_unresolved_references_identity;
+             UPDATE meta SET value = '26' WHERE key = 'schema_version';",
+        )
+        .unwrap();
+        let insert = |gv: i64, name: &str, line: i64| {
+            conn.execute(
+                "INSERT INTO unresolved_references
+                    (source_symbol_id, file_id, edge_kind, reference_name, name_tail,
+                     reason, evidence_start_line, evidence_end_line, graph_version)
+                 VALUES (NULL, 1, 'ROUTE', ?, ?, 'no_candidates', ?, ?, ?)",
+                rusqlite::params![name, name, line, line, gv],
+            )
+            .unwrap();
+        };
+        // gv 1: one reference stored three times; a distinct one once.
+        for _ in 0..3 {
+            insert(1, "/a/b", 3);
+        }
+        insert(1, "/a/c", 4);
+        // gv 2 keeps its own copy (versions are separate by design).
+        insert(2, "/a/b", 3);
+        insert(2, "/a/b", 3);
+
+        migrate(&conn).unwrap();
+
+        let count = |gv: i64| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM unresolved_references WHERE graph_version = ?",
+                [gv],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(count(1), 2);
+        assert_eq!(count(2), 1);
+        assert!(index_exists(&conn, "idx_unresolved_references_identity"));
+
+        // A further duplicate is rejected by the constraint, merged by the
+        // store's own `ON CONFLICT DO NOTHING` insert.
+        let dup = "INSERT INTO unresolved_references
+                (source_symbol_id, file_id, edge_kind, reference_name, name_tail,
+                 reason, evidence_start_line, evidence_end_line, graph_version)
+             VALUES (NULL, 1, 'ROUTE', '/a/b', '/a/b', 'no_candidates', 3, 3, 1)";
+        assert!(conn.execute(dup, []).is_err());
+        conn.execute(&format!("{dup} ON CONFLICT DO NOTHING"), [])
+            .unwrap();
+        assert_eq!(count(1), 2);
     }
 
     #[test]
