@@ -999,6 +999,8 @@ pub(crate) struct Resolver<'c> {
     /// `external_file_id`. `None` until the first stub of this `Resolver`
     /// instance's lifetime is created or looked up.
     external_file_id: Option<i64>,
+    /// Memo of `names_repo_entity`, keyed by (language family, name).
+    repo_entity_memo: HashMap<(String, String), bool>,
 }
 
 impl<'c> Resolver<'c> {
@@ -1020,6 +1022,7 @@ impl<'c> Resolver<'c> {
             call_receiver: None,
             call_scope: TypeScope::default(),
             external_file_id: None,
+            repo_entity_memo: HashMap::new(),
         })
     }
 
@@ -2312,8 +2315,8 @@ impl<'c> Resolver<'c> {
 
     /// Whether the stub name `qualname` (`ext:`-prefixed) can denote a real
     /// entity outside the repository (issue #256). It cannot when it is
-    /// raw call-expression text (`a.b().c`) or lies inside a namespace or
-    /// module this repository declares. Nor can a name that is only the
+    /// raw call-expression text (`a.b().c`) or names an entity this
+    /// repository declares or a member of one of its types. Nor can a name that is only the
     /// call's own receiver-plus-member text -- no import candidate ends
     /// with it, so it names a local value, not an import-bound entity --
     /// when every import candidate points into the repository too: the
@@ -2327,7 +2330,7 @@ impl<'c> Resolver<'c> {
         let name = qualname
             .strip_prefix(EXTERNAL_STUB_PREFIX)
             .unwrap_or(qualname);
-        if is_raw_call_text(name) || self.names_repo_namespace(source_lang, name)? {
+        if is_raw_call_text(name) || self.names_repo_entity(source_lang, name)? {
             return Ok(false);
         }
         if import_candidates.is_empty() || import_candidates.iter().any(|c| ends_with_name(c, name))
@@ -2335,33 +2338,57 @@ impl<'c> Resolver<'c> {
             return Ok(true);
         }
         for candidate in import_candidates {
-            if !self.names_repo_namespace(source_lang, candidate)? {
+            if !self.names_repo_entity(source_lang, candidate)? {
                 return Ok(true);
             }
         }
         Ok(false)
     }
 
-    /// Whether `name`, or a leading separator-delimited prefix of it, is a
-    /// namespace or module symbol this graph_version declares in the
-    /// language family of `source_lang`.
-    fn names_repo_namespace(&mut self, source_lang: &str, name: &str) -> Result<bool> {
+    /// Whether `name` points at an entity this graph_version declares in
+    /// the language family of `source_lang`: a symbol with exactly that
+    /// qualname, or a member of a repository type (its parent qualname is a
+    /// non-namespace, non-module symbol), which means the member is gone.
+    /// Merely sharing a namespace or module prefix with the repository does
+    /// not count -- a repo may declare `namespace Microsoft.Extensions...`
+    /// or a root `utils.ts` and still call the external package of that
+    /// name. Memoised per resolver.
+    fn names_repo_entity(&mut self, source_lang: &str, name: &str) -> Result<bool> {
         let family = resolution_language_family(source_lang);
+        let key = (family.to_string(), name.to_string());
+        if let Some(hit) = self.repo_entity_memo.get(&key) {
+            return Ok(*hit);
+        }
+        let parent = qualname_prefixes(name)
+            .into_iter()
+            .rev()
+            .nth(1)
+            .map(str::to_string);
         let mut stmt = self.conn.prepare_cached(
-            "SELECT f.language FROM symbols s JOIN files f ON f.id = s.file_id
-             WHERE s.graph_version = ?1 AND s.qualname = ?2
-               AND s.kind IN ('namespace', 'module')",
+            "SELECT f.language, s.kind FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.graph_version = ?1 AND s.qualname = ?2 AND s.kind <> 'external'",
         )?;
-        for prefix in qualname_prefixes(name) {
-            let mut rows = stmt.query(params![self.graph_version, prefix])?;
+        let mut found = false;
+        let mut lookup = |qualname: &str, member_of: bool| -> Result<bool> {
+            let mut rows = stmt.query(params![self.graph_version, qualname])?;
             while let Some(row) = rows.next()? {
                 let language: String = row.get(0)?;
-                if resolution_language_family(&language) == family {
+                let kind: String = row.get(1)?;
+                if resolution_language_family(&language) == family
+                    && (!member_of || !matches!(kind.as_str(), "namespace" | "module"))
+                {
                     return Ok(true);
                 }
             }
+            Ok(false)
+        };
+        if lookup(name, false)? {
+            found = true;
+        } else if let Some(parent) = parent {
+            found = lookup(&parent, true)?;
         }
-        Ok(false)
+        self.repo_entity_memo.insert(key, found);
+        Ok(found)
     }
 
     /// Get-or-create the external stub symbol for `qualname` (already

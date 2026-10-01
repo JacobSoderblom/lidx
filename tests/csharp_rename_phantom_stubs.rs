@@ -574,3 +574,152 @@ fn attributed_extension_survives_rename_elsewhere_same_process() {
 fn attributed_extension_survives_rename_elsewhere_new_process() {
     rename_with_attributed_other(Process::New);
 }
+
+// ---------------------------------------------------------------------
+// Sync of a hash-unchanged declaring file next to its caller
+// ---------------------------------------------------------------------
+
+/// Sync `sync_paths` after `edits` and assert CALLS + unresolved rows equal
+/// a fresh index of the edited tree.
+fn sync_and_compare(
+    base: &[(&str, &str)],
+    edits: &[Edit<'_>],
+    sync_paths: &[&str],
+    process: Process,
+    prefix: &str,
+) {
+    let tmp = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    common::write_files(&root, base);
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    for edit in edits {
+        match *edit {
+            Edit::Write(path, src) => common::write_files(&root, &[(path, src)]),
+            Edit::Delete(path) => std::fs::remove_file(root.join(path)).unwrap(),
+        }
+    }
+    if matches!(process, Process::New) {
+        indexer = Indexer::new(root.clone(), db_path.clone()).unwrap();
+    }
+    let rels: Vec<String> = sync_paths.iter().map(|p| p.to_string()).collect();
+    indexer.sync_rel_paths(&rels).unwrap();
+    let inc = dump(&indexer, &db_path);
+    let fresh = fresh_dump(&apply_edits(base, edits));
+    assert_eq!(inc.0, fresh.0, "CALLS edges must match fresh");
+    assert_eq!(inc.1, fresh.1, "unresolved references must match fresh");
+}
+
+/// A byte-identical declaring file synced together with an edited caller:
+/// its methods stay seeded and the caller keeps its edge.
+fn sync_unchanged_declaration_with_caller(process: Process) {
+    sync_and_compare(
+        TWO_DECLS,
+        &[Edit::Write("b_mgr/Program.cs", TWO_CALLS_COMMENTED)],
+        &[
+            "a_common/Extensions.cs",
+            "a_other/Other.cs",
+            "b_mgr/Program.cs",
+        ],
+        process,
+        "lidx-256-sync-",
+    );
+}
+
+#[test]
+fn sync_of_unchanged_declaration_and_changed_caller_matches_fresh_same_process() {
+    sync_unchanged_declaration_with_caller(Process::Same);
+}
+
+#[test]
+fn sync_of_unchanged_declaration_and_changed_caller_matches_fresh_new_process() {
+    sync_unchanged_declaration_with_caller(Process::New);
+}
+
+/// Declaration and caller both unchanged: nothing may move.
+#[test]
+fn sync_of_unchanged_declaration_and_unchanged_caller_matches_fresh() {
+    sync_and_compare(
+        TWO_DECLS,
+        &[],
+        &["a_common/Extensions.cs", "b_mgr/Program.cs"],
+        Process::New,
+        "lidx-256-sync-nochange-",
+    );
+}
+
+/// A changed declaration synced with an unchanged one still renames cleanly.
+#[test]
+fn sync_of_renamed_and_unchanged_declarations_matches_fresh() {
+    sync_and_compare(
+        TWO_DECLS,
+        &[Edit::Write("a_common/Extensions.cs", EXTENSIONS_RENAMED)],
+        &[
+            "a_common/Extensions.cs",
+            "a_other/Other.cs",
+            "b_mgr/Program.cs",
+        ],
+        Process::New,
+        "lidx-256-sync-rename-",
+    );
+}
+
+// ---------------------------------------------------------------------
+// Stub-name guard must not over-reject genuine external stubs
+// ---------------------------------------------------------------------
+
+const DI_EXT: &str = "namespace Microsoft.Extensions.DependencyInjection;\n\
+public static class MyServiceExtensions\n{\n    public static void AddMine(this object services) { }\n}\n";
+const DI_CALLER: &str = "using Microsoft.Extensions.DependencyInjection;\nnamespace App;\n\
+public class Startup\n{\n    public void Configure(IServiceCollection services)\n    {\n        Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddSingleton<Foo>(services);\n    }\n}\n";
+
+/// A repo declaring `namespace Microsoft.Extensions.DependencyInjection` for
+/// its own extension class still stubs the genuinely external AddSingleton.
+#[test]
+fn csharp_repo_namespace_shadowing_a_framework_namespace_keeps_external_stub() {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-256-di-")
+        .tempdir()
+        .unwrap();
+    let root = tmp.path().to_path_buf();
+    common::write_files(&root, &[("a/Ext.cs", DI_EXT), ("b/Startup.cs", DI_CALLER)]);
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root, db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let stubs = external_stubs(&db_path, indexer.graph_version());
+    assert!(
+        stubs.iter().any(|s| s.ends_with("AddSingleton")),
+        "AddSingleton must stay an ext: stub: {stubs:#?} {:#?}",
+        dump(&indexer, &db_path)
+    );
+}
+
+/// A root `utils.ts` module must not turn the external `utils` package's
+/// call into an unresolved reference.
+#[test]
+fn ts_root_module_named_like_a_package_keeps_external_stub() {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-256-utils-")
+        .tempdir()
+        .unwrap();
+    let root = tmp.path().to_path_buf();
+    common::write_files(
+        &root,
+        &[
+            ("utils.ts", "export function local(): void {}\n"),
+            (
+                "app.ts",
+                "import { helper } from 'utils';\n\nexport function run(): void {\n  helper();\n}\n",
+            ),
+        ],
+    );
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root, db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let stubs = external_stubs(&db_path, indexer.graph_version());
+    assert!(
+        stubs.iter().any(|s| s.contains("helper")),
+        "external utils call must stay an ext: stub: {stubs:#?}"
+    );
+}

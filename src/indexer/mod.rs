@@ -297,9 +297,13 @@ impl Indexer {
                 .filter(|p| cs_globals::is_csharp_path(p))
                 .collect())
         };
-        let stale_cs = self.stale_csharp_files(&batch_rels, graph_version, live_csharp)?;
+        // Only files that really change count as "changed" here: a
+        // hash-unchanged declaring file is skipped below, so its extension
+        // methods must stay in the seed (and its callers un-stale).
+        let changed_rels = self.changed_batch_paths(&batch_rels)?;
+        let stale_cs = self.stale_csharp_files(&changed_rels, graph_version, live_csharp)?;
         stale_files.extend(stale_cs);
-        self.begin_extraction_run(&batch_rels, graph_version, true)?;
+        self.begin_extraction_run(&changed_rels, graph_version, true)?;
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
         all_paths.extend(stale_files.iter().map(|rel| self.repo_root.join(rel)));
         for path in &all_paths {
@@ -1006,6 +1010,31 @@ impl Indexer {
             .insert_symbol_metrics(file_id, &extracted.symbol_metrics, symbols)?;
 
         Ok((symbols.len(), edges_count))
+    }
+
+    /// The subset of `rels` a sync will actually re-index: deleted files and
+    /// files whose stored hash is missing or differs from the disk content
+    /// (the same notion of "changed" `reindex` uses).
+    fn changed_batch_paths(&self, rels: &[String]) -> Result<Vec<String>> {
+        let mut changed = Vec::new();
+        for rel in rels {
+            let path = self.repo_root.join(rel);
+            let unchanged = if path.exists() {
+                match (
+                    scan::scan_path(&self.repo_root, &path)?,
+                    self.db.get_file_by_path(rel)?,
+                ) {
+                    (Some(scanned), Some(existing)) => existing.hash == scanned.hash,
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            if !unchanged {
+                changed.push(rel.clone());
+            }
+        }
+        Ok(changed)
     }
 
     /// Refresh the recorded C# `global using`s for `changed` paths and return
