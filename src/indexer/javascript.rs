@@ -4,6 +4,7 @@ use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::string_consts::{LocalBinding, StringConsts};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
     span,
@@ -60,6 +61,9 @@ struct GrpcService {
 
 #[derive(Clone)]
 struct Context {
+    /// Same-file string constants (see `string_consts`), used to resolve
+    /// channel topics given as identifiers.
+    string_consts: Rc<StringConsts>,
     module: String,
     class_stack: Vec<String>,
     /// How many leading `class_stack` entries are TS namespaces rather than
@@ -1216,6 +1220,11 @@ fn extract_with_parser(
         .extend(next_api_route_edges(module_name, root, source));
     let grpc_clients = collect_grpc_clients(root, source);
     let ctx = Context {
+        string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
+            crate::indexer::string_consts::ConstLang::JavaScript,
+            root,
+            source,
+        )),
         module: module_name.to_string(),
         class_stack: Vec::new(),
         ns_depth: 0,
@@ -2412,11 +2421,9 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
         return None;
     };
     let args = call_arguments(node);
-    let raw_topic = args
-        .first()
-        .and_then(|arg| extract_string_literal(*arg, source))
-        .or_else(|| args.first().map(|arg| node_text(*arg, source)))?;
-    let normalized = channel::normalize_channel_name(&raw_topic)?;
+    let raw_topic = node_text(*args.first()?, source);
+    let normalized =
+        channel::resolve_topic(&raw_topic, &ctx.string_consts, &LocalBinding::NotLocal)?;
     let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
         channel::build_publish_detail(&normalized, &raw_topic, "js-bus")
     } else {

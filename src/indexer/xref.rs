@@ -29,8 +29,8 @@ pub fn link_cross_language_refs(
     graph_version: i64,
 ) -> Result<usize> {
     if clear_existing {
-        db.delete_edges_by_kind(XREF_KIND, graph_version)?;
-        db.delete_edges_by_kind(ROUTE_KIND, graph_version)?;
+        db.delete_edges_and_references_by_kind(XREF_KIND, graph_version)?;
+        db.delete_edges_and_references_by_kind(ROUTE_KIND, graph_version)?;
     }
     let index = SymbolRefIndex::build(db, graph_version)?;
     let commit_sha = db.graph_version_commit(graph_version)?;

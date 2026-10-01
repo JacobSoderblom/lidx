@@ -402,3 +402,61 @@ fn repo_map_empty_path_values_mean_no_filter() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+// Issue #240: `truncated` is reported by repo_map and orient, and orient's
+// modules view honours the path filter (modules and module_edges).
+#[test]
+fn repo_map_and_orient_report_truncated_and_orient_modules_honour_paths() {
+    let repo_root = temp_repo_dir("issue240");
+    let write = |rel: &str, body: &str| {
+        let p = repo_root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    write("dirA/__init__.py", "");
+    write("dirB/__init__.py", "");
+    write("dirC/__init__.py", "");
+    write("dirB/b.py", "def fb():\n    return 1\n");
+    write(
+        "dirA/a.py",
+        "from dirB.b import fb\n\ndef fa():\n    return fb()\n",
+    );
+    write(
+        "dirC/c.py",
+        "from dirB.b import fb\n\ndef fc():\n    return fb()\n",
+    );
+    let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path).unwrap();
+    indexer.reindex().unwrap();
+
+    let map = rpc::handle_method(&mut indexer, "repo_map", serde_json::json!({})).unwrap();
+    assert_eq!(map["truncated"], serde_json::json!(false), "{map:?}");
+
+    let orient = rpc::handle_method(
+        &mut indexer,
+        "orient",
+        serde_json::json!({"view": "all", "paths": ["dirA"]}),
+    )
+    .unwrap();
+    assert_eq!(orient["map"]["truncated"], serde_json::json!(false));
+
+    let modules = orient["modules"].as_array().expect("modules array");
+    assert!(
+        modules
+            .iter()
+            .all(|m| m["path"].as_str().unwrap().starts_with("dirA")),
+        "{modules:?}"
+    );
+    let edges = orient["module_edges"].as_array().expect("module_edges");
+    assert!(!edges.is_empty(), "expected dirA -> dirB edge: {orient:?}");
+    for e in edges {
+        let (s, t) = (
+            e["source_module"].as_str().unwrap(),
+            e["target_module"].as_str().unwrap(),
+        );
+        assert!(
+            s.starts_with("dirA") || t.starts_with("dirA"),
+            "edge outside filter: {e:?}"
+        );
+    }
+}

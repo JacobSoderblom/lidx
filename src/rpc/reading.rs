@@ -289,29 +289,6 @@ fn symbol_outline_entries(
     Ok(entries)
 }
 
-/// Rejects a `path` that's absolute or that escapes the repo root via a `..`
-/// component -- applies to every `outline`/`read_symbol` path, not just
-/// Markdown (whose branch reads straight off disk with no DB row to bound
-/// it; see `is_markdown_path`'s doc comment). A relative path never needs
-/// `..` to name a file inside the repo, so any `..` component is rejected
-/// outright rather than resolved and checked against the repo root.
-fn reject_path_escape(path: &str) -> Result<()> {
-    let candidate = std::path::Path::new(path);
-    if candidate.is_absolute() {
-        anyhow::bail!(
-            "path '{}' must be relative to the repo root, not absolute",
-            path
-        );
-    }
-    if candidate
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        anyhow::bail!("path '{}' escapes the repo root (contains '..')", path);
-    }
-    Ok(())
-}
-
 /// (language, total_lines, entries) for a Markdown `outline` path: no
 /// `files`/`symbols` DB row to check (see `is_markdown_path`), so disk
 /// presence is its only "indexed" check, and entries come from parsing ATX
@@ -322,12 +299,8 @@ fn markdown_outline(
     kinds_filter: Option<&HashSet<String>>,
     max_depth: Option<usize>,
 ) -> Result<(String, i64, Vec<OutlineEntry>)> {
-    let content = crate::util::read_to_string(full_path).map_err(|_| {
-        anyhow::anyhow!(
-            "path '{}' is not indexed -- fall back to Read for this file",
-            path
-        )
-    })?;
+    let content = crate::util::read_to_string(full_path)
+        .map_err(|_| anyhow::anyhow!("{}", super::validate::not_indexed_message(path)))?;
     let total_lines = crate::indexer::tree_helpers::line_count(&content);
     let entries = markdown_outline_entries(&content, total_lines, kinds_filter, max_depth);
     Ok(("markdown".to_string(), total_lines, entries))
@@ -338,19 +311,13 @@ fn markdown_outline(
 /// and entries come from indexed symbols/`CONTAINS` edges.
 fn indexed_outline(
     db: &crate::db::Db,
+    file_record: crate::db::FileRecord,
     full_path: &std::path::Path,
     path: &str,
     graph_version: i64,
     kinds_filter: Option<&HashSet<String>>,
     max_depth: Option<usize>,
 ) -> Result<(String, i64, Vec<OutlineEntry>)> {
-    let file_record = db.get_file_by_path(path)?;
-    let Some(file_record) = file_record else {
-        anyhow::bail!(
-            "path '{}' is not indexed -- fall back to Read, or run 'reindex' if it should be tracked",
-            path
-        );
-    };
     let content = crate::util::read_to_string(full_path).map_err(|_| {
         anyhow::anyhow!(
             "file '{}' is missing from disk; run 'reindex' to refresh the index",
@@ -362,6 +329,76 @@ fn indexed_outline(
     Ok((file_record.language, total_lines, entries))
 }
 
+/// Kinds that wrap content rather than being content: never chosen as the
+/// `read_symbol` target of an `outline` next_hop (#236).
+const CONTAINER_WRAPPER_KINDS: &[&str] = &["namespace", "module"];
+
+/// Whether an entry of this kind may be an `outline` `read_symbol` hop target.
+fn is_hop_target_kind(kind: &str) -> bool {
+    !CONTAINER_WRAPPER_KINDS.contains(&kind)
+}
+
+/// True when `qualname` resolves exactly -- no fuzzy fallback -- and every
+/// indexed symbol bearing it is declared in `path`.
+fn qualname_resolves_only_in(
+    db: &crate::db::Db,
+    qualname: &str,
+    path: &str,
+    graph_version: i64,
+) -> Result<bool> {
+    let found: Vec<Symbol> = db
+        .get_symbols_by_qualname(qualname, graph_version)?
+        .into_iter()
+        .filter(|s| !s.is_external())
+        .collect();
+    Ok(!found.is_empty() && found.iter().all(|s| s.file_path == path))
+}
+
+/// `outline`'s next_hops (#236). A `read_symbol` hop is emitted only for an
+/// indexed, non-wrapper entry whose qualname resolves exactly to a symbol in
+/// the outlined file. Otherwise (Markdown, whose entries are headings and not
+/// symbols; or a file holding only namespace/module wrappers) the hop reads a
+/// line range of that same file through `gather_context`'s file seed.
+fn outline_next_hops(
+    db: &crate::db::Db,
+    path: &str,
+    entries: &[OutlineEntry],
+    total_lines: i64,
+    markdown: bool,
+) -> Result<Vec<Value>> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !markdown {
+        let graph_version = db.current_graph_version()?;
+        for entry in entries.iter().filter(|e| is_hop_target_kind(&e.kind)) {
+            if qualname_resolves_only_in(db, &entry.qualname, path, graph_version)? {
+                return Ok(vec![json!({
+                    "method": "read_symbol",
+                    "params": {"qualname": entry.qualname},
+                    "description": "read_symbol fetches this entry's exact source; it is the first non-namespace/module entry that resolves uniquely within this file",
+                })]);
+            }
+        }
+    }
+    let (start_line, end_line) = if markdown {
+        // From line 1 so any preamble before the first heading is included.
+        (1, entries[0].end_line)
+    } else {
+        (1, total_lines.max(1))
+    };
+    Ok(vec![json!({
+        "method": "gather_context",
+        "params": {"seeds": [{
+            "type": "file",
+            "path": path,
+            "start_line": start_line,
+            "end_line": end_line,
+        }]},
+        "description": "read a line range of this file (its entries have no symbol to read)",
+    })])
+}
+
 /// `outline` (#95): a compact, no-bodies skeleton of an indexed file's symbols
 /// in source order -- kind, qualname, signature, line range, nesting parent,
 /// first doc line. Answers "what's in this file?" for a fraction of the
@@ -369,40 +406,38 @@ fn indexed_outline(
 /// cap like any other method (see `handle_method`'s `effective_max`).
 pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: OutlineParams = super::parse_params("outline", params)?;
-    let path = params.path.trim();
-    if path.is_empty() {
-        anyhow::bail!("outline requires a non-empty 'path'");
-    }
-    reject_path_escape(path)?;
+    let repo_root = indexer.repo_root().clone();
+    let validated =
+        super::validate::validate_repo_path("outline", indexer.db(), &repo_root, &params.path)?;
+    let path = validated.path;
     let kinds_filter: Option<HashSet<String>> =
         params.kinds.map(|kinds| kinds.into_iter().collect());
     let max_depth = params.max_depth;
 
-    let repo_root = indexer.repo_root().clone();
     let full_path = repo_root.join(path);
 
-    let (language, total_lines, entries) = if is_markdown_path(path) {
-        markdown_outline(&full_path, path, kinds_filter.as_ref(), max_depth)?
-    } else {
+    let (language, total_lines, entries) = if let Some(file_record) = validated.file {
         let graph_version = indexer.db().current_graph_version()?;
         indexed_outline(
             indexer.db(),
+            file_record,
             &full_path,
             path,
             graph_version,
             kinds_filter.as_ref(),
             max_depth,
         )?
+    } else {
+        markdown_outline(&full_path, path, kinds_filter.as_ref(), max_depth)?
     };
 
-    let next_hops = match entries.first() {
-        Some(first) => vec![json!({
-            "method": "read_symbol",
-            "params": {"qualname": first.qualname},
-            "description": "read_symbol accepts any entry's qualname above to fetch its exact source",
-        })],
-        None => vec![],
-    };
+    let next_hops = outline_next_hops(
+        indexer.db(),
+        path,
+        &entries,
+        total_lines,
+        is_markdown_path(path),
+    )?;
 
     let result = OutlineResult {
         path: path.to_string(),

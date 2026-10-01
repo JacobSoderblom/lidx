@@ -9,6 +9,7 @@ use crate::indexer::extract::{
 };
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::string_consts::{LocalBinding, StringConsts};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
     span,
@@ -69,6 +70,9 @@ fn normalize_import_target(raw: &str, module: &str) -> Option<String> {
 
 #[derive(Clone)]
 struct Context {
+    /// Same-file string constants (see `string_consts`), used to resolve
+    /// channel topics given as identifiers.
+    string_consts: Rc<StringConsts>,
     module: String,
     container_stack: Vec<String>,
     current_scope: String,
@@ -230,6 +234,11 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             None,
         ));
         let ctx = Context {
+            string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
+                crate::indexer::string_consts::ConstLang::Rust,
+                root,
+                source,
+            )),
             module: module_name.to_string(),
             container_stack: Vec::new(),
             current_scope: module_name.to_string(),
@@ -2217,11 +2226,9 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
         return None;
     };
     let args = call_arguments(node);
-    let raw_topic = args
-        .first()
-        .and_then(|arg| extract_string_literal(*arg, source))
-        .or_else(|| args.first().map(|arg| node_text(*arg, source)))?;
-    let normalized = channel::normalize_channel_name(&raw_topic)?;
+    let raw_topic = node_text(*args.first()?, source);
+    let normalized =
+        channel::resolve_topic(&raw_topic, &ctx.string_consts, &LocalBinding::NotLocal)?;
     let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
         channel::build_publish_detail(&normalized, &raw_topic, "rust-bus")
     } else {
