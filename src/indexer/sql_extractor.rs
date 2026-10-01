@@ -54,6 +54,8 @@ impl crate::indexer::extract::LanguageExtractor for SqlExtractor {
             module: module_name.to_string(),
         };
         walk_node(root, &ctx, source, &mut output);
+        let mut suspects = Suspects::default();
+        collect_suspects(root, source, &mut suspects);
 
         // Post-walk: scan for DO blocks
         extract_do_blocks(source, module_name, &mut output);
@@ -61,7 +63,8 @@ impl crate::indexer::extract::LanguageExtractor for SqlExtractor {
         // The Postgres grammar has no T-SQL support: procedures parse as ERROR
         // nodes and one bad statement (MERGE, IF/BEGIN, GO) can swallow later
         // CREATE TABLEs. Recover them with a line scan.
-        extract_tsql_fallback(source, module_name, &mut output);
+        extract_tsql_fallback(source, module_name, &suspects, &mut output);
+        resolve_overlaps(&mut output);
 
         Ok(output)
     }
@@ -94,6 +97,12 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
 
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     if let Some(kind) = create_kind(node.kind()) {
+        // Error recovery can re-lex a T-SQL parameter such as `@Type char(1)`
+        // as a `CREATE TYPE` node. Only a statement that really reads
+        // `CREATE [OR REPLACE] TYPE` becomes a symbol.
+        if node.kind() == "create_type" && !is_real_create_type(&node_text(node, source)) {
+            return;
+        }
         if let Some((qualname, name)) = extract_object_name(node, source) {
             let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
             let qualname_owned = qualname.clone();
@@ -660,10 +669,189 @@ fn extract_do_blocks(source: &str, module_name: &str, output: &mut ExtractedFile
     }
 }
 
-/// Line-based recovery of `CREATE [OR ALTER] PROC[EDURE]` and `CREATE TABLE`
-/// statements the tree-sitter pass missed. Symbols whose qualname already
-/// exists are skipped, so this never duplicates the grammar-derived ones.
-fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut ExtractedFile) {
+/// True when `text` reads `CREATE [OR REPLACE|ALTER] TYPE`.
+fn is_real_create_type(text: &str) -> bool {
+    let mut rest = text;
+    if !next_word(&mut rest).is_some_and(|w| w.eq_ignore_ascii_case("create")) {
+        return false;
+    }
+    let Some(mut word) = next_word(&mut rest) else {
+        return false;
+    };
+    if word.eq_ignore_ascii_case("or") {
+        if next_word(&mut rest).is_none() {
+            return false;
+        }
+        let Some(w) = next_word(&mut rest) else {
+            return false;
+        };
+        word = w;
+    }
+    word.eq_ignore_ascii_case("type")
+}
+
+/// Grammar-derived symbols whose spans cannot be trusted, keyed by
+/// normalized qualname.
+#[derive(Default)]
+struct Suspects {
+    /// The node contains parse errors.
+    errored: std::collections::HashSet<String>,
+    /// Functions/triggers without a dollar-quoted body: the Postgres grammar
+    /// can only have guessed at a T-SQL `BEGIN ... END` body.
+    undelimited: std::collections::HashSet<String>,
+}
+
+fn normalize_qualname(q: &str) -> String {
+    q.chars()
+        .filter(|c| !matches!(c, '[' | ']' | '"'))
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn collect_suspects(node: Node<'_>, source: &str, out: &mut Suspects) {
+    if let Some(kind) = create_kind(node.kind()) {
+        if let Some((qualname, _)) = extract_object_name(node, source) {
+            let norm = normalize_qualname(&qualname);
+            if node.has_error() {
+                out.errored.insert(norm.clone());
+            }
+            if matches!(kind, "function" | "trigger") && !node_text(node, source).contains('$') {
+                out.undelimited.insert(norm);
+            }
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_suspects(child, source, out);
+    }
+}
+
+/// A `CREATE` statement found by the line scan.
+struct Candidate {
+    kind: &'static str,
+    qualname: String,
+    start: usize,
+    end: usize,
+    has_begin: bool,
+}
+
+fn overlaps(a: (i64, i64), b: (i64, i64)) -> bool {
+    a.0 < b.1 && b.0 < a.1
+}
+
+fn line_col(source: &str, byte: usize) -> (i64, i64) {
+    let row = source[..byte].bytes().filter(|&b| b == b'\n').count();
+    let col = byte - source[..byte].rfind('\n').map_or(0, |n| n + 1);
+    (row as i64 + 1, col as i64 + 1)
+}
+
+fn set_span(sym: &mut SymbolInput, source: &str, start: usize, end: usize) {
+    let (start_line, start_col) = line_col(source, start);
+    let (end_line, end_col) = line_col(source, end);
+    sym.start_line = start_line;
+    sym.start_col = start_col;
+    sym.end_line = end_line;
+    sym.end_col = end_col;
+    sym.start_byte = start as i64;
+    sym.end_byte = end as i64;
+}
+
+fn has_word(text: &str, word: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|w| w.eq_ignore_ascii_case(word))
+}
+
+/// Line-based recovery of `CREATE` statements (procedures, functions, triggers,
+/// views, types, tables, indexes) the tree-sitter pass missed or mis-spanned.
+/// The Postgres grammar has no T-SQL support, so a missing symbol is added,
+/// and a grammar symbol whose span is unreliable (parse errors, zero length,
+/// overlapping a neighbour, or a truncated T-SQL body) takes the scanned span.
+fn extract_tsql_fallback(
+    source: &str,
+    module_name: &str,
+    suspects: &Suspects,
+    output: &mut ExtractedFile,
+) {
+    for cand in scan_candidates(source) {
+        let norm = normalize_qualname(&cand.qualname);
+        let existing = output
+            .symbols
+            .iter()
+            .position(|s| s.kind != "module" && normalize_qualname(&s.qualname) == norm);
+        if let Some(idx) = existing {
+            let sym = &output.symbols[idx];
+            let range = (sym.start_byte, sym.end_byte);
+            let bad = range.0 >= range.1
+                || suspects.errored.contains(&norm)
+                || (suspects.undelimited.contains(&norm) && cand.has_begin)
+                || output.symbols.iter().enumerate().any(|(j, o)| {
+                    j != idx && o.kind != "module" && overlaps(range, (o.start_byte, o.end_byte))
+                });
+            // Only adopt when the scan describes the same statement.
+            let same_stmt = (cand.start as i64) >= range.0 && (cand.start as i64) <= range.1;
+            if bad && same_stmt && cand.end > cand.start {
+                set_span(&mut output.symbols[idx], source, cand.start, cand.end);
+            }
+            continue;
+        }
+        let name = cand
+            .qualname
+            .rsplit('.')
+            .next()
+            .unwrap_or(&cand.qualname)
+            .to_string();
+        let mut sym = SymbolInput {
+            kind: cand.kind.to_string(),
+            name,
+            qualname: cand.qualname.clone(),
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 0,
+            start_byte: 0,
+            end_byte: 0,
+            signature: None,
+            docstring: None,
+            identity: None,
+        };
+        set_span(&mut sym, source, cand.start, cand.end);
+        output.symbols.push(sym);
+        output.edges.push(EdgeInput {
+            kind: "CONTAINS".to_string(),
+            source_qualname: Some(module_name.to_string()),
+            target_qualname: Some(cand.qualname),
+            detail: None,
+            evidence_snippet: None,
+            ..Default::default()
+        });
+    }
+}
+
+/// Last line of defence for the "no overlapping symbols" invariant: when a
+/// grammar symbol still partially overlaps a later one, cut it back to where
+/// the next symbol starts.
+fn resolve_overlaps(output: &mut ExtractedFile) {
+    let mut order: Vec<usize> = (0..output.symbols.len())
+        .filter(|&i| output.symbols[i].kind != "module")
+        .collect();
+    order.sort_by_key(|&i| output.symbols[i].start_byte);
+    for w in order.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (a_start, a_end) = (output.symbols[a].start_byte, output.symbols[a].end_byte);
+        let (b_start, b_end) = (output.symbols[b].start_byte, output.symbols[b].end_byte);
+        // Partial overlap only: nested spans are left alone.
+        if b_start < a_end && b_end > a_end && b_start > a_start {
+            let (line, col) = (output.symbols[b].start_line, output.symbols[b].start_col);
+            let sym = &mut output.symbols[a];
+            sym.end_byte = b_start;
+            sym.end_line = line;
+            sym.end_col = col;
+        }
+    }
+}
+
+fn scan_candidates(source: &str) -> Vec<Candidate> {
     let mut lines: Vec<(usize, &str)> = Vec::new();
     let mut offset = 0;
     for line in source.split_inclusive('\n') {
@@ -678,25 +866,29 @@ fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut Extracted
             && w.next().is_none_or(|n| n.parse::<u32>().is_ok())
             && w.next().is_none()
     };
-    let normalize = |q: &str| -> String {
-        q.chars()
-            .filter(|c| !matches!(c, '[' | ']' | '"'))
-            .collect::<String>()
-            .to_ascii_lowercase()
-    };
     let mut in_block_comment = false;
     let mut in_dollar = false;
+    // End of the last block-style statement; anything starting inside it is
+    // part of its body.
+    let mut covered_until = 0usize;
+    let mut out: Vec<Candidate> = Vec::new();
 
     for (i, &(line_start, line)) in lines.iter().enumerate() {
-        let skip = in_block_comment || in_dollar || line.trim_start().starts_with("--");
-        if line.contains("/*") || line.contains("*/") {
+        let trimmed = line.trim_start();
+        let skip = in_block_comment
+            || in_dollar
+            || trimmed.is_empty()
+            || trimmed.starts_with("--")
+            || line_start < covered_until;
+        if !trimmed.starts_with("--") && (line.contains("/*") || line.contains("*/")) {
             // Last marker on the line decides the state.
             let open = line.rfind("/*");
             let close = line.rfind("*/");
             in_block_comment = match (open, close) {
                 (Some(o), Some(c)) => o > c,
                 (Some(_), None) => true,
-                _ => false,
+                (None, Some(_)) => false,
+                _ => in_block_comment,
             };
         }
         if line.matches("$$").count() % 2 == 1 {
@@ -705,7 +897,6 @@ fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut Extracted
         if skip {
             continue;
         }
-        let trimmed = line.trim_start();
         let Some((kind, raw)) = create_at(&lines, i) else {
             continue;
         };
@@ -716,62 +907,74 @@ fn extract_tsql_fallback(source: &str, module_name: &str, output: &mut Extracted
             .chars()
             .filter(|c| !matches!(c, '[' | ']' | '"'))
             .collect();
-        let norm = normalize(&qualname);
-        if qualname.is_empty()
-            || output
-                .symbols
-                .iter()
-                .any(|s| normalize(&s.qualname) == norm)
-        {
+        if qualname.is_empty() {
             continue;
         }
-        let name = qualname.rsplit('.').next().unwrap_or(&qualname).to_string();
 
         let start_byte = line_start + (line.len() - trimmed.len());
-        // Tables end at their closing paren; procedures at the next `GO` or
-        // unindented CREATE.
-        let end_byte = if kind == "table" {
-            table_end(source, start_byte)
+        let end_byte = match kind {
+            "table" | "type" => table_end(source, start_byte),
+            "index" => index_end(source, start_byte),
+            _ => {
+                // Ends at the next `GO` (inclusive) or unindented CREATE.
+                let mut end = source.len();
+                let mut at_go = false;
+                for (j, &(js, l)) in lines.iter().enumerate().skip(i + 1) {
+                    if is_go(l) {
+                        end = js + l.trim_end().len();
+                        at_go = true;
+                        break;
+                    }
+                    if l.starts_with(['c', 'C'])
+                        && create_at(&lines, j).is_some_and(|(_, n)| !n.starts_with(['#', '@']))
+                    {
+                        end = js;
+                        break;
+                    }
+                }
+                if at_go {
+                    end
+                } else {
+                    start_byte + trim_trailing_noise(&source[start_byte..end]).len()
+                }
+            }
+        };
+        let end_byte = end_byte.max(start_byte);
+        if matches!(kind, "procedure" | "function" | "trigger" | "view") {
+            covered_until = end_byte;
+        }
+        let has_begin = has_word(&source[start_byte..end_byte], "begin");
+        out.push(Candidate {
+            kind,
+            qualname,
+            start: start_byte,
+            end: end_byte,
+            has_begin,
+        });
+    }
+    out
+}
+
+/// Strips trailing whitespace, `--` lines and a trailing `/* ... */` block
+/// (typically the banner of the next statement).
+fn trim_trailing_noise(text: &str) -> &str {
+    let mut t = text.trim_end();
+    loop {
+        let line_start = t.rfind('\n').map_or(0, |n| n + 1);
+        let last = &t[line_start..];
+        if line_start > 0 && last.trim_start().starts_with("--") {
+            t = t[..line_start].trim_end();
+        } else if t.ends_with("*/")
+            && let Some(o) = t.rfind("/*")
+            && t[t[..o].rfind('\n').map_or(0, |n| n + 1)..o]
+                .trim()
+                .is_empty()
+            && o > 0
+        {
+            t = t[..o].trim_end();
         } else {
-            let stop = (i + 1..lines.len())
-                .find(|&j| {
-                    let l = lines[j].1;
-                    is_go(l)
-                        || l.starts_with(['c', 'C'])
-                            && create_at(&lines, j).is_some_and(|(_, n)| !n.starts_with(['#', '@']))
-                })
-                .map_or(source.len(), |j| lines[j].0);
-            start_byte + source[start_byte..stop].trim_end().len()
-        };
-        let pos = |byte: usize| {
-            let row = source[..byte].bytes().filter(|&b| b == b'\n').count();
-            let col = byte - source[..byte].rfind('\n').map_or(0, |n| n + 1);
-            (row as i64 + 1, col as i64 + 1)
-        };
-        let (start_line, start_col) = pos(start_byte);
-        let (end_line, end_col) = pos(end_byte);
-        output.symbols.push(SymbolInput {
-            kind: kind.to_string(),
-            name,
-            qualname: qualname.clone(),
-            start_line,
-            start_col,
-            end_line,
-            end_col,
-            start_byte: start_byte as i64,
-            end_byte: end_byte as i64,
-            signature: None,
-            docstring: None,
-            identity: None,
-        });
-        output.edges.push(EdgeInput {
-            kind: "CONTAINS".to_string(),
-            source_qualname: Some(module_name.to_string()),
-            target_qualname: Some(qualname),
-            detail: None,
-            evidence_snippet: None,
-            ..Default::default()
-        });
+            return t;
+        }
     }
 }
 
@@ -825,8 +1028,10 @@ fn create_at(lines: &[(usize, &str)], i: usize) -> Option<(&'static str, String)
     parse_create(&text)
 }
 
-/// Parses `CREATE [OR ALTER] {PROC|PROCEDURE|TABLE} [IF NOT EXISTS] <name>`,
-/// returning the symbol kind and the raw name.
+/// Parses `CREATE [OR ALTER|REPLACE] {PROC|PROCEDURE|FUNCTION|TRIGGER|VIEW|
+/// TYPE|TABLE|[UNIQUE|CLUSTERED|...] INDEX} [IF NOT EXISTS] <name>`,
+/// returning the symbol kind and the raw name. Indexes are named
+/// `<table schema>.<index name>`, matching the grammar-derived symbols.
 fn parse_create(text: &str) -> Option<(&'static str, String)> {
     let mut rest = text;
     if !next_word(&mut rest)?.eq_ignore_ascii_case("create") {
@@ -834,20 +1039,35 @@ fn parse_create(text: &str) -> Option<(&'static str, String)> {
     }
     let mut word = next_word(&mut rest)?;
     if word.eq_ignore_ascii_case("or") {
-        if !next_word(&mut rest)?.eq_ignore_ascii_case("alter") {
+        let m = next_word(&mut rest)?;
+        if !(m.eq_ignore_ascii_case("alter") || m.eq_ignore_ascii_case("replace")) {
             return None;
         }
         word = next_word(&mut rest)?;
     }
-    let kind = if word.eq_ignore_ascii_case("proc") || word.eq_ignore_ascii_case("procedure") {
-        "procedure"
-    } else if word.eq_ignore_ascii_case("table") {
-        "table"
-    } else {
-        return None;
-    };
+    let mut kind = None;
+    // Index modifiers precede the INDEX keyword.
+    for _ in 0..4 {
+        let w = word.to_ascii_lowercase();
+        kind = match w.as_str() {
+            "proc" | "procedure" => Some("procedure"),
+            "function" => Some("function"),
+            "trigger" => Some("trigger"),
+            "view" => Some("view"),
+            "type" => Some("type"),
+            "table" => Some("table"),
+            "index" => Some("index"),
+            "unique" | "clustered" | "nonclustered" | "columnstore" => {
+                word = next_word(&mut rest)?;
+                continue;
+            }
+            _ => None,
+        };
+        break;
+    }
+    let kind = kind?;
     let mut name = parse_name(rest);
-    if kind == "table" && name.eq_ignore_ascii_case("if") {
+    if matches!(kind, "table" | "index") && name.eq_ignore_ascii_case("if") {
         next_word(&mut rest)?;
         let not = next_word(&mut rest)?;
         let exists = next_word(&mut rest)?;
@@ -856,27 +1076,123 @@ fn parse_create(text: &str) -> Option<(&'static str, String)> {
         }
         name = parse_name(rest);
     }
+    if kind == "index" {
+        let mut after = rest.trim_start();
+        after = after.get(name.len().min(after.len())..).unwrap_or("");
+        let mut r = after;
+        if next_word(&mut r).is_some_and(|w| w.eq_ignore_ascii_case("on")) {
+            let table: String = parse_name(r)
+                .chars()
+                .filter(|c| !matches!(c, '[' | ']' | '"'))
+                .collect();
+            let clean: String = name
+                .chars()
+                .filter(|c| !matches!(c, '[' | ']' | '"'))
+                .collect();
+            if let Some((schema, _)) = table.rsplit_once('.') {
+                name = format!("{schema}.{clean}");
+            }
+        }
+    }
     Some((kind, name))
 }
 
-/// End byte of a `CREATE TABLE` statement: the paren matching the first `(`,
-/// or the end of the first line when there is none.
+/// End byte of a `CREATE TABLE`/`TYPE` statement: the paren matching the first
+/// `(`, ignoring parens inside string literals, bracketed or quoted
+/// identifiers and comments. With no paren before the statement ends (a `;`,
+/// a `GO` line or the next `CREATE`), the end of the first line.
 fn table_end(source: &str, start: usize) -> usize {
     let rest = &source[start..];
+    let bytes = rest.as_bytes();
+    let first_line_end = rest.lines().next().map_or(0, |l| l.trim_end().len());
     let mut depth = 0usize;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' if depth > 0 => {
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' | b'[' => {
+                let close = if bytes[i] == b'[' { b']' } else { bytes[i] };
+                i += 1;
+                while i < bytes.len() && bytes[i] != close {
+                    i += 1;
+                }
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                let mut nest = 1;
+                i += 2;
+                while i < bytes.len() && nest > 0 {
+                    if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                        nest += 1;
+                        i += 1;
+                    } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        nest -= 1;
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            b'(' => depth += 1,
+            b')' if depth > 0 => {
                 depth -= 1;
                 if depth == 0 {
                     return start + i + 1;
                 }
             }
+            b';' if depth == 0 => return start + first_line_end.min(i),
+            b'\n' if depth == 0 && i > 0 => {
+                let next = rest[i + 1..].lines().next().unwrap_or("");
+                let w = next.trim();
+                let go = w
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|f| f.trim_end_matches(';').eq_ignore_ascii_case("go"));
+                if go || next.starts_with(['c', 'C']) && has_word(next, "create") {
+                    return start + first_line_end.min(i);
+                }
+            }
             _ => {}
         }
+        i += 1;
     }
-    start + rest.lines().next().map_or(0, |l| l.trim_end().len())
+    start + first_line_end
+}
+
+/// End byte of a `CREATE INDEX`: the column list's closing paren plus any
+/// following `INCLUDE`/`WHERE`/`WITH`/`ON` clause lines and a trailing `;`.
+fn index_end(source: &str, start: usize) -> usize {
+    let mut end = table_end(source, start);
+    loop {
+        let rest = &source[end..];
+        let line_end = rest.find('\n').unwrap_or(rest.len());
+        let tail = &rest[..line_end];
+        // Same-line continuation (`) WHERE x`, `) WITH (...)`, `;`).
+        if !tail.trim().is_empty() {
+            end += tail.trim_end().len();
+        }
+        let after = &source[end..];
+        let skipped = after.len() - after.trim_start().len();
+        let next = after.trim_start();
+        let first = next
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .next()
+            .unwrap_or("");
+        if matches!(
+            first.to_ascii_lowercase().as_str(),
+            "include" | "where" | "with" | "on" | "filestream_on"
+        ) && after[..skipped].matches('\n').count() <= 1
+        {
+            let l = next.find('\n').unwrap_or(next.len());
+            end += skipped + next[..l].trim_end().len();
+            continue;
+        }
+        return end;
+    }
 }
 
 #[cfg(test)]

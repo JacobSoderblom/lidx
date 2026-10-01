@@ -289,9 +289,9 @@ fn tsql_fallback_go_variants_tabs_and_temp_table_in_proc() {
     let mut extractor = SqlExtractor::new().unwrap();
     let out = extractor.extract(source, "m").unwrap();
     let a = out.symbols.iter().find(|s| s.qualname == "dbo.a").unwrap();
-    assert_eq!((a.start_line, a.end_line), (1, 5));
+    assert_eq!((a.start_line, a.end_line), (1, 6));
     let b = out.symbols.iter().find(|s| s.qualname == "dbo.b").unwrap();
-    assert_eq!((b.start_line, b.end_line), (7, 7));
+    assert_eq!((b.start_line, b.end_line), (7, 8));
     assert!(out.symbols.iter().any(|s| s.qualname == "dbo.c"));
     assert!(!out.symbols.iter().any(|s| s.qualname == "#t"));
 }
@@ -321,7 +321,7 @@ fn tsql_fallback_multiline_create_and_spaced_names() {
         .expect("proc");
     assert_eq!(p.kind, "procedure");
     assert_eq!(p.name, "my proc");
-    assert_eq!((p.start_line, p.end_line), (1, 8));
+    assert_eq!((p.start_line, p.end_line), (1, 9));
     let t = out
         .symbols
         .iter()
