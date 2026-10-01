@@ -173,9 +173,98 @@ fn csharp_computed_topics_emit_no_phantom_edge() {
 }
 
 #[test]
-fn csharp_unresolved_container_member_keeps_existing_behaviour() {
-    let src = "class P { void Run() { _bus.PublishAsync(Topics.DataProxyStatus, msg); } }";
-    assert_eq!(targets(&cs(src)), ["channel://dataproxystatus"]);
+fn csharp_unresolvable_names_emit_no_phantom_edge() {
+    for src in [
+        // Member of a foreign object: not a topic, never `channel://order.topic`.
+        "class P { void Run() { _bus.PublishAsync(order.Topic, msg); } }",
+        "class P { void Run() { _bus.PublishAsync(settings.TOPIC, msg); } }",
+        // Bare PascalCase / UPPER name defined in another file.
+        "class P { void Run() { _bus.PublishAsync(OrdersTopic, msg); } }",
+        "class P { void Run() { _bus.PublishAsync(ORDERS, msg); } }",
+        // Container member whose class is not in this file.
+        "class P { void Run() { _bus.PublishAsync(Topics.DataProxyStatus, msg); } }",
+        // ... and a local bound to the same unresolvable member.
+        "class P { void Run() { var t = Topics.DataProxyStatus; _bus.PublishAsync(t, msg); } }",
+    ] {
+        assert!(
+            cs(src).is_empty(),
+            "expected no edge for {src}: {:?}",
+            cs(src)
+        );
+    }
+}
+
+#[test]
+fn csharp_container_member_resolves_the_same_directly_and_via_local() {
+    let src = r#"
+static class Topics { public const string DataProxyStatus = "data-proxy-status"; }
+class P {
+    void Direct() { _bus.PublishAsync(Topics.DataProxyStatus, msg); }
+    void ViaLocal() { var t = Topics.DataProxyStatus; _bus.PublishAsync(t, msg); }
+}"#;
+    assert_eq!(
+        targets(&cs(src)),
+        ["channel://data-proxy-status", "channel://data-proxy-status"]
+    );
+}
+
+#[test]
+fn csharp_this_class_and_nested_qualified_constants() {
+    let src = r#"
+class Outer {
+    public const string A = "alpha";
+    public class Inner { public const string B = "beta"; }
+    void R() {
+        _bus.PublishAsync(this.A, m);
+        _bus.PublishAsync(Outer.A, m);
+        _bus.PublishAsync(Outer.Inner.B, m);
+        _bus.PublishAsync(Inner.B, m);
+    }
+}"#;
+    assert_eq!(
+        targets(&cs(src)),
+        [
+            "channel://alpha",
+            "channel://alpha",
+            "channel://beta",
+            "channel://beta"
+        ]
+    );
+}
+
+#[test]
+fn csharp_same_name_with_different_values_is_ambiguous() {
+    let src = r#"
+class A { public const string T = "one"; }
+class B { public const string T = "two"; void R() { _bus.PublishAsync(T, m); _bus.PublishAsync(A.T, m); _bus.PublishAsync(B.T, m); } }
+"#;
+    // Bare `T` is ambiguous (dropped); the qualified forms still resolve.
+    assert_eq!(targets(&cs(src)), ["channel://one", "channel://two"]);
+}
+
+#[test]
+fn python_self_cls_class_qualified_and_foreign_receivers() {
+    let src = r#"
+class T:
+    ORDERS = 'orders'
+
+    def a(self):
+        _bus.publish(self.ORDERS, m)
+
+    @classmethod
+    def b(cls):
+        _bus.publish(cls.ORDERS, m)
+
+def c():
+    _bus.publish(T.ORDERS, m)
+    _bus.publish(settings.ORDERS, m)
+    _bus.publish(order.topic, m)
+    _bus.publish(OrdersTopic, m)
+"#;
+    assert_eq!(
+        targets(&py(src)),
+        ["channel://orders", "channel://orders", "channel://orders"]
+    );
 }
 
 #[test]
@@ -253,6 +342,51 @@ fn no_channel_name_contains_quote_paren_or_angle_bracket() {
         assert!(
             !name.contains(['"', '\'', '`', '(', ')', '<', '>']),
             "bad channel name {name}"
+        );
+    }
+}
+
+mod bridge {
+    use lidx::indexer::Indexer;
+    use lidx::rpc;
+    use serde_json::Value;
+
+    /// Issue #220 end to end: a literal-topic publisher and a subscriber whose
+    /// topic is a same-file constant must be joined by `trace_flow`.
+    #[test]
+    fn trace_flow_crosses_bus_from_literal_publisher_to_constant_subscriber() {
+        let tmp = tempfile::Builder::new()
+            .prefix("lidx-channel-bridge-")
+            .tempdir()
+            .unwrap();
+        let root = tmp.path().to_path_buf();
+        std::fs::write(
+            root.join("publisher.py"),
+            "def send_order(msg):\n    _bus.publish(\"order-created\", msg)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("subscriber.py"),
+            "ORDER_TOPIC = 'order-created'\n\n@router.subscribe(topic=ORDER_TOPIC)\ndef handle_order(msg):\n    pass\n",
+        )
+        .unwrap();
+        let db = root.join(".lidx").join(".lidx.sqlite");
+        let mut indexer = Indexer::new(root.clone(), db.clone()).unwrap();
+        indexer.reindex().unwrap();
+        drop(indexer);
+
+        let raw = rpc::call(
+            root,
+            db,
+            "trace_flow".to_string(),
+            r#"{"start_qualname":"publisher.send_order","direction":"downstream","max_hops":5}"#,
+            "1",
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&raw).unwrap();
+        assert!(
+            raw.contains("subscriber.handle_order"),
+            "trace did not cross the bus: {v}"
         );
     }
 }

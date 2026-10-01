@@ -4,6 +4,7 @@ use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::string_consts::{LocalBinding, StringConsts};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
     span,
@@ -62,7 +63,7 @@ struct GrpcService {
 struct Context {
     /// Same-file string constants (see `string_consts`), used to resolve
     /// channel topics given as identifiers.
-    string_consts: Rc<channel::StringConsts>,
+    string_consts: Rc<StringConsts>,
     module: String,
     class_stack: Vec<String>,
     /// How many leading `class_stack` entries are TS namespaces rather than
@@ -2418,11 +2419,8 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
     };
     let args = call_arguments(node);
     let raw_topic = node_text(*args.first()?, source);
-    let normalized = channel::resolve_topic(
-        &raw_topic,
-        &ctx.string_consts,
-        &channel::LocalBinding::NotLocal,
-    )?;
+    let normalized =
+        channel::resolve_topic(&raw_topic, &ctx.string_consts, &LocalBinding::NotLocal)?;
     let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
         channel::build_publish_detail(&normalized, &raw_topic, "js-bus")
     } else {

@@ -4,6 +4,7 @@ use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::string_consts::{LocalBinding, StringConsts, scan_enclosing_function};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
     span,
@@ -34,7 +35,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
 struct Context {
     /// Same-file string constants (see `string_consts`), used to resolve
     /// channel topics given as identifiers.
-    string_consts: Rc<channel::StringConsts>,
+    string_consts: Rc<StringConsts>,
     module: String,
     class_stack: Vec<String>,
     fn_depth: usize,
@@ -1759,7 +1760,7 @@ fn channel_edges_from_decorators(
     decorators: &[Node<'_>],
     handler: &str,
     source: &str,
-    consts: &channel::StringConsts,
+    consts: &StringConsts,
 ) -> Vec<EdgeInput> {
     let mut edges = Vec::new();
     for decorator in decorators {
@@ -1794,8 +1795,7 @@ fn channel_edges_from_decorators(
         let Some(raw_topic) = raw_topic else {
             continue;
         };
-        let Some(normalized) =
-            channel::resolve_topic(&raw_topic, consts, &channel::LocalBinding::NotLocal)
+        let Some(normalized) = channel::resolve_topic(&raw_topic, consts, &LocalBinding::NotLocal)
         else {
             continue;
         };
@@ -1864,73 +1864,57 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
     })
 }
 
-/// What the enclosing function says about a bare-identifier topic: a
-/// parameter or a reassigned name is not static; a single assignment yields
-/// its right-hand side to resolve; no binding falls back to file constants.
-fn python_local_binding(call: Node<'_>, name: &str, source: &str) -> channel::LocalBinding {
+/// What the enclosing function says about a bare-identifier argument: a
+/// parameter, loop variable or reassigned name is not static; a single
+/// assignment yields its right-hand side; no binding falls back to constants.
+fn python_local_binding(call: Node<'_>, name: &str, source: &str) -> LocalBinding {
     let name = name.trim();
     if name.contains('.') || name.is_empty() {
-        return channel::LocalBinding::NotLocal;
+        return LocalBinding::NotLocal;
     }
-    let mut func = None;
-    let mut cur = call.parent();
-    while let Some(n) = cur {
-        if n.kind() == "function_definition" {
-            func = Some(n);
+    scan_enclosing_function(call, &["function_definition"], |n, tally| match n.kind() {
+        "parameters" | "lambda_parameters" => {
+            let mut c = n.walk();
+            for p in n.named_children(&mut c) {
+                let bound = if p.kind() == "identifier" {
+                    Some(p)
+                } else {
+                    p.child_by_field_name("name").or_else(|| {
+                        let mut pc = p.walk();
+                        p.named_children(&mut pc).find(|x| x.kind() == "identifier")
+                    })
+                };
+                if bound.is_some_and(|x| node_text(x, source) == name) {
+                    tally.other_bindings += 1;
+                }
+            }
         }
-        cur = n.parent();
-    }
-    let Some(func) = func else {
-        return channel::LocalBinding::NotLocal;
-    };
-    let (mut params, mut assigns, mut value) = (0usize, 0usize, None);
-    let mut stack = vec![func];
-    while let Some(n) = stack.pop() {
-        match n.kind() {
-            "parameters" | "lambda_parameters" => {
-                let mut c = n.walk();
-                for p in n.named_children(&mut c) {
-                    let pname = if p.kind() == "identifier" {
-                        Some(p)
-                    } else {
-                        p.child_by_field_name("name").or_else(|| {
-                            let mut pc = p.walk();
-                            p.named_children(&mut pc).find(|x| x.kind() == "identifier")
-                        })
-                    };
-                    if pname.is_some_and(|x| node_text(x, source) == name) {
-                        params += 1;
-                    }
+        "assignment" | "augmented_assignment" => {
+            let is_target = n
+                .child_by_field_name("left")
+                .is_some_and(|l| l.kind() == "identifier" && node_text(l, source) == name);
+            if is_target {
+                if n.kind() == "assignment" {
+                    tally.declarations += 1;
+                    tally.initializer =
+                        n.child_by_field_name("right").map(|r| node_text(r, source));
+                } else {
+                    tally.reassignments += 1;
                 }
             }
-            "assignment" | "augmented_assignment" => {
-                if let Some(left) = n.child_by_field_name("left")
-                    && left.kind() == "identifier"
-                    && node_text(left, source) == name
-                {
-                    assigns += 1;
-                    if n.kind() == "assignment" {
-                        value = n.child_by_field_name("right").map(|r| node_text(r, source));
-                    }
-                }
-            }
-            "for_statement" => {
-                if let Some(left) = n.child_by_field_name("left")
-                    && node_text(left, source).split([',', ' ']).any(|t| t == name)
-                {
-                    assigns += 2;
-                }
-            }
-            _ => {}
         }
-        let mut c = n.walk();
-        stack.extend(n.named_children(&mut c));
-    }
-    match (params, assigns, value) {
-        (0, 0, _) => channel::LocalBinding::NotLocal,
-        (0, 1, Some(v)) => channel::LocalBinding::Value(v),
-        _ => channel::LocalBinding::Unknown,
-    }
+        "for_statement" => {
+            let binds = n.child_by_field_name("left").is_some_and(|l| {
+                node_text(l, source)
+                    .split([',', ' ', '(', ')'])
+                    .any(|t| t == name)
+            });
+            if binds {
+                tally.other_bindings += 1;
+            }
+        }
+        _ => {}
+    })
 }
 
 fn attribute_base_and_name(node: Node<'_>, source: &str) -> Option<(String, String)> {

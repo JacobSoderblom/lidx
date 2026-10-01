@@ -12,6 +12,9 @@ use crate::indexer::extract::{
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::scan;
+use crate::indexer::string_consts::{
+    LocalBinding, StringConsts, csharp_declarator_initializer, scan_enclosing_function,
+};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
     span,
@@ -42,7 +45,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
 struct Context {
     /// Same-file string constants (see `string_consts`), used to resolve
     /// channel topics given as identifiers.
-    string_consts: Rc<channel::StringConsts>,
+    string_consts: Rc<StringConsts>,
     module: String,
     namespace_stack: Vec<String>,
     type_stack: Vec<String>,
@@ -3579,82 +3582,57 @@ fn collect_grpc_client_fields_from_tree(
     }
 }
 
-/// What the enclosing member says about a bare-identifier topic: a parameter
-/// or a name declared/assigned more than once is not static; a single
-/// declaration yields its initializer to resolve; no binding falls back to
-/// the file's constants.
-fn csharp_local_binding(call: Node<'_>, name: &str, source: &str) -> channel::LocalBinding {
+/// What the enclosing member says about a bare-identifier argument: a
+/// parameter or a name declared/assigned more than once is not static; a
+/// single declaration yields its initializer; no binding falls back to the
+/// file's constants.
+fn csharp_local_binding(call: Node<'_>, name: &str, source: &str) -> LocalBinding {
     let name = name.trim();
     if name.contains('.') || name.is_empty() {
-        return channel::LocalBinding::NotLocal;
+        return LocalBinding::NotLocal;
     }
-    let mut member = None;
-    let mut cur = call.parent();
-    while let Some(n) = cur {
-        if matches!(
-            n.kind(),
-            "method_declaration"
-                | "constructor_declaration"
-                | "local_function_statement"
-                | "accessor_declaration"
-                | "operator_declaration"
-                | "destructor_declaration"
-                | "conversion_operator_declaration"
-        ) {
-            member = Some(n);
+    let kinds = [
+        "method_declaration",
+        "constructor_declaration",
+        "local_function_statement",
+        "accessor_declaration",
+        "operator_declaration",
+        "destructor_declaration",
+        "conversion_operator_declaration",
+    ];
+    scan_enclosing_function(call, &kinds, |n, tally| match n.kind() {
+        "parameter" => {
+            if n.child_by_field_name("name")
+                .is_some_and(|x| node_text(x, source) == name)
+            {
+                tally.other_bindings += 1;
+            }
         }
-        cur = n.parent();
-    }
-    let Some(member) = member else {
-        return channel::LocalBinding::NotLocal;
-    };
-    let (mut params, mut decls, mut assigns, mut init) = (0usize, 0usize, 0usize, None);
-    let mut stack = vec![member];
-    while let Some(n) = stack.pop() {
-        match n.kind() {
-            "parameter" => {
-                if n.child_by_field_name("name")
-                    .is_some_and(|x| node_text(x, source) == name)
-                {
-                    params += 1;
-                }
+        "variable_declarator" => {
+            if n.child_by_field_name("name")
+                .is_some_and(|x| node_text(x, source) == name)
+            {
+                tally.declarations += 1;
+                tally.initializer = csharp_declarator_initializer(n).map(|i| node_text(i, source));
             }
-            "variable_declarator" => {
-                let text = node_text(n, source);
-                let (lhs, rhs) = match text.split_once('=') {
-                    Some((l, r)) => (l.trim().to_string(), Some(r.trim().to_string())),
-                    None => (text.trim().to_string(), None),
-                };
-                if lhs == name {
-                    decls += 1;
-                    init = rhs;
-                }
-            }
-            "assignment_expression" => {
-                if n.child_by_field_name("left")
-                    .is_some_and(|x| node_text(x, source) == name)
-                {
-                    assigns += 1;
-                }
-            }
-            "declaration_pattern" | "for_each_statement" | "catch_declaration" => {
-                if node_text(n, source)
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .any(|t| t == name)
-                {
-                    params += 1;
-                }
-            }
-            _ => {}
         }
-        let mut c = n.walk();
-        stack.extend(n.named_children(&mut c));
-    }
-    match (params, decls, assigns, init) {
-        (0, 0, 0, _) => channel::LocalBinding::NotLocal,
-        (0, 1, 0, Some(v)) => channel::LocalBinding::Value(v),
-        _ => channel::LocalBinding::Unknown,
-    }
+        "assignment_expression" => {
+            if n.child_by_field_name("left")
+                .is_some_and(|x| node_text(x, source) == name)
+            {
+                tally.reassignments += 1;
+            }
+        }
+        "declaration_pattern" | "for_each_statement" | "catch_declaration" => {
+            let binds = node_text(n, source)
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|t| t == name);
+            if binds {
+                tally.other_bindings += 1;
+            }
+        }
+        _ => {}
+    })
 }
 
 fn channel_publish_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
