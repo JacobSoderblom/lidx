@@ -2045,6 +2045,7 @@ impl Db {
              WHERE e.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)",
         );
+        sql.push_str(RPC_NAME_ONLY_FILTER);
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&graph_version, &graph_version];
         let source_id_param = source_id;
         if let Some(source_id) = source_id_param.as_ref() {
@@ -2474,6 +2475,20 @@ fn symbol_from_row(row: &Row<'_>) -> rusqlite::Result<Symbol> {
         stable_id: row.get(15)?,
     })
 }
+
+/// SQL tail (alias `e`) hiding a TS/JS `RPC_CALL` accepted on its `*Client`
+/// name alone (`"evidence":"name"` in `detail`, #204) unless a proto `service`
+/// symbol of that name exists in the same graph version. Evaluated at read
+/// time, so adding or removing the `.proto` flips the edge exactly as a fresh
+/// index would.
+pub(crate) const RPC_NAME_ONLY_FILTER: &str = " AND (e.kind <> 'RPC_CALL'
+    OR e.detail IS NULL
+    OR e.detail NOT LIKE '%\"evidence\":\"name\"%'
+    OR EXISTS (SELECT 1 FROM symbols ps JOIN files pf ON ps.file_id = pf.id
+               WHERE ps.kind = 'service'
+                 AND ps.name = json_extract(e.detail, '$.service')
+                 AND ps.graph_version = e.graph_version
+                 AND (pf.deleted_version IS NULL OR pf.deleted_version > e.graph_version)))";
 
 fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
     Ok(Edge {
