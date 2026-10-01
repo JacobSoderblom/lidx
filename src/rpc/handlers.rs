@@ -1514,7 +1514,9 @@ fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
 
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let raw_params = params.clone();
-    let params: TraceFlowParams = super::parse_params("trace_flow", params)?;
+    let mut params: TraceFlowParams = super::parse_params("trace_flow", params)?;
+    let direction = super::validate::normalize_direction(params.direction.as_deref(), false)?;
+    params.kinds = super::validate::normalize_kinds(params.kinds.as_deref())?;
     super::validate::require_at_least_one("max_hops", params.max_hops)?;
     super::validate::require_at_least_one("max_bytes", params.max_bytes)?;
     super::validate::require_one_of(
@@ -1528,8 +1530,8 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
     let trace_offset = params.trace_offset.unwrap_or(0);
     let compact_mode = params.format.as_deref() == Some(super::validate::FORMAT_COMPACT);
-    let direction = match params.direction.as_deref().unwrap_or("downstream") {
-        "upstream" => crate::traversal::TraceDirection::Upstream,
+    let direction = match direction {
+        Some(super::validate::DIR_UPSTREAM) => crate::traversal::TraceDirection::Upstream,
         _ => crate::traversal::TraceDirection::Downstream,
     };
     let allowed_kinds: Vec<String> = params
@@ -2019,7 +2021,10 @@ fn analyze_impact_inner(
     resolution: &mut Option<crate::resolve::Resolved>,
 ) -> Result<Value> {
     let raw_params = params.clone();
-    let params: AnalyzeImpactParams = super::parse_params("analyze_impact", params)?;
+    let mut params: AnalyzeImpactParams = super::parse_params("analyze_impact", params)?;
+    params.direction =
+        super::validate::normalize_direction(params.direction.as_deref(), true)?.map(String::from);
+    params.kinds = super::validate::normalize_kinds(params.kinds.as_deref())?;
     super::validate::require_at_least_one("limit", params.limit)?;
     super::validate::require_at_least_one("max_depth", params.max_depth)?;
     super::validate::require_unit_interval("min_confidence", params.min_confidence)?;
