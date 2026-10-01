@@ -669,25 +669,9 @@ fn extract_do_blocks(source: &str, module_name: &str, output: &mut ExtractedFile
     }
 }
 
-/// True when `text` reads `CREATE [OR REPLACE|ALTER] TYPE`.
+/// True when `text` reads `CREATE [OR REPLACE|ALTER] TYPE <name>`.
 fn is_real_create_type(text: &str) -> bool {
-    let mut rest = text;
-    if !next_word(&mut rest).is_some_and(|w| w.eq_ignore_ascii_case("create")) {
-        return false;
-    }
-    let Some(mut word) = next_word(&mut rest) else {
-        return false;
-    };
-    if word.eq_ignore_ascii_case("or") {
-        if next_word(&mut rest).is_none() {
-            return false;
-        }
-        let Some(w) = next_word(&mut rest) else {
-            return false;
-        };
-        word = w;
-    }
-    word.eq_ignore_ascii_case("type")
+    parse_create(text).is_some_and(|(kind, _)| kind == "type")
 }
 
 /// Grammar-derived symbols whose spans cannot be trusted, keyed by
@@ -702,10 +686,7 @@ struct Suspects {
 }
 
 fn normalize_qualname(q: &str) -> String {
-    q.chars()
-        .filter(|c| !matches!(c, '[' | ']' | '"'))
-        .collect::<String>()
-        .to_ascii_lowercase()
+    strip_quotes(q).to_ascii_lowercase()
 }
 
 fn collect_suspects(node: Node<'_>, source: &str, out: &mut Suspects) {
@@ -736,8 +717,62 @@ struct Candidate {
     has_begin: bool,
 }
 
+/// Partial overlap only: one span properly containing the other is a
+/// legitimate enclosing statement, not a corrupt span.
 fn overlaps(a: (i64, i64), b: (i64, i64)) -> bool {
-    a.0 < b.1 && b.0 < a.1
+    let contains = |x: (i64, i64), y: (i64, i64)| x.0 <= y.0 && y.1 <= x.1;
+    a.0 < b.1 && b.0 < a.1 && !contains(a, b) && !contains(b, a)
+}
+
+fn strip_quotes(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, '[' | ']' | '"'))
+        .collect()
+}
+
+/// `text` with string literals and comments blanked out, so keyword searches
+/// only see code.
+fn mask_noise(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = text.as_bytes().to_vec();
+    let mut i = 0;
+    let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
+        for k in from..to.min(out.len()) {
+            if out[k] != b'\n' {
+                out[k] = b' ';
+            }
+        }
+    };
+    while i < b.len() {
+        let start = i;
+        match b[i] {
+            b'\'' | b'"' | b'[' => {
+                let close = if b[i] == b'[' { b']' } else { b[i] };
+                i += 1;
+                while i < b.len() && b[i] != close {
+                    i += 1;
+                }
+                i += 1;
+                blank(&mut out, start, i);
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                blank(&mut out, start, i);
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i < b.len() && !(b[i] == b'*' && b.get(i + 1) == Some(&b'/')) {
+                    i += 1;
+                }
+                i += 2;
+                blank(&mut out, start, i);
+            }
+            _ => i += 1,
+        }
+    }
+    String::from_utf8(out).unwrap_or_default()
 }
 
 fn line_col(source: &str, byte: usize) -> (i64, i64) {
@@ -851,6 +886,31 @@ fn resolve_overlaps(output: &mut ExtractedFile) {
     }
 }
 
+/// End of a block-style statement (procedure, function, trigger, view)
+/// starting on line `i`: the next `GO` line (inclusive) or, failing that, just
+/// before the next unindented `CREATE`, with trailing comment noise trimmed.
+fn block_end(
+    source: &str,
+    lines: &[(usize, &str)],
+    i: usize,
+    start_byte: usize,
+    is_go: &dyn Fn(&str) -> bool,
+) -> usize {
+    let mut end = source.len();
+    for (j, &(js, l)) in lines.iter().enumerate().skip(i + 1) {
+        if is_go(l) {
+            return js + l.trim_end().len();
+        }
+        if l.starts_with(['c', 'C'])
+            && create_at(lines, j).is_some_and(|(_, n)| !n.starts_with(['#', '@']))
+        {
+            end = js;
+            break;
+        }
+    }
+    start_byte + trim_trailing_noise(&source[start_byte..end]).len()
+}
+
 fn scan_candidates(source: &str) -> Vec<Candidate> {
     let mut lines: Vec<(usize, &str)> = Vec::new();
     let mut offset = 0;
@@ -903,10 +963,7 @@ fn scan_candidates(source: &str) -> Vec<Candidate> {
         if raw.starts_with(['#', '@']) {
             continue;
         }
-        let qualname: String = raw
-            .chars()
-            .filter(|c| !matches!(c, '[' | ']' | '"'))
-            .collect();
+        let qualname = strip_quotes(&raw);
         if qualname.is_empty() {
             continue;
         }
@@ -915,35 +972,13 @@ fn scan_candidates(source: &str) -> Vec<Candidate> {
         let end_byte = match kind {
             "table" | "type" => table_end(source, start_byte),
             "index" => index_end(source, start_byte),
-            _ => {
-                // Ends at the next `GO` (inclusive) or unindented CREATE.
-                let mut end = source.len();
-                let mut at_go = false;
-                for (j, &(js, l)) in lines.iter().enumerate().skip(i + 1) {
-                    if is_go(l) {
-                        end = js + l.trim_end().len();
-                        at_go = true;
-                        break;
-                    }
-                    if l.starts_with(['c', 'C'])
-                        && create_at(&lines, j).is_some_and(|(_, n)| !n.starts_with(['#', '@']))
-                    {
-                        end = js;
-                        break;
-                    }
-                }
-                if at_go {
-                    end
-                } else {
-                    start_byte + trim_trailing_noise(&source[start_byte..end]).len()
-                }
-            }
+            _ => block_end(source, &lines, i, start_byte, &is_go),
         };
         let end_byte = end_byte.max(start_byte);
         if matches!(kind, "procedure" | "function" | "trigger" | "view") {
             covered_until = end_byte;
         }
-        let has_begin = has_word(&source[start_byte..end_byte], "begin");
+        let has_begin = has_word(&mask_noise(&source[start_byte..end_byte]), "begin");
         out.push(Candidate {
             kind,
             qualname,
@@ -1046,7 +1081,8 @@ fn parse_create(text: &str) -> Option<(&'static str, String)> {
         word = next_word(&mut rest)?;
     }
     let mut kind = None;
-    // Index modifiers precede the INDEX keyword.
+    // At most a few modifiers (`UNIQUE NONCLUSTERED COLUMNSTORE`...) may sit
+    // between CREATE and INDEX; any other word ends the search.
     for _ in 0..4 {
         let w = word.to_ascii_lowercase();
         kind = match w.as_str() {
@@ -1066,35 +1102,45 @@ fn parse_create(text: &str) -> Option<(&'static str, String)> {
         break;
     }
     let kind = kind?;
-    let mut name = parse_name(rest);
+    // `[CONCURRENTLY] [IF NOT EXISTS]` may precede the name of a table or index.
+    let mut name = take_name(&mut rest);
+    if kind == "index" && name.eq_ignore_ascii_case("concurrently") {
+        name = take_name(&mut rest);
+    }
     if matches!(kind, "table" | "index") && name.eq_ignore_ascii_case("if") {
-        next_word(&mut rest)?;
         let not = next_word(&mut rest)?;
         let exists = next_word(&mut rest)?;
         if !(not.eq_ignore_ascii_case("not") && exists.eq_ignore_ascii_case("exists")) {
             return None;
         }
-        name = parse_name(rest);
+        name = take_name(&mut rest);
     }
     if kind == "index" {
-        let mut after = rest.trim_start();
-        after = after.get(name.len().min(after.len())..).unwrap_or("");
-        let mut r = after;
+        // `CREATE INDEX ON t (...)` is anonymous: nothing to name a symbol after.
+        if name.eq_ignore_ascii_case("on") {
+            return None;
+        }
+        let mut r = rest;
         if next_word(&mut r).is_some_and(|w| w.eq_ignore_ascii_case("on")) {
-            let table: String = parse_name(r)
-                .chars()
-                .filter(|c| !matches!(c, '[' | ']' | '"'))
-                .collect();
-            let clean: String = name
-                .chars()
-                .filter(|c| !matches!(c, '[' | ']' | '"'))
-                .collect();
-            if let Some((schema, _)) = table.rsplit_once('.') {
-                name = format!("{schema}.{clean}");
+            // Postgres partitioned tables: `ON ONLY t`.
+            let mut table = take_name(&mut r);
+            if table.eq_ignore_ascii_case("only") {
+                table = take_name(&mut r);
+            }
+            if let Some((schema, _)) = strip_quotes(&table).rsplit_once('.') {
+                name = format!("{schema}.{}", strip_quotes(&name));
             }
         }
     }
     Some((kind, name))
+}
+
+/// Reads an object name off the front of `rest` and advances past it.
+fn take_name(rest: &mut &str) -> String {
+    let name = parse_name(rest);
+    let t = rest.trim_start();
+    *rest = &t[name.len()..];
+    name
 }
 
 /// End byte of a `CREATE TABLE`/`TYPE` statement: the paren matching the first
@@ -1164,34 +1210,35 @@ fn table_end(source: &str, start: usize) -> usize {
 }
 
 /// End byte of a `CREATE INDEX`: the column list's closing paren plus any
-/// following `INCLUDE`/`WHERE`/`WITH`/`ON` clause lines and a trailing `;`.
+/// `INCLUDE (...)`/`WITH (...)`/`WHERE ...`/`ON ...` clauses that follow it
+/// before the statement terminator. A `;` ends the statement and, as for
+/// tables and grammar-derived symbols, is not part of the span.
 fn index_end(source: &str, start: usize) -> usize {
     let mut end = table_end(source, start);
     loop {
-        let rest = &source[end..];
-        let line_end = rest.find('\n').unwrap_or(rest.len());
-        let tail = &rest[..line_end];
-        // Same-line continuation (`) WHERE x`, `) WITH (...)`, `;`).
-        if !tail.trim().is_empty() {
-            end += tail.trim_end().len();
-        }
         let after = &source[end..];
-        let skipped = after.len() - after.trim_start().len();
         let next = after.trim_start();
+        let skipped = after.len() - next.len();
+        if next.is_empty() || next.starts_with(';') || after[..skipped].matches('\n').count() > 1 {
+            return end;
+        }
         let first = next
             .split(|c: char| !c.is_ascii_alphabetic())
             .next()
             .unwrap_or("");
-        if matches!(
-            first.to_ascii_lowercase().as_str(),
-            "include" | "where" | "with" | "on" | "filestream_on"
-        ) && after[..skipped].matches('\n').count() <= 1
-        {
-            let l = next.find('\n').unwrap_or(next.len());
-            end += skipped + next[..l].trim_end().len();
-            continue;
+        let after_kw = next[first.len()..].trim_start();
+        let continues = match first.to_ascii_lowercase().as_str() {
+            // `WITH c AS (...)` is a CTE of the next statement, not an option list.
+            "include" | "with" => after_kw.starts_with('('),
+            "where" | "on" => true,
+            _ => false,
+        };
+        if !continues {
+            return end;
         }
-        return end;
+        let line = next.split('\n').next().unwrap_or("");
+        let line = line.split(';').next().unwrap_or(line);
+        end += skipped + line.trim_end().len();
     }
 }
 
@@ -1382,6 +1429,24 @@ $$ LANGUAGE plpgsql;
                 .iter()
                 .any(|e| e.target_qualname.as_deref() == Some("multiply_two"))
         );
+    }
+
+    #[test]
+    fn containment_is_not_overlap_but_partial_overlap_is() {
+        assert!(!overlaps((0, 100), (10, 20)));
+        assert!(!overlaps((10, 20), (0, 100)));
+        assert!(!overlaps((0, 10), (10, 20)));
+        assert!(overlaps((0, 15), (10, 20)));
+    }
+
+    #[test]
+    fn mask_noise_hides_keywords_in_comments_and_strings() {
+        let t = "x -- begin\n/* begin */ 'begin' [begin] BEGIN";
+        let m = mask_noise(t);
+        assert_eq!(m.len(), t.len());
+        assert_eq!(m.matches("BEGIN").count(), 1);
+        assert!(!has_word(&m[..m.len() - 5], "begin"));
+        assert!(has_word(&m, "begin"));
     }
 
     #[test]

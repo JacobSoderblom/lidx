@@ -116,7 +116,7 @@ fn index_nested_in_if_not_exists_begin_is_extracted() {
     assert_eq!(s.kind, "index");
     assert_eq!(
         text(src, &f, "dbo.ix_a"),
-        "CREATE NONCLUSTERED INDEX ix_a ON dbo.a (label);"
+        "CREATE NONCLUSTERED INDEX ix_a ON dbo.a (label)"
     );
     assert_invariants(src);
 }
@@ -275,4 +275,47 @@ fn sql_psql_and_tsql_files_behave_identically_and_read_symbol_returns_source() {
         assert!(s.contains("GO"), "{ext}: {s}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn postgres_index_modifiers_are_skipped_and_anonymous_index_has_no_symbol() {
+    let src = "CREATE TABLE public.t (id int);\nCREATE UNIQUE INDEX CONCURRENTLY ux ON public.t USING btree (id) WHERE id > 0;\nCREATE INDEX IF NOT EXISTS ix2 ON ONLY public.t (id);\nCREATE INDEX ON public.t (id);\n";
+    let f = extract(src);
+    let idx: Vec<_> = f.symbols.iter().filter(|s| s.kind == "index").collect();
+    let names: Vec<_> = idx.iter().map(|s| s.qualname.as_str()).collect();
+    assert_eq!(idx.len(), 2, "{names:?}");
+    assert!(
+        names.contains(&"public.ux") && names.contains(&"public.ix2"),
+        "{names:?}"
+    );
+    assert!(
+        !f.symbols
+            .iter()
+            .any(|s| s.name == "ON" || s.name == "CONCURRENTLY")
+    );
+    assert_invariants(src);
+}
+
+#[test]
+fn index_end_stops_at_semicolon_before_a_cte() {
+    let src = "IF 1 = 1\nBEGIN\n    CREATE INDEX ix_a ON dbo.a (label);\n    WITH c AS (SELECT 1 AS x) SELECT x FROM c;\nEND\n";
+    let f = extract(src);
+    assert_eq!(
+        text(src, &f, "dbo.ix_a"),
+        "CREATE INDEX ix_a ON dbo.a (label)"
+    );
+    let src = "IF 1 = 1\nBEGIN\n    CREATE INDEX ix_b ON dbo.a (label) INCLUDE (n)\n        WHERE n > 0\n    SELECT 1;\nEND\n";
+    let f = extract(src);
+    assert_eq!(
+        text(src, &f, "dbo.ix_b"),
+        "CREATE INDEX ix_b ON dbo.a (label) INCLUDE (n)\n        WHERE n > 0"
+    );
+}
+
+#[test]
+fn begin_in_comment_or_string_does_not_mark_a_function_as_block_style() {
+    let src = "CREATE FUNCTION dbo.f() RETURNS int AS 'select 1 -- begin' LANGUAGE sql;\n";
+    let f = extract(src);
+    assert!(text(src, &f, "dbo.f").starts_with("CREATE FUNCTION"));
+    assert_invariants(src);
 }
