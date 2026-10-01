@@ -2238,20 +2238,30 @@ fn ambiguity_case(touch: &str) -> (tempfile::TempDir, Indexer) {
     assert_touch_matches_fresh(&borrowed, touch, "#")
 }
 
+/// Issue #248: `TestA`'s bare call binds to the same-file module-level
+/// `_dataproduct` (a same-file match wins outright); `TestC`'s has no
+/// same-file definition and two cross-file candidates, so it stays ambiguous.
 fn assert_bare_calls_stay_ambiguous(indexer: &Indexer) {
     let gv = indexer.db().current_graph_version().unwrap();
     let edges = golden::snapshot_edges(indexer.db(), gv).unwrap();
-    assert!(
-        !edges.iter().any(|e| e.kind == "CALLS"
-            && e.target_qualname.is_some()
-            && e.source_qualname.contains("test_")),
-        "bare call bound despite two candidates: {edges:#?}"
+    let bound: Vec<_> = edges
+        .iter()
+        .filter(|e| e.kind == "CALLS" && e.target_qualname.is_some())
+        .map(|e| (e.source_qualname.as_str(), e.target_qualname.as_deref()))
+        .collect();
+    assert_eq!(
+        bound,
+        vec![(
+            "tests.test_a.TestA.test_one",
+            Some("tests.test_a._dataproduct")
+        )],
+        "{edges:#?}"
     );
     let ambiguous = unresolved_snapshot(indexer)
         .into_iter()
         .filter(|r| r.1 == "CALLS" && r.3 == "ambiguous")
         .count();
-    assert_eq!(ambiguous, 2, "one ambiguous row per bare call expected");
+    assert_eq!(ambiguous, 1, "TestC's bare call stays ambiguous");
 }
 
 #[test]
@@ -2287,16 +2297,16 @@ fn literal_ambiguity_case(touch: &str) {
     let gv = indexer.db().current_graph_version().unwrap();
     let edges = golden::snapshot_edges(indexer.db(), gv).unwrap();
     assert!(
-        !edges
-            .iter()
-            .any(|e| e.kind == "CALLS" && e.target_qualname.is_some()),
-        "bare call bound despite two candidates: {edges:#?}"
+        edges.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "tests.test_a.TestA.test_one"
+            && e.target_qualname.as_deref() == Some("tests.test_a._dataproduct")),
+        "same-file module-level def must win over the other file's: {edges:#?}"
     );
     let ambiguous: Vec<_> = unresolved_snapshot(&indexer)
         .into_iter()
         .filter(|r| r.1 == "CALLS" && r.3 == "ambiguous")
         .collect();
-    assert_eq!(ambiguous.len(), 1, "{ambiguous:?}");
+    assert!(ambiguous.is_empty(), "{ambiguous:?}");
 }
 
 #[test]

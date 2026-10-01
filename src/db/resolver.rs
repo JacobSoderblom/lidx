@@ -1240,7 +1240,11 @@ impl<'c> Resolver<'c> {
                     return Ok(resolved(id, ResolutionKind::Import));
                 }
             }
-        } else {
+        } else if !(r.edge_kind == "CALLS" && r.bare_call && r.receiver_type == Some("")) {
+            // (Skipped for a bare call to a name the caller bound locally --
+            // a parameter, assignment or nested `def` shadows any
+            // module-level symbol, so neither the exact nor the import tier
+            // may bind it.)
             if let Some(qn) = r.target_qualname
                 && let Some(id) = self.exact(qn, symbol_map, r.source_file_path, types_only)?
             {
