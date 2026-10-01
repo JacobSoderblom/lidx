@@ -2434,15 +2434,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
     let changed_files: Vec<ChangedFile> = if let Some(ref diff) = params.diff {
         parse_diff_with_ranges(diff)
     } else if let Some(ref paths) = params.paths {
-        paths
-            .iter()
-            .map(|p| ChangedFile {
-                path: p.clone(),
-                changed_ranges: Vec::new(),
-                added_ranges: Vec::new(),
-                deleted_ranges: Vec::new(),
-            })
-            .collect()
+        paths.iter().map(|p| ChangedFile::new(p.clone())).collect()
     } else {
         anyhow::bail!("analyze_diff requires 'diff' or 'paths' parameter");
     };
@@ -2462,22 +2454,29 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
             warnings.push(format!("Path not found in index: {}", cf.path));
             continue;
         }
-        let has_ranges = !cf.changed_ranges.is_empty();
+        let has_ranges = cf.has_line_changes();
+        // Source lines, read lazily to tell a trailing body deletion from a
+        // following sibling's (see `ChangedFile::touches`).
+        let mut file_lines: Option<Vec<String>> = None;
         for sym in symbols {
             let change_type = if has_ranges {
-                // Check if symbol overlaps any changed hunk
-                let overlaps = cf.changed_ranges.iter().any(|h| {
-                    let hunk_end = h.start_line + h.line_count - 1;
-                    sym.start_line <= hunk_end && sym.end_line >= h.start_line
-                });
-                if !overlaps {
+                // Only added lines and deletions inside the symbol count;
+                // context lines never do.
+                let def_indent = || {
+                    let text = file_lines
+                        .get_or_insert_with(|| {
+                            std::fs::read_to_string(indexer.repo_root().join(&cf.path))
+                                .map(|t| t.lines().map(str::to_owned).collect())
+                                .unwrap_or_default()
+                        })
+                        .get(usize::try_from(sym.start_line - 1).ok()?)?;
+                    text.find(|c: char| !c.is_whitespace())
+                };
+                if !cf.touches(sym.start_line, sym.end_line, def_indent) {
                     continue;
                 }
-                // Determine change type: if symbol is fully within added range, it's "added"
-                let fully_added = cf.added_ranges.iter().any(|h| {
-                    let hunk_end = h.start_line + h.line_count - 1;
-                    sym.start_line >= h.start_line && sym.end_line <= hunk_end
-                });
+                // Fully within one run of added lines means the symbol is new.
+                let fully_added = cf.fully_added(sym.start_line, sym.end_line);
                 if fully_added {
                     "added".to_string()
                 } else {
