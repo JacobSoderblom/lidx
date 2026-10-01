@@ -111,7 +111,7 @@ fn collect_xref_edges(
         for token in extract_tokens(&text) {
             // A lone word inside a sentence is English, not a symbol reference;
             // only qualified tokens (`dbo.get_user`) are evidence there.
-            if prose && !has_separator(&token) {
+            if prose && !has_separator(&token) && !token.contains('_') {
                 continue;
             }
             let Some(match_info) = index.resolve_token(&token, &file.language, &file.rel_path)
@@ -350,12 +350,12 @@ impl SymbolRefIndex {
             if record.kind == "module" || record.kind == "namespace" {
                 continue;
             }
-            // Nothing outside the file can name a private symbol, and test
-            // code is never the far end of a cross-language link.
-            if record
-                .visibility
-                .as_deref()
-                .is_some_and(|v| v.split_whitespace().any(|m| m == "private"))
+            // Private symbols: nothing outside the file can name them. Visibility
+            // is recorded only for C# (explicit `private`), TS/JS (unexported or
+            // private members) and Rust (non-pub); Go and Python record none, so
+            // they stay eligible (deliberate, safe for precision).
+            // Test files: test code is never the far end of a cross-language link.
+            if crate::db::resolver::is_private(record.visibility.as_deref())
                 || crate::indexer::test_detection::is_test_file(&record.path)
             {
                 continue;
@@ -629,6 +629,9 @@ fn interpolation_style(source: &str, literal: &StringLiteral, language: &str) ->
             match dollars {
                 0 => Interpolation::None,
                 1 => Interpolation::Braces { escape: true },
+                // Approximation: in a raw string with two or more `$`, a single `{`
+                // is literal; we treat it as a hole too, which over-masks
+                // (recall-only loss).
                 _ => Interpolation::Braces { escape: false },
             }
         }
@@ -681,7 +684,11 @@ fn mask_interpolation(text: &str, style: Interpolation) -> String {
             continue;
         };
         out.push(b' ');
-        i = template_hole_end(bytes, body).unwrap_or(bytes.len());
+        i = match style {
+            Interpolation::DollarBraces => template_hole_end(bytes, body),
+            _ => brace_hole_end(bytes, body),
+        }
+        .unwrap_or(bytes.len());
     }
     // Only whole ASCII-delimited spans were removed, so this stays valid UTF-8.
     String::from_utf8(out).unwrap_or_default()
@@ -691,6 +698,18 @@ fn mask_interpolation(text: &str, style: Interpolation) -> String {
 /// plain punctuation. Code-shaped text (`select * from x`, `EXEC p @id`)
 /// contains operators and is not prose.
 fn is_prose(text: &str) -> bool {
+    const SQL_WORDS: [&str; 8] = [
+        "select", "from", "exec", "execute", "insert", "update", "delete", "join",
+    ];
+    let has_sql = text
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|w| {
+            let w = w.to_ascii_lowercase();
+            w == "where" || SQL_WORDS.contains(&w.as_str())
+        });
+    if has_sql {
+        return false;
+    }
     text.split_whitespace()
         .filter(|w| w.chars().any(char::is_alphabetic))
         .count()
@@ -1078,6 +1097,26 @@ fn template_close(bytes: &[u8], open: usize) -> Option<usize> {
             b'`' => return Some(i),
             b'$' if bytes.get(i + 1) == Some(&b'{') => i = template_hole_end(bytes, i + 2)?,
             _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Index just past the `}` closing a C#/Python hole whose body starts at
+/// `start`. Brace depth only: `//`, `/*` and `'` are operators or text in these
+/// holes (`{a//b}`, `{x/2}`), not JS comments or quotes.
+fn brace_hole_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 1;
+    for (off, &b) in bytes[start..].iter().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + off + 1);
+                }
+            }
+            _ => {}
         }
     }
     None
@@ -1777,6 +1816,9 @@ mod tests {
             "a   b   c"
         );
         assert_eq!(mask_interpolation("{x}", Interpolation::None), "{x}");
+        assert_eq!(mask_interpolation("{a//b} k", braces), "  k");
+        assert_eq!(mask_interpolation("{x/2} k", braces), "  k");
+        assert_eq!(mask_interpolation("{a'b} k", braces), "  k");
     }
 
     #[test]
@@ -1785,5 +1827,6 @@ mod tests {
         assert!(!is_prose("select * from get_user(@id)"));
         assert!(!is_prose("EXEC get_user @id"));
         assert!(!is_prose("FullLoad"));
+        assert!(!is_prose("SELECT Id FROM Orders WHERE Status"));
     }
 }

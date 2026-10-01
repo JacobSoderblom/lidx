@@ -512,7 +512,7 @@ impl VisibilityRule {
 
 /// `symbols.visibility` is a space-separated modifier list (`private`,
 /// `static`); whether it contains `private`.
-fn is_private(visibility: Option<&str>) -> bool {
+pub(crate) fn is_private(visibility: Option<&str>) -> bool {
     visibility.is_some_and(|v| v.split_whitespace().any(|m| m == "private"))
 }
 

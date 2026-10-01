@@ -119,3 +119,35 @@ fn string_content_xrefs_are_only_real_cross_language_links() {
     .collect();
     assert_eq!(edges, expected, "actual XREF edge set");
 }
+
+const CS_EDGE: &str = r#"public class Edge
+{
+    public void Div(int x) { var a = $"{x/2} dbo.get_user"; }
+    public void Sql() { var q = "SELECT Id FROM Orders WHERE Status"; }
+    public void Under() { var q = "call sp_get_user now"; }
+    public void Word() { var q = "Calling ProcessOrder now"; }
+}
+"#;
+const PY_EDGE: &str = "def div(a, b):\n    return f\"{a//b} dbo.get_user\"\n";
+const PY_ORDER: &str = "class ProcessOrder:\n    pass\n";
+const SQL_EDGE: &str = "CREATE TABLE Orders (Id INT);\nCREATE TABLE dbo.get_user (id INT);\nCREATE PROCEDURE sp_get_user AS SELECT 1;\n";
+
+#[test]
+fn hole_operators_and_sql_or_underscore_text_still_link() {
+    let edges = xref_edges(&[
+        ("Edge.cs", CS_EDGE),
+        ("py/edge.py", PY_EDGE),
+        ("py/order.py", PY_ORDER),
+        ("schema.sql", SQL_EDGE),
+    ]);
+    eprintln!("{edges:?}");
+    let expected: BTreeSet<_> = [
+        edge("Edge.Edge.Div", "dbo.get_user"),
+        edge("py.edge.div", "dbo.get_user"),
+        edge("Edge.Edge.Sql", "Orders"),
+        edge("Edge.Edge.Under", "sp_get_user"),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(edges, expected, "actual XREF edge set");
+}
