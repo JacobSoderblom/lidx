@@ -387,6 +387,13 @@ impl Db {
             "DELETE FROM edges WHERE kind = ? AND graph_version = ?",
             params![kind, graph_version],
         )?;
+        // Pending store rows (`edge_id` NULL, e.g. every ROUTE reference)
+        // have no edge to cascade from; without this a re-derivation of the
+        // kind adds a second copy beside the carried-forward one (issue #251).
+        self.conn().execute(
+            "DELETE FROM unresolved_references WHERE edge_kind = ? AND graph_version = ?",
+            params![kind, graph_version],
+        )?;
         Ok(())
     }
 
@@ -765,7 +772,8 @@ impl Db {
                     ur.receiver_scope, ur.deferred_kind, ur.deferred
                  FROM unresolved_references ur
                  LEFT JOIN symbols os ON os.id = ur.source_symbol_id
-                 WHERE ur.edge_id IS NULL AND ur.graph_version = ? AND ur.file_id IN ({placeholders})"
+                 WHERE ur.edge_id IS NULL AND ur.graph_version = ? AND ur.file_id IN ({placeholders})
+                 ON CONFLICT DO NOTHING"
             );
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
                 Box::new(to_version),
