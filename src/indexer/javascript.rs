@@ -1652,9 +1652,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             handle_class(node, ctx, source, output);
             return;
         }
-        // Overload declarations (`function f(a: string): string;`) are
-        // symbols like the implementation, with the same signature format.
-        "function_declaration" | "generator_function_declaration" | "function_signature" => {
+        // Bodiless overload declarations (`function_signature` /
+        // `method_signature`) are deliberately not symbols: calls must
+        // resolve to the implementation, the only declaration with a body.
+        "function_declaration" | "generator_function_declaration" => {
             if ctx.fn_depth > 0 {
                 return;
             }
@@ -1897,7 +1898,7 @@ fn walk_class_body(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
-            "method_definition" | "abstract_method_signature" | "method_signature" => {
+            "method_definition" | "abstract_method_signature" => {
                 handle_method(child, ctx, source, output);
             }
             "public_field_definition" | "field_definition" => {

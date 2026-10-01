@@ -197,47 +197,51 @@ fn same_named_arrow_consts_in_different_scopes_are_functions_with_own_signatures
 }
 
 #[test]
-fn function_overload_declarations_use_the_same_signature_format() {
+fn overload_declarations_are_not_symbols_only_the_implementation() {
     let f = extract(
         "export function over(a: string): string;\n\
          export function over(a: number): number;\n\
-         export function over<T>(a: T): T { return a; }\n",
+         export function over<T>(a: T): T { return a; }\n\
+         export class C {\n  m(a: string): string;\n  m(a: number): number;\n  m(a: any): any { return a; }\n}\n",
     );
-    let sigs: Vec<_> = f
-        .symbols
-        .iter()
-        .filter(|s| s.qualname == "m.over")
-        .map(|s| (s.kind.as_str(), s.signature.as_deref().unwrap()))
-        .collect();
-    assert_eq!(
-        sigs,
-        vec![
-            ("function", "(a: string): string"),
-            ("function", "(a: number): number"),
-            ("function", "<T>(a: T): T"),
-        ]
-    );
+    let sigs = |q: &str| -> Vec<(String, u32)> {
+        f.symbols
+            .iter()
+            .filter(|s| s.qualname == q)
+            .map(|s| (s.signature.clone().unwrap(), s.start_line as u32))
+            .collect()
+    };
+    assert_eq!(sigs("m.over"), vec![("<T>(a: T): T".to_string(), 3)]);
+    assert_eq!(sigs("m.C.m"), vec![("(a: any): any".to_string(), 7)]);
 }
 
 #[test]
-fn method_overload_declarations_use_the_same_signature_format() {
-    let f = extract(
-        "export class C {\n  m(a: string): string;\n  m(a: number): number;\n  m(a: any): any { return a; }\n}\n",
-    );
-    let sigs: Vec<_> = f
-        .symbols
-        .iter()
-        .filter(|s| s.qualname == "m.C.m")
-        .map(|s| s.signature.as_deref().unwrap())
-        .collect();
-    assert_eq!(
-        sigs,
-        vec![
-            "(a: string): string",
-            "(a: number): number",
-            "(a: any): any"
-        ]
-    );
+fn calls_to_overloaded_functions_and_methods_resolve_to_the_implementation() {
+    let (tmp, _) = common::index_files(&[
+        (
+            "src/a.ts",
+            "export function parse(x: string): number;\nexport function parse(x: number): number;\nexport function parse(x: any): number { return 1; }\nexport class C {\n  m(a: string): string;\n  m(a: number): number;\n  m(a: any): any { return a; }\n}\n",
+        ),
+        (
+            "src/b.ts",
+            "import { parse, C } from './a';\nexport function use(): number { return parse('1'); }\nexport function useM(c: C) { return c.m('x'); }\n",
+        ),
+    ]);
+    let conn = rusqlite::Connection::open(tmp.path().join(".lidx").join(".lidx.sqlite")).unwrap();
+    let line_of = |caller: &str| -> Vec<(String, i64)> {
+        conn.prepare(
+            "SELECT t.qualname, t.start_line FROM edges e JOIN symbols s ON s.id = e.source_symbol_id \
+             JOIN symbols t ON t.id = e.target_symbol_id WHERE e.kind = 'CALLS' AND s.qualname = ?",
+        )
+        .unwrap()
+        .query_map([caller], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    };
+    assert_eq!(line_of("src/b.use"), vec![("src/a.parse".to_string(), 3)]);
+    let m = line_of("src/b.useM");
+    assert!(!m.is_empty() && m.iter().all(|(_, l)| *l == 7), "{m:?}");
 }
 
 #[test]
