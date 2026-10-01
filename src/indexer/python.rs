@@ -1592,7 +1592,48 @@ fn http_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInpu
         edges.push(edge);
     }
     edges.extend(fastapi_add_api_route_edges(node, ctx, source));
+    edges.extend(aiohttp_route_edge(node, ctx, source));
     edges
+}
+
+/// aiohttp's imperative registrations: `<x>.router.add_get(path, handler)`
+/// (and `add_post`/`add_put`/`add_patch`/`add_delete`/`add_head`/
+/// `add_options`), `<x>.router.add_route(method, path, handler)`, and the
+/// `web.get(path, handler)` / `web.route(method, path, handler)` route-table
+/// entries handed to `add_routes`. The receiver is required to be a
+/// `router` / `web` and the path a string literal, so an unrelated
+/// `registry.add_get(...)` is not a route.
+fn aiohttp_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let function = node.child_by_field_name("function")?;
+    let (base, name) = attribute_base_and_name(function, source)?;
+    let on_router = base == "router" || base.ends_with(".router");
+    let on_web = base == "web" || base.ends_with(".web");
+    let (verb, explicit_method) = match name.as_str() {
+        "add_route" if on_router => (None, true),
+        "route" if on_web => (None, true),
+        n if on_router && n.starts_with("add_") => (Some(&n[4..]), false),
+        n if on_web => (Some(n), false),
+        _ => return None,
+    };
+    let args = parse_call_arguments(node, source);
+    let (method, path_idx) = if explicit_method {
+        let raw = unquote_string_literal(&node_text(*args.positional.first()?, source))?;
+        let method = if raw.trim() == "*" {
+            http::HTTP_ANY.to_string()
+        } else {
+            http::normalize_method(&raw)?
+        };
+        (method, 1)
+    } else {
+        (http::normalize_method(verb?)?, 0)
+    };
+    let raw_path = unquote_string_literal(&node_text(*args.positional.get(path_idx)?, source))?;
+    let handler = args
+        .positional
+        .get(path_idx + 1)
+        .and_then(|arg| handler_name_from_expr(*arg, ctx, source))
+        .unwrap_or_else(|| ctx.current_scope.clone());
+    build_route_edge(&handler, &method, &raw_path, "aiohttp", node, source)
 }
 
 fn django_path_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {

@@ -303,19 +303,66 @@ pub fn config_edge_allowed(edge: &Edge, allowed: Option<&HashSet<String>>) -> bo
             .is_some_and(|tq| allowed.contains(tq))
 }
 
-/// Narrow the complement edges of an `env://` bridge to the same service as
-/// the origin, when any of them is (prefer, never exclude: with no match all
-/// are kept). Other URIs are returned unchanged.
+/// Narrow the complement edges of a bridge to the same service as the origin.
+/// `env://` bridges *prefer* it (with no match all are kept). HTTP bridges
+/// are stricter, because a bare path like `/health/live` is declared by many
+/// unrelated services: same-service routes win; with none, the routes are
+/// kept only when they all belong to one service (a unique target), else
+/// none (issue #233). Other bridges are returned unchanged.
 pub fn prefer_same_service<'a>(uri: &str, origin_path: &str, bridged: &'a [Edge]) -> Vec<&'a Edge> {
     let all = || bridged.iter().collect::<Vec<_>>();
     if !uri.starts_with("env://") {
-        return all();
+        if bridged.is_empty() || !bridged.iter().all(|e| e.kind.starts_with("HTTP_")) {
+            return all();
+        }
+        let origin = code_service_key(origin_path);
+        let same: Vec<&Edge> = bridged
+            .iter()
+            .filter(|e| code_service_key(&e.file_path) == origin)
+            .collect();
+        if !same.is_empty() {
+            return same;
+        }
+        let first = code_service_key(&bridged[0].file_path);
+        let one_service = bridged
+            .iter()
+            .all(|e| code_service_key(&e.file_path) == first);
+        return if one_service { all() } else { Vec::new() };
     }
     let same: Vec<&Edge> = bridged
         .iter()
         .filter(|e| same_service(origin_path, &e.file_path))
         .collect();
     if same.is_empty() { all() } else { same }
+}
+
+/// ponytail: code-to-code "service" identity for HTTP bridging is a path
+/// heuristic: the leading directories up to the first source/test layout
+/// directory (`py/orch/src/...` and `py/orch/tests/...` -> `py/orch`),
+/// capped at two components. Ceiling: a repo whose services sit three levels
+/// deep without a layout directory merges neighbours; one with a flat layout
+/// splits a service across `src`-less subpackages.
+fn code_service_key(path: &str) -> String {
+    const LAYOUT_DIRS: &[&str] = &[
+        "src",
+        "tests",
+        "test",
+        "__tests__",
+        "spec",
+        "lib",
+        "app",
+        "cmd",
+        "internal",
+        "pkg",
+    ];
+    let dirs: Vec<&str> = path.split('/').collect();
+    let dirs = &dirs[..dirs.len().saturating_sub(1)];
+    dirs.iter()
+        .take(2)
+        .take_while(|d| !LAYOUT_DIRS.contains(d))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 const GENERIC_DIRS: &[&str] = &[
