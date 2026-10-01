@@ -57,6 +57,10 @@ const GRPC_JS_SKIP_METHODS: &[&str] = &[
 struct GrpcService {
     package: Option<String>,
     service: String,
+    /// The constructor was accepted on its `*Client` name alone (no gRPC
+    /// import evidence); the edge carries `"evidence":"name"` so queries
+    /// surface it only when a proto service of that name is indexed (#204).
+    name_only: bool,
 }
 
 #[derive(Clone)]
@@ -1354,11 +1358,7 @@ fn mark_unexported_private(
 fn uses_require(root: Node<'_>, source: &str) -> bool {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
-        if node.kind() == "call_expression"
-            && node
-                .child_by_field_name("function")
-                .is_some_and(|f| f.kind() == "identifier" && node_text(f, source) == "require")
-        {
+        if is_require_call(node, source) {
             return true;
         }
         let mut cursor = node.walk();
@@ -1519,11 +1519,31 @@ struct GrpcEvidence {
     /// Locals bound (via `import` or `require`) to a gRPC-ish module: an
     /// `@grpc/*` package, a generated `*_grpc_pb` / `*_pb` stub, a proto module.
     modules: HashSet<String>,
+    /// The subset of `modules` bound from a local generated-stub path (not a
+    /// gRPC runtime package): any capitalised constructor there is a client.
+    stub_modules: HashSet<String>,
     /// Locals initialised from `loadPackageDefinition(..)`, i.e. the root of a
     /// `@grpc/proto-loader` package tree.
     proto_roots: HashSet<String>,
+    /// Locals initialised from `makeGenericClientConstructor(def, 'Svc')` /
+    /// `makeGenericClientFromService(..)`, with the literal service name when
+    /// there is one.
+    generic_ctors: HashMap<String, Option<String>>,
+    /// Every local bound by an `import` / `require`, whatever the module.
+    imported: HashSet<String>,
 }
 
+/// Root segments of a conventional `proto.pkg.Service` / `pb.pkg.Service` path.
+const GRPC_ROOT_NAMES: &[&str] = &["proto", "pb"];
+
+/// grpc-js factories whose result is a client constructor.
+const GRPC_GENERIC_CLIENT_FACTORIES: &[&str] = &[
+    "makeGenericClientConstructor",
+    "makeGenericClientFromService",
+];
+
+/// Intentionally broad needles: this only marks a module as *gRPC-ish*, and a
+/// false hit still needs a `*Client` name (or a stub path) to count.
 fn is_grpc_module_spec(spec: &str) -> bool {
     let lower = spec.to_ascii_lowercase();
     ["grpc", "proto", "_pb", "generated"]
@@ -1531,10 +1551,67 @@ fn is_grpc_module_spec(spec: &str) -> bool {
         .any(|needle| lower.contains(needle))
 }
 
+/// A relative / aliased path (a local generated stub), not a package.
+fn is_local_module_spec(spec: &str) -> bool {
+    spec.starts_with('.')
+        || spec.starts_with('/')
+        || spec.starts_with("@/")
+        || spec.starts_with("~/")
+}
+
+/// `FooClient` or ts-proto's `FooClientImpl`, with a non-empty base.
+fn is_client_class_name(name: &str) -> bool {
+    ["ClientImpl", "Client"]
+        .iter()
+        .any(|suffix| name.strip_suffix(suffix).is_some_and(|b| !b.is_empty()))
+}
+
+/// Strips parentheses, `await`, `as`, `!` and type assertions.
+fn unwrap_expression(mut node: Node<'_>) -> Node<'_> {
+    while matches!(
+        node.kind(),
+        "parenthesized_expression"
+            | "await_expression"
+            | "as_expression"
+            | "type_assertion"
+            | "non_null_expression"
+            | "satisfies_expression"
+    ) {
+        let Some(inner) = node
+            .child_by_field_name("expression")
+            .or_else(|| node.child_by_field_name("argument"))
+            .or_else(|| node.named_child(0))
+        else {
+            break;
+        };
+        node = inner;
+    }
+    node
+}
+
+/// The final name of a call's callee (`a.b.c(..)` -> `c`, `c(..)` -> `c`).
+fn callee_last_name(call: Node<'_>, source: &str) -> Option<String> {
+    if call.kind() != "call_expression" {
+        return None;
+    }
+    let func = call.child_by_field_name("function")?;
+    match func.kind() {
+        "identifier" => Some(node_text(func, source)),
+        "member_expression" => func
+            .child_by_field_name("property")
+            .map(|p| node_text(p, source)),
+        _ => None,
+    }
+}
+
 fn collect_grpc_evidence(root: Node<'_>, source: &str) -> GrpcEvidence {
     let mut evidence = GrpcEvidence::default();
     for (local, (spec, _)) in collect_import_bindings(root, source) {
+        evidence.imported.insert(local.clone());
         if is_grpc_module_spec(&spec) {
+            if is_local_module_spec(&spec) {
+                evidence.stub_modules.insert(local.clone());
+            }
             evidence.modules.insert(local);
         }
     }
@@ -1546,15 +1623,33 @@ fn collect_grpc_evidence(root: Node<'_>, source: &str) -> GrpcEvidence {
                 node.child_by_field_name("value"),
             )
         {
-            let value_text = node_text(value_node, source);
-            if name_node.kind() == "identifier" && value_text.contains("loadPackageDefinition") {
-                evidence.proto_roots.insert(node_text(name_node, source));
-            } else if let Some(spec) = require_specifier(value_node, source)
-                && is_grpc_module_spec(&spec)
+            let value = unwrap_expression(value_node);
+            let callee = callee_last_name(value, source);
+            if name_node.kind() == "identifier"
+                && callee.as_deref() == Some("loadPackageDefinition")
             {
+                evidence.proto_roots.insert(node_text(name_node, source));
+            } else if name_node.kind() == "identifier"
+                && callee
+                    .as_deref()
+                    .is_some_and(|c| GRPC_GENERIC_CLIENT_FACTORIES.contains(&c))
+            {
+                let service = call_arguments(value)
+                    .get(1)
+                    .and_then(|arg| extract_string_literal(*arg, source));
+                evidence
+                    .generic_ctors
+                    .insert(node_text(name_node, source), service);
+            } else if let Some(spec) = require_specifier(value, source) {
                 let mut names = Vec::new();
                 collect_binding_names(name_node, source, &mut names);
-                evidence.modules.extend(names);
+                evidence.imported.extend(names.iter().cloned());
+                if is_grpc_module_spec(&spec) {
+                    if is_local_module_spec(&spec) {
+                        evidence.stub_modules.extend(names.iter().cloned());
+                    }
+                    evidence.modules.extend(names);
+                }
             }
         }
         let mut cursor = node.walk();
@@ -1565,13 +1660,17 @@ fn collect_grpc_evidence(root: Node<'_>, source: &str) -> GrpcEvidence {
     evidence
 }
 
+/// Whether `node` is a `require(..)` call.
+fn is_require_call(node: Node<'_>, source: &str) -> bool {
+    node.kind() == "call_expression"
+        && node
+            .child_by_field_name("function")
+            .is_some_and(|f| f.kind() == "identifier" && node_text(f, source) == "require")
+}
+
 /// `require('spec')` -> `spec`.
 fn require_specifier(node: Node<'_>, source: &str) -> Option<String> {
-    if node.kind() != "call_expression" {
-        return None;
-    }
-    let func = node.child_by_field_name("function")?;
-    if node_text(func, source) != "require" {
+    if !is_require_call(node, source) {
         return None;
     }
     let args = node.child_by_field_name("arguments")?;
@@ -1579,24 +1678,43 @@ fn require_specifier(node: Node<'_>, source: &str) -> Option<String> {
     unquote_string_literal(&node_text(first, source))
 }
 
-/// Whether `new <raw>(..)` constructs a gRPC client: a service under a
-/// proto-loader root or a conventional `proto.` / `pb.` root, or a
-/// `*Client` class bound from a gRPC-ish module. Anything else (`Map`,
+/// The gRPC client service `new <raw>(..)` constructs, when it has evidence:
+/// a service under a proto-loader root or a conventional `proto.` / `pb.`
+/// root, a generic-client factory local, a `*Client` / `*ClientImpl` class (or
+/// any capitalised class from a generated-stub path) bound from a gRPC-ish
+/// module. A bare `*Client` / `*ClientImpl` import from a neutral module is
+/// accepted on its name alone and flagged `name_only`, so queries drop it
+/// unless a proto service of that name is indexed. Anything else (`Map`,
 /// `sql.Request`, a user-defined `Repository`) gives no RPC edge (#204).
-fn grpc_constructor_has_evidence(raw: &str, evidence: &GrpcEvidence) -> bool {
+fn grpc_service_for_constructor(raw: &str, evidence: &GrpcEvidence) -> Option<GrpcService> {
     let collapsed = collapse_call_target_whitespace(raw);
-    let mut parts = collapsed.split('.').filter(|p| !p.is_empty());
-    let Some(first) = parts.next() else {
-        return false;
-    };
+    let dotted = collapsed.contains('.');
+    let first = collapsed.split('.').find(|p| !p.is_empty())?;
     let last = collapsed.rsplit('.').next().unwrap_or("");
-    if collapsed.contains('.')
-        && (evidence.proto_roots.contains(first)
-            || matches!(first.to_ascii_lowercase().as_str(), "proto" | "pb"))
-    {
-        return true;
+    if !dotted && let Some(name) = evidence.generic_ctors.get(first) {
+        return Some(match name {
+            Some(service) if !service.is_empty() => GrpcService {
+                package: None,
+                service: service.clone(),
+                name_only: false,
+            },
+            _ => grpc_service_from_path(&collapsed)?,
+        });
     }
-    evidence.modules.contains(first) && last.len() > "Client".len() && last.ends_with("Client")
+    let strong = (dotted
+        && (evidence.proto_roots.contains(first)
+            || GRPC_ROOT_NAMES.contains(&first.to_ascii_lowercase().as_str())))
+        || (evidence.modules.contains(first) && is_client_class_name(last))
+        || (evidence.stub_modules.contains(first)
+            && last.chars().next().is_some_and(|c| c.is_ascii_uppercase()));
+    let name_only =
+        !strong && !dotted && evidence.imported.contains(first) && is_client_class_name(last);
+    if !strong && !name_only {
+        return None;
+    }
+    let mut service = grpc_service_from_path(&collapsed)?;
+    service.name_only = name_only;
+    Some(service)
 }
 
 fn collect_grpc_clients(
@@ -1669,10 +1787,7 @@ fn grpc_service_from_client_initializer(
     }
     let target_node = call_target_node(current)?;
     let raw = node_text(target_node, source);
-    if !grpc_constructor_has_evidence(&raw, evidence) {
-        return None;
-    }
-    grpc_service_from_path(&raw)
+    grpc_service_for_constructor(&raw, evidence)
 }
 
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -2427,15 +2542,18 @@ fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     let service = grpc_service_for_receiver(object_node, ctx, source)?;
     let (raw_path, normalized) =
         proto::normalize_rpc_path(service.package.as_deref(), &service.service, &method_name)?;
-    let detail = json!({
+    let mut detail = json!({
         "framework": "grpc-js",
         "role": "client",
         "service": service.service,
         "rpc": method_name,
         "package": service.package.as_deref(),
         "raw": raw_path,
-    })
-    .to_string();
+    });
+    if service.name_only {
+        detail["evidence"] = json!("name");
+    }
+    let detail = detail.to_string();
     Some(EdgeInput {
         kind: proto::RPC_CALL_KIND.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
@@ -2613,10 +2731,7 @@ fn grpc_service_for_receiver(node: Node<'_>, ctx: &Context, source: &str) -> Opt
     if node.kind() == "new_expression" {
         let constructor = call_target_node(node)?;
         let raw = node_text(constructor, source);
-        if !grpc_constructor_has_evidence(&raw, &ctx.grpc_evidence) {
-            return None;
-        }
-        return grpc_service_from_path(&raw);
+        return grpc_service_for_constructor(&raw, &ctx.grpc_evidence);
     }
     let receiver = node_text(node, source);
     grpc_service_from_receiver(&receiver, ctx)
@@ -2664,6 +2779,7 @@ fn grpc_service_from_raw_path(raw_path: &str) -> Option<(GrpcService, String)> {
         GrpcService {
             package,
             service: service.to_string(),
+            name_only: false,
         },
         rpc.to_string(),
     ))
@@ -2688,7 +2804,11 @@ fn grpc_service_from_path(raw: &str) -> Option<GrpcService> {
         return None;
     }
     let package = grpc_package_from_parts(&parts[..parts.len() - 1], true);
-    Some(GrpcService { package, service })
+    Some(GrpcService {
+        package,
+        service,
+        name_only: false,
+    })
 }
 
 fn strip_grpc_service_token(raw: &str) -> (String, bool) {
@@ -2706,7 +2826,9 @@ fn strip_grpc_service_token(raw: &str) -> (String, bool) {
     let mut stripped = false;
     let mut stripped_client = false;
     let mut value = token;
-    if let Some(base) = value.strip_suffix("Client")
+    if let Some(base) = value
+        .strip_suffix("ClientImpl")
+        .or_else(|| value.strip_suffix("Client"))
         && !base.is_empty()
     {
         value = base;
@@ -4404,10 +4526,11 @@ fn is_require_or_import_init(declarator: Node<'_>, source: &str) -> bool {
         };
         value = inner;
     }
-    value.kind() == "call_expression"
-        && value.child_by_field_name("function").is_some_and(|f| {
-            f.kind() == "import" || (f.kind() == "identifier" && node_text(f, source) == "require")
-        })
+    is_require_call(value, source)
+        || (value.kind() == "call_expression"
+            && value
+                .child_by_field_name("function")
+                .is_some_and(|f| f.kind() == "import"))
 }
 
 /// Collects the identifiers a binding pattern introduces: plain identifiers,
