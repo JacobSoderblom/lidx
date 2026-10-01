@@ -2163,8 +2163,9 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
         return Some(format!("{container}.{}", parts[1]));
     }
     if parts.len() == 1 {
-        let container = container_qualname(&ctx.module, &ctx.class_stack);
-        return Some(format!("{container}.{raw}"));
+        // A bare name never sees the class body: Python resolves it via the
+        // enclosing function, then module globals, then builtins.
+        return Some(format!("{}.{raw}", ctx.module));
     }
     Some(raw.to_string())
 }
