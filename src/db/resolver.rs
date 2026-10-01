@@ -98,6 +98,9 @@ pub(crate) struct Reference<'a> {
     /// file (issue #75 follow-up, finding D). `None` when the caller
     /// itself didn't resolve to a symbol.
     pub source_qualname: Option<&'a str>,
+    /// The calling symbol's own id (`edges.source_symbol_id`). The guarded
+    /// name fallback never binds an edge to its own source (issue #244).
+    pub source_symbol_id: Option<i64>,
     /// `EdgeInput::bare_call` — true for a genuinely bare identifier call
     /// (`foo()`), gating the guarded name-fallback tier's method-kind
     /// exclusion. Meaningless (ignored) for any `edge_kind` other than
@@ -766,6 +769,7 @@ impl FallbackGuard {
 struct CallerContext<'a> {
     file_path: &'a str,
     qualname: Option<&'a str>,
+    symbol_id: Option<i64>,
 }
 
 /// `Resolver`'s symbol index for one language (`DeclarationIndex`).
@@ -1150,6 +1154,7 @@ impl<'c> Resolver<'c> {
                 CallerContext {
                     file_path: r.source_file_path,
                     qualname: r.source_qualname,
+                    symbol_id: r.source_symbol_id,
                 },
                 r.bare_call,
             )?,
@@ -1279,6 +1284,7 @@ impl<'c> Resolver<'c> {
         let caller = CallerContext {
             file_path: r.source_file_path,
             qualname: r.source_qualname,
+            symbol_id: r.source_symbol_id,
         };
         // An unqualified call with an implicit receiver (`CallShape::implicit_this`,
         // set by an extractor whose language gives such a call an enclosing
@@ -1608,6 +1614,9 @@ impl<'c> Resolver<'c> {
             }
             // `SAME_LANG_SQL` already excludes `method`-kind rows when
             // `guard.exclude_method` — every row reaching here is kind-eligible.
+            if caller.symbol_id == Some(id) {
+                return Ok(false);
+            }
             if is_fixture_path(&file_path) && !is_fixture_path(caller.file_path) {
                 return Ok(false);
             }
@@ -1875,6 +1884,7 @@ impl<'c> Resolver<'c> {
             CallerContext {
                 file_path: source_file_path,
                 qualname: None,
+                symbol_id: None,
             },
             name,
         )
@@ -2422,6 +2432,7 @@ struct ReferenceContext {
     source_lang: String,
     file_path: String,
     source_qualname: Option<String>,
+    source_symbol_id: Option<i64>,
 }
 
 impl ReferenceContext {
@@ -2466,6 +2477,7 @@ impl ReferenceContext {
                 source_lang: &self.source_lang,
                 source_file_path: &self.file_path,
                 source_qualname: self.source_qualname.as_deref(),
+                source_symbol_id: self.source_symbol_id,
                 bare_call: self.bare_call,
                 call_shape: self.call_shape.as_deref().and_then(CallShape::decode),
             },
@@ -2874,6 +2886,7 @@ impl Db {
                         source_lang: row.get(17)?,
                         file_path: row.get(18)?,
                         source_qualname: row.get(19)?,
+                        source_symbol_id: row.get(1)?,
                     },
                 })
             })?;
@@ -3156,6 +3169,7 @@ impl Db {
                             source_lang: row.get(18)?,
                             file_path: row.get(19)?,
                             source_qualname: row.get(20)?,
+                            source_symbol_id: row.get(2)?,
                         },
                     })
                 },
@@ -3352,7 +3366,7 @@ impl Db {
                 "SELECT e.id, e.target_symbol_id, e.kind, e.target_qualname,
                         e.receiver_type, e.import_candidates, e.bare_call,
                         COALESCE(f.language, 'unknown'), f.path, src.qualname, e.call_shape,
-                        e.receiver_scope, e.deferred_kind, e.deferred
+                        e.receiver_scope, e.deferred_kind, e.deferred, e.source_symbol_id
                  FROM edges e
                  {extra_join}
                  JOIN files f ON f.id = e.file_id
@@ -3377,6 +3391,7 @@ impl Db {
                         source_lang: row.get(7)?,
                         file_path: row.get(8)?,
                         source_qualname: row.get(9)?,
+                        source_symbol_id: row.get(14)?,
                     },
                 })
             })?;
@@ -3789,6 +3804,7 @@ fn derive_rpc_calls<'a>(
                     source_lang: &site.lang,
                     source_file_path: &site.path,
                     source_qualname: None,
+                    source_symbol_id: None,
                     bare_call: false,
                     call_shape: None,
                 },
@@ -4364,6 +4380,7 @@ mod tests {
             source_lang,
             source_file_path,
             source_qualname,
+            source_symbol_id: None,
             bare_call,
             call_shape: None,
         }

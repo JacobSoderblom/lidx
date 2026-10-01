@@ -684,14 +684,19 @@ fn handle_namespace(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ex
         docstring: None,
         identity: None,
     });
-    output.edges.push(EdgeInput {
-        kind: "CONTAINS".to_string(),
-        source_qualname: Some(container_qualname(ctx)),
-        target_qualname: Some(qualname.clone()),
-        detail: None,
-        evidence_snippet: None,
-        ..Default::default()
-    });
+    // The file module and a namespace can share a qualname (`Shop.cs` with
+    // `namespace Shop`); that would be a `CONTAINS` edge from a symbol to itself.
+    let container = container_qualname(ctx);
+    if container != qualname {
+        output.edges.push(EdgeInput {
+            kind: "CONTAINS".to_string(),
+            source_qualname: Some(container),
+            target_qualname: Some(qualname.clone()),
+            detail: None,
+            evidence_snippet: None,
+            ..Default::default()
+        });
+    }
 
     next_ctx.namespace_stack = full_parts;
     next_ctx.current_scope = qualname;
@@ -1530,15 +1535,18 @@ fn handle_using(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
     let Some(target) = target else {
         return;
     };
-    // An alias's target text is the alias itself; keep what it names for the
-    // resolver (see `using_context`).
+    // An alias's target text is the alias itself (`using Alias = Z;` in
+    // `Alias.cs` would import its own file module); point the edge at what
+    // the alias names and keep the alias for the resolver (see `using_context`).
     let mut aliased = ImportContext::default();
     record_using_directive(node, source, &mut aliased);
-    let detail = aliased
-        .aliases
-        .into_iter()
-        .next()
-        .map(|(alias, target)| json!({ "alias": alias, "target": target }).to_string());
+    let (target, detail) = match aliased.aliases.into_iter().next() {
+        Some((alias, named)) => (
+            named.clone(),
+            Some(json!({ "alias": alias, "target": named }).to_string()),
+        ),
+        None => (target, None),
+    };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     output.edges.push(EdgeInput {

@@ -82,6 +82,10 @@ struct Context {
     /// `mod` doesn't see its parent's `use`s, only `super::`/`crate::`
     /// qualified access).
     imports: Rc<HashMap<String, Vec<String>>>,
+    /// Qualnames of the traits declared directly in this scope (the file
+    /// root or the current `mod` body), so `impl Local for T` resolves to
+    /// the same-module declaration. Recomputed per scope like `imports`.
+    local_traits: Rc<HashSet<String>>,
     /// Names the current function must not get an import candidate for
     /// (`collect_shadowed_names`); empty outside a function body.
     shadowed_names: Rc<HashSet<String>>,
@@ -232,6 +236,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             grpc_service: None,
             grpc_clients: HashMap::new(),
             imports: Rc::new(collect_use_bindings(root, source, module_name)),
+            local_traits: Rc::new(collect_local_traits(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
             adts: Rc::new(collect_adts(root, source)),
@@ -574,6 +579,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     // Fresh, not merged with `ctx.imports`: this module doesn't inherit its
     // parent's `use` bindings (see `Context::imports`).
     next_ctx.imports = Rc::new(collect_use_bindings(body, source, &next_ctx.module));
+    next_ctx.local_traits = Rc::new(collect_local_traits(body, source, &next_ctx.module));
     // A module is its own namespace, not a function body: no shadowed
     // names carry in, even for a `mod` declared inside a function.
     next_ctx.shadowed_names = Rc::new(HashSet::new());
@@ -838,14 +844,16 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // are symbols, are pinned per item by `walk_declaration_list`.
 
     let mut grpc_service = None;
+    let mut trait_qualname = None;
     if let Some(trait_node) = node.child_by_field_name("trait") {
         let trait_name = normalize_type_path(&node_text(trait_node, source));
         if !trait_name.is_empty() {
-            let trait_qualname = qualify_type_name(&ctx.module, &trait_name);
+            let qualname = qualify_trait_name(ctx, &trait_name);
+            trait_qualname = Some(qualname.clone());
             output.edges.push(EdgeInput {
                 kind: "IMPLEMENTS".to_string(),
                 source_qualname: Some(type_qualname.clone()),
-                target_qualname: Some(trait_qualname),
+                target_qualname: Some(qualname),
                 detail: None,
                 evidence_snippet: None,
                 ..Default::default()
@@ -866,9 +874,7 @@ fn handle_impl(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     // directly — but an inherent impl's methods keep their own `pub`/
     // private status as normal. See `Context::in_trait_scope`.
     next_ctx.in_trait_scope = is_trait_impl;
-    next_ctx.in_trait_impl = node
-        .child_by_field_name("trait")
-        .map(|t| qualify_type_name(&ctx.module, &normalize_type_path(&node_text(t, source))));
+    next_ctx.in_trait_impl = trait_qualname;
     next_ctx.impl_identity = impl_identity(node, source);
     walk_node(body, &next_ctx, source, output);
 }
@@ -3290,6 +3296,81 @@ fn normalize_type_path(raw: &str) -> String {
     }
     let cleaned = cleaned.replace(' ', "");
     cleaned.trim_start_matches('&').trim().to_string()
+}
+
+/// Traits in the Rust prelude (and the few std traits impl'd constantly),
+/// keyed by bare name. A bare `impl Drop for X` with no `use` means this.
+const PRELUDE_TRAITS: &[(&str, &str)] = &[
+    ("Drop", "std::ops::Drop"),
+    ("From", "std::convert::From"),
+    ("Into", "std::convert::Into"),
+    ("TryFrom", "std::convert::TryFrom"),
+    ("TryInto", "std::convert::TryInto"),
+    ("AsRef", "std::convert::AsRef"),
+    ("AsMut", "std::convert::AsMut"),
+    ("Default", "std::default::Default"),
+    ("Clone", "std::clone::Clone"),
+    ("Copy", "std::marker::Copy"),
+    ("Send", "std::marker::Send"),
+    ("Sync", "std::marker::Sync"),
+    ("Sized", "std::marker::Sized"),
+    ("Iterator", "std::iter::Iterator"),
+    ("IntoIterator", "std::iter::IntoIterator"),
+    ("DoubleEndedIterator", "std::iter::DoubleEndedIterator"),
+    ("ExactSizeIterator", "std::iter::ExactSizeIterator"),
+    ("Extend", "std::iter::Extend"),
+    ("PartialEq", "std::cmp::PartialEq"),
+    ("Eq", "std::cmp::Eq"),
+    ("PartialOrd", "std::cmp::PartialOrd"),
+    ("Ord", "std::cmp::Ord"),
+    ("ToOwned", "std::borrow::ToOwned"),
+    ("ToString", "std::string::ToString"),
+];
+
+/// Trait names declared directly in `scope` (a file root or `mod` body),
+/// as `module::Name` qualnames.
+fn collect_local_traits(scope: Node<'_>, source: &str, module: &str) -> HashSet<String> {
+    let mut cursor = scope.walk();
+    scope
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() == "trait_item")
+        .filter_map(|child| child.child_by_field_name("name"))
+        .map(|name| format!("{module}::{}", node_text(name, source)))
+        .collect()
+}
+
+/// The trait qualname for `impl <trait_name> for ..`, following the scoping
+/// rules the compiler uses: an explicit `crate::`/`self::`/`super::`/`::`
+/// path is taken as written; otherwise the first segment is looked up in
+/// this scope's `use` bindings, then its own trait declarations, then the
+/// prelude. A bare name that is none of those is left bare (unqualified)
+/// rather than guessed into the current module (issue #244).
+fn qualify_trait_name(ctx: &Context, trait_name: &str) -> String {
+    let (first, rest) = match trait_name.split_once("::") {
+        Some((first, rest)) => (first, Some(rest)),
+        None => (trait_name, None),
+    };
+    if matches!(first, "crate" | "self" | "super" | "") {
+        return qualify_type_name(&ctx.module, trait_name);
+    }
+    let joined = |base: &str| match rest {
+        Some(rest) => format!("{base}::{rest}"),
+        None => base.to_string(),
+    };
+    if let Some(target) = ctx.imports.get(first).and_then(|t| t.first()) {
+        return joined(target);
+    }
+    if rest.is_some() {
+        return trait_name.to_string();
+    }
+    let local = format!("{}::{trait_name}", ctx.module);
+    if ctx.local_traits.contains(&local) {
+        return local;
+    }
+    match PRELUDE_TRAITS.iter().find(|(name, _)| *name == trait_name) {
+        Some((_, path)) => (*path).to_string(),
+        None => trait_name.to_string(),
+    }
 }
 
 fn qualify_type_name(module: &str, type_name: &str) -> String {

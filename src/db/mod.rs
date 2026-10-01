@@ -1602,6 +1602,7 @@ impl Db {
                         source_lang: &source_lang,
                         source_file_path: &source_file_path,
                         source_qualname: edge.source_qualname.as_deref(),
+                        source_symbol_id: source_id,
                         bare_call: edge.bare_call,
                         call_shape: edge.call_shape,
                     },
