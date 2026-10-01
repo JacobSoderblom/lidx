@@ -277,6 +277,7 @@ impl Indexer {
         // insertion-only watermark would otherwise never notice.
         let mut any_symbols_deleted = false;
         javascript::clear_export_cache();
+        self.begin_extraction_run();
         // Hash-unchanged JS/TS files whose chased imports or alias config
         // changed must be re-extracted too. Computed before any deletion so
         // importers' edges still exist.
@@ -307,6 +308,14 @@ impl Indexer {
         self.cs_globals = None;
         self.cs_projects.clear();
         stale_js_files.extend(stale_cs);
+        // ... and C# callers of an extension method a changed file declares.
+        stale_js_files.extend(
+            cs_globals::CsGlobals {
+                db: &self.db,
+                repo_root: &self.repo_root,
+            }
+            .stale_extension_callers(&batch_rels, self.graph_version)?,
+        );
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
         all_paths.extend(stale_js_files.iter().map(|rel| self.repo_root.join(rel)));
         for path in &all_paths {
@@ -512,6 +521,7 @@ impl Indexer {
         // Hash-unchanged JS/TS files whose chased imports or alias config
         // changed are re-extracted too (see `js_stale`).
         javascript::clear_export_cache();
+        self.begin_extraction_run();
         let scanned_paths: HashSet<&str> = scanned.iter().map(|f| f.rel_path.as_str()).collect();
         let mut changed_paths: Vec<String> = scanned
             .iter()
@@ -556,6 +566,14 @@ impl Indexer {
             changed_paths.clone()
         };
         stale_js_files.extend(self.stale_csharp_files(&cs_changed, || Ok(scanned_csharp))?);
+        // ... and C# callers of an extension method a changed file declares.
+        stale_js_files.extend(
+            cs_globals::CsGlobals {
+                db: &self.db,
+                repo_root: &self.repo_root,
+            }
+            .stale_extension_callers(&changed_paths, previous_graph_version)?,
+        );
 
         let mut seen = HashSet::new();
         let mut stats = IndexStats {
@@ -1032,6 +1050,14 @@ impl Indexer {
         js_stale::JsStale {
             db: &self.db,
             repo_root: &self.repo_root,
+        }
+    }
+
+    /// Reset every extractor's per-run cross-file state (see
+    /// `LanguageExtractor::begin_run`).
+    fn begin_extraction_run(&mut self) {
+        for extractor in self.extractors.values_mut() {
+            extractor.begin_run();
         }
     }
 

@@ -157,4 +157,61 @@ impl CsGlobals<'_> {
         }
         Ok(stale)
     }
+
+    /// Hash-unchanged C# files whose stored `CALLS` import candidates name an
+    /// extension method declared in one of the `changed` paths. The
+    /// extractor derives those candidates from the extension methods it sees
+    /// in the same run (`csharp::extension_method_candidates`), so they go
+    /// stale when the declaration is renamed, moved or removed (issue #256).
+    /// Re-extracting the caller recomputes them like a fresh index would.
+    /// `graph_version` is the version holding the files' current symbols and
+    /// edges; call before any deletion.
+    pub fn stale_extension_callers(
+        &self,
+        changed: &[String],
+        graph_version: i64,
+    ) -> Result<HashSet<String>> {
+        let conn = self.db.read_conn()?;
+        let mut declared: HashSet<String> = HashSet::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT s.qualname FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.graph_version = ?1 AND f.path = ?2 AND s.kind = 'method'
+                   AND s.signature LIKE '%(this %'",
+            )?;
+            for path in changed.iter().filter(|p| is_csharp_path(p)) {
+                let rows = stmt.query_map(rusqlite::params![graph_version, path], |r| {
+                    r.get::<_, String>(0)
+                })?;
+                for row in rows {
+                    declared.insert(row?);
+                }
+            }
+        }
+        if declared.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let changed_set: HashSet<&str> = changed.iter().map(String::as_str).collect();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT f.path, e.import_candidates
+             FROM edges e JOIN files f ON f.id = e.file_id
+             WHERE e.graph_version = ?1 AND e.kind = 'CALLS' AND f.language = 'csharp'
+               AND e.import_candidates IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([graph_version], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut stale = HashSet::new();
+        for row in rows {
+            let (path, candidates) = row?;
+            if changed_set.contains(path.as_str()) {
+                continue;
+            }
+            let names: Vec<String> = serde_json::from_str(&candidates).unwrap_or_default();
+            if names.iter().any(|n| declared.contains(n)) {
+                stale.insert(path);
+            }
+        }
+        Ok(stale)
+    }
 }

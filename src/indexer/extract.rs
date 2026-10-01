@@ -532,6 +532,11 @@ pub trait LanguageExtractor {
     /// Project-wide directives (C# `global using`) the next `extract` call
     /// applies on top of the file's own; default: none.
     fn set_project_globals(&mut self, _globals: &[String]) {}
+    /// Called once at the start of every reindex or sync batch: drop any
+    /// cross-file state accumulated by earlier runs (C# extension methods),
+    /// so a long-lived indexer sees only this run's declarations, as a fresh
+    /// process would. Default: none.
+    fn begin_run(&mut self) {}
     fn resolve_imports(
         &self,
         _repo_root: &Path,

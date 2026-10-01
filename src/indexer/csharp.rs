@@ -120,9 +120,11 @@ struct Context {
     /// walking one file is visible to call sites in a later file — the only
     /// way a single-file extractor can name a cross-file extension method's
     /// real declaring class (see `extension_method_candidates`'s doc for why
-    /// that's unavoidable). Grows monotonically; never pruned or reset
-    /// between files, so a full cold reindex ends with every extension
-    /// method the repo declares, in file-processing order. A call site
+    /// that's unavoidable). Grows monotonically within a run and is reset
+    /// by `begin_run` (issue #256: a renamed declaration's old entry must
+    /// not outlive the run), never between files, so a full cold reindex
+    /// ends with every extension method the repo declares, in
+    /// file-processing order. A call site
     /// whose extension method hasn't been visited *yet* this run simply
     /// gets no candidate from this source — see the ponytail note on
     /// `extension_method_candidates`.
@@ -355,6 +357,10 @@ impl CSharpExtractor {
 }
 
 impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
+    fn begin_run(&mut self) {
+        self.extension_registry.borrow_mut().clear();
+    }
+
     fn module_name_from_rel_path(&self, rel_path: &str) -> String {
         module_name_from_rel_path(rel_path)
     }
