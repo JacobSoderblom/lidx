@@ -115,11 +115,14 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
         {
             return true;
         }
-        // Symbols in test files
+        // Symbols in test files. `describe`/`it`/`test` callbacks are
+        // anonymous, so calls inside them are attributed to the file's
+        // module symbol: it is the only test attribution available, and
+        // `is_file_level_test` marks it as such.
         if is_test_file(&symbol.file_path) {
             return matches!(
                 symbol.kind.as_str(),
-                "function" | "method" | "arrow_function"
+                "function" | "method" | "arrow_function" | "module"
             );
         }
     }
@@ -158,6 +161,18 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
     }
 
     false
+}
+
+/// True when a JS/TS test is a whole test file's `module` symbol rather than
+/// one specific test: anonymous `describe`/`it`/`test` callbacks have no
+/// symbol of their own, so every test in the file is attributed to it.
+pub fn is_file_level_test(symbol: &Symbol) -> bool {
+    let file_lower = symbol.file_path.to_lowercase();
+    symbol.kind == "module"
+        && [".js", ".ts", ".jsx", ".tsx"]
+            .iter()
+            .any(|ext| file_lower.ends_with(ext))
+        && is_test_symbol(symbol)
 }
 
 /// Extensions covered by the generic JS/TS `.test.`/`.spec.`/`_test`
@@ -278,6 +293,19 @@ mod tests {
             commit_sha: None,
             stable_id: None,
         }
+    }
+
+    #[test]
+    fn js_module_is_a_file_level_test_only_in_test_files() {
+        let in_test = make_symbol("test/catalog.test.ts", "module", "catalog.test", None);
+        assert!(is_test_symbol(&in_test));
+        assert!(is_file_level_test(&in_test));
+        let in_src = make_symbol("src/catalog.ts", "module", "catalog", None);
+        assert!(!is_test_symbol(&in_src));
+        assert!(!is_file_level_test(&in_src));
+        let func = make_symbol("test/catalog.test.ts", "function", "helper", None);
+        assert!(is_test_symbol(&func));
+        assert!(!is_file_level_test(&func));
     }
 
     #[test]
