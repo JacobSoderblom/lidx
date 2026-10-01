@@ -2058,7 +2058,7 @@ fn extract_string_list(node: Node<'_>, source: &str) -> Vec<String> {
 }
 
 /// Internal-only edge kind for `__all__` exports (see `emit_module_export_edges`).
-const MODULE_EXPORT_KIND: &str = "MODULE_EXPORT";
+pub const MODULE_EXPORT_KIND: &str = "MODULE_EXPORT";
 
 /// Issue #116: a name listed in a module-level `__all__ = [...]`/`(...)` is
 /// part of the file's declared public API -- re-exported, so "used" even

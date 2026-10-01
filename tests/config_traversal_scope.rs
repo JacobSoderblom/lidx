@@ -237,7 +237,7 @@ fn env_bridge_is_scoped_to_consuming_deployment() {
     let r = call(
         &repo,
         "trace_flow",
-        r#"{"start_qualname":"Dpb.DataProxy.Startup.Configure","direction":"both","max_hops":6}"#,
+        r#"{"start_qualname":"Dpb.DataProxy.Startup.Configure","direction":"downstream","max_hops":6}"#,
     );
     let f = files(&r["trace"]);
     assert!(
@@ -351,7 +351,7 @@ fn shared_external_api_does_not_connect_unrelated_callers() {
     let r = call(
         &repo,
         "trace_flow",
-        r#"{"start_qualname":"a.run_a","direction":"both","max_hops":5}"#,
+        r#"{"start_qualname":"a.run_a","direction":"downstream","max_hops":5}"#,
     );
     assert!(r.to_string().contains("ext:hashlib.sha256"), "no stub: {r}");
     assert!(!r.to_string().contains("run_b"), "{r}");
