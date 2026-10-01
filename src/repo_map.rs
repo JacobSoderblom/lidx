@@ -38,6 +38,9 @@ struct BudgetedOutput {
 
 impl BudgetedOutput {
     fn new(budget: usize) -> Self {
+        // Only reserve room for the note when the budget is at least twice
+        // its length; below that, reserving would starve the real content
+        // (the note is then simply omitted, `truncated` still reports the cut).
         let reserve = if budget >= TRUNCATION_NOTE.len() * 2 {
             TRUNCATION_NOTE.len()
         } else {
@@ -58,6 +61,21 @@ impl BudgetedOutput {
             return false;
         }
         self.buf.push_str(text);
+        true
+    }
+
+    /// Append `pending` (a header, possibly empty) followed by `item`, or
+    /// neither. On success `pending` is cleared so later items of the same
+    /// section are written without it. A budget cut therefore never leaves a
+    /// header with no items under it.
+    fn push_item(&mut self, pending: &mut String, item: &str) -> bool {
+        if self.truncated || self.buf.len() + pending.len() + item.len() > self.limit {
+            self.truncated = true;
+            return false;
+        }
+        self.buf.push_str(pending);
+        self.buf.push_str(item);
+        pending.clear();
         true
     }
 
@@ -82,8 +100,11 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
         config.graph_version,
     )?;
 
-    out.push("# Architecture Overview\n\n");
-    out.push("## Modules\n");
+    let mut pending = String::from("# Architecture Overview\n\n## Modules\n");
+    if modules.is_empty() {
+        // Nothing to dangle: the header alone is the whole section.
+        out.push(&pending);
+    }
     for m in &modules {
         let dominant_language = if m.languages.is_empty() {
             "unknown".to_string()
@@ -100,7 +121,7 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
             "- **{}** ({} files, {} symbols, {})\n",
             m.path, m.file_count, m.symbol_count, dominant_language
         );
-        if !out.push(&line) {
+        if !out.push_item(&mut pending, &line) {
             break;
         }
     }
@@ -114,13 +135,13 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
             config.graph_version,
         )?;
         if !edges.is_empty() {
-            out.push("\n## Dependencies\n");
+            let mut pending = String::from("\n## Dependencies\n");
             for e in edges.iter().take(20) {
                 let line = format!(
                     "- {} → {} ({} calls, {} imports, {} xrefs)\n",
                     e.0, e.1, e.2, e.3, e.4
                 );
-                if !out.push(&line) {
+                if !out.push_item(&mut pending, &line) {
                     break;
                 }
             }
@@ -143,7 +164,7 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
                 .push((sym, *count));
         }
 
-        out.push("\n## Key Symbols (by fan-in)\n");
+        let mut pending = String::from("\n## Key Symbols (by fan-in)\n");
         let mut sorted_modules: Vec<_> = by_module.keys().cloned().collect();
         sorted_modules.sort();
         'modules: for module in sorted_modules {
@@ -152,9 +173,7 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
                 // same `module_prefix()` as `module_summary`) already
                 // carries a trailing separator -- see the "## Modules"
                 // comment above -- so it is not added again here.
-                if !out.push(&format!("\n### {}\n", module)) {
-                    break;
-                }
+                pending.push_str(&format!("\n### {}\n", module));
                 for (sym, count) in syms.iter().take(5) {
                     let line = format!(
                         "- {} **{}** `{}` (fan-in: {})\n",
@@ -163,7 +182,7 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
                         sym.signature.as_deref().unwrap_or(""),
                         count
                     );
-                    if !out.push(&line) {
+                    if !out.push_item(&mut pending, &line) {
                         break 'modules;
                     }
                     total_symbols += 1;
@@ -179,9 +198,9 @@ pub fn build_repo_map(db: &Db, config: &RepoMapConfig) -> Result<RepoMapResult> 
             config.paths.as_deref(),
             config.graph_version,
         )?;
-        out.push("\n## Patterns\n");
+        let mut pending = String::from("\n## Patterns\n");
         for (kind, count) in &kinds {
-            if !out.push(&format!("- {}: {}\n", kind, count)) {
+            if !out.push_item(&mut pending, &format!("- {}: {}\n", kind, count)) {
                 break;
             }
         }
@@ -575,12 +594,40 @@ mod tests {
                 "budget {budget} cut mid-line: {:?}",
                 r.text
             );
-            if budget >= 1000 {
+            // Budgets of twice the note's length or more always have room
+            // for it; smaller ones carry it only if it happens to fit (the
+            // length assertion above already bounds it).
+            if budget >= 2 * TRUNCATION_NOTE.len() {
                 assert!(
-                    r.text.contains("truncated"),
+                    r.text.contains("_(truncated: max_bytes reached)_"),
                     "no marker at {budget}:\n{}",
                     r.text
                 );
+            }
+        }
+    }
+
+    // Issue #240 review: a budget cut must never leave a section header with
+    // no items beneath it.
+    #[test]
+    fn truncation_never_leaves_an_empty_section_header() {
+        let (db, _temp, gv) = big_fixture();
+        for budget in 0..=1500usize {
+            let mut cfg = default_config(gv);
+            cfg.max_bytes = budget;
+            let text = build_repo_map(&db, &cfg).unwrap().text;
+            let lines: Vec<&str> = text
+                .lines()
+                .filter(|l| !l.is_empty() && !l.contains("_(truncated"))
+                .collect();
+            for (i, l) in lines.iter().enumerate() {
+                if l.starts_with('#') && !l.starts_with("# ") {
+                    let next = lines.get(i + 1);
+                    assert!(
+                        next.is_some_and(|n| n.starts_with("- ") || n.starts_with("###")),
+                        "budget {budget}: header {l:?} has no items:\n{text}"
+                    );
+                }
             }
         }
     }

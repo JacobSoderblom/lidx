@@ -2350,6 +2350,19 @@ fn collect_path_prefixes(paths: Option<&[String]>) -> Vec<String> {
     prefixes
 }
 
+/// True when `path` is one of `prefixes` or lies beneath one of them. An
+/// empty prefix list means "no filter" and matches everything. Mirrors the
+/// SQL emitted by `append_path_filters` (`path = p OR path LIKE 'p/%'`).
+fn path_in_prefixes(prefixes: &[String], path: &str) -> bool {
+    prefixes.is_empty()
+        || prefixes.iter().any(|p| {
+            path == p
+                || path
+                    .strip_prefix(p.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+}
+
 fn append_path_filters<'a>(
     sql: &mut String,
     params: &mut Vec<&'a dyn rusqlite::ToSql>,

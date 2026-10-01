@@ -423,15 +423,7 @@ impl Db {
         // Group by source module -> target module
         let mut edge_map: HashMap<(String, String), (usize, usize, usize)> = HashMap::new();
         let prefixes = super::collect_path_prefixes(paths);
-        let in_filter = |path: &str| {
-            prefixes.is_empty()
-                || prefixes.iter().any(|p| {
-                    path == p
-                        || path
-                            .strip_prefix(p.as_str())
-                            .is_some_and(|r| r.starts_with('/'))
-                })
-        };
+        let in_filter = |path: &str| super::path_in_prefixes(&prefixes, path);
 
         for (kind, src_path, tgt_path_opt) in &rows {
             if !in_filter(src_path) && !tgt_path_opt.as_deref().is_some_and(&in_filter) {
