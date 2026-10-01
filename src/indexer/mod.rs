@@ -233,7 +233,18 @@ impl Indexer {
         self.sync_abs_paths(&abs_paths)
     }
 
+    /// Incremental sync of `paths` into the current graph version. Takes the
+    /// reindex lock (issue #250) so it cannot interleave with a reindex, and
+    /// fails with [`crate::db::ReindexBusy`] when one is running.
     pub fn sync_abs_paths(&mut self, paths: &[PathBuf]) -> Result<SyncStats> {
+        let _lock = self.db.try_lock_reindex()?;
+        // A reindex in another process may have promoted a new version since
+        // this indexer last looked.
+        self.adopt_completed_version()?;
+        self.sync_abs_paths_locked(paths)
+    }
+
+    fn sync_abs_paths_locked(&mut self, paths: &[PathBuf]) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
         let mut touched = false;
         let mut indexed_files = Vec::new();
@@ -429,7 +440,39 @@ impl Indexer {
         self.reindex_impl(allow_empty)
     }
 
+    /// Serialises against other reindexes (issue #250), then runs
+    /// `reindex_locked`. The new graph version is built while the last
+    /// completed one stays current, and is promoted only at the end; on any
+    /// error this indexer goes back to the completed version.
+    /// Point this indexer at the last completed graph version. A long-lived
+    /// indexer's version may be stale (another process can have completed a
+    /// reindex since it was constructed) or may name an abandoned `building`
+    /// one after a failed run.
+    fn adopt_completed_version(&mut self) -> Result<i64> {
+        let completed = self.db.current_graph_version()?;
+        self.graph_version = completed;
+        self.commit_sha = self.db.graph_version_commit(completed)?;
+        Ok(completed)
+    }
+
     fn reindex_impl(&mut self, allow_empty: bool) -> Result<IndexStats> {
+        let lock = self.db.try_lock_reindex()?;
+        let completed = self.adopt_completed_version()?;
+        let result = self.reindex_locked(allow_empty, &lock);
+        if result.is_err() {
+            // Best effort: never let a failure here replace the original error.
+            if let Err(err) = self.adopt_completed_version() {
+                eprintln!("lidx: could not restore completed graph version {completed}: {err}");
+            }
+        }
+        result
+    }
+
+    fn reindex_locked(
+        &mut self,
+        allow_empty: bool,
+        lock: &crate::db::ReindexLock,
+    ) -> Result<IndexStats> {
         let started = Instant::now();
         let previous_graph_version = self.graph_version;
         let commit_sha = crate::util::git_head_sha(&self.repo_root);
@@ -445,7 +488,17 @@ impl Indexer {
                 existing.len()
             );
         }
-        self.graph_version = self.db.create_graph_version(commit_sha.as_deref())?;
+        // A `building` version left by a run that died before promoting it is
+        // unreachable (never current) but its `files` rows (hashes, deletion
+        // marks) were already rewritten, so they no longer describe the
+        // completed version: reclaim it and re-extract everything.
+        let abandoned = self.db.reclaim_abandoned_graph_versions(lock)?;
+        if abandoned > 0 {
+            eprintln!(
+                "lidx: reclaimed {abandoned} abandoned graph version(s) from an interrupted reindex; re-extracting all files"
+            );
+        }
+        self.graph_version = self.db.allocate_graph_version(commit_sha.as_deref())?;
         self.commit_sha = commit_sha;
         let mut existing_map: HashMap<String, FileRecord> = HashMap::new();
         for record in existing {
@@ -453,7 +506,7 @@ impl Indexer {
         }
 
         // A stale extractor version means unchanged files must be re-extracted.
-        let force_reextract = self.extractor_version_stale()?;
+        let force_reextract = abandoned > 0 || self.extractor_version_stale()?;
 
         // Hash-unchanged JS/TS files whose chased imports or alias config
         // changed are re-extracted too (see `js_stale`).
@@ -788,6 +841,11 @@ impl Indexer {
         self.db
             .set_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY, config_fingerprint)?;
         self.db.set_meta_i64("last_indexed", now)?;
+        self.db
+            .set_meta_i64(EXTRACTOR_VERSION_KEY, EXTRACTOR_VERSION)?;
+
+        // The version is fully populated: only now does it become current.
+        self.db.promote_graph_version(self.graph_version)?;
 
         // Reclaim rows from graph versions this reindex just aged out. Safe to
         // run now: this reindex's own carry-forward already read everything it
@@ -809,8 +867,6 @@ impl Indexer {
         }
 
         stats.duration_ms = started.elapsed().as_millis() as u64;
-        self.db
-            .set_meta_i64(EXTRACTOR_VERSION_KEY, EXTRACTOR_VERSION)?;
         Ok(stats)
     }
 

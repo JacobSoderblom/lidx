@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 25;
+pub const SCHEMA_VERSION: i64 = 26;
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -601,6 +601,18 @@ pub fn migrate(conn: &Connection) -> Result<()> {
              CREATE INDEX IF NOT EXISTS idx_unresolved_references_file
                 ON unresolved_references(file_id);",
         )?;
+    }
+
+    if existing < 26 {
+        // Issue #250: a graph version is `building` until a reindex has fully
+        // populated it, and only then `complete` (and current). Every
+        // pre-existing row was made current at creation, so it is complete.
+        if !has_column(conn, "graph_versions", "status")? {
+            conn.execute(
+                "ALTER TABLE graph_versions ADD COLUMN status TEXT NOT NULL DEFAULT 'complete'",
+                [],
+            )?;
+        }
     }
 
     if existing < SCHEMA_VERSION {
