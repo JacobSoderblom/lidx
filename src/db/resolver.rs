@@ -112,6 +112,22 @@ pub(crate) struct Reference<'a> {
     pub call_shape: Option<CallShape>,
 }
 
+/// True for a Python bare call (`foo()`) whose name the caller bound locally
+/// (a parameter, assignment or nested `def`), which shadows any module-level
+/// symbol, so neither the exact nor the import tier may bind it.
+///
+/// The Python extractor signals this with `receiver_type == Some("")`
+/// ("tracked, but not a repo symbol"). That marker is scoped to Python on
+/// purpose: the JS/TS extractor also emits `Some("")` for unshadowed global
+/// callables (`Error`, `Map`, `URL`...), and a genuine local `class Error {}`
+/// there must still resolve through the exact tier.
+fn is_locally_bound_bare_call(r: &Reference<'_>) -> bool {
+    r.source_lang == "python"
+        && r.edge_kind == "CALLS"
+        && r.bare_call
+        && r.receiver_type == Some("")
+}
+
 /// How a resolved target was found. `as_str` is the `edges.resolution_kind`
 /// column value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1240,11 +1256,7 @@ impl<'c> Resolver<'c> {
                     return Ok(resolved(id, ResolutionKind::Import));
                 }
             }
-        } else if !(r.edge_kind == "CALLS" && r.bare_call && r.receiver_type == Some("")) {
-            // (Skipped for a bare call to a name the caller bound locally --
-            // a parameter, assignment or nested `def` shadows any
-            // module-level symbol, so neither the exact nor the import tier
-            // may bind it.)
+        } else if !is_locally_bound_bare_call(r) {
             if let Some(qn) = r.target_qualname
                 && let Some(id) = self.exact(qn, symbol_map, r.source_file_path, types_only)?
             {

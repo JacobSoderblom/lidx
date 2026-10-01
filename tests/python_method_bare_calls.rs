@@ -3,6 +3,8 @@
 //! class body is skipped. A same-file module-level match must win over a
 //! same-named function in another file.
 
+mod common;
+
 use lidx::indexer::Indexer;
 use rusqlite::params;
 use std::path::PathBuf;
@@ -33,9 +35,7 @@ fn index(files: &[(&str, &str)]) -> Fixture {
         COUNTER.fetch_add(1, Ordering::SeqCst)
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    for (name, src) in files {
-        std::fs::write(dir.join(name), src).unwrap();
-    }
+    common::write_files(&dir, files);
     let mut indexer = Indexer::new(dir.clone(), dir.join(".lidx").join(".lidx.sqlite")).unwrap();
     indexer.reindex().unwrap();
     let gv = indexer.db().current_graph_version().unwrap();
@@ -65,16 +65,31 @@ impl Fixture {
         self.targets(caller).into_iter().map(|t| t.0).collect()
     }
 
-    fn unresolved(&self, caller: &str) -> Vec<String> {
+    /// Qualname of the one symbol named `name` whose qualname does not
+    /// contain `exclude` (used to skip the `other` file's same-named twin).
+    fn qualname_of(&self, name: &str, exclude: &str) -> String {
+        let conn = self.indexer.db().read_conn().unwrap();
+        conn.query_row(
+            "SELECT qualname FROM symbols WHERE name = ? AND qualname NOT LIKE ?",
+            params![name, format!("%{exclude}%")],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// (name_tail, reason) of the unresolved CALLS rows out of `caller`,
+    /// sorted.
+    fn unresolved_rows(&self, caller: &str) -> Vec<(String, String)> {
         let conn = self.indexer.db().read_conn().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT ur.reason FROM unresolved_references ur
+                "SELECT ur.name_tail, ur.reason FROM unresolved_references ur
                  JOIN symbols s ON s.id = ur.source_symbol_id
-                 WHERE s.qualname = ? AND ur.edge_kind = 'CALLS'",
+                 WHERE s.qualname = ? AND ur.edge_kind = 'CALLS'
+                 ORDER BY ur.name_tail",
             )
             .unwrap();
-        stmt.query_map(params![caller], |r| r.get(0))
+        stmt.query_map(params![caller], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
             .map(|r| r.unwrap())
             .collect()
@@ -90,15 +105,14 @@ fn both_orders(main: &str, check: impl Fn(&Fixture)) {
     check(&index(&[("a_other.py", OTHER), ("z_main.py", main)]));
 }
 
-fn main_mod(f: &Fixture) -> String {
-    let conn = f.indexer.db().read_conn().unwrap();
-    conn.query_row(
-        "SELECT qualname FROM symbols WHERE name = 'test_in_method'",
-        [],
-        |r| r.get::<_, String>(0),
-    )
-    .map(|q| q.trim_end_matches(".TestCancel.test_in_method").to_string())
-    .unwrap()
+/// Module qualname of the fixture file, derived from `anchor`, a symbol
+/// whose qualname is `<module>.<suffix>` and which exists once outside the
+/// `other` file.
+fn module_of(f: &Fixture, anchor: &str, suffix: &str) -> String {
+    f.qualname_of(anchor, "other")
+        .strip_suffix(suffix)
+        .unwrap()
+        .to_string()
 }
 
 const MAIN: &str = "def _step(step_id):
@@ -112,17 +126,13 @@ class TestCancel:
 #[test]
 fn method_bare_call_binds_same_file_module_function_exactly() {
     both_orders(MAIN, |f| {
-        let m = main_mod(f);
+        let m = module_of(f, "test_in_method", ".TestCancel.test_in_method");
         let caller = format!("{m}.TestCancel.test_in_method");
         assert_eq!(
             f.targets(&caller),
             vec![(format!("{m}._step"), Some("exact".to_string()))]
         );
-        assert!(
-            f.unresolved(&caller).is_empty(),
-            "{:?}",
-            f.unresolved(&caller)
-        );
+        assert!(f.unresolved_rows(&caller).is_empty());
         // The module-scope caller in the other file is unchanged.
         let other = f
             .indexer
@@ -145,15 +155,7 @@ fn method_bare_call_binds_same_file_module_function_exactly() {
 fn self_and_cls_calls_still_bind_class_members() {
     let src = "def helper():\n    pass\n\nclass C:\n    def a(self):\n        self.b()\n    @classmethod\n    def c(cls):\n        cls.b()\n    def b(self):\n        helper()\n";
     both_orders(src, |f| {
-        let conn = f.indexer.db().read_conn().unwrap();
-        let m: String = conn
-            .query_row(
-                "SELECT qualname FROM symbols WHERE name = 'helper'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let m = m.trim_end_matches(".helper").to_string();
+        let m = module_of(f, "helper", ".helper");
         assert_eq!(
             f.target_names(&format!("{m}.C.a")),
             vec![format!("{m}.C.b")]
@@ -170,25 +172,57 @@ fn self_and_cls_calls_still_bind_class_members() {
 }
 
 #[test]
-fn closure_beats_module_level_and_builtin_and_unknown_stay_unbound() {
-    let src = "def _step():\n    pass\n\nclass C:\n    def m(self):\n        def _step():\n            pass\n        _step()\n        len([])\n        nothing_here()\n";
+fn closure_call_does_not_bind_module_level_function() {
+    let src = "def _step():\n    pass\n\nclass C:\n    def m(self):\n        def _step():\n            pass\n        _step()\n";
     both_orders(src, |f| {
-        let conn = f.indexer.db().read_conn().unwrap();
-        let m: String = conn
-            .query_row("SELECT qualname FROM symbols WHERE name = 'm'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        let t = f.target_names(&m);
-        assert!(
-            !t.iter()
-                .any(|q| q.ends_with("._step") && !q.contains("other")),
-            "closure call must not bind module-level _step: {t:?}"
+        let m = module_of(f, "m", ".C.m");
+        let caller = format!("{m}.C.m");
+        assert_eq!(f.target_names(&caller), Vec::<String>::new());
+        assert_eq!(
+            f.unresolved_rows(&caller),
+            vec![("_step".to_string(), "external".to_string())]
         );
-        assert!(
-            !t.iter()
-                .any(|q| q.ends_with("nothing_here") || q.ends_with("len")),
-            "{t:?}"
+    });
+}
+
+#[test]
+fn parameter_shadowing_module_function_does_not_bind() {
+    let src = "def _step():\n    pass\n\nclass C:\n    def m(self, _step):\n        _step()\n";
+    both_orders(src, |f| {
+        let m = module_of(f, "m", ".C.m");
+        let caller = format!("{m}.C.m");
+        assert_eq!(f.target_names(&caller), Vec::<String>::new());
+        assert_eq!(
+            f.unresolved_rows(&caller),
+            vec![("_step".to_string(), "external".to_string())]
+        );
+    });
+}
+
+#[test]
+fn builtin_bare_call_stays_unresolved() {
+    let src = "class C:\n    def m(self):\n        len([])\n";
+    both_orders(src, |f| {
+        let m = module_of(f, "m", ".C.m");
+        let caller = format!("{m}.C.m");
+        assert_eq!(f.target_names(&caller), Vec::<String>::new());
+        assert_eq!(
+            f.unresolved_rows(&caller),
+            vec![("len".to_string(), "no_candidates".to_string())]
+        );
+    });
+}
+
+#[test]
+fn unknown_bare_call_stays_unresolved() {
+    let src = "class C:\n    def m(self):\n        nothing_here()\n";
+    both_orders(src, |f| {
+        let m = module_of(f, "m", ".C.m");
+        let caller = format!("{m}.C.m");
+        assert_eq!(f.target_names(&caller), Vec::<String>::new());
+        assert_eq!(
+            f.unresolved_rows(&caller),
+            vec![("nothing_here".to_string(), "no_candidates".to_string())]
         );
     });
 }
@@ -197,14 +231,7 @@ fn closure_beats_module_level_and_builtin_and_unknown_stay_unbound() {
 fn nested_class_method_bare_call_binds_module_scope() {
     let src = "def _step():\n    pass\n\nclass Outer:\n    class Inner:\n        def m(self):\n            _step()\n";
     both_orders(src, |f| {
-        let conn = f.indexer.db().read_conn().unwrap();
-        let s: String = conn
-            .query_row(
-                "SELECT qualname FROM symbols WHERE name = '_step' AND qualname NOT LIKE '%other%'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let s = f.qualname_of("_step", "other");
         let m = s.trim_end_matches("._step").to_string();
         assert_eq!(
             f.targets(&format!("{m}.Outer.Inner.m")),
