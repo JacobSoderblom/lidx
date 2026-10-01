@@ -65,6 +65,7 @@ pub struct SymbolRefRecord {
     pub kind: String,
     pub language: String,
     pub path: String,
+    pub visibility: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
