@@ -295,7 +295,7 @@ pub(super) fn collect_content(
     config: &GatherConfig,
 ) -> Result<(Vec<ContextItem>, usize, bool, usize, usize)> {
     let mut collected = match config.strategy.as_deref() {
-        Some("symbol") => collect_content_symbol_strategy(
+        Some(super::STRATEGY_SYMBOL) => collect_content_symbol_strategy(
             db,
             repo_root,
             resolved,

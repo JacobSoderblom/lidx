@@ -1,3 +1,4 @@
+use crate::indexer::string_consts::{LocalBinding, StringConsts};
 use serde_json::json;
 
 pub const CHANNEL_PUBLISH_KIND: &str = "CHANNEL_PUBLISH";
@@ -82,7 +83,7 @@ const SUBSCRIBE_METHODS: &[&str] = &[
 /// - `DATAPROXY_COMMANDS` → `channel://dataproxycommands`
 pub fn normalize_channel_name(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || !is_plausible_topic(trimmed) {
         return None;
     }
 
@@ -104,6 +105,28 @@ pub fn normalize_channel_name(raw: &str) -> Option<String> {
     }
 
     Some(format!("channel://{normalized}"))
+}
+
+/// A topic name never contains quote, bracket, or call-syntax characters.
+/// Source text like `"x"`, `Foo()` or `Arg.Any<string>()` is an expression,
+/// not a topic, so it is rejected rather than turned into a fabricated name.
+fn is_plausible_topic(s: &str) -> bool {
+    !s.chars().any(|ch| {
+        matches!(
+            ch,
+            '"' | '\'' | '`' | '(' | ')' | '<' | '>' | '{' | '}' | '[' | ']' | '\n' | '\r'
+        )
+    })
+}
+
+/// Resolve a topic argument to a normalized `channel://` name.
+///
+/// A topic is derived from a *value*: a string literal's content or a
+/// same-file constant (see `string_consts`). A call, parameter, unknown
+/// name, foreign member access, interpolation with holes or mock matcher
+/// yields `None`; a name is never derived from expression text.
+pub fn resolve_topic(raw: &str, consts: &StringConsts, local: &LocalBinding) -> Option<String> {
+    normalize_channel_name(&consts.resolve_arg(raw, local)?)
 }
 
 /// Strip known topic container prefix from a dotted expression.
@@ -290,6 +313,13 @@ mod tests {
     #[test]
     fn normalize_empty() {
         assert_eq!(normalize_channel_name(""), None);
+    }
+
+    #[test]
+    fn normalize_rejects_expression_text() {
+        for raw in ["\"orders\"", "Foo()", "Arg.Any<string>()", "'x'"] {
+            assert_eq!(normalize_channel_name(raw), None, "{raw}");
+        }
     }
 
     #[test]

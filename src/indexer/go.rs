@@ -4,6 +4,7 @@ use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::string_consts::{LocalBinding, StringConsts};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
     span,
@@ -13,6 +14,7 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 use tree_sitter::{Node, Parser};
 
 /// Go's resolution profile: the shared default, plus capitalization-based
@@ -39,6 +41,9 @@ struct ScopedVarType {
 
 #[derive(Clone)]
 struct Context {
+    /// Same-file string constants (see `string_consts`), used to resolve
+    /// channel topics given as identifiers.
+    string_consts: Rc<StringConsts>,
     module: String,
     current_scope: String,
     grpc_servers: HashMap<String, GrpcServerInfo>,
@@ -97,6 +102,11 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
         let grpc_servers = collect_grpc_servers(root, source);
 
         let ctx = Context {
+            string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
+                crate::indexer::string_consts::ConstLang::Go,
+                root,
+                source,
+            )),
             module: module_name.to_string(),
             current_scope: module_name.to_string(),
             grpc_servers,
@@ -1123,17 +1133,9 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
     };
 
     let args = call_arguments(node);
-    let raw_topic = if args.is_empty() {
-        return None;
-    } else {
-        extract_string_literal(args[0], source)
-    };
-
-    if raw_topic.is_empty() {
-        return None;
-    }
-
-    let normalized = channel::normalize_channel_name(&raw_topic)?;
+    let raw_topic = node_text(*args.first()?, source);
+    let normalized =
+        channel::resolve_topic(&raw_topic, &ctx.string_consts, &LocalBinding::NotLocal)?;
     let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
         channel::build_publish_detail(&normalized, &raw_topic, "go-bus")
     } else {

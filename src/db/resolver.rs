@@ -2414,8 +2414,10 @@ fn resolved(target_id: i64, kind: ResolutionKind) -> Resolution {
 /// reference_name, name_tail, reason, import_candidates, detail,
 /// evidence_snippet, evidence_start_line, evidence_end_line, confidence,
 /// commit_sha, trace_id, span_id, event_ts, receiver_type, bare_call,
-/// call_shape, graph_version, receiver_scope, deferred_kind, deferred. Used by `Db::insert_edges` (an edge's first resolution
-/// attempt), `reconcile_unresolved_reference_store` (an edge that went
+/// call_shape, graph_version, receiver_scope, deferred_kind, deferred. A
+/// pending reference (`edge_id` NULL) already stored for the same identity
+/// (migration 27's partial unique index) is kept, not duplicated (issue
+/// #251). Used by `Db::insert_edges` (an edge's first resolution attempt), `reconcile_unresolved_reference_store` (an edge that went
 /// NULL-target with no row yet), and `Db::carry_forward_references` (carrying an
 /// already-unresolved reference into the new graph version).
 pub(crate) const UNRESOLVED_REFERENCE_INSERT_SQL: &str = "INSERT INTO unresolved_references
@@ -2424,7 +2426,8 @@ pub(crate) const UNRESOLVED_REFERENCE_INSERT_SQL: &str = "INSERT INTO unresolved
       evidence_end_line, confidence, commit_sha, trace_id, span_id, event_ts,
       receiver_type, bare_call, call_shape, graph_version, receiver_scope, deferred_kind,
       deferred)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT DO NOTHING";
 
 /// Everything `Resolver::resolve` needs to re-judge one reference, shared by
 /// `NullTargetEdgeRow` (read straight from an edge with no store row yet)

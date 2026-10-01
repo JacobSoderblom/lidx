@@ -1,7 +1,33 @@
+//! Shared param validation: invalid values for known params are errors,
+//! never an empty result that reads as "the index has no match".
+//!
+//! Rules: enum params are checked against one const list per enum (the same
+//! const the matching code uses); count/limit/byte-budget params reject 0;
+//! unsigned params given a negative or fractional number name the param;
+//! `[0, 1]` params reject anything outside it; repo-relative paths go
+//! through `validate_repo_path`.
+
 use crate::config::Config;
 use crate::model::ValidationResult;
 
 use super::{ContextSeed, GatherContextParams};
+
+pub(super) const VIEW_ALL: &str = "all";
+pub(super) const VIEW_OVERVIEW: &str = "overview";
+pub(super) const VIEW_MAP: &str = "map";
+pub(super) const VIEW_MODULES: &str = "modules";
+pub(super) const ORIENT_VIEWS: &[&str] = &[VIEW_ALL, VIEW_OVERVIEW, VIEW_MAP, VIEW_MODULES];
+
+pub(super) const FORMAT_TEXT: &str = "text";
+pub(super) const FORMAT_JSON: &str = "json";
+pub(super) const CONTEXT_FORMATS: &[&str] = &[FORMAT_TEXT, FORMAT_JSON];
+
+pub(super) const FORMAT_FULL: &str = "full";
+pub(super) const FORMAT_SIGNATURES: &str = "signatures";
+pub(super) const EXPLAIN_FORMATS: &[&str] = &[FORMAT_FULL, FORMAT_SIGNATURES];
+
+pub(super) const FORMAT_COMPACT: &str = "compact";
+pub(super) const TRACE_FORMATS: &[&str] = &[FORMAT_FULL, FORMAT_COMPACT];
 
 pub(super) fn validate_pattern_length(pattern: &str, operation: &str) -> anyhow::Result<()> {
     let max_length = Config::get().pattern_max_length;
@@ -20,6 +46,143 @@ pub(super) fn validate_pattern_length(pattern: &str, operation: &str) -> anyhow:
         );
     }
     Ok(())
+}
+
+/// serde's "invalid value: integer `-5`, expected usize" never says which
+/// param it was. When deserialization fails, name the offending top-level
+/// param: a negative or fractional number given for a field the schema
+/// declares as an unsigned integer (`minimum: 0`). Any other failure keeps
+/// serde's message untouched.
+pub(super) fn name_bad_unsigned_param<T: schemars::JsonSchema>(
+    params: &serde_json::Value,
+    serde_msg: String,
+) -> anyhow::Error {
+    // The raw schema: the published one strips `minimum` from integers.
+    let schema = serde_json::to_value(schemars::schema_for!(T)).unwrap_or_default();
+    let props = schema.get("properties").and_then(|p| p.as_object());
+    if let (Some(props), Some(obj)) = (props, params.as_object()) {
+        let mut keys: Vec<&String> = obj.keys().collect();
+        keys.sort();
+        for key in keys {
+            let value = &obj[key];
+            let is_unsigned = props
+                .get(key)
+                .is_some_and(|p| p.get("minimum").and_then(|m| m.as_f64()) == Some(0.0));
+            if is_unsigned && value.is_number() && !value.is_u64() {
+                return anyhow::anyhow!(
+                    "invalid value for '{key}': expected a non-negative integer, got {value}"
+                );
+            }
+        }
+    }
+    anyhow::anyhow!(serde_msg)
+}
+
+/// Rejects a zero for a count/limit/bound param. A zero would produce an
+/// empty result that callers read as "the index has no match".
+pub(super) fn require_at_least_one(name: &str, value: Option<usize>) -> anyhow::Result<()> {
+    if value == Some(0) {
+        anyhow::bail!("{name} must be at least 1 (got 0)");
+    }
+    Ok(())
+}
+
+/// Rejects a string-enum param whose value is not one of `valid`, listing
+/// the valid values.
+pub(super) fn require_one_of(
+    name: &str,
+    value: Option<&str>,
+    valid: &[&str],
+) -> anyhow::Result<()> {
+    if let Some(v) = value
+        && !valid.contains(&v)
+    {
+        anyhow::bail!("{}", unknown_value_message(name, v, valid));
+    }
+    Ok(())
+}
+
+/// The one wording for an unknown enum value, shared by `require_one_of` and
+/// `validate_gather_context_params`.
+pub(super) fn unknown_value_message(name: &str, value: &str, valid: &[&str]) -> String {
+    format!(
+        "unknown {name} '{value}' -- valid values: {}",
+        valid.join(", ")
+    )
+}
+
+/// Rejects a fraction param (e.g. `min_confidence`) outside `[0, 1]`, NaN
+/// included.
+pub(super) fn require_unit_interval(name: &str, value: Option<f32>) -> anyhow::Result<()> {
+    if let Some(v) = value
+        && !(0.0..=1.0).contains(&v)
+    {
+        anyhow::bail!("{name} must be between 0 and 1 (got {v})");
+    }
+    Ok(())
+}
+
+/// Rejects a `path` that's absolute or that escapes the repo root via a `..`
+/// component. A relative path never needs `..` to name a file inside the
+/// repo, so any `..` component is rejected outright rather than resolved.
+pub(super) fn reject_path_escape(path: &str) -> anyhow::Result<()> {
+    let candidate = std::path::Path::new(path);
+    if candidate.is_absolute() {
+        anyhow::bail!(
+            "path '{}' must be relative to the repo root, not absolute",
+            path
+        );
+    }
+    if candidate
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        anyhow::bail!("path '{}' escapes the repo root (contains '..')", path);
+    }
+    Ok(())
+}
+
+/// The one "not indexed" message `outline` and `context` both report.
+pub(super) fn not_indexed_message(path: &str) -> String {
+    format!(
+        "path '{path}' is not indexed -- fall back to Read, or run 'reindex' if it should be tracked"
+    )
+}
+
+/// A validated repo-relative path; `file` is its `files` row (`None` for
+/// Markdown, which has no row -- see `is_markdown_path`).
+pub(super) struct RepoPath<'a> {
+    pub path: &'a str,
+    pub file: Option<crate::db::FileRecord>,
+}
+
+/// Shared path check for `outline` and `context`: trims, rejects empty,
+/// absolute and `..` paths, then requires the path be indexed (a `files`
+/// row; for Markdown, presence on disk).
+pub(super) fn validate_repo_path<'a>(
+    method: &str,
+    db: &crate::db::Db,
+    repo_root: &std::path::Path,
+    raw: &'a str,
+) -> anyhow::Result<RepoPath<'a>> {
+    let path = raw.trim();
+    if path.is_empty() {
+        anyhow::bail!("{method} requires a non-empty 'path'");
+    }
+    reject_path_escape(path)?;
+    if super::reading::is_markdown_path(path) {
+        if !repo_root.join(path).is_file() {
+            anyhow::bail!("{}", not_indexed_message(path));
+        }
+        return Ok(RepoPath { path, file: None });
+    }
+    let file = db
+        .get_file_by_path(path)?
+        .ok_or_else(|| anyhow::anyhow!("{}", not_indexed_message(path)))?;
+    Ok(RepoPath {
+        path,
+        file: Some(file),
+    })
 }
 
 pub(super) fn validate_gather_context_params(params: &GatherContextParams) -> ValidationResult {
@@ -46,6 +209,17 @@ pub(super) fn validate_gather_context_params(params: &GatherContextParams) -> Va
         } else if max_nodes > 500 {
             result.add("max_nodes", "out_of_range", "max_nodes must be 500 or less");
         }
+    }
+
+    // Validate strategy
+    if let Some(strategy) = params.strategy.as_deref()
+        && !crate::gather_context::STRATEGIES.contains(&strategy)
+    {
+        result.add(
+            "strategy",
+            "invalid_value",
+            &unknown_value_message("strategy", strategy, crate::gather_context::STRATEGIES),
+        );
     }
 
     // Validate seeds
@@ -89,7 +263,14 @@ pub(super) fn validate_gather_context_params(params: &GatherContextParams) -> Va
                     }
                 }
             }
-            ContextSeed::Search { query, .. } => {
+            ContextSeed::Search { query, limit } => {
+                if *limit == Some(0) {
+                    result.add(
+                        &format!("seeds[{}].limit", idx),
+                        "out_of_range",
+                        "limit must be at least 1",
+                    );
+                }
                 if query.trim().is_empty() {
                     result.add(
                         &format!("seeds[{}].query", idx),
