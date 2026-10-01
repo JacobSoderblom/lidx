@@ -274,6 +274,31 @@ fn hops(r: &serde_json::Value) -> Vec<(u64, String)> {
         .collect()
 }
 
+/// (distance, qualname, edge_kind) for every hop, in trace order.
+fn hop_kinds(r: &serde_json::Value) -> Vec<(u64, String, String)> {
+    r["trace"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no trace: {r}"))
+        .iter()
+        .map(|h| {
+            (
+                h["distance"].as_u64().unwrap(),
+                h["symbol"]["qualname"].as_str().unwrap().to_string(),
+                h["edge_kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The edge kind of the hop onto the symbol containing `needle`.
+fn kind_of(r: &serde_json::Value, needle: &str) -> String {
+    hop_kinds(r)
+        .into_iter()
+        .find(|(_, q, _)| q.contains(needle))
+        .unwrap_or_else(|| panic!("{needle} not in {:?}", hop_kinds(r)))
+        .2
+}
+
 fn names(r: &serde_json::Value) -> Vec<String> {
     hops(r).into_iter().map(|(_, q)| q).collect()
 }
@@ -313,13 +338,29 @@ fn downstream_from_secret_follows_spc_key_to_containers_and_code() {
     let repo = repo();
     let r = trace(&repo, SECRET, "downstream");
     let n = names(&r);
+    // The trace starts at the SPC (the Bicep secret is its other seed), so
+    // the first hop already leaves the SPC.
+    assert!(
+        r["start"]["qualname"].as_str().unwrap().contains(SPC_Q),
+        "{}",
+        r["start"]
+    );
     // SPC (seed) -> kv-secrets -> container -> env URI -> C# binding.
     let container = dist(&r, DB_CONTAINER);
     let add_database = dist(&r, "DatabaseExtensions.AddDatabase");
     assert_eq!((container, add_database), (1, 2), "{:?}", hops(&r));
+    // Each container is reached over its config read of the synced secret,
+    // and the code over the env read bound to it.
+    assert_eq!(kind_of(&r, DB_CONTAINER), "CONFIG_READ");
+    assert_eq!(kind_of(&r, "DatabaseExtensions.AddDatabase"), "CONFIG_READ");
     // The same objectName synced into a second secret reaches its consumer.
     assert_eq!(dist(&r, "deployment/mirror/container/mirror"), 1);
-    assert!(has(&n, "Dpb.Mirror.MirrorReader.Run"), "{n:?}");
+    assert_eq!(
+        kind_of(&r, "deployment/mirror/container/mirror"),
+        "CONFIG_READ"
+    );
+    assert_eq!(dist(&r, "Dpb.Mirror.MirrorReader.Run"), 2);
+    assert_eq!(kind_of(&r, "Dpb.Mirror.MirrorReader.Run"), "CONFIG_READ");
     // Other keys of the same synced secret are not followed.
     assert!(!has(&n, "orchestrator"), "{n:?}");
     assert_no_siblings(&n, "trace downstream");
@@ -374,6 +415,33 @@ fn upstream_narrows_per_synced_secret_and_defaults_omitted_key() {
     assert!(has(&n, "infra/main.secretDataMgrDbConnStr"), "{n:?}");
     assert!(!has(&n, DB_CONTAINER), "{n:?}");
     assert_no_siblings(&n, "mirror upstream");
+    // container -> SPC -> Bicep, each over its config source edge.
+    assert_eq!(
+        hop_kinds(&r),
+        vec![
+            (
+                1,
+                "k8s://default/deployment/mirror/container/mirror".to_string(),
+                "CONFIG_SOURCE".to_string()
+            ),
+            (
+                2,
+                "k8s://default/secretproviderclass/azure-keyvault-secrets".to_string(),
+                "CONFIG_SOURCE".to_string()
+            ),
+            (
+                3,
+                "infra/main.secretDataMgrDbConnStr".to_string(),
+                "CONFIG_SOURCE".to_string()
+            ),
+        ]
+    );
+    // analyze_impact agrees: the mirror reader reaches only its own secret.
+    let a = impact(&repo, "Dpb.Mirror.MirrorReader.Run", "upstream");
+    assert!(has(&a, "infra/main.secretDataMgrDbConnStr"), "{a:?}");
+    assert!(has(&a, SPC_Q), "{a:?}");
+    assert!(!has(&a, DB_CONTAINER), "{a:?}");
+    assert_no_siblings(&a, "impact mirror upstream");
     // `key` omitted in the SPC defaults to the objectName.
     let r = trace(
         &repo,
@@ -385,6 +453,15 @@ fn upstream_narrows_per_synced_secret_and_defaults_omitted_key() {
     assert!(!has(&n, "secretAppInsightsConnStr"), "{n:?}");
     assert!(!has(&n, "secretDataMgrDbConnStr"), "{n:?}");
     assert!(!has(&n, DB_CONTAINER), "{n:?}");
+    let a = impact(
+        &repo,
+        "k8s://default/deployment/orchestrator/container/orchestrator",
+        "upstream",
+    );
+    assert!(has(&a, "infra/main.secretOrchestratorSqlConnStr"), "{a:?}");
+    assert!(!has(&a, "secretAppInsightsConnStr"), "{a:?}");
+    assert!(!has(&a, "secretDataMgrDbConnStr"), "{a:?}");
+    assert!(!has(&a, DB_CONTAINER) && !has(&a, "mirror"), "{a:?}");
 }
 
 #[test]
