@@ -299,6 +299,7 @@ pub fn analyze_direct_impact(
         languages,
         graph_version,
         None,
+        &[],
     )
 }
 
@@ -318,6 +319,7 @@ pub fn analyze_direct_impact_scoped(
     languages: Option<&[String]>,
     graph_version: i64,
     seed_config_uri: Option<&str>,
+    upstream_only_seeds: &[i64],
 ) -> Result<LayerResult> {
     let start = Instant::now();
     let timeout = Duration::from_secs(5);
@@ -332,8 +334,29 @@ pub fn analyze_direct_impact_scoped(
     // dispatch edge to a closed explicit impl only follows a matching call.
     let mut entry_args = crate::db::EntryArgs::default();
 
+    // Upstream-only seeds (issue #249) matter only to a `both` walk: any other
+    // direction treats them as ordinary seeds.
+    let upstream_only: HashSet<i64> = if direction == TraversalDirection::Both {
+        upstream_only_seeds.iter().copied().collect()
+    } else {
+        HashSet::new()
+    };
+    // The direction a node is expanded in: an upstream-only seed, at its seed
+    // distance, follows incoming edges only.
+    let direction_at = |id: i64, distance: usize| {
+        if distance == 0 && upstream_only.contains(&id) {
+            TraversalDirection::Upstream
+        } else {
+            direction
+        }
+    };
+
     // Load and cache seed symbols
-    let seed_set: HashSet<i64> = seed_ids.iter().copied().collect();
+    let seed_set: HashSet<i64> = seed_ids
+        .iter()
+        .copied()
+        .filter(|id| !upstream_only.contains(id))
+        .collect();
     cache_symbols(
         db,
         &mut symbol_cache,
@@ -347,7 +370,7 @@ pub fn analyze_direct_impact_scoped(
     let valid_seeds: Vec<i64> = seed_ids
         .iter()
         .copied()
-        .filter(|id| symbol_cache.contains_key(id))
+        .filter(|id| symbol_cache.contains_key(id) && !upstream_only.contains(id))
         .collect();
 
     // Seed the queue
@@ -361,6 +384,18 @@ pub fn analyze_direct_impact_scoped(
         });
         visited.insert(id);
         distance_map.insert(id, 0);
+    }
+    // Upstream-only seeds are queued but not marked visited: the container
+    // still reaches them through CONTAINS like a class-only walk, which then
+    // expands them in full, while this queue entry adds their callers.
+    for &id in seed_ids {
+        if upstream_only.contains(&id) && symbol_cache.contains_key(&id) {
+            queue.push_back(QueueItem {
+                id,
+                distance: 0,
+                entry: scope.seed_entry(),
+            });
+        }
     }
 
     let mut truncated = false;
@@ -438,8 +473,11 @@ pub fn analyze_direct_impact_scoped(
                     {
                         continue;
                     }
-                    if let Some(id) = resolve_next_id(edge, *current_id, direction)
-                        && !visited.contains(&id)
+                    if let Some(id) = resolve_next_id(
+                        edge,
+                        *current_id,
+                        direction_at(*current_id, current_distance),
+                    ) && !visited.contains(&id)
                     {
                         neighbor_ids.push(id);
                     }
@@ -485,7 +523,11 @@ pub fn analyze_direct_impact_scoped(
                         });
                     }
 
-                    let Some(next_id) = resolve_next_id(edge, *current_id, direction) else {
+                    let Some(next_id) = resolve_next_id(
+                        edge,
+                        *current_id,
+                        direction_at(*current_id, current_distance),
+                    ) else {
                         continue;
                     };
 

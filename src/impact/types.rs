@@ -222,6 +222,11 @@ pub struct DirectConfig {
     pub languages: Option<Vec<String>>,
     /// Config URI the seeds were resolved from (issue #131), if any.
     pub seed_config_uri: Option<String>,
+    /// Seeds (a subset of the seed list) that a `both` traversal expands
+    /// through incoming edges only (issue #249): a container's members are
+    /// walked for their callers, while the downstream half stays rooted at the
+    /// container itself so member callees do not leak into it.
+    pub upstream_only_seeds: Vec<i64>,
 }
 
 impl Default for DirectConfig {
@@ -235,6 +240,7 @@ impl Default for DirectConfig {
             include_tests: true,
             languages: None,
             seed_config_uri: None,
+            upstream_only_seeds: Vec::new(),
         }
     }
 }
