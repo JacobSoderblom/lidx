@@ -228,18 +228,18 @@ pub fn is_test_file(path: &str) -> bool {
     })
 }
 
+/// Directory names that mark test code (also the layout boundary used for
+/// service identity in `indexer::config`).
+pub const TEST_DIR_NAMES: &[&str] = &["test", "tests", "_test", "__tests__", "spec", "specs"];
+
 fn is_test_directory(path_lower: &str) -> bool {
     let Some((dir, _file_name)) = path_lower.rsplit_once('/') else {
         // No directory component at all (a bare file name) -- nothing to
         // check here, only `is_test_file`'s filename rules apply.
         return false;
     };
-    dir.split('/').any(|segment| {
-        matches!(
-            segment,
-            "test" | "tests" | "_test" | "__tests__" | "spec" | "specs"
-        ) || segment.starts_with("test_")
-    })
+    dir.split('/')
+        .any(|segment| TEST_DIR_NAMES.contains(&segment) || segment.starts_with("test_"))
 }
 
 /// Classify test type based on file path and symbol properties
