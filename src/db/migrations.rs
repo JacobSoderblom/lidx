@@ -626,9 +626,11 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         // file, source symbol, kind, name and evidence span. Before this,
         // nothing enforced it, so carry-forward plus the cross-language link
         // pass each contributed a row for the same pending ROUTE reference
-        // on every reindex. Collapse existing duplicates (keeping the row
-        // bound to a Bridge Edge if any, else the oldest), then make the
-        // invariant structural with a unique index.
+        // on every reindex. Collapse existing duplicate pending rows (keeping
+        // the oldest), then make the invariant structural with a unique
+        // index. The index is partial on `edge_id IS NULL`: a row bound to a
+        // Bridge Edge is already unique through `edge_id` itself, and two
+        // distinct identical-looking edges must each keep their own row.
         eprintln!("migration 27: collapsing duplicate unresolved_references rows");
         conn.execute_batch(&format!(
             "DELETE FROM unresolved_references WHERE id IN (
@@ -636,10 +638,11 @@ pub fn migrate(conn: &Connection) -> Result<()> {
                     SELECT id, ROW_NUMBER() OVER (
                         PARTITION BY graph_version, file_id, {UNRESOLVED_IDENTITY_EXPRS}
                         ORDER BY (edge_id IS NULL), id) AS rn
-                    FROM unresolved_references)
+                    FROM unresolved_references WHERE edge_id IS NULL)
                 WHERE rn > 1);
              CREATE UNIQUE INDEX IF NOT EXISTS idx_unresolved_references_identity
-                ON unresolved_references(graph_version, file_id, {UNRESOLVED_IDENTITY_EXPRS});"
+                ON unresolved_references(graph_version, file_id, {UNRESOLVED_IDENTITY_EXPRS})
+                WHERE edge_id IS NULL;"
         ))?;
     }
 

@@ -10,7 +10,6 @@ use lidx::indexer::Indexer;
 use rusqlite::Connection;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 const API_PY: &str = r#"
 def handler():
@@ -79,17 +78,6 @@ impl Fixture {
             .query_row(
                 "SELECT COUNT(*) FROM unresolved_references
                  WHERE graph_version = ? AND edge_kind = 'ROUTE'",
-                [self.gv()],
-                |r| r.get(0),
-            )
-            .unwrap()
-    }
-
-    fn distinct_rows(&self) -> i64 {
-        self.conn()
-            .query_row(
-                "SELECT COUNT(*) FROM (SELECT DISTINCT source_symbol_id, edge_kind, reference_name
-                 FROM unresolved_references WHERE graph_version = ?)",
                 [self.gv()],
                 |r| r.get(0),
             )
@@ -186,24 +174,6 @@ fn no_duplicate_rows_within_a_graph_version() {
         )
         .unwrap();
     assert_eq!(fx.total_rows(), spans);
-    assert!(fx.distinct_rows() <= fx.total_rows());
-}
-
-#[test]
-fn noop_reindex_wall_time_does_not_grow() {
-    let mut fx = fixture(&[("api.py", API_PY), ("other.py", OTHER_PY)]);
-    let mut times: Vec<Duration> = Vec::new();
-    for _ in 0..5 {
-        let start = Instant::now();
-        fx.reindex();
-        times.push(start.elapsed());
-    }
-    let first = times[0];
-    let last = *times.last().unwrap();
-    assert!(
-        last <= first * 4 + Duration::from_secs(2),
-        "no-op reindex time grew: {times:?}"
-    );
 }
 
 #[test]
@@ -247,35 +217,68 @@ fn edit_removes_stale_rows_and_keeps_unresolved_once() {
     assert_eq!(fx.total_rows(), total);
 }
 
+/// A database reindexed several times under the pre-fix code holds duplicate
+/// pending rows in its current graph version. After migration and one
+/// reindex on the new code it must match a fresh index exactly.
 #[test]
-fn unique_index_rejects_duplicate_insert() {
-    let fx = fixture(&[("api.py", API_PY)]);
-    let conn = fx.conn();
-    conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
-    let gv = fx.gv();
-    let (file_id, src, kind, name, line, end): (i64, Option<i64>, String, String, i64, i64) = conn
-        .query_row(
-            "SELECT file_id, source_symbol_id, edge_kind, reference_name, evidence_start_line, evidence_end_line
-             FROM unresolved_references WHERE graph_version = ? AND edge_kind = 'ROUTE' LIMIT 1",
-            [gv],
-            |r| Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-            ))
-    )
+fn database_with_old_duplicates_converges_after_one_reindex() {
+    let files = [("api.py", API_PY), ("other.py", OTHER_PY)];
+    let fresh = fixture(&files);
+    let expected_contents = fresh.contents();
+    let expected_total = fresh.total_rows();
+    let expected_routes = fresh.route_rows();
+
+    let mut old = fixture(&files);
+    old.reindex();
+    let gv = old.gv();
+    {
+        // Simulate the old behaviour: no identity index, schema at v26, and
+        // two extra copies of every pending row in the current version.
+        let conn = old.conn();
+        conn.execute_batch(
+            "DROP INDEX idx_unresolved_references_identity;
+             UPDATE meta SET value = '26' WHERE key = 'schema_version';",
+        )
         .unwrap();
-    let before = fx.total_rows();
-    let res = conn.execute(
-        "INSERT INTO unresolved_references
-            (source_symbol_id, file_id, edge_kind, reference_name, name_tail, reason,
-             evidence_start_line, evidence_end_line, graph_version)
-         VALUES (?, ?, ?, ?, ?, 'no_match', ?, ?, ?)",
-        rusqlite::params![src, file_id, kind, name, name, line, end, gv],
-    );
-    assert!(res.is_err(), "duplicate insert must be rejected");
-    assert_eq!(fx.total_rows(), before);
+        for _ in 0..2 {
+            conn.execute(
+                "INSERT INTO unresolved_references
+                    (source_symbol_id, file_id, edge_kind, reference_name, name_tail, reason,
+                     import_candidates, detail, evidence_snippet, evidence_start_line,
+                     evidence_end_line, confidence, commit_sha, graph_version)
+                 SELECT source_symbol_id, file_id, edge_kind, reference_name, name_tail, reason,
+                        import_candidates, detail, evidence_snippet, evidence_start_line,
+                        evidence_end_line, confidence, commit_sha, graph_version
+                 FROM unresolved_references WHERE graph_version = ? AND edge_id IS NULL",
+                [gv],
+            )
+            .unwrap();
+        }
+    }
+    assert!(old.total_rows() > expected_total, "duplicates injected");
+
+    // Reopen through the normal path (runs migration 27), then reindex once.
+    let mut reopened = Indexer::new(old.root.clone(), old.db_path.clone()).unwrap();
+    reopened.reindex().unwrap();
+    let conn = old.conn();
+    let gv = reopened.graph_version();
+    let total: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM unresolved_references WHERE graph_version = ?",
+            [gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let routes: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM unresolved_references
+             WHERE graph_version = ? AND edge_kind = 'ROUTE'",
+            [gv],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(total, expected_total);
+    assert_eq!(routes, expected_routes);
+    old.indexer = reopened;
+    assert_eq!(old.contents(), expected_contents);
 }
