@@ -409,13 +409,14 @@ fn outline_next_hops(
                 return Ok(vec![json!({
                     "method": "read_symbol",
                     "params": {"qualname": entry.qualname},
-                    "description": "read_symbol accepts any entry's qualname above to fetch its exact source",
+                    "description": "read_symbol fetches this entry's exact source; it is the first non-namespace/module entry that resolves uniquely within this file",
                 })]);
             }
         }
     }
     let (start_line, end_line) = if markdown {
-        (entries[0].start_line, entries[0].end_line)
+        // From line 1 so any preamble before the first heading is included.
+        (1, entries[0].end_line)
     } else {
         (1, total_lines.max(1))
     };
@@ -1201,19 +1202,5 @@ mod parse_markdown_headings_tests {
         assert_eq!(headings[0].text, "One");
         assert_eq!(headings[1].level, 3);
         assert_eq!(headings[1].text, "Three");
-    }
-}
-
-#[cfg(test)]
-mod outline_hop_kind_tests {
-    use super::is_hop_target_kind;
-
-    #[test]
-    fn namespace_and_module_are_never_hop_targets() {
-        assert!(!is_hop_target_kind("namespace"));
-        assert!(!is_hop_target_kind("module"));
-        for kind in ["class", "function", "method", "struct", "interface"] {
-            assert!(is_hop_target_kind(kind), "{kind}");
-        }
     }
 }

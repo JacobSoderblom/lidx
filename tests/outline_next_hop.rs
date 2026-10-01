@@ -88,6 +88,12 @@ fn files() -> Vec<(&'static str, &'static str)> {
 fn follow(fx: &Fixture, hop: &Value) -> Vec<String> {
     let method = hop["method"].as_str().unwrap();
     let result = call(fx, method, hop["params"].clone());
+    if method == "read_symbol" {
+        assert_eq!(
+            result["qualname"], hop["params"]["qualname"],
+            "fuzzy substitution: {hop} -> {result}"
+        );
+    }
     let mut paths = Vec::new();
     collect_paths(&result, &mut paths);
     paths
