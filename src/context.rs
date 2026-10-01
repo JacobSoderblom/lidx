@@ -5,7 +5,7 @@
 use crate::db::Db;
 use crate::indexer::test_detection::is_test_file;
 use crate::model::{Edge, Symbol};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -76,8 +76,19 @@ pub fn build_file_context(
     let mut callee_seen: HashSet<(String, String)> = HashSet::new();
     let mut xref_seen: HashSet<(String, String)> = HashSet::new();
 
-    // Pre-resolve target symbols for outgoing edges so we know their file paths
-    let mut target_file_cache: HashMap<i64, String> = HashMap::new();
+    // Cache of resolved symbols (qualname, file_path) by id, so each id costs one query.
+    let mut symbol_cache: HashMap<i64, Option<(String, String)>> = HashMap::new();
+    let mut lookup = |id: i64| -> Result<Option<(String, String)>> {
+        if let Some(hit) = symbol_cache.get(&id) {
+            return Ok(hit.clone());
+        }
+        let found = db
+            .get_symbol_by_id(id)
+            .with_context(|| format!("failed to look up symbol {id} for file context"))?
+            .map(|s| (s.qualname, s.file_path));
+        symbol_cache.insert(id, found.clone());
+        Ok(found)
+    };
 
     for edge in &unique_edges {
         // edge.file_path is the file where the edge was *emitted* (source file).
@@ -90,42 +101,15 @@ pub fn build_file_context(
                 if let Some(src_id) = edge.source_symbol_id
                     && symbol_id_set.contains(&src_id)
                 {
-                    // Use the resolved symbol's qualname instead of the raw target_qualname
-                    let name = if let Some(tgt_id) = edge.target_symbol_id {
-                        db.get_symbol_by_id(tgt_id)
-                            .ok()
-                            .flatten()
-                            .map(|s| s.qualname)
-                            .unwrap_or_else(|| "?".to_string())
-                    } else {
-                        "?".to_string()
+                    // Unresolved targets are omitted: the raw target_qualname is only
+                    // an extractor guess and may name a symbol that does not exist.
+                    let Some(tgt_id) = edge.target_symbol_id else {
+                        continue;
                     };
-
-                    // Resolve target file from target_symbol_id
-                    let target_file = if let Some(tgt_id) = edge.target_symbol_id {
-                        let file = target_file_cache
-                            .entry(tgt_id)
-                            .or_insert_with(|| {
-                                db.get_symbol_by_id(tgt_id)
-                                    .ok()
-                                    .flatten()
-                                    .map(|s| s.file_path)
-                                    .unwrap_or_default()
-                            })
-                            .clone();
-                        if file.is_empty() { None } else { Some(file) }
-                    } else {
-                        None
+                    let Some((name, callee_file)) = lookup(tgt_id)? else {
+                        continue;
                     };
-                    // Skip if we can't resolve target file (unresolved edges)
-                    // or if it's same-file
-                    let callee_file = match target_file {
-                        Some(f) if f != file_path => f,
-                        _ => continue,
-                    };
-
-                    // Skip unresolved references (marked with "?")
-                    if name == "?" {
+                    if callee_file.is_empty() || callee_file == file_path {
                         continue;
                     }
 
@@ -146,18 +130,9 @@ pub fn build_file_context(
                     && symbol_id_set.contains(&tgt_id)
                     && let Some(src_id) = edge.source_symbol_id
                 {
-                    // Look up the source symbol's qualname instead of formatting id:N
-                    let name = db
-                        .get_symbol_by_id(src_id)
-                        .ok()
-                        .flatten()
-                        .map(|s| s.qualname)
-                        .unwrap_or_else(|| "?".to_string());
-
-                    // Skip unresolved references (marked with "?")
-                    if name == "?" {
+                    let Some((name, _)) = lookup(src_id)? else {
                         continue;
-                    }
+                    };
 
                     let key = (name.clone(), edge.file_path.clone());
                     if caller_seen.insert(key) && callers.len() < MAX_CALLERS {
@@ -181,7 +156,7 @@ pub fn build_file_context(
                 let key = (name.clone(), edge.file_path.clone());
                 if xref_seen.insert(key) && xrefs.len() < MAX_XREFS {
                     xrefs.push(CrossRef {
-                        symbol_name: name,
+                        symbol_name: short_name(&name),
                         file_path: edge.file_path.clone(),
                     });
                 }
@@ -295,4 +270,14 @@ fn build_symbol_summary(symbols: &[Symbol]) -> String {
     }
 
     format!("{} symbols: {}", total, parts.join(", "))
+}
+
+fn short_name(qualname: &str) -> String {
+    // "pkg.core.Greeter.greet" → "Greeter.greet" (last 2 segments)
+    let parts: Vec<&str> = qualname.split('.').collect();
+    if parts.len() <= 2 {
+        qualname.to_string()
+    } else {
+        parts[parts.len() - 2..].join(".")
+    }
 }
