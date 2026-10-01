@@ -11,6 +11,17 @@ pub fn normalize_env_var_name(raw: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
+    // Never turn expression text (calls, quoted strings, subscripts, ...)
+    // into a plausible-looking env URI (issue #225).
+    if trimmed.chars().any(|c| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | '+'
+            )
+    }) {
+        return None;
+    }
     let upper = trimmed.to_uppercase();
     Some(format!("env://{upper}"))
 }
