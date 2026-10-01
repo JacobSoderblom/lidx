@@ -438,16 +438,34 @@ fn fallback_scan(indexer: &mut Indexer, max_batch: usize) -> Result<()> {
         indexer.reindex()?;
         return Ok(());
     }
-    let stats = indexer.sync_rel_paths(&rel_paths)?;
+    let stats = retry_while_reindexing(|| indexer.sync_rel_paths(&rel_paths))?;
     report_errors(&stats, "watch fallback");
     Ok(())
+}
+
+/// Incremental syncs share the reindex lock (issue #250); when a reindex in
+/// another process holds it, wait for it to finish rather than drop the batch.
+fn retry_while_reindexing<T>(mut op: impl FnMut() -> Result<T>) -> Result<T> {
+    const MAX_WAIT: Duration = Duration::from_secs(600);
+    let started = Instant::now();
+    loop {
+        match op() {
+            Err(err)
+                if err.downcast_ref::<crate::db::ReindexBusy>().is_some()
+                    && started.elapsed() < MAX_WAIT =>
+            {
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            other => return other,
+        }
+    }
 }
 
 fn apply_paths(indexer: &mut Indexer, paths: Vec<PathBuf>) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
-    let stats = indexer.sync_abs_paths(&paths)?;
+    let stats = retry_while_reindexing(|| indexer.sync_abs_paths(&paths))?;
     report_errors(&stats, "watch apply");
     Ok(())
 }

@@ -7,6 +7,9 @@ fn default_db_path(repo: &Path) -> PathBuf {
     repo.join(".lidx").join(".lidx.sqlite")
 }
 
+/// `lidx reindex` exit status when another reindex holds the lock (EX_TEMPFAIL).
+const REINDEX_BUSY_EXIT_CODE: i32 = 75;
+
 fn main() -> Result<()> {
     let args = cli::Args::parse();
 
@@ -45,7 +48,15 @@ fn main() -> Result<()> {
                 db_path,
                 indexer::scan::ScanOptions::new(no_ignore),
             )?;
-            let stats = indexer.reindex_with_options(allow_empty)?;
+            let stats = match indexer.reindex_with_options(allow_empty) {
+                Ok(stats) => stats,
+                Err(err) if err.downcast_ref::<db::ReindexBusy>().is_some() => {
+                    // Distinct from a generic failure (1): retry later.
+                    eprintln!("Error: {err}");
+                    std::process::exit(REINDEX_BUSY_EXIT_CODE);
+                }
+                Err(err) => return Err(err),
+            };
             println!("{}", serde_json::to_string_pretty(&stats)?);
             Ok(())
         }
