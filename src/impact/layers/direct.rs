@@ -8,8 +8,8 @@ use crate::db::Db;
 use crate::impact::confidence::apply_distance_decay;
 use crate::impact::types::{ConfidenceScore, ImpactSource, LayerResult, ParentLink};
 use crate::indexer::config::{
-    BridgeTarget, CAP_TRUNCATION_REASON, ConfigScope, Entry, config_edge_allowed,
-    prefer_same_service,
+    BridgeOutcome, BridgeTarget, CAP_TRUNCATION_REASON, CROSS_SERVICE_KIND, ConfigScope, Entry,
+    config_edge_allowed, prefer_same_service,
 };
 use crate::indexer::test_detection::is_test_file;
 use crate::model::{Edge, Symbol};
@@ -153,26 +153,6 @@ fn bridge_hop_is_reversed(edge_kind: &str) -> bool {
     )
 }
 
-/// Every config URI `id`'s own config edges carry (see `traversal`).
-fn config_uris(
-    db: &Db,
-    id: i64,
-    languages: Option<&[String]>,
-    graph_version: i64,
-) -> std::collections::BTreeSet<String> {
-    db.edges_for_symbol(id, languages, graph_version)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|e| {
-            matches!(
-                e.kind.as_str(),
-                "CONFIG_SOURCE" | "CONFIG_READ" | "CONFIG_BIND"
-            )
-        })
-        .filter_map(|e| e.target_qualname)
-        .collect()
-}
-
 /// One BFS frontier entry: a node to expand under `entry`.
 struct QueueItem {
     id: i64,
@@ -200,25 +180,28 @@ fn resolve_bridge_targets(
     languages: Option<&[String]>,
     graph_version: i64,
 ) -> Result<bool> {
-    for BridgeTarget {
-        uri: tq,
-        edge_kind,
-        origin_path,
-        source_id,
-    } in bridge_targets
-    {
+    for bridge in bridge_targets {
+        let BridgeTarget {
+            uri: tq,
+            edge_kind,
+            origin_path,
+            source_id,
+            ..
+        } = bridge;
         if let Some(complement_kinds) = crate::indexer::channel::bridge_complement(edge_kind) {
             let bridged = db
                 .edges_by_target_qualname_and_kinds(tq, complement_kinds, languages, graph_version)
                 .unwrap_or_default();
-            for bridged_edge in prefer_same_service(tq, origin_path, &bridged) {
+            for (bridged_edge, speculative) in prefer_same_service(tq, origin_path, &bridged) {
                 let Some(bridged_id) = bridged_edge.source_symbol_id else {
                     continue;
                 };
-                let Some(admission) = scope.admit_bridge(bridged_id, edge_kind, tq, || {
-                    config_uris(db, bridged_id, languages, graph_version)
-                }) else {
-                    continue;
+                let admission = match scope.admit_bridged(bridge, bridged_id, || {
+                    db.edges_for_symbol(bridged_id, languages, graph_version)
+                        .unwrap_or_default()
+                }) {
+                    BridgeOutcome::Admitted(a) => a,
+                    BridgeOutcome::Skipped | BridgeOutcome::Refused => continue,
                 };
                 visited.insert(bridged_id);
                 cache_symbols(
@@ -235,7 +218,11 @@ fn resolve_bridge_targets(
                 let link = (
                     *source_id,
                     edge_kind.clone(),
-                    bridged_edge.resolution_kind.clone(),
+                    if speculative {
+                        Some(CROSS_SERVICE_KIND.to_string())
+                    } else {
+                        bridged_edge.resolution_kind.clone()
+                    },
                     bridge_hop_is_reversed(edge_kind),
                 );
                 // A re-entry keeps the minimum distance and the first path;
@@ -299,6 +286,7 @@ pub fn analyze_direct_impact(
         languages,
         graph_version,
         None,
+        &[],
     )
 }
 
@@ -318,6 +306,7 @@ pub fn analyze_direct_impact_scoped(
     languages: Option<&[String]>,
     graph_version: i64,
     seed_config_uri: Option<&str>,
+    upstream_only_seeds: &[i64],
 ) -> Result<LayerResult> {
     let start = Instant::now();
     let timeout = Duration::from_secs(5);
@@ -332,8 +321,29 @@ pub fn analyze_direct_impact_scoped(
     // dispatch edge to a closed explicit impl only follows a matching call.
     let mut entry_args = crate::db::EntryArgs::default();
 
+    // Upstream-only seeds (issue #249) matter only to a `both` walk: any other
+    // direction treats them as ordinary seeds.
+    let upstream_only: HashSet<i64> = if direction == TraversalDirection::Both {
+        upstream_only_seeds.iter().copied().collect()
+    } else {
+        HashSet::new()
+    };
+    // The direction a node is expanded in: an upstream-only seed, at its seed
+    // distance, follows incoming edges only.
+    let direction_at = |id: i64, distance: usize| {
+        if distance == 0 && upstream_only.contains(&id) {
+            TraversalDirection::Upstream
+        } else {
+            direction
+        }
+    };
+
     // Load and cache seed symbols
-    let seed_set: HashSet<i64> = seed_ids.iter().copied().collect();
+    let seed_set: HashSet<i64> = seed_ids
+        .iter()
+        .copied()
+        .filter(|id| !upstream_only.contains(id))
+        .collect();
     cache_symbols(
         db,
         &mut symbol_cache,
@@ -347,7 +357,7 @@ pub fn analyze_direct_impact_scoped(
     let valid_seeds: Vec<i64> = seed_ids
         .iter()
         .copied()
-        .filter(|id| symbol_cache.contains_key(id))
+        .filter(|id| symbol_cache.contains_key(id) && !upstream_only.contains(id))
         .collect();
 
     // Seed the queue
@@ -361,6 +371,18 @@ pub fn analyze_direct_impact_scoped(
         });
         visited.insert(id);
         distance_map.insert(id, 0);
+    }
+    // Upstream-only seeds are queued but not marked visited: the container
+    // still reaches them through CONTAINS like a class-only walk, which then
+    // expands them in full, while this queue entry adds their callers.
+    for &id in seed_ids {
+        if upstream_only.contains(&id) && symbol_cache.contains_key(&id) {
+            queue.push_back(QueueItem {
+                id,
+                distance: 0,
+                entry: scope.seed_entry(),
+            });
+        }
     }
 
     let mut truncated = false;
@@ -438,8 +460,11 @@ pub fn analyze_direct_impact_scoped(
                     {
                         continue;
                     }
-                    if let Some(id) = resolve_next_id(edge, *current_id, direction)
-                        && !visited.contains(&id)
+                    if let Some(id) = resolve_next_id(
+                        edge,
+                        *current_id,
+                        direction_at(*current_id, current_distance),
+                    ) && !visited.contains(&id)
                     {
                         neighbor_ids.push(id);
                     }
@@ -477,15 +502,20 @@ pub fn analyze_direct_impact_scoped(
                     if let Some(ref tq) = edge.target_qualname
                         && crate::indexer::channel::bridge_complement(&edge.kind).is_some()
                     {
-                        bridge_targets.push(BridgeTarget {
-                            uri: tq.clone(),
-                            edge_kind: edge.kind.clone(),
-                            origin_path: edge.file_path.clone(),
-                            source_id: *current_id,
-                        });
+                        bridge_targets.extend(ConfigScope::bridges_for(
+                            entry,
+                            edges,
+                            edge,
+                            tq,
+                            *current_id,
+                        ));
                     }
 
-                    let Some(next_id) = resolve_next_id(edge, *current_id, direction) else {
+                    let Some(next_id) = resolve_next_id(
+                        edge,
+                        *current_id,
+                        direction_at(*current_id, current_distance),
+                    ) else {
                         continue;
                     };
 

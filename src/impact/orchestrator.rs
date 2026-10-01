@@ -115,6 +115,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
                     languages,
                     graph_version,
                     config.direct.seed_config_uri.as_deref(),
+                    &config.direct.upstream_only_seeds,
                 ) {
                     Ok(result) => {
                         let mut meta = metadata.lock().unwrap();
@@ -593,6 +594,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
             languages,
             graph_version,
             self.config.direct.seed_config_uri.as_deref(),
+            &self.config.direct.upstream_only_seeds,
         )
     }
 
@@ -711,7 +713,15 @@ impl<'a> MultiLayerOrchestrator<'a> {
         let symbol_map: HashMap<i64, Symbol> = symbols.into_iter().map(|s| (s.id, s)).collect();
 
         // Build impact entries with fused confidence
-        let seed_set: std::collections::HashSet<i64> = seed_ids.iter().copied().collect();
+        // Upstream-only seeds of a `both` walk (issue #249) are reached from
+        // the container like any downstream member, so they are reported
+        // rather than skipped as seeds.
+        let upstream_only = self.upstream_only_seeds();
+        let seed_set: HashSet<i64> = seed_ids
+            .iter()
+            .copied()
+            .filter(|id| !upstream_only.contains(id))
+            .collect();
         let mut affected = Vec::new();
 
         for (symbol_id, evidence) in symbol_evidence {
@@ -793,16 +803,19 @@ impl<'a> MultiLayerOrchestrator<'a> {
                     path,
                     confidence: Some(confidence),
                     also_via,
+                    file_level: crate::indexer::test_detection::is_file_level_test(symbol),
                 });
             }
         }
 
         // Filter out module/namespace-level symbols that add noise
+        // (a JS/TS test file's module is kept: it is the test).
         affected.retain(|entry| {
-            !matches!(
-                entry.symbol.kind.as_str(),
-                "module" | "namespace" | "package"
-            )
+            entry.file_level
+                || !matches!(
+                    entry.symbol.kind.as_str(),
+                    "module" | "namespace" | "package"
+                )
         });
 
         // Sort by distance, then by qualname for determinism
@@ -819,9 +832,34 @@ impl<'a> MultiLayerOrchestrator<'a> {
     }
 
     /// Load seed symbols
+    /// The configured upstream-only seeds, which only a `both` walk treats
+    /// differently from ordinary seeds (see `DirectConfig::upstream_only_seeds`).
+    fn upstream_only_seeds(&self) -> HashSet<i64> {
+        if TraversalDirection::from(self.config.direct.direction.as_str())
+            == TraversalDirection::Both
+        {
+            self.config
+                .direct
+                .upstream_only_seeds
+                .iter()
+                .copied()
+                .collect()
+        } else {
+            HashSet::new()
+        }
+    }
+
+    /// The seed symbols to report: upstream-only seeds are traversal
+    /// scaffolding, not part of the request.
     fn load_seeds(&self, seed_ids: &[i64], graph_version: i64) -> Result<Vec<Symbol>> {
+        let upstream_only = self.upstream_only_seeds();
+        let seed_ids: Vec<i64> = seed_ids
+            .iter()
+            .copied()
+            .filter(|id| !upstream_only.contains(id))
+            .collect();
         let languages = self.config.direct.languages.as_deref();
-        self.db.symbols_by_ids(seed_ids, languages, graph_version)
+        self.db.symbols_by_ids(&seed_ids, languages, graph_version)
     }
 
     /// Build configuration summary for result

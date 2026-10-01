@@ -966,6 +966,11 @@ pub struct ExplainRef {
     /// to the interface method, not to this implementation).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub via_interface: bool,
+    /// A JS/TS test attributed to the whole test file (its module symbol)
+    /// because the calling `describe`/`it`/`test` callback is anonymous: it
+    /// says which file covers the symbol, not which test.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub file_level: bool,
 }
 
 #[derive(Debug, Serialize)]

@@ -4,6 +4,13 @@ pub const CONFIG_SOURCE_KIND: &str = "CONFIG_SOURCE";
 pub const CONFIG_READ_KIND: &str = "CONFIG_READ";
 pub const CONFIG_BIND_KIND: &str = "CONFIG_BIND";
 
+/// Detail JSON keys of an SPC CONFIG_SOURCE edge's `secretObjects` mapping:
+/// written by the YAML extractor, read by `ConfigScope`.
+pub const SPC_MAPPING_FIELD: &str = "mapping";
+pub const SPC_OBJECT_NAME_FIELD: &str = "objectName";
+pub const SPC_SECRET_NAME_FIELD: &str = "secretName";
+pub const SPC_KEY_FIELD: &str = "key";
+
 /// Normalize an env var name to a canonical URI: `env://VARNAME`
 /// Trims whitespace, rejects empty, uppercases.
 pub fn normalize_env_var_name(raw: &str) -> Option<String> {
@@ -122,6 +129,12 @@ pub struct BridgeTarget {
     pub edge_kind: String,
     pub origin_path: String,
     pub source_id: i64,
+    /// Key within `uri` the bridge follows (see `Entry::Key`), when the
+    /// edge's node pairs it with one.
+    pub key: Option<String>,
+    /// Keyed bridges (this one, or the node's own entry) never turn back to
+    /// the node they came from: see `ConfigScope::note_bridge`.
+    pub no_return: bool,
 }
 
 /// What a traversal step may expand a node under: everything (`Unscoped`), or
@@ -130,15 +143,108 @@ pub struct BridgeTarget {
 pub enum Entry {
     Unscoped,
     Uri(String),
+    /// One key of a keyed secret URI (`secret://kv-secrets` key `db-conn`):
+    /// an aggregator entered this way follows only that key's mapping.
+    Key(String, String),
 }
 
 impl Entry {
+    /// `Uri`, or `Key` when the bridge follows one key of it.
+    pub fn scoped(uri: &str, key: Option<&str>) -> Self {
+        match key {
+            Some(k) => Entry::Key(uri.to_string(), k.to_string()),
+            None => Entry::Uri(uri.to_string()),
+        }
+    }
+
     fn as_uri(&self) -> Option<&str> {
         match self {
             Entry::Unscoped => None,
-            Entry::Uri(u) => Some(u),
+            Entry::Uri(u) | Entry::Key(u, _) => Some(u),
         }
     }
+
+    fn key(&self) -> Option<&str> {
+        match self {
+            Entry::Key(_, k) => Some(k),
+            _ => None,
+        }
+    }
+}
+
+fn detail_json(e: &Edge) -> Option<serde_json::Value> {
+    serde_json::from_str(e.detail.as_deref()?).ok()
+}
+
+/// One `secretObjects[].data[]` entry on an SPC's CONFIG_SOURCE edge: the
+/// Key Vault `objectName` synced into the edge's target secret as `key`.
+fn spc_mapping(e: &Edge) -> Vec<(String, String)> {
+    detail_json(e)
+        .and_then(|d| {
+            let m = d.get(SPC_MAPPING_FIELD)?.as_array()?;
+            Some(
+                m.iter()
+                    .filter_map(|m| {
+                        let obj = normalize_secret_name(m.get(SPC_OBJECT_NAME_FIELD)?.as_str()?)?;
+                        Some((obj, m.get(SPC_KEY_FIELD)?.as_str()?.to_string()))
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// A container's `secretKeyRef` env edge: env var URI, the secret URI it
+/// reads and the key within that secret (empty when unspecified).
+struct EnvPairing<'a> {
+    var: &'a str,
+    secret_uri: String,
+    key: String,
+}
+
+fn env_pairing(e: &Edge) -> Option<EnvPairing<'_>> {
+    if e.kind != CONFIG_SOURCE_KIND {
+        return None;
+    }
+    let var = e.target_qualname.as_deref()?;
+    var.strip_prefix("env://")?;
+    let d = detail_json(e)?;
+    let secret = d.get("secret")?.as_str()?.to_lowercase();
+    let key = d.get("key").and_then(|k| k.as_str()).unwrap_or("");
+    Some(EnvPairing {
+        var,
+        secret_uri: format!("secret://{secret}"),
+        key: key.to_string(),
+    })
+}
+
+/// Whether `var` is the entry's env var or one of its `__` section children.
+fn env_related(entry_var: Option<&str>, var: &str) -> bool {
+    entry_var.is_some_and(|x| {
+        let x = format!("env://{x}");
+        var == x || var.strip_prefix(&x).is_some_and(|r| r.starts_with("__"))
+    })
+}
+
+/// Every config URI `edges` (one node's) carry: the only URIs a config bridge
+/// can enter that node on.
+pub fn config_uris(edges: &[Edge]) -> BTreeSet<String> {
+    edges
+        .iter()
+        .filter(|e| is_config_kind(&e.kind))
+        .filter_map(|e| e.target_qualname.clone())
+        .collect()
+}
+
+/// Result of `ConfigScope::admit_bridged`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeOutcome {
+    /// A U-turn, or the node does not pair the bridge's key: ignore it.
+    Skipped,
+    /// The node was already reached under this entry (or hit the per-node
+    /// cap): nothing new to expand, but a shorter path may still replace it.
+    Refused,
+    Admitted(Admission),
 }
 
 /// A newly reached (node, entry) pair.
@@ -176,6 +282,8 @@ pub struct ConfigScope {
     seed_uri: Option<String>,
     seeds: HashSet<i64>,
     capped: bool,
+    /// (node, node it was bridged into from): a bridge never U-turns.
+    came_from: HashSet<(i64, i64)>,
 }
 
 impl ConfigScope {
@@ -223,6 +331,7 @@ impl ConfigScope {
         id: i64,
         bridge_kind: &str,
         uri: &str,
+        key: Option<&str>,
         node_uris: impl FnOnce() -> BTreeSet<String>,
     ) -> Option<Admission> {
         if !is_config_kind(bridge_kind) {
@@ -240,7 +349,7 @@ impl ConfigScope {
             self.capped = true;
             return None;
         }
-        let entry = Entry::Uri(uri.to_string());
+        let entry = Entry::scoped(uri, key);
         if !self.seen.insert((id, entry.clone())) {
             return None;
         }
@@ -249,46 +358,177 @@ impl ConfigScope {
     }
 
     /// URIs a node's config edges may follow when expanded under `entry`, or
-    /// None when unscoped. A node entered via URI `U` keeps `U` plus the secret/env-var mapping of
-    /// its own `secretKeyRef` CONFIG_SOURCE edges (`detail.secret` <-> env var
-    /// and its `__` section prefixes), in both directions, so the chain
-    /// code -> `env://X` -> container -> `secret://S` -> Bicep stays intact.
+    /// None when unscoped. A node entered via URI `U` keeps `U` plus:
+    /// - a container's `secretKeyRef` mapping (`detail.secret` <-> env var and
+    ///   its `__` section prefixes), in both directions, so the chain
+    ///   code -> `env://X` -> container -> `secret://S` -> Bicep stays intact.
+    ///   Entered under key `K` of `S`, only the env vars reading `K`.
+    /// - a SecretProviderClass's `secretObjects` mapping: entered via an
+    ///   `objectName` it keeps the secrets that name is synced into; entered
+    ///   via key `K` of a synced secret, only the `objectName`s mapped to `K`.
     pub fn allowed(entry: &Entry, node_edges: &[Edge]) -> Option<HashSet<String>> {
         let uri = entry.as_uri()?;
         let mut allowed = HashSet::from([uri.to_string()]);
         let entry_var = uri.strip_prefix("env://");
         for e in node_edges.iter().filter(|e| e.kind == CONFIG_SOURCE_KIND) {
-            let Some(tq) = e.target_qualname.as_deref() else {
-                continue;
-            };
-            let Some(var) = tq.strip_prefix("env://") else {
-                continue;
-            };
-            let Some(secret) = e
-                .detail
-                .as_deref()
-                .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
-                .and_then(|v| Some(v.get("secret")?.as_str()?.to_lowercase()))
-            else {
-                continue;
-            };
-            let secret_uri = format!("secret://{secret}");
-            let related = uri == secret_uri
-                || entry_var.is_some_and(|x| {
-                    var == x || var.strip_prefix(x).is_some_and(|r| r.starts_with("__"))
-                });
-            if !related {
+            if let Some(EnvPairing {
+                var,
+                secret_uri,
+                key,
+            }) = env_pairing(e)
+            {
+                let key_ok = entry.key().is_none_or(|k| key.is_empty() || key == k);
+                if !((uri == secret_uri && key_ok) || env_related(entry_var, var)) {
+                    continue;
+                }
+                allowed.insert(secret_uri);
+                allowed.insert(var.to_string());
+                let name = &var["env://".len()..];
+                for (idx, _) in name.match_indices("__") {
+                    if idx > 0 {
+                        allowed.insert(format!("env://{}", &name[..idx]));
+                    }
+                }
                 continue;
             }
-            allowed.insert(secret_uri);
-            allowed.insert(tq.to_string());
-            for (idx, _) in var.match_indices("__") {
-                if idx > 0 {
-                    allowed.insert(format!("env://{}", &var[..idx]));
+            let Some(target) = e.target_qualname.as_deref() else {
+                continue;
+            };
+            for (obj_uri, key) in spc_mapping(e) {
+                if uri == obj_uri {
+                    allowed.insert(target.to_string());
+                }
+                if uri == target && entry.key() == Some(key.as_str()) {
+                    allowed.insert(obj_uri);
                 }
             }
         }
         Some(allowed)
+    }
+
+    /// Keys of `node_edges`' node for the secret `uri`: the keys a container
+    /// reads from it, or the keys an SPC syncs into it.
+    fn declared_keys(node_edges: &[Edge], uri: &str) -> HashSet<String> {
+        let mut keys = HashSet::new();
+        for e in node_edges.iter().filter(|e| e.kind == CONFIG_SOURCE_KIND) {
+            if let Some(p) = env_pairing(e) {
+                if p.secret_uri == uri && !p.key.is_empty() {
+                    keys.insert(p.key);
+                }
+            } else if e.target_qualname.as_deref() == Some(uri) {
+                keys.extend(spc_mapping(e).into_iter().map(|(_, k)| k));
+            }
+        }
+        keys
+    }
+
+    /// Whether a node reached by bridging key `key` of `uri` actually pairs
+    /// with that key. A node declaring no keys for `uri` is not narrowed.
+    pub fn accepts_key(node_edges: &[Edge], uri: &str, key: &str) -> bool {
+        let keys = Self::declared_keys(node_edges, uri);
+        keys.is_empty() || keys.contains(key)
+    }
+
+    /// The bridges a traversal step makes over `edge` while expanding a node
+    /// under `entry`: one per key the node pairs with `edge`'s secret, or a
+    /// single keyless one.
+    pub fn bridges_for(
+        entry: &Entry,
+        node_edges: &[Edge],
+        edge: &Edge,
+        uri: &str,
+        source_id: i64,
+    ) -> Vec<BridgeTarget> {
+        let mut keys: Vec<String> = match (edge.kind.as_str(), entry) {
+            (_, Entry::Key(u, k)) if u == uri => vec![k.clone()],
+            (CONFIG_READ_KIND, _) => node_edges
+                .iter()
+                .filter_map(env_pairing)
+                .filter(|p| {
+                    p.secret_uri == uri
+                        && !p.key.is_empty()
+                        && match entry {
+                            Entry::Unscoped => true,
+                            Entry::Uri(u) => {
+                                u == uri || env_related(u.strip_prefix("env://"), p.var)
+                            }
+                            Entry::Key(..) => true,
+                        }
+                })
+                .map(|p| p.key)
+                .collect(),
+            (CONFIG_SOURCE_KIND, Entry::Uri(u)) => spc_mapping(edge)
+                .into_iter()
+                .filter(|(obj, _)| obj == u)
+                .map(|(_, k)| k)
+                .collect(),
+            _ => Vec::new(),
+        };
+        keys.sort();
+        keys.dedup();
+        let target = |key: Option<String>| BridgeTarget {
+            uri: uri.to_string(),
+            edge_kind: edge.kind.clone(),
+            origin_path: edge.file_path.clone(),
+            source_id,
+            no_return: key.is_some() || entry.key().is_some(),
+            key,
+        };
+        if keys.is_empty() {
+            vec![target(None)]
+        } else {
+            keys.into_iter().map(|k| target(Some(k))).collect()
+        }
+    }
+
+    /// Decide whether `bridge` may enter `to`, in one step: refuses a U-turn
+    /// and a node that does not pair the bridge's key, then admits the
+    /// (node, URI) pair and records the bridge. `load_edges` fetches `to`'s
+    /// edges; it runs at most once, and only when needed.
+    pub fn admit_bridged(
+        &mut self,
+        bridge: &BridgeTarget,
+        to: i64,
+        load_edges: impl FnOnce() -> Vec<Edge>,
+    ) -> BridgeOutcome {
+        if self.is_u_turn(bridge.source_id, to) {
+            return BridgeOutcome::Skipped;
+        }
+        let cell = std::cell::OnceCell::new();
+        let mut load = Some(load_edges);
+        let mut edges =
+            || -> &Vec<Edge> { cell.get_or_init(|| (load.take().expect("loaded once"))()) };
+        if let Some(key) = bridge.key.as_deref()
+            && !Self::accepts_key(edges(), &bridge.uri, key)
+        {
+            return BridgeOutcome::Skipped;
+        }
+        match self.admit_bridge(
+            to,
+            &bridge.edge_kind,
+            &bridge.uri,
+            bridge.key.as_deref(),
+            || config_uris(edges()),
+        ) {
+            Some(a) => {
+                self.note_bridge(bridge, to);
+                BridgeOutcome::Admitted(a)
+            }
+            None => BridgeOutcome::Refused,
+        }
+    }
+
+    /// Whether bridging from `from` into `to` would turn back to where `from`
+    /// was bridged in from (only keyed bridges are recorded).
+    pub fn is_u_turn(&self, from: i64, to: i64) -> bool {
+        self.came_from.contains(&(from, to))
+    }
+
+    /// Record that `to` was bridged into from `from`, if `bridge` is keyed.
+    pub fn note_bridge(&mut self, bridge: &BridgeTarget, to: i64) {
+        if bridge.no_return {
+            self.came_from.insert((to, bridge.source_id));
+        }
     }
 }
 
@@ -303,19 +543,81 @@ pub fn config_edge_allowed(edge: &Edge, allowed: Option<&HashSet<String>>) -> bo
             .is_some_and(|tq| allowed.contains(tq))
 }
 
-/// Narrow the complement edges of an `env://` bridge to the same service as
-/// the origin, when any of them is (prefer, never exclude: with no match all
-/// are kept). Other URIs are returned unchanged.
-pub fn prefer_same_service<'a>(uri: &str, origin_path: &str, bridged: &'a [Edge]) -> Vec<&'a Edge> {
-    let all = || bridged.iter().collect::<Vec<_>>();
+/// `resolution_kind` stamped on an HTTP bridge hop that crossed into another
+/// service because it was the only one declaring the path (issue #233): a
+/// guess, distinguishable from a same-service bridge (spec criterion 7).
+pub const CROSS_SERVICE_KIND: &str = "cross_service_http";
+
+/// Narrow the complement edges of a bridge to the same service as the origin.
+/// `env://` bridges *prefer* it (with no match all are kept). HTTP bridges
+/// are stricter, because a bare path like `/health/live` is declared by many
+/// unrelated services: same-service routes win; with none, the routes are
+/// kept only when they all belong to one service (a unique target), else
+/// none (issue #233). Each edge is paired with whether it is such a
+/// speculative cross-service fallback. Other bridges are returned unchanged.
+pub fn prefer_same_service<'a>(
+    uri: &str,
+    origin_path: &str,
+    bridged: &'a [Edge],
+) -> Vec<(&'a Edge, bool)> {
+    let all = |speculative: bool| bridged.iter().map(|e| (e, speculative)).collect();
     if !uri.starts_with("env://") {
-        return all();
+        if bridged.is_empty() || !bridged.iter().all(|e| e.kind.starts_with("HTTP_")) {
+            return all(false);
+        }
+        let origin = service_root(origin_path);
+        let keys: Vec<String> = bridged.iter().map(|e| service_root(&e.file_path)).collect();
+        let same: Vec<(&Edge, bool)> = bridged
+            .iter()
+            .zip(&keys)
+            .filter(|(_, k)| **k == origin)
+            .map(|(e, _)| (e, false))
+            .collect();
+        if !same.is_empty() {
+            return same;
+        }
+        return if keys.iter().all(|k| *k == keys[0]) {
+            all(true)
+        } else {
+            Vec::new()
+        };
     }
-    let same: Vec<&Edge> = bridged
+    let same: Vec<(&Edge, bool)> = bridged
         .iter()
         .filter(|e| same_service(origin_path, &e.file_path))
+        .map(|e| (e, false))
         .collect();
-    if same.is_empty() { all() } else { same }
+    if same.is_empty() { all(false) } else { same }
+}
+
+/// Service identity for a *code* path, used for HTTP code-vs-code narrowing.
+/// Not shared with `same_service`: that relates a manifest (identified by its
+/// deploy directory's name token) to code, and has no code-side root to
+/// compare; the two never apply to the same pair of paths. A single key cannot
+/// serve both relations. The root is the directories
+/// leading to the first source/test layout directory (`py/orch/src/...` and
+/// `py/orch/tests/...` -> `py/orch`; `services/team/foo/src/...` ->
+/// `services/team/foo`). A path that starts with a layout directory takes the
+/// next component too (`src/frontend/...` -> `src/frontend`), and a path with
+/// no layout directory is capped at two components. Ceiling: a flat layout
+/// splits a service across subpackages; every mis-key either merges or splits
+/// services, so the HTTP caller can only get its old behaviour (a bridge) or
+/// lose a speculative one.
+fn service_root(path: &str) -> String {
+    let dirs: Vec<&str> = path.split('/').collect();
+    let dirs = &dirs[..dirs.len().saturating_sub(1)];
+    let end = match dirs.iter().position(|d| is_layout_dir(d)) {
+        Some(0) => 2.min(dirs.len()),
+        Some(i) => i,
+        None => 2.min(dirs.len()),
+    };
+    dirs[..end].join("/")
+}
+
+fn is_layout_dir(d: &str) -> bool {
+    crate::indexer::test_detection::TEST_DIR_NAMES.contains(&d)
+        || d.starts_with("test_")
+        || matches!(d, "src" | "lib" | "app" | "cmd" | "internal" | "pkg")
 }
 
 const GENERIC_DIRS: &[&str] = &[
@@ -494,20 +796,26 @@ mod tests {
     fn scope_reenters_per_uri() {
         let mut s = ConfigScope::default();
         let a = s
-            .admit_bridge(1, CONFIG_SOURCE_KIND, "env://U0", || uris(2))
+            .admit_bridge(1, CONFIG_SOURCE_KIND, "env://U0", None, || uris(2))
             .unwrap();
         assert_eq!((a.entry, a.expand), (uri("env://U0"), true));
         let b = s
-            .admit_bridge(1, CONFIG_SOURCE_KIND, "env://U1", || unreachable!())
+            .admit_bridge(1, CONFIG_SOURCE_KIND, "env://U1", None, || unreachable!())
             .unwrap();
         assert_eq!(b.entry, uri("env://U1"));
         assert!(
-            s.admit_bridge(1, CONFIG_SOURCE_KIND, "env://U1", || unreachable!())
+            s.admit_bridge(1, CONFIG_SOURCE_KIND, "env://U1", None, || unreachable!())
                 .is_none()
         );
         // Non-config bridges stay visit-once.
-        assert!(s.admit_bridge(2, "RPC_IMPL", "x", BTreeSet::new).is_some());
-        assert!(s.admit_bridge(2, "RPC_IMPL", "x", BTreeSet::new).is_none());
+        assert!(
+            s.admit_bridge(2, "RPC_IMPL", "x", None, BTreeSet::new)
+                .is_some()
+        );
+        assert!(
+            s.admit_bridge(2, "RPC_IMPL", "x", None, BTreeSet::new)
+                .is_none()
+        );
         assert!(!s.capped());
     }
 
@@ -520,7 +828,7 @@ mod tests {
                 .into_iter()
                 .map(|i| format!("env://U{i}"))
                 .filter(|u| {
-                    s.admit_bridge(3, CONFIG_READ_KIND, u, || uris(10))
+                    s.admit_bridge(3, CONFIG_READ_KIND, u, None, || uris(10))
                         .is_some()
                 })
                 .collect();
@@ -534,7 +842,7 @@ mod tests {
         // Bridge first, then plain: both pairs are reached, both expand.
         let mut s = ConfigScope::default();
         assert!(
-            s.admit_bridge(1, CONFIG_READ_KIND, "env://U0", || uris(2))
+            s.admit_bridge(1, CONFIG_READ_KIND, "env://U0", None, || uris(2))
                 .unwrap()
                 .expand
         );
@@ -544,7 +852,7 @@ mod tests {
         let mut s = ConfigScope::default();
         s.admit_plain(1).unwrap();
         let b = s
-            .admit_bridge(1, CONFIG_READ_KIND, "env://U0", || uris(2))
+            .admit_bridge(1, CONFIG_READ_KIND, "env://U0", None, || uris(2))
             .unwrap();
         assert_eq!((b.entry, b.expand), (uri("env://U0"), false));
         // Seeds resolved from a URI stay scoped.
@@ -560,5 +868,24 @@ mod tests {
         assert!(same_service("svc/a/deploy.yaml", "svc/a/src/x.cs"));
         assert!(!same_service("deploy.yaml", "anything.cs"));
         assert!(!same_service("a/x.bicep", "b/y.cs"));
+    }
+
+    #[test]
+    fn service_root_keys() {
+        assert_eq!(service_root("py/orch/src/a/b.py"), "py/orch");
+        assert_eq!(service_root("py/orch/tests/t.py"), "py/orch");
+        assert_eq!(
+            service_root("services/team/foo/src/x.py"),
+            "services/team/foo"
+        );
+        assert_eq!(
+            service_root("services/team/bar/src/x.py"),
+            "services/team/bar"
+        );
+        assert_ne!(
+            service_root("src/frontend/a.ts"),
+            service_root("src/backend/a.py")
+        );
+        assert_eq!(service_root("x.py"), "");
     }
 }
