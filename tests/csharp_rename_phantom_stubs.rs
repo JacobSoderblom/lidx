@@ -313,3 +313,219 @@ fn python_function_rename_still_matches_fresh() {
 
     assert_eq!(inc, fresh_dump(&[("lib.py", lib_renamed), ("app.py", app)]));
 }
+
+// ---------------------------------------------------------------------
+// Stub-name guard (the repair path invents no phantom `ext:` stubs)
+// ---------------------------------------------------------------------
+
+const SYSTEM_CALLER: &str = "using System;\nnamespace App;\n\
+public class Logger\n{\n    public void Say()\n    {\n        Console.WriteLine(1);\n    }\n}\n";
+
+fn external_stubs(db_path: &PathBuf, graph_version: i64) -> BTreeSet<String> {
+    let conn = Connection::open(db_path).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT qualname FROM symbols WHERE graph_version = ? AND kind = 'external'")
+        .unwrap();
+    stmt.query_map([graph_version], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+/// Drive the repair pass directly on callers whose declaration vanished and
+/// whose stored import candidates are stale (what `carry_forward_files`
+/// leaves behind), with no re-extraction to mask the stub path: the result
+/// must be what a fresh index of the renamed tree records, and the only
+/// stub is the genuinely external one.
+#[test]
+fn repair_pass_invents_no_stub_for_a_repo_namespace_or_receiver_text() {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-256-guard-")
+        .tempdir()
+        .unwrap();
+    let root = tmp.path().to_path_buf();
+    let mut files: Vec<(&str, &str)> = BASE.to_vec();
+    files.push(("d_ext/Logger.cs", SYSTEM_CALLER));
+    common::write_files(&root, &files);
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let gv = indexer.graph_version();
+    assert_eq!(
+        external_stubs(&db_path, gv),
+        BTreeSet::from(["ext:Console.WriteLine".to_string()]),
+        "baseline: only the genuinely external call is stubbed"
+    );
+
+    // The declaration disappears; its callers keep their stale candidates
+    // and lose their target, exactly as a carried-forward edge does.
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE edges SET target_symbol_id = NULL, resolution_kind = NULL
+             WHERE graph_version = ?1 AND target_symbol_id IN
+               (SELECT id FROM symbols WHERE graph_version = ?1
+                  AND qualname = 'Dpb.Common.Database.Extensions.AddDatabase')",
+            [gv],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM edges WHERE graph_version = ?1 AND kind = 'CONTAINS'
+               AND target_qualname = 'Dpb.Common.Database.Extensions.AddDatabase'",
+            [gv],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM symbols WHERE graph_version = ?1
+               AND qualname = 'Dpb.Common.Database.Extensions.AddDatabase'",
+            [gv],
+        )
+        .unwrap();
+    }
+    indexer.db().repair_unresolved(gv, true, "test").unwrap();
+
+    let repaired = dump(&indexer, &db_path);
+    let mut renamed: Vec<(&str, &str)> = files.clone();
+    renamed[0] = ("a_common/Extensions.cs", EXTENSIONS_RENAMED);
+    let fresh = fresh_dump(&renamed);
+    assert_eq!(
+        external_stubs(&db_path, gv),
+        BTreeSet::from(["ext:Console.WriteLine".to_string()]),
+        "no stub named after a repo namespace or `receiver.member` text"
+    );
+    assert_eq!(repaired.0, fresh.0, "CALLS edges must match fresh");
+    assert_eq!(
+        repaired.1, fresh.1,
+        "unresolved references must match fresh"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Unresolved reason: carried/repair path == fresh parse
+// ---------------------------------------------------------------------
+
+const PY_CALLER: &str = "def run():\n    decorate()\n";
+const PY_DECL_A: &str = "def decorate():\n    pass\n";
+const PY_DECL_B: &str = "def decorate():\n    return 1\n";
+
+/// `decorate()` is `no_candidates` until two declarations arrive; the
+/// carried caller's stored label must follow to `ambiguous`, as a fresh
+/// parse records it (the reason decides whether a later deletion retries).
+fn candidates_arrive(process: Process) {
+    let inc = edit_and_compare(
+        &[("c.py", PY_CALLER)],
+        &[
+            Edit::Write("a.py", PY_DECL_A),
+            Edit::Write("b.py", PY_DECL_B),
+        ],
+        process,
+        "lidx-256-reason-add-",
+    );
+    assert!(
+        inc.dump.1.iter().any(|u| u.ends_with("|ambiguous")),
+        "{:#?}",
+        inc.dump.1
+    );
+}
+
+#[test]
+fn reason_follows_arriving_candidates_same_process() {
+    candidates_arrive(Process::Same);
+}
+
+#[test]
+fn reason_follows_arriving_candidates_new_process() {
+    candidates_arrive(Process::New);
+}
+
+/// The reverse: both candidates are deleted, so the stored `ambiguous` label
+/// must become `no_candidates` even though no symbol matches it any more.
+fn candidates_vanish(process: Process) {
+    let inc = edit_and_compare(
+        &[
+            ("c.py", PY_CALLER),
+            ("a.py", PY_DECL_A),
+            ("b.py", PY_DECL_B),
+        ],
+        &[Edit::Delete("a.py"), Edit::Delete("b.py")],
+        process,
+        "lidx-256-reason-del-",
+    );
+    assert!(
+        inc.dump.1.iter().any(|u| u.ends_with("|no_candidates")),
+        "{:#?}",
+        inc.dump.1
+    );
+}
+
+#[test]
+fn reason_follows_vanishing_candidates_same_process() {
+    candidates_vanish(Process::Same);
+}
+
+#[test]
+fn reason_follows_vanishing_candidates_new_process() {
+    candidates_vanish(Process::New);
+}
+
+// ---------------------------------------------------------------------
+// Bridge-kind edges keep their (targetless) edge through the repair pass
+// ---------------------------------------------------------------------
+
+/// A `CHANNEL_PUBLISH` with no subscriber has no target; the repair pass
+/// must keep the edge and re-store its reference (`edge_id` set), unlike a
+/// non-bridge `CALLS`, which is demoted to the store alone.
+#[test]
+fn bridge_edge_without_a_target_is_retained_by_the_repair_pass() {
+    let publisher = "def send(msg):\n    _bus.publish(\"order-created\", msg)\n";
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-256-bridge-")
+        .tempdir()
+        .unwrap();
+    let root = tmp.path().to_path_buf();
+    common::write_files(&root, &[("pub.py", publisher)]);
+    let db_path = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root, db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let gv = indexer.graph_version();
+
+    let bridge_state = |db_path: &PathBuf| -> (i64, i64) {
+        let conn = Connection::open(db_path).unwrap();
+        let edges = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE graph_version = ?1
+                   AND kind = 'CHANNEL_PUBLISH' AND target_symbol_id IS NULL
+                   AND target_qualname = 'channel://order-created'",
+                [gv],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let stored = conn
+            .query_row(
+                "SELECT COUNT(*) FROM unresolved_references ur
+                 JOIN edges e ON e.id = ur.edge_id
+                 WHERE ur.graph_version = ?1 AND e.kind = 'CHANNEL_PUBLISH'",
+                [gv],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (edges, stored)
+    };
+    assert_eq!(bridge_state(&db_path), (1, 1), "baseline");
+
+    // Lose the store row so reconcile has to re-judge the bare edge.
+    Connection::open(&db_path)
+        .unwrap()
+        .execute(
+            "DELETE FROM unresolved_references WHERE graph_version = ?1 AND edge_id IS NOT NULL",
+            [gv],
+        )
+        .unwrap();
+    assert_eq!(bridge_state(&db_path), (1, 0));
+    indexer.db().repair_unresolved(gv, false, "test").unwrap();
+    assert_eq!(
+        bridge_state(&db_path),
+        (1, 1),
+        "the bridge edge stays and its reference is re-stored"
+    );
+}

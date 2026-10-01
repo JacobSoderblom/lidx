@@ -1353,7 +1353,27 @@ impl<'c> Resolver<'c> {
             // to resolve outside the repo (standard library, third-party
             // packages)".
             None if refuse_names && !never_external(r) => {
-                self.stub_resolution(r.target_qualname, r.import_candidates, r.bare_call, false)
+                match self.stub_resolution(
+                    r.source_lang,
+                    r.target_qualname,
+                    r.import_candidates,
+                    r.bare_call,
+                    false,
+                )? {
+                    Some(stub) => Ok(stub),
+                    // The stored import candidates point into this very
+                    // repository (issue #256: a renamed extension method
+                    // whose callers were carried forward), so they are
+                    // stale evidence, not proof of an external receiver:
+                    // judge the call as a fresh parse without them would.
+                    None => self.resolve_tiers(
+                        &Reference {
+                            import_candidates: &[],
+                            ..*r
+                        },
+                        symbol_map,
+                    ),
+                }
             }
             // A builtin/unresolved receiver type with no import involved at
             // all (a local variable, e.g. `cells = []` then
@@ -1380,11 +1400,18 @@ impl<'c> Resolver<'c> {
                     Some(qn) => self.is_known_external_fallback(r.source_lang, qn)?,
                     None => false,
                 };
-                if is_external {
-                    self.stub_resolution(r.target_qualname, r.import_candidates, r.bare_call, true)
+                let stub = if is_external {
+                    self.stub_resolution(
+                        r.source_lang,
+                        r.target_qualname,
+                        r.import_candidates,
+                        r.bare_call,
+                        true,
+                    )?
                 } else {
-                    Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates))
-                }
+                    None
+                };
+                Ok(stub.unwrap_or(Resolution::Unresolved(UnresolvedReason::NoCandidates)))
             }
         }
     }
@@ -2261,23 +2288,80 @@ impl<'c> Resolver<'c> {
     /// `Resolution::stored_receiver_type`.
     fn stub_resolution(
         &mut self,
+        source_lang: &str,
         target_qualname: Option<&str>,
         import_candidates: &[String],
         bare_call: bool,
         via_language_fallback: bool,
-    ) -> Result<Resolution> {
-        match external_stub_qualname(target_qualname, import_candidates, bare_call) {
-            Some(qualname) => {
-                let stub_id = self.resolve_external_stub(&qualname)?;
-                Ok(resolved(
-                    stub_id,
-                    ResolutionKind::External {
-                        via_language_fallback,
-                    },
-                ))
-            }
-            None => Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates)),
+    ) -> Result<Option<Resolution>> {
+        let Some(qualname) = external_stub_qualname(target_qualname, import_candidates, bare_call)
+        else {
+            return Ok(Some(Resolution::Unresolved(UnresolvedReason::NoCandidates)));
+        };
+        if !self.denotes_external_symbol(source_lang, &qualname, import_candidates)? {
+            return Ok(None);
         }
+        let stub_id = self.resolve_external_stub(&qualname)?;
+        Ok(Some(resolved(
+            stub_id,
+            ResolutionKind::External {
+                via_language_fallback,
+            },
+        )))
+    }
+
+    /// Whether the stub name `qualname` (`ext:`-prefixed) can denote a real
+    /// entity outside the repository (issue #256). It cannot when it is
+    /// raw call-expression text (`a.b().c`) or lies inside a namespace or
+    /// module this repository declares. Nor can a name that is only the
+    /// call's own receiver-plus-member text -- no import candidate ends
+    /// with it, so it names a local value, not an import-bound entity --
+    /// when every import candidate points into the repository too: the
+    /// evidence then says the target is a repository symbol that is gone.
+    fn denotes_external_symbol(
+        &mut self,
+        source_lang: &str,
+        qualname: &str,
+        import_candidates: &[String],
+    ) -> Result<bool> {
+        let name = qualname
+            .strip_prefix(EXTERNAL_STUB_PREFIX)
+            .unwrap_or(qualname);
+        if is_raw_call_text(name) || self.names_repo_namespace(source_lang, name)? {
+            return Ok(false);
+        }
+        if import_candidates.is_empty() || import_candidates.iter().any(|c| ends_with_name(c, name))
+        {
+            return Ok(true);
+        }
+        for candidate in import_candidates {
+            if !self.names_repo_namespace(source_lang, candidate)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether `name`, or a leading separator-delimited prefix of it, is a
+    /// namespace or module symbol this graph_version declares in the
+    /// language family of `source_lang`.
+    fn names_repo_namespace(&mut self, source_lang: &str, name: &str) -> Result<bool> {
+        let family = resolution_language_family(source_lang);
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT f.language FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.graph_version = ?1 AND s.qualname = ?2
+               AND s.kind IN ('namespace', 'module')",
+        )?;
+        for prefix in qualname_prefixes(name) {
+            let mut rows = stmt.query(params![self.graph_version, prefix])?;
+            while let Some(row) = rows.next()? {
+                let language: String = row.get(0)?;
+                if resolution_language_family(&language) == family {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Get-or-create the external stub symbol for `qualname` (already
@@ -2362,6 +2446,39 @@ fn never_external(r: &Reference<'_>) -> bool {
     r.edge_kind == "USES" && r.source_lang == "csharp"
 }
 
+/// The `ext:` marker every external stub qualname starts with.
+const EXTERNAL_STUB_PREFIX: &str = "ext:";
+
+/// Raw call-expression text (`a.b().c`, `x[0].y`) rather than a dotted
+/// name: never a real external entity's name.
+fn is_raw_call_text(name: &str) -> bool {
+    name.chars().any(|c| {
+        c.is_whitespace() || matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | ';' | '"' | '\'')
+    })
+}
+
+/// Whether `candidate` is `name` or ends with it at a segment boundary
+/// (`.`, `::` or the `:` JS/TS candidates use after the module).
+fn ends_with_name(candidate: &str, name: &str) -> bool {
+    candidate
+        .strip_suffix(name)
+        .is_some_and(|head| head.is_empty() || head.ends_with(['.', ':']))
+}
+
+/// `name` and each leading prefix of it that ends before a `.` or `::`
+/// separator.
+fn qualname_prefixes(name: &str) -> Vec<&str> {
+    let bytes = name.as_bytes();
+    let mut out = Vec::new();
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (*b == b'.' || (*b == b':' && bytes.get(i + 1) == Some(&b':'))) {
+            out.push(&name[..i]);
+        }
+    }
+    out.push(name);
+    out
+}
+
 /// The stub qualname for a known-external outcome (issue #80): `ext:` plus
 /// the reference's own text.
 ///
@@ -2395,7 +2512,7 @@ fn external_stub_qualname(
     } else {
         target_qualname.or_else(first_candidate)
     }?;
-    Some(format!("ext:{text}"))
+    Some(format!("{EXTERNAL_STUB_PREFIX}{text}"))
 }
 
 fn resolved(target_id: i64, kind: ResolutionKind) -> Resolution {
@@ -3052,19 +3169,19 @@ impl Db {
     ///
     /// `symbols_deleted_this_batch` -- true when this sync/reindex removed
     /// any symbol, a whole file's or just one in-place-edited-away
-    /// definition (see the callers' own docs) -- widens the join for
-    /// `reason = 'ambiguous'` rows only, to match against *every* existing
-    /// symbol instead of just ones past the watermark, and skips the
-    /// cheap-check early return so that widened pass still runs even when
-    /// nothing new was inserted. Ambiguity is the only reason a deletion
-    /// (rather than an insertion) can unblock: it's the only outcome caused
-    /// by *too many* candidates, so removing one can turn it unique again,
-    /// and no new `symbols.id` is ever inserted for the watermark to notice
-    /// that by. Every other reason (`NoCandidates`, `External`, `Private`)
-    /// can only be fixed by something arriving, so those rows keep the
-    /// normal watermark-gated join even on a deletion-carrying batch. Still
-    /// only re-resolves rows already in the store, so this stays bounded by
-    /// the store's size rather than every edge in the graph.
+    /// definition (see the callers' own docs) -- also retries every
+    /// `reason = 'ambiguous'` or `'private'` row, matching a symbol or not,
+    /// and skips the cheap-check early return so that pass still runs even
+    /// when nothing new was inserted. Those are the only reasons a deletion
+    /// (rather than an insertion) can change: they are caused by *too many*
+    /// or only-private candidates, so removing one can make the reference
+    /// unique again or leave no candidate at all, and no new `symbols.id`
+    /// is ever inserted for the watermark to notice that by. Every other
+    /// reason (`NoCandidates`, `External`) can only be fixed by something
+    /// arriving, so those rows keep the normal watermark-gated join even on
+    /// a deletion-carrying batch. Still only re-resolves rows already in the
+    /// store, so this stays bounded by the store's size rather than every
+    /// edge in the graph.
     ///
     /// Issue #78/#79 follow-up (finding G1): a reference resolvable only via
     /// the receiver-type/inheritance tier (`Resolver::resolve_via_inheritance`)
@@ -3094,8 +3211,9 @@ impl Db {
     /// `Db::insert_edges` resolved it the first time. A resolved reference
     /// updates its edge (`target_symbol_id`/`resolution_kind`) and leaves
     /// the store; a still-unresolved one is left in place for a later
-    /// pass, its original `reason` unchanged even if a different one would
-    /// now apply.
+    /// pass, relabelled with the reason the retry classified (a fresh parse
+    /// of the same tree records that one, and `Ambiguous` rows are the ones
+    /// a deletion revisits, so a stale label would strand the row).
     ///
     /// The join is a heuristic proxy for "worth retrying", not the
     /// resolver's own suffix-matching rule (`resolve_import`'s second
@@ -3178,7 +3296,7 @@ impl Db {
                  JOIN symbols s ON (s.qualname = ur.reference_name OR s.name = ur.name_tail)
                  WHERE ur.graph_version = ?1
                    AND s.graph_version = ?1
-                   AND (s.id > ?2 OR (?3 AND ur.reason = 'ambiguous'))
+                   AND s.id > ?2
 
                  UNION
 
@@ -3194,7 +3312,8 @@ impl Db {
                  LEFT JOIN symbols src ON src.id = ur.source_symbol_id
                  WHERE ur.graph_version = ?1
                    AND ((?4 AND ur.receiver_type IS NOT NULL AND ur.receiver_type != '')
-                        OR ur.deferred_kind IS NOT NULL)",
+                        OR ur.deferred_kind IS NOT NULL
+                        OR (?3 AND ur.reason IN ('ambiguous', 'private')))",
             )?;
             let rows = stmt.query_map(
                 params![
@@ -3257,10 +3376,18 @@ impl Db {
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             let mut delete_store = tx.prepare("DELETE FROM unresolved_references WHERE id = ?")?;
+            let mut relabel_store = tx.prepare(
+                "UPDATE unresolved_references SET reason = ?1 WHERE id = ?2 AND reason != ?1",
+            )?;
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &candidates {
                 let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
+                // Still unresolved: relabel it with the reason this pass
+                // classified, the one a fresh parse would record now.
+                if let Some(reason) = resolution.unresolved_reason() {
+                    relabel_store.execute(params![reason.as_str(), row.store_id])?;
+                }
                 if let Resolution::Resolved { target_id, kind } = resolution {
                     match row.ctx.edge_id {
                         Some(edge_id) => {
