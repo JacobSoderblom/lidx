@@ -6,9 +6,9 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
-const XREF_KIND: &str = "XREF";
+pub const XREF_KIND: &str = "XREF";
 const XREF_MIN_CONFIDENCE: f64 = 0.7;
-const ROUTE_KIND: &str = "ROUTE";
+pub const ROUTE_KIND: &str = "ROUTE";
 const ROUTE_MIN_CONFIDENCE: f64 = 0.85;
 const ROUTE_MAX_LEN: usize = 200;
 const ROUTE_RAW_MAX_BYTES: usize = 200;
@@ -103,7 +103,17 @@ fn collect_xref_edges(
             literal.start_line,
             literal.end_line,
         );
-        for token in extract_tokens(&literal.text) {
+        let text = mask_interpolation(
+            &literal.text,
+            interpolation_style(source, &literal, &file.language),
+        );
+        let prose = is_prose(&text);
+        for token in extract_tokens(&text) {
+            // A lone word inside a sentence is English, not a symbol reference;
+            // only qualified tokens (`dbo.get_user`) are evidence there.
+            if prose && !has_separator(&token) && !token.contains('_') {
+                continue;
+            }
             let Some(match_info) = index.resolve_token(&token, &file.language, &file.rel_path)
             else {
                 continue;
@@ -338,6 +348,16 @@ impl SymbolRefIndex {
         let mut by_key: HashMap<String, Vec<KeyRef>> = HashMap::new();
         for record in records {
             if record.kind == "module" || record.kind == "namespace" {
+                continue;
+            }
+            // Private symbols: nothing outside the file can name them. Visibility
+            // is recorded only for C# (explicit `private`), TS/JS (unexported or
+            // private members) and Rust (non-pub); Go and Python record none, so
+            // they stay eligible (deliberate, safe for precision).
+            // Test files: test code is never the far end of a cross-language link.
+            if crate::db::resolver::is_private(record.visibility.as_deref())
+                || crate::indexer::test_detection::is_test_file(&record.path)
+            {
                 continue;
             }
             let idx = symbols.len();
@@ -579,6 +599,129 @@ fn has_separator(value: &str) -> bool {
 
 fn normalize_separators(value: &str) -> String {
     value.replace("::", ".").replace('/', ".")
+}
+
+/// How a string literal embeds code, so the code can be left out of
+/// tokenisation: `{expr}` is a variable reference, not string content.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Interpolation {
+    None,
+    /// C# `$"{x}"` and Python `f"{x}"`; `escape` means `{{` is a literal brace.
+    Braces {
+        escape: bool,
+    },
+    /// JS/TS template literal `${x}`.
+    DollarBraces,
+}
+
+fn interpolation_style(source: &str, literal: &StringLiteral, language: &str) -> Interpolation {
+    let bytes = source.as_bytes();
+    let start = (literal.start_byte as usize).min(bytes.len());
+    match language {
+        "csharp" => {
+            // `$"`, `$@"`, `@$"`, `$$"""`: count the `$` before the quote.
+            let dollars = bytes[..start]
+                .iter()
+                .rev()
+                .take_while(|&&b| b == b'$' || b == b'@')
+                .filter(|&&b| b == b'$')
+                .count();
+            match dollars {
+                0 => Interpolation::None,
+                1 => Interpolation::Braces { escape: true },
+                // Approximation: in a raw string with two or more `$`, a single `{`
+                // is literal; we treat it as a hole too, which over-masks
+                // (recall-only loss).
+                _ => Interpolation::Braces { escape: false },
+            }
+        }
+        "python" => {
+            let is_f = bytes[..start]
+                .iter()
+                .rev()
+                .take_while(|b| b.is_ascii_alphabetic())
+                .any(|&b| b == b'f' || b == b'F');
+            if is_f {
+                Interpolation::Braces { escape: true }
+            } else {
+                Interpolation::None
+            }
+        }
+        "typescript" | "tsx" | "javascript" if bytes.get(start) == Some(&b'`') => {
+            Interpolation::DollarBraces
+        }
+        _ => Interpolation::None,
+    }
+}
+
+/// Replaces every interpolation hole in `text` with a space, keeping the
+/// literal portions.
+fn mask_interpolation(text: &str, style: Interpolation) -> String {
+    if style == Interpolation::None {
+        return text.to_string();
+    }
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hole_body = match style {
+            Interpolation::Braces { escape: true }
+                if bytes[i] == b'{' && bytes.get(i + 1) == Some(&b'{') =>
+            {
+                out.extend_from_slice(b"{{");
+                i += 2;
+                continue;
+            }
+            Interpolation::Braces { .. } if bytes[i] == b'{' => Some(i + 1),
+            Interpolation::DollarBraces if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'{') => {
+                Some(i + 2)
+            }
+            _ => None,
+        };
+        let Some(body) = hole_body else {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        };
+        out.push(b' ');
+        i = match style {
+            Interpolation::DollarBraces => template_hole_end(bytes, body),
+            _ => brace_hole_end(bytes, body),
+        }
+        .unwrap_or(bytes.len());
+    }
+    // Only whole ASCII-delimited spans were removed, so this stays valid UTF-8.
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// Sentence-like text: three or more words made only of letters, digits and
+/// plain punctuation. Code-shaped text (`select * from x`, `EXEC p @id`)
+/// contains operators and is not prose.
+fn is_prose(text: &str) -> bool {
+    const SQL_WORDS: [&str; 8] = [
+        "select", "from", "exec", "execute", "insert", "update", "delete", "join",
+    ];
+    let has_sql = text
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|w| {
+            let w = w.to_ascii_lowercase();
+            w == "where" || SQL_WORDS.contains(&w.as_str())
+        });
+    if has_sql {
+        return false;
+    }
+    text.split_whitespace()
+        .filter(|w| w.chars().any(char::is_alphabetic))
+        .count()
+        >= 3
+        && text.chars().all(|c| {
+            c.is_alphanumeric()
+                || c.is_whitespace()
+                || matches!(
+                    c,
+                    '\'' | '.' | ',' | ':' | ';' | '!' | '?' | '-' | '_' | '"'
+                )
+        })
 }
 
 fn extract_tokens(text: &str) -> Vec<String> {
@@ -954,6 +1097,26 @@ fn template_close(bytes: &[u8], open: usize) -> Option<usize> {
             b'`' => return Some(i),
             b'$' if bytes.get(i + 1) == Some(&b'{') => i = template_hole_end(bytes, i + 2)?,
             _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Index just past the `}` closing a C#/Python hole whose body starts at
+/// `start`. Brace depth only: `//`, `/*` and `'` are operators or text in these
+/// holes (`{a//b}`, `{x/2}`), not JS comments or quotes.
+fn brace_hole_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 1;
+    for (off, &b) in bytes[start..].iter().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + off + 1);
+                }
+            }
+            _ => {}
         }
     }
     None
@@ -1371,6 +1534,7 @@ mod tests {
             kind: "class".to_string(),
             language: language.to_string(),
             path: path.to_string(),
+            visibility: None,
         }
     }
 
@@ -1638,5 +1802,31 @@ mod tests {
         );
         assert!(normalize_route_literal("api/users").is_none());
         assert!(normalize_route_literal("./src/api/users").is_none());
+    }
+
+    #[test]
+    fn interpolation_holes_are_masked_but_literal_text_kept() {
+        let braces = Interpolation::Braces { escape: true };
+        assert_eq!(
+            mask_interpolation("a {x} b {{lit}} c {y:N{z}}", braces),
+            "a   b {{lit}} c  "
+        );
+        assert_eq!(
+            mask_interpolation("a ${x} b ${ `n ${y}` } c", Interpolation::DollarBraces),
+            "a   b   c"
+        );
+        assert_eq!(mask_interpolation("{x}", Interpolation::None), "{x}");
+        assert_eq!(mask_interpolation("{a//b} k", braces), "  k");
+        assert_eq!(mask_interpolation("{x/2} k", braces), "  k");
+        assert_eq!(mask_interpolation("{a'b} k", braces), "  k");
+    }
+
+    #[test]
+    fn prose_needs_three_plain_words() {
+        assert!(is_prose("Datasource '' already exists."));
+        assert!(!is_prose("select * from get_user(@id)"));
+        assert!(!is_prose("EXEC get_user @id"));
+        assert!(!is_prose("FullLoad"));
+        assert!(!is_prose("SELECT Id FROM Orders WHERE Status"));
     }
 }
