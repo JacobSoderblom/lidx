@@ -120,9 +120,11 @@ struct Context {
     /// walking one file is visible to call sites in a later file — the only
     /// way a single-file extractor can name a cross-file extension method's
     /// real declaring class (see `extension_method_candidates`'s doc for why
-    /// that's unavoidable). Grows monotonically; never pruned or reset
-    /// between files, so a full cold reindex ends with every extension
-    /// method the repo declares, in file-processing order. A call site
+    /// that's unavoidable). Grows monotonically within a run and is reset
+    /// by `begin_run` (issue #256: a renamed declaration's old entry must
+    /// not outlive the run), never between files, so a full cold reindex
+    /// ends with every extension method the repo declares, in
+    /// file-processing order. A call site
     /// whose extension method hasn't been visited *yet* this run simply
     /// gets no candidate from this source — see the ponytail note on
     /// `extension_method_candidates`.
@@ -355,6 +357,23 @@ impl CSharpExtractor {
 }
 
 impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
+    fn begin_run(&mut self) {
+        self.extension_registry.borrow_mut().clear();
+    }
+
+    fn seed_extension_methods(&mut self, methods: &[crate::indexer::extract::ExtensionMethodRow]) {
+        for method in methods {
+            let name = method.qualname.rsplit('.').next().unwrap_or("");
+            register_extension_method(
+                &self.extension_registry,
+                name,
+                &method.qualname,
+                method.namespace.clone(),
+                &method.signature,
+            );
+        }
+    }
+
     fn module_name_from_rel_path(&self, rel_path: &str) -> String {
         module_name_from_rel_path(rel_path)
     }
@@ -5119,15 +5138,98 @@ fn record_extension_method(
             LocalType::Known(name) => Some(name),
             _ => None,
         });
-    let namespace = ctx.namespace_stack.join(".");
     ctx.extension_registry
         .borrow_mut()
         .entry(name.to_string())
         .or_default()
         .push(ExtensionMethodEntry {
             qualname: qualname.to_string(),
-            namespace,
+            namespace: ctx.namespace_stack.join("."),
             receiver_type,
+        });
+}
+
+/// Coarse SQL `LIKE` prefilter for stored extension-method signatures: it
+/// also matches an attributed first parameter (`([NotNull] this T x)`).
+/// Always apply `is_extension_signature` to the rows it returns.
+pub(crate) const EXTENSION_SIGNATURE_LIKE: &str = "(%this %";
+
+/// The text of a stored signature's first parameter, past the opening `(`
+/// and any leading attribute groups (`[A]`, `[A, B]`, `[A][B]`).
+fn first_parameter_text(signature: &str) -> Option<&str> {
+    let mut rest = signature.strip_prefix('(')?.trim_start();
+    while rest.starts_with('[') {
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, c) in rest.char_indices() {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest = rest[end?..].trim_start();
+    }
+    Some(rest)
+}
+
+/// Whether a stored method signature (`method_signature`: the parameter
+/// list, then ` -> return`) has a first parameter carrying the `this`
+/// modifier, i.e. the method is an extension method. Used when re-seeding
+/// the extension registry from the stored graph; extraction itself reads
+/// the AST (`record_extension_method`).
+pub(crate) fn is_extension_signature(signature: &str) -> bool {
+    first_parameter_text(signature)
+        .and_then(|p| p.strip_prefix("this"))
+        .is_some_and(|tail| tail.starts_with(char::is_whitespace))
+}
+
+/// The extended (`this`) parameter's type name of an extension method's
+/// `signature`, when it classifies as a concrete non-builtin type — `None`
+/// for a generic, builtin or otherwise unclassifiable shape.
+fn extension_receiver_type(signature: &str) -> Option<String> {
+    let mut rest = first_parameter_text(signature)?
+        .strip_prefix("this")?
+        .trim_start();
+    // `this ref T x`, `this in T x`: the modifier is not part of the type.
+    while let Some((word, tail)) = rest.split_once(char::is_whitespace) {
+        if matches!(word, "ref" | "in" | "out" | "readonly" | "scoped") {
+            rest = tail.trim_start();
+        } else {
+            break;
+        }
+    }
+    // Generic, tuple and array shapes all collapse to `Other` in
+    // `classify_annotation_raw`, so the first whitespace-delimited token is
+    // enough to tell them apart from a plain (possibly qualified) name.
+    let ty = rest.split_whitespace().next()?;
+    match classify_annotation_raw(ty) {
+        LocalType::Known(name) => Some(name),
+        _ => None,
+    }
+}
+
+fn register_extension_method(
+    registry: &ExtensionRegistry,
+    name: &str,
+    qualname: &str,
+    namespace: String,
+    signature: &str,
+) {
+    registry
+        .borrow_mut()
+        .entry(name.to_string())
+        .or_default()
+        .push(ExtensionMethodEntry {
+            qualname: qualname.to_string(),
+            namespace,
+            receiver_type: extension_receiver_type(signature),
         });
 }
 

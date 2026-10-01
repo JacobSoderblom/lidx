@@ -5962,12 +5962,18 @@ mod tests {
             .iter()
             .map(|s| (s.qualname.clone(), s.id))
             .collect();
-        let edges = vec![make_test_edge_with_import_candidates(
-            "CALLS",
-            "py.pkg.src.pkg.a.caller",
-            target,
-            candidates.iter().map(|c| c.to_string()).collect(),
-        )];
+        // A bare call (`quote(x)`): its target is the same-module guess the
+        // extractor always qualifies it with, so the stub is named after the
+        // import candidate instead (see `external_stub_qualname`).
+        let edges = vec![crate::indexer::extract::EdgeInput {
+            bare_call: true,
+            ..make_test_edge_with_import_candidates(
+                "CALLS",
+                "py.pkg.src.pkg.a.caller",
+                target,
+                candidates.iter().map(|c| c.to_string()).collect(),
+            )
+        }];
         db.insert_edges(file_id, &edges, &symbol_map, 1, None)
             .unwrap();
         let row: Option<(Option<i64>, Option<String>, Option<String>)> = db

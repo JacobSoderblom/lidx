@@ -526,12 +526,32 @@ use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use anyhow::Result;
 use std::path::Path;
 
+/// One stored C# extension method, as `seed_extension_methods` takes it.
+#[derive(Debug, Clone)]
+pub struct ExtensionMethodRow {
+    pub qualname: String,
+    /// The declaring class's enclosing namespace (`""` when none).
+    pub namespace: String,
+    /// The method's stored signature (see `csharp::is_extension_signature`).
+    pub signature: String,
+}
+
 pub trait LanguageExtractor {
     fn module_name_from_rel_path(&self, rel_path: &str) -> String;
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile>;
     /// Project-wide directives (C# `global using`) the next `extract` call
     /// applies on top of the file's own; default: none.
     fn set_project_globals(&mut self, _globals: &[String]) {}
+    /// Called once at the start of every reindex or sync batch: drop any
+    /// cross-file state accumulated by earlier runs (C# extension methods),
+    /// so a long-lived indexer sees only this run's declarations, as a fresh
+    /// process would. Default: none.
+    fn begin_run(&mut self) {}
+    /// Re-register extension methods a previous run stored, for the files
+    /// this run does not re-extract (called right after `begin_run`), so the
+    /// registry never depends on which files happen to be extracted now.
+    /// Default: none.
+    fn seed_extension_methods(&mut self, _methods: &[ExtensionMethodRow]) {}
     fn resolve_imports(
         &self,
         _repo_root: &Path,

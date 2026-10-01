@@ -7,7 +7,9 @@
 
 use crate::db::Db;
 use crate::indexer::csharp;
-use anyhow::Result;
+use crate::indexer::extract::ExtensionMethodRow;
+use anyhow::{Context, Result};
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -156,5 +158,133 @@ impl CsGlobals<'_> {
             }
         }
         Ok(stale)
+    }
+
+    /// Hash-unchanged C# files whose stored `CALLS` import candidates name an
+    /// extension method declared in one of the `changed` paths. The
+    /// extractor derives those candidates from the extension methods it sees
+    /// in the same run (`csharp::extension_method_candidates`), so they go
+    /// stale when the declaration is renamed, moved or removed (issue #256).
+    /// Re-extracting the caller recomputes them like a fresh index would.
+    /// `graph_version` is the version holding the files' current symbols and
+    /// edges; call before any deletion.
+    pub fn stale_extension_callers(
+        &self,
+        changed: &[String],
+        graph_version: i64,
+    ) -> Result<HashSet<String>> {
+        let conn = self.db.read_conn()?;
+        let mut declared: HashSet<String> = HashSet::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT s.qualname, s.signature FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.graph_version = ?1 AND f.path = ?2 AND s.kind = 'method'
+                   AND s.signature LIKE ?3",
+            )?;
+            for path in changed.iter().filter(|p| is_csharp_path(p)) {
+                let rows = stmt.query_map(
+                    rusqlite::params![graph_version, path, csharp::EXTENSION_SIGNATURE_LIKE],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )?;
+                for row in rows {
+                    let (qualname, signature) = row?;
+                    if csharp::is_extension_signature(&signature) {
+                        declared.insert(qualname);
+                    }
+                }
+            }
+        }
+        if declared.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let changed_set: HashSet<&str> = changed.iter().map(String::as_str).collect();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT f.path, e.import_candidates
+             FROM edges e JOIN files f ON f.id = e.file_id
+             WHERE e.graph_version = ?1 AND e.kind = 'CALLS' AND f.language = 'csharp'
+               AND e.import_candidates IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([graph_version], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut stale = HashSet::new();
+        for row in rows {
+            let (path, candidates) = row?;
+            if changed_set.contains(path.as_str()) {
+                continue;
+            }
+            let names: Vec<String> = serde_json::from_str(&candidates)
+                .with_context(|| format!("decode import_candidates of an edge in {path}"))?;
+            if names.iter().any(|n| declared.contains(n)) {
+                stale.insert(path);
+            }
+        }
+        Ok(stale)
+    }
+
+    /// Every C# extension method stored at `graph_version`, except those
+    /// declared in the `changed` paths (edited, added or deleted files of
+    /// this run: the extractor re-registers the survivors itself). Feeds
+    /// `LanguageExtractor::seed_extension_methods` so the extension registry
+    /// covers the whole repository, not just the files extracted this run
+    /// (issue #256).
+    pub fn extension_methods(
+        &self,
+        changed: &[String],
+        graph_version: i64,
+    ) -> Result<Vec<ExtensionMethodRow>> {
+        let conn = self.db.read_conn()?;
+        let changed_set: HashSet<&str> = changed.iter().map(String::as_str).collect();
+        let mut stmt = conn.prepare(
+            "SELECT f.id, f.path, s.qualname, s.signature
+             FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.graph_version = ?1 AND f.language = 'csharp'
+               AND s.kind = 'method' AND s.signature LIKE ?2",
+        )?;
+        let methods: Vec<(i64, String, String, String)> = stmt
+            .query_map(
+                rusqlite::params![graph_version, csharp::EXTENSION_SIGNATURE_LIKE],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut namespaces: HashMap<i64, Vec<String>> = HashMap::new();
+        let mut ns_stmt = conn.prepare(
+            "SELECT qualname FROM symbols
+             WHERE graph_version = ?1 AND file_id = ?2 AND kind = 'namespace'",
+        )?;
+        let mut out = Vec::new();
+        for (file_id, path, qualname, signature) in methods {
+            if changed_set.contains(path.as_str()) || !csharp::is_extension_signature(&signature) {
+                continue;
+            }
+            let file_namespaces = match namespaces.entry(file_id) {
+                Entry::Occupied(known) => known.into_mut(),
+                Entry::Vacant(slot) => slot.insert(
+                    ns_stmt
+                        .query_map(rusqlite::params![graph_version, file_id], |r| {
+                            r.get::<_, String>(0)
+                        })?
+                        .collect::<rusqlite::Result<_>>()?,
+                ),
+            };
+            // The declaring namespace is the longest namespace symbol of
+            // the file that prefixes the method's qualname.
+            let namespace = file_namespaces
+                .iter()
+                .filter(|ns| {
+                    qualname
+                        .strip_prefix(ns.as_str())
+                        .is_some_and(|r| r.starts_with('.'))
+                })
+                .max_by_key(|ns| ns.len())
+                .cloned()
+                .unwrap_or_default();
+            out.push(ExtensionMethodRow {
+                qualname,
+                namespace,
+                signature,
+            });
+        }
+        Ok(out)
     }
 }
