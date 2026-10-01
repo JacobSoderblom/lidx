@@ -277,7 +277,8 @@ struct ExplainSymbolParams {
     /// `resolution_kind` at all) is always excluded once this is set.
     /// Distinct from `analyze_impact`'s `min_confidence`, which filters an
     /// unrelated query-time heuristic. Omit to return every ref regardless
-    /// of tier. An unknown tier name is an error.
+    /// of tier. An unknown tier name is ignored with a warning rather than
+    /// an error.
     min_resolution: Option<String>,
     #[serde(flatten)]
     common: LangVersionParams,

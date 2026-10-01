@@ -108,17 +108,20 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     // Issue #67: resolve `min_resolution` against the resolver's canonical,
     // strongest-to-weakest tier order (`db::resolver::ALL_RESOLUTION_KINDS`,
     // the same single source of truth issue #81's `exclude_resolution_kinds`
-    // validates against). An unknown tier is an error: a silently ignored
-    // filter returns an unfiltered answer the caller reads as filtered.
-    super::validate::require_one_of(
-        "min_resolution",
-        params.min_resolution.as_deref(),
-        &crate::db::resolver::ALL_RESOLUTION_KINDS,
-    )?;
-    let min_resolution_rank: Option<usize> = params
-        .min_resolution
-        .as_deref()
-        .and_then(resolution_kind_rank);
+    // validates against on trace_flow/analyze_impact) rather than inventing
+    // a second ordering here. An unknown tier name warns -- same treatment
+    // as an unknown `sections` value above -- instead of erroring, and the
+    // filter is then simply not applied.
+    let min_resolution_rank: Option<usize> = params.min_resolution.as_deref().and_then(|tier| {
+        resolution_kind_rank(tier).or_else(|| {
+            warnings.push(format!(
+                "Unknown resolution tier '{}' in min_resolution -- valid tiers: {}",
+                tier,
+                crate::db::resolver::ALL_RESOLUTION_KINDS.join(", ")
+            ));
+            None
+        })
+    });
     // A ref passes when its edge's tier ranks at or above (index <=)
     // `min_resolution_rank`. An edge whose `resolution_kind` is absent
     // (never resolved -- e.g. a String-Targeted Edge Kind whose own target

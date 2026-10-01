@@ -248,7 +248,6 @@ rejects! {
     explain_symbol_format_bogus: "explain_symbol", json!({"qualname": "src.app.other", "format": "bogus"}) => ["bogus", "full", "signatures"];
     trace_flow_format_bogus: "trace_flow", json!({"start_qualname": "src.app.other", "format": "bogus"}) => ["bogus", "full", "compact"];
     gather_context_strategy_bogus: "gather_context", json!({"seeds": [{"type": "symbol", "qualname": "src.app.other"}], "strategy": "bogus"}) => ["bogus", "unknown strategy", "valid values: symbol, file"];
-    explain_symbol_min_resolution_bogus: "explain_symbol", json!({"qualname": "src.app.other", "min_resolution": "bogus"}) => ["min_resolution", "bogus", "exact"];
 }
 
 #[test]
@@ -268,15 +267,4 @@ fn context_markdown_file_on_disk_still_works() {
     let (_t, mut ix) = build();
     let r = call(&mut ix, "context", json!({"path": "docs/guide.md"})).unwrap();
     assert!(r["context"].is_string());
-}
-
-#[test]
-fn explain_symbol_valid_min_resolution_still_works() {
-    let (_t, mut ix) = build();
-    call(
-        &mut ix,
-        "explain_symbol",
-        json!({"qualname": "src.app.other", "min_resolution": "exact"}),
-    )
-    .unwrap();
 }

@@ -267,22 +267,34 @@ fn min_resolution_filters_callees_at_bare_name_tier_boundary() {
     );
 }
 
-/// An unknown tier name is an error (issue #241): a silently ignored
-/// filter would return an unfiltered answer the caller reads as filtered.
+/// An unknown tier name produces a warning in the existing `warnings`
+/// field, consistent with how an unknown `sections` value behaves, rather
+/// than a hard error -- and the filter has no effect, same as omitting
+/// `min_resolution` entirely.
 #[test]
-fn unknown_min_resolution_errors_naming_valid_tiers() {
+fn unknown_min_resolution_warns_instead_of_erroring() {
     let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer.reindex().unwrap();
 
-    let err = lidx::rpc::handle_method(
-        &mut indexer,
+    let result = call_rpc(
+        &repo_root,
+        &db_path,
         "explain_symbol",
-        serde_json::json!({"qualname": "caller.entry", "min_resolution": "bogus"}),
-    )
-    .expect_err("unknown min_resolution must error")
-    .to_string();
-    assert!(err.contains("bogus") && err.contains("exact"), "{err}");
+        r#"{"qualname":"caller.entry","sections":["callers","callees"],"min_resolution":"bogus"}"#,
+    );
+    let warnings = result["warnings"].as_array().unwrap();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or_default().contains("bogus")),
+        "an unknown min_resolution tier should be named in a warning, got {warnings:?}"
+    );
+    assert!(ref_qualnames(&result["callees"]).contains(&"caller.local_util".to_string()));
+    assert!(
+        ref_qualnames(&result["callers"]).contains(&"downstream.use_entry".to_string()),
+        "an unrecognized tier must not filter anything, same as omitting min_resolution: {result}"
+    );
 }
 
 /// `analyze_impact`'s `min_confidence` is a different, untouched knob
