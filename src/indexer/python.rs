@@ -4,6 +4,7 @@ use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::string_consts::{LocalBinding, StringConsts, scan_enclosing_function};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
     span,
@@ -32,6 +33,9 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
 
 #[derive(Clone)]
 struct Context {
+    /// Same-file string constants (see `string_consts`), used to resolve
+    /// channel topics given as identifiers.
+    string_consts: Rc<StringConsts>,
     module: String,
     class_stack: Vec<String>,
     fn_depth: usize,
@@ -120,6 +124,11 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             module_docstring,
         ));
         let ctx = Context {
+            string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
+                crate::indexer::string_consts::ConstLang::Python,
+                root,
+                source,
+            )),
             module: module_name.to_string(),
             class_stack: Vec::new(),
             fn_depth: 0,
@@ -1380,7 +1389,8 @@ fn handle_decorated_definition(
         if let Some(handler) = handler_qualname(definition, ctx, source) {
             let edges = route_edges_from_decorators(&decorators, &handler, source);
             output.edges.extend(edges);
-            let edges = channel_edges_from_decorators(&decorators, &handler, source);
+            let edges =
+                channel_edges_from_decorators(&decorators, &handler, source, &ctx.string_consts);
             output.edges.extend(edges);
         }
         walk_node(definition, ctx, source, output);
@@ -1750,6 +1760,7 @@ fn channel_edges_from_decorators(
     decorators: &[Node<'_>],
     handler: &str,
     source: &str,
+    consts: &StringConsts,
 ) -> Vec<EdgeInput> {
     let mut edges = Vec::new();
     for decorator in decorators {
@@ -1784,7 +1795,8 @@ fn channel_edges_from_decorators(
         let Some(raw_topic) = raw_topic else {
             continue;
         };
-        let Some(normalized) = channel::normalize_channel_name(&raw_topic) else {
+        let Some(normalized) = channel::resolve_topic(&raw_topic, consts, &LocalBinding::NotLocal)
+        else {
             continue;
         };
 
@@ -1833,7 +1845,8 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
         .find(|(k, _)| k == "topic")
         .map(|(_, v)| node_text(*v, source))
         .or_else(|| args.positional.first().map(|v| node_text(*v, source)))?;
-    let normalized = channel::normalize_channel_name(&raw_topic)?;
+    let local = python_local_binding(node, &raw_topic, source);
+    let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
     let detail = if kind == channel::CHANNEL_PUBLISH_KIND {
         channel::build_publish_detail(&normalized, &raw_topic, "python-bus")
     } else {
@@ -1848,6 +1861,59 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
         evidence_start_line: Some(span(node).0),
         evidence_end_line: Some(span(node).2),
         ..Default::default()
+    })
+}
+
+/// What the enclosing function says about a bare-identifier argument: a
+/// parameter, loop variable or reassigned name is not static; a single
+/// assignment yields its right-hand side; no binding falls back to constants.
+fn python_local_binding(call: Node<'_>, name: &str, source: &str) -> LocalBinding {
+    let name = name.trim();
+    if name.contains('.') || name.is_empty() {
+        return LocalBinding::NotLocal;
+    }
+    scan_enclosing_function(call, &["function_definition"], |n, tally| match n.kind() {
+        "parameters" | "lambda_parameters" => {
+            let mut c = n.walk();
+            for p in n.named_children(&mut c) {
+                let bound = if p.kind() == "identifier" {
+                    Some(p)
+                } else {
+                    p.child_by_field_name("name").or_else(|| {
+                        let mut pc = p.walk();
+                        p.named_children(&mut pc).find(|x| x.kind() == "identifier")
+                    })
+                };
+                if bound.is_some_and(|x| node_text(x, source) == name) {
+                    tally.other_bindings += 1;
+                }
+            }
+        }
+        "assignment" | "augmented_assignment" => {
+            let is_target = n
+                .child_by_field_name("left")
+                .is_some_and(|l| l.kind() == "identifier" && node_text(l, source) == name);
+            if is_target {
+                if n.kind() == "assignment" {
+                    tally.declarations += 1;
+                    tally.initializer =
+                        n.child_by_field_name("right").map(|r| node_text(r, source));
+                } else {
+                    tally.reassignments += 1;
+                }
+            }
+        }
+        "for_statement" => {
+            let binds = n.child_by_field_name("left").is_some_and(|l| {
+                node_text(l, source)
+                    .split([',', ' ', '(', ')'])
+                    .any(|t| t == name)
+            });
+            if binds {
+                tally.other_bindings += 1;
+            }
+        }
+        _ => {}
     })
 }
 

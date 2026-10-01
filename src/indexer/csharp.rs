@@ -12,6 +12,9 @@ use crate::indexer::extract::{
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::scan;
+use crate::indexer::string_consts::{
+    LocalBinding, StringConsts, csharp_declarator_initializer, scan_enclosing_function,
+};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
     span,
@@ -40,6 +43,9 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
 
 #[derive(Clone)]
 struct Context {
+    /// Same-file string constants (see `string_consts`), used to resolve
+    /// channel topics given as identifiers.
+    string_consts: Rc<StringConsts>,
     module: String,
     namespace_stack: Vec<String>,
     type_stack: Vec<String>,
@@ -374,6 +380,11 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             .symbols
             .push(module_symbol_with_span(module_name, module_span, "/", None));
         let ctx = Context {
+            string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
+                crate::indexer::string_consts::ConstLang::CSharp,
+                root,
+                source,
+            )),
             module: module_name.to_string(),
             namespace_stack: Vec::new(),
             type_stack: Vec::new(),
@@ -3571,6 +3582,59 @@ fn collect_grpc_client_fields_from_tree(
     }
 }
 
+/// What the enclosing member says about a bare-identifier argument: a
+/// parameter or a name declared/assigned more than once is not static; a
+/// single declaration yields its initializer; no binding falls back to the
+/// file's constants.
+fn csharp_local_binding(call: Node<'_>, name: &str, source: &str) -> LocalBinding {
+    let name = name.trim();
+    if name.contains('.') || name.is_empty() {
+        return LocalBinding::NotLocal;
+    }
+    let kinds = [
+        "method_declaration",
+        "constructor_declaration",
+        "local_function_statement",
+        "accessor_declaration",
+        "operator_declaration",
+        "destructor_declaration",
+        "conversion_operator_declaration",
+    ];
+    scan_enclosing_function(call, &kinds, |n, tally| match n.kind() {
+        "parameter" => {
+            if n.child_by_field_name("name")
+                .is_some_and(|x| node_text(x, source) == name)
+            {
+                tally.other_bindings += 1;
+            }
+        }
+        "variable_declarator" => {
+            if n.child_by_field_name("name")
+                .is_some_and(|x| node_text(x, source) == name)
+            {
+                tally.declarations += 1;
+                tally.initializer = csharp_declarator_initializer(n).map(|i| node_text(i, source));
+            }
+        }
+        "assignment_expression" => {
+            if n.child_by_field_name("left")
+                .is_some_and(|x| node_text(x, source) == name)
+            {
+                tally.reassignments += 1;
+            }
+        }
+        "declaration_pattern" | "for_each_statement" | "catch_declaration" => {
+            let binds = node_text(n, source)
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|t| t == name);
+            if binds {
+                tally.other_bindings += 1;
+            }
+        }
+        _ => {}
+    })
+}
+
 fn channel_publish_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
     if node.kind() != "invocation_expression" {
         return None;
@@ -3586,7 +3650,8 @@ fn channel_publish_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     let args = call_arguments(node);
     let first_arg = args.first()?;
     let raw_topic = node_text(*first_arg, source);
-    let normalized = channel::normalize_channel_name(&raw_topic)?;
+    let local = csharp_local_binding(node, &raw_topic, source);
+    let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
     let detail = channel::build_publish_detail(&normalized, &raw_topic, "azure-service-bus");
     Some(EdgeInput {
         kind: channel::CHANNEL_PUBLISH_KIND.to_string(),
@@ -3615,7 +3680,8 @@ fn channel_subscribe_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option
     let args = call_arguments(node);
     let first_arg = args.first()?;
     let raw_topic = node_text(*first_arg, source);
-    let normalized = channel::normalize_channel_name(&raw_topic)?;
+    let local = csharp_local_binding(node, &raw_topic, source);
+    let normalized = channel::resolve_topic(&raw_topic, &ctx.string_consts, &local)?;
     let detail = channel::build_subscribe_detail(&normalized, &raw_topic, "azure-service-bus");
     Some(EdgeInput {
         kind: channel::CHANNEL_SUBSCRIBE_KIND.to_string(),

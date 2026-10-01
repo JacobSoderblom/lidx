@@ -30,7 +30,7 @@ pub fn validate_repo_root(repo: &Path) -> Result<PathBuf> {
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 8;
+pub const EXTRACTOR_VERSION: i64 = 9;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -53,6 +53,7 @@ pub mod rust;
 pub mod scan;
 pub mod sql_extractor;
 pub mod stable_id;
+pub mod string_consts;
 pub mod test_detection;
 pub mod tree_helpers;
 pub mod xref;
