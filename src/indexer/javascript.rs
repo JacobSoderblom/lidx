@@ -1623,7 +1623,13 @@ fn collect_grpc_evidence(root: Node<'_>, source: &str) -> GrpcEvidence {
                 node.child_by_field_name("value"),
             )
         {
-            let value = unwrap_expression(value_node);
+            let mut value = unwrap_expression(value_node);
+            // `loadPackageDefinition(def).pkg.sub` is still rooted at the call.
+            while value.kind() == "member_expression"
+                && let Some(object) = value.child_by_field_name("object")
+            {
+                value = unwrap_expression(object);
+            }
             let callee = callee_last_name(value, source);
             if name_node.kind() == "identifier"
                 && callee.as_deref() == Some("loadPackageDefinition")

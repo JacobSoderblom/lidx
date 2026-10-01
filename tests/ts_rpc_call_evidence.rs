@@ -28,28 +28,23 @@ struct Repo {
     _tmp: tempfile::TempDir,
     root: std::path::PathBuf,
     db: std::path::PathBuf,
+    indexer: Indexer,
 }
 
 fn repo(files: &[(&str, &str)]) -> Repo {
-    let tmp = tempfile::Builder::new()
-        .prefix("lidx-ts-rpc-evidence-")
-        .tempdir()
-        .unwrap();
-    common::write_files(tmp.path(), files);
-    let root = tmp.path().to_path_buf();
-    let db = root.join(".lidx").join(".lidx.sqlite");
-    let mut indexer = Indexer::new(root.clone(), db.clone()).unwrap();
-    indexer.reindex().unwrap();
+    let (tmp, root, db) = common::index_repo("lidx-ts-rpc-evidence-", files);
+    let indexer = Indexer::new(root.clone(), db.clone()).unwrap();
     Repo {
         _tmp: tmp,
         root,
         db,
+        indexer,
     }
 }
 
+/// Every stored RPC_CALL row, including name-only ones no query surfaces.
 fn rpc_call_edges(repo: &Repo) -> Vec<(String, Value)> {
-    let indexer = Indexer::new(repo.root.clone(), repo.db.clone()).unwrap();
-    let conn = indexer.db().read_conn().unwrap();
+    let conn = repo.indexer.db().read_conn().unwrap();
     let mut stmt = conn
         .prepare("SELECT target_qualname, detail FROM edges WHERE kind = 'RPC_CALL'")
         .unwrap();
@@ -67,9 +62,38 @@ fn rpc_call_edges(repo: &Repo) -> Vec<(String, Value)> {
     .collect()
 }
 
+/// RPC_CALL targets as returned by the edge query layer (sorted).
+fn surfaced_rpc_calls(repo: &Repo) -> Vec<String> {
+    let db = repo.indexer.db();
+    let gv = db.current_graph_version().unwrap();
+    let kinds = vec!["RPC_CALL".to_string()];
+    let mut targets: Vec<String> = db
+        .list_edges(
+            1000,
+            0,
+            None,
+            None,
+            Some(&kinds),
+            None,
+            None,
+            None,
+            false,
+            None,
+            gv,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| e.target_qualname)
+        .collect();
+    targets.sort();
+    targets
+}
+
 fn proto_services(repo: &Repo) -> Vec<String> {
-    let indexer = Indexer::new(repo.root.clone(), repo.db.clone()).unwrap();
-    let conn = indexer.db().read_conn().unwrap();
+    let conn = repo.indexer.db().read_conn().unwrap();
     let mut stmt = conn
         .prepare("SELECT name FROM symbols WHERE kind = 'service'")
         .unwrap();
@@ -78,6 +102,14 @@ fn proto_services(repo: &Repo) -> Vec<String> {
         .map(|r| r.unwrap())
         .collect()
 }
+
+const ORDER_PROTO: &str = "syntax = \"proto3\";\npackage shop;\n\
+service OrderService {\n  rpc PlaceOrder (Req) returns (Res);\n}\n\
+message Req {}\nmessage Res {}\n";
+
+/// A `*Client` imported from a neutral path: accepted on its name alone.
+const NAME_ONLY: &str = "import { OrderServiceClient } from './order';\n\
+export function place() {\n  const c = new OrderServiceClient('h');\n  c.placeOrder({});\n}\n";
 
 #[test]
 fn rpc_call_edges_only_name_services_in_the_index() {
@@ -104,13 +136,48 @@ fn rpc_call_edges_only_name_services_in_the_index() {
             services.iter().any(|s| s.as_str() == service),
             "RPC_CALL {target} names service {service:?} absent from the index {services:?}"
         );
-        for builtin in ["map", "set", "date", "request", "repository"] {
-            assert!(
-                !target.to_lowercase().contains(&format!("/{builtin}/")),
-                "built-in/library type leaked into RPC target {target}"
-            );
-        }
     }
+    assert_eq!(
+        surfaced_rpc_calls(&repo),
+        vec!["/datacatalogservice/getitem"]
+    );
+}
+
+#[test]
+fn name_only_client_surfaces_only_when_proto_service_is_indexed() {
+    let with_proto = repo(&[("protos/order.proto", ORDER_PROTO), ("src/o.ts", NAME_ONLY)]);
+    assert_eq!(
+        surfaced_rpc_calls(&with_proto),
+        vec!["/orderservice/placeorder"]
+    );
+    let without = repo(&[("src/o.ts", NAME_ONLY)]);
+    assert_eq!(rpc_call_edges(&without).len(), 1, "row is still stored");
+    assert!(
+        surfaced_rpc_calls(&without).is_empty(),
+        "name-only edge without a proto service must not surface"
+    );
+}
+
+#[test]
+fn name_only_client_visibility_flips_with_the_proto_like_a_fresh_index() {
+    let mut inc = repo(&[("src/o.ts", NAME_ONLY)]);
+    assert!(surfaced_rpc_calls(&inc).is_empty());
+
+    common::write_files(&inc.root, &[("protos/order.proto", ORDER_PROTO)]);
+    inc.indexer
+        .sync_rel_paths(&["protos/order.proto".to_string()])
+        .unwrap();
+    let fresh = repo(&[("protos/order.proto", ORDER_PROTO), ("src/o.ts", NAME_ONLY)]);
+    assert_eq!(surfaced_rpc_calls(&inc), surfaced_rpc_calls(&fresh));
+    assert_eq!(surfaced_rpc_calls(&inc), vec!["/orderservice/placeorder"]);
+
+    std::fs::remove_file(inc.root.join("protos/order.proto")).unwrap();
+    inc.indexer
+        .sync_rel_paths(&["protos/order.proto".to_string()])
+        .unwrap();
+    let fresh = repo(&[("src/o.ts", NAME_ONLY)]);
+    assert_eq!(surfaced_rpc_calls(&inc), surfaced_rpc_calls(&fresh));
+    assert!(surfaced_rpc_calls(&inc).is_empty());
 }
 
 #[test]
