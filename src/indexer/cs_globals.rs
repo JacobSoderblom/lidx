@@ -9,6 +9,7 @@ use crate::db::Db;
 use crate::indexer::csharp;
 use crate::indexer::extract::ExtensionMethodRow;
 use anyhow::{Context, Result};
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -253,17 +254,19 @@ impl CsGlobals<'_> {
             if changed_set.contains(path.as_str()) || !csharp::is_extension_signature(&signature) {
                 continue;
             }
-            if !namespaces.contains_key(&file_id) {
-                let names = ns_stmt
-                    .query_map(rusqlite::params![graph_version, file_id], |r| {
-                        r.get::<_, String>(0)
-                    })?
-                    .collect::<rusqlite::Result<_>>()?;
-                namespaces.insert(file_id, names);
-            }
+            let file_namespaces = match namespaces.entry(file_id) {
+                Entry::Occupied(known) => known.into_mut(),
+                Entry::Vacant(slot) => slot.insert(
+                    ns_stmt
+                        .query_map(rusqlite::params![graph_version, file_id], |r| {
+                            r.get::<_, String>(0)
+                        })?
+                        .collect::<rusqlite::Result<_>>()?,
+                ),
+            };
             // The declaring namespace is the longest namespace symbol of
             // the file that prefixes the method's qualname.
-            let namespace = namespaces[&file_id]
+            let namespace = file_namespaces
                 .iter()
                 .filter(|ns| {
                     qualname
