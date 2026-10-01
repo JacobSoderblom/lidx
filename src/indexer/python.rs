@@ -57,11 +57,6 @@ struct Context {
     /// `collect_import_bindings`). Set once and inherited unchanged through
     /// every `ctx.clone()`, mirroring C#'s `Context::imports`.
     imports: Rc<HashMap<String, Vec<String>>>,
-    /// Same-file string constants (issue #225): module-level `NAME = "v"`
-    /// keyed `NAME`, class-level keyed `Outer.Inner.NAME`. `None` marks a
-    /// name assigned more than once or to a non-string (value unknowable
-    /// statically). See `collect_string_constants`.
-    string_constants: Rc<HashMap<String, Option<String>>>,
     /// Qualnames of module/class-scope symbols emitted so far in this file,
     /// mapped to "was emitted by an assignment" (issue #203). Shared across
     /// every `ctx.clone()`. Lets a later assignment skip a name already
@@ -142,7 +137,6 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             local_types: Rc::new(infer_module_level_types(root, source)),
             class_attr_types: Rc::new(HashMap::new()),
             imports: Rc::new(collect_import_bindings(root, source)),
-            string_constants: Rc::new(collect_string_constants(root, source)),
             declared: Rc::new(RefCell::new(HashMap::new())),
         };
         walk_node(root, &ctx, source, &mut output);
@@ -1242,7 +1236,7 @@ fn config_read_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<
 
     let args = parse_call_arguments(node, source);
     let key_node = args.positional.first()?;
-    let key = resolve_string_value(*key_node, ctx, source)?;
+    let key = resolve_env_key(*key_node, ctx, source)?;
     let env_uri = config::normalize_env_var_name(&key)?;
     let detail = config::build_config_read_detail("env", &env_uri, &key, "python");
     let (start_line, _, end_line, _, _, _) = span(node);
@@ -1355,7 +1349,7 @@ fn config_read_subscript_edge(node: Node<'_>, ctx: &Context, source: &str) -> Op
     if base != "os.environ" {
         return None;
     }
-    let key = resolve_string_value(subscript_node, ctx, source)?;
+    let key = resolve_env_key(subscript_node, ctx, source)?;
     let env_uri = config::normalize_env_var_name(&key)?;
     let detail = config::build_config_read_detail("env", &env_uri, &key, "python");
     let (start_line, _, end_line, _, _, _) = span(node);
@@ -2028,7 +2022,7 @@ fn handler_name_from_expr(node: Node<'_>, ctx: &Context, source: &str) -> Option
 /// is not a literal. The raw-text fallback is deliberate for the callers
 /// below (route paths, HTTP client URLs/methods, `__all__` entries, channel
 /// topics and the like) and is NOT safe for anything that must be a string
-/// *value* -- e.g. an env var name (issue #225); use `resolve_string_value`
+/// *value* -- e.g. an env var name (issue #225); use `resolve_env_key`
 /// there. Audit for #225: every remaining caller of this function is a
 /// pre-existing, non-env consumer whose behaviour is unchanged.
 fn literal_or_raw_text(node: Node<'_>, source: &str) -> Option<String> {
@@ -2036,116 +2030,14 @@ fn literal_or_raw_text(node: Node<'_>, source: &str) -> Option<String> {
     unquote_string_literal(&raw).or(Some(raw))
 }
 
-/// Pre-pass for `Context::string_constants`: every module-level and
-/// class-level (recursively nested classes) `NAME = "literal"` assignment.
-/// A name assigned more than once, or to anything but a plain string
-/// literal, is recorded as `None` (unknowable) rather than guessed.
-fn collect_string_constants(root: Node<'_>, source: &str) -> HashMap<String, Option<String>> {
-    let mut out = HashMap::new();
-    collect_string_constants_in(root, "", source, &mut out);
-    out
-}
-
-fn collect_string_constants_in(
-    block: Node<'_>,
-    prefix: &str,
-    source: &str,
-    out: &mut HashMap<String, Option<String>>,
-) {
-    let mut cursor = block.walk();
-    for stmt in block.named_children(&mut cursor) {
-        let stmt = if stmt.kind() == "decorated_definition" {
-            stmt.child_by_field_name("definition").unwrap_or(stmt)
-        } else {
-            stmt
-        };
-        match stmt.kind() {
-            "expression_statement" => {
-                let Some(assign) = stmt.named_child(0).filter(|n| n.kind() == "assignment") else {
-                    continue;
-                };
-                let Some(left) = assign.child_by_field_name("left") else {
-                    continue;
-                };
-                if left.kind() != "identifier" {
-                    continue;
-                }
-                let key = format!("{prefix}{}", node_text(left, source));
-                let value = assign
-                    .child_by_field_name("right")
-                    .and_then(|right| plain_string_literal(right, source));
-                out.entry(key)
-                    .and_modify(|existing| *existing = None)
-                    .or_insert(value);
-            }
-            "class_definition" => {
-                let (Some(name), Some(body)) = (
-                    stmt.child_by_field_name("name"),
-                    stmt.child_by_field_name("body"),
-                ) else {
-                    continue;
-                };
-                let inner = format!("{prefix}{}.", node_text(name, source));
-                collect_string_constants_in(body, &inner, source, out);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Content of a plain (non-concatenated, hole-free) string literal node;
-/// `None` for anything else, including an f-string with `{...}` holes.
-fn plain_string_literal(node: Node<'_>, source: &str) -> Option<String> {
-    if node.kind() != "string" {
-        return None;
-    }
-    let mut cursor = node.walk();
-    if node
-        .named_children(&mut cursor)
-        .any(|child| child.kind() == "interpolation")
-    {
-        return None;
-    }
-    unquote_string_literal(&node_text(node, source))
-}
-
-/// Resolve an expression to a string *value*, or `None` when it cannot be
-/// determined statically (issue #225): a string literal, an identifier bound
-/// to a same-file module/class string constant, or `self.X` / `cls.X` /
-/// `Class.X` naming a class-level constant. Never falls back to expression
-/// text.
-fn resolve_string_value(node: Node<'_>, ctx: &Context, source: &str) -> Option<String> {
-    match node.kind() {
-        "string" => plain_string_literal(node, source),
-        "identifier" => {
-            let name = node_text(node, source);
-            // A class body (not a method) sees its own class attributes.
-            if ctx.fn_depth == 0 && !ctx.class_stack.is_empty() {
-                let key = format!("{}.{name}", ctx.class_stack.join("."));
-                if let Some(found) = ctx.string_constants.get(&key) {
-                    return found.clone();
-                }
-            }
-            ctx.string_constants.get(&name).cloned().flatten()
-        }
-        "attribute" => {
-            let object = node.child_by_field_name("object")?;
-            let attr = node_text(node.child_by_field_name("attribute")?, source);
-            let object = node_text(object, source);
-            let key = if object == "self" || object == "cls" {
-                if ctx.class_stack.is_empty() {
-                    return None;
-                }
-                format!("{}.{attr}", ctx.class_stack.join("."))
-            } else if let Some(idx) = ctx.class_stack.iter().position(|c| *c == object) {
-                format!("{}.{attr}", ctx.class_stack[..=idx].join("."))
-            } else {
-                format!("{object}.{attr}")
-            };
-            ctx.string_constants.get(&key).cloned().flatten()
-        }
-        _ => None,
-    }
+/// Static env-var name of an `os.getenv`/`os.environ` key argument (issue
+/// #225), via the shared `string_consts` resolver: a literal, a same-file
+/// module/class constant or a single-assignment local; `None` for
+/// parameters, calls, reassigned names and f-strings with holes.
+fn resolve_env_key(node: Node<'_>, ctx: &Context, source: &str) -> Option<String> {
+    let raw = node_text(node, source);
+    let local = python_local_binding(node, &raw, source);
+    ctx.string_consts.resolve_arg(&raw, &local)
 }
 
 fn extract_string_list(node: Node<'_>, source: &str) -> Vec<String> {

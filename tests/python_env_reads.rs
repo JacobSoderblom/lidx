@@ -163,3 +163,9 @@ spec:
             - name: DPB_ORCHESTRATOR_SQL_CONNECTION_STRING
               value: "x"
 "#;
+
+#[test]
+fn parameter_shadowing_a_constant_emits_nothing() {
+    let src = "import os\nK = 'REAL'\ndef f(K):\n    return os.getenv(K)\n";
+    assert!(env_targets(src).is_empty());
+}
