@@ -529,3 +529,48 @@ fn bridge_edge_without_a_target_is_retained_by_the_repair_pass() {
         "the bridge edge stays and its reference is re-stored"
     );
 }
+
+const OTHER_ATTRIBUTED: &str = "namespace Dpb.Other;\n\
+public static class OtherExtensions\n{\n    public static void AddOther([NotNull] this object services) { }\n}\n";
+
+const ATTRIBUTED_DECLS: &[(&str, &str)] = &[
+    ("a_common/Extensions.cs", EXTENSIONS),
+    ("a_other/Other.cs", OTHER_ATTRIBUTED),
+    ("b_mgr/Program.cs", TWO_CALLS),
+];
+
+/// An attribute on the `this` parameter must not hide the extension method.
+#[test]
+fn attributed_this_parameter_extension_resolves_on_fresh_index() {
+    let fresh = fresh_dump(ATTRIBUTED_DECLS);
+    assert!(
+        fresh
+            .0
+            .iter()
+            .any(|e| e.ends_with(".AddOther") && e.contains("Dpb.Other.OtherExtensions.AddOther")),
+        "attributed extension must resolve: {:#?}",
+        fresh.0
+    );
+}
+
+/// The unchanged attributed declaration is re-seeded from the DB (new
+/// process) and must still match a fresh index after another file is renamed.
+fn rename_with_attributed_other(process: Process) {
+    let inc = edit_and_compare(
+        ATTRIBUTED_DECLS,
+        &[Edit::Write("a_common/Extensions.cs", EXTENSIONS_RENAMED)],
+        process,
+        "lidx-256-attr-",
+    );
+    assert_resolved(&inc, "AddOther");
+}
+
+#[test]
+fn attributed_extension_survives_rename_elsewhere_same_process() {
+    rename_with_attributed_other(Process::Same);
+}
+
+#[test]
+fn attributed_extension_survives_rename_elsewhere_new_process() {
+    rename_with_attributed_other(Process::New);
+}

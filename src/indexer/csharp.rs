@@ -5118,43 +5118,84 @@ fn record_extension_method(
     if !has_modifier(node, source, "static") {
         return;
     }
-    let Some(signature) = method_signature(node, source) else {
+    let Some(params) = node.child_by_field_name("parameters") else {
         return;
     };
-    if !is_extension_signature(&signature) {
+    let mut cursor = params.walk();
+    let Some(first_param) = params
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "parameter")
+    else {
+        return;
+    };
+    if !has_modifier(first_param, source, "this") {
         return;
     }
-    register_extension_method(
-        &ctx.extension_registry,
-        name,
-        qualname,
-        ctx.namespace_stack.join("."),
-        &signature,
-    );
+    let receiver_type = first_param
+        .child_by_field_name("type")
+        .map(|t| classify_annotation_raw(&node_text(t, source)))
+        .and_then(|ty| match ty {
+            LocalType::Known(name) => Some(name),
+            _ => None,
+        });
+    ctx.extension_registry
+        .borrow_mut()
+        .entry(name.to_string())
+        .or_default()
+        .push(ExtensionMethodEntry {
+            qualname: qualname.to_string(),
+            namespace: ctx.namespace_stack.join("."),
+            receiver_type,
+        });
 }
 
-/// A C# method signature as stored (`method_signature`: the parameter list,
-/// then ` -> return`) starts with this exactly when the first parameter
-/// carries the `this` modifier, i.e. the method is an extension method. The
-/// one definition of "is an extension method" shared by the extractor's
-/// registry (`record_extension_method`) and by the SQL that re-seeds that
-/// registry from the stored graph (`EXTENSION_SIGNATURE_LIKE`).
-const EXTENSION_SIGNATURE_PREFIX: &str = "(this ";
+/// Coarse SQL `LIKE` prefilter for stored extension-method signatures: it
+/// also matches an attributed first parameter (`([NotNull] this T x)`).
+/// Always apply `is_extension_signature` to the rows it returns.
+pub(crate) const EXTENSION_SIGNATURE_LIKE: &str = "(%this %";
 
-/// SQL `LIKE` pattern equivalent to `is_extension_signature` (the prefix has
-/// no wildcard characters).
-pub(crate) const EXTENSION_SIGNATURE_LIKE: &str = "(this %";
+/// The text of a stored signature's first parameter, past the opening `(`
+/// and any leading attribute groups (`[A]`, `[A, B]`, `[A][B]`).
+fn first_parameter_text(signature: &str) -> Option<&str> {
+    let mut rest = signature.strip_prefix('(')?.trim_start();
+    while rest.starts_with('[') {
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, c) in rest.char_indices() {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest = rest[end?..].trim_start();
+    }
+    Some(rest)
+}
 
+/// Whether a stored method signature (`method_signature`: the parameter
+/// list, then ` -> return`) has a first parameter carrying the `this`
+/// modifier, i.e. the method is an extension method. Used when re-seeding
+/// the extension registry from the stored graph; extraction itself reads
+/// the AST (`record_extension_method`).
 pub(crate) fn is_extension_signature(signature: &str) -> bool {
-    signature.starts_with(EXTENSION_SIGNATURE_PREFIX)
+    first_parameter_text(signature)
+        .and_then(|p| p.strip_prefix("this"))
+        .is_some_and(|tail| tail.starts_with(char::is_whitespace))
 }
 
 /// The extended (`this`) parameter's type name of an extension method's
 /// `signature`, when it classifies as a concrete non-builtin type — `None`
 /// for a generic, builtin or otherwise unclassifiable shape.
 fn extension_receiver_type(signature: &str) -> Option<String> {
-    let mut rest = signature
-        .strip_prefix(EXTENSION_SIGNATURE_PREFIX)?
+    let mut rest = first_parameter_text(signature)?
+        .strip_prefix("this")?
         .trim_start();
     // `this ref T x`, `this in T x`: the modifier is not part of the type.
     while let Some((word, tail)) = rest.split_once(char::is_whitespace) {

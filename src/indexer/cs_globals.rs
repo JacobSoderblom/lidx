@@ -177,17 +177,20 @@ impl CsGlobals<'_> {
         let mut declared: HashSet<String> = HashSet::new();
         {
             let mut stmt = conn.prepare(
-                "SELECT s.qualname FROM symbols s JOIN files f ON f.id = s.file_id
+                "SELECT s.qualname, s.signature FROM symbols s JOIN files f ON f.id = s.file_id
                  WHERE s.graph_version = ?1 AND f.path = ?2 AND s.kind = 'method'
                    AND s.signature LIKE ?3",
             )?;
             for path in changed.iter().filter(|p| is_csharp_path(p)) {
                 let rows = stmt.query_map(
                     rusqlite::params![graph_version, path, csharp::EXTENSION_SIGNATURE_LIKE],
-                    |r| r.get::<_, String>(0),
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
                 )?;
                 for row in rows {
-                    declared.insert(row?);
+                    let (qualname, signature) = row?;
+                    if csharp::is_extension_signature(&signature) {
+                        declared.insert(qualname);
+                    }
                 }
             }
         }
