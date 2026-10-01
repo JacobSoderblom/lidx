@@ -671,3 +671,74 @@ fn zero_affected_direction_alias_callees_produces_flip_hop() {
         next_hops
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #234: duplicate next_hops in recovery payload
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recovery_payload_deduplicates_by_method_and_params() {
+    // Issue #234: when a symbol is not found, the recovery payload suggests
+    // near-match candidates. For explain_symbol specifically, the same candidate
+    // appears twice: once as "Explain ..." in the first loop and once as
+    // "Retry ... with near-match" in the second loop, both with identical params.
+    // Deduplication should key on (method, params) pair, not full JSON.
+    let temp = indexed_repo("py_mvp");
+
+    // Query a misspelling of a known symbol to trigger recovery with candidates
+    let value = rpc_json(&temp, "explain_symbol", r#"{"query":"make_greter"}"#);
+
+    // explain_symbol should return a recovery payload when symbol not found
+    assert!(
+        value["result"]["resolved"].is_null() || value["result"]["resolved"] == false,
+        "explain_symbol with bad query should have recovery payload"
+    );
+
+    let result = value["result"].as_object().unwrap();
+    let next_hops = result["next_hops"]
+        .as_array()
+        .expect("should have next_hops for unresolved symbol");
+
+    // The message should report the actual count of hops returned
+    let message = result["message"].as_str().unwrap_or("");
+    let hops_count_in_message = extract_hop_count(message);
+    let actual_hops_count = next_hops.len();
+
+    assert_eq!(
+        hops_count_in_message, actual_hops_count,
+        "message hop count must match actual hops: message says {}, got {} hops: {:?}",
+        hops_count_in_message, actual_hops_count, next_hops
+    );
+
+    // No two hops should have the same (method, params) pair
+    let mut seen_pairs = std::collections::HashSet::new();
+    for hop in next_hops {
+        let method = hop["method"].as_str().unwrap_or("");
+        let params = hop["params"].clone();
+        // Canonicalize params to handle key ordering
+        let canonical_params = serde_json::to_string(&params).unwrap();
+        let pair = (method.to_string(), canonical_params);
+        assert!(
+            seen_pairs.insert(pair.clone()),
+            "duplicate (method, params) pair found: {:?} in hops: {:?}",
+            pair,
+            next_hops
+        );
+    }
+}
+
+fn extract_hop_count(message: &str) -> usize {
+    // Extract "N next hop(s)" from message like:
+    // "Symbol 'X' not found. 2 suggestion(s), 5 next hop(s) below."
+    if let Some(pos) = message.find("next hop") {
+        let before = &message[..pos];
+        if let Some(comma_pos) = before.rfind(',') {
+            let num_str = before[comma_pos + 1..].trim();
+            num_str.parse().unwrap_or(0)
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
