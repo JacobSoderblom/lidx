@@ -299,12 +299,8 @@ fn markdown_outline(
     kinds_filter: Option<&HashSet<String>>,
     max_depth: Option<usize>,
 ) -> Result<(String, i64, Vec<OutlineEntry>)> {
-    let content = crate::util::read_to_string(full_path).map_err(|_| {
-        anyhow::anyhow!(
-            "path '{}' is not indexed -- fall back to Read for this file",
-            path
-        )
-    })?;
+    let content = crate::util::read_to_string(full_path)
+        .map_err(|_| anyhow::anyhow!("{}", super::validate::not_indexed_message(path)))?;
     let total_lines = crate::indexer::tree_helpers::line_count(&content);
     let entries = markdown_outline_entries(&content, total_lines, kinds_filter, max_depth);
     Ok(("markdown".to_string(), total_lines, entries))
@@ -315,13 +311,13 @@ fn markdown_outline(
 /// and entries come from indexed symbols/`CONTAINS` edges.
 fn indexed_outline(
     db: &crate::db::Db,
+    file_record: crate::db::FileRecord,
     full_path: &std::path::Path,
     path: &str,
     graph_version: i64,
     kinds_filter: Option<&HashSet<String>>,
     max_depth: Option<usize>,
 ) -> Result<(String, i64, Vec<OutlineEntry>)> {
-    let file_record = super::validate::require_indexed_file(db, path)?;
     let content = crate::util::read_to_string(full_path).map_err(|_| {
         anyhow::anyhow!(
             "file '{}' is missing from disk; run 'reindex' to refresh the index",
@@ -340,30 +336,29 @@ fn indexed_outline(
 /// cap like any other method (see `handle_method`'s `effective_max`).
 pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: OutlineParams = super::parse_params("outline", params)?;
-    let path = params.path.trim();
-    if path.is_empty() {
-        anyhow::bail!("outline requires a non-empty 'path'");
-    }
-    super::validate::reject_path_escape(path)?;
+    let repo_root = indexer.repo_root().clone();
+    let validated =
+        super::validate::validate_repo_path("outline", indexer.db(), &repo_root, &params.path)?;
+    let path = validated.path;
     let kinds_filter: Option<HashSet<String>> =
         params.kinds.map(|kinds| kinds.into_iter().collect());
     let max_depth = params.max_depth;
 
-    let repo_root = indexer.repo_root().clone();
     let full_path = repo_root.join(path);
 
-    let (language, total_lines, entries) = if is_markdown_path(path) {
-        markdown_outline(&full_path, path, kinds_filter.as_ref(), max_depth)?
-    } else {
+    let (language, total_lines, entries) = if let Some(file_record) = validated.file {
         let graph_version = indexer.db().current_graph_version()?;
         indexed_outline(
             indexer.db(),
+            file_record,
             &full_path,
             path,
             graph_version,
             kinds_filter.as_ref(),
             max_depth,
         )?
+    } else {
+        markdown_outline(&full_path, path, kinds_filter.as_ref(), max_depth)?
     };
 
     let next_hops = match entries.first() {

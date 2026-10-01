@@ -212,58 +212,71 @@ fn genuine_no_match_search_keeps_empty_result_and_recovery_hops() {
 
 // ---- audit: same shape in other methods ----
 
-#[test]
-fn zero_limits_error_in_other_methods() {
-    let (_t, mut ix) = build();
-    for (method, params) in [
-        ("top_complexity", json!({"limit": 0})),
-        ("dead_symbols", json!({"limit": 0})),
-        (
-            "analyze_impact",
-            json!({"qualname": "src.app.other", "limit": 0}),
-        ),
-        (
-            "trace_flow",
-            json!({"start_qualname": "src.app.other", "max_hops": 0}),
-        ),
-        (
-            "explain_symbol",
-            json!({"qualname": "src.app.other", "max_refs": 0}),
-        ),
-        (
-            "gather_context",
-            json!({"seeds": [{"type": "search", "query": "other", "limit": 0}]}),
-        ),
-    ] {
-        let err = err_of(&mut ix, method, params);
-        assert!(err.contains("at least 1"), "{method}: {err}");
-    }
+/// One test per (name, method, params, expected substrings) so a failure
+/// names the method and param.
+macro_rules! rejects {
+    ($($name:ident: $method:expr, $params:expr => [$($needle:expr),+];)+) => {$(
+        #[test]
+        fn $name() {
+            let (_t, mut ix) = build();
+            let err = err_of(&mut ix, $method, $params);
+            $(assert!(
+                err.contains($needle),
+                "{} {}: expected '{}' in error: {err}",
+                $method,
+                $params,
+                $needle
+            );)+
+        }
+    )+};
+}
+
+rejects! {
+    top_complexity_limit_zero: "top_complexity", json!({"limit": 0}) => ["limit", "at least 1"];
+    dead_symbols_limit_zero: "dead_symbols", json!({"limit": 0}) => ["limit", "at least 1"];
+    analyze_impact_limit_zero: "analyze_impact", json!({"qualname": "src.app.other", "limit": 0}) => ["limit", "at least 1"];
+    analyze_impact_max_depth_zero: "analyze_impact", json!({"qualname": "src.app.other", "max_depth": 0}) => ["max_depth", "at least 1"];
+    analyze_impact_min_confidence_high: "analyze_impact", json!({"qualname": "src.app.other", "min_confidence": 1.5}) => ["min_confidence", "between 0 and 1"];
+    analyze_impact_min_confidence_negative: "analyze_impact", json!({"qualname": "src.app.other", "min_confidence": -0.1}) => ["min_confidence", "between 0 and 1"];
+    trace_flow_max_hops_zero: "trace_flow", json!({"start_qualname": "src.app.other", "max_hops": 0}) => ["max_hops", "at least 1"];
+    trace_flow_max_bytes_zero: "trace_flow", json!({"start_qualname": "src.app.other", "max_bytes": 0}) => ["max_bytes", "at least 1"];
+    explain_symbol_max_refs_zero: "explain_symbol", json!({"qualname": "src.app.other", "max_refs": 0}) => ["max_refs", "at least 1"];
+    explain_symbol_max_bytes_zero: "explain_symbol", json!({"qualname": "src.app.other", "max_bytes": 0}) => ["max_bytes", "at least 1"];
+    analyze_diff_max_depth_zero: "analyze_diff", json!({"paths": ["src/app.py"], "max_depth": 0}) => ["max_depth", "at least 1"];
+    analyze_diff_max_bytes_zero: "analyze_diff", json!({"paths": ["src/app.py"], "max_bytes": 0}) => ["max_bytes", "at least 1"];
+    gather_context_seed_limit_zero: "gather_context", json!({"seeds": [{"type": "search", "query": "other", "limit": 0}]}) => ["limit", "at least 1"];
+    explain_symbol_format_bogus: "explain_symbol", json!({"qualname": "src.app.other", "format": "bogus"}) => ["bogus", "full", "signatures"];
+    trace_flow_format_bogus: "trace_flow", json!({"start_qualname": "src.app.other", "format": "bogus"}) => ["bogus", "full", "compact"];
+    gather_context_strategy_bogus: "gather_context", json!({"seeds": [{"type": "symbol", "qualname": "src.app.other"}], "strategy": "bogus"}) => ["bogus", "unknown strategy", "valid values: symbol, file"];
+    explain_symbol_min_resolution_bogus: "explain_symbol", json!({"qualname": "src.app.other", "min_resolution": "bogus"}) => ["min_resolution", "bogus", "exact"];
 }
 
 #[test]
-fn unknown_enum_values_error_in_other_methods() {
+fn markdown_not_indexed_message_matches_between_context_and_outline() {
     let (_t, mut ix) = build();
-    for (method, params, bad) in [
-        (
-            "explain_symbol",
-            json!({"qualname": "src.app.other", "format": "bogus"}),
-            "bogus",
-        ),
-        (
-            "trace_flow",
-            json!({"start_qualname": "src.app.other", "format": "bogus"}),
-            "bogus",
-        ),
-        (
-            "gather_context",
-            json!({"seeds": [{"type": "symbol", "qualname": "src.app.other"}], "strategy": "bogus"}),
-            "bogus",
-        ),
-    ] {
-        let err = err_of(&mut ix, method, params);
-        assert!(
-            err.contains(bad) && err.contains("valid"),
-            "{method}: {err}"
-        );
-    }
+    let ctx = err_of(&mut ix, "context", json!({"path": "docs/missing.md"}));
+    let outline = err_of(&mut ix, "outline", json!({"path": "docs/missing.md"}));
+    assert_eq!(ctx, outline);
+    assert!(
+        ctx.contains("is not indexed") && ctx.contains("reindex"),
+        "{ctx}"
+    );
+}
+
+#[test]
+fn context_markdown_file_on_disk_still_works() {
+    let (_t, mut ix) = build();
+    let r = call(&mut ix, "context", json!({"path": "docs/guide.md"})).unwrap();
+    assert!(r["context"].is_string());
+}
+
+#[test]
+fn explain_symbol_valid_min_resolution_still_works() {
+    let (_t, mut ix) = build();
+    call(
+        &mut ix,
+        "explain_symbol",
+        json!({"qualname": "src.app.other", "min_resolution": "exact"}),
+    )
+    .unwrap();
 }

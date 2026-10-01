@@ -1,29 +1,33 @@
-//! Shared param validation. Issue #241: invalid values for known params are
-//! errors, never an empty result that reads as "the index has no match".
+//! Shared param validation: invalid values for known params are errors,
+//! never an empty result that reads as "the index has no match".
 //!
-//! Audit of every method for an unvalidated enum, path or numeric bound
-//! (fixed unless listed as already safe):
-//! - `orient.view`, `context.format`, `explain_symbol.format`,
-//!   `trace_flow.format`, `gather_context.strategy`: enum checked via
-//!   `require_one_of` / `validate_gather_context_params`.
-//! - `context.path`: absolute, `..` escape, and unindexed paths rejected.
-//! - `search.limit`, `dead_symbols.limit`, `top_complexity.limit`,
-//!   `analyze_impact.limit`, `trace_flow.max_hops`, `explain_symbol.max_refs`,
-//!   `gather_context` search seed `limit`: 0 rejected (`require_at_least_one`);
-//!   negative or fractional values are named by `name_bad_unsigned_param`;
-//!   oversized values keep their existing clamp (`search`: 500).
-//! - Already safe: `search.scope` and every `languages` filter (validated
-//!   centrally), `exclude_resolution_kinds` (#81), `outline`/`read_symbol`
-//!   paths (reject escape + indexed check), `explain_symbol.sections` and
-//!   `min_resolution` (documented warn-and-ignore, reported in `warnings`),
-//!   `max_bytes`/`depth`/`max_depth` (clamped to a floor of a usable value
-//!   or a 0 that still returns real data), `gather_context` bounds
-//!   (validated below). `direction`/`kinds` belong to #246.
+//! Rules: enum params are checked against one const list per enum (the same
+//! const the matching code uses); count/limit/byte-budget params reject 0;
+//! unsigned params given a negative or fractional number name the param;
+//! `[0, 1]` params reject anything outside it; repo-relative paths go
+//! through `validate_repo_path`.
 
 use crate::config::Config;
 use crate::model::ValidationResult;
 
 use super::{ContextSeed, GatherContextParams};
+
+pub(super) const VIEW_ALL: &str = "all";
+pub(super) const VIEW_OVERVIEW: &str = "overview";
+pub(super) const VIEW_MAP: &str = "map";
+pub(super) const VIEW_MODULES: &str = "modules";
+pub(super) const ORIENT_VIEWS: &[&str] = &[VIEW_ALL, VIEW_OVERVIEW, VIEW_MAP, VIEW_MODULES];
+
+pub(super) const FORMAT_TEXT: &str = "text";
+pub(super) const FORMAT_JSON: &str = "json";
+pub(super) const CONTEXT_FORMATS: &[&str] = &[FORMAT_TEXT, FORMAT_JSON];
+
+pub(super) const FORMAT_FULL: &str = "full";
+pub(super) const FORMAT_SIGNATURES: &str = "signatures";
+pub(super) const EXPLAIN_FORMATS: &[&str] = &[FORMAT_FULL, FORMAT_SIGNATURES];
+
+pub(super) const FORMAT_COMPACT: &str = "compact";
+pub(super) const TRACE_FORMATS: &[&str] = &[FORMAT_FULL, FORMAT_COMPACT];
 
 pub(super) fn validate_pattern_length(pattern: &str, operation: &str) -> anyhow::Result<()> {
     let max_length = Config::get().pattern_max_length;
@@ -93,7 +97,27 @@ pub(super) fn require_one_of(
     if let Some(v) = value
         && !valid.contains(&v)
     {
-        anyhow::bail!("unknown {name} '{v}' -- valid values: {}", valid.join(", "));
+        anyhow::bail!("{}", unknown_value_message(name, v, valid));
+    }
+    Ok(())
+}
+
+/// The one wording for an unknown enum value, shared by `require_one_of` and
+/// `validate_gather_context_params`.
+pub(super) fn unknown_value_message(name: &str, value: &str, valid: &[&str]) -> String {
+    format!(
+        "unknown {name} '{value}' -- valid values: {}",
+        valid.join(", ")
+    )
+}
+
+/// Rejects a fraction param (e.g. `min_confidence`) outside `[0, 1]`, NaN
+/// included.
+pub(super) fn require_unit_interval(name: &str, value: Option<f32>) -> anyhow::Result<()> {
+    if let Some(v) = value
+        && !(0.0..=1.0).contains(&v)
+    {
+        anyhow::bail!("{name} must be between 0 and 1 (got {v})");
     }
     Ok(())
 }
@@ -118,17 +142,46 @@ pub(super) fn reject_path_escape(path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The `files` row for `path`, or the shared "not indexed" error `outline`
-/// and `context` both report.
-pub(super) fn require_indexed_file(
+/// The one "not indexed" message `outline` and `context` both report.
+pub(super) fn not_indexed_message(path: &str) -> String {
+    format!(
+        "path '{path}' is not indexed -- fall back to Read, or run 'reindex' if it should be tracked"
+    )
+}
+
+/// A validated repo-relative path; `file` is its `files` row (`None` for
+/// Markdown, which has no row -- see `is_markdown_path`).
+pub(super) struct RepoPath<'a> {
+    pub path: &'a str,
+    pub file: Option<crate::db::FileRecord>,
+}
+
+/// Shared path check for `outline` and `context`: trims, rejects empty,
+/// absolute and `..` paths, then requires the path be indexed (a `files`
+/// row; for Markdown, presence on disk).
+pub(super) fn validate_repo_path<'a>(
+    method: &str,
     db: &crate::db::Db,
-    path: &str,
-) -> anyhow::Result<crate::db::FileRecord> {
-    db.get_file_by_path(path)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "path '{}' is not indexed -- fall back to Read, or run 'reindex' if it should be tracked",
-            path
-        )
+    repo_root: &std::path::Path,
+    raw: &'a str,
+) -> anyhow::Result<RepoPath<'a>> {
+    let path = raw.trim();
+    if path.is_empty() {
+        anyhow::bail!("{method} requires a non-empty 'path'");
+    }
+    reject_path_escape(path)?;
+    if super::reading::is_markdown_path(path) {
+        if !repo_root.join(path).is_file() {
+            anyhow::bail!("{}", not_indexed_message(path));
+        }
+        return Ok(RepoPath { path, file: None });
+    }
+    let file = db
+        .get_file_by_path(path)?
+        .ok_or_else(|| anyhow::anyhow!("{}", not_indexed_message(path)))?;
+    Ok(RepoPath {
+        path,
+        file: Some(file),
     })
 }
 
@@ -160,12 +213,12 @@ pub(super) fn validate_gather_context_params(params: &GatherContextParams) -> Va
 
     // Validate strategy
     if let Some(strategy) = params.strategy.as_deref()
-        && !["symbol", "file"].contains(&strategy)
+        && !crate::gather_context::STRATEGIES.contains(&strategy)
     {
         result.add(
             "strategy",
             "invalid_value",
-            &format!("unknown strategy '{strategy}' -- valid values: symbol, file"),
+            &unknown_value_message("strategy", strategy, crate::gather_context::STRATEGIES),
         );
     }
 

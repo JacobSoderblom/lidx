@@ -17,6 +17,11 @@ use resolve::{ResolvedSeed, resolve_seeds};
 use sort::sort_items;
 
 /// Configuration for gather_context operation
+pub const STRATEGY_SYMBOL: &str = "symbol";
+pub const STRATEGY_FILE: &str = "file";
+/// Valid `strategy` values; the request validator checks against this.
+pub const STRATEGIES: &[&str] = &[STRATEGY_SYMBOL, STRATEGY_FILE];
+
 pub struct GatherConfig {
     pub max_bytes: usize,
     pub depth: usize,
