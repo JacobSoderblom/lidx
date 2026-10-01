@@ -1661,6 +1661,9 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             handle_class(node, ctx, source, output);
             return;
         }
+        // Bodiless overload declarations (`function_signature` /
+        // `method_signature`) are deliberately not symbols: calls must
+        // resolve to the implementation, the only declaration with a body.
         "function_declaration" | "generator_function_declaration" => {
             if ctx.fn_depth > 0 {
                 return;
@@ -4241,8 +4244,18 @@ fn handle_variable_declaration(
         for name in names {
             let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
             let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(child);
+            // `const f = (..) => ..` / `= function ..` is a function; any
+            // other initialiser keeps the declaration kind and no signature.
+            let function_node = (name_node.kind() == "identifier")
+                .then(|| function_initializer(child))
+                .flatten();
             output.symbols.push(SymbolInput {
-                kind: kind.to_string(),
+                kind: if function_node.is_some() {
+                    "function"
+                } else {
+                    kind
+                }
+                .to_string(),
                 name,
                 qualname: qualname.clone(),
                 start_line,
@@ -4251,18 +4264,25 @@ fn handle_variable_declaration(
                 end_col,
                 start_byte,
                 end_byte,
-                signature: None,
+                signature: function_node.and_then(|f| extract_signature(f, source)),
                 docstring: None,
                 identity: None,
             });
             output.edges.push(EdgeInput {
                 kind: "CONTAINS".to_string(),
                 source_qualname: Some(container_qualname(&ctx.module, &ctx.class_stack)),
-                target_qualname: Some(qualname),
+                target_qualname: Some(qualname.clone()),
                 detail: None,
                 evidence_snippet: None,
                 ..Default::default()
             });
+            if name_node.kind() == "identifier"
+                && let Some(object) = child
+                    .child_by_field_name("value")
+                    .filter(|v| v.kind() == "object")
+            {
+                emit_object_literal_methods(object, &qualname, source, output);
+            }
         }
     }
 }
@@ -4427,11 +4447,114 @@ fn unquote_string_literal(raw: &str) -> Option<String> {
     None
 }
 
+/// Source-faithful signature of a function-like node: type parameters,
+/// parameters and the return annotation as written (`<T>(items: T[]): T |
+/// undefined`). Grammar fields differ per node kind: `parameters` (a
+/// parenthesised list) on declarations, methods and parenthesised arrows,
+/// but `parameter` (a bare identifier) on `x => ...`. The `return_type` field
+/// is a `type_annotation` / `asserts_annotation` / `type_predicate_annotation`
+/// node whose text starts with `:`. Nothing is inferred: with no annotation
+/// there is no return part.
 fn extract_signature(node: Node<'_>, source: &str) -> Option<String> {
-    let params = node
-        .child_by_field_name("parameters")
-        .map(|n| node_text(n, source));
-    params.filter(|value| !value.is_empty())
+    let params = match node.child_by_field_name("parameters") {
+        Some(n) => node_text(n, source),
+        None => format!(
+            "({})",
+            node_text(node.child_by_field_name("parameter")?, source)
+        ),
+    };
+    if params.is_empty() {
+        return None;
+    }
+    let mut sig = String::new();
+    if let Some(tp) = node.child_by_field_name("type_parameters") {
+        sig.push_str(&node_text(tp, source));
+    }
+    sig.push_str(&params);
+    if let Some(ret) = node.child_by_field_name("return_type") {
+        let text = node_text(ret, source);
+        let annotation = text.trim_start().trim_start_matches(':').trim();
+        if !annotation.is_empty() {
+            sig.push_str(": ");
+            sig.push_str(annotation);
+        }
+    }
+    Some(sig)
+}
+
+/// Whether `node` is an arrow function or function expression (including
+/// generator expressions): the value kinds that make a binding a function.
+fn is_function_value(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "arrow_function" | "function_expression" | "function" | "generator_function"
+    )
+}
+
+/// The initialiser's function node when a declarator's value is a function
+/// value (see `is_function_value`).
+fn function_initializer<'a>(declarator: Node<'a>) -> Option<Node<'a>> {
+    declarator
+        .child_by_field_name("value")
+        .filter(|v| is_function_value(*v))
+}
+
+/// Emits `method` symbols for the methods (`m() {}`) and function-valued
+/// pairs (`m: () => {}`, `m: function () {}`) of an object literal bound to a
+/// module-level const/let, qualified under the binding's name.
+fn emit_object_literal_methods(
+    object: Node<'_>,
+    owner_qualname: &str,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut cursor = object.walk();
+    for member in object.named_children(&mut cursor) {
+        let (name_node, function_node) = match member.kind() {
+            "method_definition" => (member.child_by_field_name("name"), Some(member)),
+            "pair" => (
+                member.child_by_field_name("key"),
+                member
+                    .child_by_field_name("value")
+                    .filter(|v| is_function_value(*v)),
+            ),
+            _ => continue,
+        };
+        let (Some(name_node), Some(function_node)) = (name_node, function_node) else {
+            continue;
+        };
+        if !matches!(name_node.kind(), "property_identifier" | "identifier") {
+            continue;
+        }
+        let name = node_text(name_node, source);
+        if name.is_empty() {
+            continue;
+        }
+        let qualname = format!("{owner_qualname}.{name}");
+        let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(member);
+        output.symbols.push(SymbolInput {
+            kind: "method".to_string(),
+            name,
+            qualname: qualname.clone(),
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+            start_byte,
+            end_byte,
+            signature: extract_signature(function_node, source),
+            docstring: None,
+            identity: None,
+        });
+        output.edges.push(EdgeInput {
+            kind: "CONTAINS".to_string(),
+            source_qualname: Some(owner_qualname.to_string()),
+            target_qualname: Some(qualname),
+            detail: None,
+            evidence_snippet: None,
+            ..Default::default()
+        });
+    }
 }
 
 fn build_qualname(module: &str, class_stack: &[String], name: &str) -> String {
