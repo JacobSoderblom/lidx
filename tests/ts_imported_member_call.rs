@@ -44,7 +44,7 @@ fn relative_import_member_call_binds_to_imported_object() {
         ],
         "queries/client.load",
     );
-    assert_eq!(targets, vec!["lib/api-client.apiClient".to_string()]);
+    assert_eq!(targets, vec!["lib/api-client.apiClient.get".to_string()]);
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn alias_import_member_call_binds_to_imported_object() {
         ],
         "queries/client.load",
     );
-    assert_eq!(targets, vec!["lib/api-client.apiClient".to_string()]);
+    assert_eq!(targets, vec!["lib/api-client.apiClient.get".to_string()]);
 }
 
 fn single_call_target(files: &[(&str, &str)]) -> Vec<String> {
@@ -167,7 +167,7 @@ fn namespace_import_deep_chain_does_not_bind_to_module() {
             "import * as ns from './lib/api';\nexport function go() {\n  return ns.a.b();\n}\n",
         ),
     ]);
-    assert_eq!(t, vec!["lib/api.a".to_string()]);
+    assert_eq!(t, vec!["lib/api.a.b".to_string()]);
 }
 
 // Issue #187: default-import aliases, re-export chains, unexported members.
@@ -192,7 +192,7 @@ fn default_import_alias_binds_to_differently_named_default_export() {
             ),
             ("use.ts", &caller(spec, "api", "api.get()")),
         ]);
-        assert_eq!(t, vec!["lib/api.apiClient".to_string()], "{spec}");
+        assert_eq!(t, vec!["lib/api.apiClient.get".to_string()], "{spec}");
     }
 }
 
@@ -487,7 +487,7 @@ fn import_then_export_default_barrel_binds_to_original() {
         ),
         ("use.ts", &caller("./lib", "api", "api.get()")),
     ]);
-    assert_eq!(t, vec!["lib/client.apiClient".to_string()]);
+    assert_eq!(t, vec!["lib/client.apiClient.get".to_string()]);
 }
 
 #[test]

@@ -1624,7 +1624,7 @@ fn incremental_default_export_rename_reextracts_unchanged_importer() {
         &["api.ts"],
         &[("api.ts", v2), ("use.ts", caller)],
     );
-    assert_eq!(target_of(&idx).as_deref(), Some("api.renamedClient"));
+    assert_eq!(target_of(&idx).as_deref(), Some("api.renamedClient.get"));
 }
 
 #[test]
