@@ -520,6 +520,11 @@ impl Db {
                      AND (f.deleted_version IS NULL OR f.deleted_version > ?)
                      AND s.kind IN ('function', 'method', 'class', 'struct')
                      AND s.name NOT IN ('main', '__init__', 'setup', 'teardown', 'configure', 'register', '.cctor')
+                     -- Operators and finalizers are invoked implicitly (#247).
+                     AND NOT (f.language = 'csharp' AND (s.name LIKE 'operator %'
+                              OR s.name LIKE 'implicit operator %'
+                              OR s.name LIKE 'explicit operator %'
+                              OR s.name LIKE '~%'))
                      AND COALESCE(s.signature, '') NOT LIKE '%#[test]%'
                      AND COALESCE(s.signature, '') NOT LIKE '%::test]%'
                      AND COALESCE(s.signature, '') NOT LIKE '%#[rstest]%'

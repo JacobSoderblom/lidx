@@ -889,6 +889,33 @@ fn csharp_one_batch_edits_caller_and_moves_overload_target_across_files() {
     common::assert_matches_fresh(&snapshot, &fresh);
 }
 
+/// Issue #247: a C# `Color.Red` read whose enum file does not exist yet must
+/// stay retryable, so adding the enum later binds it like a fresh reindex.
+#[test]
+fn csharp_enum_member_read_resolves_when_enum_file_is_added_later() {
+    let reader = "using N;\nnamespace M\n{\n    public class Painter\n    {\n        \
+         public object Pick() => Color.Red;\n    }\n}\n";
+    let color = "namespace N\n{\n    public enum Color { Red, Green }\n}\n";
+
+    let (_tmp, repo_root, mut indexer) =
+        indexed_tree("csharp-enum-later", &[("Painter.cs", reader)]);
+    common::write_files(&repo_root, &[("Color.cs", color)]);
+    indexer.sync_rel_paths(&["Color.cs".to_string()]).unwrap();
+
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot
+            .iter()
+            .any(|e| e.source_qualname == "M.Painter.Pick"
+                && e.kind == "USES"
+                && e.target_qualname.as_deref() == Some("N.Color.Red")),
+        "{snapshot:#?}"
+    );
+    let (_fresh_tmp, fresh) = common::index_files(&[("Painter.cs", reader), ("Color.cs", color)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
 /// `from pkg import mod` while `pkg.mod` names two modules (`mod.py` plus a
 /// `mod.pyi` stub) must stay unresolved, not fall back to `pkg`; deleting
 /// the stub then binds it to `pkg.mod`, matching a fresh reindex.

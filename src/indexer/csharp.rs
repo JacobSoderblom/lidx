@@ -584,6 +584,9 @@ fn walk_node_inner(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     {
         output.edges.push(edge);
     }
+    if node.kind() == "member_access_expression" {
+        handle_member_read(node, ctx, source, output);
+    }
     if is_local_function_node(node.kind()) {
         return;
     }
@@ -631,6 +634,21 @@ fn walk_node_inner(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
             handle_property(node, ctx, source, output);
             return;
         }
+        "enum_member_declaration" => {
+            handle_enum_member(node, ctx, source, output);
+            return;
+        }
+        "indexer_declaration"
+        | "operator_declaration"
+        | "conversion_operator_declaration"
+        | "destructor_declaration" => {
+            handle_special_member(node, ctx, source, output);
+            return;
+        }
+        "delegate_declaration" => {
+            handle_delegate(node, ctx, source, output);
+            return;
+        }
         "event_declaration" => {
             handle_event(node, ctx, source, output);
             return;
@@ -654,6 +672,88 @@ fn walk_node_inner(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     for child in node.named_children(&mut cursor) {
         walk_node(child, ctx, source, output);
     }
+}
+
+/// `Type.Member` read (not a call): a `USES` edge whose target the resolver
+/// binds through the file's `using`s, so an enum member read from another
+/// file resolves to the member symbol. Limited to a bare PascalCase type
+/// name and member that aren't a tracked local/field.
+fn handle_member_read(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    if ctx.current_scope.is_empty() {
+        return;
+    }
+    let (Some(object), Some(member)) = (
+        node.child_by_field_name("expression"),
+        node.child_by_field_name("name"),
+    ) else {
+        return;
+    };
+    if object.kind() != "identifier" || member.kind() != "identifier" {
+        return;
+    }
+    if let Some(parent) = node.parent()
+        && parent.kind() == "invocation_expression"
+        && parent.child_by_field_name("function") == Some(node)
+    {
+        return;
+    }
+    let (ty, name) = (node_text(object, source), node_text(member, source));
+    if !ty.starts_with(char::is_uppercase) || !name.starts_with(char::is_uppercase) {
+        return;
+    }
+    if is_qualified_name_prefix(node) || is_inside_nameof(node, source) {
+        return;
+    }
+    let receiver_type = infer_receiver_type(node, source, ctx);
+    if receiver_type != ReceiverType::NotTracked || ctx.local_types.contains_key(ty.as_str()) {
+        return;
+    }
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+    output.edges.push(EdgeInput {
+        kind: "USES".to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(format!("{ty}.{name}")),
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        import_candidates: import_qualified_candidates(&ty, &name, ctx),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    });
+}
+
+/// `System.Console` in `System.Console.Out`: the receiver of a further
+/// un-invoked PascalCase member read is a qualified name, not a `Type.Member`
+/// read. (`Color.Red.ToString()` is invoked, so `Color.Red` still counts.)
+fn is_qualified_name_prefix(node: Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    if parent.kind() != "member_access_expression"
+        || parent.child_by_field_name("expression") != Some(node)
+    {
+        return false;
+    }
+    let invoked = parent.parent().is_some_and(|gp| {
+        gp.kind() == "invocation_expression" && gp.child_by_field_name("function") == Some(parent)
+    });
+    !invoked
+}
+
+/// Inside `nameof(...)`, where `Type.Member` is a name, not a read.
+fn is_inside_nameof(node: Node<'_>, source: &str) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if n.kind() == "invocation_expression"
+            && n.child_by_field_name("function")
+                .is_some_and(|f| f.kind() == "identifier" && node_text(f, source) == "nameof")
+        {
+            return true;
+        }
+        cur = n.parent();
+    }
+    false
 }
 
 fn handle_namespace(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -760,6 +860,12 @@ fn handle_type(
 
     if type_kind != TypeKind::Enum {
         handle_base_list(node, &qualname, source, output, type_kind, ctx);
+    }
+    if type_kind == TypeKind::Record {
+        let mut member_ctx = ctx.clone();
+        member_ctx.type_stack.push(name.clone());
+        member_ctx.generic_arities.push(generic_arity(node));
+        handle_record_parameters(node, &member_ctx, source, output);
     }
 
     let grpc_service_info = grpc_service_from_bases(node, source);
@@ -1199,6 +1305,210 @@ fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut 
     pin_edge_sources(&mut output.edges[first_edge..], &qualname, start_byte);
 }
 
+/// `enum Color { Red, Green = 2 }`: each member is a `const` of its enum.
+fn handle_enum_member(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let name = node_text(name_node, source);
+    if name.is_empty() {
+        return;
+    }
+    let qualname = build_qualname(ctx, &name);
+    push_member(
+        node,
+        ctx,
+        output,
+        "const",
+        name,
+        qualname.clone(),
+        None,
+        None,
+    );
+    walk_initializer(node, &qualname, ctx, source, output);
+}
+
+/// `record P(string Name, int Age)`: each positional parameter declares a
+/// `property` of the record.
+fn handle_record_parameters(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut cursor = node.walk();
+    let Some(list) = node
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "parameter_list")
+    else {
+        return;
+    };
+    let mut inner = list.walk();
+    for param in list.named_children(&mut inner) {
+        if param.kind() != "parameter" {
+            continue;
+        }
+        let Some(name_node) = param.child_by_field_name("name") else {
+            continue;
+        };
+        let name = node_text(name_node, source);
+        if name.is_empty() {
+            continue;
+        }
+        let qualname = build_qualname(ctx, &name);
+        push_member(param, ctx, output, "property", name, qualname, None, None);
+    }
+}
+
+/// `delegate void Handler(int x);`: a type-level declaration.
+fn handle_delegate(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    if ctx.fn_depth > 0 {
+        return;
+    }
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let name = node_text(name_node, source);
+    if name.is_empty() {
+        return;
+    }
+    let qualname = build_qualname(ctx, &name);
+    let signature = special_member_signature(node, source);
+    push_member(
+        node,
+        ctx,
+        output,
+        "delegate",
+        name,
+        qualname,
+        signature,
+        Some(generic_arity(node)),
+    );
+}
+
+/// Indexers (`this[]`), operators (`operator +`), conversion operators
+/// (`implicit operator int`) and finalizers (`~Svc`). Overloads share one
+/// qualname and differ by signature, like methods.
+fn handle_special_member(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let (name, kind) = match node.kind() {
+        "indexer_declaration" => ("this[]".to_string(), "property"),
+        "destructor_declaration" => {
+            let Some(name_node) = node.child_by_field_name("name") else {
+                return;
+            };
+            (format!("~{}", node_text(name_node, source)), "method")
+        }
+        "conversion_operator_declaration" => {
+            let Some(ty) = node.child_by_field_name("type") else {
+                return;
+            };
+            let mut cursor = node.walk();
+            let direction = node
+                .children(&mut cursor)
+                .find(|c| matches!(c.kind(), "implicit" | "explicit"))
+                .map_or("implicit", |c| c.kind());
+            let ty: Vec<String> = node_text(ty, source)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect();
+            // No '.' in a name: parent lookups split the qualname on it.
+            let ty = ty.join(" ").replace('.', "_");
+            (format!("{direction} operator {ty}"), "method")
+        }
+        _ => {
+            let Some(op) = node.child_by_field_name("operator") else {
+                return;
+            };
+            (format!("operator {}", node_text(op, source)), "method")
+        }
+    };
+    let qualname = build_qualname(ctx, &name);
+    let signature = special_member_signature(node, source);
+    let first_edge = output.edges.len();
+    let (start_line, .., start_byte, _) = span(node);
+    if has_modifier(node, source, "override") {
+        output.override_symbols.push((qualname.clone(), start_line));
+    }
+    push_member(
+        node,
+        ctx,
+        output,
+        kind,
+        name,
+        qualname.clone(),
+        signature,
+        None,
+    );
+    walk_parameter_defaults(node, &qualname, ctx, source, output);
+    let mut next_ctx = ctx.clone();
+    next_ctx.fn_depth += 1;
+    next_ctx.current_scope = qualname.clone();
+    let (local_types, assigns) = infer_local_types(node, source, ctx);
+    next_ctx.local_types = Rc::new(local_types);
+    next_ctx.assigns = Rc::new(assigns);
+    for field in ["body", "value"] {
+        if let Some(body) = node.child_by_field_name(field) {
+            walk_node(body, &next_ctx, source, output);
+        }
+    }
+    walk_accessors(node, &qualname, ctx, source, output);
+    pin_edge_sources(&mut output.edges[first_edge..], &qualname, start_byte);
+}
+
+/// `(params) -> type`, the shape `method_signature` gives methods; these
+/// nodes name the type `type` rather than `returns`.
+fn special_member_signature(node: Node<'_>, source: &str) -> Option<String> {
+    let params = node_text(node.child_by_field_name("parameters")?, source);
+    if params.is_empty() {
+        return None;
+    }
+    match node
+        .child_by_field_name("type")
+        .map(|n| node_text(n, source))
+    {
+        Some(ty) if !ty.is_empty() => Some(format!("{params} -> {ty}")),
+        _ => Some(params),
+    }
+}
+
+/// Emit one member symbol spanning `node` plus the `CONTAINS` edge from its
+/// declaring type or namespace.
+#[allow(clippy::too_many_arguments)]
+fn push_member(
+    node: Node<'_>,
+    ctx: &Context,
+    output: &mut ExtractedFile,
+    kind: &str,
+    name: String,
+    qualname: String,
+    signature: Option<String>,
+    own_arity: Option<usize>,
+) {
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    output.symbols.push(SymbolInput {
+        kind: kind.to_string(),
+        name,
+        qualname: qualname.clone(),
+        start_line,
+        start_col,
+        end_line,
+        end_col,
+        start_byte,
+        end_byte,
+        signature,
+        docstring: None,
+        identity: identity(ctx, own_arity),
+    });
+    output.edges.push(EdgeInput {
+        kind: "CONTAINS".to_string(),
+        source_qualname: Some(container_qualname(ctx)),
+        target_qualname: Some(qualname),
+        detail: None,
+        evidence_snippet: None,
+        ..Default::default()
+    });
+}
+
 fn handle_property(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     let Some(name_node) = node.child_by_field_name("name") else {
         return;
@@ -1293,32 +1603,12 @@ fn push_event(
     qualname: String,
     is_override: bool,
 ) {
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
     if is_override {
-        output.override_symbols.push((qualname.clone(), start_line));
+        output
+            .override_symbols
+            .push((qualname.clone(), span(node).0));
     }
-    output.symbols.push(SymbolInput {
-        kind: "event".to_string(),
-        name,
-        qualname: qualname.clone(),
-        start_line,
-        start_col,
-        end_line,
-        end_col,
-        start_byte,
-        end_byte,
-        signature: None,
-        docstring: None,
-        identity: identity(ctx, None),
-    });
-    output.edges.push(EdgeInput {
-        kind: "CONTAINS".to_string(),
-        source_qualname: Some(container_qualname(ctx)),
-        target_qualname: Some(qualname),
-        detail: None,
-        evidence_snippet: None,
-        ..Default::default()
-    });
+    push_member(node, ctx, output, "event", name, qualname, None, None);
 }
 
 /// Walk a property/event's accessor bodies (`get`/`set`/`init`/`add`/
