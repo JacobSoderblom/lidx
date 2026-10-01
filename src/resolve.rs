@@ -774,14 +774,23 @@ fn resolve_by_query(
     resolve_after_candidates(db, query, candidates, graph_version)
 }
 
+/// Whether `kind` is a type that owns members (class, struct, record,
+/// interface). Callers hit such a type through its members, so every method
+/// that answers "who depends on this type" aggregates them (#249).
+pub fn is_type_container_kind(kind: &str) -> bool {
+    matches!(kind, "class" | "struct" | "record" | "interface")
+}
+
 /// Expands a symbol into seed IDs for BFS traversal.
-/// For container symbols (class/module/resource), returns the symbol plus its members.
+/// For container symbols (types, module, resource), returns the symbol plus
+/// its members.
 pub fn expand_seeds(db: &Db, symbol_id: i64, graph_version: i64) -> Result<Vec<i64>> {
     let symbol = db
         .get_symbol_by_id(symbol_id)?
         .ok_or_else(|| anyhow::anyhow!("symbol not found: id={}", symbol_id))?;
 
-    let is_container = matches!(symbol.kind.as_str(), "class" | "module" | "resource");
+    let is_container = is_type_container_kind(&symbol.kind)
+        || matches!(symbol.kind.as_str(), "module" | "resource");
     if !is_container {
         return Ok(vec![symbol_id]);
     }

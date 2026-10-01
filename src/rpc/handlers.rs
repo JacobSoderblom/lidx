@@ -189,7 +189,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     // 4b. Cross-boundary neighbours (RPC/HTTP/channel/config), appended after
     // the CALLS refs in callers/callees/tests below. Same seed set as the
     // CALLS aggregation: a class also speaks for its members.
-    let cross_seeds = if symbol.kind == "class" {
+    let cross_seeds = if crate::resolve::is_type_container_kind(&symbol.kind) {
         crate::resolve::expand_seeds(indexer.db(), symbol.id, ctx.graph_version)?
     } else {
         vec![symbol.id]
@@ -209,7 +209,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     // left out of the share renormalization: their share goes to the other
     // requested sections instead of stranding behind an earlier one.
     let has_callers = wants_callers
-        && (symbol.kind == "class"
+        && (crate::resolve::is_type_container_kind(&symbol.kind)
             || !incoming_cross.is_empty()
             || !indexer
                 .db()
@@ -220,7 +220,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 .iter()
                 .any(|e| e.kind == "CALLS" && e.target_symbol_id == Some(symbol.id)));
     let has_callees = wants_callees
-        && (symbol.kind == "class"
+        && (crate::resolve::is_type_container_kind(&symbol.kind)
             || !outgoing_cross.is_empty()
             || edges.iter().any(|e| {
                 e.kind == "CALLS"
@@ -336,7 +336,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         let mut seen_caller_ids = std::collections::HashSet::new();
 
         // Determine which symbol IDs to collect callers for
-        let is_class_symbol = symbol.kind == "class";
+        let is_class_symbol = crate::resolve::is_type_container_kind(&symbol.kind);
         let target_ids: Vec<i64> = if is_class_symbol {
             // For class symbols, find all methods and collect callers for each
             let all_symbols = indexer
@@ -496,7 +496,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         let mut seen_callee_ids = std::collections::HashSet::new();
 
         // Determine if this is a class-level symbol
-        let is_class_symbol = symbol.kind == "class";
+        let is_class_symbol = crate::resolve::is_type_container_kind(&symbol.kind);
 
         if is_class_symbol {
             // For class symbols, find all methods in the same file within the class's line range
@@ -1872,12 +1872,46 @@ fn build_impact_config(
 /// see issue: batch analyze_impact previously labeled every per-entry
 /// error "not found", even analysis failures like a `languages` filter
 /// that excludes the seed's own language.
+/// Seeds for an impact analysis plus the subset a `both` walk expands upstream
+/// only (see `DirectConfig::upstream_only_seeds`).
+struct ImpactSeeds {
+    ids: Vec<i64>,
+    upstream_only: Vec<i64>,
+}
+
+/// Widens `ids` with the members of a container symbol (issue #249): nothing
+/// calls a class itself, callers hit its constructors and methods. Upstream
+/// walks seed the members outright; a `both` walk seeds them for their
+/// callers only, so member callees stay out of the downstream half; a
+/// downstream walk is untouched. Shares `trace_flow`'s `expand_seeds` so the
+/// methods cannot drift. Returns the members added (empty for downstream).
+fn expand_container_members(
+    db: &crate::db::Db,
+    symbol_id: i64,
+    ids: &mut Vec<i64>,
+    direction: crate::impact::TraversalDirection,
+    graph_version: i64,
+) -> Result<Vec<i64>> {
+    use crate::impact::TraversalDirection;
+    if direction == TraversalDirection::Downstream {
+        return Ok(Vec::new());
+    }
+    let mut members = Vec::new();
+    for id in crate::resolve::expand_seeds(db, symbol_id, graph_version)? {
+        if !ids.contains(&id) {
+            ids.push(id);
+            members.push(id);
+        }
+    }
+    Ok(members)
+}
+
 fn resolve_batch_seed_ids(
     indexer: &mut Indexer,
     qualname: &str,
     config: &crate::impact::config::MultiLayerConfig,
     graph_version: i64,
-) -> Result<Vec<i64>> {
+) -> Result<ImpactSeeds> {
     let dir = config.direct.direction.as_str();
 
     if crate::indexer::config::is_config_uri(qualname) {
@@ -1895,13 +1929,25 @@ fn resolve_batch_seed_ids(
                 qualname
             ));
         }
-        Ok(ids)
+        Ok(ImpactSeeds {
+            ids,
+            upstream_only: Vec::new(),
+        })
     } else {
         let symbol = indexer
             .db()
             .get_symbol_by_qualname(qualname, graph_version)?
             .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", qualname))?;
-        Ok(vec![symbol.id])
+        let direction = crate::impact::TraversalDirection::from(dir);
+        let mut ids = vec![symbol.id];
+        let members =
+            expand_container_members(indexer.db(), symbol.id, &mut ids, direction, graph_version)?;
+        let upstream_only = if direction == crate::impact::TraversalDirection::Both {
+            members
+        } else {
+            Vec::new()
+        };
+        Ok(ImpactSeeds { ids, upstream_only })
     }
 }
 
@@ -2054,11 +2100,15 @@ fn analyze_impact_inner(
 
         for qn in qualnames {
             let entry = match resolve_batch_seed_ids(indexer, qn, &base_config, ctx.graph_version) {
-                Ok(seed_ids) => match crate::impact::analyze_impact_multi_layer(
+                Ok(ImpactSeeds {
+                    ids: seed_ids,
+                    upstream_only,
+                }) => match crate::impact::analyze_impact_multi_layer(
                     indexer.db(),
                     &seed_ids,
                     {
                         let mut c = base_config.clone();
+                        c.direct.upstream_only_seeds = upstream_only;
                         if crate::indexer::config::is_config_uri(qn) {
                             c.direct.seed_config_uri = Some(qn.clone());
                         }
@@ -2138,16 +2188,19 @@ fn analyze_impact_inner(
 
     // ---- Single-seed path (unchanged) ----
 
+    // Parsed once; every direction decision below reads this.
+    let traversal_direction =
+        crate::impact::TraversalDirection::from(params.direction.as_deref().unwrap_or("both"));
+
     // Check for config URI in qualname (e.g., "secret://datamgr-db-conn-str", "env://DATABASE")
     // Direction-aware: downstream seeds from providers (CONFIG_SOURCE),
     // upstream seeds from consumers (CONFIG_READ), both uses all.
     let seed_ids: Vec<i64> = if let Some(qualname) = params.qualname.as_deref() {
         if crate::indexer::config::is_config_uri(qualname) {
-            let dir = params.direction.as_deref().unwrap_or("both");
-            let uri_kinds: &[&str] = match dir {
-                "downstream" => &["CONFIG_SOURCE"],
-                "upstream" => &["CONFIG_READ", "CONFIG_BIND"],
-                _ => &[],
+            let uri_kinds: &[&str] = match traversal_direction {
+                crate::impact::TraversalDirection::Downstream => &["CONFIG_SOURCE"],
+                crate::impact::TraversalDirection::Upstream => &["CONFIG_READ", "CONFIG_BIND"],
+                crate::impact::TraversalDirection::Both => &[],
             };
             let ids = indexer.db().source_symbols_for_config_uri(
                 qualname,
@@ -2171,6 +2224,11 @@ fn analyze_impact_inner(
     } else {
         vec![]
     };
+
+    // Seeds widened to a container's members (#249), and the subset a `both`
+    // walk expands upstream only.
+    let mut container_seeded = false;
+    let mut upstream_only_seeds: Vec<i64> = Vec::new();
 
     // Resolve symbol by id, qualname, or fuzzy query (skip if config URI already resolved).
     // For qualname/query we catch resolution failure and return a structured recovery payload
@@ -2217,6 +2275,17 @@ fn analyze_impact_inner(
         {
             ids.push(parent.id);
         }
+        let members = expand_container_members(
+            indexer.db(),
+            symbol.id,
+            &mut ids,
+            traversal_direction,
+            ctx.graph_version,
+        )?;
+        container_seeded = !members.is_empty();
+        if traversal_direction == crate::impact::TraversalDirection::Both {
+            upstream_only_seeds = members;
+        }
         ids
     };
 
@@ -2258,6 +2327,7 @@ fn analyze_impact_inner(
     if let Some(ref languages) = ctx.languages {
         config.direct.languages = Some(languages.clone());
     }
+    config.direct.upstream_only_seeds = upstream_only_seeds;
 
     if let Some(qn) = params.qualname.as_deref()
         && crate::indexer::config::is_config_uri(qn)
@@ -2387,12 +2457,19 @@ fn analyze_impact_inner(
         // Also recognise aliases accepted by TraversalDirection::from (direct.rs ~30-31):
         //   up/upstream/callers/in  → upstream  → flip to "downstream"
         //   down/downstream/callees/out → downstream → flip to "upstream"
-        let alt_direction = match direction.to_lowercase().as_str() {
-            "upstream" | "up" | "callers" | "in" => Some("downstream"),
-            "downstream" | "down" | "callees" | "out" => Some("upstream"),
-            _ => None,
+        let alt_direction = match traversal_direction {
+            crate::impact::TraversalDirection::Upstream => Some("downstream"),
+            crate::impact::TraversalDirection::Downstream => Some("upstream"),
+            crate::impact::TraversalDirection::Both => None,
         };
-        if let Some(alt) = alt_direction {
+        // A container whose members were all searched upstream is a genuine
+        // "nothing depends on this": the direction was not the problem
+        // (unless the direct layer was switched off, which is).
+        let members_searched_upstream = container_seeded
+            && traversal_direction == crate::impact::TraversalDirection::Upstream
+            && params.enable_direct != Some(false);
+        let suppress_flip = |alt: &str| members_searched_upstream && alt == "downstream";
+        if let Some(alt) = alt_direction.filter(|alt| !suppress_flip(alt)) {
             next_hops.push(json!({
                 "method": "analyze_impact",
                 "params": seed_params(alt),
