@@ -6,6 +6,15 @@
 use crate::model::Symbol;
 use std::path::Path;
 
+/// True if the path ends with a JavaScript/TypeScript source file extension.
+/// Covers the 4 standard source extensions: `.js`, `.ts`, `.jsx`, `.tsx`.
+fn is_js_ts_source(path: &str) -> bool {
+    let path_lower = path.to_lowercase();
+    [".js", ".ts", ".jsx", ".tsx"]
+        .iter()
+        .any(|ext| path_lower.ends_with(ext))
+}
+
 /// Detects if a symbol is a test based on language-specific conventions
 ///
 /// # Detection Rules by Language
@@ -100,11 +109,7 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
     }
 
     // JavaScript/TypeScript tests
-    if file_lower.ends_with(".js")
-        || file_lower.ends_with(".ts")
-        || file_lower.ends_with(".jsx")
-        || file_lower.ends_with(".tsx")
-    {
+    if is_js_ts_source(&symbol.file_path) {
         // Test functions
         if name_lower.starts_with("test")
             || name_lower == "it"
@@ -167,12 +172,7 @@ pub fn is_test_symbol(symbol: &Symbol) -> bool {
 /// one specific test: anonymous `describe`/`it`/`test` callbacks have no
 /// symbol of their own, so every test in the file is attributed to it.
 pub fn is_file_level_test(symbol: &Symbol) -> bool {
-    let file_lower = symbol.file_path.to_lowercase();
-    symbol.kind == "module"
-        && [".js", ".ts", ".jsx", ".tsx"]
-            .iter()
-            .any(|ext| file_lower.ends_with(ext))
-        && is_test_symbol(symbol)
+    symbol.kind == "module" && is_js_ts_source(&symbol.file_path) && is_test_symbol(symbol)
 }
 
 /// Extensions covered by the generic JS/TS `.test.`/`.spec.`/`_test`

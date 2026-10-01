@@ -3,6 +3,7 @@
 
 use super::reading::is_markdown_path;
 use super::*;
+use crate::indexer::test_detection::is_file_level_test;
 use crate::search::{
     RgSearchOptions, annotate_grep_hits, normalize_rg_context, resolve_rg_paths, search_rg,
 };
@@ -690,7 +691,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     continue;
                 }
                 tests_budget.used += ref_bytes;
-                let file_level = crate::indexer::test_detection::is_file_level_test(&test_sym);
+                let file_level = is_file_level_test(&test_sym);
                 test_refs.push(ExplainRef {
                     symbol: test_sym,
                     evidence: edge.evidence_snippet.clone(),
@@ -725,7 +726,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             }
             tests_budget.used += ref_bytes;
             let mut test_ref = r.clone();
-            test_ref.file_level = crate::indexer::test_detection::is_file_level_test(&r.symbol);
+            test_ref.file_level = is_file_level_test(&r.symbol);
             test_refs.push(test_ref);
             if test_refs.len() >= max_refs {
                 still_adding = false;
