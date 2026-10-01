@@ -135,8 +135,9 @@ fn unannotated_function_has_no_guessed_return_type() {
     assert_eq!(sym(&f, "m.C.m").1, Some("(x: number)"));
 }
 
+/// Guard only: #212's dup ordinals already keep these distinct on main.
 #[test]
-fn same_named_arrow_consts_in_one_file_stay_distinct() {
+fn same_named_arrow_consts_in_one_file_stay_distinct_guard() {
     let (tmp, _) = common::index_files(&[(
         "a.ts",
         "var f = (a: number) => 1;\nvar f = (a: string) => 2;\nvar g = () => 1;\nvar g = () => 2;\n",
@@ -169,4 +170,118 @@ fn outline_shows_improved_signatures() {
     assert!(text.contains("(c: string): number"), "{text}");
     assert!(text.contains("<T>(items: T[]): T | undefined"), "{text}");
     assert!(text.contains("function"), "{text}");
+}
+
+#[test]
+fn same_named_arrow_consts_in_different_scopes_are_functions_with_own_signatures() {
+    let f = extract(
+        "namespace A { export const f = (x: number): number => x; }\n\
+         namespace B { export const f = (x: string): string => x; }\n\
+         var g = (a: number): number => a;\nvar g = (a: string): string => a;\n",
+    );
+    assert_eq!(sym(&f, "m.A.f"), ("function", Some("(x: number): number")));
+    assert_eq!(sym(&f, "m.B.f"), ("function", Some("(x: string): string")));
+    let gs: Vec<_> = f
+        .symbols
+        .iter()
+        .filter(|s| s.qualname == "m.g")
+        .map(|s| (s.kind.as_str(), s.signature.as_deref()))
+        .collect();
+    assert_eq!(
+        gs,
+        vec![
+            ("function", Some("(a: number): number")),
+            ("function", Some("(a: string): string"))
+        ]
+    );
+}
+
+#[test]
+fn function_overload_declarations_use_the_same_signature_format() {
+    let f = extract(
+        "export function over(a: string): string;\n\
+         export function over(a: number): number;\n\
+         export function over<T>(a: T): T { return a; }\n",
+    );
+    let sigs: Vec<_> = f
+        .symbols
+        .iter()
+        .filter(|s| s.qualname == "m.over")
+        .map(|s| (s.kind.as_str(), s.signature.as_deref().unwrap()))
+        .collect();
+    assert_eq!(
+        sigs,
+        vec![
+            ("function", "(a: string): string"),
+            ("function", "(a: number): number"),
+            ("function", "<T>(a: T): T"),
+        ]
+    );
+}
+
+#[test]
+fn method_overload_declarations_use_the_same_signature_format() {
+    let f = extract(
+        "export class C {\n  m(a: string): string;\n  m(a: number): number;\n  m(a: any): any { return a; }\n}\n",
+    );
+    let sigs: Vec<_> = f
+        .symbols
+        .iter()
+        .filter(|s| s.qualname == "m.C.m")
+        .map(|s| s.signature.as_deref().unwrap())
+        .collect();
+    assert_eq!(
+        sigs,
+        vec![
+            "(a: string): string",
+            "(a: number): number",
+            "(a: any): any"
+        ]
+    );
+}
+
+#[test]
+fn nested_object_literal_methods_are_not_symbols() {
+    let f = extract("export const o = { a: { b(): void {} }, top(): number { return 1; } };\n");
+    assert_eq!(sym(&f, "m.o"), ("const", None));
+    assert_eq!(sym(&f, "m.o.top"), ("method", Some("(): number")));
+    assert!(
+        !f.symbols.iter().any(|s| s.qualname.starts_with("m.o.a")),
+        "nested object members are not extracted"
+    );
+}
+
+#[test]
+fn object_literal_spread_and_plain_values_yield_no_methods() {
+    let f = extract(
+        "const base = { x: 1 };\nexport const o = { ...base, m(): void {} };\nexport const plain = { a: 1, b: 'x' };\n",
+    );
+    let q: Vec<_> = f
+        .symbols
+        .iter()
+        .map(|s| s.qualname.as_str())
+        .filter(|q| q.starts_with("m.o") || q.starts_with("m.plain"))
+        .collect();
+    assert_eq!(q, vec!["m.o", "m.o.m", "m.plain"]);
+}
+
+#[test]
+fn generator_function_values_and_destructured_params() {
+    let f = extract(
+        "export const gen = function* (n: number): Generator<number> { yield n; };\n\
+         export const o = { *g(n: number): Generator<number> { yield n; } };\n\
+         export const d = ({ a }: { a: number }): number => a;\n",
+    );
+    assert_eq!(
+        sym(&f, "m.gen"),
+        ("function", Some("(n: number): Generator<number>"))
+    );
+    assert_eq!(
+        sym(&f, "m.o.g"),
+        ("method", Some("(n: number): Generator<number>"))
+    );
+    assert_eq!(
+        sym(&f, "m.d"),
+        ("function", Some("({ a }: { a: number }): number"))
+    );
 }

@@ -1652,7 +1652,9 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             handle_class(node, ctx, source, output);
             return;
         }
-        "function_declaration" | "generator_function_declaration" => {
+        // Overload declarations (`function f(a: string): string;`) are
+        // symbols like the implementation, with the same signature format.
+        "function_declaration" | "generator_function_declaration" | "function_signature" => {
             if ctx.fn_depth > 0 {
                 return;
             }
@@ -1895,7 +1897,7 @@ fn walk_class_body(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
-            "method_definition" | "abstract_method_signature" => {
+            "method_definition" | "abstract_method_signature" | "method_signature" => {
                 handle_method(child, ctx, source, output);
             }
             "public_field_definition" | "field_definition" => {
@@ -4236,11 +4238,16 @@ fn handle_variable_declaration(
             let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(child);
             // `const f = (..) => ..` / `= function ..` is a function; any
             // other initialiser keeps the declaration kind and no signature.
-            let func = (name_node.kind() == "identifier")
+            let function_node = (name_node.kind() == "identifier")
                 .then(|| function_initializer(child))
                 .flatten();
             output.symbols.push(SymbolInput {
-                kind: if func.is_some() { "function" } else { kind }.to_string(),
+                kind: if function_node.is_some() {
+                    "function"
+                } else {
+                    kind
+                }
+                .to_string(),
                 name,
                 qualname: qualname.clone(),
                 start_line,
@@ -4249,7 +4256,7 @@ fn handle_variable_declaration(
                 end_col,
                 start_byte,
                 end_byte,
-                signature: func.and_then(|f| extract_signature(f, source)),
+                signature: function_node.and_then(|f| extract_signature(f, source)),
                 docstring: None,
                 identity: None,
             });
@@ -4467,15 +4474,21 @@ fn extract_signature(node: Node<'_>, source: &str) -> Option<String> {
     Some(sig)
 }
 
-/// The initialiser's function node when a declarator's value is an arrow
-/// function or function expression (including generator expressions).
-fn function_initializer<'a>(declarator: Node<'a>) -> Option<Node<'a>> {
-    let value = declarator.child_by_field_name("value")?;
+/// Whether `node` is an arrow function or function expression (including
+/// generator expressions): the value kinds that make a binding a function.
+fn is_function_value(node: Node<'_>) -> bool {
     matches!(
-        value.kind(),
+        node.kind(),
         "arrow_function" | "function_expression" | "function" | "generator_function"
     )
-    .then_some(value)
+}
+
+/// The initialiser's function node when a declarator's value is a function
+/// value (see `is_function_value`).
+fn function_initializer<'a>(declarator: Node<'a>) -> Option<Node<'a>> {
+    declarator
+        .child_by_field_name("value")
+        .filter(|v| is_function_value(*v))
 }
 
 /// Emits `method` symbols for the methods (`m() {}`) and function-valued
@@ -4489,23 +4502,17 @@ fn emit_object_literal_methods(
 ) {
     let mut cursor = object.walk();
     for member in object.named_children(&mut cursor) {
-        let (name_node, func) = match member.kind() {
+        let (name_node, function_node) = match member.kind() {
             "method_definition" => (member.child_by_field_name("name"), Some(member)),
             "pair" => (
                 member.child_by_field_name("key"),
-                member.child_by_field_name("value").filter(|v| {
-                    matches!(
-                        v.kind(),
-                        "arrow_function"
-                            | "function_expression"
-                            | "function"
-                            | "generator_function"
-                    )
-                }),
+                member
+                    .child_by_field_name("value")
+                    .filter(|v| is_function_value(*v)),
             ),
             _ => continue,
         };
-        let (Some(name_node), Some(func)) = (name_node, func) else {
+        let (Some(name_node), Some(function_node)) = (name_node, function_node) else {
             continue;
         };
         if !matches!(name_node.kind(), "property_identifier" | "identifier") {
@@ -4527,7 +4534,7 @@ fn emit_object_literal_methods(
             end_col,
             start_byte,
             end_byte,
-            signature: extract_signature(func, source),
+            signature: extract_signature(function_node, source),
             docstring: None,
             identity: None,
         });
