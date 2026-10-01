@@ -29,6 +29,79 @@ pub(super) const EXPLAIN_FORMATS: &[&str] = &[FORMAT_FULL, FORMAT_SIGNATURES];
 pub(super) const FORMAT_COMPACT: &str = "compact";
 pub(super) const TRACE_FORMATS: &[&str] = &[FORMAT_FULL, FORMAT_COMPACT];
 
+pub(super) const DIR_UPSTREAM: &str = "upstream";
+pub(super) const DIR_DOWNSTREAM: &str = "downstream";
+pub(super) const DIR_BOTH: &str = "both";
+const TRACE_DIRECTIONS: &[&str] = &[DIR_DOWNSTREAM, DIR_UPSTREAM];
+const IMPACT_DIRECTIONS: &[&str] = &[DIR_DOWNSTREAM, DIR_UPSTREAM, DIR_BOTH];
+
+/// Every edge kind `kinds` may name (the vocabulary the MCP instructions
+/// advertise). Matching is case-insensitive; see `normalize_kinds`.
+pub(super) const EDGE_KINDS: &[&str] = &[
+    "CALLS",
+    "IMPORTS",
+    "CONTAINS",
+    "EXTENDS",
+    "IMPLEMENTS",
+    "INHERITS",
+    "RPC_IMPL",
+    "RPC_CALL",
+    "RPC_ROUTE",
+    "HTTP_ROUTE",
+    "HTTP_CALL",
+    "CHANNEL_PUBLISH",
+    "CHANNEL_SUBSCRIBE",
+    "CONFIG_SOURCE",
+    "CONFIG_READ",
+    "CONFIG_BIND",
+    "USES",
+    "XREF",
+    "MODULE_FILE",
+    "IMPORTS_FILE",
+];
+
+/// Canonicalizes a `direction` value (case-insensitive; `up`/`callers` and
+/// `down`/`callees` are aliases) or errors naming the value and the valid
+/// ones. `None` means the param was omitted; the caller applies its default.
+/// `allow_both` is true for `analyze_impact` only.
+pub(super) fn normalize_direction(
+    value: Option<&str>,
+    allow_both: bool,
+) -> anyhow::Result<Option<&'static str>> {
+    let Some(v) = value else { return Ok(None) };
+    match v.to_lowercase().as_str() {
+        "upstream" | "up" | "callers" => Ok(Some(DIR_UPSTREAM)),
+        "downstream" | "down" | "callees" => Ok(Some(DIR_DOWNSTREAM)),
+        "both" if allow_both => Ok(Some(DIR_BOTH)),
+        _ => {
+            let valid = if allow_both {
+                IMPACT_DIRECTIONS
+            } else {
+                TRACE_DIRECTIONS
+            };
+            anyhow::bail!("{}", unknown_value_message("direction", v, valid))
+        }
+    }
+}
+
+/// Upper-cases each `kinds` entry and rejects any that is not an edge kind,
+/// so a wrongly cased or misspelled kind can never silently match nothing.
+pub(super) fn normalize_kinds(kinds: Option<&[String]>) -> anyhow::Result<Option<Vec<String>>> {
+    let Some(kinds) = kinds else { return Ok(None) };
+    kinds
+        .iter()
+        .map(|k| {
+            let upper = k.to_uppercase();
+            if EDGE_KINDS.contains(&upper.as_str()) {
+                Ok(upper)
+            } else {
+                anyhow::bail!("{}", unknown_value_message("edge kind", k, EDGE_KINDS))
+            }
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+        .map(Some)
+}
+
 pub(super) fn validate_pattern_length(pattern: &str, operation: &str) -> anyhow::Result<()> {
     let max_length = Config::get().pattern_max_length;
     if pattern.len() > max_length {
