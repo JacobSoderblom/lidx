@@ -242,3 +242,66 @@ fn reindex_auto_prune_bounds_unresolved_reference_store_too() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+/// Issue #254: `idx_unresolved_references_source` changes the cost of a
+/// prune, never its outcome. Prune two identical repos -- one with the index,
+/// one with it dropped -- and require the same deletion counts and the same
+/// surviving symbol/edge/unresolved counts, with the current version intact.
+#[test]
+fn prune_results_are_identical_with_and_without_source_index() {
+    type Counts = (i64, i64, i64);
+    fn run(drop_index: bool) -> ((usize, usize, usize), Counts, Counts) {
+        let (repo_root, db_path) = setup_repo("py_mvp");
+        std::fs::write(
+            repo_root.join("unresolved.py"),
+            "import os\n\ndef f():\n    os.getcwd()\n    nowhere_fn()\n",
+        )
+        .unwrap();
+        let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+        for _ in 0..4 {
+            indexer.reindex().unwrap();
+        }
+        let db = indexer.db();
+        if drop_index {
+            rusqlite::Connection::open(&db_path)
+                .unwrap()
+                .execute("DROP INDEX idx_unresolved_references_source", [])
+                .unwrap();
+        }
+        let current = db.current_graph_version().unwrap();
+        let counts = |version: Option<i64>| -> Counts {
+            let conn = db.read_conn().unwrap();
+            let count = |table: &str| -> i64 {
+                let sql = match version {
+                    Some(_) => format!("SELECT COUNT(*) FROM {table} WHERE graph_version = ?"),
+                    None => format!("SELECT COUNT(*) FROM {table} WHERE ? IS NULL OR 1"),
+                };
+                let param = version.unwrap_or(0);
+                conn.query_row(&sql, rusqlite::params![param], |row| row.get(0))
+                    .unwrap()
+            };
+            (
+                count("symbols"),
+                count("edges"),
+                count("unresolved_references"),
+            )
+        };
+        let current_before = counts(Some(current));
+        let deleted = db.prune_old_graph_versions(1).unwrap();
+        let current_after = counts(Some(current));
+        let total_after = counts(None);
+        assert_eq!(
+            current_before, current_after,
+            "prune must not touch the current version"
+        );
+        assert_eq!(
+            total_after, current_after,
+            "with keep=1 only the current version's rows may survive"
+        );
+        assert!(deleted.2 > 0, "fixture must have had a version to prune");
+        let _ = std::fs::remove_dir_all(&repo_root);
+        (deleted, current_after, total_after)
+    }
+
+    assert_eq!(run(false), run(true));
+}

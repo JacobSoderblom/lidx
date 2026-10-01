@@ -125,12 +125,36 @@ pub fn serve(repo_root: PathBuf, db_path: PathBuf, watch_config: watch::WatchCon
     Ok(())
 }
 
+/// One input line yields at most one output line: a batch yields a single
+/// response array, and only notifications (or an all-notification batch)
+/// yield nothing.
 fn handle_message(message: Value, state: &mut State) -> Option<Value> {
+    match message {
+        Value::Array(items) if items.is_empty() => Some(jsonrpc_error(
+            Value::Null,
+            -32600,
+            "invalid request: empty batch",
+        )),
+        Value::Array(items) => {
+            let responses: Vec<Value> = items
+                .into_iter()
+                .filter_map(|item| handle_single_message(item, state))
+                .collect();
+            (!responses.is_empty()).then_some(Value::Array(responses))
+        }
+        other => handle_single_message(other, state),
+    }
+}
+
+fn handle_single_message(message: Value, state: &mut State) -> Option<Value> {
     let id = message.get("id").cloned();
     let method = message.get("method").and_then(|value| value.as_str());
 
     let Some(method) = method else {
-        return id.map(|id| jsonrpc_error(id, -32600, "invalid request"));
+        // No method field: this is an invalid request (not a notification)
+        // Return error with id if present, or id: null if not
+        let response_id = id.unwrap_or(Value::Null);
+        return Some(jsonrpc_error(response_id, -32600, "invalid request"));
     };
 
     match method {
@@ -282,7 +306,7 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
         .and_then(|value| value.as_str())
         .unwrap_or("");
     if tool_name != TOOL_NAME {
-        return jsonrpc_error(id, -32601, "unknown tool");
+        return jsonrpc_error(id, -32602, "unknown tool");
     }
 
     let arguments = params
@@ -859,5 +883,104 @@ mod tests {
             assert!(list.contains(v), "instructions should list {v}: {list}");
             assert!(schema.contains(v), "search schema should accept {v}");
         }
+    }
+
+    fn assert_invalid_request(resp: &Value) {
+        assert_eq!(resp["id"], Value::Null);
+        assert_eq!(resp["error"]["code"], -32600);
+    }
+
+    #[test]
+    fn scalars_and_empty_array_produce_invalid_request_with_null_id() {
+        let (mut state, _repo) = mcp_state("scalars");
+        for input in [
+            json!(42),
+            json!("hello"),
+            json!(true),
+            Value::Null,
+            json!([]),
+        ] {
+            let resp = handle_message(input.clone(), &mut state)
+                .unwrap_or_else(|| panic!("{input} must not be silent"));
+            assert_invalid_request(&resp);
+        }
+    }
+
+    #[test]
+    fn batch_of_two_valid_requests_returns_one_array_in_order() {
+        let (mut state, _repo) = mcp_state("batch_valid");
+        let batch = json!([
+            {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            {"jsonrpc": "2.0", "id": 2, "method": "ping"}
+        ]);
+        let resp = handle_message(batch, &mut state).unwrap();
+        let arr = resp.as_array().expect("batch response is an array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["id"], 1);
+        assert_eq!(arr[1]["id"], 2);
+        assert!(arr.iter().all(|r| r["result"].is_object()));
+    }
+
+    #[test]
+    fn batch_with_invalid_elements_answers_every_request() {
+        let (mut state, _repo) = mcp_state("batch_mixed");
+        let batch = json!([
+            {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            {"invalid": "not a request"},
+            42,
+            [],
+            {"jsonrpc": "2.0", "method": "ping"}
+        ]);
+        let resp = handle_message(batch, &mut state).unwrap();
+        let arr = resp.as_array().unwrap();
+        // The trailing notification is the only element without a response.
+        assert_eq!(arr.len(), 4);
+        assert!(arr[0]["result"].is_object());
+        for bad in &arr[1..] {
+            assert_invalid_request(bad);
+        }
+    }
+
+    #[test]
+    fn notifications_alone_or_in_a_batch_produce_no_output() {
+        let (mut state, _repo) = mcp_state("notif");
+        let notif = json!({"jsonrpc": "2.0", "method": "ping"});
+        assert!(handle_message(notif.clone(), &mut state).is_none());
+        assert!(handle_message(json!([notif.clone(), notif]), &mut state).is_none());
+    }
+
+    #[test]
+    fn explicit_null_id_is_answered_but_missing_id_is_not() {
+        let (mut state, _repo) = mcp_state("null_id");
+        let with_null = json!({"jsonrpc": "2.0", "id": null, "method": "ping"});
+        let resp = handle_message(with_null, &mut state).expect("null id is a request");
+        assert_eq!(resp["id"], Value::Null);
+        assert!(resp["result"].is_object());
+        let missing = json!({"jsonrpc": "2.0", "method": "ping"});
+        assert!(handle_message(missing, &mut state).is_none());
+    }
+
+    #[test]
+    fn unknown_tool_is_invalid_params_and_unknown_method_is_not_found() {
+        let (mut state, _repo) = mcp_state("codes");
+        let tool = json!({"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+            "params": {"name": "nope", "arguments": {}}});
+        let resp = handle_message(tool, &mut state).unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert_eq!(resp["id"], 6);
+        let method = json!({"jsonrpc": "2.0", "id": 1, "method": "nope/nope"});
+        let resp = handle_message(method, &mut state).unwrap();
+        assert_eq!(resp["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn valid_single_request_is_byte_identical() {
+        let (mut state, _repo) = mcp_state("identical");
+        let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "ping"});
+        let resp = handle_message(msg, &mut state).unwrap();
+        assert_eq!(
+            serde_json::to_string(&resp).unwrap(),
+            r#"{"id":1,"jsonrpc":"2.0","result":{}}"#
+        );
     }
 }
