@@ -598,7 +598,8 @@ pub(super) fn parse_params<T>(method: &str, params: Value) -> Result<T>
 where
     T: serde::de::DeserializeOwned + ParamsExtra + schemars::JsonSchema,
 {
-    let parsed: T = serde_json::from_value(params)?;
+    let parsed: T = T::deserialize(&params)
+        .map_err(|e| validate::name_bad_unsigned_param::<T>(&params, e.to_string()))?;
     let mut unknown: Vec<String> = parsed
         .extra()
         .keys()

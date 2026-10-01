@@ -62,6 +62,8 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let requested_max_bytes = params.max_bytes;
     let max_bytes = requested_max_bytes.unwrap_or(40_000).min(200_000);
     let max_bytes_clamped = requested_max_bytes.is_some_and(|v| v != max_bytes);
+    super::validate::require_at_least_one("max_refs", params.max_refs)?;
+    super::validate::require_one_of("format", params.format.as_deref(), &["full", "signatures"])?;
     let max_refs = params.max_refs.unwrap_or(10);
 
     // Normalize sections: resolve aliases and warn on unknowns
@@ -1091,6 +1093,11 @@ fn cross_boundary_refs(
 
 pub(super) fn handle_orient(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: OrientParams = super::parse_params("orient", params)?;
+    super::validate::require_one_of(
+        "view",
+        params.view.as_deref(),
+        &["all", "overview", "map", "modules"],
+    )?;
     let view = params.view.as_deref().unwrap_or("all");
     let ctx = HandlerContext::new(indexer, params.common)?;
 
@@ -1283,6 +1290,7 @@ pub(super) fn handle_repo_map(indexer: &mut Indexer, params: Value) -> Result<Va
 
 pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: DeadSymbolsParams = super::parse_params("dead_symbols", params)?;
+    super::validate::require_at_least_one("limit", params.limit)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
     let limit = params.limit.unwrap_or(50);
     let include_unused_imports = params.include_unused_imports.unwrap_or(true);
@@ -1336,6 +1344,7 @@ pub(super) fn handle_dead_symbols(indexer: &mut Indexer, params: Value) -> Resul
 
 pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: TopComplexityParams = super::parse_params("top_complexity", params)?;
+    super::validate::require_at_least_one("limit", params.limit)?;
     let ctx = HandlerContext::new(indexer, params.common)?;
     let limit = params.limit.unwrap_or(10);
     let min_complexity = params.min_complexity.unwrap_or(1);
@@ -1370,16 +1379,9 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
             )?
             .is_empty();
         let mut next_hops: Vec<serde_json::Value> = Vec::new();
-        // `limit:0` empties `results` unconditionally (`LIMIT 0`), regardless
-        // of whether any symbol actually clears `min_complexity` -- only
-        // diagnose "below threshold" when the limit itself isn't already
-        // sufficient to explain the empty result.
-        let warnings: Vec<String> = if limit == 0 {
-            vec![
-                "limit:0 was requested, so no results can be returned regardless of scope -- retry with a positive limit to see results."
-                    .to_string(),
-            ]
-        } else if metrics_exist {
+        // `limit:0` is rejected up front, so an empty ranking here is never
+        // the limit's doing.
+        let warnings: Vec<String> = if metrics_exist {
             if min_complexity > 1 {
                 let mut retry_params = serde_json::Map::new();
                 retry_params.insert("min_complexity".to_string(), json!(1));
@@ -1430,11 +1432,26 @@ pub(super) fn handle_top_complexity(indexer: &mut Indexer, params: Value) -> Res
 
 pub(super) fn handle_context(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: ContextParams = super::parse_params("context", params)?;
+    super::validate::require_one_of("format", params.format.as_deref(), &["text", "json"])?;
+    let path = params.path.trim();
+    if path.is_empty() {
+        anyhow::bail!("context requires a non-empty 'path'");
+    }
+    super::validate::reject_path_escape(path)?;
+    // Markdown has no `files` row (see `is_markdown_path`); disk presence is
+    // its only "indexed" check, same as `outline`.
+    if is_markdown_path(path) {
+        if !indexer.repo_root().join(path).is_file() {
+            anyhow::bail!("path '{path}' is not indexed -- fall back to Read for this file");
+        }
+    } else {
+        super::validate::require_indexed_file(indexer.db(), path)?;
+    }
     let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
     let file_ctx = crate::context::build_file_context(
         indexer.db(),
         indexer.repo_root(),
-        &params.path,
+        path,
         ctx.graph_version,
     )?;
     match params.format.as_deref() {
@@ -1480,6 +1497,8 @@ fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let raw_params = params.clone();
     let params: TraceFlowParams = super::parse_params("trace_flow", params)?;
+    super::validate::require_at_least_one("max_hops", params.max_hops)?;
+    super::validate::require_one_of("format", params.format.as_deref(), &["full", "compact"])?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
     let max_hops = params.max_hops.unwrap_or(5).min(10);
     let include_snippets = params.include_snippets.unwrap_or(true);
@@ -1978,6 +1997,7 @@ fn analyze_impact_inner(
 ) -> Result<Value> {
     let raw_params = params.clone();
     let params: AnalyzeImpactParams = super::parse_params("analyze_impact", params)?;
+    super::validate::require_at_least_one("limit", params.limit)?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
     // Issue #81 (R3): validated once here, ahead of both the batch path
     // (`build_impact_config`) and the single-seed path below -- both read
@@ -2879,6 +2899,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: RgParams = super::parse_params("search", params)?;
     super::validate::validate_pattern_length(&params.query, "search_rg")?;
+    super::validate::require_at_least_one("limit", params.limit)?;
     let limit = params.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
     let context_lines = normalize_rg_context(params.context_lines);
     let include_text = params.include_text.unwrap_or(true);
