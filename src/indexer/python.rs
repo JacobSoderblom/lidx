@@ -1236,8 +1236,7 @@ fn config_read_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<
 
     let args = parse_call_arguments(node, source);
     let key_node = args.positional.first()?;
-    let key = extract_string_literal(*key_node, source)?;
-    let key = unquote_string_literal(&key).unwrap_or(key);
+    let key = resolve_env_key(*key_node, ctx, source)?;
     let env_uri = config::normalize_env_var_name(&key)?;
     let detail = config::build_config_read_detail("env", &env_uri, &key, "python");
     let (start_line, _, end_line, _, _, _) = span(node);
@@ -1350,8 +1349,7 @@ fn config_read_subscript_edge(node: Node<'_>, ctx: &Context, source: &str) -> Op
     if base != "os.environ" {
         return None;
     }
-    let key = extract_string_literal(subscript_node, source)?;
-    let key = unquote_string_literal(&key).unwrap_or(key);
+    let key = resolve_env_key(subscript_node, ctx, source)?;
     let env_uri = config::normalize_env_var_name(&key)?;
     let detail = config::build_config_read_detail("env", &env_uri, &key, "python");
     let (start_line, _, end_line, _, _, _) = span(node);
@@ -1434,7 +1432,7 @@ fn route_edges_from_decorators(
             let raw_path = args
                 .positional
                 .first()
-                .and_then(|arg| extract_string_literal(*arg, source))
+                .and_then(|arg| literal_or_raw_text(*arg, source))
                 .unwrap_or_else(|| "/".to_string());
             if let Some(edge) =
                 build_route_edge(handler, &method, &raw_path, "fastapi", *decorator, source)
@@ -1447,7 +1445,7 @@ fn route_edges_from_decorators(
             let raw_path = args
                 .positional
                 .first()
-                .and_then(|arg| extract_string_literal(*arg, source))
+                .and_then(|arg| literal_or_raw_text(*arg, source))
                 .unwrap_or_else(|| "/".to_string());
             let mut methods = methods_from_keywords(&args, source);
             if methods.is_empty() {
@@ -1466,7 +1464,7 @@ fn route_edges_from_decorators(
             let raw_path = args
                 .positional
                 .first()
-                .and_then(|arg| extract_string_literal(*arg, source))
+                .and_then(|arg| literal_or_raw_text(*arg, source))
                 .unwrap_or_else(|| "/".to_string());
             let mut methods = methods_from_keywords(&args, source);
             if methods.is_empty() {
@@ -1606,7 +1604,7 @@ fn django_path_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeI
     let raw_path = args
         .positional
         .first()
-        .and_then(|arg| extract_string_literal(*arg, source))?;
+        .and_then(|arg| literal_or_raw_text(*arg, source))?;
     let handler = args
         .positional
         .get(1)
@@ -1632,7 +1630,7 @@ fn fastapi_add_api_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> V
     let Some(raw_path) = args
         .positional
         .first()
-        .and_then(|arg| extract_string_literal(*arg, source))
+        .and_then(|arg| literal_or_raw_text(*arg, source))
     else {
         return Vec::new();
     };
@@ -1664,18 +1662,18 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
         let method = args
             .positional
             .first()
-            .and_then(|arg| extract_string_literal(*arg, source))
+            .and_then(|arg| literal_or_raw_text(*arg, source))
             .and_then(|raw| http::normalize_method(&raw))?;
         let raw_path = args
             .positional
             .get(1)
-            .and_then(|arg| extract_string_literal(*arg, source))?;
+            .and_then(|arg| literal_or_raw_text(*arg, source))?;
         (method, raw_path)
     } else if let Some(method) = http::normalize_method(&name) {
         let raw_path = args
             .positional
             .first()
-            .and_then(|arg| extract_string_literal(*arg, source))?;
+            .and_then(|arg| literal_or_raw_text(*arg, source))?;
         (method, raw_path)
     } else {
         return None;
@@ -2020,9 +2018,26 @@ fn handler_name_from_expr(node: Node<'_>, ctx: &Context, source: &str) -> Option
     resolve_call_target(&raw, ctx)
 }
 
-fn extract_string_literal(node: Node<'_>, source: &str) -> Option<String> {
+/// Unquoted string literal content, or the node's *raw source text* when it
+/// is not a literal. The raw-text fallback is deliberate for the callers
+/// below (route paths, HTTP client URLs/methods, `__all__` entries, channel
+/// topics and the like) and is NOT safe for anything that must be a string
+/// *value* -- e.g. an env var name (issue #225); use `resolve_env_key`
+/// there. Audit for #225: every remaining caller of this function is a
+/// pre-existing, non-env consumer whose behaviour is unchanged.
+fn literal_or_raw_text(node: Node<'_>, source: &str) -> Option<String> {
     let raw = node_text(node, source);
     unquote_string_literal(&raw).or(Some(raw))
+}
+
+/// Static env-var name of an `os.getenv`/`os.environ` key argument (issue
+/// #225), via the shared `string_consts` resolver: a literal, a same-file
+/// module/class constant or a single-assignment local; `None` for
+/// parameters, calls, reassigned names and f-strings with holes.
+fn resolve_env_key(node: Node<'_>, ctx: &Context, source: &str) -> Option<String> {
+    let raw = node_text(node, source);
+    let local = python_local_binding(node, &raw, source);
+    ctx.string_consts.resolve_arg(&raw, &local)
 }
 
 fn extract_string_list(node: Node<'_>, source: &str) -> Vec<String> {
@@ -2030,13 +2045,13 @@ fn extract_string_list(node: Node<'_>, source: &str) -> Vec<String> {
     if matches!(node.kind(), "list" | "tuple" | "set") {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if let Some(value) = extract_string_literal(child, source) {
+            if let Some(value) = literal_or_raw_text(child, source) {
                 out.push(value);
             }
         }
         return out;
     }
-    if let Some(value) = extract_string_literal(node, source) {
+    if let Some(value) = literal_or_raw_text(node, source) {
         out.push(value);
     }
     out
