@@ -6,9 +6,9 @@ use anyhow::Result;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
-const XREF_KIND: &str = "XREF";
+pub const XREF_KIND: &str = "XREF";
 const XREF_MIN_CONFIDENCE: f64 = 0.7;
-const ROUTE_KIND: &str = "ROUTE";
+pub const ROUTE_KIND: &str = "ROUTE";
 const ROUTE_MIN_CONFIDENCE: f64 = 0.85;
 const ROUTE_MAX_LEN: usize = 200;
 const ROUTE_RAW_MAX_BYTES: usize = 200;

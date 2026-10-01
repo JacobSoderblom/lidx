@@ -166,3 +166,48 @@ fn lowercase_kinds_match_like_uppercase() {
         assert_eq!(reached(m, &lower), reached(m, &upper), "{m}: {lower}");
     }
 }
+
+fn is_unknown_kind_error<T>(r: &anyhow::Result<T>) -> bool {
+    r.as_ref()
+        .err()
+        .is_some_and(|e| e.to_string().contains("unknown edge kind"))
+}
+
+#[test]
+fn every_emitted_edge_kind_is_accepted() {
+    // Drift guard: EDGE_KINDS must cover every kind the extractors write.
+    let mut seen = std::collections::BTreeSet::new();
+    for fixture in std::fs::read_dir("tests/fixtures").unwrap() {
+        let fixture = fixture.unwrap();
+        if !fixture.path().is_dir() || fixture.file_name() == "golden" {
+            continue;
+        }
+        let (_tmp, root, db_path) = common::setup_repo(fixture.file_name().to_str().unwrap());
+        let mut ix = Indexer::new(root, db_path).unwrap();
+        ix.reindex().unwrap();
+        let conn = ix.db().read_conn().unwrap();
+        let mut stmt = conn.prepare("SELECT DISTINCT kind FROM edges").unwrap();
+        let kinds: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        seen.extend(kinds);
+    }
+    // Kinds that only appear for specific constructs the fixtures may not hit.
+    let (_t, mut ix) = build();
+    let mut extra: Vec<String> = ["REFERENCES", "page_route", "MODULE_EXPORT", "ROUTE"]
+        .map(String::from)
+        .to_vec();
+    extra.extend(seen);
+    assert!(
+        extra.len() > 8,
+        "fixtures should yield many kinds: {extra:?}"
+    );
+    for k in &extra {
+        for m in METHODS {
+            let r = call(&mut ix, m, params(m, json!({"kinds": [k]})));
+            assert!(!is_unknown_kind_error(&r), "{m} rejected kind {k}: {r:?}");
+        }
+    }
+}
