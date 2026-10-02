@@ -237,7 +237,7 @@ fn env_bridge_is_scoped_to_consuming_deployment() {
     let r = call(
         &repo,
         "trace_flow",
-        r#"{"start_qualname":"Dpb.DataProxy.Startup.Configure","direction":"downstream","max_hops":6}"#,
+        r#"{"start_qualname":"Dpb.DataProxy.Startup.Configure","direction":"upstream","max_hops":6}"#,
     );
     let f = files(&r["trace"]);
     assert!(

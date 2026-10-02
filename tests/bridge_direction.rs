@@ -3,7 +3,10 @@
 
 use lidx::db::Db;
 use lidx::impact::layers::direct::{TraversalDirection, analyze_direct_impact};
+use lidx::impact::orchestrator::reconstruct_path_steps;
+use lidx::indexer::channel::WalkDirection;
 use lidx::indexer::extract::{EdgeInput, ReceiverType, SymbolInput};
+use lidx::model::Symbol;
 use lidx::traversal::{TraceConfig, TraceDirection, trace_flow};
 use std::collections::{HashMap, HashSet};
 
@@ -50,6 +53,7 @@ fn edge(kind: &str, source: &str, target: &str) -> EdgeInput {
 struct Fixture {
     db: Db,
     ids: HashMap<String, i64>,
+    symbols: HashMap<i64, Symbol>,
     _temp: tempfile::TempDir,
 }
 
@@ -77,15 +81,17 @@ fn fixture(callee_kind: &str, caller_kind: &str, key: &str) -> Fixture {
         edge("CALLS", "svc.callee", "svc.leaf"),
     ];
     db.insert_edges(file_id, &edges, &ids, 1, None).unwrap();
+    let symbols = inserted.into_iter().map(|s| (s.id, s)).collect();
     Fixture {
         db,
         ids,
+        symbols,
         _temp: temp,
     }
 }
 
 impl Fixture {
-    fn trace(&self, start: &str, up: bool) -> HashSet<String> {
+    fn trace_hops(&self, start: &str, up: bool) -> Vec<lidx::model::TraceHop> {
         let config = TraceConfig {
             direction: if up {
                 TraceDirection::Upstream
@@ -94,14 +100,24 @@ impl Fixture {
             },
             ..Default::default()
         };
-        let hops = trace_flow(&self.db, vec![self.ids[start]], None, None, 1, &config)
+        trace_flow(&self.db, vec![self.ids[start]], None, None, 1, &config)
             .unwrap()
-            .hops;
-        hops.into_iter().map(|h| h.symbol.qualname).collect()
+            .hops
     }
 
-    fn impact(&self, start: &str, direction: TraversalDirection) -> HashSet<String> {
-        let result = analyze_direct_impact(
+    fn trace(&self, start: &str, up: bool) -> HashSet<String> {
+        self.trace_hops(start, up)
+            .into_iter()
+            .map(|h| h.symbol.qualname)
+            .collect()
+    }
+
+    fn impact_layer(
+        &self,
+        start: &str,
+        direction: TraversalDirection,
+    ) -> lidx::impact::types::LayerResult {
+        analyze_direct_impact(
             &self.db,
             &[self.ids[start]],
             5,
@@ -113,9 +129,22 @@ impl Fixture {
             None,
             1,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    /// The (from_symbol, to_symbol) labels of the step that reaches `target`.
+    fn labels(&self, start: &str, direction: TraversalDirection, target: &str) -> (String, String) {
+        let layer = self.impact_layer(start, direction);
+        let seeds = HashSet::from([self.ids[start]]);
+        let steps =
+            reconstruct_path_steps(self.ids[target], &seeds, &layer.parent_map, &self.symbols);
+        let step = steps.last().unwrap();
+        (step.from_symbol.clone(), step.to_symbol.clone())
+    }
+
+    fn impact(&self, start: &str, direction: TraversalDirection) -> HashSet<String> {
         let by_id: HashMap<i64, &String> = self.ids.iter().map(|(q, i)| (*i, q)).collect();
-        result
+        self.impact_layer(start, direction)
             .impacts
             .iter()
             .map(|(id, _)| by_id[id].clone())
@@ -127,10 +156,13 @@ fn set(names: &[&str]) -> HashSet<String> {
     names.iter().map(|s| s.to_string()).collect()
 }
 
-const PAIRS: [(&str, &str, &str); 3] = [
+const PAIRS: [(&str, &str, &str); 5] = [
     ("CHANNEL_SUBSCRIBE", "CHANNEL_PUBLISH", "orders"),
     ("RPC_IMPL", "RPC_CALL", "pkg.Svc.Do"),
     ("HTTP_ROUTE", "HTTP_CALL", "GET /orders"),
+    // The .proto side: downstream from the rpc definition reaches the impl.
+    ("RPC_IMPL", "RPC_ROUTE", "pkg.Svc.Do"),
+    ("CONFIG_READ", "CONFIG_SOURCE", "env://ORDERS"),
 ];
 
 #[test]
@@ -180,29 +212,43 @@ fn trace_flow_bridged_hop_records_direction_crossed() {
     for (callee_kind, caller_kind, key) in PAIRS {
         let f = fixture(callee_kind, caller_kind, key);
         let dir_of = |start: &str, up: bool, target: &str| {
-            let config = TraceConfig {
-                direction: if up {
-                    TraceDirection::Upstream
-                } else {
-                    TraceDirection::Downstream
-                },
-                ..Default::default()
-            };
-            trace_flow(&f.db, vec![f.ids[start]], None, None, 1, &config)
-                .unwrap()
-                .hops
+            f.trace_hops(start, up)
                 .into_iter()
                 .find(|h| h.symbol.qualname == target)
                 .unwrap()
                 .bridge_direction
         };
-        assert_eq!(dir_of("svc.callee", true, "svc.caller"), Some("upstream"));
+        assert_eq!(
+            dir_of("svc.callee", true, "svc.caller"),
+            Some(WalkDirection::Upstream)
+        );
         assert_eq!(
             dir_of("svc.caller", false, "svc.callee"),
-            Some("downstream")
+            Some(WalkDirection::Downstream)
         );
         // A direct edge is not a bridged hop.
         assert_eq!(dir_of("svc.callee", false, "svc.leaf"), None);
+    }
+}
+
+/// `from_symbol` is always the caller/publisher side, whichever end the walk
+/// started from.
+#[test]
+fn analyze_impact_labels_bridged_step_caller_to_callee() {
+    use TraversalDirection::{Downstream, Upstream};
+    for (callee_kind, caller_kind, key) in PAIRS {
+        let f = fixture(callee_kind, caller_kind, key);
+        let want = ("svc.caller".to_string(), "svc.callee".to_string());
+        assert_eq!(
+            f.labels("svc.callee", Upstream, "svc.caller"),
+            want,
+            "{callee_kind}: upstream"
+        );
+        assert_eq!(
+            f.labels("svc.caller", Downstream, "svc.callee"),
+            want,
+            "{callee_kind}: downstream"
+        );
     }
 }
 

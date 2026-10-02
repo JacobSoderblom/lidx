@@ -196,18 +196,35 @@ pub fn build_subscribe_detail(channel: &str, raw: &str, framework: &str) -> Stri
 /// downstream from a `.proto` rpc has nothing to reach via `RPC_CALL`
 /// (nothing *calls* a route definition).
 pub fn bridge_complement(kind: &str) -> Option<&'static [&'static str]> {
-    match kind {
-        "CHANNEL_PUBLISH" => Some(&["CHANNEL_SUBSCRIBE"]),
-        "CHANNEL_SUBSCRIBE" => Some(&["CHANNEL_PUBLISH"]),
-        "RPC_CALL" => Some(&["RPC_IMPL"]),
-        "RPC_IMPL" => Some(&["RPC_CALL", "RPC_ROUTE"]),
-        "RPC_ROUTE" => Some(&["RPC_IMPL"]),
-        "HTTP_CALL" => Some(&["HTTP_ROUTE"]),
-        "HTTP_ROUTE" => Some(&["HTTP_CALL"]),
-        "CONFIG_SOURCE" => Some(&["CONFIG_READ"]),
-        "CONFIG_READ" => Some(&["CONFIG_SOURCE"]),
-        _ => None,
-    }
+    bridge_entry(kind).map(|(complement, _)| complement)
+}
+
+/// The one table of bridge kinds: each kind's complement(s) and whether it is
+/// the callee/subscriber side (true) or the caller/publisher side (false).
+/// Adding a bridge kind is one edit here.
+fn bridge_entry(kind: &str) -> Option<(&'static [&'static str], bool)> {
+    Some(match kind {
+        "CHANNEL_PUBLISH" => (&["CHANNEL_SUBSCRIBE"], false),
+        "CHANNEL_SUBSCRIBE" => (&["CHANNEL_PUBLISH"], true),
+        "RPC_CALL" => (&["RPC_IMPL"], false),
+        "RPC_IMPL" => (&["RPC_CALL", "RPC_ROUTE"], true),
+        "RPC_ROUTE" => (&["RPC_IMPL"], false),
+        "HTTP_CALL" => (&["HTTP_ROUTE"], false),
+        "HTTP_ROUTE" => (&["HTTP_CALL"], true),
+        "CONFIG_SOURCE" => (&["CONFIG_READ"], false),
+        "CONFIG_READ" => (&["CONFIG_SOURCE"], true),
+        _ => return None,
+    })
+}
+
+/// Which way a walk (or a bridged hop) runs through the graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WalkDirection {
+    Upstream,
+    Downstream,
+    /// A walk following both directions; never recorded on a hop.
+    Both,
 }
 
 /// Whether crossing a bridge from a symbol holding an `edge_kind` edge walks
@@ -215,22 +232,19 @@ pub fn bridge_complement(kind: &str) -> Option<&'static [&'static str]> {
 /// symbol holding `edge_kind`, so a callee-side kind means the bridged symbol
 /// is the caller (issue #103).
 pub fn bridge_hop_is_reversed(edge_kind: &str) -> bool {
-    matches!(
-        edge_kind,
-        "RPC_IMPL" | "CHANNEL_SUBSCRIBE" | "HTTP_ROUTE" | "CONFIG_READ"
-    )
+    bridge_entry(edge_kind).is_some_and(|(_, callee_side)| callee_side)
 }
 
 /// The one direction gate for bridge crossing, shared by `trace_flow` and
 /// `analyze_impact` (issue #201). A callee-side kind (subscriber, RPC impl,
-/// route) bridges to its callers/publishers, which lie upstream; a
-/// caller-side kind bridges to its callees/subscribers, downstream.
-/// `walk_upstream` is `None` for a walk that follows both directions. Config
-/// bridges (`CONFIG_SOURCE`/`CONFIG_READ`) link a key to its consumers, not a
-/// call flow, so they cross in either direction.
-pub fn bridge_crossing_allowed(edge_kind: &str, walk_upstream: Option<bool>) -> bool {
-    edge_kind.starts_with("CONFIG_")
-        || walk_upstream.is_none_or(|up| up == bridge_hop_is_reversed(edge_kind))
+/// route, config reader) bridges to its callers/publishers/sources, which lie
+/// upstream; a caller-side kind bridges downstream.
+pub fn bridge_crossing_allowed(edge_kind: &str, walk: WalkDirection) -> bool {
+    match walk {
+        WalkDirection::Both => true,
+        WalkDirection::Upstream => bridge_hop_is_reversed(edge_kind),
+        WalkDirection::Downstream => !bridge_hop_is_reversed(edge_kind),
+    }
 }
 
 /// Returns true for an edge kind that `Db::insert_edges` always keeps a live

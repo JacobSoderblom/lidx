@@ -1,6 +1,7 @@
 use crate::db::Db;
 use crate::indexer::channel::{
-    boundary_type_for_kind, bridge_complement, bridge_crossing_allowed, bridge_hop_is_reversed,
+    WalkDirection, boundary_type_for_kind, bridge_complement, bridge_crossing_allowed,
+    bridge_hop_is_reversed,
 };
 use crate::indexer::config::{
     BridgeOutcome, BridgeTarget, CAP_TRUNCATION_REASON, CROSS_SERVICE_KIND, ConfigScope, Entry,
@@ -203,6 +204,7 @@ pub fn trace_flow(
     let mut truncated = false;
     let mut reached_target = false;
     let is_upstream = matches!(config.direction, TraceDirection::Upstream);
+    let walk = walk_direction(is_upstream);
     // Issue #81 (R5): every edge that actually produced a hop -- checked
     // once, after the BFS, against `HEURISTIC_RESOLUTION_KINDS` to decide
     // whether suggesting the exclude-heuristics retry is useful at all.
@@ -310,7 +312,7 @@ pub fn trace_flow(
 
             if let Some(ref tq) = edge.target_qualname
                 && bridge_complement(&edge.kind).is_some()
-                && bridge_crossing_allowed(&edge.kind, Some(is_upstream))
+                && bridge_crossing_allowed(&edge.kind, walk)
             {
                 bridge_targets.extend(ConfigScope::bridges_for(
                     &entry, &edges, edge, tq, current_id,
@@ -451,9 +453,9 @@ pub fn trace_flow(
                                 config.include_snippets,
                             );
                             hop.bridge_direction = Some(if bridge_hop_is_reversed(edge_kind) {
-                                "upstream"
+                                WalkDirection::Upstream
                             } else {
-                                "downstream"
+                                WalkDirection::Downstream
                             });
                             hop.cross_language = true;
                             hop.boundary_type = Some(b_type.to_string());
@@ -622,6 +624,14 @@ pub fn trace_flow(
 /// edges via `bridge_complement`), but only checks for existence -- it does
 /// not build hops, consult `visited`, or resolve bridge targets against the
 /// database, so it stays cheap even for a wide final frontier.
+fn walk_direction(is_upstream: bool) -> WalkDirection {
+    if is_upstream {
+        WalkDirection::Upstream
+    } else {
+        WalkDirection::Downstream
+    }
+}
+
 fn has_further_edges(
     db: &Db,
     id: i64,
@@ -632,6 +642,7 @@ fn has_further_edges(
     graph_version: i64,
 ) -> Result<bool> {
     let edges = db.edges_for_symbol_with_dispatch(id, languages, graph_version)?;
+    let walk = walk_direction(is_upstream);
     let allowed = ConfigScope::allowed(entry, &edges);
     for edge in &edges {
         if !config.allowed_kinds.contains(&edge.kind)
@@ -667,7 +678,7 @@ fn has_further_edges(
 
         if edge.target_qualname.is_some()
             && bridge_complement(&edge.kind).is_some()
-            && bridge_crossing_allowed(&edge.kind, Some(is_upstream))
+            && bridge_crossing_allowed(&edge.kind, walk)
         {
             return Ok(true);
         }

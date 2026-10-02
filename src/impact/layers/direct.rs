@@ -7,6 +7,7 @@
 use crate::db::Db;
 use crate::impact::confidence::apply_distance_decay;
 use crate::impact::types::{ConfidenceScore, ImpactSource, LayerResult, ParentLink};
+use crate::indexer::channel::WalkDirection;
 use crate::indexer::config::{
     BridgeOutcome, BridgeTarget, CAP_TRUNCATION_REASON, CROSS_SERVICE_KIND, ConfigScope, Entry,
     config_edge_allowed, prefer_same_service,
@@ -27,6 +28,16 @@ pub enum TraversalDirection {
     /// Follow all edges
     #[default]
     Both,
+}
+
+impl From<TraversalDirection> for WalkDirection {
+    fn from(d: TraversalDirection) -> Self {
+        match d {
+            TraversalDirection::Upstream => WalkDirection::Upstream,
+            TraversalDirection::Downstream => WalkDirection::Downstream,
+            TraversalDirection::Both => WalkDirection::Both,
+        }
+    }
 }
 
 impl From<&str> for TraversalDirection {
@@ -488,17 +499,10 @@ pub fn analyze_direct_impact_scoped(
                     }
 
                     // Collect bridge targets
-                    let walk_upstream = match direction_at(*current_id, current_distance) {
-                        TraversalDirection::Upstream => Some(true),
-                        TraversalDirection::Downstream => Some(false),
-                        TraversalDirection::Both => None,
-                    };
+                    let walk = direction_at(*current_id, current_distance).into();
                     if let Some(ref tq) = edge.target_qualname
                         && crate::indexer::channel::bridge_complement(&edge.kind).is_some()
-                        && crate::indexer::channel::bridge_crossing_allowed(
-                            &edge.kind,
-                            walk_upstream,
-                        )
+                        && crate::indexer::channel::bridge_crossing_allowed(&edge.kind, walk)
                     {
                         bridge_targets.extend(ConfigScope::bridges_for(
                             entry,
