@@ -298,9 +298,9 @@ fn search_hits_include_outline_hops_deduplicated_per_file() {
         "search",
         r#"{"query":"NEXT_HOPS_SEARCH_MARKER","limit":50}"#,
     );
-    let hits = result
+    let hits = result["results"]
         .as_array()
-        .expect("non-empty search must stay a bare array (unchanged format)");
+        .expect("non-empty search returns {results: [...]}");
     assert_eq!(
         hits.len(),
         8,
@@ -391,7 +391,7 @@ fn search_outline_hops_use_description_field_like_other_hops() {
         "search",
         r#"{"query":"NEXT_HOPS_SEARCH_MARKER","limit":50}"#,
     );
-    let hits = result.as_array().unwrap();
+    let hits = result["results"].as_array().unwrap();
     let hop = hits
         .iter()
         .find_map(|h| h.get("next_hops"))
@@ -443,7 +443,9 @@ fn search_hits_skip_outline_hop_for_non_outlineable_files() {
         "search",
         r#"{"query":"NEXT_HOPS_SEARCH_MARKER","limit":50}"#,
     );
-    let hits = result.as_array().expect("non-empty search stays an array");
+    let hits = result["results"]
+        .as_array()
+        .expect("non-empty search returns {results: [...]}");
     assert_eq!(hits.len(), 3, "{:?}", hits);
 
     for hit in hits {

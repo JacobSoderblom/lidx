@@ -557,14 +557,23 @@ pub fn trace_flow(
     trace.sort_by_cached_key(canonical_key);
     let mut trace: Vec<TraceHop> = trace.into_iter().skip(config.trace_offset).collect();
 
-    // Apply the byte budget to the settled hops: keep hops up to and
-    // including the one that reaches it.
+    // Apply the byte budget to the settled hops: keep hops while they fit,
+    // so `used_bytes` stays within the budget (#221). The one exception is the
+    // first hop, which is always kept: a budget smaller than a single hop would
+    // otherwise return nothing and the continuation (offset + 0) would never
+    // advance. Only then can `used_bytes` exceed `budget_bytes`.
     let mut used_bytes = 0usize;
-    if let Some(cut) = trace.iter().position(|h| {
-        used_bytes += estimate_hop_size(h, config.compact);
-        used_bytes >= config.max_bytes
-    }) {
-        trace.truncate(cut + 1);
+    let mut keep = 0usize;
+    for h in &trace {
+        let size = estimate_hop_size(h, config.compact);
+        if keep > 0 && used_bytes + size > config.max_bytes {
+            break;
+        }
+        used_bytes += size;
+        keep += 1;
+    }
+    if keep < trace.len() {
+        trace.truncate(keep);
         truncated = true;
     }
 

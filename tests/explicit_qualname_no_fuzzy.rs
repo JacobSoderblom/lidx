@@ -84,19 +84,14 @@ fn call_raw(temp: &TempRepo, method: &str, params: &str) -> serde_json::Value {
 }
 
 /// Calls an RPC method and returns the inner result value (unwrapping the
-/// `{"result": ...}` envelope and any truncation wrapper `{"data": ...}`).
+/// `{"result": ...}` envelope).
 /// Panics if the response contains an error.
 fn call(temp: &TempRepo, method: &str, params: &str) -> serde_json::Value {
     let envelope = call_raw(temp, method, params);
     if let Some(err) = envelope.get("error") {
         panic!("RPC error for {}: {:?}", method, err);
     }
-    let result = envelope["result"].clone();
-    // Unwrap the truncation envelope if present so tests see the actual result.
-    if result.get("truncated").is_some() && result.get("data").is_some() {
-        return result["data"].clone();
-    }
-    result
+    envelope["result"].clone()
 }
 
 use serde_json::Value;
@@ -271,27 +266,33 @@ fn query_reports_resolved_qualname_without_marking_inexact() {
 }
 
 #[test]
-fn disclosure_survives_truncation_envelope() {
+fn disclosure_survives_truncation() {
     let (temp, _idx) = indexed_repo("py_mvp");
-    for (method, param) in [
-        ("trace_flow", "start_qualname"),
-        ("analyze_impact", "qualname"),
+    // trace_flow budgets itself: upstream from Greeter has several hops, so a
+    // tiny budget forces its own truncation. analyze_impact is cut by the
+    // dispatcher's generic pass.
+    for (method, params) in [
+        (
+            "trace_flow",
+            serde_json::json!({"start_qualname": INEXACT, "direction": "upstream", "max_hops": 4, "max_bytes": 1}),
+        ),
+        (
+            "analyze_impact",
+            serde_json::json!({"qualname": INEXACT, "max_bytes": 300, "max_response_bytes": 300}),
+        ),
     ] {
-        let raw = call_raw(
-            &temp,
-            method,
-            &serde_json::json!({ param: INEXACT, "max_bytes": 300, "max_response_bytes": 300 })
-                .to_string(),
-        );
+        let raw = call_raw(&temp, method, &params.to_string());
         let result = &raw["result"];
-        assert_eq!(result["truncated"], true, "{method}: not wrapped: {result}");
-        let data = &result["data"];
+        assert_eq!(
+            result["truncated"], true,
+            "{method}: not truncated: {result}"
+        );
         for key in DISCLOSURE_KEYS {
-            assert!(data.get(key).is_some(), "{method}: {key} lost: {data}");
+            assert!(result.get(key).is_some(), "{method}: {key} lost: {result}");
         }
-        assert_eq!(data["requested_qualname"], INEXACT, "{method}");
-        assert_eq!(data["resolved_qualname"], EXACT, "{method}");
-        assert_eq!(data["exact_match"], false, "{method}");
+        assert_eq!(result["requested_qualname"], INEXACT, "{method}");
+        assert_eq!(result["resolved_qualname"], EXACT, "{method}");
+        assert_eq!(result["exact_match"], false, "{method}");
     }
 }
 

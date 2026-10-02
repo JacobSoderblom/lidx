@@ -1295,7 +1295,8 @@ fn analyze_impact_accepts_max_bytes_as_response_budget_alias() {
     // `affected` array to fit the byte budget, that inner field must be
     // corrected to true too -- not left as a stale `false` sitting right
     // next to an array that was just cut out from under it.
-    let inner = &result["data"];
+    // (#221: truncation is reported beside the payload, not around it.)
+    let inner = result;
     assert_eq!(
         inner.get("truncated"),
         Some(&serde_json::json!(true)),

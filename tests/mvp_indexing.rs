@@ -233,7 +233,7 @@ fn rpc_search_rg_returns_regex_matches() {
     )
     .unwrap();
     let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-    let hits = value["result"].as_array().unwrap();
+    let hits = value["result"]["results"].as_array().unwrap();
     assert!(!hits.is_empty());
     assert!(
         hits.iter()

@@ -22,11 +22,7 @@ fn call(repo_root: PathBuf, db_path: PathBuf, method: &str, params: &str) -> Val
         envelope.get("error").is_none_or(|e| e.is_null()),
         "{method} returned an error: {envelope}"
     );
-    let result = envelope["result"].clone();
-    if result.get("truncated").is_some() && result.get("data").is_some() {
-        return result["data"].clone();
-    }
-    result
+    envelope["result"].clone()
 }
 
 const TARGET_SOURCE: &str = "def target():\n    return 1\n";

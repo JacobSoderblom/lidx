@@ -807,9 +807,9 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 1,
             "result": {
-                "content": [{"type": "text", "text": json!([hit.clone()]).to_string()}],
+                "content": [{"type": "text", "text": json!({"results": [hit.clone()]}).to_string()}],
                 "isError": false,
-                "structuredContent": {"items": [hit]}
+                "structuredContent": {"results": [hit]}
             }
         });
         assert_eq!(resp, expected);
@@ -826,14 +826,14 @@ mod tests {
         );
         let (clean, stray) = (&clean["result"], &stray["result"]);
         assert_eq!(stray["isError"], false, "{stray}");
-        // The result itself is untouched: still a bare array in the first
-        // text block and the same structuredContent.
+        // The result itself is untouched: the same `{results}` object in the
+        // first text block and the same structuredContent.
         assert_eq!(stray["content"][0], clean["content"][0]);
         assert!(
             stray["content"][0]["text"]
                 .as_str()
                 .unwrap()
-                .starts_with('[')
+                .starts_with("{\"results\":[")
         );
         assert_eq!(stray["structuredContent"], clean["structuredContent"]);
         // The ignored param is reported beside it.
