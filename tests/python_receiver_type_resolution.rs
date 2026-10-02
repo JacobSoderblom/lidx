@@ -273,3 +273,69 @@ fn chained_self_attribute_call_does_not_bind() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+fn factory_callers_total(repo_root: &Path, db_path: &Path, qualname: &str) -> i64 {
+    let raw = lidx::rpc::call(
+        repo_root.to_path_buf(),
+        db_path.to_path_buf(),
+        "explain_symbol".to_string(),
+        &format!(r#"{{"qualname":"{qualname}","sections":["callers"]}}"#),
+        "1",
+    )
+    .unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    envelope["result"]["callers_total"].as_i64().unwrap_or(-1)
+}
+
+/// Issue #207: a local assigned from a same-file factory annotated
+/// `-> Type` takes that type; unannotated factories, `list[Foo]` returns and
+/// reassignment from two factories must stay unresolved.
+#[test]
+fn factory_return_annotation_types_the_local() {
+    let (repo_root, db_path) = setup_repo("py_factory_locals");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let total = |q: &str| factory_callers_total(&repo_root, &db_path, q);
+    // factory + direct constructor
+    assert_eq!(total("models.Coordinator.handle_trigger"), 2);
+    assert_eq!(total("models.OptFoo.opt_run"), 1, "Optional[Foo]");
+    assert_eq!(total("models.AsyncFoo.async_run"), 1, "await async factory");
+    assert_eq!(total("models.DottedFoo.dotted_run"), 1, "dotted annotation");
+    assert_eq!(total("models.StrFoo.str_run"), 1, "string forward ref");
+    assert_eq!(total("models.UnannFoo.unann_run"), 0, "unannotated");
+    assert_eq!(total("models.ListFoo.list_run"), 0, "list[Foo]");
+    assert_eq!(total("models.MixedA.mixed_run"), 0, "reassigned");
+    assert_eq!(total("models.MixedB.mixed_run"), 0, "reassigned");
+    assert_eq!(total("models.PipeFoo.pipe_run"), 1, "Foo | None");
+    assert_eq!(total("models.CoroFoo.coro_run"), 1, "await Awaitable[Foo]");
+    assert_eq!(
+        total("models.UnawaitedFoo.unawaited_run"),
+        0,
+        "un-awaited async"
+    );
+    assert_eq!(total("models.DupFoo.dup_run"), 0, "duplicate top-level def");
+    assert_eq!(
+        total("models.ShadowFoo.shadow_run"),
+        0,
+        "param shadows factory"
+    );
+    // `-> pkg_a.twin.Twin` must never bind the same-named class in pkg_b.
+    assert_eq!(total("pkg_b.twin.Twin.twin_run"), 0, "same-named class");
+    assert!(total("pkg_a.twin.Twin.twin_run") <= 1);
+
+    // The direct-constructor call keeps its receiver_type resolution kind.
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let kind: Option<String> = conn
+        .query_row(
+            "SELECT resolution_kind FROM edges WHERE kind = 'CALLS'
+             AND target_qualname = 'coord2.handle_trigger' AND graph_version = ?",
+            params![gv],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(kind.as_deref(), Some("receiver_type"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
