@@ -401,7 +401,6 @@
         "description": "Re-trace with CONFIG edges only (useful for config/property symbols)",
         "method": "trace_flow",
         "params": {
-          "include_snippets": true,
           "kinds": [
             "CONFIG_SOURCE",
             "CONFIG_READ",

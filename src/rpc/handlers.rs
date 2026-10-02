@@ -1512,6 +1512,17 @@ fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Edge kinds for a "re-trace with CONFIG edges only" next_hop.
+const CONFIG_EDGE_KINDS: [&str; 3] = ["CONFIG_SOURCE", "CONFIG_READ", "CONFIG_BIND"];
+
+/// Start of a trace_flow next_hop's params: the originating request, so the
+/// hop preserves every parameter (query, direction, max_hops, ...) except
+/// those the caller then overrides. `raw_params` already parsed as a
+/// `TraceFlowParams` struct, so it is always an object.
+fn trace_hop_params(raw_params: &Value) -> serde_json::Map<String, Value> {
+    raw_params.as_object().cloned().unwrap_or_default()
+}
+
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let raw_params = params.clone();
     let mut params: TraceFlowParams = super::parse_params("trace_flow", params)?;
@@ -1662,14 +1673,11 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         }));
     }
     if truncated && params.kinds.is_none() {
-        // Suggest narrowing by edge kind when trace was truncated and no filter was used
-        let mut narrow_params = json!({"max_bytes": (max_bytes * 2).min(200_000)});
-        if let Some(ref qn) = params.start_qualname {
-            narrow_params["start_qualname"] = json!(qn);
-        } else if let Some(id) = params.start_id {
-            narrow_params["start_id"] = json!(id);
-        }
-        narrow_params["kinds"] = json!(["CONFIG_BIND", "CONFIG_SOURCE", "CONFIG_READ"]);
+        // Suggest narrowing by edge kind when trace was truncated and no filter was used.
+        // #230: clone-and-override -- only `kinds` and `max_bytes` change.
+        let mut narrow_params = trace_hop_params(&raw_params);
+        narrow_params.insert("max_bytes".to_string(), json!((max_bytes * 2).min(200_000)));
+        narrow_params.insert("kinds".to_string(), json!(CONFIG_EDGE_KINDS));
         next_hops.push(json!({
             "method": "trace_flow",
             "params": narrow_params,
@@ -1685,6 +1693,8 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     }
     // When trace is empty, suggest analyze_impact as an alternative
     if trace.is_empty() {
+        // Different method schema (analyze_impact takes no query/max_hops/...),
+        // so its params are built from scratch rather than cloned.
         let mut impact_params = json!({"id": start.id, "direction": "upstream"});
         if matches!(start.kind.as_str(), "class" | "property") {
             impact_params["kinds"] =
@@ -1695,15 +1705,12 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             "params": impact_params,
             "description": format!("Try analyze_impact on {} (finds consumers via CONFIG/DI edges)", start.name),
         }));
-        // Also suggest with CONFIG-only kinds if default kinds were used
+        // Also suggest with CONFIG-only kinds if default kinds were used.
+        // #230: clone-and-override -- only `kinds` changes (a query-started
+        // trace keeps its `query`, an upstream one keeps its `direction`).
         if params.kinds.is_none() {
-            let mut retry_params = json!({"include_snippets": include_snippets});
-            if let Some(ref qn) = params.start_qualname {
-                retry_params["start_qualname"] = json!(qn);
-            } else {
-                retry_params["start_id"] = json!(start.id);
-            }
-            retry_params["kinds"] = json!(["CONFIG_SOURCE", "CONFIG_READ", "CONFIG_BIND"]);
+            let mut retry_params = trace_hop_params(&raw_params);
+            retry_params.insert("kinds".to_string(), json!(CONFIG_EDGE_KINDS));
             next_hops.push(json!({
                 "method": "trace_flow",
                 "params": retry_params,
@@ -1728,46 +1735,25 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         .exclude_resolution_kinds
         .as_ref()
         .is_some_and(|k| !k.is_empty());
-    // R2/R4: a retry hop must reconstruct the same trace, not a bare start --
-    // a call started via `query`/`start_query` has neither start_qualname nor
-    // start_id, so it falls back to the symbol `resolve_symbol` already
-    // resolved it to (`start.id`); end_qualname/end_id/kinds/max_hops/
-    // include_snippets all carry over too, so only the filter itself changes.
-    let hop_start_params = |extra: &mut serde_json::Map<String, serde_json::Value>| {
-        if let Some(ref qn) = params.start_qualname {
-            extra.insert("start_qualname".to_string(), json!(qn));
-        } else if let Some(id) = params.start_id {
-            extra.insert("start_id".to_string(), json!(id));
-        } else {
-            extra.insert("start_id".to_string(), json!(start.id));
+    // R2/R4 + #230: a retry hop must reconstruct the same trace, so it clones
+    // the request (end_*, kinds, max_hops, include_snippets, languages, ...
+    // all carry over) and only the filter changes. `trace_offset` is dropped
+    // (a different filter restarts the trace), and a call started via
+    // `query`/`start_query` has neither start_qualname nor start_id, so it
+    // falls back to the symbol `resolve_symbol` already resolved it to.
+    let retry_base = || {
+        let mut m = trace_hop_params(&raw_params);
+        m.remove("trace_offset");
+        if params.start_qualname.is_none() && params.start_id.is_none() {
+            m.remove("query");
+            m.remove("start_query");
+            m.insert("start_id".to_string(), json!(start.id));
         }
-        if let Some(id) = params.end_id {
-            extra.insert("end_id".to_string(), json!(id));
-        } else if let Some(ref qn) = params.end_qualname {
-            extra.insert("end_qualname".to_string(), json!(qn));
-        }
-        if let Some(ref d) = params.direction {
-            extra.insert("direction".to_string(), json!(d));
-        }
-        if let Some(ref k) = params.kinds {
-            extra.insert("kinds".to_string(), json!(k));
-        }
-        if let Some(h) = params.max_hops {
-            extra.insert("max_hops".to_string(), json!(h));
-        }
-        if let Some(s) = params.include_snippets {
-            extra.insert("include_snippets".to_string(), json!(s));
-        }
-        if let Some(ref langs) = params.common.languages {
-            extra.insert("languages".to_string(), json!(langs));
-        }
-        if let Some(gv) = params.common.graph_version {
-            extra.insert("graph_version".to_string(), json!(gv));
-        }
+        m
     };
     if has_exclude_filter {
-        let mut retry_params = serde_json::Map::new();
-        hop_start_params(&mut retry_params);
+        let mut retry_params = retry_base();
+        retry_params.remove("exclude_resolution_kinds");
         next_hops.push(json!({
             "method": "trace_flow",
             "params": retry_params,
@@ -1778,8 +1764,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         // actually traversed -- a non-empty trace made entirely of exact/
         // import/receiver_type/inherited edges has nothing for the filter
         // to remove.
-        let mut retry_params = serde_json::Map::new();
-        hop_start_params(&mut retry_params);
+        let mut retry_params = retry_base();
         retry_params.insert(
             "exclude_resolution_kinds".to_string(),
             json!(crate::db::resolver::HEURISTIC_RESOLUTION_KINDS),
@@ -2435,19 +2420,18 @@ fn analyze_impact_inner(
     // forward instead of a dead-end payload.
     if result.affected.is_empty() {
         let seed_id = seed_ids.first().copied();
+        // #230: clone-and-override the original request (so max_depth, kinds,
+        // limit, languages, filters, ... survive); only the start and
+        // direction change.
         let seed_params = |dir: &str| {
-            let mut map = serde_json::Map::new();
+            let mut map = raw_params.as_object().cloned().unwrap_or_default();
             if let Some(id) = seed_id {
+                for k in ["id", "qualname", "query"] {
+                    map.remove(k);
+                }
                 map.insert("id".to_string(), json!(id));
             }
             map.insert("direction".to_string(), json!(dir));
-            // Keep a filtered call's filter so following the hop doesn't
-            // silently widen it.
-            if let Some(ref exclude) = params.exclude_resolution_kinds
-                && !exclude.is_empty()
-            {
-                map.insert("exclude_resolution_kinds".to_string(), json!(exclude));
-            }
             map
         };
         let mut next_hops: Vec<serde_json::Value> = Vec::new();
@@ -2512,9 +2496,12 @@ fn analyze_impact_inner(
                 .get_symbol_by_qualname(parent_qn, ctx.graph_version)
             && !seed_ids.contains(&parent.id)
         {
+            let mut parent_params = seed_params(&direction);
+            parent_params.remove("id");
+            parent_params.insert("qualname".to_string(), json!(parent_qn));
             next_hops.push(json!({
                 "method": "analyze_impact",
-                "params": {"qualname": parent_qn, "direction": direction},
+                "params": parent_params,
                 "description": format!("Seed parent {} '{}' instead", parent.kind, parent_qn),
             }));
         }
