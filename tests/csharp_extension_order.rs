@@ -32,20 +32,13 @@ fn borrowed<'a>(files: &'a [(String, &'static str)]) -> Vec<(&'a str, &'static s
     files.iter().map(|(p, s)| (p.as_str(), *s)).collect()
 }
 
-fn calls(db_path: &PathBuf, gv: i64) -> BTreeSet<String> {
+/// Two-column rows of `sql` (bound to `gv`) joined with `sep`.
+fn rows(db_path: &PathBuf, gv: i64, sql: &str, sep: &str) -> BTreeSet<String> {
     let conn = Connection::open(db_path).unwrap();
-    let mut stmt = conn
-        .prepare(
-            "SELECT s.qualname, COALESCE(t.qualname, e.target_qualname)
-             FROM edges e
-             JOIN symbols s ON s.id = e.source_symbol_id
-             LEFT JOIN symbols t ON t.id = e.target_symbol_id
-             WHERE e.graph_version = ? AND e.kind = 'CALLS'",
-        )
-        .unwrap();
+    let mut stmt = conn.prepare(sql).unwrap();
     stmt.query_map([gv], |r| {
         Ok(format!(
-            "{}->{}",
+            "{}{sep}{}",
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?
         ))
@@ -55,21 +48,26 @@ fn calls(db_path: &PathBuf, gv: i64) -> BTreeSet<String> {
     .collect()
 }
 
+fn calls(db_path: &PathBuf, gv: i64) -> BTreeSet<String> {
+    rows(
+        db_path,
+        gv,
+        "SELECT s.qualname, COALESCE(t.qualname, e.target_qualname)
+         FROM edges e
+         JOIN symbols s ON s.id = e.source_symbol_id
+         LEFT JOIN symbols t ON t.id = e.target_symbol_id
+         WHERE e.graph_version = ? AND e.kind = 'CALLS'",
+        "->",
+    )
+}
+
 fn unresolved(db_path: &PathBuf, gv: i64) -> BTreeSet<String> {
-    let conn = Connection::open(db_path).unwrap();
-    let mut stmt = conn
-        .prepare("SELECT reference_name, reason FROM unresolved_references WHERE graph_version = ?")
-        .unwrap();
-    stmt.query_map([gv], |r| {
-        Ok(format!(
-            "{}|{}",
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?
-        ))
-    })
-    .unwrap()
-    .map(|r| r.unwrap())
-    .collect()
+    rows(
+        db_path,
+        gv,
+        "SELECT reference_name, reason FROM unresolved_references WHERE graph_version = ?",
+        "|",
+    )
 }
 
 fn index(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Indexer) {
@@ -127,23 +125,81 @@ fn extension_declared_and_called_in_one_file_resolves() {
     );
 }
 
+const NESTED_EXT: &str = "namespace Dpb.Outer.Inner;\npublic static class Ext\n{\n    public static void Twice(this Widget w) { }\n}\n";
+
 #[test]
-fn extension_via_using_static_and_nested_namespace_resolves() {
-    let ext = "namespace Dpb.Outer.Inner;\npublic static class Ext\n{\n    public static void Twice(this Widget w) { }\n}\n";
+fn extension_via_using_static_resolves() {
     let stat = "using static Dpb.Outer.Inner.Ext;\nnamespace Dpb.A;\npublic class Zed\n{\n    public void Run(Widget w)\n    {\n        w.Twice();\n    }\n}\n";
-    let nested = "namespace Dpb.B\n{\n    using Dpb.Outer.Inner;\n    public class Yak\n    {\n        public void Run(Widget w)\n        {\n            w.Twice();\n        }\n    }\n}\n";
-    let edges = index_calls(&[
-        ("Zlib/Ext.cs", ext),
-        ("A/Zed.cs", stat),
-        ("B/Yak.cs", nested),
-    ]);
+    let edges = index_calls(&[("Zlib/Ext.cs", NESTED_EXT), ("A/Zed.cs", stat)]);
     assert!(
         edges.contains("Dpb.A.Zed.Run->Dpb.Outer.Inner.Ext.Twice"),
-        "using static: {edges:?}"
+        "{edges:?}"
     );
+}
+
+#[test]
+fn extension_via_using_inside_a_block_namespace_resolves() {
+    let nested = "namespace Dpb.B\n{\n    using Dpb.Outer.Inner;\n    public class Yak\n    {\n        public void Run(Widget w)\n        {\n            w.Twice();\n        }\n    }\n}\n";
+    let edges = index_calls(&[("Zlib/Ext.cs", NESTED_EXT), ("B/Yak.cs", nested)]);
     assert!(
         edges.contains("Dpb.B.Yak.Run->Dpb.Outer.Inner.Ext.Twice"),
-        "nested namespace: {edges:?}"
+        "{edges:?}"
+    );
+}
+
+#[test]
+fn declaration_with_tab_or_newline_after_this_is_prescanned() {
+    for sep in ["\t", "\n"] {
+        let ext = EXTENSIONS.replace(
+            "this IServiceCollection",
+            &format!("this{sep}IServiceCollection"),
+        );
+        let edges = index_calls(&[
+            ("Common/Extensions.cs", &ext),
+            ("AppA/Program.cs", MGR),
+            ("AppB/Program.cs", PROXY),
+        ]);
+        assert!(edges.contains(PROXY_EDGE), "{sep:?}: {edges:?}");
+    }
+}
+
+fn ancestor_call(ns: &str) -> String {
+    format!(
+        "namespace {ns};\npublic class Caller\n{{\n    public void Run(Widget w)\n    {{\n        w.Twice();\n    }}\n}}\n"
+    )
+}
+
+#[test]
+fn extension_in_an_enclosing_namespace_is_in_scope_without_a_using() {
+    let acme = "namespace Acme;\npublic static class AcmeExt\n{\n    public static void Twice(this Widget w) { }\n}\n";
+    let mid = "namespace Acme.Mid;\npublic static class MidExt\n{\n    public static void Thrice(this Widget w) { }\n}\n";
+    let call =
+        ancestor_call("Acme.Mid.Inner").replace("Twice();\n", "Twice();\n        w.Thrice();\n");
+    let edges = index_calls(&[
+        ("Zlib/Acme.cs", acme),
+        ("Zlib/Mid.cs", mid),
+        ("Caller.cs", &call),
+    ]);
+    assert!(
+        edges.contains("Acme.Mid.Inner.Caller.Run->Acme.AcmeExt.Twice"),
+        "{edges:?}"
+    );
+    assert!(
+        edges.contains("Acme.Mid.Inner.Caller.Run->Acme.Mid.MidExt.Thrice"),
+        "{edges:?}"
+    );
+}
+
+#[test]
+fn extension_in_a_sibling_namespace_is_not_in_scope() {
+    let other = "namespace Acme.Other;\npublic static class OtherExt\n{\n    public static void Twice(this Widget w) { }\n}\n";
+    let edges = index_calls(&[
+        ("Zlib/Other.cs", other),
+        ("Caller.cs", &ancestor_call("Acme.Mid")),
+    ]);
+    assert!(
+        !edges.iter().any(|e| e.ends_with("OtherExt.Twice")),
+        "{edges:?}"
     );
 }
 
@@ -178,6 +234,60 @@ fn unresolved_extension_reasons_do_not_depend_on_receiver_shape() {
         .filter(|r| r.contains("AddDatabase"))
         .map(|r| r.split('|').nth(1).unwrap())
         .collect();
-    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(
+        reasons.len() == 1 && rows.iter().filter(|r| r.contains("AddDatabase")).count() == 2,
+        "{rows:?}"
+    );
     assert_eq!(reasons.len(), 1, "{rows:?}");
+}
+
+fn root_of(db_path: &std::path::Path) -> PathBuf {
+    db_path.parent().unwrap().parent().unwrap().to_path_buf()
+}
+
+#[test]
+fn deleting_then_restoring_only_the_declaring_file_matches_fresh() {
+    let files = three("Common");
+    let (_tmp, db_path, mut indexer) = index(&borrowed(&files));
+    let root = root_of(&db_path);
+    let decl = root.join("Common/Extensions.cs");
+    std::fs::remove_file(&decl).unwrap();
+    indexer
+        .sync_rel_paths(&["Common/Extensions.cs".into()])
+        .unwrap();
+    let gone = calls(&db_path, indexer.graph_version());
+    assert!(!gone.contains(MAIN_EDGE), "{gone:?}");
+    std::fs::write(&decl, EXTENSIONS).unwrap();
+    indexer
+        .sync_rel_paths(&["Common/Extensions.cs".into()])
+        .unwrap();
+    let gv = indexer.graph_version();
+    let restored = (calls(&db_path, gv), unresolved(&db_path, gv));
+    let fresh = {
+        let (_t, p, i) = index(&borrowed(&files));
+        (
+            calls(&p, i.graph_version()),
+            unresolved(&p, i.graph_version()),
+        )
+    };
+    assert_eq!(restored, fresh);
+    assert!(restored.0.contains(MAIN_EDGE));
+}
+
+#[test]
+fn adding_a_declaring_file_resolves_untouched_callers() {
+    let files = three("Common");
+    let callers: Vec<(&str, &str)> = borrowed(&files).into_iter().skip(1).collect();
+    let (_tmp, db_path, mut indexer) = index(&callers);
+    let before = calls(&db_path, indexer.graph_version());
+    assert!(before.is_empty(), "{before:?}");
+    let root = root_of(&db_path);
+    std::fs::create_dir_all(root.join("Common")).unwrap();
+    std::fs::write(root.join("Common/Extensions.cs"), EXTENSIONS).unwrap();
+    indexer
+        .sync_rel_paths(&["Common/Extensions.cs".into()])
+        .unwrap();
+    let edges = calls(&db_path, indexer.graph_version());
+    assert!(edges.contains(MAIN_EDGE), "{edges:?}");
+    assert!(edges.contains(PROXY_EDGE), "{edges:?}");
 }

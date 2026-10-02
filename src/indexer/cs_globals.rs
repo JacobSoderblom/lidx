@@ -222,6 +222,43 @@ impl CsGlobals<'_> {
         Ok(stale)
     }
 
+    /// Hash-unchanged C# files holding an unresolved `CALLS` reference, or a
+    /// `CALLS` edge to an external stub, whose trailing name is one of
+    /// `declared` (extension methods a file of this run declares). They
+    /// could not resolve to it while the declaration was missing;
+    /// re-extracting recomputes them like a fresh index would. Call before any deletion, at the version holding the
+    /// files' current rows.
+    pub fn stale_unresolved_extension_callers(
+        &self,
+        declared: &HashSet<String>,
+        graph_version: i64,
+    ) -> Result<HashSet<String>> {
+        let conn = self.db.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT f.path FROM unresolved_references ur
+             JOIN files f ON f.id = ur.file_id
+             WHERE ur.graph_version = ?1 AND ur.edge_kind = 'CALLS'
+               AND f.language = 'csharp' AND ur.name_tail = ?2",
+        )?;
+        let mut stubbed = conn.prepare(
+            "SELECT DISTINCT f.path FROM edges e
+             JOIN files f ON f.id = e.file_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.graph_version = ?1 AND e.kind = 'CALLS'
+               AND f.language = 'csharp' AND (t.id IS NULL OR t.kind = 'external')
+               AND (e.target_qualname = ?2 OR e.target_qualname LIKE '%.' || ?2)",
+        )?;
+        let mut stale = HashSet::new();
+        for name in declared {
+            for stmt in [&mut stmt, &mut stubbed] {
+                for path in stmt.query_map(rusqlite::params![graph_version, name], |r| r.get(0))? {
+                    stale.insert(path?);
+                }
+            }
+        }
+        Ok(stale)
+    }
+
     /// Every C# extension method stored at `graph_version`, except those
     /// declared in the `changed` paths (edited, added or deleted files of
     /// this run: the extractor re-registers the survivors itself). Feeds
