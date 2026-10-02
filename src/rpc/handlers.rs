@@ -162,6 +162,43 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     };
     let symbol = resolved.symbol.clone();
 
+    // An overloaded qualname (C# overloads, Rust twins) names several
+    // symbols: report the set, as `read_symbol` does, rather than silently
+    // explaining one. An explicit `id` selects one overload.
+    if params.id.is_none() {
+        let overloads =
+            super::reading::overloaded_symbols(indexer, &symbol.qualname, ctx.graph_version)?;
+        if !overloads.is_empty() {
+            let entries: Vec<Value> = overloads
+                .iter()
+                .map(|s| {
+                    json!({
+                        "id": s.id,
+                        "qualname": s.qualname,
+                        "signature": s.signature,
+                        "path": s.file_path,
+                        "start_line": s.start_line,
+                        "end_line": s.end_line,
+                    })
+                })
+                .collect();
+            let next_hops: Vec<Value> = overloads
+                .iter()
+                .map(|s| json!({"method": "explain_symbol", "params": {"id": s.id}, "description": format!("Explain the overload at line {}", s.start_line)}))
+                .collect();
+            let mut response = super::reading::overload_set_response(
+                &symbol.qualname,
+                overloads.len(),
+                json!(entries),
+            );
+            response["note"] = json!(
+                "qualname is shared by several overloads; call explain_symbol with one overload's id"
+            );
+            response["next_hops"] = json!(next_hops);
+            return Ok(response);
+        }
+    }
+
     // 2. Budget allocation: percentages below are shares of max_bytes (30%
     // source, 20% callers, 20% callees, 10% tests, 10% implements) - FIX #4.
     //

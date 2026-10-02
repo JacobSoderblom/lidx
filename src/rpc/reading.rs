@@ -703,7 +703,11 @@ fn build_symbol_entry(
 /// own span, never silently pick one. Empty otherwise -- other languages'
 /// duplicate qualnames (Python property setters, `@overload`, TS overload
 /// signatures) keep the single-symbol shape.
-fn overloaded_symbols(indexer: &Indexer, qn: &str, graph_version: i64) -> Result<Vec<Symbol>> {
+pub(super) fn overloaded_symbols(
+    indexer: &Indexer,
+    qn: &str,
+    graph_version: i64,
+) -> Result<Vec<Symbol>> {
     let overloads: Vec<Symbol> = indexer
         .db()
         .get_symbols_by_qualname(qn, graph_version)?
@@ -731,6 +735,18 @@ fn overloaded_symbols(indexer: &Indexer, qn: &str, graph_version: i64) -> Result
     )
 }
 
+/// The `overloaded` response header shared by `read_symbol` and
+/// `explain_symbol`, so the two methods cannot drift: `entries` is each
+/// method's per-overload payload.
+pub(super) fn overload_set_response(qn: &str, count: usize, entries: Value) -> Value {
+    json!({
+        "overloaded": true,
+        "qualname": qn,
+        "count": count,
+        "overloads": entries,
+    })
+}
+
 /// The `overloaded` response object shared by the `qualname`, `qualnames` and
 /// `query` selectors: every overload's entry, bounded by `max_bytes` (the
 /// first entry is always kept).
@@ -751,13 +767,9 @@ fn overload_response(
         max_bytes,
         graph_version,
     )?;
-    Ok(json!({
-        "overloaded": true,
-        "qualname": qn,
-        "count": overloads.len(),
-        "overloads": entries,
-        "omitted": omitted,
-    }))
+    let mut response = overload_set_response(qn, overloads.len(), json!(entries));
+    response["omitted"] = json!(omitted);
+    Ok(response)
 }
 
 /// One `ReadSymbolEntry` per overload (the same entry a single symbol gets),
