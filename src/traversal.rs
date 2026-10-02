@@ -353,7 +353,7 @@ pub fn trace_flow(
                             &sym,
                             edge,
                             dist + 1,
-                            &current_qn,
+                            (current_id, &current_qn),
                             &prev_file,
                             config.include_snippets,
                         ))
@@ -370,7 +370,7 @@ pub fn trace_flow(
                     &next_sym,
                     edge,
                     dist + 1,
-                    &current_qn,
+                    (current_id, &current_qn),
                     &prev_file,
                     config.include_snippets,
                 );
@@ -439,27 +439,22 @@ pub fn trace_flow(
                             if speculative {
                                 b_detail.push_str(" (speculative: other service)");
                             }
-                            TraceHop {
-                                symbol: bridged_sym.clone(),
-                                edge_kind: bridged_edge.kind.clone(),
-                                distance: dist + 1,
-                                predecessor: Some(current_qn.clone()),
-                                language: next_lang,
-                                snippet: if config.include_snippets {
-                                    bridged_edge.evidence_snippet.clone()
-                                } else {
-                                    None
-                                },
-                                cross_language: true,
-                                boundary_type: Some(b_type.to_string()),
-                                boundary_detail: Some(b_detail),
-                                protocol_context: extract_protocol_context(bridged_edge),
-                                resolution_kind: if speculative {
-                                    Some(CROSS_SERVICE_KIND.to_string())
-                                } else {
-                                    bridged_edge.resolution_kind.clone()
-                                },
+                            let mut hop = build_hop(
+                                bridged_sym,
+                                bridged_edge,
+                                dist + 1,
+                                (current_id, &current_qn),
+                                &prev_file,
+                                config.include_snippets,
+                            );
+                            hop.cross_language = true;
+                            hop.boundary_type = Some(b_type.to_string());
+                            hop.boundary_detail = Some(b_detail);
+                            hop.protocol_context = extract_protocol_context(bridged_edge);
+                            if speculative {
+                                hop.resolution_kind = Some(CROSS_SERVICE_KIND.to_string());
                             }
+                            hop
                         };
                         let admission = match scope.admit_bridged(bridge, bridged_id, || {
                             db.edges_for_symbol(bridged_id, languages, graph_version)
@@ -533,26 +528,15 @@ pub fn trace_flow(
     // frontier: keep only the hops on the predecessor chain, or none when
     // the target was never reached.
     if let Some(eid) = end_id {
-        let mut path = Vec::new();
-        if reached_target && let Some(mut cur) = trace.iter().position(|h| h.symbol.id == eid) {
-            loop {
-                path.push(cur);
-                let (dist, pred) = (trace[cur].distance, &trace[cur].predecessor);
-                let parent = pred.as_ref().filter(|_| dist > 1).and_then(|p| {
-                    trace
-                        .iter()
-                        .position(|h| h.distance == dist - 1 && &h.symbol.qualname == p)
-                });
-                match parent {
-                    Some(i) => cur = i,
-                    None => break,
-                }
-            }
-        }
+        let on_path: HashSet<usize> = if reached_target {
+            path_indices(&trace, eid).into_iter().collect()
+        } else {
+            HashSet::new()
+        };
         let mut idx = 0;
         trace.retain(|_| {
             idx += 1;
-            path.contains(&(idx - 1))
+            on_path.contains(&(idx - 1))
         });
     }
 
@@ -680,11 +664,33 @@ fn has_further_edges(
     Ok(false)
 }
 
+/// Indices of the hops on the chain from the hop reaching `end_id` back to
+/// the first hop after a seed, found by following predecessor ids. The walk
+/// ends naturally there: seeds are never hops, so the lookup for a
+/// distance-1 hop's predecessor (at distance 0) finds nothing.
+fn path_indices(trace: &[TraceHop], end_id: i64) -> Vec<usize> {
+    let mut by_id_dist: HashMap<(i64, usize), usize> = HashMap::new();
+    for (i, h) in trace.iter().enumerate() {
+        by_id_dist.entry((h.symbol.id, h.distance)).or_insert(i);
+    }
+    let mut path = Vec::new();
+    let mut cur = trace.iter().position(|h| h.symbol.id == end_id);
+    while let Some(i) = cur {
+        path.push(i);
+        let h = &trace[i];
+        cur = h
+            .distance
+            .checked_sub(1)
+            .and_then(|d| by_id_dist.get(&(h.predecessor_id, d)).copied());
+    }
+    path
+}
+
 fn build_hop(
     next_sym: &Symbol,
     edge: &Edge,
     distance: usize,
-    predecessor: &str,
+    predecessor: (i64, &str),
     prev_file: &str,
     include_snippets: bool,
 ) -> TraceHop {
@@ -715,7 +721,8 @@ fn build_hop(
         symbol: next_sym.clone(),
         edge_kind: edge.kind.clone(),
         distance,
-        predecessor: Some(predecessor.to_string()),
+        predecessor: predecessor.1.to_string(),
+        predecessor_id: predecessor.0,
         language: next_lang,
         snippet,
         cross_language: cross_lang,
@@ -1820,7 +1827,8 @@ mod tests {
             },
             edge_kind: "CALLS".to_string(),
             distance: 1,
-            predecessor: None,
+            predecessor: String::new(),
+            predecessor_id: 0,
             language: "python".to_string(),
             snippet: Some("test_func()".to_string()),
             cross_language: false,
@@ -1928,7 +1936,7 @@ mod tsx_normalization_tests {
             ("components/App.tsx", "components/Bar.tsx", ".tsx -> .tsx"),
         ] {
             let target_sym = dummy_symbol(target);
-            let hop = build_hop(&target_sym, &edge, 1, "p", source, true);
+            let hop = build_hop(&target_sym, &edge, 1, (0, "p"), source, true);
             assert!(!hop.cross_language, "{label} should not be cross-language");
             assert!(
                 hop.boundary_type.is_none(),
@@ -1944,7 +1952,7 @@ mod tsx_normalization_tests {
 
         for (source, label) in [("frontend/util.ts", ".ts"), ("frontend/App.tsx", ".tsx")] {
             let target_sym = dummy_symbol("backend/app.py");
-            let hop = build_hop(&target_sym, &edge, 1, "p", source, true);
+            let hop = build_hop(&target_sym, &edge, 1, (0, "p"), source, true);
             assert!(
                 hop.cross_language,
                 "{label} -> .py should be cross-language"
@@ -1965,7 +1973,7 @@ mod tsx_normalization_tests {
             ("src/main.rs", "ext:std::fs::read", "Rust -> std external"),
         ] {
             let target_sym = dummy_external_symbol(target_qualname);
-            let hop = build_hop(&target_sym, &edge, 1, "p", source, true);
+            let hop = build_hop(&target_sym, &edge, 1, (0, "p"), source, true);
             assert!(
                 !hop.cross_language,
                 "{label}: external stub should not be reported as cross-language"

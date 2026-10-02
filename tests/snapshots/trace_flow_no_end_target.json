@@ -1,0 +1,157 @@
+{
+  "budget": {
+    "budget_bytes": 30000,
+    "truncated": false
+  },
+  "graph_version": 2,
+  "lower_bound": {
+    "is_lower_bound": false,
+    "unresolved_count": 0
+  },
+  "next_hops": [
+    {
+      "description": "Explain helper1",
+      "method": "explain_symbol",
+      "params": {}
+    },
+    {
+      "description": "Explain helper2",
+      "method": "explain_symbol",
+      "params": {}
+    },
+    {
+      "description": "Explain mid",
+      "method": "explain_symbol",
+      "params": {}
+    }
+  ],
+  "paths_found": 2,
+  "reached_target": false,
+  "start": {
+    "end_byte": 229,
+    "end_col": 17,
+    "end_line": 25,
+    "file_path": "flow.py",
+    "kind": "function",
+    "name": "start",
+    "qualname": "flow.start",
+    "signature": "()",
+    "stable_id": "sym_aaadf91dbdc38b02",
+    "start_byte": 172,
+    "start_col": 1,
+    "start_line": 22
+  },
+  "trace": [
+    {
+      "cross_language": false,
+      "distance": 1,
+      "edge_kind": "CALLS",
+      "language": "python",
+      "resolution_kind": "exact",
+      "snippet": "helper1()",
+      "symbol": {
+        "end_byte": 27,
+        "end_col": 13,
+        "end_line": 2,
+        "file_path": "flow.py",
+        "kind": "function",
+        "name": "helper1",
+        "qualname": "flow.helper1",
+        "signature": "()",
+        "stable_id": "sym_0c035b7cee8ef646",
+        "start_byte": 0,
+        "start_col": 1,
+        "start_line": 1
+      }
+    },
+    {
+      "cross_language": false,
+      "distance": 1,
+      "edge_kind": "CALLS",
+      "language": "python",
+      "resolution_kind": "exact",
+      "snippet": "helper2()",
+      "symbol": {
+        "end_byte": 57,
+        "end_col": 13,
+        "end_line": 6,
+        "file_path": "flow.py",
+        "kind": "function",
+        "name": "helper2",
+        "qualname": "flow.helper2",
+        "signature": "()",
+        "stable_id": "sym_d87ab6b2d73f1944",
+        "start_byte": 30,
+        "start_col": 1,
+        "start_line": 5
+      }
+    },
+    {
+      "cross_language": false,
+      "distance": 1,
+      "edge_kind": "CALLS",
+      "language": "python",
+      "resolution_kind": "exact",
+      "snippet": "mid()",
+      "symbol": {
+        "end_byte": 169,
+        "end_col": 20,
+        "end_line": 19,
+        "file_path": "flow.py",
+        "kind": "function",
+        "name": "mid",
+        "qualname": "flow.mid",
+        "signature": "()",
+        "stable_id": "sym_acbebe27d42fc0e9",
+        "start_byte": 122,
+        "start_col": 1,
+        "start_line": 17
+      }
+    },
+    {
+      "cross_language": false,
+      "distance": 2,
+      "edge_kind": "CALLS",
+      "language": "python",
+      "resolution_kind": "exact",
+      "snippet": "other_leaf()",
+      "symbol": {
+        "end_byte": 90,
+        "end_col": 13,
+        "end_line": 10,
+        "file_path": "flow.py",
+        "kind": "function",
+        "name": "other_leaf",
+        "qualname": "flow.other_leaf",
+        "signature": "()",
+        "stable_id": "sym_457c5fc7a2fd45c8",
+        "start_byte": 60,
+        "start_col": 1,
+        "start_line": 9
+      }
+    },
+    {
+      "cross_language": false,
+      "distance": 2,
+      "edge_kind": "CALLS",
+      "language": "python",
+      "resolution_kind": "exact",
+      "snippet": "target()",
+      "symbol": {
+        "end_byte": 119,
+        "end_col": 13,
+        "end_line": 14,
+        "file_path": "flow.py",
+        "kind": "function",
+        "name": "target",
+        "qualname": "flow.target",
+        "signature": "()",
+        "stable_id": "sym_77ed963c9d5cc7f9",
+        "start_byte": 93,
+        "start_col": 1,
+        "start_line": 13
+      }
+    }
+  ],
+  "truncated": false
+}
