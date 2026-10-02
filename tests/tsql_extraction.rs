@@ -7,6 +7,8 @@ use lidx::indexer::extract::{ExtractedFile, LanguageExtractor};
 use lidx::indexer::sql_extractor::SqlExtractor;
 use lidx::rpc;
 
+mod common;
+
 fn extract(source: &str) -> ExtractedFile {
     SqlExtractor::new().unwrap().extract(source, "m").unwrap()
 }
@@ -318,4 +320,196 @@ fn begin_in_comment_or_string_does_not_mark_a_function_as_block_style() {
     let f = extract(src);
     assert!(text(src, &f, "dbo.f").starts_with("CREATE FUNCTION"));
     assert_invariants(src);
+}
+
+const EXEC_FIXTURE: &str = "\
+CREATE OR ALTER PROCEDURE dpb.audit_write @msg NVARCHAR(50) AS
+BEGIN
+    SET NOCOUNT ON;
+END
+GO
+
+CREATE OR ALTER PROCEDURE dpb.do_work AS
+BEGIN
+    -- EXEC dpb.in_comment
+    /* EXEC dpb.in_block */
+    DECLARE @s NVARCHAR(100) = 'EXEC dpb.in_string';
+    IF 1 = 1
+    BEGIN
+        EXEC dpb.audit_write @msg = N'x';
+    END
+    EXEC [dpb].[audit_write] @msg = N'a';
+    EXECUTE dpb.audit_write @msg = N'b';
+    EXEC @rc = dpb.audit_write @msg = N'c';
+    EXEC dpb.audit_write 'update',
+        'dpb',
+        'multi';
+    EXEC sp_executesql N'select 1';
+    EXEC sp_rename 'a', 'b';
+    EXEC (@sql);
+    EXEC ('CREATE SCHEMA x');
+END
+GO
+EXEC dpb.audit_write @msg = N'top';
+";
+
+fn exec_edges(f: &ExtractedFile) -> Vec<(String, String, String)> {
+    f.edges
+        .iter()
+        .filter(|e| e.kind == "CALLS")
+        .map(|e| {
+            (
+                e.source_qualname.clone().unwrap(),
+                e.target_qualname.clone().unwrap(),
+                e.evidence_snippet.clone().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn exec_statements_yield_one_calls_edge_each_and_dynamic_forms_none() {
+    let edges = exec_edges(&extract(EXEC_FIXTURE));
+    let ev: Vec<&str> = edges.iter().map(|e| e.2.as_str()).collect();
+    assert_eq!(
+        ev,
+        [
+            "EXEC dpb.audit_write @msg = N'x';",
+            "EXEC [dpb].[audit_write] @msg = N'a';",
+            "EXECUTE dpb.audit_write @msg = N'b';",
+            "EXEC @rc = dpb.audit_write @msg = N'c';",
+            "EXEC dpb.audit_write 'update',",
+        ],
+        "{edges:?}"
+    );
+    for (src, tgt, _) in &edges {
+        assert_eq!(
+            (src.as_str(), tgt.as_str()),
+            ("dpb.do_work", "dpb.audit_write")
+        );
+    }
+}
+
+fn exec_calls_in_db(root: &std::path::Path, db_path: &std::path::Path) -> Vec<(String, bool)> {
+    let indexer = Indexer::new(root.to_path_buf(), db_path.to_path_buf()).unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.qualname, COALESCE(t.qualname, e.target_qualname), e.target_symbol_id IS NOT NULL
+             FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id WHERE e.graph_version = ? AND e.kind = 'CALLS' ORDER BY 1, 2, e.id",
+        )
+        .unwrap();
+    stmt.query_map([gv], |r| {
+        Ok((
+            format!("{} -> {}", r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+            r.get::<_, bool>(2)?,
+        ))
+    })
+    .unwrap()
+    .map(|r| r.unwrap())
+    .collect()
+}
+
+#[test]
+fn exec_calls_resolve_to_the_callee_symbol() {
+    let (_tmp, root, db_path) = common::index_repo("lidx-tsql-342-", &[("m.sql", EXEC_FIXTURE)]);
+    let calls = exec_calls_in_db(&root, &db_path);
+    assert_eq!(calls.len(), 5, "{calls:?}");
+    assert!(
+        calls
+            .iter()
+            .all(|(e, resolved)| e == "dpb.do_work -> dpb.audit_write" && *resolved),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn exec_calls_appear_in_explain_symbol_callers() {
+    let (_tmp, root, db_path) = common::index_repo("lidx-tsql-342-", &[("m.sql", EXEC_FIXTURE)]);
+    let raw = rpc::call(
+        root,
+        db_path,
+        "explain_symbol".to_string(),
+        &serde_json::json!({ "qualname": "dpb.audit_write" }).to_string(),
+        "1",
+    )
+    .unwrap();
+    assert!(raw.contains("dpb.do_work"), "{raw}");
+}
+
+const CALLEE_SQL: &str =
+    "CREATE PROCEDURE dpb.audit_write AS\nBEGIN\n    SET NOCOUNT ON;\nEND\nGO\n";
+const CALLER_SQL: &str =
+    "CREATE PROCEDURE dpb.do_work AS\nBEGIN\n    EXEC dpb.audit_write;\nEND\nGO\n";
+
+#[test]
+fn exec_calls_resolve_across_files_with_different_case() {
+    let caller = "CREATE PROCEDURE dpb.do_work AS\nBEGIN\n    EXEC DPB.AUDIT_WRITE;\nEND\nGO\n";
+    let (_tmp, root, db_path) = common::index_repo(
+        "lidx-tsql-342-",
+        &[("callee.sql", CALLEE_SQL), ("caller.sql", caller)],
+    );
+    let calls = exec_calls_in_db(&root, &db_path);
+    assert_eq!(
+        calls,
+        [("dpb.do_work -> dpb.audit_write".to_string(), true)],
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn exec_calls_across_files_survive_incremental_sync_of_the_caller() {
+    let (_tmp, root, db_path) = common::index_repo(
+        "lidx-tsql-342-",
+        &[("callee.sql", CALLEE_SQL), ("caller.sql", CALLER_SQL)],
+    );
+    let fresh = exec_calls_in_db(&root, &db_path);
+    assert_eq!(
+        fresh,
+        [("dpb.do_work -> dpb.audit_write".to_string(), true)]
+    );
+
+    let edited = format!("{CALLER_SQL}-- edited\n");
+    common::write_files(&root, &[("caller.sql", &edited)]);
+    let mut indexer = Indexer::new(root.clone(), db_path.clone()).unwrap();
+    indexer.sync_rel_paths(&["caller.sql".to_string()]).unwrap();
+    assert_eq!(exec_calls_in_db(&root, &db_path), fresh);
+
+    let (_tmp2, root2, db2) = common::index_repo(
+        "lidx-tsql-342-",
+        &[("callee.sql", CALLEE_SQL), ("caller.sql", &edited)],
+    );
+    assert_eq!(exec_calls_in_db(&root2, &db2), fresh);
+}
+
+#[test]
+fn exec_mixed_case_keyword_and_names() {
+    let src = "CREATE PROCEDURE Dpb.Do_Work AS\nBEGIN\n    ExEc [DPB].[Audit_Write];\n    execute dpb.AUDIT_write;\nEND\nGO\nCREATE PROCEDURE dpb.audit_write AS\nBEGIN\n    SET NOCOUNT ON;\nEND\nGO\n";
+    let edges = exec_edges(&extract(src));
+    assert_eq!(edges.len(), 2, "{edges:?}");
+    for (s, t, _) in &edges {
+        assert_eq!((s.as_str(), t.as_str()), ("Dpb.Do_Work", "dpb.audit_write"));
+    }
+}
+
+#[test]
+fn exec_skips_xp_sp_and_variable_forms() {
+    let src = "CREATE PROCEDURE dbo.p AS\nBEGIN\n    EXEC xp_cmdshell 'dir';\n    EXEC master.dbo.xp_foo;\n    EXEC SP_who;\n    EXEC @proc;\n    EXEC @proc @a = 1;\n    EXEC dbo.real_one;\nEND\nGO\n";
+    let edges = exec_edges(&extract(src));
+    assert_eq!(edges.len(), 1, "{edges:?}");
+    assert_eq!(edges[0].1, "dbo.real_one");
+}
+
+#[test]
+fn exec_inside_function_and_trigger_bodies() {
+    let src = "CREATE TRIGGER dbo.trg ON dbo.t AFTER INSERT AS\nBEGIN\n    EXEC dbo.on_insert;\nEND\nGO\nCREATE FUNCTION dbo.f() RETURNS INT AS\nBEGIN\n    EXEC dbo.helper;\n    RETURN 1;\nEND\nGO\n";
+    let edges = exec_edges(&extract(src));
+    let pairs: Vec<(&str, &str)> = edges.iter().map(|e| (e.0.as_str(), e.1.as_str())).collect();
+    assert_eq!(
+        pairs,
+        [("dbo.trg", "dbo.on_insert"), ("dbo.f", "dbo.helper")],
+        "{edges:?}"
+    );
 }
