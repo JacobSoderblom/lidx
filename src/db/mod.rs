@@ -1590,6 +1590,16 @@ impl Db {
                         graph_version,
                     )?,
                 };
+                // A channel edge with no source symbol is unreachable from
+                // either end (#222); fail loudly instead of storing it.
+                if source_id.is_none() && edge.kind.starts_with("CHANNEL_") {
+                    anyhow::bail!(
+                        "{} edge has unresolved source {:?} (target {:?})",
+                        edge.kind,
+                        edge.source_qualname,
+                        edge.target_qualname
+                    );
+                }
                 let receiver = edge.receiver_type.to_columns();
                 let extracted_receiver_type = receiver.receiver_type.as_deref();
                 let marker = edge.receiver_type.deferred_marker();

@@ -439,6 +439,11 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         }
         "function_definition" | "async_function_definition" => {
             if ctx.fn_depth > 0 {
+                // Not indexed, but its body is still walked (attributed to
+                // the enclosing symbol) so deeper decorated defs are seen.
+                if let Some(body) = node.child_by_field_name("body") {
+                    walk_block(body, ctx, source, output);
+                }
                 return;
             }
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -1403,6 +1408,12 @@ fn handler_qualname(node: Node<'_>, ctx: &Context, source: &str) -> Option<Strin
     }
     if node.kind() == "class_definition" {
         return None;
+    }
+    // A nested `def` is never indexed (`walk_node` skips it at `fn_depth > 0`),
+    // so its edges attach to the nearest enclosing indexed symbol instead of a
+    // qualname that would dangle.
+    if ctx.fn_depth > 0 {
+        return Some(ctx.current_scope.clone());
     }
     Some(build_qualname(&ctx.module, &ctx.class_stack, &name))
 }
