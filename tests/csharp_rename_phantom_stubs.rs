@@ -19,8 +19,7 @@ public class Program\n{\n    public static void Main(Builder builder)\n    {\n  
 const PROXY: &str = "using Dpb.Common.Database;\nnamespace Dpb.DataProxy;\n\
 public class Program\n{\n    public void RegisterServices(object services)\n    {\n        services.AddDatabase();\n    }\n}\n";
 
-// "a_common" sorts first so the declaration is scanned before its callers
-// (sidesteps #210) and the baseline resolves through the import tier.
+// "a_common" sorts first so the baseline resolves through the import tier.
 const BASE: &[(&str, &str)] = &[
     ("a_common/Extensions.cs", EXTENSIONS),
     ("b_mgr/Program.cs", MGR),

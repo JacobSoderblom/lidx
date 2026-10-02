@@ -27,6 +27,19 @@ pub fn validate_repo_root(repo: &Path) -> Result<PathBuf> {
         .with_context(|| format!("canonicalize repo root {}", repo.display()))
 }
 
+/// The stored record of `file` when a reindex can carry it forward instead
+/// of re-extracting it: same hash, no forced re-extraction, not stale.
+fn unchanged_record<'a>(
+    existing: &'a HashMap<String, FileRecord>,
+    file: &scan::ScannedFile,
+    force_reextract: bool,
+    stale_files: &HashSet<String>,
+) -> Option<&'a FileRecord> {
+    existing.get(&file.rel_path).filter(|r| {
+        r.hash == file.hash && !force_reextract && !stale_files.contains(&file.rel_path)
+    })
+}
+
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
@@ -314,6 +327,9 @@ impl Indexer {
         self.begin_extraction_run(&changed_rels, graph_version, true)?;
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
         all_paths.extend(stale_files.iter().map(|rel| self.repo_root.join(rel)));
+        let stale_callers = self.prescan_files(all_paths.iter().cloned(), graph_version)?;
+        all_paths.extend(stale_callers.iter().map(|rel| self.repo_root.join(rel)));
+        stale_files.extend(stale_callers);
         for path in &all_paths {
             let rel_path = match crate::util::normalize_rel_path(&self.repo_root, path) {
                 Ok(value) => value,
@@ -337,6 +353,7 @@ impl Indexer {
             };
             if let Some(existing) = self.db.get_file_by_path(&scanned.rel_path)?
                 && existing.hash == scanned.hash
+                && existing.deleted_version.is_none()
                 && !stale_files.contains(&scanned.rel_path)
             {
                 stats.skipped += 1;
@@ -415,6 +432,7 @@ impl Indexer {
                 any_symbols_deleted,
                 "incremental sync",
             )?;
+            self.db.reconcile_rpc_edges(self.graph_version)?;
 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -567,6 +585,12 @@ impl Indexer {
         );
         // A forced re-extraction visits every file, so it needs no seed.
         self.begin_extraction_run(&changed_paths, previous_graph_version, !force_reextract)?;
+        let to_extract: Vec<PathBuf> = scanned
+            .iter()
+            .filter(|f| unchanged_record(&existing_map, f, force_reextract, &stale_files).is_none())
+            .map(|f| f.abs_path.clone())
+            .collect();
+        stale_files.extend(self.prescan_files(to_extract.into_iter(), previous_graph_version)?);
 
         let mut seen = HashSet::new();
         let mut stats = IndexStats {
@@ -591,10 +615,8 @@ impl Indexer {
         for file in &scanned {
             seen.insert(file.rel_path.clone());
 
-            if let Some(existing_record) = existing_map.get(&file.rel_path)
-                && existing_record.hash == file.hash
-                && !force_reextract
-                && !stale_files.contains(&file.rel_path)
+            if let Some(existing_record) =
+                unchanged_record(&existing_map, file, force_reextract, &stale_files)
             {
                 // Unchanged: skip the parse (tree-sitter + symbol extraction is the
                 // expensive part) and carry the file's rows forward further down.
@@ -841,6 +863,7 @@ impl Indexer {
                 any_symbols_deleted || stats.deleted > 0,
                 "reindex",
             )?;
+            self.db.reconcile_rpc_edges(self.graph_version)?;
 
             let remaining = unresolved_edge_count(&self.db, self.graph_version)?;
             self.db.set_meta_i64("unresolved_edge_floor", remaining)?;
@@ -1034,7 +1057,9 @@ impl Indexer {
                     scan::scan_path(&self.repo_root, &path)?,
                     self.db.get_file_by_path(rel)?,
                 ) {
-                    (Some(scanned), Some(existing)) => existing.hash == scanned.hash,
+                    (Some(scanned), Some(existing)) => {
+                        existing.hash == scanned.hash && existing.deleted_version.is_none()
+                    }
                     _ => false,
                 }
             } else {
@@ -1125,6 +1150,36 @@ impl Indexer {
             extractor.seed_extension_methods(&methods);
         }
         Ok(())
+    }
+
+    /// Let each file's own extractor register cross-file declarations
+    /// before any file is extracted (see `LanguageExtractor::prescan`), and
+    /// re-extract the hash-unchanged C# files whose stored unresolved calls
+    /// name a declaration found: they could not resolve it when last
+    /// indexed. Returns those callers' repo-relative paths.
+    fn prescan_files(
+        &mut self,
+        paths: impl Iterator<Item = PathBuf>,
+        graph_version: i64,
+    ) -> Result<HashSet<String>> {
+        let mut declared: HashSet<String> = HashSet::new();
+        for path in paths {
+            let Ok(rel) = crate::util::normalize_rel_path(&self.repo_root, &path) else {
+                continue;
+            };
+            let Some(language) = scan::language_for_path(&path) else {
+                continue;
+            };
+            let Ok(source) = crate::util::read_to_string(&path) else {
+                continue;
+            };
+            if let Some(extractor) = self.extractors.get_mut(language) {
+                let module_name = extractor.module_name_from_rel_path(&rel);
+                declared.extend(extractor.prescan(&source, &module_name));
+            }
+        }
+        self.cs_globals_db()
+            .stale_unresolved_extension_callers(&declared, graph_version)
     }
 
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {

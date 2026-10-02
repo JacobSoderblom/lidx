@@ -2503,7 +2503,9 @@ fn symbol_from_row(row: &Row<'_>) -> rusqlite::Result<Symbol> {
 /// name alone (`"evidence":"name"` in `detail`, #204) unless a proto `service`
 /// symbol of that name exists in the same graph version. Evaluated at read
 /// time, so adding or removing the `.proto` flips the edge exactly as a fresh
-/// index would.
+/// index would. Likewise an RPC_CALL named `bind`/`call`/`apply` (a possible
+/// `Function.prototype` call through a client) surfaces only when a proto
+/// route has that method name.
 pub(crate) const RPC_NAME_ONLY_FILTER: &str = " AND (e.kind <> 'RPC_CALL'
     OR e.detail IS NULL
     OR e.detail NOT LIKE '%\"evidence\":\"name\"%'
@@ -2511,7 +2513,13 @@ pub(crate) const RPC_NAME_ONLY_FILTER: &str = " AND (e.kind <> 'RPC_CALL'
                WHERE ps.kind = 'service'
                  AND ps.name = json_extract(e.detail, '$.service')
                  AND ps.graph_version = e.graph_version
-                 AND (pf.deleted_version IS NULL OR pf.deleted_version > e.graph_version)))";
+                 AND (pf.deleted_version IS NULL OR pf.deleted_version > e.graph_version)))
+    AND (e.kind <> 'RPC_CALL'
+    OR e.detail IS NULL
+    OR lower(json_extract(e.detail, '$.rpc')) NOT IN ('bind', 'call', 'apply')
+    OR EXISTS (SELECT 1 FROM edges r
+               WHERE r.kind = 'RPC_ROUTE' AND r.graph_version = e.graph_version
+                 AND r.target_qualname LIKE '%/' || lower(json_extract(e.detail, '$.rpc'))))";
 
 fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
     Ok(Edge {
@@ -4917,7 +4925,107 @@ mod tests {
         let found = db
             .edges_by_target_qualname_and_kinds(real, &["RPC_IMPL"], None, 1)
             .unwrap();
+        // Only the exact edge: the guessed package contradicts the route's.
         assert_eq!(found.len(), 1);
+    }
+
+    /// TS handler (package-less guess) plus a real proto route.
+    fn rpc_guess_fixture(guessed: &str, real: &str) -> (Db, tempfile::TempDir) {
+        let (mut db, temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/svc.ts", "h1", "typescript", 100, 0)
+            .unwrap();
+        let inserted = db
+            .insert_symbols(
+                file_id,
+                "src/svc.ts",
+                &[make_test_symbol("svc.getTables", None, "function", 1)],
+                1,
+                None,
+            )
+            .unwrap();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        let edge = |kind: &str, src: Option<&str>, tq: &str| crate::indexer::extract::EdgeInput {
+            kind: kind.to_string(),
+            source_qualname: src.map(str::to_string),
+            target_qualname: Some(tq.to_string()),
+            ..Default::default()
+        };
+        db.insert_edges(
+            file_id,
+            &[edge("RPC_IMPL", Some("svc.getTables"), guessed)],
+            &symbol_map,
+            1,
+            None,
+        )
+        .unwrap();
+        let proto_id = db.upsert_file("p.proto", "h2", "proto", 10, 0).unwrap();
+        let rpc = "datacatalog.v1.DataCatalogService.GetTables";
+        let proto_syms = db
+            .insert_symbols(
+                proto_id,
+                "p.proto",
+                &[make_test_symbol(rpc, None, "rpc", 1)],
+                1,
+                None,
+            )
+            .unwrap();
+        let proto_map: HashMap<String, i64> = proto_syms
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(
+            proto_id,
+            &[edge("RPC_ROUTE", Some(rpc), real)],
+            &proto_map,
+            1,
+            None,
+        )
+        .unwrap();
+        (db, temp)
+    }
+
+    const REAL_ROUTE: &str = "/datacatalog.v1.datacatalogservice/gettables";
+
+    #[test]
+    fn test_rpc_widening_proto_side_finds_package_less_impl() {
+        let (db, _temp) = rpc_guess_fixture("/datacatalogservice/gettables", REAL_ROUTE);
+        let found = db
+            .edges_by_target_qualname_and_kinds(REAL_ROUTE, &["RPC_IMPL"], None, 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, "RPC_IMPL");
+    }
+
+    #[test]
+    fn test_rpc_widening_impl_side_finds_proto_route() {
+        let guessed = "/datacatalogservice/gettables";
+        let (db, _temp) = rpc_guess_fixture(guessed, REAL_ROUTE);
+        let found = db
+            .edges_by_target_qualname_and_kinds(guessed, &["RPC_ROUTE"], None, 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, "RPC_ROUTE");
+    }
+
+    #[test]
+    fn test_rpc_guess_with_contradicting_package_does_not_bind() {
+        let guessed = "/other.pkg.datacatalogservice/gettables";
+        let (db, _temp) = rpc_guess_fixture(guessed, REAL_ROUTE);
+        // Neither end reaches the other through the guessed path.
+        assert!(
+            db.edges_by_target_qualname_and_kinds(REAL_ROUTE, &["RPC_IMPL"], None, 1)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.edges_by_target_qualname_and_kinds(guessed, &["RPC_ROUTE"], None, 1)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

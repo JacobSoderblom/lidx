@@ -875,7 +875,7 @@ impl<'a> MultiLayerOrchestrator<'a> {
 }
 
 /// Walk parent chain from a symbol back to a seed, returning path steps in root-to-leaf order.
-fn reconstruct_path_steps(
+pub fn reconstruct_path_steps(
     symbol_id: i64,
     seed_set: &HashSet<i64>,
     parent_map: &HashMap<i64, ParentLink>,

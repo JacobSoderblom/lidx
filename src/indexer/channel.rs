@@ -192,22 +192,74 @@ pub fn build_subscribe_detail(channel: &str, raw: &str, framework: &str) -> Stri
 /// invoking this RPC) and `RPC_ROUTE` (the `.proto` definition this method
 /// implements) -- unlike `HTTP_ROUTE`/`HTTP_CALL`, gRPC has a third edge
 /// kind (the route/definition side) distinct from the call side, so it
-/// needs both. `RPC_ROUTE` only bridges back to `RPC_IMPL`: tracing
-/// downstream from a `.proto` rpc has nothing to reach via `RPC_CALL`
-/// (nothing *calls* a route definition).
-pub fn bridge_complement(kind: &str) -> Option<&'static [&'static str]> {
-    match kind {
-        "CHANNEL_PUBLISH" => Some(&["CHANNEL_SUBSCRIBE"]),
-        "CHANNEL_SUBSCRIBE" => Some(&["CHANNEL_PUBLISH"]),
-        "RPC_CALL" => Some(&["RPC_IMPL"]),
-        "RPC_IMPL" => Some(&["RPC_CALL", "RPC_ROUTE"]),
-        "RPC_ROUTE" => Some(&["RPC_IMPL"]),
-        "HTTP_CALL" => Some(&["HTTP_ROUTE"]),
-        "HTTP_ROUTE" => Some(&["HTTP_CALL"]),
-        "CONFIG_SOURCE" => Some(&["CONFIG_READ"]),
-        "CONFIG_READ" => Some(&["CONFIG_SOURCE"]),
-        _ => None,
-    }
+/// needs both. `RPC_ROUTE` sits in the middle (callers -> route -> impl):
+/// it bridges downstream to `RPC_IMPL` and upstream to `RPC_CALL`.
+pub fn bridge_complement(kind: &str) -> Option<Vec<&'static str>> {
+    bridge_entry(kind).map(|pairs| pairs.iter().map(|(complement, _)| *complement).collect())
+}
+
+/// The one table of bridge kinds: each kind's complement(s), each with the
+/// walk direction it is crossed in (true = upstream, toward callers /
+/// publishers / sources; false = downstream). Adding a bridge kind is one
+/// edit here.
+fn bridge_entry(kind: &str) -> Option<&'static [(&'static str, bool)]> {
+    Some(match kind {
+        "CHANNEL_PUBLISH" => &[("CHANNEL_SUBSCRIBE", false)],
+        "CHANNEL_SUBSCRIBE" => &[("CHANNEL_PUBLISH", true)],
+        "RPC_CALL" => &[("RPC_IMPL", false)],
+        "RPC_IMPL" => &[("RPC_CALL", true), ("RPC_ROUTE", true)],
+        "RPC_ROUTE" => &[("RPC_IMPL", false), ("RPC_CALL", true)],
+        "HTTP_CALL" => &[("HTTP_ROUTE", false)],
+        "HTTP_ROUTE" => &[("HTTP_CALL", true)],
+        "CONFIG_SOURCE" => &[("CONFIG_READ", false)],
+        "CONFIG_READ" => &[("CONFIG_SOURCE", true)],
+        _ => return None,
+    })
+}
+
+/// Which way a walk (or a bridged hop) runs through the graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WalkDirection {
+    Upstream,
+    Downstream,
+    /// A walk following both directions; never recorded on a hop.
+    Both,
+}
+
+/// Whether crossing from a symbol holding an `edge_kind` edge to its
+/// `complement` walks against caller/publisher -> callee/subscriber order. The
+/// hop's parent is the symbol holding `edge_kind`, so an upstream pair means
+/// the bridged symbol is the caller (issue #103).
+pub fn bridge_pair_is_upstream(edge_kind: &str, complement: &str) -> bool {
+    bridge_entry(edge_kind).is_some_and(|pairs| pairs.iter().any(|(c, up)| *c == complement && *up))
+}
+
+/// Whether any of `edge_kind`'s bridges runs upstream (a callee-side kind).
+pub fn bridge_hop_is_reversed(edge_kind: &str) -> bool {
+    bridge_entry(edge_kind).is_some_and(|pairs| pairs.iter().any(|(_, up)| *up))
+}
+
+/// The complements of `edge_kind` a `walk` may cross to: the one direction
+/// gate shared by `trace_flow` and `analyze_impact` (issue #201). Upstream
+/// walks cross to callers/publishers/sources, downstream walks to
+/// callees/subscribers.
+pub fn bridge_complements_for(edge_kind: &str, walk: WalkDirection) -> Vec<&'static str> {
+    bridge_entry(edge_kind)
+        .into_iter()
+        .flatten()
+        .filter(|(_, up)| match walk {
+            WalkDirection::Both => true,
+            WalkDirection::Upstream => *up,
+            WalkDirection::Downstream => !*up,
+        })
+        .map(|(c, _)| *c)
+        .collect()
+}
+
+/// Whether a `walk` may cross any bridge from an `edge_kind` edge.
+pub fn bridge_crossing_allowed(edge_kind: &str, walk: WalkDirection) -> bool {
+    !bridge_complements_for(edge_kind, walk).is_empty()
 }
 
 /// Returns true for an edge kind that `Db::insert_edges` always keeps a live
@@ -348,39 +400,30 @@ mod tests {
     fn bridge_pairs() {
         assert_eq!(
             bridge_complement("CHANNEL_PUBLISH"),
-            Some(&["CHANNEL_SUBSCRIBE"] as &[&str])
+            Some(vec!["CHANNEL_SUBSCRIBE"])
         );
         assert_eq!(
             bridge_complement("CHANNEL_SUBSCRIBE"),
-            Some(&["CHANNEL_PUBLISH"] as &[&str])
+            Some(vec!["CHANNEL_PUBLISH"])
         );
-        assert_eq!(
-            bridge_complement("RPC_CALL"),
-            Some(&["RPC_IMPL"] as &[&str])
-        );
+        assert_eq!(bridge_complement("RPC_CALL"), Some(vec!["RPC_IMPL"]));
         assert_eq!(
             bridge_complement("RPC_IMPL"),
-            Some(&["RPC_CALL", "RPC_ROUTE"] as &[&str])
+            Some(vec!["RPC_CALL", "RPC_ROUTE"])
         );
         assert_eq!(
             bridge_complement("RPC_ROUTE"),
-            Some(&["RPC_IMPL"] as &[&str])
+            Some(vec!["RPC_IMPL", "RPC_CALL"])
         );
-        assert_eq!(
-            bridge_complement("HTTP_CALL"),
-            Some(&["HTTP_ROUTE"] as &[&str])
-        );
-        assert_eq!(
-            bridge_complement("HTTP_ROUTE"),
-            Some(&["HTTP_CALL"] as &[&str])
-        );
+        assert_eq!(bridge_complement("HTTP_CALL"), Some(vec!["HTTP_ROUTE"]));
+        assert_eq!(bridge_complement("HTTP_ROUTE"), Some(vec!["HTTP_CALL"]));
         assert_eq!(
             bridge_complement("CONFIG_SOURCE"),
-            Some(&["CONFIG_READ"] as &[&str])
+            Some(vec!["CONFIG_READ"])
         );
         assert_eq!(
             bridge_complement("CONFIG_READ"),
-            Some(&["CONFIG_SOURCE"] as &[&str])
+            Some(vec!["CONFIG_SOURCE"])
         );
         assert_eq!(bridge_complement("CALLS"), None);
     }
