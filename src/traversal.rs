@@ -353,6 +353,7 @@ pub fn trace_flow(
                             &sym,
                             edge,
                             dist + 1,
+                            &current_qn,
                             &prev_file,
                             config.include_snippets,
                         ))
@@ -369,6 +370,7 @@ pub fn trace_flow(
                     &next_sym,
                     edge,
                     dist + 1,
+                    &current_qn,
                     &prev_file,
                     config.include_snippets,
                 );
@@ -441,6 +443,7 @@ pub fn trace_flow(
                                 symbol: bridged_sym.clone(),
                                 edge_kind: bridged_edge.kind.clone(),
                                 distance: dist + 1,
+                                predecessor: Some(current_qn.clone()),
                                 language: next_lang,
                                 snippet: if config.include_snippets {
                                     bridged_edge.evidence_snippet.clone()
@@ -525,6 +528,33 @@ pub fn trace_flow(
 
     let truncation_reason = scope.capped().then(|| CAP_TRUNCATION_REASON.to_string());
     truncated |= scope.capped();
+
+    // With an end target the answer is the path to it, not the visited
+    // frontier: keep only the hops on the predecessor chain, or none when
+    // the target was never reached.
+    if let Some(eid) = end_id {
+        let mut path = Vec::new();
+        if reached_target && let Some(mut cur) = trace.iter().position(|h| h.symbol.id == eid) {
+            loop {
+                path.push(cur);
+                let (dist, pred) = (trace[cur].distance, &trace[cur].predecessor);
+                let parent = pred.as_ref().filter(|_| dist > 1).and_then(|p| {
+                    trace
+                        .iter()
+                        .position(|h| h.distance == dist - 1 && &h.symbol.qualname == p)
+                });
+                match parent {
+                    Some(i) => cur = i,
+                    None => break,
+                }
+            }
+        }
+        let mut idx = 0;
+        trace.retain(|_| {
+            idx += 1;
+            path.contains(&(idx - 1))
+        });
+    }
 
     // Canonical order: independent of the order edges were processed in.
     trace.sort_by_cached_key(canonical_key);
@@ -654,6 +684,7 @@ fn build_hop(
     next_sym: &Symbol,
     edge: &Edge,
     distance: usize,
+    predecessor: &str,
     prev_file: &str,
     include_snippets: bool,
 ) -> TraceHop {
@@ -684,6 +715,7 @@ fn build_hop(
         symbol: next_sym.clone(),
         edge_kind: edge.kind.clone(),
         distance,
+        predecessor: Some(predecessor.to_string()),
         language: next_lang,
         snippet,
         cross_language: cross_lang,
@@ -1788,6 +1820,7 @@ mod tests {
             },
             edge_kind: "CALLS".to_string(),
             distance: 1,
+            predecessor: None,
             language: "python".to_string(),
             snippet: Some("test_func()".to_string()),
             cross_language: false,
@@ -1895,7 +1928,7 @@ mod tsx_normalization_tests {
             ("components/App.tsx", "components/Bar.tsx", ".tsx -> .tsx"),
         ] {
             let target_sym = dummy_symbol(target);
-            let hop = build_hop(&target_sym, &edge, 1, source, true);
+            let hop = build_hop(&target_sym, &edge, 1, "p", source, true);
             assert!(!hop.cross_language, "{label} should not be cross-language");
             assert!(
                 hop.boundary_type.is_none(),
@@ -1911,7 +1944,7 @@ mod tsx_normalization_tests {
 
         for (source, label) in [("frontend/util.ts", ".ts"), ("frontend/App.tsx", ".tsx")] {
             let target_sym = dummy_symbol("backend/app.py");
-            let hop = build_hop(&target_sym, &edge, 1, source, true);
+            let hop = build_hop(&target_sym, &edge, 1, "p", source, true);
             assert!(
                 hop.cross_language,
                 "{label} -> .py should be cross-language"
@@ -1932,7 +1965,7 @@ mod tsx_normalization_tests {
             ("src/main.rs", "ext:std::fs::read", "Rust -> std external"),
         ] {
             let target_sym = dummy_external_symbol(target_qualname);
-            let hop = build_hop(&target_sym, &edge, 1, source, true);
+            let hop = build_hop(&target_sym, &edge, 1, "p", source, true);
             assert!(
                 !hop.cross_language,
                 "{label}: external stub should not be reported as cross-language"
