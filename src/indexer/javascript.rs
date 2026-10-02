@@ -3850,10 +3850,38 @@ fn collect_http_wrappers(root: Node<'_>, source: &str) -> WrapperTable {
             .map(|_| "method".to_string());
         value.or(shorthand).and_then(|n| param(&n))
     }
+    /// Locals assigned from an expression built from a parameter (`const url =
+    /// p.startsWith('/') ? p : `/${p}``), each mapped to that parameter's
+    /// index, after the parameters themselves.
+    fn url_names(body: Node<'_>, params: &[String], source: &str) -> Vec<(String, usize)> {
+        fn walk(node: Node<'_>, source: &str, names: &mut Vec<(String, usize)>) {
+            if node.kind() == "variable_declarator"
+                && let (Some(name), Some(value)) = (
+                    node.child_by_field_name("name")
+                        .filter(|n| n.kind() == "identifier"),
+                    node.child_by_field_name("value"),
+                )
+                && let Some(idx) = names
+                    .iter()
+                    .find(|(n, _)| mentions(value, n, source))
+                    .map(|(_, i)| *i)
+            {
+                names.push((node_text(name, source), idx));
+            }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                walk(child, source, names);
+            }
+        }
+        let mut names: Vec<(String, usize)> = params.iter().cloned().zip(0..).collect();
+        walk(body, source, &mut names);
+        names
+    }
     /// The wrapper `params` make of `node`'s first URL-forwarding call, if any.
     fn analyze(
         node: Node<'_>,
         params: &[String],
+        names: &[(String, usize)],
         key: &str,
         known: &WrapperTable,
         source: &str,
@@ -3881,7 +3909,7 @@ fn collect_http_wrappers(root: Node<'_>, source: &str) -> WrapperTable {
                 {
                     return None;
                 }
-                let i = params.iter().position(|p| mentions(arg, p, source))?;
+                let i = names.iter().find(|(n, _)| mentions(arg, n, source))?.1;
                 Some((u, i))
             });
             if let Some((u, url)) = forwarded {
@@ -3921,7 +3949,7 @@ fn collect_http_wrappers(root: Node<'_>, source: &str) -> WrapperTable {
         }
         let mut cursor = node.walk();
         node.named_children(&mut cursor)
-            .find_map(|c| analyze(c, params, key, known, source))
+            .find_map(|c| analyze(c, params, names, key, known, source))
     }
     let mut candidates = Vec::new();
     gather(root, source, &mut candidates);
@@ -3936,7 +3964,8 @@ fn collect_http_wrappers(root: Node<'_>, source: &str) -> WrapperTable {
             let Some(body) = func.child_by_field_name("body") else {
                 continue;
             };
-            if let Some(wrapper) = analyze(body, &params, key, &found, source) {
+            let names = url_names(body, &params, source);
+            if let Some(wrapper) = analyze(body, &params, &names, key, &found, source) {
                 found.insert(key.clone(), wrapper);
                 changed = true;
             }
@@ -6228,6 +6257,25 @@ function go(id: string) {
 }
 "#;
         assert_eq!(http_calls(source), vec![call("GET", "/api/y")]);
+    }
+
+    #[test]
+    fn direct_fetch_keeps_conventional_base_url_interpolations() {
+        let source = r#"
+function go() {
+  fetch(`${API_URL}/a`);
+  fetch(`${apiUrl}/b`);
+  fetch(`${process.env.NEXT_PUBLIC_API_URL}/c`);
+  fetch(`${this.baseUrl}/d`);
+  fetch(`${config.api.baseUrl}/e`);
+  fetch(`${window.location.origin}/f`);
+  fetch(`${HOST}/g`);
+  fetch(`${basePath}/h`);
+  fetch(`${id}/i`);
+}
+"#;
+        let paths: Vec<_> = http_calls(source).into_iter().map(|c| c.1).collect();
+        assert_eq!(paths, ["/a", "/b", "/c", "/d", "/e", "/f", "/g", "/h"]);
     }
 
     #[test]

@@ -198,3 +198,53 @@ fn pending_wrapper_edges_never_reach_the_db() {
     assert_eq!(pending, 0);
     assert_eq!(http_calls_of(&indexer), [call("c.a", "/api/a", "GET")]);
 }
+
+/// The real dpb `datacatalog-ui` shape (verbatim files): a three-level
+/// `apiClient.get -> apiClientFetch -> fetchWithTimeout -> fetch` chain whose
+/// URL flows through a local, generic type arguments at the call sites, and a
+/// nested project tsconfig `@/*` alias.
+#[test]
+fn dpb_datacatalog_ui_api_client_links_to_route_handler() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dpb_api_client");
+    fn copy(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            let target = to.join(e.file_name());
+            if e.file_type().unwrap().is_dir() {
+                copy(&e.path(), &target);
+            } else {
+                std::fs::copy(e.path(), target).unwrap();
+            }
+        }
+    }
+    copy(&src, tmp.path());
+    let db = tmp.path().join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(tmp.path().to_path_buf(), db.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let targets: Vec<(String, String)> = http_calls_of(&indexer)
+        .into_iter()
+        .map(|(_, t, m)| (t, m))
+        .collect();
+    for want in [
+        "/api/tables",
+        "/api/data-products/list",
+        "/api/dependency-graph",
+    ] {
+        assert!(
+            targets.contains(&(want.to_string(), "GET".to_string())),
+            "{want} missing: {targets:?}"
+        );
+    }
+    let resp = lidx::rpc::call(
+        tmp.path().to_path_buf(),
+        db,
+        "explain_symbol".to_string(),
+        r#"{"query":"node/datacatalog-ui/app/api/tables/route.GET"}"#,
+        "1",
+    )
+    .unwrap();
+    assert!(resp.contains("tablesQueryOptions"), "{resp}");
+}
