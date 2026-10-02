@@ -2490,7 +2490,9 @@ fn symbol_from_row(row: &Row<'_>) -> rusqlite::Result<Symbol> {
 /// name alone (`"evidence":"name"` in `detail`, #204) unless a proto `service`
 /// symbol of that name exists in the same graph version. Evaluated at read
 /// time, so adding or removing the `.proto` flips the edge exactly as a fresh
-/// index would.
+/// index would. Likewise an RPC_CALL named `bind`/`call`/`apply` (a possible
+/// `Function.prototype` call through a client) surfaces only when a proto
+/// route has that method name.
 pub(crate) const RPC_NAME_ONLY_FILTER: &str = " AND (e.kind <> 'RPC_CALL'
     OR e.detail IS NULL
     OR e.detail NOT LIKE '%\"evidence\":\"name\"%'
@@ -2498,7 +2500,13 @@ pub(crate) const RPC_NAME_ONLY_FILTER: &str = " AND (e.kind <> 'RPC_CALL'
                WHERE ps.kind = 'service'
                  AND ps.name = json_extract(e.detail, '$.service')
                  AND ps.graph_version = e.graph_version
-                 AND (pf.deleted_version IS NULL OR pf.deleted_version > e.graph_version)))";
+                 AND (pf.deleted_version IS NULL OR pf.deleted_version > e.graph_version)))
+    AND (e.kind <> 'RPC_CALL'
+    OR e.detail IS NULL
+    OR lower(json_extract(e.detail, '$.rpc')) NOT IN ('bind', 'call', 'apply')
+    OR EXISTS (SELECT 1 FROM edges r
+               WHERE r.kind = 'RPC_ROUTE' AND r.graph_version = e.graph_version
+                 AND r.target_qualname LIKE '%/' || lower(json_extract(e.detail, '$.rpc'))))";
 
 fn edge_from_row(row: &Row<'_>) -> rusqlite::Result<Edge> {
     Ok(Edge {

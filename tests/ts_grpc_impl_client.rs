@@ -286,3 +286,65 @@ export function go(req) {
         "{calls:?}"
     );
 }
+
+/// RPC_CALL targets as the query layer surfaces them.
+fn surfaced_rpc_calls(repo: &Repo) -> Vec<String> {
+    let db = repo.indexer.db();
+    let gv = db.current_graph_version().unwrap();
+    let kinds = vec!["RPC_CALL".to_string()];
+    db.list_edges(
+        1000,
+        0,
+        None,
+        None,
+        Some(&kinds),
+        None,
+        None,
+        None,
+        false,
+        None,
+        gv,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+    .into_iter()
+    .filter_map(|e| e.target_qualname)
+    .collect()
+}
+
+#[test]
+fn indirection_named_rpc_surfaces_only_with_a_matching_proto_rpc() {
+    let proto = "syntax = \"proto3\";\npackage datacatalog.v1;\n\
+service DataCatalogService {\n  rpc Call (Req) returns (Res);\n}\n\
+message Req {}\nmessage Res {}\n";
+    let other = "syntax = \"proto3\";\npackage datacatalog.v1;\n\
+service DataCatalogService {\n  rpc GetTables (Req) returns (Res);\n}\n\
+message Req {}\nmessage Res {}\n";
+    let bind_src = r#"
+import { DataCatalogServiceClient } from "../gen/datacatalog_grpc_pb";
+const client = new DataCatalogServiceClient("h");
+export function go(req) { client.bind(req); }
+"#;
+    let call_src = bind_src.replace("client.bind(req)", "client.call(req)");
+
+    let no_rpc = repo_with(&[("protos/c.proto", other), ("src/c.ts", bind_src)]);
+    assert!(surfaced_rpc_calls(&no_rpc).is_empty());
+    let with_rpc = repo_with(&[("protos/c.proto", proto), ("src/c.ts", &call_src)]);
+    assert_eq!(surfaced_rpc_calls(&with_rpc).len(), 1);
+
+    // Incremental equals fresh when the proto gains / loses `rpc Call`.
+    let mut inc = repo_with(&[("protos/c.proto", other), ("src/c.ts", &call_src)]);
+    assert!(surfaced_rpc_calls(&inc).is_empty());
+    common::write_files(&inc.root, &[("protos/c.proto", proto)]);
+    inc.indexer
+        .sync_rel_paths(&["protos/c.proto".to_string()])
+        .unwrap();
+    assert_eq!(surfaced_rpc_calls(&inc), surfaced_rpc_calls(&with_rpc));
+    common::write_files(&inc.root, &[("protos/c.proto", other)]);
+    inc.indexer
+        .sync_rel_paths(&["protos/c.proto".to_string()])
+        .unwrap();
+    assert!(surfaced_rpc_calls(&inc).is_empty());
+}
