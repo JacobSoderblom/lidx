@@ -296,3 +296,50 @@ fn analyze_impact_crosses_bridge_only_with_the_flow() {
         );
     }
 }
+
+/// The `.proto` route sits in the middle: `client =RPC_CALL=> route =RPC_IMPL=> impl`.
+fn route_middle_fixture() -> Fixture {
+    let temp = tempfile::TempDir::new().unwrap();
+    let mut db = Db::new(&temp.path().join("t.db")).unwrap();
+    let file_id = db.upsert_file("svc.py", "h", "python", 100, 0).unwrap();
+    let names = ["svc.client", "svc.route", "svc.impl"];
+    let symbols: Vec<_> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| symbol(n, 1 + 10 * i as i64))
+        .collect();
+    let inserted = db
+        .insert_symbols(file_id, "svc.py", &symbols, 1, None)
+        .unwrap();
+    let ids: HashMap<String, i64> = inserted
+        .iter()
+        .map(|s| (s.qualname.clone(), s.id))
+        .collect();
+    let key = "pkg.Svc.Do";
+    let edges = [
+        edge("RPC_CALL", "svc.client", key),
+        edge("RPC_ROUTE", "svc.route", key),
+        edge("RPC_IMPL", "svc.impl", key),
+    ];
+    db.insert_edges(file_id, &edges, &ids, 1, None).unwrap();
+    let symbols = inserted.into_iter().map(|s| (s.id, s)).collect();
+    Fixture {
+        db,
+        ids,
+        symbols,
+        _temp: temp,
+    }
+}
+
+#[test]
+fn rpc_route_in_the_middle_reaches_callers_upstream_and_impl_downstream() {
+    use TraversalDirection::{Downstream, Upstream};
+    let f = route_middle_fixture();
+    assert_eq!(f.trace("svc.route", true), set(&["svc.client"]));
+    assert_eq!(f.trace("svc.route", false), set(&["svc.impl"]));
+    assert_eq!(f.impact("svc.route", Upstream), set(&["svc.client"]));
+    assert_eq!(f.impact("svc.route", Downstream), set(&["svc.impl"]));
+    // Through the middle, in both directions.
+    assert_eq!(f.trace("svc.client", false), set(&["svc.impl"]));
+    assert_eq!(f.trace("svc.impl", true), set(&["svc.client", "svc.route"]));
+}

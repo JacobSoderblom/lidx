@@ -1,7 +1,7 @@
 use crate::db::Db;
 use crate::indexer::channel::{
-    WalkDirection, boundary_type_for_kind, bridge_complement, bridge_crossing_allowed,
-    bridge_hop_is_reversed,
+    WalkDirection, boundary_type_for_kind, bridge_complement, bridge_complements_for,
+    bridge_crossing_allowed, bridge_pair_is_upstream,
 };
 use crate::indexer::config::{
     BridgeOutcome, BridgeTarget, CAP_TRUNCATION_REASON, CROSS_SERVICE_KIND, ConfigScope, Entry,
@@ -315,7 +315,7 @@ pub fn trace_flow(
                 && bridge_crossing_allowed(&edge.kind, walk)
             {
                 bridge_targets.extend(ConfigScope::bridges_for(
-                    &entry, &edges, edge, tq, current_id,
+                    &entry, &edges, edge, tq, current_id, walk,
                 ));
             }
 
@@ -418,13 +418,15 @@ pub fn trace_flow(
                     edge_kind,
                     origin_path,
                     key,
+                    walk: bridge_walk,
                     ..
                 } = bridge;
-                if let Some(complement_kinds) = bridge_complement(edge_kind) {
+                let complement_kinds = bridge_complements_for(edge_kind, *bridge_walk);
+                if !complement_kinds.is_empty() {
                     let bridged = db
                         .edges_by_target_qualname_and_kinds(
                             tq,
-                            complement_kinds,
+                            &complement_kinds,
                             languages,
                             graph_version,
                         )
@@ -452,11 +454,12 @@ pub fn trace_flow(
                                 &prev_file,
                                 config.include_snippets,
                             );
-                            hop.bridge_direction = Some(if bridge_hop_is_reversed(edge_kind) {
-                                WalkDirection::Upstream
-                            } else {
-                                WalkDirection::Downstream
-                            });
+                            hop.bridge_direction =
+                                Some(if bridge_pair_is_upstream(edge_kind, &bridged_edge.kind) {
+                                    WalkDirection::Upstream
+                                } else {
+                                    WalkDirection::Downstream
+                                });
                             hop.cross_language = true;
                             hop.boundary_type = Some(b_type.to_string());
                             hop.boundary_detail = Some(b_detail);

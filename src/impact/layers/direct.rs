@@ -186,11 +186,13 @@ fn resolve_bridge_targets(
             edge_kind,
             origin_path,
             source_id,
+            walk,
             ..
         } = bridge;
-        if let Some(complement_kinds) = crate::indexer::channel::bridge_complement(edge_kind) {
+        let complement_kinds = crate::indexer::channel::bridge_complements_for(edge_kind, *walk);
+        if !complement_kinds.is_empty() {
             let bridged = db
-                .edges_by_target_qualname_and_kinds(tq, complement_kinds, languages, graph_version)
+                .edges_by_target_qualname_and_kinds(tq, &complement_kinds, languages, graph_version)
                 .unwrap_or_default();
             for (bridged_edge, speculative) in prefer_same_service(tq, origin_path, &bridged) {
                 let Some(bridged_id) = bridged_edge.source_symbol_id else {
@@ -223,7 +225,7 @@ fn resolve_bridge_targets(
                     } else {
                         bridged_edge.resolution_kind.clone()
                     },
-                    crate::indexer::channel::bridge_hop_is_reversed(edge_kind),
+                    crate::indexer::channel::bridge_pair_is_upstream(edge_kind, &bridged_edge.kind),
                 );
                 // A re-entry keeps the minimum distance and the first path;
                 // its own parent is recorded as an additional path.
@@ -510,6 +512,7 @@ pub fn analyze_direct_impact_scoped(
                             edge,
                             tq,
                             *current_id,
+                            walk,
                         ));
                     }
 

@@ -30,7 +30,7 @@ pub fn validate_repo_root(repo: &Path) -> Result<PathBuf> {
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 11;
+pub const EXTRACTOR_VERSION: i64 = 12;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -407,6 +407,7 @@ impl Indexer {
                 any_symbols_deleted,
                 "incremental sync",
             )?;
+            self.db.reconcile_rpc_edges(self.graph_version)?;
 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -831,6 +832,7 @@ impl Indexer {
                 any_symbols_deleted || stats.deleted > 0,
                 "reindex",
             )?;
+            self.db.reconcile_rpc_edges(self.graph_version)?;
 
             let remaining = unresolved_edge_count(&self.db, self.graph_version)?;
             self.db.set_meta_i64("unresolved_edge_floor", remaining)?;
