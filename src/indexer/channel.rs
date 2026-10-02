@@ -210,6 +210,29 @@ pub fn bridge_complement(kind: &str) -> Option<&'static [&'static str]> {
     }
 }
 
+/// Whether crossing a bridge from a symbol holding an `edge_kind` edge walks
+/// against caller/publisher -> callee/subscriber order. The hop's parent is the
+/// symbol holding `edge_kind`, so a callee-side kind means the bridged symbol
+/// is the caller (issue #103).
+pub fn bridge_hop_is_reversed(edge_kind: &str) -> bool {
+    matches!(
+        edge_kind,
+        "RPC_IMPL" | "CHANNEL_SUBSCRIBE" | "HTTP_ROUTE" | "CONFIG_READ"
+    )
+}
+
+/// The one direction gate for bridge crossing, shared by `trace_flow` and
+/// `analyze_impact` (issue #201). A callee-side kind (subscriber, RPC impl,
+/// route) bridges to its callers/publishers, which lie upstream; a
+/// caller-side kind bridges to its callees/subscribers, downstream.
+/// `walk_upstream` is `None` for a walk that follows both directions. Config
+/// bridges (`CONFIG_SOURCE`/`CONFIG_READ`) link a key to its consumers, not a
+/// call flow, so they cross in either direction.
+pub fn bridge_crossing_allowed(edge_kind: &str, walk_upstream: Option<bool>) -> bool {
+    edge_kind.starts_with("CONFIG_")
+        || walk_upstream.is_none_or(|up| up == bridge_hop_is_reversed(edge_kind))
+}
+
 /// Returns true for an edge kind that `Db::insert_edges` always keeps a live
 /// edge for, even when unresolved -- issue #79's exemption from "every other
 /// kind's unresolved reference lives only in `unresolved_references`". Not

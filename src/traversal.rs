@@ -1,5 +1,7 @@
 use crate::db::Db;
-use crate::indexer::channel::{boundary_type_for_kind, bridge_complement};
+use crate::indexer::channel::{
+    boundary_type_for_kind, bridge_complement, bridge_crossing_allowed, bridge_hop_is_reversed,
+};
 use crate::indexer::config::{
     BridgeOutcome, BridgeTarget, CAP_TRUNCATION_REASON, CROSS_SERVICE_KIND, ConfigScope, Entry,
     config_edge_allowed, prefer_same_service,
@@ -308,6 +310,7 @@ pub fn trace_flow(
 
             if let Some(ref tq) = edge.target_qualname
                 && bridge_complement(&edge.kind).is_some()
+                && bridge_crossing_allowed(&edge.kind, Some(is_upstream))
             {
                 bridge_targets.extend(ConfigScope::bridges_for(
                     &entry, &edges, edge, tq, current_id,
@@ -447,6 +450,11 @@ pub fn trace_flow(
                                 &prev_file,
                                 config.include_snippets,
                             );
+                            hop.bridge_direction = Some(if bridge_hop_is_reversed(edge_kind) {
+                                "upstream"
+                            } else {
+                                "downstream"
+                            });
                             hop.cross_language = true;
                             hop.boundary_type = Some(b_type.to_string());
                             hop.boundary_detail = Some(b_detail);
@@ -657,7 +665,10 @@ fn has_further_edges(
             return Ok(true);
         }
 
-        if edge.target_qualname.is_some() && bridge_complement(&edge.kind).is_some() {
+        if edge.target_qualname.is_some()
+            && bridge_complement(&edge.kind).is_some()
+            && bridge_crossing_allowed(&edge.kind, Some(is_upstream))
+        {
             return Ok(true);
         }
     }
@@ -730,6 +741,7 @@ fn build_hop(
         boundary_detail,
         protocol_context,
         resolution_kind: edge.resolution_kind.clone(),
+        bridge_direction: None,
     }
 }
 
@@ -1836,6 +1848,7 @@ mod tests {
             boundary_detail: None,
             protocol_context: None,
             resolution_kind: None,
+            bridge_direction: None,
         };
 
         let full_size = estimate_hop_size(&hop, false);

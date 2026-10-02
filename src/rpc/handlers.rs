@@ -1075,6 +1075,12 @@ fn cross_boundary_refs(
     let config = crate::traversal::TraceConfig {
         max_hops: 1,
         max_bytes: usize::MAX,
+        // Server kinds cross back to their clients, which lie upstream.
+        direction: if outgoing {
+            crate::traversal::TraceDirection::Downstream
+        } else {
+            crate::traversal::TraceDirection::Upstream
+        },
         allowed_kinds,
         ..Default::default()
     };
