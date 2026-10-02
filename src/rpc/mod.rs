@@ -535,7 +535,8 @@ enum Sizing {
     /// Large by design: capped only when the caller asks.
     Uncapped,
     /// Budgets and paginates its own output (`max_bytes`, continuation
-    /// next_hops); the generic pass never touches it.
+    /// next_hops); exempt from the default cap, but an explicit caller cap is
+    /// handed down as its `max_bytes` and still enforced as a backstop.
     SelfBudgeting,
 }
 
@@ -632,9 +633,12 @@ pub fn is_self_budgeting(method: &str) -> bool {
         .any(|s| s.name == method && s.sizing == Sizing::SelfBudgeting)
 }
 
+/// How many times a self-budgeting method is re-run under an explicit cap.
+const SELF_BUDGET_RETRIES: usize = 8;
+
 /// Default response size cap (30KB ≈ 7,500 tokens).
-/// Applied when caller doesn't specify max_response_bytes/max_tokens.
-/// Methods that manage their own budgets or intentionally return large content are exempt.
+/// Applied to `Sizing::Capped` methods when the caller doesn't specify
+/// max_response_bytes/max_tokens; `Uncapped` and `SelfBudgeting` methods skip it.
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 30_000;
 
 /// What to do with params a handler's params struct did not recognize.
@@ -790,50 +794,77 @@ fn dispatch_method(indexer: &mut Indexer, method: &str, params: Value) -> Result
         .find(|s| s.name == method)
         .ok_or_else(|| anyhow::anyhow!("unknown method: {method}"))?;
     let mut params = params;
-    // A self-budgeting method sizes itself, so an explicit response cap
-    // becomes its own `max_bytes` instead of a second cut after the fact.
+    // A self-budgeting method sizes itself, so an explicit response cap is
+    // handed down as its own `max_bytes` rather than cutting its output after
+    // the fact (which would leave its continuation offsets pointing past
+    // dropped elements).
+    let mut budget = None;
     if spec.sizing == Sizing::SelfBudgeting
         && let (Some(cap), Some(obj)) = (max_response_bytes, params.as_object_mut())
     {
-        obj.entry("max_bytes").or_insert(json!(cap));
+        let b = obj
+            .get("max_bytes")
+            .and_then(Value::as_u64)
+            .map_or(cap, |b| b as usize);
+        obj.insert("max_bytes".into(), json!(b));
+        budget = Some((cap, b));
     }
-    let value = (spec.run)(indexer, params)?;
-    let value = hoist_symbol_run_metadata(value);
+    let mut value = (spec.run)(indexer, params.clone()).map(hoist_symbol_run_metadata)?;
+    // That budget covers only the paginated payload, so when the whole
+    // response still overshoots the cap, re-run with the budget reduced by the
+    // overshoot; the generic pass below stays as the last-resort backstop.
+    if let Some((cap, mut b)) = budget {
+        for _ in 0..SELF_BUDGET_RETRIES {
+            let size = value.to_string().len();
+            if size <= cap || b <= 1 {
+                break;
+            }
+            // Shrink from what the payload actually used (not the nominal
+            // budget, which a quantized payload may sit well under), so each
+            // retry is guaranteed to drop at least one more element.
+            let used = value
+                .pointer("/budget/used_bytes")
+                .and_then(Value::as_u64)
+                .map_or(b, |u| (u as usize).min(b));
+            b = used.saturating_sub(size - cap).max(1);
+            params["max_bytes"] = json!(b);
+            value = (spec.run)(indexer, params.clone()).map(hoist_symbol_run_metadata)?;
+        }
+    }
 
     let elapsed = start.elapsed();
     if elapsed.as_millis() > 100 {
         eprintln!("lidx: Slow query: {} took {:?}", method, elapsed);
     }
 
+    // Only `Capped` methods get the default cap; an explicit caller cap is
+    // enforced on every method as a backstop (self-budgeting ones were also
+    // handed it as their own `max_bytes` above, so it rarely fires there).
     let effective_max = match spec.sizing {
-        Sizing::SelfBudgeting => None,
-        Sizing::Uncapped => max_response_bytes,
         Sizing::Capped => Some(max_response_bytes.unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)),
+        Sizing::Uncapped | Sizing::SelfBudgeting => max_response_bytes,
     };
     let Some(max_bytes) = effective_max else {
         return Ok(value);
     };
     let (mut value, was_truncated, total_available) = format::truncate_response(value, max_bytes);
-    if !was_truncated {
-        return Ok(value);
-    }
-    // Truncation is reported next to the payload, never by relocating it
-    // (#221): `.result.<field>` reads the same whether or not it fired. Only
-    // a bare array has nowhere to carry the fields, so it is wrapped.
-    let mut report = serde_json::Map::new();
-    report.insert("truncated".into(), json!(true));
-    report.insert("max_response_bytes".into(), json!(max_bytes));
-    if let Some(total) = total_available {
-        report.insert("total_available".into(), json!(total));
-    }
-    match value.as_object_mut() {
-        Some(obj) => obj.extend(report),
-        None => {
-            report.insert("data".into(), value);
-            value = Value::Object(report);
-        }
+    if was_truncated {
+        attach_truncation_report(&mut value, max_bytes, total_available);
     }
     Ok(value)
+}
+
+/// Reports a generic truncation beside the payload, never by relocating it
+/// (#221): `.result.<field>` reads the same whether or not it fired. Every
+/// method returns an object, so there is always somewhere to put the fields.
+fn attach_truncation_report(value: &mut Value, max_bytes: usize, total_available: Option<usize>) {
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("truncated".into(), json!(true));
+        obj.insert("max_response_bytes".into(), json!(max_bytes));
+        if let Some(total) = total_available {
+            obj.insert("total_available".into(), json!(total));
+        }
+    }
 }
 
 /// `graph_version`/`commit_sha` are properties of the indexing run, not of
@@ -1110,6 +1141,15 @@ fn infer_language(file_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
+
+    #[test]
+    fn method_list_matches_method_specs() {
+        let mut specs: Vec<&str> = super::METHOD_SPECS.iter().map(|s| s.name).collect();
+        let mut listed = super::METHOD_LIST.to_vec();
+        specs.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(specs, listed);
+    }
 
     // --- Schema generation tests ---
 

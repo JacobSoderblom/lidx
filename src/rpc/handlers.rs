@@ -3286,7 +3286,9 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
         }]);
     }
 
-    Ok(json!(results))
+    // An object even when non-empty, so the dispatcher can report truncation
+    // beside the hits without changing the response shape (#221).
+    Ok(json!({"results": results}))
 }
 
 // ---------------------------------------------------------------------------

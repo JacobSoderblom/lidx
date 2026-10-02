@@ -11,9 +11,9 @@ pub(super) const RESPONSE_BUDGET_PARAMS: [&str; 3] =
 /// Extract the response byte budget from params. Supports three names:
 /// `max_response_bytes` (preferred, most explicit), `max_bytes` (alias --
 /// this is what fixes analyze_impact silently ignoring `max_bytes`, since it
-/// has no params field of its own for it; skipped for methods in
-/// `Sizing::SelfBudgeting`: their own `max_bytes` is a content budget), then `max_tokens` (converted at
-/// ~4 bytes/token).
+/// has no params field of its own for it; skipped for `Sizing::SelfBudgeting`
+/// methods, whose own `max_bytes` is a content budget), then `max_tokens`
+/// (converted at ~4 bytes/token).
 pub(super) fn extract_max_response_bytes(
     method: &str,
     params: &serde_json::Value,

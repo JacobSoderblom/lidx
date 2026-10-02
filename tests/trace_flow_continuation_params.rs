@@ -7,7 +7,6 @@
 /// no start param at all in the continuation.
 mod common;
 
-use lidx::indexer::Indexer;
 use lidx::rpc;
 use serde_json::{Value, json};
 
@@ -43,28 +42,30 @@ fn call_and_get_result(
 /// at all) -- and override only `trace_offset`.
 #[test]
 fn continuation_hop_echoes_every_original_param() {
-    let (_tmp, repo_root, db_path) = common::setup_repo("py_mvp");
-    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-    drop(indexer);
+    // A 3-hop chain, so an `end_qualname` path still has hops left after the
+    // one the byte budget keeps.
+    let (_tmp, repo_root, db_path) = common::index_repo(
+        "lidx-continuation-params-",
+        &[(
+            "chain.py",
+            "def one():\n    return two()\n\ndef two():\n    return three()\n\ndef three():\n    return four()\n\ndef four():\n    return 1\n",
+        )],
+    );
 
-    // `max_bytes: 1` forces truncation on the very first hop (same technique
-    // as `traversal::tests::byte_budget_truncation`), regardless of which
-    // params are otherwise set. Started via `query` (not start_qualname/
+    // `max_bytes: 1000` keeps only the first hop of the 3-hop `end_qualname`
+    // path, so the trace truncates whatever else is set. Started via `query` (not start_qualname/
     // start_id) -- the case the issue calls out as ending up with no start
     // at all in the continuation.
     let original = json!({
-        "query": "run",
+        "query": "one",
         "direction": "downstream",
         "max_hops": 3,
-        "max_bytes": 1,
+        "max_bytes": 1000,
         "include_snippets": true,
-        "exclude_resolution_kinds": ["bare_name"],
+        "exclude_resolution_kinds": ["two_segment"],
         "languages": ["python"],
         "kinds": ["CALLS"],
-        // No `end_qualname`: the fixture's only end-reaching path is a single
-        // hop, which now fits the budget and is (correctly) not reported
-        // truncated -- #221.
+        "end_qualname": "chain.four",
     });
 
     let result = call_and_get_result(&repo_root, &db_path, "trace_flow", &original.to_string());

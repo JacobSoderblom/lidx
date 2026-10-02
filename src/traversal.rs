@@ -545,8 +545,10 @@ pub fn trace_flow(
     let mut trace: Vec<TraceHop> = trace.into_iter().skip(config.trace_offset).collect();
 
     // Apply the byte budget to the settled hops: keep hops while they fit,
-    // so `used_bytes` never exceeds the budget (#221). The first hop is always
-    // kept, so a continuation makes progress even when one hop outsizes it.
+    // so `used_bytes` stays within the budget (#221). The one exception is the
+    // first hop, which is always kept: a budget smaller than a single hop would
+    // otherwise return nothing and the continuation (offset + 0) would never
+    // advance. Only then can `used_bytes` exceed `budget_bytes`.
     let mut used_bytes = 0usize;
     let mut keep = 0usize;
     for h in &trace {

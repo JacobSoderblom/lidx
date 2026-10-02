@@ -45,11 +45,7 @@ fn call(temp: &TempRepo, method: &str, params: &str) -> serde_json::Value {
     if let Some(err) = envelope.get("error") {
         panic!("RPC error for {method}: {err:?}");
     }
-    let result = envelope["result"].clone();
-    if result.get("truncated").is_some() && result.get("data").is_some() {
-        return result["data"].clone();
-    }
-    result
+    envelope["result"].clone()
 }
 
 /// One target function, one plain caller, and one caller that also looks

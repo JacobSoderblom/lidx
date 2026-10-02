@@ -85,19 +85,14 @@ fn call_raw(temp: &TempRepo, method: &str, params: &str) -> serde_json::Value {
 }
 
 /// Calls an RPC method and returns the inner result value (unwrapping the
-/// `{"result": ...}` envelope and any truncation wrapper `{"data": ...}`).
+/// `{"result": ...}` envelope).
 /// Panics if the response contains an error.
 fn call(temp: &TempRepo, method: &str, params: &str) -> serde_json::Value {
     let envelope = call_raw(temp, method, params);
     if let Some(err) = envelope.get("error") {
         panic!("RPC error for {}: {:?}", method, err);
     }
-    let result = envelope["result"].clone();
-    // Unwrap the truncation envelope if present so tests see the actual result.
-    if result.get("truncated").is_some() && result.get("data").is_some() {
-        return result["data"].clone();
-    }
-    result
+    envelope["result"].clone()
 }
 
 // ---------------------------------------------------------------------------

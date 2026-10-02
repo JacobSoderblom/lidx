@@ -53,11 +53,7 @@ fn call(env: &Env, params: &str) -> Value {
         envelope.get("error").is_none_or(|e| e.is_null()),
         "{envelope}"
     );
-    let result = envelope["result"].clone();
-    if result.get("truncated").is_some() && result.get("data").is_some() {
-        return result["data"].clone();
-    }
-    result
+    envelope["result"].clone()
 }
 
 fn qualnames(r: &Value) -> Vec<String> {
