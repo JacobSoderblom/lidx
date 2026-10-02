@@ -657,6 +657,9 @@ pub struct IndexStats {
     pub symbols: usize,
     pub edges: usize,
     pub duration_ms: u64,
+    /// Post-reindex graph-version prune failure; the reindex itself still succeeded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prune_error: Option<String>,
 }
 
 // gather_context types

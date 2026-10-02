@@ -3423,7 +3423,7 @@ pub(super) fn handle_reindex(indexer: &mut Indexer, params: Value) -> Result<Val
         json_stats,
         params.summary.unwrap_or(false),
         params.fields.as_deref(),
-        &["scanned", "indexed", "skipped", "deleted"],
+        &["scanned", "indexed", "skipped", "deleted", "prune_error"],
     ))
 }
 
