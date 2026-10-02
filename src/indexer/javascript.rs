@@ -108,6 +108,16 @@ struct Context {
     /// (`const { f } = require('./x')`): imports, not locals, for call
     /// resolution — see `collect_required_names`.
     required_names: Rc<HashSet<String>>,
+    /// Names bound in the function scopes enclosing the current one (and
+    /// the module's own locals), so a nested function sees them as locals
+    /// too — see `enter_scope`.
+    outer_locals: Rc<HashSet<String>>,
+    /// Names this file declares (any function/class/enum/namespace, plus
+    /// module-level variables) — see `collect_declared_names`.
+    declared_names: Rc<HashSet<String>>,
+    /// The file has `import`/`export` syntax, so an unbound bare name
+    /// cannot refer to another file's export.
+    is_esm: bool,
 }
 
 /// Local name bound by a top-level `import` → (module specifier, imported
@@ -1251,6 +1261,9 @@ fn extract_with_parser(
         fn_owner: None,
         import_bindings: Rc::new(collect_import_bindings(root, source)),
         required_names: Rc::new(collect_required_names(root, source)),
+        outer_locals: Rc::new(HashSet::new()),
+        declared_names: Rc::new(collect_declared_names(root, source)),
+        is_esm: is_esm_file(root),
     };
     walk_node(root, &ctx, source, &mut output);
     dedup_namespace_symbols(&mut output);
@@ -1894,6 +1907,15 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         // resolve to the implementation, the only declaration with a body.
         "function_declaration" | "generator_function_declaration" => {
             if ctx.fn_depth > 0 {
+                // Not a symbol, but its calls belong to the enclosing one,
+                // resolved against its own locals plus the enclosing ones.
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut next_ctx = ctx.clone();
+                    next_ctx.class_stack.truncate(ctx.ns_depth);
+                    enter_scope(&mut next_ctx);
+                    next_ctx.local_types = Rc::new(infer_local_types(node, source));
+                    walk_node(body, &next_ctx, source, output);
+                }
                 return;
             }
             handle_function(node, ctx, source, output);
@@ -2353,25 +2375,87 @@ fn collect_import_bindings(root: Node<'_>, source: &str) -> ImportBindings {
     bindings
 }
 
-/// Names bound at module level from `require(..)` / `import(..)`.
+/// Names bound from `require(..)` / `import(..)` at any scope.
 fn collect_required_names(root: Node<'_>, source: &str) -> HashSet<String> {
-    let mut names = Vec::new();
-    let mut cursor = root.walk();
-    for stmt in root.named_children(&mut cursor) {
-        if !matches!(stmt.kind(), "lexical_declaration" | "variable_declaration") {
-            continue;
+    fn walk(node: Node<'_>, source: &str, names: &mut Vec<String>) {
+        if node.kind() == "variable_declarator"
+            && is_require_or_import_init(node, source)
+            && let Some(name) = node.child_by_field_name("name")
+        {
+            collect_binding_names(name, source, names);
         }
-        let mut decl_cursor = stmt.walk();
-        for d in stmt.named_children(&mut decl_cursor) {
-            if d.kind() == "variable_declarator"
-                && is_require_or_import_init(d, source)
-                && let Some(name) = d.child_by_field_name("name")
-            {
-                collect_binding_names(name, source, &mut names);
-            }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk(child, source, names);
         }
     }
+    let mut names = Vec::new();
+    walk(root, source, &mut names);
     names.into_iter().collect()
+}
+
+/// Names a bare call in this file can bind without an import: every
+/// function/class/enum/namespace declaration (hoisted, so nested ones
+/// count) and each module-level variable declaration.
+fn collect_declared_names(root: Node<'_>, source: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        let decl = match stmt.kind() {
+            "export_statement" => stmt.child_by_field_name("declaration"),
+            _ => Some(stmt),
+        };
+        if let Some(decl) = decl {
+            declared_names(decl, source, &mut names);
+        }
+    }
+    fn walk(node: Node<'_>, source: &str, names: &mut HashSet<String>) {
+        if matches!(
+            node.kind(),
+            "function_declaration"
+                | "generator_function_declaration"
+                | "function_signature"
+                | "class_declaration"
+                | "abstract_class_declaration"
+                | "enum_declaration"
+                | "internal_module"
+                | "module"
+        ) {
+            declared_names(node, source, names);
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk(child, source, names);
+        }
+    }
+    walk(root, source, &mut names);
+    names
+}
+
+/// ES-module syntax: a top-level `import` or `export` statement.
+fn is_esm_file(root: Node<'_>) -> bool {
+    let mut cursor = root.walk();
+    root.named_children(&mut cursor)
+        .any(|n| matches!(n.kind(), "import_statement" | "export_statement"))
+}
+
+/// Make the names bound in `ctx`'s current scope visible as locals to the
+/// function scope about to replace it.
+fn enter_scope(ctx: &mut Context) {
+    let mut outer = (*ctx.outer_locals).clone();
+    outer.extend(ctx.local_types.keys().cloned());
+    ctx.outer_locals = Rc::new(outer);
+}
+
+/// A bare call target bound by a parameter, destructuring or `let`/`const`
+/// of this or an enclosing function scope: a local, never another module's
+/// export (issue #232). `require`-bound names are imports; a module-level
+/// declaration of the same name is the file's own symbol and still
+/// resolves through the exact tier.
+fn is_local_non_import_binding(ctx: &Context, name: &str) -> bool {
+    !ctx.required_names.contains(name)
+        && (ctx.local_types.contains_key(name)
+            || (ctx.outer_locals.contains(name) && !ctx.declared_names.contains(name)))
 }
 
 /// Placeholder import candidate (`{specifier}\0{member}`) for a call whose
@@ -4168,6 +4252,7 @@ fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<C
     next_ctx.current_scope = owner.clone();
     next_ctx.fn_owner = None;
     if !is_lambda_node(kind) {
+        enter_scope(&mut next_ctx);
         next_ctx.local_types = Rc::new(infer_local_types(node, source));
     }
     Some(next_ctx)
@@ -4241,6 +4326,7 @@ fn handle_function_named(
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
+        enter_scope(&mut next_ctx);
         next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
@@ -4307,6 +4393,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
+        enter_scope(&mut next_ctx);
         next_ctx.local_types = Rc::new(infer_local_types(node, source));
         walk_node(body, &next_ctx, source, output);
     }
@@ -4978,11 +5065,15 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         if is_unshadowed_global_callable(&name, ctx) {
             return ReceiverType::Unresolved;
         }
-        // Bare `name()` bound by a parameter/destructuring/`let`: a local,
-        // never a same-named export of some other module (issue #232).
-        // Unbound names still fall through (classic scripts share globals
-        // across files), as do `require`-bound ones (really imports).
-        if ctx.local_types.contains_key(&name) && !ctx.required_names.contains(&name) {
+        // A local, or (in an ES module) a name that is not imported,
+        // `require`-bound or declared here, cannot be another module's
+        // export (issue #232). Classic scripts share globals across files.
+        if is_local_non_import_binding(ctx, &name)
+            || (ctx.is_esm
+                && !ctx.import_bindings.contains_key(&name)
+                && !ctx.required_names.contains(&name)
+                && !ctx.declared_names.contains(&name))
+        {
             return ReceiverType::Unresolved;
         }
     }

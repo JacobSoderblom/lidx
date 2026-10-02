@@ -16,10 +16,13 @@ fn targets(caller: &str, snap: &BTreeSet<EdgeKey>) -> Vec<String> {
 }
 
 /// Indexes `defs` plus `src/caller.ts` calling each of `names` bare, and
-/// returns the resolved targets of `src/caller.run`.
+/// returns the resolved targets of `src/caller.run`. The caller is a classic
+/// script (no `import`/`export`): in an ES module an unbound bare name cannot
+/// reach another file's export at all (issue #232), see
+/// `esm_caller_does_not_reach_unimported_exports`.
 fn resolved_from_caller(defs: &[(&str, &str)], names: &[&str]) -> Vec<String> {
     let calls: String = names.iter().map(|n| format!("  {n}();\n")).collect();
-    let caller = format!("export function run() {{\n{calls}}}\n");
+    let caller = format!("function run() {{\n{calls}}}\n");
     let mut files = defs.to_vec();
     files.push(("src/caller.ts", caller.as_str()));
     let (_tmp, snap) = common::index_files(&files);
@@ -69,6 +72,24 @@ fn esm_exports_resolve_cross_file() {
             "src/def.dflt",
             "src/obj.inObj",
         ],
+    );
+}
+
+#[test]
+fn esm_caller_does_not_reach_unimported_exports() {
+    let (_tmp, snap) = common::index_files(&[
+        ("src/esm.ts", "export function esmHelper() {}\n"),
+        (
+            "src/caller.ts",
+            "export function run() {\n  esmHelper();\n}\n",
+        ),
+    ]);
+    assert!(
+        !targets("src/caller.run", &snap)
+            .iter()
+            .any(|t| t == "src/esm.esmHelper"),
+        "{:?}",
+        targets("src/caller.run", &snap)
     );
 }
 
