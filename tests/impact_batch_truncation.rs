@@ -95,42 +95,37 @@ fn oversized_batch_entry_is_shrunk_not_dropped() {
 #[test]
 fn empty_results_never_coexist_with_nonzero_total_affected() {
     let r = repo(400);
+    let mut hit_overflow = false;
     for params in [
         r#"{"qualnames":["mod.hub"],"direction":"upstream"}"#,
         r#"{"qualnames":["mod.hub","mod.other"],"direction":"upstream"}"#,
         r#"{"qualnames":["mod.hub"],"direction":"upstream","max_response_bytes":50}"#,
+        r#"{"qualnames":["mod.hub","mod.other"],"direction":"upstream","max_response_bytes":50}"#,
     ] {
         let result = call(&r, "analyze_impact", params);
         let d = data(&result);
-        if d["total_affected"].as_u64().unwrap_or(0) > 0
-            && d["results"].as_array().unwrap().is_empty()
-        {
-            // Only acceptable with an explicit signal.
-            assert!(
-                d["truncation_note"].is_string() || result["truncated"] == true,
-                "{params}: {result}"
-            );
-            assert!(d["truncation_note"].is_string(), "{params}: {result}");
-        }
+        hit_overflow |= result["truncated"] == true;
+        assert!(d["total_affected"].as_u64().unwrap() > 0, "{params}");
+        assert!(
+            !d["results"].as_array().unwrap().is_empty(),
+            "{params}: {result}"
+        );
     }
-    let default = call(
-        &r,
-        "analyze_impact",
-        r#"{"qualnames":["mod.hub"],"direction":"upstream"}"#,
-    );
-    assert!(!data(&default)["results"].as_array().unwrap().is_empty());
+    assert!(hit_overflow, "setup must actually overflow the budget");
 }
 
 #[test]
-fn tiny_budget_reports_explicit_note() {
+fn tiny_budget_keeps_an_emptied_entry_with_note() {
     let r = repo(50);
     let result = call(
         &r,
         "analyze_impact",
         r#"{"qualnames":["mod.hub"],"direction":"upstream","max_response_bytes":50}"#,
     );
-    let d = data(&result);
-    assert!(d["truncation_note"].is_string(), "{result}");
+    let entry = &data(&result)["results"][0];
+    assert!(entry["truncation_note"].is_string(), "{result}");
+    assert_eq!(affected_len(entry), 0);
+    assert!(entry["affected_total_available"].as_u64().unwrap() >= 50);
 }
 
 #[test]
@@ -165,7 +160,17 @@ fn batch_and_single_agree_when_budget_is_large() {
 #[test]
 fn explicit_limit_is_an_upper_bound_per_seed() {
     let r = repo(120);
-    for quals in [r#"["mod.hub"]"#, r#"["mod.hub","mod.other"]"#] {
+    let ten = serde_json::to_string(
+        &(0..10)
+            .map(|i| if i % 2 == 0 { "mod.hub" } else { "mod.other" })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    for quals in [
+        r#"["mod.hub"]"#.to_string(),
+        r#"["mod.hub","mod.other"]"#.to_string(),
+        ten,
+    ] {
         let result = call(
             &r,
             "analyze_impact",
