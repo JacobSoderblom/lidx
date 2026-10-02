@@ -1438,7 +1438,10 @@ impl<'c> Resolver<'c> {
             // call happened to create it, defeating "who calls X?". Stay
             // unresolved instead, as before #80 -- see
             // `UnresolvedReason::External`'s doc.
-            None if receiver_type == Some("") => {
+            // C# is the exception: an extension method's receiver may be of
+            // a type the extractor cannot name (`builder.Services.X()`), so
+            // an untyped receiver gets the same reason as a typed one.
+            None if receiver_type == Some("") && r.source_lang != "csharp" => {
                 Ok(Resolution::Unresolved(UnresolvedReason::External))
             }
             None if self.saw_ambiguous => Ok(Resolution::Unresolved(UnresolvedReason::Ambiguous)),

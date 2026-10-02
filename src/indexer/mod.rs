@@ -30,7 +30,7 @@ pub fn validate_repo_root(repo: &Path) -> Result<PathBuf> {
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 11;
+pub const EXTRACTOR_VERSION: i64 = 12;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -306,6 +306,7 @@ impl Indexer {
         self.begin_extraction_run(&changed_rels, graph_version, true)?;
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
         all_paths.extend(stale_files.iter().map(|rel| self.repo_root.join(rel)));
+        self.prescan_files(all_paths.iter().cloned());
         for path in &all_paths {
             let rel_path = match crate::util::normalize_rel_path(&self.repo_root, path) {
                 Ok(value) => value,
@@ -557,6 +558,18 @@ impl Indexer {
         );
         // A forced re-extraction visits every file, so it needs no seed.
         self.begin_extraction_run(&changed_paths, previous_graph_version, !force_reextract)?;
+        let to_extract: Vec<PathBuf> = scanned
+            .iter()
+            .filter(|f| {
+                force_reextract
+                    || stale_files.contains(&f.rel_path)
+                    || existing_map
+                        .get(&f.rel_path)
+                        .is_none_or(|e| e.hash != f.hash)
+            })
+            .map(|f| f.abs_path.clone())
+            .collect();
+        self.prescan_files(to_extract.into_iter());
 
         let mut seen = HashSet::new();
         let mut stats = IndexStats {
@@ -1094,6 +1107,26 @@ impl Indexer {
             extractor.seed_extension_methods(&methods);
         }
         Ok(())
+    }
+
+    /// Let every extractor register cross-file declarations from `rel_paths`
+    /// before any of them is extracted (see `LanguageExtractor::prescan`).
+    fn prescan_files(&mut self, rel_paths: impl Iterator<Item = PathBuf>) {
+        for path in rel_paths {
+            let Ok(rel) = crate::util::normalize_rel_path(&self.repo_root, &path) else {
+                continue;
+            };
+            if !cs_globals::is_csharp_path(&rel) {
+                continue;
+            }
+            let Ok(source) = crate::util::read_to_string(&path) else {
+                continue;
+            };
+            if let Some(extractor) = self.extractors.get_mut("csharp") {
+                let module_name = extractor.module_name_from_rel_path(&rel);
+                extractor.prescan(&source, &module_name);
+            }
+        }
     }
 
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {

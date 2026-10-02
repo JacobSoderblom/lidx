@@ -552,6 +552,11 @@ pub trait LanguageExtractor {
     /// registry never depends on which files happen to be extracted now.
     /// Default: none.
     fn seed_extension_methods(&mut self, _methods: &[ExtensionMethodRow]) {}
+    /// Called for every file this run will extract, before any is: lets an
+    /// extractor register cross-file declarations (C# extension methods) so
+    /// a call site never depends on its declaring file being extracted
+    /// first. Default: none.
+    fn prescan(&mut self, _source: &str, _module_name: &str) {}
     fn resolve_imports(
         &self,
         _repo_root: &Path,

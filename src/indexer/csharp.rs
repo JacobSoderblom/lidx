@@ -374,6 +374,14 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
         }
     }
 
+    fn prescan(&mut self, source: &str, module_name: &str) {
+        // Only a file that can declare an extension method (`this` parameter
+        // modifier) is worth a parse; the registry fills as a side effect.
+        if source.contains("this ") && source.contains("static") {
+            let _ = self.extract(source, module_name);
+        }
+    }
+
     fn module_name_from_rel_path(&self, rel_path: &str) -> String {
         module_name_from_rel_path(rel_path)
     }
@@ -3517,6 +3525,7 @@ fn resolve_pending_grpc_calls(edges: &mut Vec<EdgeInput>, registry: &GrpcClientF
         let imports = ImportContext {
             namespaces,
             aliases,
+            static_types: Vec::new(),
         };
         let source_qualname = edge.source_qualname.clone().unwrap_or_default();
         edges.extend(build_grpc_call_edges(
@@ -4879,6 +4888,9 @@ struct ImportContext {
     /// the *sole* candidate (an alias can only ever mean one thing, so it
     /// short-circuits the namespace-guessing path entirely).
     aliases: HashMap<String, String>,
+    /// Types named by `using static Type;`: the extension methods they
+    /// declare are in scope without their namespace being imported.
+    static_types: Vec<String>,
 }
 
 impl ImportContext {
@@ -4925,13 +4937,9 @@ fn collect_import_context_rec(node: Node<'_>, source: &str, out: &mut ImportCont
 }
 
 fn record_using_directive(node: Node<'_>, source: &str, out: &mut ImportContext) {
-    // `using static Type;` brings a *type's* members into scope directly
-    // (so a bare `Method()` — not `Type.Method()` — could resolve through
-    // it), which is a different shape than everything else this module
-    // handles and isn't covered by the issue this exists to fix.
-    // ponytail: not handled — see module doc. Upgrade path: track the
-    // named type as an implicit extra receiver-free candidate, separate
-    // from `namespaces`/`aliases` (both of which qualify a *receiver*).
+    // `using static Type;` brings a *type's* members into scope directly.
+    // Only extension-method scoping consumes it (`static_types`); a bare
+    // `Method()` through it stays unhandled.
     let text = node_text(node, source);
     let after_using = text
         .trim()
@@ -4941,7 +4949,11 @@ fn record_using_directive(node: Node<'_>, source: &str, out: &mut ImportContext)
         .strip_prefix("using")
         .map(str::trim)
         .unwrap_or("");
-    if after_using.starts_with("static") {
+    if let Some(ty) = after_using.strip_prefix("static") {
+        let ty = ty.trim().trim_end_matches(';').trim();
+        if !ty.is_empty() {
+            out.static_types.push(ty.to_string());
+        }
         return;
     }
 
@@ -5318,7 +5330,11 @@ fn extension_method_candidates(
     let mut seen = std::collections::HashSet::new();
     let mut candidates = Vec::new();
     for entry in entries {
-        if !namespace_in_scope(&entry.namespace, ctx) {
+        let static_import = entry
+            .qualname
+            .rsplit_once('.')
+            .is_some_and(|(ty, _)| ctx.imports.static_types.iter().any(|t| t == ty));
+        if !static_import && !namespace_in_scope(&entry.namespace, ctx) {
             continue;
         }
         if let (
@@ -6075,6 +6091,7 @@ fn grpc_edges(
     let imports = ImportContext {
         namespaces: scope.namespaces.clone(),
         aliases: scope.aliases.clone(),
+        static_types: Vec::new(),
     };
     build_grpc_call_edges(&[client], &rpc, "", &None, 0, 0, &imports)
         .into_iter()
