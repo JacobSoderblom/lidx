@@ -463,7 +463,10 @@ fn fuzzy_score(query_tokens: &[String], query_last: &str, sym: &Symbol) -> Optio
 /// overlap and Levenshtein distance on the last name segment.
 fn fuzzy_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
     let mut query_tokens = name_tokens(query);
-    query_tokens.truncate(FUZZY_MAX_QUERY_TOKENS);
+    // Drop leading tokens, not trailing: the final segment names the symbol,
+    // while a path prefix is the least identifying part (#245).
+    let excess = query_tokens.len().saturating_sub(FUZZY_MAX_QUERY_TOKENS);
+    query_tokens.drain(..excess);
     if query_tokens.is_empty() {
         return Vec::new();
     }
