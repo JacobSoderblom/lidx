@@ -2,24 +2,6 @@ use serde_json::Value;
 
 use super::{RpcError, RpcResponse};
 
-/// Methods whose params already use `max_bytes` for their own internal
-/// content budget (source snippet sizing, section allocation, etc.), with
-/// their own truncation bookkeeping (e.g. explain_symbol's budget.truncated).
-/// For these, `max_bytes` must NOT also be read here as the outer
-/// response-size cap: that would silently apply the same number a second
-/// time via generic array-slicing, on top of (and uncoordinated with) the
-/// method's own budget -- reintroducing the exact "truncation the caller
-/// can't see" bug this module exists to close, just one layer out.
-const METHODS_WITH_OWN_MAX_BYTES: &[&str] = &[
-    "repo_map",
-    "analyze_diff",
-    "orient",
-    "gather_context",
-    "explain_symbol",
-    "trace_flow",
-    "read_symbol",
-];
-
 /// Param names the dispatcher reads for every method (see
 /// `extract_max_response_bytes`); they are never "unknown" even when a
 /// method's own params struct has no field for them.
@@ -30,7 +12,7 @@ pub(super) const RESPONSE_BUDGET_PARAMS: [&str; 3] =
 /// `max_response_bytes` (preferred, most explicit), `max_bytes` (alias --
 /// this is what fixes analyze_impact silently ignoring `max_bytes`, since it
 /// has no params field of its own for it; skipped for methods in
-/// `METHODS_WITH_OWN_MAX_BYTES`, see there), then `max_tokens` (converted at
+/// `Sizing::SelfBudgeting`: their own `max_bytes` is a content budget), then `max_tokens` (converted at
 /// ~4 bytes/token).
 pub(super) fn extract_max_response_bytes(
     method: &str,
@@ -41,7 +23,7 @@ pub(super) fn extract_max_response_bytes(
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
         .or_else(|| {
-            if METHODS_WITH_OWN_MAX_BYTES.contains(&method) {
+            if super::is_self_budgeting(method) {
                 None
             } else {
                 params
@@ -168,18 +150,26 @@ fn truncate_inner(
             };
 
             // Room for the `<key>_total_available` counts added below.
-            let reserve: usize = if nested {
+            let reports_counts = nested || array_keys.len() > 1;
+            let reserve: usize = if reports_counts {
                 // `"<key>_total_available":<up to 20 digits>,`
                 array_keys.iter().map(|k| k.len() + 16 + 4 + 20).sum()
             } else {
                 0
             };
             let available = max_bytes.saturating_sub(overhead + reserve);
-            let per_array = available / array_keys.len().max(1);
+            // Each array's share is proportional to its serialized size, so a
+            // result that is mostly one array keeps most of it (#221).
+            let sizes: Vec<usize> = array_keys
+                .iter()
+                .map(|k| serde_json::to_string(&map[k]).unwrap_or_default().len())
+                .collect();
+            let total_size: usize = sizes.iter().sum::<usize>().max(1);
 
             let mut did_truncate = false;
             let mut dropped_all = false;
-            for key in &array_keys {
+            for (key, size) in array_keys.iter().zip(&sizes) {
+                let per_array = (available as u128 * *size as u128 / total_size as u128) as usize;
                 if let Some(serde_json::Value::Array(arr)) = map.remove(key) {
                     let original_len = arr.len();
                     let (truncated_arr, was_truncated, dropped_from) =
@@ -190,7 +180,7 @@ fn truncate_inner(
                         total_available = dropped_from;
                     }
                     if dropped_from.is_some() {
-                        if nested {
+                        if reports_counts {
                             // Keep a count recorded by an earlier pass over this object.
                             map.entry(format!("{key}_total_available"))
                                 .or_insert(serde_json::json!(original_len));
@@ -202,7 +192,12 @@ fn truncate_inner(
                     map.insert(key.clone(), truncated_arr);
                 }
             }
-            if dropped_all {
+            // Only when nothing at all survived: a small array emptied by the
+            // proportional split next to a well-kept one is not "too small".
+            let nothing_kept = array_keys
+                .iter()
+                .all(|k| map[k].as_array().is_some_and(|a| a.is_empty()));
+            if dropped_all && nothing_kept {
                 map.insert(
                     "truncation_note".to_string(),
                     serde_json::json!("max_response_bytes too small to fit even one entry; raise it or narrow the query"),
@@ -402,6 +397,29 @@ mod tests {
         // Result serialized should fit within budget
         let size = serde_json::to_string(&result).unwrap().len();
         assert!(size <= 50, "truncated result {} > budget 50", size);
+    }
+
+    #[test]
+    fn truncate_response_splits_budget_by_serialized_size_not_equally() {
+        // #221: one array holds ~95% of the bytes, two are tiny. An equal
+        // split gave the big one a third of the budget.
+        let big: Vec<_> = (0..400)
+            .map(|i| json!({"id": i, "pad": "xxxxxxxx"}))
+            .collect();
+        let val =
+            json!({"affected": big, "seeds": [{"id": 1}], "next_hops": [{"m": "a"}, {"m": "b"}]});
+        let big_size = serde_json::to_string(&val["affected"]).unwrap().len();
+        let budget = big_size / 2;
+        let (result, truncated, total) = truncate_response(val, budget);
+        assert!(truncated);
+        assert_eq!(total, None, "multi-array: no single total");
+        let kept = result["affected"].as_array().unwrap().len();
+        // Proportional: roughly half of the big array survives (equal split: ~1/6).
+        assert!((170..=210).contains(&kept), "kept {kept} of 400");
+        assert_eq!(result["affected_total_available"], json!(400));
+        let n = serde_json::to_string(&result).unwrap().len();
+        assert!(n <= budget, "{n} > {budget}");
+        assert!(result.get("truncation_note").is_none());
     }
 
     #[test]

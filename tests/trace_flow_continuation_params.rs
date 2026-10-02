@@ -62,9 +62,9 @@ fn continuation_hop_echoes_every_original_param() {
         "exclude_resolution_kinds": ["bare_name"],
         "languages": ["python"],
         "kinds": ["CALLS"],
-        // Reached at hop 1, so the (byte-truncated) path trace is non-empty
-        // and has something to continue from.
-        "end_qualname": "pkg.core.make_greeter",
+        // No `end_qualname`: the fixture's only end-reaching path is a single
+        // hop, which now fits the budget and is (correctly) not reported
+        // truncated -- #221.
     });
 
     let result = call_and_get_result(&repo_root, &db_path, "trace_flow", &original.to_string());

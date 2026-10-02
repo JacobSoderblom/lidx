@@ -527,6 +527,111 @@ impl App {
     }
 }
 
+/// Who is the authority on a method's response size.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sizing {
+    /// Generic dispatcher cap (`DEFAULT_MAX_RESPONSE_BYTES`) applies.
+    Capped,
+    /// Large by design: capped only when the caller asks.
+    Uncapped,
+    /// Budgets and paginates its own output (`max_bytes`, continuation
+    /// next_hops); the generic pass never touches it.
+    SelfBudgeting,
+}
+
+/// One dispatchable method: its handler and its sizing contract, declared in
+/// one place so the two cannot drift apart.
+struct MethodSpec {
+    name: &'static str,
+    sizing: Sizing,
+    run: fn(&mut Indexer, Value) -> Result<Value>,
+}
+
+const METHOD_SPECS: &[MethodSpec] = &[
+    MethodSpec {
+        name: "search",
+        sizing: Sizing::Capped,
+        run: handlers::handle_search_rg,
+    },
+    MethodSpec {
+        name: "outline",
+        sizing: Sizing::Capped,
+        run: reading::handle_outline,
+    },
+    MethodSpec {
+        name: "read_symbol",
+        sizing: Sizing::SelfBudgeting,
+        run: reading::handle_read_symbol,
+    },
+    MethodSpec {
+        name: "explain_symbol",
+        sizing: Sizing::SelfBudgeting,
+        run: handlers::handle_explain_symbol,
+    },
+    MethodSpec {
+        name: "trace_flow",
+        sizing: Sizing::SelfBudgeting,
+        run: handlers::handle_trace_flow,
+    },
+    MethodSpec {
+        name: "analyze_impact",
+        sizing: Sizing::Capped,
+        run: handlers::handle_analyze_impact,
+    },
+    MethodSpec {
+        name: "analyze_diff",
+        sizing: Sizing::SelfBudgeting,
+        run: handlers::handle_analyze_diff,
+    },
+    MethodSpec {
+        name: "gather_context",
+        sizing: Sizing::SelfBudgeting,
+        run: handlers::handle_gather_context,
+    },
+    MethodSpec {
+        name: "orient",
+        sizing: Sizing::SelfBudgeting,
+        run: handlers::handle_orient,
+    },
+    MethodSpec {
+        name: "onboard",
+        sizing: Sizing::Uncapped,
+        run: handlers::handle_onboard,
+    },
+    MethodSpec {
+        name: "reindex",
+        sizing: Sizing::Capped,
+        run: handlers::handle_reindex,
+    },
+    MethodSpec {
+        name: "top_complexity",
+        sizing: Sizing::Capped,
+        run: handlers::handle_top_complexity,
+    },
+    MethodSpec {
+        name: "context",
+        sizing: Sizing::Uncapped,
+        run: handlers::handle_context,
+    },
+    MethodSpec {
+        name: "repo_map",
+        sizing: Sizing::SelfBudgeting,
+        run: handlers::handle_repo_map,
+    },
+    MethodSpec {
+        name: "dead_symbols",
+        sizing: Sizing::Capped,
+        run: handlers::handle_dead_symbols,
+    },
+];
+
+/// Whether `method` sizes its own output (see `Sizing::SelfBudgeting`).
+pub fn is_self_budgeting(method: &str) -> bool {
+    METHOD_SPECS
+        .iter()
+        .any(|s| s.name == method && s.sizing == Sizing::SelfBudgeting)
+}
+
 /// Default response size cap (30KB ≈ 7,500 tokens).
 /// Applied when caller doesn't specify max_response_bytes/max_tokens.
 /// Methods that manage their own budgets or intentionally return large content are exempt.
@@ -680,26 +785,19 @@ pub fn handle_method_lenient(
 fn dispatch_method(indexer: &mut Indexer, method: &str, params: Value) -> Result<Value> {
     let start = Instant::now();
     let max_response_bytes = format::extract_max_response_bytes(method, &params);
-    let value = match method {
-        "search" => handlers::handle_search_rg(indexer, params)?,
-        "outline" => reading::handle_outline(indexer, params)?,
-        "read_symbol" => reading::handle_read_symbol(indexer, params)?,
-        "explain_symbol" => handlers::handle_explain_symbol(indexer, params)?,
-        "trace_flow" => handlers::handle_trace_flow(indexer, params)?,
-        "analyze_impact" => handlers::handle_analyze_impact(indexer, params)?,
-        "analyze_diff" => handlers::handle_analyze_diff(indexer, params)?,
-        "gather_context" => handlers::handle_gather_context(indexer, params)?,
-        "orient" => handlers::handle_orient(indexer, params)?,
-        "onboard" => handlers::handle_onboard(indexer, params)?,
-        "reindex" => handlers::handle_reindex(indexer, params)?,
-        "top_complexity" => handlers::handle_top_complexity(indexer, params)?,
-        "context" => handlers::handle_context(indexer, params)?,
-        "repo_map" => handlers::handle_repo_map(indexer, params)?,
-        "dead_symbols" => handlers::handle_dead_symbols(indexer, params)?,
-        other => {
-            return Err(anyhow::anyhow!("unknown method: {other}"));
-        }
-    };
+    let spec = METHOD_SPECS
+        .iter()
+        .find(|s| s.name == method)
+        .ok_or_else(|| anyhow::anyhow!("unknown method: {method}"))?;
+    let mut params = params;
+    // A self-budgeting method sizes itself, so an explicit response cap
+    // becomes its own `max_bytes` instead of a second cut after the fact.
+    if spec.sizing == Sizing::SelfBudgeting
+        && let (Some(cap), Some(obj)) = (max_response_bytes, params.as_object_mut())
+    {
+        obj.entry("max_bytes").or_insert(json!(cap));
+    }
+    let value = (spec.run)(indexer, params)?;
     let value = hoist_symbol_run_metadata(value);
 
     let elapsed = start.elapsed();
@@ -707,39 +805,35 @@ fn dispatch_method(indexer: &mut Indexer, method: &str, params: Value) -> Result
         eprintln!("lidx: Slow query: {} took {:?}", method, elapsed);
     }
 
-    let exempt = matches!(
-        method,
-        "gather_context" | "onboard" | "orient" | "context" | "repo_map" | "read_symbol"
-    );
-    let effective_max = max_response_bytes.or({
-        if exempt {
-            None
-        } else {
-            Some(DEFAULT_MAX_RESPONSE_BYTES)
-        }
-    });
-    if let Some(max_bytes) = effective_max {
-        let (truncated_value, was_truncated, total_available) =
-            format::truncate_response(value, max_bytes);
-        if was_truncated {
-            let mut response = json!({
-                "data": truncated_value,
-                "truncated": true,
-                "max_response_bytes": max_bytes,
-            });
-            if let Some(total) = total_available {
-                response
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("total_available".to_string(), json!(total));
-            }
-            Ok(response)
-        } else {
-            Ok(truncated_value)
-        }
-    } else {
-        Ok(value)
+    let effective_max = match spec.sizing {
+        Sizing::SelfBudgeting => None,
+        Sizing::Uncapped => max_response_bytes,
+        Sizing::Capped => Some(max_response_bytes.unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)),
+    };
+    let Some(max_bytes) = effective_max else {
+        return Ok(value);
+    };
+    let (mut value, was_truncated, total_available) = format::truncate_response(value, max_bytes);
+    if !was_truncated {
+        return Ok(value);
     }
+    // Truncation is reported next to the payload, never by relocating it
+    // (#221): `.result.<field>` reads the same whether or not it fired. Only
+    // a bare array has nowhere to carry the fields, so it is wrapped.
+    let mut report = serde_json::Map::new();
+    report.insert("truncated".into(), json!(true));
+    report.insert("max_response_bytes".into(), json!(max_bytes));
+    if let Some(total) = total_available {
+        report.insert("total_available".into(), json!(total));
+    }
+    match value.as_object_mut() {
+        Some(obj) => obj.extend(report),
+        None => {
+            report.insert("data".into(), value);
+            value = Value::Object(report);
+        }
+    }
+    Ok(value)
 }
 
 /// `graph_version`/`commit_sha` are properties of the indexing run, not of

@@ -284,8 +284,12 @@ fn disclosure_survives_truncation_envelope() {
                 .to_string(),
         );
         let result = &raw["result"];
-        assert_eq!(result["truncated"], true, "{method}: not wrapped: {result}");
-        let data = &result["data"];
+        // #221: no `data` wrap; trace_flow budgets itself, analyze_impact is
+        // cut by the dispatcher -- disclosure sits at the same path either way.
+        if method == "analyze_impact" {
+            assert_eq!(result["truncated"], true, "{method}: not cut: {result}");
+        }
+        let data = result;
         for key in DISCLOSURE_KEYS {
             assert!(data.get(key).is_some(), "{method}: {key} lost: {data}");
         }
