@@ -620,8 +620,7 @@ pub fn http_method(edge: &Edge) -> Option<String> {
     if !edge.kind.starts_with("HTTP_") {
         return None;
     }
-    let detail: serde_json::Value = serde_json::from_str(edge.detail.as_deref()?).ok()?;
-    detail["method"].as_str().map(str::to_string)
+    crate::indexer::http::detail_method(edge.detail.as_deref())
 }
 
 /// Service identity for a *code* path, used for HTTP code-vs-code narrowing.

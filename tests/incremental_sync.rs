@@ -2367,3 +2367,84 @@ fn overlap_invariant_detects_a_bound_reference_that_is_also_unresolved() {
     assert_eq!(inserted, 1);
     assert_no_edge_and_unresolved_overlap(&indexer);
 }
+
+const WRAPPER_TSCONFIG: &str = r#"{"compilerOptions": {"paths": {"@/*": ["./*"]}}}"#;
+const WRAPPER_V1: &str = "export function req(url: string) { return fetch(url); }\n\
+    export const api = { get: (url: string) => req(url) };\n";
+const WRAPPER_CALLER: &str = "import { api } from \"@/lib/w\";\n\
+    export function list() { return api.get(\"/api/t\"); }\n";
+
+/// (method) of every HTTP_CALL edge in the current graph version.
+fn http_call_methods(indexer: &Indexer) -> Vec<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT detail FROM edges WHERE graph_version = ? AND kind = 'HTTP_CALL'")
+        .unwrap();
+    stmt.query_map(rusqlite::params![gv], |r| {
+        let d: serde_json::Value = serde_json::from_str(&r.get::<_, String>(0)?).unwrap();
+        Ok(d["method"].as_str().unwrap().to_string())
+    })
+    .unwrap()
+    .collect::<rusqlite::Result<_>>()
+    .unwrap()
+}
+
+/// Edit only the wrapper file `lib/w.ts` to `v2`, sync it alone, and require
+/// the importing call site's HTTP_CALL edges to match a fresh reindex.
+fn wrapper_edit_matches_fresh(label: &str, v2: &str) -> (Indexer, Vec<String>) {
+    let files = [
+        ("tsconfig.json", WRAPPER_TSCONFIG),
+        ("lib/w.ts", WRAPPER_V1),
+        ("q/c.ts", WRAPPER_CALLER),
+    ];
+    let (tmp, repo_root, mut indexer) = indexed_tree(label, &files);
+    assert_eq!(http_call_methods(&indexer), ["GET"], "precondition");
+    common::write_files(&repo_root, &[("lib/w.ts", v2)]);
+    indexer.sync_rel_paths(&["lib/w.ts".to_string()]).unwrap();
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("tsconfig.json", WRAPPER_TSCONFIG),
+        ("lib/w.ts", v2),
+        ("q/c.ts", WRAPPER_CALLER),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+    drop(tmp);
+    let methods = http_call_methods(&indexer);
+    (indexer, methods)
+}
+
+/// A wrapper that stops calling `fetch` is no longer an HTTP wrapper: its
+/// importers' HTTP_CALL edges must go.
+#[test]
+fn incremental_wrapper_loses_fetch_drops_importer_http_call() {
+    let (_indexer, methods) = wrapper_edit_matches_fresh(
+        "wrapper-no-fetch",
+        "export function req(url: string) { return url; }\n\
+         export const api = { get: (url: string) => req(url) };\n",
+    );
+    assert!(methods.is_empty(), "stale HTTP_CALL: {methods:?}");
+}
+
+/// Renaming the wrapper's method orphans the importer's `api.get(..)` call.
+#[test]
+fn incremental_wrapper_method_rename_drops_importer_http_call() {
+    let (_indexer, methods) = wrapper_edit_matches_fresh(
+        "wrapper-rename",
+        "export function req(url: string) { return fetch(url); }\n\
+         export const api = { fetchAll: (url: string) => req(url) };\n",
+    );
+    assert!(methods.is_empty(), "stale HTTP_CALL: {methods:?}");
+}
+
+/// Changing the wrapper's HTTP method changes the importer's HTTP_CALL.
+#[test]
+fn incremental_wrapper_method_change_updates_importer_http_call() {
+    let (_indexer, methods) = wrapper_edit_matches_fresh(
+        "wrapper-method",
+        "export function req(url: string, init?: RequestInit) { return fetch(url, init); }\n\
+         export const api = { get: (url: string) => req(url, { method: \"POST\" }) };\n",
+    );
+    assert_eq!(methods, ["POST"]);
+}
