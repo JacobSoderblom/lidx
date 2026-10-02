@@ -104,6 +104,10 @@ struct Context {
     fn_owner: Option<String>,
     /// This file's top-level `import` bindings — see `collect_import_bindings`.
     import_bindings: Rc<ImportBindings>,
+    /// Module-level names bound from `require(..)` / `import(..)`
+    /// (`const { f } = require('./x')`): imports, not locals, for call
+    /// resolution — see `collect_required_names`.
+    required_names: Rc<HashSet<String>>,
 }
 
 /// Local name bound by a top-level `import` → (module specifier, imported
@@ -1246,6 +1250,7 @@ fn extract_with_parser(
         class_attr_types: Rc::new(HashMap::new()),
         fn_owner: None,
         import_bindings: Rc::new(collect_import_bindings(root, source)),
+        required_names: Rc::new(collect_required_names(root, source)),
     };
     walk_node(root, &ctx, source, &mut output);
     dedup_namespace_symbols(&mut output);
@@ -2346,6 +2351,27 @@ fn collect_import_bindings(root: Node<'_>, source: &str) -> ImportBindings {
         }
     }
     bindings
+}
+
+/// Names bound at module level from `require(..)` / `import(..)`.
+fn collect_required_names(root: Node<'_>, source: &str) -> HashSet<String> {
+    let mut names = Vec::new();
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        if !matches!(stmt.kind(), "lexical_declaration" | "variable_declaration") {
+            continue;
+        }
+        let mut decl_cursor = stmt.walk();
+        for d in stmt.named_children(&mut decl_cursor) {
+            if d.kind() == "variable_declarator"
+                && is_require_or_import_init(d, source)
+                && let Some(name) = d.child_by_field_name("name")
+            {
+                collect_binding_names(name, source, &mut names);
+            }
+        }
+    }
+    names.into_iter().collect()
 }
 
 /// Placeholder import candidate (`{specifier}\0{member}`) for a call whose
@@ -4950,6 +4976,13 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     if function_node.kind() == "identifier" {
         let name = node_text(function_node, source);
         if is_unshadowed_global_callable(&name, ctx) {
+            return ReceiverType::Unresolved;
+        }
+        // Bare `name()` bound by a parameter/destructuring/`let`: a local,
+        // never a same-named export of some other module (issue #232).
+        // Unbound names still fall through (classic scripts share globals
+        // across files), as do `require`-bound ones (really imports).
+        if ctx.local_types.contains_key(&name) && !ctx.required_names.contains(&name) {
             return ReceiverType::Unresolved;
         }
     }
