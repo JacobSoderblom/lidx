@@ -306,9 +306,28 @@ fn markdown_outline(
     Ok(("markdown".to_string(), total_lines, entries))
 }
 
+/// True when `content`'s hash differs from the hash recorded at index time:
+/// the file changed on disk since indexing. Shared by `outline` and
+/// `read_symbol`.
+fn content_is_stale(content: &str, indexed_hash: &str) -> bool {
+    scan::hash_bytes(content.as_bytes()) != indexed_hash
+}
+
+/// The `reindex` next_hop attached to stale `outline`/`read_symbol` results.
+fn reindex_hop(path: &str) -> Value {
+    json!({
+        "method": "reindex",
+        "params": {},
+        "description": format!(
+            "'{path}' changed on disk since indexing; reindex to refresh symbol spans"
+        ),
+    })
+}
+
 /// (language, total_lines, entries) for an indexed (non-Markdown) `outline`
 /// path: requires a `files` DB row -- checked before touching disk at all --
-/// and entries come from indexed symbols/`CONTAINS` edges.
+/// and entries come from indexed symbols/`CONTAINS` edges. Staleness (disk
+/// content vs. the indexed hash) is judged by the caller, `handle_outline`.
 fn indexed_outline(
     db: &crate::db::Db,
     file_record: crate::db::FileRecord,
@@ -317,7 +336,7 @@ fn indexed_outline(
     graph_version: i64,
     kinds_filter: Option<&HashSet<String>>,
     max_depth: Option<usize>,
-) -> Result<(String, i64, Vec<OutlineEntry>, bool)> {
+) -> Result<(String, i64, Vec<OutlineEntry>)> {
     let content = crate::util::read_to_string(full_path).map_err(|_| {
         anyhow::anyhow!(
             "file '{}' is missing from disk; run 'reindex' to refresh the index",
@@ -326,12 +345,7 @@ fn indexed_outline(
     })?;
     let total_lines = crate::indexer::tree_helpers::line_count(&content);
     let entries = symbol_outline_entries(db, path, graph_version, kinds_filter, max_depth)?;
-
-    // Check if the file is stale: compare current content hash with indexed hash
-    let hash = crate::indexer::scan::hash_bytes(content.as_bytes());
-    let stale = file_record.hash != hash;
-
-    Ok((file_record.language, total_lines, entries, stale))
+    Ok((file_record.language, total_lines, entries))
 }
 
 /// Kinds that wrap content rather than being content: never chosen as the
@@ -421,8 +435,13 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
 
     let full_path = repo_root.join(path);
 
-    let (language, total_lines, entries, stale) = if let Some(file_record) = validated.file {
+    let mut stale = false;
+    let (language, total_lines, entries) = if let Some(file_record) = validated.file {
         let graph_version = indexer.db().current_graph_version()?;
+        // `indexed_outline` already proved the file is readable.
+        if let Ok(content) = crate::util::read_to_string(&full_path) {
+            stale = content_is_stale(&content, &file_record.hash);
+        }
         indexed_outline(
             indexer.db(),
             file_record,
@@ -433,9 +452,7 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
             max_depth,
         )?
     } else {
-        let (language, total_lines, entries) =
-            markdown_outline(&full_path, path, kinds_filter.as_ref(), max_depth)?;
-        (language, total_lines, entries, false)
+        markdown_outline(&full_path, path, kinds_filter.as_ref(), max_depth)?
     };
 
     let mut next_hops = outline_next_hops(
@@ -446,16 +463,8 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
         is_markdown_path(path),
     )?;
 
-    // If the file is stale, add a reindex next_hop
     if stale {
-        next_hops.push(serde_json::json!({
-            "method": "reindex",
-            "params": {},
-            "description": format!(
-                "'{}' changed on disk since indexing; reindex to refresh symbol spans",
-                path
-            ),
-        }));
+        next_hops.push(reindex_hop(path));
     }
 
     let result = OutlineResult {
@@ -672,12 +681,10 @@ fn build_symbol_entry(
     // it) -- build_source_response below reuses this same content instead of
     // reading the file a second time.
     let content = crate::util::read_to_string(&full_path)?;
-    let hash = scan::hash_bytes(content.as_bytes());
-    let indexed_hash = indexer
+    let stale = indexer
         .db()
         .get_file_by_path(&symbol.file_path)?
-        .map(|f| f.hash);
-    let stale = indexed_hash.is_some_and(|indexed| indexed != hash);
+        .is_some_and(|f| content_is_stale(&content, &f.hash));
 
     let mut next_hops: Vec<Value> = Vec::new();
     let mut entry = if skeleton {
@@ -702,14 +709,7 @@ fn build_symbol_entry(
     };
 
     if stale {
-        next_hops.push(json!({
-            "method": "reindex",
-            "params": {},
-            "description": format!(
-                "'{}' changed on disk since indexing; reindex to refresh symbol spans",
-                symbol.file_path
-            ),
-        }));
+        next_hops.push(reindex_hop(&symbol.file_path));
     }
     entry.next_hops = next_hops;
     Ok(entry)

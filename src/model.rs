@@ -211,6 +211,8 @@ pub struct OutlineResult {
     pub language: String,
     pub total_lines: i64,
     pub entries: Vec<OutlineEntry>,
+    /// True when the file changed on disk since indexing, so `entries` line
+    /// spans may be out of date. Omitted when false.
     #[serde(skip_serializing_if = "is_false")]
     pub stale: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
