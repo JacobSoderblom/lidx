@@ -87,6 +87,22 @@ pub fn is_config_uri(s: &str) -> bool {
     s.starts_with("secret://") || s.starts_with("env://")
 }
 
+/// The `__`-delimited section ancestors of an `env://` URI, longest first:
+/// `env://A__B__C` -> `env://A__B`, `env://A`. Empty for any other URI.
+pub fn env_section_prefixes(uri: &str) -> Vec<String> {
+    let Some(name) = uri.strip_prefix("env://") else {
+        return Vec::new();
+    };
+    let mut prefixes: Vec<String> = name
+        .match_indices("__")
+        .map(|(idx, _)| &name[..idx])
+        .filter(|prefix| !prefix.is_empty())
+        .map(|prefix| format!("env://{prefix}"))
+        .collect();
+    prefixes.reverse();
+    prefixes
+}
+
 pub fn build_config_bind_detail(
     options_type: &str,
     wrapper_type: &str,
@@ -383,12 +399,7 @@ impl ConfigScope {
                 }
                 allowed.insert(secret_uri);
                 allowed.insert(var.to_string());
-                let name = &var["env://".len()..];
-                for (idx, _) in name.match_indices("__") {
-                    if idx > 0 {
-                        allowed.insert(format!("env://{}", &name[..idx]));
-                    }
-                }
+                allowed.extend(env_section_prefixes(var));
                 continue;
             }
             let Some(target) = e.target_qualname.as_deref() else {
@@ -679,6 +690,18 @@ fn same_service(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn env_section_prefixes_are_proper_ancestors_longest_first() {
+        assert_eq!(
+            env_section_prefixes("env://A__B__C"),
+            ["env://A__B", "env://A"]
+        );
+        assert!(env_section_prefixes("env://DATABASE").is_empty());
+        assert!(env_section_prefixes("env://__X").is_empty());
+        // `secret://` URIs have no sections.
+        assert!(env_section_prefixes("secret://a__b").is_empty());
+    }
+
     #[test]
     fn normalize_env_var_name_rejects_expression_text() {
         for bad in [
