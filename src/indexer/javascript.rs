@@ -283,6 +283,39 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
     }
 }
 
+/// Rewrites an RPC_IMPL edge's `detail.handler_candidates` import
+/// placeholders into qualnames in the imported file; a placeholder that
+/// does not resolve to a repo file is dropped. `Db::reconcile_rpc_edges`
+/// later picks the candidate that is a function.
+fn resolve_handler_candidates(
+    edge: &mut EdgeInput,
+    rewrite: &mut impl FnMut(&str) -> Option<String>,
+) {
+    let Some(mut detail) = edge
+        .detail
+        .as_deref()
+        .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+    else {
+        return;
+    };
+    let Some(candidates) = detail["handler_candidates"].as_array() else {
+        return;
+    };
+    let resolved: Vec<String> = candidates
+        .iter()
+        .filter_map(|c| c.as_str())
+        .filter_map(|c| {
+            if c.contains(IMPORT_PLACEHOLDER_SEP) {
+                rewrite(c)
+            } else {
+                Some(c.to_string())
+            }
+        })
+        .collect();
+    detail["handler_candidates"] = resolved.into();
+    edge.detail = Some(detail.to_string());
+}
+
 pub fn resolve_import_file_edges(
     repo_root: &Path,
     file_rel_path: &str,
@@ -301,33 +334,27 @@ pub fn resolve_import_file_edges(
     // are chased on disk (`chase_export`), so the candidate names the
     // original declaration rather than the barrel.
     let mut resolved_specs: HashMap<String, Option<String>> = HashMap::new();
+    let mut rewrite = |candidate: &str| -> Option<String> {
+        let (spec, member) = candidate.split_once(IMPORT_PLACEHOLDER_SEP)?;
+        let dst = resolved_specs
+            .entry(spec.to_string())
+            .or_insert_with(|| resolve_import_path(repo_root, file_rel_path, spec))
+            .as_ref()?;
+        let (path, member) =
+            EXPORT_CACHE.with(|c| chase_member(repo_root, dst, member, &mut c.borrow_mut()));
+        Some(format!("{}.{member}", module_name_from_rel_path(&path)))
+    };
     for edge in edges.iter_mut() {
-        let mut impl_source = None;
         for candidate in edge.import_candidates.iter_mut() {
             let Some((spec, member)) = candidate.split_once(IMPORT_PLACEHOLDER_SEP) else {
                 continue;
             };
-            let dst = resolved_specs
-                .entry(spec.to_string())
-                .or_insert_with(|| resolve_import_path(repo_root, file_rel_path, spec));
-            *candidate = match dst {
-                Some(dst) => {
-                    let (path, member) = EXPORT_CACHE
-                        .with(|c| chase_member(repo_root, dst, member, &mut c.borrow_mut()));
-                    let resolved = format!("{}.{member}", module_name_from_rel_path(&path));
-                    impl_source.get_or_insert_with(|| resolved.clone());
-                    resolved
-                }
-                None => format!("{spec}:{}", member.trim_start_matches(DEFAULT_IMPORT_MARK)),
-            };
+            *candidate = rewrite(candidate).unwrap_or_else(|| {
+                format!("{spec}:{}", member.trim_start_matches(DEFAULT_IMPORT_MARK))
+            });
         }
-        // A gRPC handler imported from another file: the candidate is the
-        // handler itself, not a call target (see `grpc_impl_edge`).
-        if edge.kind == proto::RPC_IMPL_KIND && !edge.import_candidates.is_empty() {
-            if let Some(source) = impl_source {
-                edge.source_qualname = Some(source);
-            }
-            edge.import_candidates.clear();
+        if edge.kind == proto::RPC_IMPL_KIND {
+            resolve_handler_candidates(edge, &mut rewrite);
         }
     }
     let mut resolved = Vec::new();
@@ -2666,11 +2693,8 @@ fn grpc_impl_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput
     if handlers_arg.kind() != "object" {
         return edges;
     }
-    for (rpc_name, handler, import) in grpc_handlers_from_object(*handlers_arg, ctx, source) {
-        if let Some(mut edge) = grpc_impl_edge(node, &service, &rpc_name, handler, source) {
-            // An imported handler's file is only known after import
-            // resolution, which then sets this edge's source.
-            edge.import_candidates.extend(import);
+    for handler in grpc_handlers_from_object(*handlers_arg, ctx, source) {
+        if let Some(edge) = grpc_impl_edge(node, &service, handler, source) {
             edges.push(edge);
         }
     }
@@ -2684,14 +2708,14 @@ fn grpc_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     let target_node = call_target_node(node)?;
     let (mut object_node, mut method_name) = member_object_and_method(target_node, source)?;
     // `client.getTables.bind(client)` / `.call(..)` / `.apply(..)` call the
-    // underlying method; see through to it.
-    if FUNCTION_INDIRECTION_METHODS.contains(&method_name.as_str()) {
-        (object_node, method_name) = member_object_and_method(object_node, source)?;
+    // underlying method: see through them, but only after a member access
+    // (`client.call(req)` is an rpc that happens to be named `call`).
+    if FUNCTION_INDIRECTION_METHODS.contains(&method_name.as_str())
+        && let Some(inner) = member_object_and_method(object_node, source)
+    {
+        (object_node, method_name) = inner;
     }
     let method_name = unquote_string_literal(&method_name).unwrap_or(method_name);
-    if FUNCTION_INDIRECTION_METHODS.contains(&method_name.as_str()) {
-        return None;
-    }
     if GRPC_JS_RAW_METHODS.contains(&method_name.as_str()) {
         return grpc_call_edge_from_raw_path(node, ctx, source);
     }
@@ -2757,28 +2781,32 @@ fn grpc_call_edge_from_raw_path(node: Node<'_>, ctx: &Context, source: &str) -> 
 fn grpc_impl_edge(
     node: Node<'_>,
     service: &GrpcService,
-    rpc_name: &str,
-    handler: String,
+    handler: GrpcHandler,
     source: &str,
 ) -> Option<EdgeInput> {
     let (raw_path, normalized) =
-        proto::normalize_rpc_path(service.package.as_deref(), &service.service, rpc_name)?;
+        proto::normalize_rpc_path(service.package.as_deref(), &service.service, &handler.rpc)?;
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
-    let detail = json!({
+    let mut detail = json!({
         "framework": "grpc-js",
         "role": "server",
         "service": service.service.as_str(),
-        "rpc": rpc_name,
+        "rpc": handler.rpc,
         "package": service.package.as_deref(),
         "raw": raw_path,
-    })
-    .to_string();
+    });
+    if !handler.candidates.is_empty() {
+        // Wrapped or imported handler: `Db::reconcile_rpc_edges` sources the
+        // edge at the first candidate that is a function, else `enclosing`.
+        detail["handler_candidates"] = json!(handler.candidates);
+        detail["enclosing"] = json!(handler.enclosing);
+    }
     Some(EdgeInput {
         kind: proto::RPC_IMPL_KIND.to_string(),
-        source_qualname: Some(handler),
+        source_qualname: Some(handler.qualname),
         target_qualname: Some(normalized),
-        detail: Some(detail),
+        detail: Some(detail.to_string()),
         evidence_snippet: snippet,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
@@ -2820,13 +2848,44 @@ fn channel_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<Edge
     })
 }
 
-/// `(rpc name, handler qualname, import placeholder)` per handler property;
-/// the placeholder is set when the handler is bound by an `import`.
-fn grpc_handlers_from_object(
-    node: Node<'_>,
-    ctx: &Context,
-    source: &str,
-) -> Vec<(String, String, Option<String>)> {
+/// One handler registered for an rpc in an `addService` object.
+struct GrpcHandler {
+    rpc: String,
+    /// Qualname the edge is first sourced at: the first same-file candidate,
+    /// else the enclosing scope.
+    qualname: String,
+    enclosing: String,
+    /// Every function-like name the handler expression mentions, in
+    /// argument order: same-file qualnames, or import placeholders (see
+    /// `import_placeholder`) that `resolve_import_file_edges` rewrites.
+    /// Empty for a method definition.
+    candidates: Vec<String>,
+}
+
+fn grpc_handler(rpc: String, value: Option<Node<'_>>, ctx: &Context, source: &str) -> GrpcHandler {
+    let candidates: Vec<String> = value
+        .map(|node| handler_target_nodes(node, ctx, source))
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|target| {
+            let raw = node_text(target, source);
+            import_placeholder(&raw, ctx).or_else(|| resolve_call_target(&raw, ctx))
+        })
+        .collect();
+    let qualname = candidates
+        .iter()
+        .find(|c| !c.contains(IMPORT_PLACEHOLDER_SEP))
+        .cloned()
+        .unwrap_or_else(|| ctx.current_scope.clone());
+    GrpcHandler {
+        rpc,
+        qualname,
+        enclosing: ctx.current_scope.clone(),
+        candidates,
+    }
+}
+
+fn grpc_handlers_from_object(node: Node<'_>, ctx: &Context, source: &str) -> Vec<GrpcHandler> {
     let mut out = Vec::new();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -2838,26 +2897,19 @@ fn grpc_handlers_from_object(
                 let Some(rpc_name) = grpc_property_name(key_node, source) else {
                     continue;
                 };
-                let target = child
-                    .child_by_field_name("value")
-                    .and_then(|node| handler_target_node(node, ctx, source));
-                let raw = target.map(|node| node_text(node, source));
-                let handler = raw
-                    .as_deref()
-                    .and_then(|raw| resolve_call_target(raw, ctx))
-                    .unwrap_or_else(|| ctx.current_scope.clone());
-                let import = raw.as_deref().and_then(|raw| import_placeholder(raw, ctx));
-                out.push((rpc_name, handler, import));
+                out.push(grpc_handler(
+                    rpc_name,
+                    child.child_by_field_name("value"),
+                    ctx,
+                    source,
+                ));
             }
             "shorthand_property_identifier" | "shorthand_property_identifier_pattern" => {
                 let rpc_name = node_text(child, source);
                 if rpc_name.is_empty() {
                     continue;
                 }
-                let handler = resolve_call_target(&rpc_name, ctx)
-                    .unwrap_or_else(|| ctx.current_scope.clone());
-                let import = import_placeholder(&rpc_name, ctx);
-                out.push((rpc_name, handler, import));
+                out.push(grpc_handler(rpc_name, Some(child), ctx, source));
             }
             "method_definition" => {
                 let Some(name_node) = child.child_by_field_name("name") else {
@@ -2867,7 +2919,7 @@ fn grpc_handlers_from_object(
                 if rpc_name.is_empty() {
                     continue;
                 }
-                out.push((rpc_name, ctx.current_scope.clone(), None));
+                out.push(grpc_handler(rpc_name, None, ctx, source));
             }
             _ => {}
         }
@@ -3687,31 +3739,35 @@ fn handler_from_args(args: &[Node<'_>], ctx: &Context, source: &str) -> String {
 }
 
 fn handler_node_qualname(node: Node<'_>, ctx: &Context, source: &str) -> Option<String> {
-    let target = handler_target_node(node, ctx, source)?;
+    let target = *handler_target_nodes(node, ctx, source).first()?;
     resolve_call_target(&node_text(target, source), ctx)
 }
 
-/// The identifier/member node a handler expression names: the node itself,
-/// or, for a wrapper call (`grpcHandler(getTables, fastify)`), its first
-/// argument naming a function this file declares or imports (a wrapper may
-/// take the handler in any position, and `fastify` is neither).
-fn handler_target_node<'a>(node: Node<'a>, ctx: &Context, source: &str) -> Option<Node<'a>> {
+/// The identifier/member nodes a handler expression names: the node itself,
+/// or, for a wrapper call (`grpcHandler(getTables, fastify)`), every
+/// argument naming something this file declares or imports, in order (a
+/// wrapper may take the handler in any position; which one is a function is
+/// decided later, see `Db::reconcile_rpc_edges`).
+fn handler_target_nodes<'a>(node: Node<'a>, ctx: &Context, source: &str) -> Vec<Node<'a>> {
     match node.kind() {
         "identifier"
         | "member_expression"
         | "optional_member_expression"
         | "shorthand_property_identifier"
-        | "shorthand_property_identifier_pattern" => Some(node),
+        | "shorthand_property_identifier_pattern" => vec![node],
         "call_expression" => call_arguments(node)
             .into_iter()
-            .find_map(|arg| match arg.kind() {
-                "call_expression" => handler_target_node(arg, ctx, source),
-                "identifier" | "member_expression" | "optional_member_expression" => {
-                    is_known_function_name(&node_text(arg, source), ctx).then_some(arg)
+            .flat_map(|arg| match arg.kind() {
+                "call_expression" => handler_target_nodes(arg, ctx, source),
+                "identifier" | "member_expression" | "optional_member_expression"
+                    if is_known_function_name(&node_text(arg, source), ctx) =>
+                {
+                    vec![arg]
                 }
-                _ => None,
-            }),
-        _ => None,
+                _ => Vec::new(),
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 

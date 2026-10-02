@@ -926,18 +926,18 @@ impl Db {
         // (RPC_IMPL) both store guessed paths.
         if own.is_none() {
             let (_, svc_method) = rpc_split(target_qualname);
+            let conn = self.read_conn()?;
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT target_qualname FROM edges
+                 WHERE kind = ?4 AND graph_version = ?1
+                   AND target_qualname != ?2
+                   AND (target_qualname = '/' || ?3
+                        OR substr(target_qualname, -length(?3) - 1) = '.' || ?3)",
+            )?;
             for kind in ["RPC_CALL", "RPC_IMPL"] {
                 if !kinds.contains(&kind) {
                     continue;
                 }
-                let conn = self.read_conn()?;
-                let mut stmt = conn.prepare(
-                    "SELECT DISTINCT target_qualname FROM edges
-                     WHERE kind = ?4 AND graph_version = ?1
-                       AND target_qualname != ?2
-                       AND (target_qualname = '/' || ?3
-                            OR substr(target_qualname, -length(?3) - 1) = '.' || ?3)",
-                )?;
                 let guesses: Vec<String> = stmt
                     .query_map(
                         rusqlite::params![graph_version, target_qualname, svc_method, kind],
@@ -964,10 +964,11 @@ impl Db {
 
     /// Bind a guessed RPC path (`/pkg.service/method`, package possibly wrong
     /// or missing) to a real `.proto` RPC_ROUTE path. `None` when the path
-    /// already has an exact route, or no single route can be chosen: one
-    /// `service/method` suffix match binds; several are narrowed to those
-    /// whose package agrees with the guessed package (one a dotted suffix
-    /// of the other); still ambiguous means unbound.
+    /// already has an exact route, or no single route can be chosen. A
+    /// package-less guess binds to the one `service/method` suffix match; a
+    /// guess that carries a package binds only to routes whose package agrees
+    /// (one a dotted suffix of the other), so a contradicting package never
+    /// binds; still ambiguous means unbound.
     fn resolve_rpc_route(&self, guess: &str, graph_version: i64) -> Result<Option<String>> {
         let (guess_pkg, svc_method) = rpc_split(guess);
         let conn = self.read_conn()?;
@@ -983,24 +984,204 @@ impl Db {
         if routes.iter().any(|r| r == guess) {
             return Ok(None);
         }
-        if routes.len() > 1 && !guess_pkg.is_empty() {
-            let agree: Vec<&String> = routes
-                .iter()
-                .filter(|r| {
-                    let (pkg, _) = rpc_split(r);
-                    pkg == guess_pkg
-                        || pkg.ends_with(&format!(".{guess_pkg}"))
-                        || guess_pkg.ends_with(&format!(".{pkg}"))
-                })
-                .collect();
-            if let [only] = agree.as_slice() {
-                return Ok(Some((*only).clone()));
-            }
-        }
-        Ok(match routes.as_slice() {
-            [only] => Some(only.clone()),
+        let agreeing: Vec<&String> = routes
+            .iter()
+            .filter(|r| {
+                let (pkg, _) = rpc_split(r);
+                guess_pkg.is_empty()
+                    || pkg == guess_pkg
+                    || pkg.ends_with(&format!(".{guess_pkg}"))
+                    || guess_pkg.ends_with(&format!(".{pkg}"))
+            })
+            .collect();
+        Ok(match agreeing.as_slice() {
+            [only] => Some((*only).clone()),
             _ => None,
         })
+    }
+
+    /// RPC_IMPL handlers bound to the route(s) of proto `rpc` symbol
+    /// `symbol_id`, guessed-package edges included; deduped, in edge order.
+    pub fn rpc_implementers(
+        &self,
+        symbol_id: i64,
+        languages: Option<&[String]>,
+        graph_version: i64,
+    ) -> Result<Vec<i64>> {
+        let paths: Vec<String> = {
+            let conn = self.read_conn()?;
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT target_qualname FROM edges
+                 WHERE kind = 'RPC_ROUTE' AND source_symbol_id = ?1
+                   AND graph_version = ?2 AND target_qualname IS NOT NULL",
+            )?;
+            stmt.query_map(rusqlite::params![symbol_id, graph_version], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let mut seen = HashSet::new();
+        let mut ids = Vec::new();
+        for path in paths {
+            for edge in self.edges_by_target_qualname_and_kinds(
+                &path,
+                &["RPC_IMPL"],
+                languages,
+                graph_version,
+            )? {
+                if let Some(id) = edge.source_symbol_id
+                    && seen.insert(id)
+                {
+                    ids.push(id);
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Cross-file reconciliation of RPC_IMPL / RPC_CALL edges, recomputed
+    /// from current rows only so incremental sync equals a fresh index:
+    /// - `detail.package`, when the extractor had none, is the package of the
+    ///   one `.proto` route the edge's path binds to (flagged
+    ///   `package_from_route`, and cleared again when the binding goes);
+    /// - an RPC_IMPL edge that lists `handler_candidates` (a wrapped or
+    ///   imported handler) is sourced at the first candidate that is a
+    ///   function or method, else at its enclosing scope (`detail.enclosing`).
+    pub fn reconcile_rpc_edges(&self, graph_version: i64) -> Result<usize> {
+        struct Row {
+            id: i64,
+            kind: String,
+            file_id: i64,
+            source: Option<i64>,
+            target: String,
+            detail: String,
+        }
+        let rows: Vec<Row> = {
+            let conn = self.read_conn()?;
+            let mut stmt = conn.prepare(
+                "SELECT e.id, e.kind, e.file_id, e.source_symbol_id, e.target_qualname, e.detail
+                 FROM edges e JOIN files f ON f.id = e.file_id
+                 WHERE e.graph_version = ?1 AND e.kind IN ('RPC_IMPL', 'RPC_CALL')
+                   AND e.target_qualname LIKE '/%' AND e.detail IS NOT NULL
+                   AND (f.deleted_version IS NULL OR f.deleted_version > ?1)",
+            )?;
+            stmt.query_map([graph_version], |r| {
+                Ok(Row {
+                    id: r.get(0)?,
+                    kind: r.get(1)?,
+                    file_id: r.get(2)?,
+                    source: r.get(3)?,
+                    target: r.get(4)?,
+                    detail: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?
+        };
+        let mut route_packages: HashMap<String, Option<String>> = HashMap::new();
+        let mut updates: Vec<(i64, Option<i64>, String)> = Vec::new();
+        for row in rows {
+            let Ok(mut detail) = serde_json::from_str::<serde_json::Value>(&row.detail) else {
+                continue;
+            };
+            let before = detail.clone();
+            let mut source = row.source;
+            let flagged = detail["package_from_route"] == true;
+            if detail["package"].is_null() || flagged {
+                let package = match route_packages.get(&row.target) {
+                    Some(cached) => cached.clone(),
+                    None => {
+                        let found = self.bound_route_package(&row.target, graph_version)?;
+                        route_packages.insert(row.target.clone(), found.clone());
+                        found
+                    }
+                };
+                match package {
+                    Some(pkg) => {
+                        detail["package"] = pkg.into();
+                        detail["package_from_route"] = true.into();
+                    }
+                    None => {
+                        detail["package"] = serde_json::Value::Null;
+                        if let Some(map) = detail.as_object_mut() {
+                            map.remove("package_from_route");
+                        }
+                    }
+                }
+            }
+            if row.kind == "RPC_IMPL"
+                && let Some(candidates) = detail["handler_candidates"].as_array()
+            {
+                let conn = self.read_conn()?;
+                let mut chosen = None;
+                for candidate in candidates.iter().filter_map(|c| c.as_str()) {
+                    chosen = conn
+                        .query_row(
+                            "SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id
+                             WHERE s.qualname = ?1 AND s.graph_version = ?2
+                               AND s.kind IN ('function', 'method')
+                               AND (f.deleted_version IS NULL OR f.deleted_version > ?2)
+                             ORDER BY s.id LIMIT 1",
+                            rusqlite::params![candidate, graph_version],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    if chosen.is_some() {
+                        break;
+                    }
+                }
+                if chosen.is_none()
+                    && let Some(scope) = detail["enclosing"].as_str()
+                {
+                    chosen = conn
+                        .query_row(
+                            "SELECT id FROM symbols WHERE qualname = ?1 AND file_id = ?2
+                               AND graph_version = ?3 ORDER BY id LIMIT 1",
+                            rusqlite::params![scope, row.file_id, graph_version],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                }
+                if chosen.is_some() {
+                    source = chosen;
+                }
+            }
+            if detail != before || source != row.source {
+                updates.push((row.id, source, detail.to_string()));
+            }
+        }
+        let changed = updates.len();
+        if changed > 0 {
+            let mut conn = self.conn();
+            let tx = conn.transaction()?;
+            for (id, source, detail) in updates {
+                tx.execute(
+                    "UPDATE edges SET source_symbol_id = ?1, detail = ?2 WHERE id = ?3",
+                    rusqlite::params![source, detail, id],
+                )?;
+            }
+            tx.commit()?;
+        }
+        Ok(changed)
+    }
+
+    /// Package of the `.proto` route `path` is, or binds to.
+    fn bound_route_package(&self, path: &str, graph_version: i64) -> Result<Option<String>> {
+        let route = match self.resolve_rpc_route(path, graph_version)? {
+            Some(real) => real,
+            None => path.to_string(),
+        };
+        let conn = self.read_conn()?;
+        let detail: Option<String> = conn
+            .query_row(
+                "SELECT detail FROM edges
+                 WHERE kind = 'RPC_ROUTE' AND target_qualname = ?1 AND graph_version = ?2
+                 LIMIT 1",
+                rusqlite::params![route, graph_version],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(detail
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+            .and_then(|d| d["package"].as_str().map(str::to_string)))
     }
 
     /// `route` is the RPC_ROUTE path that must back RPC edges (the target

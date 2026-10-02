@@ -4904,20 +4904,24 @@ mod tests {
         let found = db
             .edges_by_target_qualname_and_kinds(real, &["RPC_IMPL"], None, 1)
             .unwrap();
-        // The exact edge plus the guessed-path edge that now binds to the
-        // route (widening is symmetric with RPC_CALL).
-        assert_eq!(found.len(), 2);
+        // Only the exact edge: the guessed package contradicts the route's.
+        assert_eq!(found.len(), 1);
     }
 
-    #[test]
-    fn test_rpc_route_guess_widening_is_symmetric_for_impl() {
-        let (mut db, _temp) = create_test_db();
+    /// TS handler (package-less guess) plus a real proto route.
+    fn rpc_guess_fixture(guessed: &str, real: &str) -> (Db, tempfile::TempDir) {
+        let (mut db, temp) = create_test_db();
         let file_id = db
             .upsert_file("src/svc.ts", "h1", "typescript", 100, 0)
             .unwrap();
-        let symbols = vec![make_test_symbol("svc.getTables", None, "function", 1)];
         let inserted = db
-            .insert_symbols(file_id, "src/svc.ts", &symbols, 1, None)
+            .insert_symbols(
+                file_id,
+                "src/svc.ts",
+                &[make_test_symbol("svc.getTables", None, "function", 1)],
+                1,
+                None,
+            )
             .unwrap();
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4929,9 +4933,6 @@ mod tests {
             target_qualname: Some(tq.to_string()),
             ..Default::default()
         };
-        // The implementer guessed the package wrong (none); the proto is real.
-        let guessed = "/datacatalogservice/gettables";
-        let real = "/datacatalog.v1.datacatalogservice/gettables";
         db.insert_edges(
             file_id,
             &[edge("RPC_IMPL", Some("svc.getTables"), guessed)],
@@ -4941,16 +4942,12 @@ mod tests {
         )
         .unwrap();
         let proto_id = db.upsert_file("p.proto", "h2", "proto", 10, 0).unwrap();
+        let rpc = "datacatalog.v1.DataCatalogService.GetTables";
         let proto_syms = db
             .insert_symbols(
                 proto_id,
                 "p.proto",
-                &[make_test_symbol(
-                    "datacatalog.v1.DataCatalogService.GetTables",
-                    None,
-                    "rpc",
-                    1,
-                )],
+                &[make_test_symbol(rpc, None, "rpc", 1)],
                 1,
                 None,
             )
@@ -4961,28 +4958,53 @@ mod tests {
             .collect();
         db.insert_edges(
             proto_id,
-            &[edge(
-                "RPC_ROUTE",
-                Some("datacatalog.v1.DataCatalogService.GetTables"),
-                real,
-            )],
+            &[edge("RPC_ROUTE", Some(rpc), real)],
             &proto_map,
             1,
             None,
         )
         .unwrap();
-        // proto side -> implementer
+        (db, temp)
+    }
+
+    const REAL_ROUTE: &str = "/datacatalog.v1.datacatalogservice/gettables";
+
+    #[test]
+    fn test_rpc_widening_proto_side_finds_package_less_impl() {
+        let (db, _temp) = rpc_guess_fixture("/datacatalogservice/gettables", REAL_ROUTE);
         let found = db
-            .edges_by_target_qualname_and_kinds(real, &["RPC_IMPL"], None, 1)
+            .edges_by_target_qualname_and_kinds(REAL_ROUTE, &["RPC_IMPL"], None, 1)
             .unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, "RPC_IMPL");
-        // implementer side -> proto
+    }
+
+    #[test]
+    fn test_rpc_widening_impl_side_finds_proto_route() {
+        let guessed = "/datacatalogservice/gettables";
+        let (db, _temp) = rpc_guess_fixture(guessed, REAL_ROUTE);
         let found = db
             .edges_by_target_qualname_and_kinds(guessed, &["RPC_ROUTE"], None, 1)
             .unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, "RPC_ROUTE");
+    }
+
+    #[test]
+    fn test_rpc_guess_with_contradicting_package_does_not_bind() {
+        let guessed = "/other.pkg.datacatalogservice/gettables";
+        let (db, _temp) = rpc_guess_fixture(guessed, REAL_ROUTE);
+        // Neither end reaches the other through the guessed path.
+        assert!(
+            db.edges_by_target_qualname_and_kinds(REAL_ROUTE, &["RPC_IMPL"], None, 1)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.edges_by_target_qualname_and_kinds(guessed, &["RPC_ROUTE"], None, 1)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

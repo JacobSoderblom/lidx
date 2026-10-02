@@ -275,31 +275,14 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             && (e.source_symbol_id == Some(symbol.id)
                 || (e.kind == "IMPLEMENTS" && e.target_symbol_id == Some(symbol.id)))
     });
-    // A proto `rpc` is implemented by the RPC_IMPL sources bound to its
-    // route path (guessed-package edges included).
-    let mut rpc_implementers: Vec<i64> = Vec::new();
-    if wants_implements && symbol.kind == "rpc" {
-        for route in edges
-            .iter()
-            .filter(|e| e.kind == "RPC_ROUTE" && e.source_symbol_id == Some(symbol.id))
-        {
-            let Some(path) = route.target_qualname.as_deref() else {
-                continue;
-            };
-            for edge in indexer.db().edges_by_target_qualname_and_kinds(
-                path,
-                &["RPC_IMPL"],
-                ctx.languages.as_deref(),
-                ctx.graph_version,
-            )? {
-                if let Some(id) = edge.source_symbol_id
-                    && !rpc_implementers.contains(&id)
-                {
-                    rpc_implementers.push(id);
-                }
-            }
-        }
-    }
+    // A proto `rpc` is implemented by the RPC_IMPL sources bound to its route.
+    let rpc_implementers = if wants_implements && symbol.kind == "rpc" {
+        indexer
+            .db()
+            .rpc_implementers(symbol.id, ctx.languages.as_deref(), ctx.graph_version)?
+    } else {
+        Vec::new()
+    };
     let has_implements = wants_implements
         && (has_direct_implements
             || !rpc_implementers.is_empty()
