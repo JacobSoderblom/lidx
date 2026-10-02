@@ -48,6 +48,7 @@ mod js_stale;
 pub mod markdown;
 pub mod postgres;
 pub mod proto;
+mod py_layout;
 pub mod python;
 pub mod rust;
 pub mod scan;
@@ -306,6 +307,10 @@ impl Indexer {
         let changed_rels = self.changed_batch_paths(&batch_rels)?;
         let stale_cs = self.stale_csharp_files(&changed_rels, graph_version, live_csharp)?;
         stale_files.extend(stale_cs);
+        if batch_rels.iter().any(|p| py_layout::is_layout_marker(p)) {
+            let stale_py = self.stale_python_files(graph_version)?;
+            stale_files.extend(stale_py.into_iter().filter(|p| !batch_rels.contains(p)));
+        }
         self.begin_extraction_run(&changed_rels, graph_version, true)?;
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
         all_paths.extend(stale_files.iter().map(|rel| self.repo_root.join(rel)));
@@ -543,6 +548,8 @@ impl Indexer {
             stale_files.extend(js_paths);
         }
 
+        // ... and Python files whose package root a layout marker moved.
+        stale_files.extend(self.stale_python_files(previous_graph_version)?);
         // ... and C# files whose project's `global using`s changed.
         let scanned_csharp: Vec<String> = scanned
             .iter()
@@ -1058,6 +1065,27 @@ impl Indexer {
             self.cs_globals_db()
                 .stale_extension_callers(changed, graph_version)?,
         );
+        Ok(stale)
+    }
+
+    /// Python files whose module name under the current package layout
+    /// differs from the one `graph_version` stores: a root marker
+    /// (`__init__.py`, `pyproject.toml`, `setup.py`, `setup.cfg`) was added,
+    /// removed or edited since they were extracted, so a hash skip would keep
+    /// a stale qualname. Only files still on disk.
+    fn stale_python_files(&mut self, graph_version: i64) -> Result<HashSet<String>> {
+        let Some(extractor) = self.extractors.get_mut("python") else {
+            return Ok(HashSet::new());
+        };
+        extractor.begin_run();
+        let mut stale = HashSet::new();
+        for (path, stored) in self.db.python_module_names(graph_version)? {
+            if self.repo_root.join(&path).is_file()
+                && extractor.module_name_from_rel_path(&path) != stored
+            {
+                stale.insert(path);
+            }
+        }
         Ok(stale)
     }
 

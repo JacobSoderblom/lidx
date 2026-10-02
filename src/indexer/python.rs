@@ -4,6 +4,7 @@ use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::py_layout::PyLayout;
 use crate::indexer::string_consts::{LocalBinding, StringConsts, scan_enclosing_function};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
@@ -97,10 +98,10 @@ enum LocalType {
 
 pub struct PythonExtractor {
     parser: Parser,
-    /// Repo root for package-root detection (issue #202), set via
-    /// `with_repo_root`. `None` (the `new()` default for standalone
-    /// extractors) keeps the path-only naming: every path component counts.
-    repo_root: Option<PathBuf>,
+    /// Package-root detection (issue #202), set via `with_repo_root`. `None`
+    /// (the `new()` default for standalone extractors) keeps the path-only
+    /// naming: every path component counts.
+    layout: Option<PyLayout>,
 }
 
 impl PythonExtractor {
@@ -110,26 +111,29 @@ impl PythonExtractor {
         parser.set_language(&language.into())?;
         Ok(Self {
             parser,
-            repo_root: None,
+            layout: None,
         })
     }
 
     /// Enables package-root detection (issue #202): module names are the
-    /// importable dotted path (see `import_root`), not the filesystem path.
+    /// importable dotted path (see `PyLayout::import_root`), not the filesystem path.
     pub fn with_repo_root(mut self, repo_root: PathBuf) -> Self {
-        self.repo_root = Some(repo_root);
+        self.layout = Some(PyLayout::new(repo_root));
         self
     }
 }
 
 impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
     fn module_name_from_rel_path(&self, rel_path: &str) -> String {
-        match self.repo_root.as_deref() {
-            Some(repo_root) => {
-                let root = import_root(repo_root, rel_path);
-                module_name_from_rel_path(&strip_import_root(rel_path, &root))
-            }
+        match &self.layout {
+            Some(layout) => module_name_from_rel_path(&layout.strip_root(rel_path)),
             None => module_name_from_rel_path(rel_path),
+        }
+    }
+
+    fn begin_run(&mut self) {
+        if let Some(layout) = &self.layout {
+            layout.clear();
         }
     }
 
@@ -187,107 +191,13 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
         module_name: &str,
         edges: &mut Vec<crate::indexer::extract::EdgeInput>,
     ) {
-        resolve_import_file_edges(repo_root, file_rel_path, module_name, edges);
-    }
-}
-
-const PROJECT_MARKERS: [&str; 3] = ["pyproject.toml", "setup.py", "setup.cfg"];
-
-fn has_init(repo_root: &Path, dir: &Path) -> bool {
-    repo_root.join(dir).join("__init__.py").is_file()
-}
-
-/// Nearest ancestor of `dir` (inclusive) holding a project-root marker.
-fn project_root(repo_root: &Path, dir: &Path) -> Option<PathBuf> {
-    let mut cur = dir.to_path_buf();
-    loop {
-        if PROJECT_MARKERS
-            .iter()
-            .any(|m| repo_root.join(&cur).join(m).is_file())
-        {
-            return Some(cur);
-        }
-        if !cur.pop() {
-            return None;
-        }
-    }
-}
-
-/// Direct children of `project` that are plain directories (no
-/// `__init__.py`) holding at least one regular package -- a source
-/// container such as `src/`, detected structurally rather than by name.
-fn source_containers(repo_root: &Path, project: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(repo_root.join(project)) else {
-        return Vec::new();
-    };
-    let mut out: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .map(|e| project.join(e.file_name()))
-        .filter(|dir| !has_init(repo_root, dir))
-        .filter(|dir| {
-            std::fs::read_dir(repo_root.join(dir))
-                .into_iter()
-                .flatten()
-                .flatten()
-                .any(|c| c.path().is_dir() && c.path().join("__init__.py").is_file())
-        })
-        .collect();
-    out.sort();
-    out
-}
-
-/// `project`, or the source container of `project` that `dir` lies under.
-fn project_import_root(repo_root: &Path, project: &Path, dir: &Path) -> PathBuf {
-    source_containers(repo_root, project)
-        .into_iter()
-        .find(|c| dir.starts_with(c))
-        .unwrap_or_else(|| project.to_path_buf())
-}
-
-/// The directory a file's module name is relative to (issue #202): the
-/// directory Python would have on `sys.path` for it. Walks up through
-/// contiguous `__init__.py` dirs to the top regular package; its parent is
-/// the root, widened to the project root / source container when namespace
-/// directories sit in between. A file outside any regular package takes the
-/// project root (`pyproject.toml`/`setup.py`/`setup.cfg`) or source
-/// container, else the repo root (a loose script keeps its path).
-fn import_root(repo_root: &Path, rel_path: &str) -> PathBuf {
-    let dir = Path::new(rel_path).parent().unwrap_or(Path::new(""));
-    let project = project_root(repo_root, dir);
-    if has_init(repo_root, dir) {
-        let mut top = dir.to_path_buf();
-        while let Some(parent) = top.parent()
-            && has_init(repo_root, parent)
-        {
-            top = parent.to_path_buf();
-        }
-        let root = top.parent().unwrap_or(Path::new("")).to_path_buf();
-        match project {
-            Some(p)
-                if root.starts_with(&p)
-                    && root.components().count() > p.components().count() + 1 =>
-            {
-                project_import_root(repo_root, &p, dir)
-            }
-            _ => root,
-        }
-    } else {
-        match project {
-            Some(p) => project_import_root(repo_root, &p, dir),
-            None => PathBuf::new(),
-        }
-    }
-}
-
-fn strip_import_root(rel_path: &str, root: &Path) -> String {
-    match Path::new(rel_path).strip_prefix(root) {
-        Ok(rest) => rest
-            .components()
-            .filter_map(|c| c.as_os_str().to_str())
-            .collect::<Vec<_>>()
-            .join("/"),
-        Err(_) => rel_path.to_string(),
+        resolve_import_file_edges(
+            repo_root,
+            self.layout.as_ref(),
+            file_rel_path,
+            module_name,
+            edges,
+        );
     }
 }
 
@@ -372,12 +282,16 @@ fn identifiers_outside_imports(src: &str) -> std::collections::HashSet<String> {
 
 pub fn resolve_import_file_edges(
     repo_root: &Path,
+    layout: Option<&PyLayout>,
     file_rel_path: &str,
     file_module: &str,
     edges: &mut Vec<EdgeInput>,
 ) {
     let base_package = base_package_parts(file_rel_path, file_module);
-    let search_roots = module_search_roots(repo_root, file_rel_path);
+    let search_roots = match layout {
+        Some(layout) => layout.search_roots(file_rel_path),
+        None => Rc::new(vec![PathBuf::new()]),
+    };
     let mut resolved = Vec::new();
     for edge in edges.iter() {
         if edge.kind != "IMPORTS" {
@@ -2908,34 +2822,20 @@ fn absolutize_module(candidate: &str, base_package: &[String]) -> Option<String>
     }
 }
 
-/// Directories an absolute import from `file_rel_path` may be rooted at
-/// (issue #202): the file's own import root, its project root and source
-/// containers, then the repo root.
-fn module_search_roots(repo_root: &Path, file_rel_path: &str) -> Vec<PathBuf> {
-    let dir = Path::new(file_rel_path).parent().unwrap_or(Path::new(""));
-    let mut roots = vec![import_root(repo_root, file_rel_path)];
-    if let Some(project) = project_root(repo_root, dir) {
-        roots.extend(source_containers(repo_root, &project));
-        roots.push(project);
-    }
-    roots.push(PathBuf::new());
-    let mut seen = std::collections::HashSet::new();
-    roots.retain(|r| seen.insert(r.clone()));
-    roots
-}
-
 fn resolve_module_to_file(repo_root: &Path, roots: &[PathBuf], module: &str) -> Option<String> {
     roots
         .iter()
         .find_map(|root| resolve_module_under(&repo_root.join(root), root, module))
 }
 
-fn resolve_module_under(repo_root: &Path, root: &Path, module: &str) -> Option<String> {
+/// Looks `module` up under `base` (the absolute directory of `root`, which
+/// is relative to the repo); the result path is repo-relative via `root`.
+fn resolve_module_under(base: &Path, root: &Path, module: &str) -> Option<String> {
     let parts: Vec<&str> = module.split('.').filter(|part| !part.is_empty()).collect();
     if parts.is_empty() {
         return None;
     }
-    if !package_prefixes_have_init(repo_root, &parts) {
+    if !package_prefixes_have_init(base, &parts) {
         return None;
     }
     let mut rel = std::path::PathBuf::new();
@@ -2943,24 +2843,24 @@ fn resolve_module_under(repo_root: &Path, root: &Path, module: &str) -> Option<S
         rel.push(part);
     }
     let module_file = rel.with_extension("py");
-    if repo_root.join(&module_file).is_file() {
+    if base.join(&module_file).is_file() {
         return Some(util::normalize_path(&root.join(&module_file)));
     }
     let package_init = rel.join("__init__.py");
-    if repo_root.join(&package_init).is_file() {
+    if base.join(&package_init).is_file() {
         return Some(util::normalize_path(&root.join(&package_init)));
     }
     None
 }
 
-fn package_prefixes_have_init(repo_root: &Path, parts: &[&str]) -> bool {
+fn package_prefixes_have_init(base: &Path, parts: &[&str]) -> bool {
     if parts.len() <= 1 {
         return true;
     }
     let mut rel = std::path::PathBuf::new();
     for part in &parts[..parts.len() - 1] {
         rel.push(part);
-        let init = repo_root.join(&rel).join("__init__.py");
+        let init = base.join(&rel).join("__init__.py");
         if !init.is_file() {
             return false;
         }

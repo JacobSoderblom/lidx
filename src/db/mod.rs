@@ -1948,6 +1948,19 @@ impl Db {
     /// # Returns
     ///
     /// A vector of all symbols in the file for the specified graph version
+    /// `(path, module qualname)` of every Python file's module symbol in
+    /// `graph_version`.
+    pub fn python_module_names(&self, graph_version: i64) -> Result<Vec<(String, String)>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT f.path, s.qualname FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE f.language = 'python' AND s.kind = 'module' AND s.graph_version = ?",
+        )?;
+        let rows = stmt.query_map(params![graph_version], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn get_symbols_for_file(&self, file_path: &str, graph_version: i64) -> Result<Vec<Symbol>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
