@@ -1613,7 +1613,25 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     let end_id = if let Some(id) = params.end_id {
         Some(id)
     } else if let Some(ref qn) = params.end_qualname {
-        indexer.db().lookup_symbol_id(qn, ctx.graph_version)?
+        match indexer.db().lookup_symbol_id(qn, ctx.graph_version)? {
+            Some(id) => Some(id),
+            None => {
+                // No silent frontier: the caller asked for a path to a
+                // symbol that does not exist.
+                let mut payload = crate::resolve::build_resolution_recovery_payload(
+                    indexer.db(),
+                    qn,
+                    &[],
+                    ctx.graph_version,
+                    "trace_flow",
+                    &raw_params,
+                );
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert("end_resolved".to_string(), json!(false));
+                }
+                return Ok(payload);
+            }
+        }
     } else {
         None
     };
@@ -1655,7 +1673,8 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
 
     // Build next_hops with continuation when truncated
     let mut next_hops: Vec<serde_json::Value> = Vec::new();
-    if truncated {
+    // An end-target trace that missed has no hops to continue from.
+    if truncated && !(end_id.is_some() && trace.is_empty()) {
         let next_offset = trace_offset + trace.len();
         // #119: echo every original param (direction, max_bytes,
         // exclude_resolution_kinds, languages, end_qualname, query, ...) by
