@@ -1948,7 +1948,12 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     {
         output.edges.push(edge);
     }
-    if node.kind() == "call_expression" || node.kind() == "new_expression" {
+    if is_dynamic_import(node) {
+        // `import('./x.js')` is an import, not a call: record IMPORTS like a
+        // static import and skip `handle_call`'s CALLS to `import`. The
+        // generic recursion below still walks any enclosing/argument code.
+        handle_dynamic_import(node, ctx, source, output);
+    } else if node.kind() == "call_expression" || node.kind() == "new_expression" {
         // `handle_call` returns `true` when it has already fully walked a
         // callback argument itself with adjusted context (currently just
         // `fastify_register_walk`, which re-walks a `.register(cb, {
@@ -5375,6 +5380,48 @@ fn handle_import(
     });
 }
 
+fn is_dynamic_import(node: Node<'_>) -> bool {
+    node.kind() == "call_expression"
+        && node
+            .child_by_field_name("function")
+            .is_some_and(|f| f.kind() == "import")
+}
+
+/// Emits IMPORTS for `import('<literal>')`; a non-literal or substituted
+/// template argument emits nothing.
+fn handle_dynamic_import(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let Some(arg) = call_arguments(node).into_iter().next() else {
+        return;
+    };
+    let literal = match arg.kind() {
+        "string" => true,
+        "template_string" => {
+            let mut cursor = arg.walk();
+            !arg.named_children(&mut cursor)
+                .any(|c| c.kind() == "template_substitution")
+        }
+        _ => false,
+    };
+    let Some(target) = literal
+        .then(|| unquote_string_literal(&node_text(arg, source)))
+        .flatten()
+    else {
+        return;
+    };
+    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+    let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+    output.edges.push(EdgeInput {
+        kind: "IMPORTS".to_string(),
+        source_qualname: Some(ctx.module.clone()),
+        target_qualname: Some(target),
+        detail: None,
+        evidence_snippet: snippet,
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    });
+}
+
 fn extract_import_target(node: Node<'_>, source: &str, allow_fallback: bool) -> Option<String> {
     if let Some(source_node) = node.child_by_field_name("source") {
         let raw = node_text(source_node, source);
@@ -6127,6 +6174,45 @@ mod tests {
     use crate::indexer::extract::{LanguageExtractor, ReceiverType};
     use crate::indexer::http;
     use crate::indexer::proto;
+
+    #[test]
+    fn dynamic_import_emits_imports_not_calls() {
+        let source = r#"
+import { helper } from './helper.js';
+export async function run(name: string) {
+  const { buildApp } = await import('./app.js');
+  import('./then.js').then(m => m.go());
+  await import(`./tpl.js`);
+  await import(name);
+  await import(`./x/${name}.js`);
+  await import('@opentelemetry/api');
+}
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "src.index").unwrap();
+        let mut imports: Vec<_> = file
+            .edges
+            .iter()
+            .filter(|e| e.kind == "IMPORTS")
+            .map(|e| e.target_qualname.clone().unwrap())
+            .collect();
+        imports.sort();
+        assert_eq!(
+            imports,
+            vec![
+                "./app.js",
+                "./helper.js",
+                "./then.js",
+                "./tpl.js",
+                "@opentelemetry/api"
+            ]
+        );
+        assert!(!file.edges.iter().any(|e| {
+            e.target_qualname
+                .as_deref()
+                .is_some_and(|t| t.ends_with("import"))
+        }));
+    }
 
     #[test]
     fn extracts_express_route_and_fetch_call() {
