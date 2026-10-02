@@ -317,7 +317,7 @@ fn indexed_outline(
     graph_version: i64,
     kinds_filter: Option<&HashSet<String>>,
     max_depth: Option<usize>,
-) -> Result<(String, i64, Vec<OutlineEntry>)> {
+) -> Result<(String, i64, Vec<OutlineEntry>, bool)> {
     let content = crate::util::read_to_string(full_path).map_err(|_| {
         anyhow::anyhow!(
             "file '{}' is missing from disk; run 'reindex' to refresh the index",
@@ -326,7 +326,12 @@ fn indexed_outline(
     })?;
     let total_lines = crate::indexer::tree_helpers::line_count(&content);
     let entries = symbol_outline_entries(db, path, graph_version, kinds_filter, max_depth)?;
-    Ok((file_record.language, total_lines, entries))
+
+    // Check if the file is stale: compare current content hash with indexed hash
+    let hash = crate::indexer::scan::hash_bytes(content.as_bytes());
+    let stale = file_record.hash != hash;
+
+    Ok((file_record.language, total_lines, entries, stale))
 }
 
 /// Kinds that wrap content rather than being content: never chosen as the
@@ -416,7 +421,7 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
 
     let full_path = repo_root.join(path);
 
-    let (language, total_lines, entries) = if let Some(file_record) = validated.file {
+    let (language, total_lines, entries, stale) = if let Some(file_record) = validated.file {
         let graph_version = indexer.db().current_graph_version()?;
         indexed_outline(
             indexer.db(),
@@ -428,10 +433,12 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
             max_depth,
         )?
     } else {
-        markdown_outline(&full_path, path, kinds_filter.as_ref(), max_depth)?
+        let (language, total_lines, entries) =
+            markdown_outline(&full_path, path, kinds_filter.as_ref(), max_depth)?;
+        (language, total_lines, entries, false)
     };
 
-    let next_hops = outline_next_hops(
+    let mut next_hops = outline_next_hops(
         indexer.db(),
         path,
         &entries,
@@ -439,11 +446,24 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
         is_markdown_path(path),
     )?;
 
+    // If the file is stale, add a reindex next_hop
+    if stale {
+        next_hops.push(serde_json::json!({
+            "method": "reindex",
+            "params": {},
+            "description": format!(
+                "'{}' changed on disk since indexing; reindex to refresh symbol spans",
+                path
+            ),
+        }));
+    }
+
     let result = OutlineResult {
         path: path.to_string(),
         language,
         total_lines,
         entries,
+        stale,
         next_hops,
     };
     Ok(serde_json::to_value(result)?)

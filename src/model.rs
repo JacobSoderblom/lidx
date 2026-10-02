@@ -77,6 +77,10 @@ fn serialize_signature<S: serde::Serializer>(
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct Symbol {
     pub id: i64,
@@ -207,6 +211,8 @@ pub struct OutlineResult {
     pub language: String,
     pub total_lines: i64,
     pub entries: Vec<OutlineEntry>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub stale: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub next_hops: Vec<Value>,
 }

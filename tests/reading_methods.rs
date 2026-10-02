@@ -1604,3 +1604,125 @@ fn read_symbol_with_multiple_selectors_is_rejected() {
 
     let _ = std::fs::remove_dir_all(&_repo_root);
 }
+
+#[test]
+fn outline_stale_file_flags_and_adds_reindex_hop() {
+    let (mut indexer, repo_root) = indexed("py_mvp");
+
+    // Get initial outline with fresh files (no stale flag)
+    let before = rpc::handle_method(
+        &mut indexer,
+        "outline",
+        serde_json::json!({"path": "pkg/core.py"}),
+    )
+    .unwrap();
+    assert_eq!(
+        before.get("stale"),
+        None,
+        "fresh file should not have stale field: {before:#}"
+    );
+    let before_entries = before["entries"].as_array().expect("entries");
+    assert!(
+        !before_entries.is_empty(),
+        "should have entries: {before:#}"
+    );
+
+    // Modify file on disk without reindexing
+    let file_path = repo_root.join("pkg/core.py");
+    let mut content = std::fs::read_to_string(&file_path).unwrap();
+    content.push_str("\n# trailing comment, added after indexing\n");
+    std::fs::write(&file_path, content).unwrap();
+
+    // Get outline again - should be stale
+    let after = rpc::handle_method(
+        &mut indexer,
+        "outline",
+        serde_json::json!({"path": "pkg/core.py"}),
+    )
+    .unwrap();
+    assert_eq!(after["stale"], true, "{after:#}");
+
+    // Entries should be unchanged (from index), but total_lines is re-computed from disk
+    let after_entries = after["entries"].as_array().expect("entries");
+    assert_eq!(
+        after_entries.len(),
+        before_entries.len(),
+        "stale outline should have same entries as before: {after:#}"
+    );
+    assert!(
+        after["total_lines"].as_i64().unwrap() > before["total_lines"].as_i64().unwrap(),
+        "total_lines should increase after appending to file: before={}, after={}",
+        before["total_lines"],
+        after["total_lines"]
+    );
+
+    // Should have a reindex next_hop
+    let hops = after["next_hops"]
+        .as_array()
+        .expect("stale outline should emit next_hops");
+    assert!(
+        hops.iter().any(|h| h["method"] == "reindex"),
+        "expected a reindex next hop on a stale outline: {hops:?}"
+    );
+
+    // Reindex
+    indexer.reindex().unwrap();
+
+    // Get outline again - should no longer be stale
+    let after_reindex = rpc::handle_method(
+        &mut indexer,
+        "outline",
+        serde_json::json!({"path": "pkg/core.py"}),
+    )
+    .unwrap();
+    assert_eq!(
+        after_reindex.get("stale"),
+        None,
+        "reindexed file should not have stale field: {after_reindex:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn outline_markdown_file_is_unaffected_by_staleness_check() {
+    // Markdown files are read from disk, not from index, so they shouldn't
+    // have a staleness flag even if the "index" is out of date (for Markdown
+    // there's no indexed file record anyway).
+    let (mut indexer, repo_root) = indexed_from_source(
+        "outline-markdown-stale",
+        &[("test.md", "# Heading 1\n\n## Heading 2\n")],
+    );
+
+    // Get outline before modification
+    let before = rpc::handle_method(
+        &mut indexer,
+        "outline",
+        serde_json::json!({"path": "test.md"}),
+    )
+    .unwrap();
+    assert_eq!(
+        before.get("stale"),
+        None,
+        "markdown outline should never be stale: {before:#}"
+    );
+
+    // Modify the markdown file
+    let file_path = repo_root.join("test.md");
+    std::fs::write(&file_path, "# New Heading\n\n## Another Heading\n").unwrap();
+
+    // Get outline after modification
+    let after = rpc::handle_method(
+        &mut indexer,
+        "outline",
+        serde_json::json!({"path": "test.md"}),
+    )
+    .unwrap();
+    assert_eq!(
+        after.get("stale"),
+        None,
+        "markdown outline should never be stale: {after:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
