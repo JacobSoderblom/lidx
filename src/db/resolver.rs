@@ -64,7 +64,7 @@ use crate::indexer::extract::{
 };
 use crate::model::{has_parameter_list, is_partial_signature};
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, Statement, ToSql, params};
+use rusqlite::{Connection, OptionalExtension, Statement, ToSql, named_params, params};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -641,6 +641,18 @@ fn profile_for(lang: &str) -> LanguageProfile {
 /// as ambiguous). The language `CASE` must agree with
 /// `resolution_language_family`.
 ///
+/// The leading `s.name IN (:tail, '.' || :tail)` (the lookup name's trailing
+/// segment, bound by `Resolver::unique_by_pattern`/`resolve_type_symbol`) is
+/// an index-seekable prefilter (`idx_symbols_name_kind`), not the decision:
+/// the `LIKE`s and the case-sensitive re-check below still decide. Without
+/// it the leading-wildcard `LIKE`s full-scan `symbols` per lookup (issue
+/// #255). It is result-preserving because a symbol's `name` is its
+/// qualname's trailing segment, except C# constructors (`.ctor`/`.cctor`,
+/// hence the `'.' || :tail` arm) and TS/JS computed or quoted method keys
+/// (`[Symbol.iterator]`, `'a.b'`), whose tail ends in `]` or a quote:
+/// `name_prefilter_applies` sends those lookups to the unfiltered statement
+/// (`NAME_PREFILTER` removed).
+///
 /// `LIKE` is SQLite's only substring/suffix operator, but it's
 /// case-insensitive for ASCII (no `PRAGMA case_sensitive_like` is set) —
 /// `s.qualname LIKE '%.Error'` also matches a same-named lowercase
@@ -651,15 +663,19 @@ fn profile_for(lang: &str) -> LanguageProfile {
 /// cheap, case-insensitive pre-filter here, and re-check every row's
 /// actual `qualname` case-sensitively in Rust (`matches_name_case_sensitive`)
 /// before counting it as a candidate — issue #110.
+/// The prefilter clause, removed to derive the unfiltered fallback statements.
+const NAME_PREFILTER: &str = "s.name IN (:tail, '.' || :tail)\n       AND ";
+
 const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.kind, s.signature
      FROM symbols s
      JOIN files f ON s.file_id = f.id
-     WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
+     WHERE s.name IN (:tail, '.' || :tail)
+       AND (s.qualname = :name OR s.qualname LIKE :p1 OR s.qualname LIKE :p2)
        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
-       AND (? = 0 OR s.kind != 'method')
-       AND s.graph_version = ?
-       AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-       AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = ?
+       AND (:exclude_method = 0 OR s.kind != 'method')
+       AND s.graph_version = :gv
+       AND (f.deleted_version IS NULL OR f.deleted_version > :gv)
+       AND (CASE WHEN f.language IN ('typescript', 'tsx') THEN 'javascript' ELSE f.language END) = :lang
        -- Issue #181: a C# explicit interface impl `C.IA.Run` has no parent
        -- symbol `C.IA`; it is only reachable through the interface, so it is
        -- never a name-fallback candidate (it would make `IA.Run` ambiguous).
@@ -679,10 +695,11 @@ const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.ki
 const ANY_LANG_SQL: &str = "SELECT s.id, s.qualname, s.kind, s.signature, f.language
      FROM symbols s
      JOIN files f ON s.file_id = f.id
-     WHERE (s.qualname = ? OR s.qualname LIKE ? OR s.qualname LIKE ?)
+     WHERE s.name IN (:tail, '.' || :tail)
+       AND (s.qualname = :name OR s.qualname LIKE :p1 OR s.qualname LIKE :p2)
        AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
-       AND s.graph_version = ?
-       AND (f.deleted_version IS NULL OR f.deleted_version > ?)";
+       AND s.graph_version = :gv
+       AND (f.deleted_version IS NULL OR f.deleted_version > :gv)";
 
 /// A type's recorded EXTENDS/IMPLEMENTS/INHERITS edges, for
 /// `resolve_via_inheritance` -- unioned across both shapes issue #79 leaves
@@ -990,6 +1007,10 @@ pub(crate) struct Resolver<'c> {
     exact: Statement<'c>,
     same_lang: Statement<'c>,
     any_lang: Statement<'c>,
+    /// `SAME_LANG_SQL`/`ANY_LANG_SQL` without `NAME_PREFILTER`, for tails
+    /// that are not a plain symbol name (see `name_prefilter_applies`).
+    same_lang_scan: Statement<'c>,
+    any_lang_scan: Statement<'c>,
     hierarchy: Statement<'c>,
     import_suffix: Statement<'c>,
     repo_python_module: Statement<'c>,
@@ -1033,6 +1054,8 @@ impl<'c> Resolver<'c> {
             exact: conn.prepare(EXACT_SQL)?,
             same_lang: conn.prepare(SAME_LANG_SQL)?,
             any_lang: conn.prepare(ANY_LANG_SQL)?,
+            same_lang_scan: conn.prepare(&SAME_LANG_SQL.replace(NAME_PREFILTER, ""))?,
+            any_lang_scan: conn.prepare(&ANY_LANG_SQL.replace(NAME_PREFILTER, ""))?,
             hierarchy: conn.prepare(HIERARCHY_SQL)?,
             import_suffix: conn.prepare(IMPORT_SUFFIX_SQL)?,
             repo_python_module: conn.prepare(REPO_PYTHON_MODULE_SQL)?,
@@ -1557,20 +1580,11 @@ impl<'c> Resolver<'c> {
     ) -> Result<Option<i64>> {
         let profile = profile_for(source_lang);
         let (same_p1, same_p2) = same_lang_patterns(name, &profile);
-        let gv = self.graph_version;
-        let exclude_method: i64 = guard.exclude_method as i64;
-        let same = self.same_lang_lookup(
-            params![name, same_p1, same_p2, exclude_method, gv, gv, source_lang],
-            guard,
-            source_lang,
-            caller,
-            name,
-        )?;
+        let same = self.same_lang_lookup(name, (&same_p1, &same_p2), guard, source_lang, caller)?;
         if same.is_some() || !is_bridge_edge_kind(edge_kind) {
             return Ok(same);
         }
-        let (dot_pattern, colons_pattern) = any_lang_patterns;
-        self.any_lang_lookup(params![name, dot_pattern, colons_pattern, gv, gv], name)
+        self.any_lang_lookup(name, any_lang_patterns)
     }
 
     /// Iterate rows checking `qualname` (at column `col_qualname`) case-
@@ -1609,9 +1623,18 @@ impl<'c> Resolver<'c> {
     /// per-language visibility contract to apply. Consumes the result
     /// lazily, same early-exit-on-second-match shape as `same_lang_lookup`
     /// (see `ANY_LANG_SQL`'s doc for why it carries no `LIMIT`).
-    fn any_lang_lookup(&mut self, query_params: &[&dyn ToSql], name: &str) -> Result<Option<i64>> {
+    fn any_lang_lookup(&mut self, name: &str, patterns: (&str, &str)) -> Result<Option<i64>> {
         let arity = self.arity;
-        let mut rows = self.any_lang.query(query_params)?;
+        let tail = qualname_trailing_name(name);
+        let gv = self.graph_version;
+        let named = named_params! {
+            ":tail": tail, ":name": name, ":p1": patterns.0, ":p2": patterns.1, ":gv": gv,
+        };
+        let mut rows = if name_prefilter_applies(tail) {
+            self.any_lang.query(named)?
+        } else {
+            self.any_lang_scan.query(&named[1..])?
+        };
         let mut matched: Option<i64> = None;
         let is_ambiguous = Self::check_case_sensitive_matches(&mut rows, name, 1, |row| {
             // Issue #186: a C# overload of the wrong arity was never a
@@ -1666,15 +1689,25 @@ impl<'c> Resolver<'c> {
     /// was never really a name match.
     fn same_lang_lookup(
         &mut self,
-        query_params: &[&dyn ToSql],
+        name: &str,
+        patterns: (&str, &str),
         guard: FallbackGuard,
         source_lang: &str,
         caller: CallerContext<'_>,
-        name: &str,
     ) -> Result<Option<i64>> {
         let visibility_rule = profile_for(source_lang).visibility;
         let arity = self.arity;
-        let mut rows = self.same_lang.query(query_params)?;
+        let tail = qualname_trailing_name(name);
+        let gv = self.graph_version;
+        let named = named_params! {
+            ":tail": tail, ":name": name, ":p1": patterns.0, ":p2": patterns.1,
+            ":exclude_method": i64::from(guard.exclude_method), ":gv": gv, ":lang": source_lang,
+        };
+        let mut rows = if name_prefilter_applies(tail) {
+            self.same_lang.query(named)?
+        } else {
+            self.same_lang_scan.query(&named[1..])?
+        };
         let mut kind_eligible = 0usize;
         let mut visible: Vec<i64> = Vec::new();
         let is_ambiguous = Self::check_case_sensitive_matches(&mut rows, name, 2, |row| {
@@ -1952,9 +1985,9 @@ impl<'c> Resolver<'c> {
     ) -> Result<Option<i64>> {
         let name = qualname_trailing_name(type_name);
         let (p1, p2) = same_lang_patterns(name, &profile_for(source_lang));
-        let gv = self.graph_version;
         self.same_lang_lookup(
-            params![name, p1, p2, 0i64, gv, gv, source_lang],
+            name,
+            (&p1, &p2),
             FallbackGuard::NONE,
             source_lang,
             CallerContext {
@@ -1962,7 +1995,6 @@ impl<'c> Resolver<'c> {
                 qualname: None,
                 symbol_id: None,
             },
-            name,
         )
     }
 
@@ -4233,6 +4265,14 @@ fn matches_name_case_sensitive(qualname: &str, name: &str) -> bool {
             .is_some_and(|prefix| prefix.ends_with('.') || prefix.ends_with("::"))
 }
 
+/// Whether `NAME_PREFILTER` is result-preserving for a lookup whose trailing
+/// segment is `tail`: not for TS/JS computed or quoted method keys
+/// (`[Symbol.iterator]`, `'a.b'`), whose `name` is longer than the qualname's
+/// last segment and whose tail ends in `]` or a quote.
+fn name_prefilter_applies(tail: &str) -> bool {
+    !tail.is_empty() && !tail.ends_with([']', '\'', '"', '`'])
+}
+
 /// Index right after the last qualname separator (`.` or `::`) in `s`, or
 /// `None` when `s` has none.
 fn last_qualname_separator(s: &str) -> Option<usize> {
@@ -5122,5 +5162,240 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Issue #255: both name-fallback queries must seek `idx_symbols_name*`
+    /// (never `SCAN s`), the leading-wildcard `LIKE` having no index.
+    #[test]
+    fn name_fallback_queries_seek_the_name_index() {
+        let conn = test_conn();
+        for sql in [super::SAME_LANG_SQL, super::ANY_LANG_SQL] {
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let args =
+                (0..stmt.parameter_count()).map(|i| rusqlite::types::Value::Integer(i as i64));
+            let plan: Vec<String> = stmt
+                .query_map(rusqlite::params_from_iter(args), |row| row.get(3))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            let symbols_step = plan
+                .iter()
+                .find(|d| d.contains(" s ") || d.ends_with(" s") || d.contains(" s USING"))
+                .unwrap_or_else(|| panic!("no step on symbols s: {plan:?}"));
+            assert!(
+                symbols_step.starts_with("SEARCH") && symbols_step.contains("idx_symbols_name"),
+                "name fallback must seek the name index, plan: {plan:?}"
+            );
+        }
+    }
+
+    /// Issue #255: the `name` prefilter is not the decision. A same-named
+    /// symbol whose qualname does not end in the looked-up (two-segment)
+    /// name is still rejected; exact, `.`-suffix and `::`-suffix matches
+    /// still bind.
+    #[test]
+    fn name_prefilter_still_requires_the_qualname_suffix() {
+        let conn = test_conn();
+        let py = insert_file(&conn, "pkg/a.py", "python");
+        let rs = insert_file(&conn, "src/lib.rs", "rust");
+        let exact = insert_symbol(&conn, py, "function", "solo", "solo", None);
+        let dotted = insert_symbol(&conn, py, "method", "process", "pkg.Db.process", None);
+        insert_symbol(&conn, py, "method", "process", "pkg.Cache.process", None);
+        let coloned = insert_symbol(&conn, rs, "function", "new", "crate::db::Db::new", None);
+        insert_symbol(
+            &conn,
+            rs,
+            "function",
+            "new",
+            "crate::cache::Cache::new",
+            None,
+        );
+
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let map = std::collections::HashMap::new();
+        let mut id_of = |target: &str, lang: &str| {
+            let r = reference(target, "CALLS", lang, "caller", None, false);
+            match resolver.resolve(&r, &map).unwrap() {
+                Resolution::Resolved { target_id, .. } => Some(target_id),
+                _ => None,
+            }
+        };
+        assert_eq!(id_of("solo", "python"), Some(exact));
+        assert_eq!(id_of("Db.process", "python"), Some(dotted));
+        assert_eq!(id_of("Db::new", "rust"), Some(coloned));
+        // `name` matches two symbols, but neither qualname ends in `Other.process`.
+        assert_eq!(id_of("Other.process", "python"), None);
+    }
+
+    /// Issue #255: with three retained graph versions, only the resolver's
+    /// own version's rows are candidates (older copies of the same symbol
+    /// neither bind nor make the name ambiguous), and the lookup still seeks
+    /// the name index.
+    #[test]
+    fn name_fallback_ignores_other_graph_versions() {
+        let conn = test_conn();
+        let file = insert_file(&conn, "pkg/a.py", "python");
+        let mut ids = Vec::new();
+        for gv in 1..=3 {
+            conn.execute(
+                "INSERT INTO symbols
+                    (file_id, kind, name, qualname, start_line, start_col, end_line, end_col,
+                     start_byte, end_byte, graph_version)
+                 VALUES (?, 'function', 'util', 'pkg.util', 0, 0, 0, 0, 0, 0, ?)",
+                params![file, gv],
+            )
+            .unwrap();
+            ids.push(conn.last_insert_rowid());
+        }
+        for (gv, id) in (1..=3).zip(&ids) {
+            let mut resolver = Resolver::new(&conn, gv).unwrap();
+            let map = std::collections::HashMap::new();
+            let r = reference("util", "CALLS", "python", "caller.py", None, true);
+            let resolution = resolver.resolve(&r, &map).unwrap();
+            assert!(
+                matches!(resolution, Resolution::Resolved { target_id, .. } if target_id == *id),
+                "version {gv}: {resolution:?}"
+            );
+        }
+    }
+
+    /// Issue #255: resolution output is unchanged. For every lookup shape,
+    /// the statement `any_lang_lookup` picks (prefiltered, or unfiltered for
+    /// non-plain tails) must admit exactly the rows, after the case-sensitive
+    /// re-check, that the unfiltered statement does -- over symbols named the
+    /// way the extractors emit them (C# `.ctor`, TS computed/quoted keys
+    /// included), not derived from the qualname.
+    #[test]
+    fn name_prefilter_admits_the_same_rows_as_the_unfiltered_predicate() {
+        let conn = test_conn();
+        let py = insert_file(&conn, "a.py", "python");
+        let rs = insert_file(&conn, "a.rs", "rust");
+        let cs = insert_file(&conn, "a.cs", "csharp");
+        let ts = insert_file(&conn, "a.ts", "typescript");
+        let sql = insert_file(&conn, "a.sql", "sql");
+        for (f, kind, name, qn) in [
+            (py, "function", "run", "a.run"),
+            (py, "method", "run", "a.Svc.run"),
+            (py, "method", "runner", "a.Svc.runner"),
+            (py, "class", "Run", "Run"),
+            (rs, "function", "run", "crate::a::run"),
+            (rs, "method", "run", "crate::a::Svc::run"),
+            (rs, "function", "run", "run"),
+            (cs, "method", "Run", "N.Svc.Run"),
+            (cs, "method", "Run", "N.Svc.IA.Run"),
+            (cs, "method", ".ctor", "N.Svc..ctor"),
+            (cs, "method", ".cctor", "N.Svc..cctor"),
+            (ts, "method", "[Symbol.iterator]", "K.[Symbol.iterator]"),
+            (ts, "method", "'a.b'", "K.'a.b'"),
+            (ts, "method", "run", "K.run"),
+            (sql, "function", "[run]", "[dbo].[run]"),
+        ] {
+            insert_symbol(&conn, f, kind, name, qn, None);
+        }
+        let any = |tail_ok: bool, n: &str, d: &str, c: &str, tail: &str| -> Vec<i64> {
+            let text = if tail_ok {
+                super::ANY_LANG_SQL.to_string()
+            } else {
+                super::ANY_LANG_SQL.replace(super::NAME_PREFILTER, "")
+            };
+            let mut stmt = conn.prepare(&text).unwrap();
+            let named = rusqlite::named_params! {
+                ":tail": tail, ":name": n, ":p1": d, ":p2": c, ":gv": 1i64,
+            };
+            let args: &[_] = if tail_ok { named } else { &named[1..] };
+            let mut v: Vec<i64> = stmt
+                .query_map(args, |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .filter(|(_, qn)| super::matches_name_case_sensitive(qn, n))
+                .map(|(id, _)| id)
+                .collect();
+            v.sort();
+            v
+        };
+        let mut non_empty = 0;
+        for target in [
+            "run",
+            "Run",
+            "a.run",
+            "Svc.run",
+            "Svc::run",
+            "Svc.Run",
+            "IA.Run",
+            "[run]",
+            "nope",
+            "ctor",
+            "cctor",
+            ".ctor",
+            "Svc..ctor",
+            "K.[Symbol.iterator]",
+            "K.'a.b'",
+            "iterator]",
+        ] {
+            let (name, dot, colons) = super::fuzzy_qualname_patterns(target);
+            let two = super::two_segment_qualname_patterns(target);
+            let (n2, d2, c2) =
+                two.unwrap_or_else(|| (name.to_string(), dot.clone(), colons.clone()));
+            for (n, d, c) in [(name.to_string(), dot, colons), (n2, d2, c2)] {
+                let tail = super::qualname_trailing_name(&n);
+                let expected = any(false, &n, &d, &c, tail);
+                let actual = any(super::name_prefilter_applies(tail), &n, &d, &c, tail);
+                assert_eq!(expected, actual, "target {target:?}, lookup {n:?}");
+                non_empty += usize::from(!expected.is_empty());
+            }
+        }
+        assert!(non_empty >= 8, "fixture should exercise real matches");
+    }
+
+    /// Issue #255: the two-pass rule survives the rewrite -- a same-language
+    /// round never binds a cross-language candidate (a Rust `CALLS` to a
+    /// name only C# declares, constructor included, stays unresolved), while
+    /// a bridge edge kind still crosses.
+    #[test]
+    fn name_fallback_cross_language_false_positive_still_rejected() {
+        let conn = test_conn();
+        let cs = insert_file(&conn, "a.cs", "csharp");
+        let id = insert_symbol(&conn, cs, "method", "Process", "N.Svc.Process", None);
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let map = std::collections::HashMap::new();
+        let call = reference("crate::x::Process", "CALLS", "rust", "b.rs", None, false);
+        assert!(matches!(
+            resolver.resolve(&call, &map).unwrap(),
+            Resolution::Unresolved(_)
+        ));
+        let bridge = reference("crate::x::Process", "RPC_CALL", "rust", "b.rs", None, false);
+        assert!(matches!(
+            resolver.resolve(&bridge, &map).unwrap(),
+            Resolution::Resolved { target_id, .. } if target_id == id
+        ));
+    }
+
+    /// Issue #255: C# constructors (`name = ".ctor"`) and TS computed-key
+    /// methods (`[Symbol.iterator]`) stay name-fallback candidates.
+    #[test]
+    fn name_fallback_keeps_ctor_and_computed_key_candidates() {
+        let conn = test_conn();
+        let cs = insert_file(&conn, "a.cs", "csharp");
+        let ts = insert_file(&conn, "a.ts", "typescript");
+        let ctor = insert_symbol(&conn, cs, "method", ".ctor", "N.Svc..ctor", None);
+        let iter = insert_symbol(
+            &conn,
+            ts,
+            "method",
+            "[Symbol.iterator]",
+            "K.[Symbol.iterator]",
+            None,
+        );
+        let mut resolver = Resolver::new(&conn, 1).unwrap();
+        let map = std::collections::HashMap::new();
+        let mut id_of = |target: &str, lang: &str| {
+            let r = reference(target, "CALLS", lang, "caller", None, false);
+            match resolver.resolve(&r, &map).unwrap() {
+                Resolution::Resolved { target_id, .. } => Some(target_id),
+                _ => None,
+            }
+        };
+        assert_eq!(id_of("N.Svc..ctor", "csharp"), Some(ctor));
+        assert_eq!(id_of("K.[Symbol.iterator]", "typescript"), Some(iter));
     }
 }
