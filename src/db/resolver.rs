@@ -996,6 +996,11 @@ pub(crate) struct Resolver<'c> {
     module_exact: Statement<'c>,
     /// Set when any tier of the current `resolve` saw 2+ candidates.
     saw_ambiguous: bool,
+    /// Set only when an exact-qualname lookup found 2+ in-repo symbols it
+    /// could not choose between (issue #239) -- unlike `saw_ambiguous`,
+    /// never by a loose suffix/name match, so it proves the target is in
+    /// this repository.
+    saw_repo_ambiguous: bool,
     /// Set when `same_lang_lookup` (the guarded name-fallback tier only)
     /// found same-language, same-kind candidate(s) by name but refused
     /// every one of them as not visible — see `VisibilityRule`.
@@ -1033,6 +1038,7 @@ impl<'c> Resolver<'c> {
             repo_python_module: conn.prepare(REPO_PYTHON_MODULE_SQL)?,
             module_exact: conn.prepare(MODULE_EXACT_SQL)?,
             saw_ambiguous: false,
+            saw_repo_ambiguous: false,
             saw_private: false,
             arity: None,
             call_receiver: None,
@@ -1233,6 +1239,7 @@ impl<'c> Resolver<'c> {
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
         self.saw_ambiguous = false;
+        self.saw_repo_ambiguous = false;
         self.saw_private = false;
 
         // `IMPORTS_FILE` with a populated candidate list (Python) always
@@ -1367,6 +1374,12 @@ impl<'c> Resolver<'c> {
         };
         match found {
             Some((id, kind)) => Ok(resolved(id, kind)),
+            // Issue #239: the exact tier found 2+ in-repo candidates (same-arity
+            // overloads), so the target is in this repository, not a foreign
+            // receiver: ambiguous, never a stub.
+            None if refuse_names && self.saw_repo_ambiguous => {
+                Ok(Resolution::Unresolved(UnresolvedReason::Ambiguous))
+            }
             // Tier 3, issue #80's actual scope: the receiver is bound by an
             // import known not to resolve here -- "calls into imports known
             // to resolve outside the repo (standard library, third-party
@@ -1485,12 +1498,14 @@ impl<'c> Resolver<'c> {
                     return Ok(Some(id));
                 }
                 self.saw_ambiguous = true;
+                self.saw_repo_ambiguous = true;
             }
             return Ok(exactly_one(admitted.into_iter()).map(|c| c.id));
         }
         let resolved = collapse_exact_candidates(&candidates);
         if resolved.is_none() && candidates.len() > 1 {
             self.saw_ambiguous = true;
+            self.saw_repo_ambiguous = true;
         }
         Ok(resolved)
     }
@@ -2111,6 +2126,9 @@ impl<'c> Resolver<'c> {
                     Some(existing) if existing == id => {}
                     Some(_) => {
                         self.saw_ambiguous = true;
+                        // Two exact-round candidates naming different real
+                        // symbols are in-repo; suffix matches are loose.
+                        self.saw_repo_ambiguous |= exact_round;
                         return Ok(None);
                     }
                 }
