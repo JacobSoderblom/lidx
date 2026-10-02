@@ -1,5 +1,8 @@
 use crate::db::Db;
-use crate::indexer::channel::{boundary_type_for_kind, bridge_complement};
+use crate::indexer::channel::{
+    WalkDirection, boundary_type_for_kind, bridge_complement, bridge_complements_for,
+    bridge_crossing_allowed, bridge_pair_is_upstream,
+};
 use crate::indexer::config::{
     BridgeOutcome, BridgeTarget, CAP_TRUNCATION_REASON, CROSS_SERVICE_KIND, ConfigScope, Entry,
     config_edge_allowed, prefer_same_service,
@@ -201,6 +204,7 @@ pub fn trace_flow(
     let mut truncated = false;
     let mut reached_target = false;
     let is_upstream = matches!(config.direction, TraceDirection::Upstream);
+    let walk = walk_direction(is_upstream);
     // Issue #81 (R5): every edge that actually produced a hop -- checked
     // once, after the BFS, against `HEURISTIC_RESOLUTION_KINDS` to decide
     // whether suggesting the exclude-heuristics retry is useful at all.
@@ -308,9 +312,10 @@ pub fn trace_flow(
 
             if let Some(ref tq) = edge.target_qualname
                 && bridge_complement(&edge.kind).is_some()
+                && bridge_crossing_allowed(&edge.kind, walk)
             {
                 bridge_targets.extend(ConfigScope::bridges_for(
-                    &entry, &edges, edge, tq, current_id,
+                    &entry, &edges, edge, tq, current_id, walk,
                 ));
             }
 
@@ -413,13 +418,15 @@ pub fn trace_flow(
                     edge_kind,
                     origin_path,
                     key,
+                    walk: bridge_walk,
                     ..
                 } = bridge;
-                if let Some(complement_kinds) = bridge_complement(edge_kind) {
+                let complement_kinds = bridge_complements_for(edge_kind, *bridge_walk);
+                if !complement_kinds.is_empty() {
                     let bridged = db
                         .edges_by_target_qualname_and_kinds(
                             tq,
-                            complement_kinds,
+                            &complement_kinds,
                             languages,
                             graph_version,
                         )
@@ -447,6 +454,12 @@ pub fn trace_flow(
                                 &prev_file,
                                 config.include_snippets,
                             );
+                            hop.bridge_direction =
+                                Some(if bridge_pair_is_upstream(edge_kind, &bridged_edge.kind) {
+                                    WalkDirection::Upstream
+                                } else {
+                                    WalkDirection::Downstream
+                                });
                             hop.cross_language = true;
                             hop.boundary_type = Some(b_type.to_string());
                             hop.boundary_detail = Some(b_detail);
@@ -623,6 +636,14 @@ pub fn trace_flow(
 /// edges via `bridge_complement`), but only checks for existence -- it does
 /// not build hops, consult `visited`, or resolve bridge targets against the
 /// database, so it stays cheap even for a wide final frontier.
+fn walk_direction(is_upstream: bool) -> WalkDirection {
+    if is_upstream {
+        WalkDirection::Upstream
+    } else {
+        WalkDirection::Downstream
+    }
+}
+
 fn has_further_edges(
     db: &Db,
     id: i64,
@@ -633,6 +654,7 @@ fn has_further_edges(
     graph_version: i64,
 ) -> Result<bool> {
     let edges = db.edges_for_symbol_with_dispatch(id, languages, graph_version)?;
+    let walk = walk_direction(is_upstream);
     let allowed = ConfigScope::allowed(entry, &edges);
     for edge in &edges {
         if !config.allowed_kinds.contains(&edge.kind)
@@ -666,7 +688,10 @@ fn has_further_edges(
             return Ok(true);
         }
 
-        if edge.target_qualname.is_some() && bridge_complement(&edge.kind).is_some() {
+        if edge.target_qualname.is_some()
+            && bridge_complement(&edge.kind).is_some()
+            && bridge_crossing_allowed(&edge.kind, walk)
+        {
             return Ok(true);
         }
     }
@@ -739,6 +764,7 @@ fn build_hop(
         boundary_detail,
         protocol_context,
         resolution_kind: edge.resolution_kind.clone(),
+        bridge_direction: None,
     }
 }
 
@@ -1845,6 +1871,7 @@ mod tests {
             boundary_detail: None,
             protocol_context: None,
             resolution_kind: None,
+            bridge_direction: None,
         };
 
         let full_size = estimate_hop_size(&hop, false);

@@ -4,6 +4,7 @@ use crate::indexer::config;
 use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
+use crate::indexer::py_layout::PyLayout;
 use crate::indexer::string_consts::{LocalBinding, StringConsts, scan_enclosing_function};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
@@ -15,6 +16,7 @@ use serde_json::json;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
 use tree_sitter::{Node, Parser};
 
@@ -96,6 +98,10 @@ enum LocalType {
 
 pub struct PythonExtractor {
     parser: Parser,
+    /// Package-root detection (issue #202), set via `with_repo_root`. `None`
+    /// (the `new()` default for standalone extractors) keeps the path-only
+    /// naming: every path component counts.
+    layout: Option<PyLayout>,
 }
 
 impl PythonExtractor {
@@ -103,13 +109,32 @@ impl PythonExtractor {
         let mut parser = Parser::new();
         let language = tree_sitter_python::LANGUAGE;
         parser.set_language(&language.into())?;
-        Ok(Self { parser })
+        Ok(Self {
+            parser,
+            layout: None,
+        })
+    }
+
+    /// Enables package-root detection (issue #202): module names are the
+    /// importable dotted path (see `PyLayout::import_root`), not the filesystem path.
+    pub fn with_repo_root(mut self, repo_root: PathBuf) -> Self {
+        self.layout = Some(PyLayout::new(repo_root));
+        self
     }
 }
 
 impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
     fn module_name_from_rel_path(&self, rel_path: &str) -> String {
-        module_name_from_rel_path(rel_path)
+        match &self.layout {
+            Some(layout) => module_name_from_rel_path(&layout.strip_root(rel_path)),
+            None => module_name_from_rel_path(rel_path),
+        }
+    }
+
+    fn begin_run(&mut self) {
+        if let Some(layout) = &self.layout {
+            layout.clear();
+        }
     }
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
@@ -166,7 +191,13 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
         module_name: &str,
         edges: &mut Vec<crate::indexer::extract::EdgeInput>,
     ) {
-        resolve_import_file_edges(repo_root, file_rel_path, module_name, edges);
+        resolve_import_file_edges(
+            repo_root,
+            self.layout.as_ref(),
+            file_rel_path,
+            module_name,
+            edges,
+        );
     }
 }
 
@@ -251,11 +282,16 @@ fn identifiers_outside_imports(src: &str) -> std::collections::HashSet<String> {
 
 pub fn resolve_import_file_edges(
     repo_root: &Path,
+    layout: Option<&PyLayout>,
     file_rel_path: &str,
     file_module: &str,
     edges: &mut Vec<EdgeInput>,
 ) {
     let base_package = base_package_parts(file_rel_path, file_module);
+    let search_roots = match layout {
+        Some(layout) => layout.search_roots(file_rel_path),
+        None => Rc::new(vec![PathBuf::new()]),
+    };
     let mut resolved = Vec::new();
     for edge in edges.iter() {
         if edge.kind != "IMPORTS" {
@@ -303,7 +339,7 @@ pub fn resolve_import_file_edges(
         };
         let dst_path = candidates
             .iter()
-            .find_map(|candidate| resolve_module_to_file(repo_root, candidate));
+            .find_map(|candidate| resolve_module_to_file(repo_root, &search_roots, candidate));
         let confidence = if dst_path.is_some() { 1.0 } else { 0.0 };
         resolved.push(EdgeInput {
             kind: "IMPORTS_FILE".to_string(),
@@ -2786,12 +2822,20 @@ fn absolutize_module(candidate: &str, base_package: &[String]) -> Option<String>
     }
 }
 
-fn resolve_module_to_file(repo_root: &Path, module: &str) -> Option<String> {
+fn resolve_module_to_file(repo_root: &Path, roots: &[PathBuf], module: &str) -> Option<String> {
+    roots
+        .iter()
+        .find_map(|root| resolve_module_under(&repo_root.join(root), root, module))
+}
+
+/// Looks `module` up under `base` (the absolute directory of `root`, which
+/// is relative to the repo); the result path is repo-relative via `root`.
+fn resolve_module_under(base: &Path, root: &Path, module: &str) -> Option<String> {
     let parts: Vec<&str> = module.split('.').filter(|part| !part.is_empty()).collect();
     if parts.is_empty() {
         return None;
     }
-    if !package_prefixes_have_init(repo_root, &parts) {
+    if !package_prefixes_have_init(base, &parts) {
         return None;
     }
     let mut rel = std::path::PathBuf::new();
@@ -2799,24 +2843,24 @@ fn resolve_module_to_file(repo_root: &Path, module: &str) -> Option<String> {
         rel.push(part);
     }
     let module_file = rel.with_extension("py");
-    if repo_root.join(&module_file).is_file() {
-        return Some(util::normalize_path(&module_file));
+    if base.join(&module_file).is_file() {
+        return Some(util::normalize_path(&root.join(&module_file)));
     }
     let package_init = rel.join("__init__.py");
-    if repo_root.join(&package_init).is_file() {
-        return Some(util::normalize_path(&package_init));
+    if base.join(&package_init).is_file() {
+        return Some(util::normalize_path(&root.join(&package_init)));
     }
     None
 }
 
-fn package_prefixes_have_init(repo_root: &Path, parts: &[&str]) -> bool {
+fn package_prefixes_have_init(base: &Path, parts: &[&str]) -> bool {
     if parts.len() <= 1 {
         return true;
     }
     let mut rel = std::path::PathBuf::new();
     for part in &parts[..parts.len() - 1] {
         rel.push(part);
-        let init = repo_root.join(&rel).join("__init__.py");
+        let init = base.join(&rel).join("__init__.py");
         if !init.is_file() {
             return false;
         }

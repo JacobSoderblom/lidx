@@ -375,6 +375,11 @@ pub(crate) struct LanguageProfile {
     /// file); `None` when it is no client. See
     /// `Db::rederive_deferred_rpc_calls`.
     pub deferred_rpc: Option<DeferredRpcFn>,
+    /// Whether a call whose receiver type could not be inferred stays
+    /// `UnresolvedReason::External` when nothing resolves it. Off for C#,
+    /// where an extension method's receiver may be of a type the extractor
+    /// cannot name, so the reason must not depend on that.
+    pub untyped_receiver_is_external: bool,
     /// Finishes a language's own deferred-receiver marker (a
     /// `DeferredMarker` this language's extractor wrote) from the declarations it
     /// names. `None` for a language without one.
@@ -457,6 +462,7 @@ impl LanguageProfile {
         import_member_fallback: false,
         visibility: VisibilityRule::None,
         deferred_rpc: None,
+        untyped_receiver_is_external: true,
         deferred_receiver: None,
     };
 }
@@ -1438,7 +1444,9 @@ impl<'c> Resolver<'c> {
             // call happened to create it, defeating "who calls X?". Stay
             // unresolved instead, as before #80 -- see
             // `UnresolvedReason::External`'s doc.
-            None if receiver_type == Some("") => {
+            None if receiver_type == Some("")
+                && profile_for(r.source_lang).untyped_receiver_is_external =>
+            {
                 Ok(Resolution::Unresolved(UnresolvedReason::External))
             }
             None if self.saw_ambiguous => Ok(Resolution::Unresolved(UnresolvedReason::Ambiguous)),

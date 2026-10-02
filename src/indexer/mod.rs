@@ -27,10 +27,23 @@ pub fn validate_repo_root(repo: &Path) -> Result<PathBuf> {
         .with_context(|| format!("canonicalize repo root {}", repo.display()))
 }
 
+/// The stored record of `file` when a reindex can carry it forward instead
+/// of re-extracting it: same hash, no forced re-extraction, not stale.
+fn unchanged_record<'a>(
+    existing: &'a HashMap<String, FileRecord>,
+    file: &scan::ScannedFile,
+    force_reextract: bool,
+    stale_files: &HashSet<String>,
+) -> Option<&'a FileRecord> {
+    existing.get(&file.rel_path).filter(|r| {
+        r.hash == file.hash && !force_reextract && !stale_files.contains(&file.rel_path)
+    })
+}
+
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 11;
+pub const EXTRACTOR_VERSION: i64 = 12;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -48,6 +61,7 @@ mod js_stale;
 pub mod markdown;
 pub mod postgres;
 pub mod proto;
+mod py_layout;
 pub mod python;
 pub mod rust;
 pub mod scan;
@@ -114,7 +128,10 @@ impl Indexer {
         let commit_sha = db.graph_version_commit(graph_version)?;
 
         let mut extractors: HashMap<String, Box<dyn extract::LanguageExtractor>> = HashMap::new();
-        extractors.insert("python".into(), Box::new(python::PythonExtractor::new()?));
+        extractors.insert(
+            "python".into(),
+            Box::new(python::PythonExtractor::new()?.with_repo_root(repo_root.clone())),
+        );
         extractors.insert(
             "rust".into(),
             Box::new(rust::RustExtractor::new()?.with_repo_root(repo_root.clone())),
@@ -303,9 +320,16 @@ impl Indexer {
         let changed_rels = self.changed_batch_paths(&batch_rels)?;
         let stale_cs = self.stale_csharp_files(&changed_rels, graph_version, live_csharp)?;
         stale_files.extend(stale_cs);
+        if batch_rels.iter().any(|p| py_layout::is_layout_marker(p)) {
+            let stale_py = self.stale_python_files(graph_version)?;
+            stale_files.extend(stale_py.into_iter().filter(|p| !batch_rels.contains(p)));
+        }
         self.begin_extraction_run(&changed_rels, graph_version, true)?;
         let mut all_paths: Vec<PathBuf> = paths.to_vec();
         all_paths.extend(stale_files.iter().map(|rel| self.repo_root.join(rel)));
+        let stale_callers = self.prescan_files(all_paths.iter().cloned(), graph_version)?;
+        all_paths.extend(stale_callers.iter().map(|rel| self.repo_root.join(rel)));
+        stale_files.extend(stale_callers);
         for path in &all_paths {
             let rel_path = match crate::util::normalize_rel_path(&self.repo_root, path) {
                 Ok(value) => value,
@@ -329,6 +353,7 @@ impl Indexer {
             };
             if let Some(existing) = self.db.get_file_by_path(&scanned.rel_path)?
                 && existing.hash == scanned.hash
+                && existing.deleted_version.is_none()
                 && !stale_files.contains(&scanned.rel_path)
             {
                 stats.skipped += 1;
@@ -407,6 +432,7 @@ impl Indexer {
                 any_symbols_deleted,
                 "incremental sync",
             )?;
+            self.db.reconcile_rpc_edges(self.graph_version)?;
 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -540,6 +566,8 @@ impl Indexer {
             stale_files.extend(js_paths);
         }
 
+        // ... and Python files whose package root a layout marker moved.
+        stale_files.extend(self.stale_python_files(previous_graph_version)?);
         // ... and C# files whose project's `global using`s changed.
         let scanned_csharp: Vec<String> = scanned
             .iter()
@@ -557,6 +585,12 @@ impl Indexer {
         );
         // A forced re-extraction visits every file, so it needs no seed.
         self.begin_extraction_run(&changed_paths, previous_graph_version, !force_reextract)?;
+        let to_extract: Vec<PathBuf> = scanned
+            .iter()
+            .filter(|f| unchanged_record(&existing_map, f, force_reextract, &stale_files).is_none())
+            .map(|f| f.abs_path.clone())
+            .collect();
+        stale_files.extend(self.prescan_files(to_extract.into_iter(), previous_graph_version)?);
 
         let mut seen = HashSet::new();
         let mut stats = IndexStats {
@@ -581,10 +615,8 @@ impl Indexer {
         for file in &scanned {
             seen.insert(file.rel_path.clone());
 
-            if let Some(existing_record) = existing_map.get(&file.rel_path)
-                && existing_record.hash == file.hash
-                && !force_reextract
-                && !stale_files.contains(&file.rel_path)
+            if let Some(existing_record) =
+                unchanged_record(&existing_map, file, force_reextract, &stale_files)
             {
                 // Unchanged: skip the parse (tree-sitter + symbol extraction is the
                 // expensive part) and carry the file's rows forward further down.
@@ -831,6 +863,7 @@ impl Indexer {
                 any_symbols_deleted || stats.deleted > 0,
                 "reindex",
             )?;
+            self.db.reconcile_rpc_edges(self.graph_version)?;
 
             let remaining = unresolved_edge_count(&self.db, self.graph_version)?;
             self.db.set_meta_i64("unresolved_edge_floor", remaining)?;
@@ -1024,7 +1057,9 @@ impl Indexer {
                     scan::scan_path(&self.repo_root, &path)?,
                     self.db.get_file_by_path(rel)?,
                 ) {
-                    (Some(scanned), Some(existing)) => existing.hash == scanned.hash,
+                    (Some(scanned), Some(existing)) => {
+                        existing.hash == scanned.hash && existing.deleted_version.is_none()
+                    }
                     _ => false,
                 }
             } else {
@@ -1055,6 +1090,27 @@ impl Indexer {
             self.cs_globals_db()
                 .stale_extension_callers(changed, graph_version)?,
         );
+        Ok(stale)
+    }
+
+    /// Python files whose module name under the current package layout
+    /// differs from the one `graph_version` stores: a root marker
+    /// (`__init__.py`, `pyproject.toml`, `setup.py`, `setup.cfg`) was added,
+    /// removed or edited since they were extracted, so a hash skip would keep
+    /// a stale qualname. Only files still on disk.
+    fn stale_python_files(&mut self, graph_version: i64) -> Result<HashSet<String>> {
+        let Some(extractor) = self.extractors.get_mut("python") else {
+            return Ok(HashSet::new());
+        };
+        extractor.begin_run();
+        let mut stale = HashSet::new();
+        for (path, stored) in self.db.python_module_names(graph_version)? {
+            if self.repo_root.join(&path).is_file()
+                && extractor.module_name_from_rel_path(&path) != stored
+            {
+                stale.insert(path);
+            }
+        }
         Ok(stale)
     }
 
@@ -1094,6 +1150,36 @@ impl Indexer {
             extractor.seed_extension_methods(&methods);
         }
         Ok(())
+    }
+
+    /// Let each file's own extractor register cross-file declarations
+    /// before any file is extracted (see `LanguageExtractor::prescan`), and
+    /// re-extract the hash-unchanged C# files whose stored unresolved calls
+    /// name a declaration found: they could not resolve it when last
+    /// indexed. Returns those callers' repo-relative paths.
+    fn prescan_files(
+        &mut self,
+        paths: impl Iterator<Item = PathBuf>,
+        graph_version: i64,
+    ) -> Result<HashSet<String>> {
+        let mut declared: HashSet<String> = HashSet::new();
+        for path in paths {
+            let Ok(rel) = crate::util::normalize_rel_path(&self.repo_root, &path) else {
+                continue;
+            };
+            let Some(language) = scan::language_for_path(&path) else {
+                continue;
+            };
+            let Ok(source) = crate::util::read_to_string(&path) else {
+                continue;
+            };
+            if let Some(extractor) = self.extractors.get_mut(language) {
+                let module_name = extractor.module_name_from_rel_path(&rel);
+                declared.extend(extractor.prescan(&source, &module_name));
+            }
+        }
+        self.cs_globals_db()
+            .stale_unresolved_extension_callers(&declared, graph_version)
     }
 
     fn extract_file(&mut self, file: &scan::ScannedFile, source: &str) -> Result<ExtractedFile> {

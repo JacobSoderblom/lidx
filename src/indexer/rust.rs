@@ -33,6 +33,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     import_member_fallback: false,
     visibility: VisibilityRule::RustModule,
     deferred_rpc: None,
+    untyped_receiver_is_external: true,
     deferred_receiver: Some(resolve_deferred),
 };
 
