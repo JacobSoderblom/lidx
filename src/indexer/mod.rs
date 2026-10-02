@@ -30,7 +30,7 @@ pub fn validate_repo_root(repo: &Path) -> Result<PathBuf> {
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 11;
+pub const EXTRACTOR_VERSION: i64 = 12;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -114,7 +114,10 @@ impl Indexer {
         let commit_sha = db.graph_version_commit(graph_version)?;
 
         let mut extractors: HashMap<String, Box<dyn extract::LanguageExtractor>> = HashMap::new();
-        extractors.insert("python".into(), Box::new(python::PythonExtractor::new()?));
+        extractors.insert(
+            "python".into(),
+            Box::new(python::PythonExtractor::new()?.with_repo_root(repo_root.clone())),
+        );
         extractors.insert(
             "rust".into(),
             Box::new(rust::RustExtractor::new()?.with_repo_root(repo_root.clone())),
