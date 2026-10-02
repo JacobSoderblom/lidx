@@ -1877,6 +1877,87 @@ fn build_impact_config(
 struct ImpactSeeds {
     ids: Vec<i64>,
     upstream_only: Vec<i64>,
+    config_seeds: Option<Value>,
+}
+
+/// Seeds resolved from a config URI, plus (upstream only) the `config_seeds`
+/// note naming the URI each seed was read from.
+struct ConfigUriSeeds {
+    ids: Vec<i64>,
+    note: Option<Value>,
+}
+
+/// Seeds an impact analysis from a config URI. Downstream seeds from
+/// providers (CONFIG_SOURCE), upstream from consumers (CONFIG_READ /
+/// CONFIG_BIND), both from all. Upstream also seeds from the readers of each
+/// `__` section ancestor of an `env://` URI (#227): a service reading section
+/// `Database` depends on `Database__ConnectionString`. A seed found under more
+/// than one URI keeps its most specific match.
+fn config_uri_seeds(
+    db: &crate::db::Db,
+    uri: &str,
+    direction: crate::impact::TraversalDirection,
+    graph_version: i64,
+) -> Result<ConfigUriSeeds> {
+    use crate::impact::TraversalDirection;
+    let kinds: &[&str] = match direction {
+        TraversalDirection::Downstream => &["CONFIG_SOURCE"],
+        TraversalDirection::Upstream => &["CONFIG_READ", "CONFIG_BIND"],
+        TraversalDirection::Both => &[],
+    };
+    if direction != TraversalDirection::Upstream {
+        let ids = db.source_symbols_for_config_uri(uri, kinds, graph_version)?;
+        return Ok(ConfigUriSeeds { ids, note: None });
+    }
+    let mut ids: Vec<i64> = Vec::new();
+    let mut matches = Vec::new();
+    let sections = crate::indexer::config::env_section_prefixes(uri);
+    for (candidate, kind) in std::iter::once((uri.to_string(), "exact"))
+        .chain(sections.into_iter().map(|s| (s, "section")))
+    {
+        let mut symbols = Vec::new();
+        for id in db.source_symbols_for_config_uri(&candidate, kinds, graph_version)? {
+            if !ids.contains(&id) {
+                ids.push(id);
+                if let Some(sym) = db.get_symbol_by_id(id)? {
+                    symbols.push(sym.qualname);
+                }
+            }
+        }
+        if !symbols.is_empty() {
+            matches.push(json!({"uri": candidate, "match": kind, "symbols": symbols}));
+        }
+    }
+    let note = (!ids.is_empty()).then(|| json!({"seed_uri": uri, "matches": matches}));
+    Ok(ConfigUriSeeds { ids, note })
+}
+
+/// Response for a config URI that no CONFIG edge mentions: it is not an
+/// unresolved symbol, so say so and point at a text search instead.
+fn config_uri_not_found_payload(uri: &str, direction: &str) -> Value {
+    let name = uri.split_once("://").map_or(uri, |(_, n)| n);
+    let mut next_hops = vec![json!({
+        "method": "search",
+        "params": {"query": name, "limit": 10, "fixed_string": true},
+        "description": format!("Text search for '{name}' to find where it is declared or read"),
+    })];
+    if direction != "both" {
+        next_hops.insert(
+            0,
+            json!({
+                "method": "analyze_impact",
+                "params": {"qualname": uri, "direction": "both"},
+                "description": "Retry across all CONFIG edge kinds and both directions",
+            }),
+        );
+    }
+    json!({
+        "resolved": false,
+        "message": format!(
+            "No config source or reader was found for '{uri}'. The URI appears in no CONFIG_SOURCE, CONFIG_READ or CONFIG_BIND edge; it may be spelled differently or declared outside the indexed files."
+        ),
+        "next_hops": next_hops,
+    })
 }
 
 /// Widens `ids` with the members of a container symbol (issue #249): nothing
@@ -1915,23 +1996,22 @@ fn resolve_batch_seed_ids(
     let dir = config.direct.direction.as_str();
 
     if crate::indexer::config::is_config_uri(qualname) {
-        let uri_kinds: &[&str] = match dir {
-            "downstream" => &["CONFIG_SOURCE"],
-            "upstream" => &["CONFIG_READ", "CONFIG_BIND"],
-            _ => &[],
-        };
-        let ids = indexer
-            .db()
-            .source_symbols_for_config_uri(qualname, uri_kinds, graph_version)?;
+        let ConfigUriSeeds { ids, note } = config_uri_seeds(
+            indexer.db(),
+            qualname,
+            crate::impact::TraversalDirection::from(dir),
+            graph_version,
+        )?;
         if ids.is_empty() {
             return Err(anyhow::anyhow!(
-                "no symbols found for config URI: {}",
+                "No config source or reader found for config URI: {}",
                 qualname
             ));
         }
         Ok(ImpactSeeds {
             ids,
             upstream_only: Vec::new(),
+            config_seeds: note,
         })
     } else {
         let symbol = indexer
@@ -1947,7 +2027,11 @@ fn resolve_batch_seed_ids(
         } else {
             Vec::new()
         };
-        Ok(ImpactSeeds { ids, upstream_only })
+        Ok(ImpactSeeds {
+            ids,
+            upstream_only,
+            config_seeds: None,
+        })
     }
 }
 
@@ -1963,6 +2047,7 @@ fn batch_error_entry(
     crate::impact::types::BatchImpactEntry {
         seed_qualname: qn.to_string(),
         test_layer: None,
+        config_seeds: None,
         seeds: vec![],
         affected: vec![],
         summary: crate::impact::types::ImpactSummary {
@@ -2103,6 +2188,7 @@ fn analyze_impact_inner(
                 Ok(ImpactSeeds {
                     ids: seed_ids,
                     upstream_only,
+                    config_seeds,
                 }) => match crate::impact::analyze_impact_multi_layer(
                     indexer.db(),
                     &seed_ids,
@@ -2133,6 +2219,7 @@ fn analyze_impact_inner(
                             layers: result.layers,
                             lower_bound: result.lower_bound,
                             recovery: None,
+                            config_seeds,
                         }
                     }
                     Err(e) => {
@@ -2152,16 +2239,23 @@ fn analyze_impact_inner(
                     // candidates aren't already computed the way resolve_by_query's
                     // failure carries them -- find them the same way (find_candidates
                     // is the one candidate-search algorithm).
-                    let candidates =
-                        crate::resolve::find_candidates(indexer.db(), qn, ctx.graph_version);
-                    let recovery = crate::resolve::build_resolution_recovery_payload(
-                        indexer.db(),
-                        qn,
-                        &candidates,
-                        ctx.graph_version,
-                        "analyze_impact",
-                        &raw_params,
-                    );
+                    let recovery = if crate::indexer::config::is_config_uri(qn) {
+                        config_uri_not_found_payload(
+                            qn,
+                            params.direction.as_deref().unwrap_or("both"),
+                        )
+                    } else {
+                        let candidates =
+                            crate::resolve::find_candidates(indexer.db(), qn, ctx.graph_version);
+                        crate::resolve::build_resolution_recovery_payload(
+                            indexer.db(),
+                            qn,
+                            &candidates,
+                            ctx.graph_version,
+                            "analyze_impact",
+                            &raw_params,
+                        )
+                    };
                     batch_error_entry(qn, e.to_string(), Some(recovery))
                 }
             };
@@ -2193,30 +2287,22 @@ fn analyze_impact_inner(
         crate::impact::TraversalDirection::from(params.direction.as_deref().unwrap_or("both"));
 
     // Check for config URI in qualname (e.g., "secret://datamgr-db-conn-str", "env://DATABASE")
-    // Direction-aware: downstream seeds from providers (CONFIG_SOURCE),
-    // upstream seeds from consumers (CONFIG_READ), both uses all.
+    let mut config_seeds_note: Option<Value> = None;
     let seed_ids: Vec<i64> = if let Some(qualname) = params.qualname.as_deref() {
         if crate::indexer::config::is_config_uri(qualname) {
-            let uri_kinds: &[&str] = match traversal_direction {
-                crate::impact::TraversalDirection::Downstream => &["CONFIG_SOURCE"],
-                crate::impact::TraversalDirection::Upstream => &["CONFIG_READ", "CONFIG_BIND"],
-                crate::impact::TraversalDirection::Both => &[],
-            };
-            let ids = indexer.db().source_symbols_for_config_uri(
+            let ConfigUriSeeds { ids, note } = config_uri_seeds(
+                indexer.db(),
                 qualname,
-                uri_kinds,
+                traversal_direction,
                 ctx.graph_version,
             )?;
             if ids.is_empty() {
-                return Ok(crate::resolve::build_resolution_recovery_payload(
-                    indexer.db(),
+                return Ok(config_uri_not_found_payload(
                     qualname,
-                    &[],
-                    ctx.graph_version,
-                    "analyze_impact",
-                    &raw_params,
+                    params.direction.as_deref().unwrap_or("both"),
                 ));
             }
+            config_seeds_note = note;
             ids
         } else {
             vec![]
@@ -2526,11 +2612,14 @@ fn analyze_impact_inner(
             if let Some(note) = test_layer_note {
                 obj.insert("test_layer".to_string(), note);
             }
+            if let Some(note) = config_seeds_note {
+                obj.insert("config_seeds".to_string(), note);
+            }
         }
         return Ok(value);
     }
 
-    if resolution_next_hops.is_empty() && test_layer_note.is_none() {
+    if resolution_next_hops.is_empty() && test_layer_note.is_none() && config_seeds_note.is_none() {
         Ok(json!(result))
     } else {
         let mut value = serde_json::to_value(&result)?;
@@ -2540,6 +2629,9 @@ fn analyze_impact_inner(
             }
             if let Some(note) = test_layer_note {
                 obj.insert("test_layer".to_string(), note);
+            }
+            if let Some(note) = config_seeds_note {
+                obj.insert("config_seeds".to_string(), note);
             }
         }
         Ok(value)
