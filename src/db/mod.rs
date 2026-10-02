@@ -4904,7 +4904,85 @@ mod tests {
         let found = db
             .edges_by_target_qualname_and_kinds(real, &["RPC_IMPL"], None, 1)
             .unwrap();
+        // The exact edge plus the guessed-path edge that now binds to the
+        // route (widening is symmetric with RPC_CALL).
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn test_rpc_route_guess_widening_is_symmetric_for_impl() {
+        let (mut db, _temp) = create_test_db();
+        let file_id = db
+            .upsert_file("src/svc.ts", "h1", "typescript", 100, 0)
+            .unwrap();
+        let symbols = vec![make_test_symbol("svc.getTables", None, "function", 1)];
+        let inserted = db
+            .insert_symbols(file_id, "src/svc.ts", &symbols, 1, None)
+            .unwrap();
+        let symbol_map: HashMap<String, i64> = inserted
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        let edge = |kind: &str, src: Option<&str>, tq: &str| crate::indexer::extract::EdgeInput {
+            kind: kind.to_string(),
+            source_qualname: src.map(str::to_string),
+            target_qualname: Some(tq.to_string()),
+            ..Default::default()
+        };
+        // The implementer guessed the package wrong (none); the proto is real.
+        let guessed = "/datacatalogservice/gettables";
+        let real = "/datacatalog.v1.datacatalogservice/gettables";
+        db.insert_edges(
+            file_id,
+            &[edge("RPC_IMPL", Some("svc.getTables"), guessed)],
+            &symbol_map,
+            1,
+            None,
+        )
+        .unwrap();
+        let proto_id = db.upsert_file("p.proto", "h2", "proto", 10, 0).unwrap();
+        let proto_syms = db
+            .insert_symbols(
+                proto_id,
+                "p.proto",
+                &[make_test_symbol(
+                    "datacatalog.v1.DataCatalogService.GetTables",
+                    None,
+                    "rpc",
+                    1,
+                )],
+                1,
+                None,
+            )
+            .unwrap();
+        let proto_map: HashMap<String, i64> = proto_syms
+            .iter()
+            .map(|s| (s.qualname.clone(), s.id))
+            .collect();
+        db.insert_edges(
+            proto_id,
+            &[edge(
+                "RPC_ROUTE",
+                Some("datacatalog.v1.DataCatalogService.GetTables"),
+                real,
+            )],
+            &proto_map,
+            1,
+            None,
+        )
+        .unwrap();
+        // proto side -> implementer
+        let found = db
+            .edges_by_target_qualname_and_kinds(real, &["RPC_IMPL"], None, 1)
+            .unwrap();
         assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, "RPC_IMPL");
+        // implementer side -> proto
+        let found = db
+            .edges_by_target_qualname_and_kinds(guessed, &["RPC_ROUTE"], None, 1)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, "RPC_ROUTE");
     }
 
     #[test]

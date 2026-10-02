@@ -903,7 +903,9 @@ impl Db {
         languages: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<Edge>> {
-        let is_rpc = kinds.iter().any(|k| matches!(*k, "RPC_CALL" | "RPC_IMPL"));
+        let is_rpc = kinds
+            .iter()
+            .any(|k| matches!(*k, "RPC_CALL" | "RPC_IMPL" | "RPC_ROUTE"));
         if !is_rpc || !target_qualname.starts_with('/') {
             return self.edges_by_exact_target(
                 target_qualname,
@@ -920,33 +922,40 @@ impl Db {
             self.edges_by_exact_target(route, route, kinds, languages, graph_version)?;
         // The other side may be the wrong guess: pull in its edges whose
         // guessed path resolves to our route.
-        if kinds.contains(&"RPC_CALL") && own.is_none() {
+        // Symmetric in edge kind: callers (RPC_CALL) and implementers
+        // (RPC_IMPL) both store guessed paths.
+        if own.is_none() {
             let (_, svc_method) = rpc_split(target_qualname);
-            let conn = self.read_conn()?;
-            let mut stmt = conn.prepare(
-                "SELECT DISTINCT target_qualname FROM edges
-                 WHERE kind = 'RPC_CALL' AND graph_version = ?1
-                   AND target_qualname != ?2
-                   AND (target_qualname = '/' || ?3
-                        OR substr(target_qualname, -length(?3) - 1) = '.' || ?3)",
-            )?;
-            let guesses: Vec<String> = stmt
-                .query_map(
-                    rusqlite::params![graph_version, target_qualname, svc_method],
-                    |r| r.get(0),
-                )?
-                .collect::<rusqlite::Result<_>>()?;
-            for guess in guesses {
-                if self.resolve_rpc_route(&guess, graph_version)?.as_deref()
-                    == Some(target_qualname)
-                {
-                    edges.extend(self.edges_by_exact_target(
-                        &guess,
-                        target_qualname,
-                        &["RPC_CALL"],
-                        languages,
-                        graph_version,
-                    )?);
+            for kind in ["RPC_CALL", "RPC_IMPL"] {
+                if !kinds.contains(&kind) {
+                    continue;
+                }
+                let conn = self.read_conn()?;
+                let mut stmt = conn.prepare(
+                    "SELECT DISTINCT target_qualname FROM edges
+                     WHERE kind = ?4 AND graph_version = ?1
+                       AND target_qualname != ?2
+                       AND (target_qualname = '/' || ?3
+                            OR substr(target_qualname, -length(?3) - 1) = '.' || ?3)",
+                )?;
+                let guesses: Vec<String> = stmt
+                    .query_map(
+                        rusqlite::params![graph_version, target_qualname, svc_method, kind],
+                        |r| r.get(0),
+                    )?
+                    .collect::<rusqlite::Result<_>>()?;
+                for guess in guesses {
+                    if self.resolve_rpc_route(&guess, graph_version)?.as_deref()
+                        == Some(target_qualname)
+                    {
+                        edges.extend(self.edges_by_exact_target(
+                            &guess,
+                            target_qualname,
+                            &[kind],
+                            languages,
+                            graph_version,
+                        )?);
+                    }
                 }
             }
         }
