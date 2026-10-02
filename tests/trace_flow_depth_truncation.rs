@@ -30,11 +30,7 @@ fn call(repo_root: std::path::PathBuf, db_path: std::path::PathBuf, params: &str
         envelope.get("error").is_none_or(|e| e.is_null()),
         "trace_flow returned an error: {envelope}"
     );
-    let result = envelope["result"].clone();
-    if result.get("truncated").is_some() && result.get("data").is_some() {
-        return result["data"].clone();
-    }
-    result
+    envelope["result"].clone()
 }
 
 fn setup() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {

@@ -38,6 +38,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     visibility: VisibilityRule::Recorded,
     deferred_receiver: Some(resolve_deferred),
     deferred_rpc: Some(deferred_rpc_calls),
+    untyped_receiver_is_external: false,
     ..LanguageProfile::DEFAULT
 };
 
@@ -310,6 +311,15 @@ pub struct CSharpExtractor {
     project_globals: Vec<String>,
 }
 
+/// Whether `source` contains `this` followed by whitespace anywhere: a
+/// superset of every extension method's `this` modifier (the space after it
+/// may be a tab or a newline).
+fn has_this_modifier_text(source: &str) -> bool {
+    source
+        .match_indices("this")
+        .any(|(i, _)| source[i + 4..].starts_with(char::is_whitespace))
+}
+
 /// The `global using` directives in `source`, one entry per directive: the
 /// namespace, or `Alias=Target` for an alias. Line-based (a cheap pre-pass
 /// over changed files); `global using static` is skipped like `using static`.
@@ -372,6 +382,26 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
                 &method.signature,
             );
         }
+    }
+
+    /// Cost: a full `extract()` whose output is discarded (the registry
+    /// fills as a side effect), but only for files whose text can declare an
+    /// extension method: `static` plus the `this` modifier.
+    fn prescan(&mut self, source: &str, module_name: &str) -> Vec<String> {
+        if !source.contains("static") || !has_this_modifier_text(source) {
+            return Vec::new();
+        }
+        let Ok(extracted) = self.extract(source, module_name) else {
+            return Vec::new();
+        };
+        extracted
+            .symbols
+            .iter()
+            .filter(|s| {
+                s.kind == "method" && s.signature.as_deref().is_some_and(is_extension_signature)
+            })
+            .map(|s| s.name.clone())
+            .collect()
     }
 
     fn module_name_from_rel_path(&self, rel_path: &str) -> String {
@@ -3517,6 +3547,7 @@ fn resolve_pending_grpc_calls(edges: &mut Vec<EdgeInput>, registry: &GrpcClientF
         let imports = ImportContext {
             namespaces,
             aliases,
+            ..Default::default()
         };
         let source_qualname = edge.source_qualname.clone().unwrap_or_default();
         edges.extend(build_grpc_call_edges(
@@ -4879,6 +4910,9 @@ struct ImportContext {
     /// the *sole* candidate (an alias can only ever mean one thing, so it
     /// short-circuits the namespace-guessing path entirely).
     aliases: HashMap<String, String>,
+    /// Types named by `using static Type;`: the extension methods they
+    /// declare are in scope without their namespace being imported.
+    static_types: Vec<String>,
 }
 
 impl ImportContext {
@@ -4925,13 +4959,9 @@ fn collect_import_context_rec(node: Node<'_>, source: &str, out: &mut ImportCont
 }
 
 fn record_using_directive(node: Node<'_>, source: &str, out: &mut ImportContext) {
-    // `using static Type;` brings a *type's* members into scope directly
-    // (so a bare `Method()` — not `Type.Method()` — could resolve through
-    // it), which is a different shape than everything else this module
-    // handles and isn't covered by the issue this exists to fix.
-    // ponytail: not handled — see module doc. Upgrade path: track the
-    // named type as an implicit extra receiver-free candidate, separate
-    // from `namespaces`/`aliases` (both of which qualify a *receiver*).
+    // `using static Type;` brings a *type's* members into scope directly.
+    // Only extension-method scoping consumes it (`static_types`); a bare
+    // `Method()` through it stays unhandled.
     let text = node_text(node, source);
     let after_using = text
         .trim()
@@ -4941,7 +4971,14 @@ fn record_using_directive(node: Node<'_>, source: &str, out: &mut ImportContext)
         .strip_prefix("using")
         .map(str::trim)
         .unwrap_or("");
-    if after_using.starts_with("static") {
+    if let Some(ty) = after_using
+        .strip_prefix("static")
+        .filter(|t| t.starts_with(char::is_whitespace))
+    {
+        let ty = ty.trim().trim_end_matches(';').trim();
+        if !ty.is_empty() {
+            out.static_types.push(ty.to_string());
+        }
         return;
     }
 
@@ -5259,7 +5296,14 @@ fn namespace_in_scope(namespace: &str, ctx: &Context) -> bool {
     if namespace.is_empty() {
         return false;
     }
-    if !ctx.namespace_stack.is_empty() && ctx.namespace_stack.join(".") == namespace {
+    // The call site's own namespace and every enclosing one, no `using`
+    // needed (`Acme.Mid.Inner` sees `Acme.Mid` and `Acme`).
+    let current = ctx.namespace_stack.join(".");
+    if current == namespace
+        || current
+            .strip_prefix(namespace)
+            .is_some_and(|rest| rest.starts_with('.'))
+    {
         return true;
     }
     if ctx.imports.namespaces.iter().any(|ns| ns == namespace) {
@@ -5318,7 +5362,11 @@ fn extension_method_candidates(
     let mut seen = std::collections::HashSet::new();
     let mut candidates = Vec::new();
     for entry in entries {
-        if !namespace_in_scope(&entry.namespace, ctx) {
+        let static_import = entry
+            .qualname
+            .rsplit_once('.')
+            .is_some_and(|(ty, _)| ctx.imports.static_types.iter().any(|t| t == ty));
+        if !static_import && !namespace_in_scope(&entry.namespace, ctx) {
             continue;
         }
         if let (
@@ -6075,6 +6123,7 @@ fn grpc_edges(
     let imports = ImportContext {
         namespaces: scope.namespaces.clone(),
         aliases: scope.aliases.clone(),
+        ..Default::default()
     };
     build_grpc_call_edges(&[client], &rpc, "", &None, 0, 0, &imports)
         .into_iter()

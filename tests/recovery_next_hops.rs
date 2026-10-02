@@ -220,7 +220,7 @@ fn empty_search_drop_case_hop_description_is_honest() {
 }
 
 #[test]
-fn non_empty_search_is_unchanged() {
+fn non_empty_search_returns_results_object() {
     if !rg_available() {
         return;
     }
@@ -229,10 +229,10 @@ fn non_empty_search_is_unchanged() {
     // A pattern that DOES match
     let value = rpc_json(&temp, "search", r#"{"query":"def\\s+greet","limit":5}"#);
 
-    // Non-empty search keeps existing bare-array format
-    let hits = value["result"]
+    // Non-empty search has the same {results, ...} shape as an empty one (#221)
+    let hits = value["result"]["results"]
         .as_array()
-        .expect("non-empty search should return a bare array (unchanged format)");
+        .expect("non-empty search should return {results: [...]}");
     assert!(!hits.is_empty());
 }
 

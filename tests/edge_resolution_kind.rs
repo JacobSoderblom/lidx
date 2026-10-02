@@ -234,7 +234,16 @@ fn trace_flow_hops_expose_resolution_kind_and_omit_it_when_unresolved() {
         "the direct call to format_url binds exact: {direct_hop}"
     );
 
-    let bridged_hop = trace
+    // A reader reaches its source over the bridge walking upstream.
+    let up = call_rpc(
+        tmp.path().to_path_buf(),
+        tmp.path().join(".lidx").join(".lidx.sqlite"),
+        "trace_flow",
+        r#"{"start_qualname":"settings.read_url","direction":"upstream"}"#,
+    );
+    let bridged_hop = up["trace"]
+        .as_array()
+        .expect("trace should be an array")
         .iter()
         .find(|h| h["edge_kind"] == "CONFIG_SOURCE")
         .expect("expected a bridged CONFIG_SOURCE hop into k8s/deploy.yaml");

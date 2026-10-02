@@ -51,7 +51,7 @@ fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
     )
 }
 
-/// Result payload of `method`, with an error envelope or a truncation wrapper
+/// Result payload of `method`, with the error envelope
 /// normalised away. Panics on an error response: a followed hop must work.
 fn run(fx: &(tempfile::TempDir, PathBuf, PathBuf), method: &str, params: &Value) -> Value {
     let raw = rpc::call(
@@ -67,11 +67,7 @@ fn run(fx: &(tempfile::TempDir, PathBuf, PathBuf), method: &str, params: &Value)
         envelope.get("error").is_none_or(Value::is_null),
         "{method} {params} returned an error: {envelope}"
     );
-    let result = envelope["result"].clone();
-    if result.get("truncated").is_some() && result.get("data").is_some() {
-        return result["data"].clone();
-    }
-    result
+    envelope["result"].clone()
 }
 
 fn hops(result: &Value) -> Vec<Value> {

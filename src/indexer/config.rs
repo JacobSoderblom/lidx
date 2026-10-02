@@ -154,6 +154,9 @@ pub struct BridgeTarget {
     /// HTTP method of the edge (`detail.method`), so a bridge pairs a POST
     /// call with POST routes only (see `prefer_same_service`).
     pub method: Option<String>,
+    /// The walk direction the bridge was found in; it decides which
+    /// complements the bridge may cross to.
+    pub walk: crate::indexer::channel::WalkDirection,
 }
 
 /// What a traversal step may expand a node under: everything (`Unscoped`), or
@@ -452,6 +455,7 @@ impl ConfigScope {
         edge: &Edge,
         uri: &str,
         source_id: i64,
+        walk: crate::indexer::channel::WalkDirection,
     ) -> Vec<BridgeTarget> {
         let mut keys: Vec<String> = match (edge.kind.as_str(), entry) {
             (_, Entry::Key(u, k)) if u == uri => vec![k.clone()],
@@ -488,6 +492,7 @@ impl ConfigScope {
             no_return: key.is_some() || entry.key().is_some(),
             key,
             method: http_method(edge),
+            walk,
         };
         if keys.is_empty() {
             vec![target(None)]

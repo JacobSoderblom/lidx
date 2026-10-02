@@ -30,9 +30,8 @@ fn build() -> (tempfile::TempDir, Indexer) {
 }
 
 fn hit_paths(result: &Value) -> BTreeSet<String> {
-    let arr = result
+    let arr = result["results"]
         .as_array()
-        .or_else(|| result["results"].as_array())
         .unwrap_or_else(|| panic!("unexpected search shape: {result}"));
     arr.iter()
         .map(|h| h["path"].as_str().unwrap().to_string())
@@ -169,8 +168,8 @@ fn valid_params_report_nothing_ignored() {
     // rg emits files in nondeterministic order; compare the hit sets.
     assert_eq!(hit_paths(&lenient), hit_paths(&strict));
     assert_eq!(
-        lenient.as_array().unwrap().len(),
-        strict.as_array().unwrap().len()
+        lenient["results"].as_array().unwrap().len(),
+        strict["results"].as_array().unwrap().len()
     );
 }
 

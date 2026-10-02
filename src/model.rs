@@ -1172,6 +1172,11 @@ pub struct TraceHop {
     /// CONFIG_* -- or an edge kind the resolver doesn't label).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution_kind: Option<String>,
+    /// Which way a bridged hop was crossed: upstream (to a caller or
+    /// publisher) or downstream (to a callee or subscriber). Absent on a
+    /// hop reached over a direct edge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge_direction: Option<crate::indexer::channel::WalkDirection>,
 }
 
 #[cfg(test)]

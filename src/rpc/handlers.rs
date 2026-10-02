@@ -231,11 +231,37 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     } else {
         vec![symbol.id]
     };
-    let incoming_cross = if wants_callers || wants_tests {
+    let mut incoming_cross = if wants_callers || wants_tests {
         cross_boundary_refs(indexer.db(), &cross_seeds, false, &ctx)?
     } else {
         Vec::new()
     };
+    // A proto `rpc`'s callers are the RPC_CALL sources bound to its route.
+    if (wants_callers || wants_tests) && symbol.kind == "rpc" {
+        for edge in indexer.db().rpc_bound_edges(
+            symbol.id,
+            "RPC_CALL",
+            ctx.languages.as_deref(),
+            ctx.graph_version,
+        )? {
+            if let Some(sym) = edge
+                .source_symbol_id
+                .map(|id| indexer.db().get_symbol_by_id(id))
+                .transpose()?
+                .flatten()
+            {
+                incoming_cross.push(ExplainRef {
+                    symbol: sym,
+                    via_interface: false,
+                    file_level: false,
+                    evidence: edge.evidence_snippet,
+                    edge_kind: edge.kind,
+                    protocol_context: None,
+                    resolution_kind: edge.resolution_kind,
+                });
+            }
+        }
+    }
     let outgoing_cross = if wants_callees {
         cross_boundary_refs(indexer.db(), &cross_seeds, true, &ctx)?
     } else {
@@ -275,8 +301,25 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             && (e.source_symbol_id == Some(symbol.id)
                 || (e.kind == "IMPLEMENTS" && e.target_symbol_id == Some(symbol.id)))
     });
+    // A proto `rpc` is implemented by the RPC_IMPL sources bound to its route.
+    let rpc_implementers: Vec<i64> = if wants_implements && symbol.kind == "rpc" {
+        indexer
+            .db()
+            .rpc_bound_edges(
+                symbol.id,
+                "RPC_IMPL",
+                ctx.languages.as_deref(),
+                ctx.graph_version,
+            )?
+            .into_iter()
+            .filter_map(|e| e.source_symbol_id)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let has_implements = wants_implements
         && (has_direct_implements
+            || !rpc_implementers.is_empty()
             || !indexer
                 .db()
                 .implementing_types(symbol.id, ctx.graph_version)?
@@ -843,6 +886,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 }
             }
         }
+        for id in rpc_implementers {
+            if !related.contains(&id) {
+                related.push(id);
+            }
+        }
         for target_id in related {
             if let Ok(Some(impl_sym)) = indexer.db().get_symbol_by_id(target_id) {
                 impl_total += 1;
@@ -1060,36 +1108,53 @@ fn cross_boundary_refs(
 ) -> Result<Vec<ExplainRef>> {
     // Outgoing starts from the client kinds and crosses to the server side;
     // incoming starts from the server kinds and crosses back to the clients.
-    let mut allowed_kinds: Vec<String> = if outgoing {
+    // Bridge crossing follows the walk direction, so each side runs in the
+    // direction its bridge points: a callee-side kind (RPC_IMPL, HTTP_ROUTE,
+    // CHANNEL_SUBSCRIBE, CONFIG_READ) crosses upstream, the rest downstream.
+    use crate::indexer::channel::bridge_hop_is_reversed;
+    use crate::traversal::TraceDirection;
+    let start_kinds = if outgoing {
         CLIENT_BRIDGE_KINDS
     } else {
         SERVER_BRIDGE_KINDS
-    }
-    .iter()
-    .map(|k| k.to_string())
-    .collect();
-    if outgoing {
-        // Resolved method -> options-class binding; a direct edge, no bridge.
-        allowed_kinds.push("CONFIG_BIND".to_string());
-    }
-    let config = crate::traversal::TraceConfig {
-        max_hops: 1,
-        max_bytes: usize::MAX,
-        allowed_kinds,
-        ..Default::default()
     };
-    let hops = crate::traversal::trace_flow(
-        db,
-        seeds.to_vec(),
-        None,
-        ctx.languages.as_deref(),
-        ctx.graph_version,
-        &config,
-    )?
-    .hops;
-    let mut refs: Vec<ExplainRef> = hops
-        .into_iter()
-        .filter_map(|hop| {
+    let mut passes: Vec<(TraceDirection, Vec<String>)> = Vec::new();
+    for (direction, upstream) in [
+        (TraceDirection::Downstream, false),
+        (TraceDirection::Upstream, true),
+    ] {
+        let mut kinds: Vec<String> = start_kinds
+            .iter()
+            .filter(|k| bridge_hop_is_reversed(k) == upstream)
+            .map(|k| k.to_string())
+            .collect();
+        if outgoing && !upstream {
+            // Resolved method -> options-class binding; a direct edge, no bridge.
+            kinds.push("CONFIG_BIND".to_string());
+        }
+        if !kinds.is_empty() {
+            passes.push((direction, kinds));
+        }
+    }
+    let mut refs: Vec<ExplainRef> = Vec::new();
+    for (direction, allowed_kinds) in passes {
+        let config = crate::traversal::TraceConfig {
+            max_hops: 1,
+            max_bytes: usize::MAX,
+            direction,
+            allowed_kinds,
+            ..Default::default()
+        };
+        let hops = crate::traversal::trace_flow(
+            db,
+            seeds.to_vec(),
+            None,
+            ctx.languages.as_deref(),
+            ctx.graph_version,
+            &config,
+        )?
+        .hops;
+        refs.extend(hops.into_iter().filter_map(|hop| {
             let edge_kind = if config.allowed_kinds.contains(&hop.edge_kind) {
                 // Direct edge from a seed. Incoming wants only bridged hops.
                 if !outgoing {
@@ -1114,8 +1179,8 @@ fn cross_boundary_refs(
                 protocol_context: hop.protocol_context,
                 resolution_kind: hop.resolution_kind,
             })
-        })
-        .collect();
+        }));
+    }
     if !outgoing {
         // CONFIG_BIND is resolved and unbridged, so trace_flow's downstream
         // walk never sees it arriving; read it straight off the seeds.
@@ -3286,7 +3351,9 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
         }]);
     }
 
-    Ok(json!(results))
+    // An object even when non-empty, so the dispatcher can report truncation
+    // beside the hits without changing the response shape (#221).
+    Ok(json!({"results": results}))
 }
 
 // ---------------------------------------------------------------------------

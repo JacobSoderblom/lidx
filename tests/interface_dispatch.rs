@@ -22,11 +22,7 @@ fn call(repo: &std::path::Path, db: &std::path::Path, method: &str, params: Valu
         envelope.get("error").is_none_or(|e| e.is_null()),
         "{method} errored: {envelope}"
     );
-    let result = envelope["result"].clone();
-    if result.get("truncated").is_some() && result.get("data").is_some() {
-        return result["data"].clone();
-    }
-    result
+    envelope["result"].clone()
 }
 
 fn names(v: &Value) -> Vec<String> {

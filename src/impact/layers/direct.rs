@@ -7,6 +7,7 @@
 use crate::db::Db;
 use crate::impact::confidence::apply_distance_decay;
 use crate::impact::types::{ConfidenceScore, ImpactSource, LayerResult, ParentLink};
+use crate::indexer::channel::WalkDirection;
 use crate::indexer::config::{
     BridgeOutcome, BridgeTarget, CAP_TRUNCATION_REASON, CROSS_SERVICE_KIND, ConfigScope, Entry,
     config_edge_allowed, prefer_same_service,
@@ -27,6 +28,16 @@ pub enum TraversalDirection {
     /// Follow all edges
     #[default]
     Both,
+}
+
+impl From<TraversalDirection> for WalkDirection {
+    fn from(d: TraversalDirection) -> Self {
+        match d {
+            TraversalDirection::Upstream => WalkDirection::Upstream,
+            TraversalDirection::Downstream => WalkDirection::Downstream,
+            TraversalDirection::Both => WalkDirection::Both,
+        }
+    }
 }
 
 impl From<&str> for TraversalDirection {
@@ -142,17 +153,6 @@ fn resolve_next_id(edge: &Edge, current_id: i64, direction: TraversalDirection) 
     next_symbol(edge, current_id, direction)
 }
 
-/// Whether crossing a bridge from a symbol holding an `edge_kind` edge walks
-/// against caller/publisher -> callee/subscriber order. The hop's parent is the
-/// symbol holding `edge_kind`, so a callee-side kind means the bridged symbol
-/// is the caller. Independent of the BFS direction (issue #103).
-fn bridge_hop_is_reversed(edge_kind: &str) -> bool {
-    matches!(
-        edge_kind,
-        "RPC_IMPL" | "CHANNEL_SUBSCRIBE" | "HTTP_ROUTE" | "CONFIG_READ"
-    )
-}
-
 /// One BFS frontier entry: a node to expand under `entry`.
 struct QueueItem {
     id: i64,
@@ -187,11 +187,13 @@ fn resolve_bridge_targets(
             origin_path,
             source_id,
             method,
+            walk,
             ..
         } = bridge;
-        if let Some(complement_kinds) = crate::indexer::channel::bridge_complement(edge_kind) {
+        let complement_kinds = crate::indexer::channel::bridge_complements_for(edge_kind, *walk);
+        if !complement_kinds.is_empty() {
             let bridged = db
-                .edges_by_target_qualname_and_kinds(tq, complement_kinds, languages, graph_version)
+                .edges_by_target_qualname_and_kinds(tq, &complement_kinds, languages, graph_version)
                 .unwrap_or_default();
             for (bridged_edge, speculative) in
                 prefer_same_service(tq, origin_path, method.as_deref(), &bridged)
@@ -226,7 +228,7 @@ fn resolve_bridge_targets(
                     } else {
                         bridged_edge.resolution_kind.clone()
                     },
-                    bridge_hop_is_reversed(edge_kind),
+                    crate::indexer::channel::bridge_pair_is_upstream(edge_kind, &bridged_edge.kind),
                 );
                 // A re-entry keeps the minimum distance and the first path;
                 // its own parent is recorded as an additional path.
@@ -502,8 +504,10 @@ pub fn analyze_direct_impact_scoped(
                     }
 
                     // Collect bridge targets
+                    let walk = direction_at(*current_id, current_distance).into();
                     if let Some(ref tq) = edge.target_qualname
                         && crate::indexer::channel::bridge_complement(&edge.kind).is_some()
+                        && crate::indexer::channel::bridge_crossing_allowed(&edge.kind, walk)
                     {
                         bridge_targets.extend(ConfigScope::bridges_for(
                             entry,
@@ -511,6 +515,7 @@ pub fn analyze_direct_impact_scoped(
                             edge,
                             tq,
                             *current_id,
+                            walk,
                         ));
                     }
 
@@ -1098,12 +1103,12 @@ mod tests {
             db.insert_edges(file_id, &[callee, caller], &symbol_map, 1, None)
                 .unwrap();
 
-            let run = |seed: i64| {
+            let run = |seed: i64, direction: TraversalDirection| {
                 analyze_direct_impact(
                     &db,
                     &[seed],
                     3,
-                    TraversalDirection::Upstream,
+                    direction,
                     &HashSet::new(),
                     &[],
                     true,
@@ -1113,7 +1118,7 @@ mod tests {
                 )
                 .unwrap()
             };
-            let from_callee = run(id_of("svc.Handler"));
+            let from_callee = run(id_of("svc.Handler"), TraversalDirection::Upstream);
             let hop = from_callee
                 .parent_map
                 .get(&id_of("svc.client"))
@@ -1122,7 +1127,7 @@ mod tests {
                 hop.3,
                 "{callee_kind} -> caller hop must be reversed: {hop:?}"
             );
-            let from_caller = run(id_of("svc.client"));
+            let from_caller = run(id_of("svc.client"), TraversalDirection::Downstream);
             let hop = from_caller
                 .parent_map
                 .get(&id_of("svc.Handler"))
