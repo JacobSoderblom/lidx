@@ -2500,7 +2500,90 @@ fn collect_import_bindings(root: Node<'_>, source: &str) -> ImportBindings {
             }
         }
     }
+    collect_dynamic_import_bindings(root, source, &mut bindings);
     bindings
+}
+
+/// Bindings of `const { a, b: c } = await import('x')` / `const m = await
+/// import('x')` at any scope, recorded like the static named / namespace
+/// imports of `x`. A static binding of the same name wins.
+fn collect_dynamic_import_bindings(root: Node<'_>, source: &str, out: &mut ImportBindings) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+        if node.kind() != "variable_declarator" {
+            continue;
+        }
+        let (Some(name), Some(mut value)) = (
+            node.child_by_field_name("name"),
+            node.child_by_field_name("value"),
+        ) else {
+            continue;
+        };
+        while matches!(
+            value.kind(),
+            "await_expression" | "parenthesized_expression"
+        ) {
+            let Some(inner) = value.named_child(0) else {
+                break;
+            };
+            value = inner;
+        }
+        if !is_dynamic_import(value) {
+            continue;
+        }
+        let Some(spec) = dynamic_import_specifier(value, source) else {
+            continue;
+        };
+        let mut bind = |local: String, imported: Option<String>| {
+            out.entry(local).or_insert((spec.clone(), imported));
+        };
+        match name.kind() {
+            "identifier" => bind(node_text(name, source), None),
+            "object_pattern" => {
+                let mut c = name.walk();
+                for prop in name.named_children(&mut c) {
+                    match prop.kind() {
+                        "shorthand_property_identifier_pattern" => {
+                            let n = node_text(prop, source);
+                            bind(n.clone(), Some(n));
+                        }
+                        "object_assignment_pattern" => {
+                            if let Some(left) = prop.child_by_field_name("left") {
+                                let n = node_text(left, source);
+                                bind(n.clone(), Some(n));
+                            }
+                        }
+                        "pair_pattern" => {
+                            let (Some(key), Some(val)) = (
+                                prop.child_by_field_name("key"),
+                                prop.child_by_field_name("value"),
+                            ) else {
+                                continue;
+                            };
+                            let val = match val.kind() {
+                                "assignment_pattern" => val.child_by_field_name("left"),
+                                _ => Some(val),
+                            };
+                            if let Some(val) = val.filter(|v| v.kind() == "identifier") {
+                                let key = node_text(key, source);
+                                let key = unquote_string_literal(&key).unwrap_or(key);
+                                let imported = if key == "default" {
+                                    DEFAULT_EXPORT.to_string()
+                                } else {
+                                    key
+                                };
+                                bind(node_text(val, source), Some(imported));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Names bound from `require(..)` / `import(..)` at any scope.
@@ -2598,7 +2681,7 @@ fn import_placeholder(raw: &str, ctx: &Context) -> Option<String> {
         Some((root, rest)) => (root, Some(rest)),
         None => (raw.as_str(), None),
     };
-    if ctx.local_types.contains_key(root) {
+    if ctx.local_types.contains_key(root) && !ctx.required_names.contains(root) {
         return None;
     }
     let (spec, imported) = ctx.import_bindings.get(root)?;
@@ -5366,6 +5449,16 @@ fn handle_import(
         Some(value) => value,
         None => return,
     };
+    push_imports_edge(node, target, ctx, source, output);
+}
+
+fn push_imports_edge(
+    node: Node<'_>,
+    target: String,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     output.edges.push(EdgeInput {
@@ -5387,39 +5480,33 @@ fn is_dynamic_import(node: Node<'_>) -> bool {
             .is_some_and(|f| f.kind() == "import")
 }
 
+/// The text of a string literal or substitution-free template literal.
+fn static_string_arg(arg: Node<'_>, source: &str) -> Option<String> {
+    if arg.kind() == "template_string" {
+        let mut cursor = arg.walk();
+        if arg
+            .named_children(&mut cursor)
+            .any(|c| c.kind() == "template_substitution")
+        {
+            return None;
+        }
+    } else if arg.kind() != "string" {
+        return None;
+    }
+    unquote_string_literal(&node_text(arg, source))
+}
+
+/// The specifier of `import('<literal>')`; `None` for a non-literal argument.
+fn dynamic_import_specifier(call: Node<'_>, source: &str) -> Option<String> {
+    static_string_arg(call_arguments(call).into_iter().next()?, source)
+}
+
 /// Emits IMPORTS for `import('<literal>')`; a non-literal or substituted
 /// template argument emits nothing.
 fn handle_dynamic_import(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    let Some(arg) = call_arguments(node).into_iter().next() else {
-        return;
-    };
-    let literal = match arg.kind() {
-        "string" => true,
-        "template_string" => {
-            let mut cursor = arg.walk();
-            !arg.named_children(&mut cursor)
-                .any(|c| c.kind() == "template_substitution")
-        }
-        _ => false,
-    };
-    let Some(target) = literal
-        .then(|| unquote_string_literal(&node_text(arg, source)))
-        .flatten()
-    else {
-        return;
-    };
-    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
-    let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
-    output.edges.push(EdgeInput {
-        kind: "IMPORTS".to_string(),
-        source_qualname: Some(ctx.module.clone()),
-        target_qualname: Some(target),
-        detail: None,
-        evidence_snippet: snippet,
-        evidence_start_line: Some(start_line),
-        evidence_end_line: Some(end_line),
-        ..Default::default()
-    });
+    if let Some(target) = dynamic_import_specifier(node, source) {
+        push_imports_edge(node, target, ctx, source, output);
+    }
 }
 
 fn extract_import_target(node: Node<'_>, source: &str, allow_fallback: bool) -> Option<String> {
@@ -6183,8 +6270,6 @@ export async function run(name: string) {
   const { buildApp } = await import('./app.js');
   import('./then.js').then(m => m.go());
   await import(`./tpl.js`);
-  await import(name);
-  await import(`./x/${name}.js`);
   await import('@opentelemetry/api');
 }
 "#;
@@ -6194,24 +6279,50 @@ export async function run(name: string) {
             .edges
             .iter()
             .filter(|e| e.kind == "IMPORTS")
-            .map(|e| e.target_qualname.clone().unwrap())
+            .map(|e| {
+                (
+                    e.target_qualname.clone().unwrap(),
+                    e.evidence_start_line.unwrap(),
+                )
+            })
             .collect();
         imports.sort();
-        assert_eq!(
-            imports,
-            vec![
-                "./app.js",
-                "./helper.js",
-                "./then.js",
-                "./tpl.js",
-                "@opentelemetry/api"
-            ]
-        );
+        let want: Vec<(String, i64)> = [
+            ("./app.js", 4),
+            ("./helper.js", 2),
+            ("./then.js", 5),
+            ("./tpl.js", 6),
+            ("@opentelemetry/api", 7),
+        ]
+        .map(|(t, l)| (t.to_string(), l))
+        .to_vec();
+        assert_eq!(imports, want);
         assert!(!file.edges.iter().any(|e| {
             e.target_qualname
                 .as_deref()
                 .is_some_and(|t| t.ends_with("import"))
         }));
+    }
+
+    #[test]
+    fn dynamic_import_non_literal_emits_nothing() {
+        let source = r#"
+export async function run(name: string) {
+  await import(name);
+  await import(`./x/${name}.js`);
+  await import();
+}
+"#;
+        let mut extractor = JavascriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "src.index").unwrap();
+        assert!(
+            !file
+                .edges
+                .iter()
+                .any(|e| e.kind == "IMPORTS" || e.target_qualname.as_deref() == Some("import")),
+            "{:?}",
+            file.edges
+        );
     }
 
     #[test]
