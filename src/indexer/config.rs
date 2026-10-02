@@ -399,12 +399,7 @@ impl ConfigScope {
                 }
                 allowed.insert(secret_uri);
                 allowed.insert(var.to_string());
-                let name = &var["env://".len()..];
-                for (idx, _) in name.match_indices("__") {
-                    if idx > 0 {
-                        allowed.insert(format!("env://{}", &name[..idx]));
-                    }
-                }
+                allowed.extend(env_section_prefixes(var));
                 continue;
             }
             let Some(target) = e.target_qualname.as_deref() else {

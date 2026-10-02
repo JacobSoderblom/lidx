@@ -1910,6 +1910,7 @@ fn config_uri_seeds(
         return Ok(ConfigUriSeeds { ids, note: None });
     }
     let mut ids: Vec<i64> = Vec::new();
+    let mut seen = HashSet::new();
     let mut matches = Vec::new();
     let sections = crate::indexer::config::env_section_prefixes(uri);
     for (candidate, kind) in std::iter::once((uri.to_string(), "exact"))
@@ -1917,7 +1918,7 @@ fn config_uri_seeds(
     {
         let mut symbols = Vec::new();
         for id in db.source_symbols_for_config_uri(&candidate, kinds, graph_version)? {
-            if !ids.contains(&id) {
+            if seen.insert(id) {
                 ids.push(id);
                 if let Some(sym) = db.get_symbol_by_id(id)? {
                     symbols.push(sym.qualname);
@@ -1932,16 +1933,27 @@ fn config_uri_seeds(
     Ok(ConfigUriSeeds { ids, note })
 }
 
-/// Response for a config URI that no CONFIG edge mentions: it is not an
-/// unresolved symbol, so say so and point at a text search instead.
-fn config_uri_not_found_payload(uri: &str, direction: &str) -> Value {
+/// Response for a config URI that yielded no seeds: it is not an unresolved
+/// symbol, so say what is true of the URI and point at a retry and a text
+/// search instead. Distinguishes a URI the graph knows (declared but with no
+/// match for `direction`) from one it has never seen.
+fn config_uri_not_found_payload(
+    db: &crate::db::Db,
+    uri: &str,
+    direction: crate::impact::TraversalDirection,
+    graph_version: i64,
+) -> Value {
     let name = uri.split_once("://").map_or(uri, |(_, n)| n);
+    let both = direction == crate::impact::TraversalDirection::Both;
+    let known = db
+        .source_symbols_for_config_uri(uri, &[], graph_version)
+        .is_ok_and(|ids| !ids.is_empty());
     let mut next_hops = vec![json!({
         "method": "search",
         "params": {"query": name, "limit": 10, "fixed_string": true},
         "description": format!("Text search for '{name}' to find where it is declared or read"),
     })];
-    if direction != "both" {
+    if !both {
         next_hops.insert(
             0,
             json!({
@@ -1951,13 +1963,16 @@ fn config_uri_not_found_payload(uri: &str, direction: &str) -> Value {
             }),
         );
     }
-    json!({
-        "resolved": false,
-        "message": format!(
+    let message = if known {
+        format!(
+            "No config source or reader matches '{uri}' for this direction. The URI is in the index, but has no CONFIG_READ/CONFIG_BIND reader (upstream) or CONFIG_SOURCE provider (downstream); try direction 'both'."
+        )
+    } else {
+        format!(
             "No config source or reader was found for '{uri}'. The URI appears in no CONFIG_SOURCE, CONFIG_READ or CONFIG_BIND edge; it may be spelled differently or declared outside the indexed files."
-        ),
-        "next_hops": next_hops,
-    })
+        )
+    };
+    json!({"resolved": false, "message": message, "next_hops": next_hops})
 }
 
 /// Widens `ids` with the members of a container symbol (issue #249): nothing
@@ -1994,18 +2009,17 @@ fn resolve_batch_seed_ids(
     graph_version: i64,
 ) -> Result<ImpactSeeds> {
     let dir = config.direct.direction.as_str();
+    let direction = crate::impact::TraversalDirection::from(dir);
 
     if crate::indexer::config::is_config_uri(qualname) {
-        let ConfigUriSeeds { ids, note } = config_uri_seeds(
-            indexer.db(),
-            qualname,
-            crate::impact::TraversalDirection::from(dir),
-            graph_version,
-        )?;
+        let ConfigUriSeeds { ids, note } =
+            config_uri_seeds(indexer.db(), qualname, direction, graph_version)?;
         if ids.is_empty() {
+            let payload =
+                config_uri_not_found_payload(indexer.db(), qualname, direction, graph_version);
             return Err(anyhow::anyhow!(
-                "No config source or reader found for config URI: {}",
-                qualname
+                "{}",
+                payload["message"].as_str().unwrap_or_default()
             ));
         }
         Ok(ImpactSeeds {
@@ -2018,7 +2032,6 @@ fn resolve_batch_seed_ids(
             .db()
             .get_symbol_by_qualname(qualname, graph_version)?
             .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", qualname))?;
-        let direction = crate::impact::TraversalDirection::from(dir);
         let mut ids = vec![symbol.id];
         let members =
             expand_container_members(indexer.db(), symbol.id, &mut ids, direction, graph_version)?;
@@ -2241,8 +2254,12 @@ fn analyze_impact_inner(
                     // is the one candidate-search algorithm).
                     let recovery = if crate::indexer::config::is_config_uri(qn) {
                         config_uri_not_found_payload(
+                            indexer.db(),
                             qn,
-                            params.direction.as_deref().unwrap_or("both"),
+                            crate::impact::TraversalDirection::from(
+                                base_config.direct.direction.as_str(),
+                            ),
+                            ctx.graph_version,
                         )
                     } else {
                         let candidates =
@@ -2298,8 +2315,10 @@ fn analyze_impact_inner(
             )?;
             if ids.is_empty() {
                 return Ok(config_uri_not_found_payload(
+                    indexer.db(),
                     qualname,
-                    params.direction.as_deref().unwrap_or("both"),
+                    traversal_direction,
+                    ctx.graph_version,
                 ));
             }
             config_seeds_note = note;

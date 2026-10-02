@@ -24,6 +24,44 @@ spec:
               value: "x"
             - name: A__B__C
               value: "y"
+            - name: Orphan__Var
+              value: "z"
+            - name: DB_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: datamgr-db-conn-str
+                  key: value
+"#;
+
+const BICEP: &str = r#"resource dbSecret 'Microsoft.KeyVault/vaults/secrets@2021-06-01-preview' = {
+  name: 'datamgr-db-conn-str'
+  properties: {
+    value: 'x'
+  }
+}
+"#;
+
+const WIRING: &str = r#"
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
+
+namespace Acme
+{
+    public class DatabaseOptions { public string ConnectionString { get; set; } }
+
+    public static class Wiring
+    {
+        public static void AddDatabase(IServiceCollection services)
+        {
+            services.AddOptions<DatabaseOptions>().BindConfiguration("Database");
+        }
+
+        public static void ReadSecret(IConfiguration config)
+        {
+            var s = config.GetSection("datamgr-db-conn-str");
+        }
+    }
+}
 "#;
 
 const APP: &str = r#"
@@ -50,7 +88,12 @@ fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
         .unwrap();
     common::write_files(
         tmp.path(),
-        &[("k8s/deploy.yaml", DEPLOYMENT), ("App.cs", APP)],
+        &[
+            ("k8s/deploy.yaml", DEPLOYMENT),
+            ("infra/main.bicep", BICEP),
+            ("App.cs", APP),
+            ("Wiring.cs", WIRING),
+        ],
     );
     let repo = tmp.path().to_path_buf();
     let db_path = repo.join(".lidx").join(".lidx.sqlite");
@@ -220,5 +263,69 @@ fn both_direction_has_no_section_seeding() {
             !names.contains(&"Acme.Startup.ReadSection".to_string()),
             "{names:?}"
         );
+    }
+}
+
+#[test]
+fn bound_options_reader_found_via_section() {
+    let (_tmp, repo, db) = setup();
+    for r in both_modes(&repo, &db, "env://DATABASE__CONNECTIONSTRING", "upstream") {
+        let names = seed_names(&r);
+        assert!(
+            names.contains(&"Acme.Wiring.AddDatabase".to_string()),
+            "{names:?}\n{r}"
+        );
+    }
+}
+
+#[test]
+fn known_uri_without_readers_gets_accurate_message() {
+    let (_tmp, repo, db) = setup();
+    for r in both_modes(&repo, &db, "env://ORPHAN__VAR", "upstream") {
+        let text = r.to_string();
+        assert!(text.contains("is in the index"), "{text}");
+        assert!(!text.contains("appears in no CONFIG"), "{text}");
+        assert!(!text.contains("Symbol 'env://"), "{text}");
+    }
+}
+
+#[test]
+fn unknown_message_is_identical_in_single_and_batch() {
+    let (_tmp, repo, db) = setup();
+    let [s, b] = both_modes(&repo, &db, "env://NOWHERE", "upstream");
+    assert_eq!(s["message"], b["layers"]["direct"]["error"]);
+    assert_eq!(s["message"], b["recovery"]["message"]);
+}
+
+#[test]
+fn secret_uri_upstream_unaffected() {
+    let (_tmp, repo, db) = setup();
+    for r in both_modes(&repo, &db, "secret://datamgr-db-conn-str", "upstream") {
+        // No section logic: at most an exact match, never a section one.
+        assert!(matches(&r).iter().all(|(_, kind)| kind == "exact"), "{r}");
+    }
+    for r in both_modes(&repo, &db, "secret://nowhere-at-all", "upstream") {
+        let text = r.to_string();
+        assert!(
+            text.contains("No config source or reader was found"),
+            "{text}"
+        );
+        assert!(!text.contains("Symbol 'secret://"), "{text}");
+    }
+}
+
+#[test]
+fn downstream_and_both_ignore_sections() {
+    let (_tmp, repo, db) = setup();
+    let uri = "env://DATABASE__CONNECTIONSTRING";
+    for direction in ["downstream", "both"] {
+        for r in both_modes(&repo, &db, uri, direction) {
+            assert!(r.get("config_seeds").is_none(), "{direction}: {r}");
+            let names = seed_names(&r);
+            assert!(
+                !names.iter().any(|n| n == "Acme.Startup.ReadSection"),
+                "{direction}: {names:?}"
+            );
+        }
     }
 }
