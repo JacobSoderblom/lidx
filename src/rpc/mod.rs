@@ -122,8 +122,9 @@ struct AnalyzeImpactParams {
     exclude_resolution_kinds: Option<Vec<String>>,
     include_tests: Option<bool>,
     include_paths: Option<bool>,
-    /// Global configuration
+    /// Max affected symbols. In batch mode (`qualnames`) an explicit limit is an upper bound per seed; omitted, 500 is split across seeds with a floor of 50 each.
     limit: Option<usize>,
+    /// Global configuration
     min_confidence: Option<f32>,
     #[serde(flatten)]
     common: LangVersionParams,

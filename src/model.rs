@@ -1150,6 +1150,12 @@ pub struct TraceHop {
     pub symbol: Symbol,
     pub edge_kind: String,
     pub distance: usize,
+    /// Qualname of the node this hop was reached from (a seed for the
+    /// first hop), so a caller can rebuild the chain by following it back.
+    pub predecessor: String,
+    /// Symbol id of that node, for exact (qualname-collision-proof) backtracking.
+    #[serde(skip)]
+    pub predecessor_id: i64,
     pub language: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,

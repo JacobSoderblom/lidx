@@ -1590,6 +1590,16 @@ impl Db {
                         graph_version,
                     )?,
                 };
+                // A channel edge with no source symbol is unreachable from
+                // either end (#222); fail loudly instead of storing it.
+                if source_id.is_none() && edge.kind.starts_with("CHANNEL_") {
+                    anyhow::bail!(
+                        "{} edge has unresolved source {:?} (target {:?})",
+                        edge.kind,
+                        edge.source_qualname,
+                        edge.target_qualname
+                    );
+                }
                 let receiver = edge.receiver_type.to_columns();
                 let extracted_receiver_type = receiver.receiver_type.as_deref();
                 let marker = edge.receiver_type.deferred_marker();
@@ -2627,11 +2637,7 @@ mod tests {
     ) -> SymbolInput {
         SymbolInput {
             kind: kind.to_string(),
-            name: qualname
-                .split('.')
-                .next_back()
-                .unwrap_or(qualname)
-                .to_string(),
+            name: resolver::qualname_trailing_name(qualname).to_string(),
             qualname: qualname.to_string(),
             start_line,
             start_col: 0,
@@ -5814,41 +5820,27 @@ mod tests {
             .unwrap();
 
         // Two import candidates that both name real (but different) symbols
-        // must not bind to either -- the ambiguity guard must still refuse,
-        // exactly as it did before import qualification. Pre-#80 that
-        // refusal was reported as `external` rather than `ambiguous` (the
-        // known-external check already ran ahead of the ambiguity check in
-        // `Resolver::resolve`'s tier order, unchanged here -- an import
-        // candidate list this language's policy refuses on a miss is
-        // "known-external" first, regardless of *why* the import tier
-        // itself came up empty), so issue #80 turns this same refusal into
-        // a bind to the external stub instead of a `no-edge` store row --
-        // still never either real `Widget.Create`.
-        let target_symbol_id: Option<i64> = db
+        // must not bind to either, and since both live in this repository
+        // the reference is an in-repo ambiguity, never an `ext:` stub
+        // (issue #239).
+        let edges: i64 = db
             .conn()
             .query_row(
-                "SELECT target_symbol_id FROM edges WHERE target_qualname = 'Widget.Create'",
+                "SELECT COUNT(*) FROM edges WHERE target_qualname = 'Widget.Create'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        let domain_a_id = inserted[0].id;
-        let domain_b_id = inserted[1].id;
-        assert!(
-            target_symbol_id.is_some()
-                && target_symbol_id != Some(domain_a_id)
-                && target_symbol_id != Some(domain_b_id),
-            "must bind to the external stub, never guess between the two real Widget.Create symbols"
-        );
-        let stub_qualname: String = db
+        assert_eq!(edges, 0, "no edge: neither a real symbol nor a stub");
+        let reason: String = db
             .conn()
             .query_row(
-                "SELECT qualname FROM symbols WHERE id = ?",
-                [target_symbol_id.unwrap()],
+                "SELECT reason FROM unresolved_references WHERE reference_name = 'Widget.Create'",
+                [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(stub_qualname, "ext:Widget.Create");
+        assert_eq!(reason, "ambiguous");
     }
 
     #[test]

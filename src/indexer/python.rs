@@ -51,6 +51,10 @@ struct Context {
     /// `collect_class_level_annotations`. Used only to resolve a single-hop
     /// `self.attr.method()` receiver.
     class_attr_types: Rc<HashMap<String, LocalType>>,
+    /// Return annotations of this file's top-level functions, so a local
+    /// assigned from `factory()` can take the annotated type — see
+    /// `collect_factory_returns`. Same-file callees only.
+    factories: Rc<FactoryReturns>,
     /// This file's import bindings — bound name -> fully-qualified
     /// target(s) it stands for, from `from x import Y [as Z]` / `import
     /// x.y as z` — collected once in `extract()` before the main walk (see
@@ -64,6 +68,15 @@ struct Context {
     /// assignment's placeholder symbol, so a qualname is never duplicated.
     declared: Rc<RefCell<HashMap<String, bool>>>,
 }
+
+/// Return annotation of a top-level function, and whether it is `async def`.
+struct FactoryReturn {
+    ret: String,
+    is_async: bool,
+}
+
+/// Top-level function name -> its return annotation.
+type FactoryReturns = HashMap<String, FactoryReturn>;
 
 /// Locally-inferred type of a name bound within a single function body.
 /// Deliberately coarse: everything that isn't a confident, non-builtin type
@@ -123,6 +136,7 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             ".",
             module_docstring,
         ));
+        let factories = Rc::new(collect_factory_returns(root, source));
         let ctx = Context {
             string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
                 crate::indexer::string_consts::ConstLang::Python,
@@ -134,7 +148,8 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             fn_depth: 0,
             current_scope: module_name.to_string(),
             grpc_service: None,
-            local_types: Rc::new(infer_module_level_types(root, source)),
+            local_types: Rc::new(infer_module_level_types(root, source, &factories)),
+            factories,
             class_attr_types: Rc::new(HashMap::new()),
             imports: Rc::new(collect_import_bindings(root, source)),
             declared: Rc::new(RefCell::new(HashMap::new())),
@@ -439,6 +454,11 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         }
         "function_definition" | "async_function_definition" => {
             if ctx.fn_depth > 0 {
+                // Not indexed, but its body is still walked (attributed to
+                // the enclosing symbol) so deeper decorated defs are seen.
+                if let Some(body) = node.child_by_field_name("body") {
+                    walk_block(body, ctx, source, output);
+                }
                 return;
             }
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -488,7 +508,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 let mut next_ctx = ctx.clone();
                 next_ctx.fn_depth += 1;
                 next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
-                next_ctx.local_types = Rc::new(infer_local_types(node, source));
+                next_ctx.local_types = Rc::new(infer_local_types(node, source, &ctx.factories));
                 if let Some(body) = node.child_by_field_name("body") {
                     walk_block(body, &next_ctx, source, output);
                 }
@@ -888,7 +908,52 @@ fn annotation_text(type_node: Node<'_>, source: &str) -> String {
 /// A name reassigned anywhere in the body (including a parameter later
 /// reassigned) collapses to `LocalType::Other`, matching the "reassignment
 /// → unknown" rule literally, not just "unknown when the types disagree".
-fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {
+fn infer_local_types(
+    function_node: Node<'_>,
+    source: &str,
+    factories: &FactoryReturns,
+) -> HashMap<String, LocalType> {
+    let bindings = function_bindings(function_node, source, factories);
+    match without_shadowed(factories, &bindings) {
+        Some(unshadowed) => {
+            bindings_to_local_types(function_bindings(function_node, source, &unshadowed))
+        }
+        None => bindings_to_local_types(bindings),
+    }
+}
+
+/// `factories` minus any name this scope also binds locally (a parameter,
+/// assignment or nested def shadows the module-level function, so its
+/// annotation says nothing about the local). `None` when nothing is shadowed.
+fn without_shadowed(
+    factories: &FactoryReturns,
+    bindings: &[(String, LocalType)],
+) -> Option<FactoryReturns> {
+    if !bindings.iter().any(|(n, _)| factories.contains_key(n)) {
+        return None;
+    }
+    Some(
+        factories
+            .iter()
+            .filter(|(n, _)| !bindings.iter().any(|(b, _)| b == *n))
+            .map(|(n, f)| {
+                (
+                    n.clone(),
+                    FactoryReturn {
+                        ret: f.ret.clone(),
+                        is_async: f.is_async,
+                    },
+                )
+            })
+            .collect(),
+    )
+}
+
+fn function_bindings(
+    function_node: Node<'_>,
+    source: &str,
+    factories: &FactoryReturns,
+) -> Vec<(String, LocalType)> {
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
 
     if let Some(params) = function_node.child_by_field_name("parameters") {
@@ -937,11 +1002,11 @@ fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, L
     }
 
     if let Some(body) = function_node.child_by_field_name("body") {
-        collect_statement_bindings(body, source, &mut bindings);
+        collect_statement_bindings(body, source, factories, &mut bindings);
         collect_nested_def_names(body, source, &mut bindings);
     }
 
-    bindings_to_local_types(bindings)
+    bindings
 }
 
 /// Names bound by `def` statements nested in a function body (without
@@ -972,9 +1037,17 @@ fn collect_nested_def_names(node: Node<'_>, source: &str, bindings: &mut Vec<(St
 /// function or class bodies (each of those gets its own fresh scope — see
 /// `infer_local_types`), and a name bound only at module level is not
 /// looked up again once a function scope replaces `local_types` on entry.
-fn infer_module_level_types(root: Node<'_>, source: &str) -> HashMap<String, LocalType> {
+fn infer_module_level_types(
+    root: Node<'_>,
+    source: &str,
+    factories: &FactoryReturns,
+) -> HashMap<String, LocalType> {
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
-    collect_statement_bindings(root, source, &mut bindings);
+    collect_statement_bindings(root, source, factories, &mut bindings);
+    if let Some(unshadowed) = without_shadowed(factories, &bindings) {
+        bindings.clear();
+        collect_statement_bindings(root, source, &unshadowed, &mut bindings);
+    }
     bindings_to_local_types(bindings)
 }
 
@@ -1011,6 +1084,7 @@ fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String
 fn collect_statement_bindings(
     node: Node<'_>,
     source: &str,
+    factories: &FactoryReturns,
     bindings: &mut Vec<(String, LocalType)>,
 ) {
     match node.kind() {
@@ -1033,7 +1107,7 @@ fn collect_statement_bindings(
                     let ty = if let Some(type_node) = node.child_by_field_name("type") {
                         classify_annotation(&annotation_text(type_node, source))
                     } else if let Some(right) = node.child_by_field_name("right") {
-                        classify_assignment_value(right, source)
+                        classify_assignment_value(right, source, factories)
                     } else {
                         LocalType::Other
                     };
@@ -1077,7 +1151,7 @@ fn collect_statement_bindings(
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_statement_bindings(child, source, bindings);
+        collect_statement_bindings(child, source, factories, bindings);
     }
 }
 
@@ -1149,7 +1223,11 @@ fn collect_lambda_parameter_bindings(
 /// analysis to determine. Everything else (attribute access, subscripts,
 /// comprehensions, binary/boolean/conditional expressions, awaits, ...)
 /// is `Other`.
-fn classify_assignment_value(right: Node<'_>, source: &str) -> LocalType {
+fn classify_assignment_value(
+    right: Node<'_>,
+    source: &str,
+    factories: &FactoryReturns,
+) -> LocalType {
     match right.kind() {
         "list"
         | "dictionary"
@@ -1166,22 +1244,139 @@ fn classify_assignment_value(right: Node<'_>, source: &str) -> LocalType {
         | "dictionary_comprehension"
         | "set_comprehension"
         | "generator_expression" => LocalType::Other,
-        "call" => {
-            let Some(func) = right.child_by_field_name("function") else {
-                return LocalType::Other;
-            };
-            if func.kind() != "identifier" {
-                return LocalType::Other;
+        "call" => classify_call_value(right, source, factories, false),
+        "await" => match right.named_child(0) {
+            Some(call) if call.kind() == "call" => {
+                classify_call_value(call, source, factories, true)
             }
-            let name = node_text(func, source);
-            if name.chars().next().is_some_and(|c| c.is_uppercase()) {
-                LocalType::Known(name)
-            } else {
-                LocalType::Other
-            }
-        }
+            _ => LocalType::Other,
+        },
         _ => LocalType::Other,
     }
+}
+
+/// `Known` for a constructor-style call (`Foo()`) or a call to a same-file
+/// function whose return annotation names a type (see
+/// `factory_return_type`); `Other` otherwise.
+fn classify_call_value(
+    call: Node<'_>,
+    source: &str,
+    factories: &FactoryReturns,
+    awaited: bool,
+) -> LocalType {
+    let Some(func) = call.child_by_field_name("function") else {
+        return LocalType::Other;
+    };
+    if func.kind() != "identifier" {
+        return LocalType::Other;
+    }
+    let name = node_text(func, source);
+    if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+        return if awaited {
+            LocalType::Other
+        } else {
+            LocalType::Known(name)
+        };
+    }
+    match factories.get(&name) {
+        Some(f) => factory_return_type(&f.ret, f.is_async, awaited),
+        None => LocalType::Other,
+    }
+}
+
+/// Type of a call to a function annotated `-> ann`. `Optional[X]` / `X | None`
+/// unwrap to `X`; `Awaitable[X]` / `Coroutine[_, _, X]` (and the implicit
+/// coroutine of an `async def`) unwrap only when the call is awaited.
+/// Containers (`list[Foo]`) and anything else subscripted stay `Other`.
+fn factory_return_type(ann: &str, is_async: bool, awaited: bool) -> LocalType {
+    if is_async && !awaited {
+        return LocalType::Other; // un-awaited async call is a coroutine
+    }
+    let mut ann = ann.trim();
+    let mut awaitable_seen = false;
+    loop {
+        ann = ann.trim().trim_matches(['"', '\'']).trim();
+        if let Some(inner) = last_type_arg(ann, &["Optional"]) {
+            ann = inner;
+        } else if let Some(inner) = last_type_arg(ann, &["Awaitable", "Coroutine"]) {
+            awaitable_seen = true;
+            ann = inner;
+        } else if ann.contains('|') {
+            let mut parts = ann.split('|').map(str::trim).filter(|p| *p != "None");
+            match (parts.next(), parts.next()) {
+                (Some(only), None) => ann = only,
+                _ => return LocalType::Other,
+            }
+        } else {
+            break;
+        }
+    }
+    if awaitable_seen && !awaited {
+        return LocalType::Other;
+    }
+    classify_annotation(ann)
+}
+
+/// For `Name[...]` (optionally dotted, e.g. `typing.Optional[X]`) where the
+/// last segment of `Name` is in `names`, the last top-level type argument.
+fn last_type_arg<'a>(ann: &'a str, names: &[&str]) -> Option<&'a str> {
+    let open = ann.find('[')?;
+    let head = ann[..open].rsplit('.').next()?.trim();
+    if !names.contains(&head) || !ann.ends_with(']') {
+        return None;
+    }
+    let inner = &ann[open + 1..ann.len() - 1];
+    let mut depth = 0;
+    let mut last = 0;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            ',' if depth == 0 => last = i + 1,
+            _ => {}
+        }
+    }
+    Some(inner[last..].trim())
+}
+
+/// Return annotations of module-top-level `def`s (decorated or not). A name
+/// defined more than once is dropped — which definition wins is unknowable.
+fn collect_factory_returns(root: Node<'_>, source: &str) -> FactoryReturns {
+    let mut found: FactoryReturns = HashMap::new();
+    let mut seen: Vec<String> = Vec::new();
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        let def = if stmt.kind() == "decorated_definition" {
+            stmt.child_by_field_name("definition")
+        } else {
+            Some(stmt)
+        };
+        let Some(def) = def.filter(|d| d.kind() == "function_definition") else {
+            continue;
+        };
+        let Some(name) = def.child_by_field_name("name") else {
+            continue;
+        };
+        let name = node_text(name, source);
+        if seen.contains(&name) {
+            found.remove(&name);
+            continue;
+        }
+        seen.push(name.clone());
+        let Some(ret) = def.child_by_field_name("return_type") else {
+            continue;
+        };
+        let is_async =
+            (0..def.child_count()).any(|i| def.child(i).is_some_and(|c| c.kind() == "async"));
+        found.insert(
+            name,
+            FactoryReturn {
+                ret: annotation_text(ret, source),
+                is_async,
+            },
+        );
+    }
+    found
 }
 
 /// Class-level (PEP 526) annotated attributes declared directly in a class
@@ -1403,6 +1598,12 @@ fn handler_qualname(node: Node<'_>, ctx: &Context, source: &str) -> Option<Strin
     }
     if node.kind() == "class_definition" {
         return None;
+    }
+    // A nested `def` is never indexed (`walk_node` skips it at `fn_depth > 0`),
+    // so its edges attach to the nearest enclosing indexed symbol instead of a
+    // qualname that would dangle.
+    if ctx.fn_depth > 0 {
+        return Some(ctx.current_scope.clone());
     }
     Some(build_qualname(&ctx.module, &ctx.class_stack, &name))
 }
