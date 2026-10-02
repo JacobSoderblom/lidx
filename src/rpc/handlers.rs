@@ -231,11 +231,37 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     } else {
         vec![symbol.id]
     };
-    let incoming_cross = if wants_callers || wants_tests {
+    let mut incoming_cross = if wants_callers || wants_tests {
         cross_boundary_refs(indexer.db(), &cross_seeds, false, &ctx)?
     } else {
         Vec::new()
     };
+    // A proto `rpc`'s callers are the RPC_CALL sources bound to its route.
+    if (wants_callers || wants_tests) && symbol.kind == "rpc" {
+        for edge in indexer.db().rpc_bound_edges(
+            symbol.id,
+            "RPC_CALL",
+            ctx.languages.as_deref(),
+            ctx.graph_version,
+        )? {
+            if let Some(sym) = edge
+                .source_symbol_id
+                .map(|id| indexer.db().get_symbol_by_id(id))
+                .transpose()?
+                .flatten()
+            {
+                incoming_cross.push(ExplainRef {
+                    symbol: sym,
+                    via_interface: false,
+                    file_level: false,
+                    evidence: edge.evidence_snippet,
+                    edge_kind: edge.kind,
+                    protocol_context: None,
+                    resolution_kind: edge.resolution_kind,
+                });
+            }
+        }
+    }
     let outgoing_cross = if wants_callees {
         cross_boundary_refs(indexer.db(), &cross_seeds, true, &ctx)?
     } else {
@@ -276,10 +302,18 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 || (e.kind == "IMPLEMENTS" && e.target_symbol_id == Some(symbol.id)))
     });
     // A proto `rpc` is implemented by the RPC_IMPL sources bound to its route.
-    let rpc_implementers = if wants_implements && symbol.kind == "rpc" {
+    let rpc_implementers: Vec<i64> = if wants_implements && symbol.kind == "rpc" {
         indexer
             .db()
-            .rpc_implementers(symbol.id, ctx.languages.as_deref(), ctx.graph_version)?
+            .rpc_bound_edges(
+                symbol.id,
+                "RPC_IMPL",
+                ctx.languages.as_deref(),
+                ctx.graph_version,
+            )?
+            .into_iter()
+            .filter_map(|e| e.source_symbol_id)
+            .collect()
     } else {
         Vec::new()
     };

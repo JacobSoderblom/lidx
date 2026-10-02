@@ -1791,6 +1791,17 @@ fn collect_grpc_clients(
     let mut aliases: Vec<(String, String)> = Vec::new();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
+        // `client = new FooClient(..)` (a `let client;` assigned later).
+        if node.kind() == "assignment_expression"
+            && let (Some(left), Some(right)) = (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            )
+            && left.kind() == "identifier"
+            && let Some(service) = grpc_service_from_client_initializer(right, source, evidence)
+        {
+            clients.insert(node_text(left, source), service);
+        }
         if node.kind() == "variable_declarator" {
             let Some(name_node) = node.child_by_field_name("name") else {
                 continue;

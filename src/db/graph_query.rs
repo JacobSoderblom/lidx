@@ -1000,14 +1000,16 @@ impl Db {
         })
     }
 
-    /// RPC_IMPL handlers bound to the route(s) of proto `rpc` symbol
-    /// `symbol_id`, guessed-package edges included; deduped, in edge order.
-    pub fn rpc_implementers(
+    /// `kind` (RPC_IMPL or RPC_CALL) edges bound to the route(s) of proto
+    /// `rpc` symbol `symbol_id`, guessed-package edges included; one per
+    /// source symbol, in edge order.
+    pub fn rpc_bound_edges(
         &self,
         symbol_id: i64,
+        kind: &str,
         languages: Option<&[String]>,
         graph_version: i64,
-    ) -> Result<Vec<i64>> {
+    ) -> Result<Vec<Edge>> {
         let paths: Vec<String> = {
             let conn = self.read_conn()?;
             let mut stmt = conn.prepare(
@@ -1019,22 +1021,19 @@ impl Db {
                 .collect::<rusqlite::Result<_>>()?
         };
         let mut seen = HashSet::new();
-        let mut ids = Vec::new();
+        let mut found = Vec::new();
         for path in paths {
-            for edge in self.edges_by_target_qualname_and_kinds(
-                &path,
-                &["RPC_IMPL"],
-                languages,
-                graph_version,
-            )? {
+            for edge in
+                self.edges_by_target_qualname_and_kinds(&path, &[kind], languages, graph_version)?
+            {
                 if let Some(id) = edge.source_symbol_id
                     && seen.insert(id)
                 {
-                    ids.push(id);
+                    found.push(edge);
                 }
             }
         }
-        Ok(ids)
+        Ok(found)
     }
 
     /// Cross-file reconciliation of RPC_IMPL / RPC_CALL edges, recomputed

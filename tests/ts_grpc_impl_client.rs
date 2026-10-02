@@ -348,3 +348,38 @@ export function go(req) { client.bind(req); }
         .unwrap();
     assert!(surfaced_rpc_calls(&inc).is_empty());
 }
+
+const REAL_CLIENT: &str = include_str!("fixtures/ts_grpc/datacatalog-service-client.ts");
+
+#[test]
+fn real_ts_proto_client_file_yields_rpc_calls_and_proto_callers() {
+    let proto = "syntax = \"proto3\";\npackage datacatalog.v1;\n\
+service DataCatalogService {\n  rpc List (Req) returns (Res);\n  rpc Get (Req) returns (Res);\n\
+  rpc GetTables (Req) returns (Res);\n  rpc GetDependencyGraph (Req) returns (Res);\n}\n\
+message Req {}\nmessage Res {}\n";
+    let repo = repo_with(&[
+        ("protos/datacatalog.proto", proto),
+        (
+            "node/datacatalog-ui/lib/datacatalog-service-client.ts",
+            REAL_CLIENT,
+        ),
+    ]);
+    let calls = rows(&repo, "RPC_CALL");
+    let mut rpcs: Vec<String> = calls
+        .iter()
+        .map(|(_, _, d)| d["rpc"].as_str().unwrap().to_string())
+        .collect();
+    rpcs.sort();
+    assert_eq!(rpcs, ["get", "getDependencyGraph", "getTables", "list"]);
+    assert!(
+        calls
+            .iter()
+            .all(|(_, _, d)| d["package"] == "datacatalog.v1")
+    );
+    let explain = call(
+        &repo,
+        "explain_symbol",
+        serde_json::json!({"query": "datacatalog.v1.DataCatalogService.GetTables"}),
+    );
+    assert!(explain["callers_total"].as_u64().unwrap() >= 1, "{explain}");
+}
