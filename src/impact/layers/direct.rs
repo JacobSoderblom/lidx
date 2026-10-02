@@ -186,6 +186,7 @@ fn resolve_bridge_targets(
             edge_kind,
             origin_path,
             source_id,
+            method,
             walk,
             ..
         } = bridge;
@@ -194,7 +195,9 @@ fn resolve_bridge_targets(
             let bridged = db
                 .edges_by_target_qualname_and_kinds(tq, &complement_kinds, languages, graph_version)
                 .unwrap_or_default();
-            for (bridged_edge, speculative) in prefer_same_service(tq, origin_path, &bridged) {
+            for (bridged_edge, speculative) in
+                prefer_same_service(tq, origin_path, method.as_deref(), &bridged)
+            {
                 let Some(bridged_id) = bridged_edge.source_symbol_id else {
                     continue;
                 };

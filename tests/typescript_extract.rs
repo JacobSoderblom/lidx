@@ -494,3 +494,107 @@ fn nextjs_route_handlers_and_template_fetch_link_up() {
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(calls[0].1, routes[0].1);
 }
+
+/// Issue #211: calls through an in-repo `fetch` wrapper (object method over a
+/// plain function, defined in another file) are HTTP calls to the URL the
+/// call site supplies.
+#[test]
+fn fetch_wrapper_calls_link_to_next_routes() {
+    let tmp = tempfile::tempdir().unwrap();
+    common::write_files(
+        tmp.path(),
+        &[
+            (
+                "app/api/tables/route.ts",
+                "export async function GET() { return Response.json([]); }\n\
+                 export async function POST(req: Request) { return Response.json({}); }\n",
+            ),
+            (
+                "lib/api-client.ts",
+                "export async function apiClientFetch(endpoint: string, options: RequestInit = {}) {\n  \
+                 return fetch(`${process.env.API}${endpoint}`, options);\n}\n\
+                 export const apiClient = {\n  \
+                 get: (endpoint: string, options?: RequestInit) =>\n    \
+                 apiClientFetch(endpoint, { ...options, method: \"GET\" }),\n  \
+                 post: (endpoint: string, body: unknown) =>\n    \
+                 apiClientFetch(endpoint, { method: \"POST\", body: JSON.stringify(body) }),\n};\n\
+                 export function log(msg: string) { console.log(msg); }\n",
+            ),
+            (
+                "queries/tables/client.ts",
+                "import { apiClient, apiClientFetch, log } from \"../../lib/api-client\";\n\
+                 export function listTables(kind: string) {\n  \
+                 return apiClient.get(`/api/tables?type=${kind}`);\n}\n\
+                 export function createTable(body: unknown) {\n  \
+                 return apiClient.post(\"/api/tables\", body);\n}\n\
+                 export function viaPlain() {\n  \
+                 return apiClientFetch(\"/api/tables\", { method: \"POST\" });\n}\n\
+                 export function dynamicUrl(url: string) {\n  \
+                 return apiClient.get(url);\n}\n\
+                 export function notHttp() {\n  log(\"/api/tables\");\n}\n",
+            ),
+        ],
+    );
+    let db_path = tmp.path().join(".lidx").join(".lidx.sqlite");
+    let mut indexer =
+        lidx::indexer::Indexer::new(tmp.path().to_path_buf(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.qualname, e.target_qualname, e.detail FROM edges e \
+             JOIN symbols s ON s.id = e.source_symbol_id \
+             WHERE e.graph_version = ? AND e.kind = 'HTTP_CALL' ORDER BY e.id",
+        )
+        .unwrap();
+    let mut calls: Vec<(String, String, String)> = stmt
+        .query_map(rusqlite::params![gv], |r| {
+            let detail: serde_json::Value = serde_json::from_str(&r.get::<_, String>(2)?).unwrap();
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                detail["method"].as_str().unwrap().to_string(),
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    calls.sort();
+    let c = "queries/tables/client";
+    let want = |f: &str, m: &str| (format!("{c}.{f}"), "/api/tables".to_string(), m.to_string());
+    assert_eq!(
+        calls,
+        [
+            want("createTable", "POST"),
+            want("listTables", "GET"),
+            want("viaPlain", "POST"),
+        ],
+        "{calls:?}"
+    );
+
+    let (tmp_root, db_path2) = (tmp.path().to_path_buf(), db_path.clone());
+    let resp = lidx::rpc::call(
+        tmp.path().to_path_buf(),
+        db_path,
+        "explain_symbol".to_string(),
+        r#"{"query":"app/api/tables/route.GET"}"#,
+        "1",
+    )
+    .unwrap();
+    assert!(resp.contains("listTables"), "GET has no caller: {resp}");
+    assert!(!resp.contains("createTable"), "POST caller on GET: {resp}");
+    let resp = lidx::rpc::call(
+        tmp_root,
+        db_path2,
+        "explain_symbol".to_string(),
+        r#"{"query":"app/api/tables/route.POST"}"#,
+        "2",
+    )
+    .unwrap();
+    assert!(
+        resp.contains("createTable") && resp.contains("viaPlain"),
+        "{resp}"
+    );
+    assert!(!resp.contains("listTables"), "GET caller on POST: {resp}");
+}

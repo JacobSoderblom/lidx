@@ -33,6 +33,12 @@ pub fn normalize_path(raw: &str) -> Option<String> {
     xref::normalize_route_literal(raw)
 }
 
+/// The `method` recorded in an HTTP edge's detail JSON.
+pub fn detail_method(detail: Option<&str>) -> Option<String> {
+    let detail: serde_json::Value = serde_json::from_str(detail?).ok()?;
+    detail["method"].as_str().map(str::to_string)
+}
+
 pub fn build_route_detail(
     method: &str,
     normalized_path: &str,

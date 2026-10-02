@@ -295,3 +295,73 @@ fn caller_in_neither_of_two_backends_gets_no_definite_bridge() {
     let i = impact(&files, "web/src/api.loadX");
     assert!(!i.contains("get_x") && !i.contains("GetX"), "{i}");
 }
+
+const WRAPPER: &str = "export async function request(url: string, init?: RequestInit) {\n  \
+    return fetch(url, init);\n}\n";
+const WRAPPED_CALL: &str = "import { request } from \"../lib/http\";\n\
+    export function listTables() {\n  return request(`/api/tables?type=${1}`);\n}\n";
+const NEXT_ROUTE: &str = "export async function GET() { return Response.json([]); }\n";
+
+/// Issue #211: an HTTP_CALL made through an in-repo wrapper bridges like any
+/// other, so it must stay inside its own service.
+#[test]
+fn wrapper_call_does_not_bridge_to_unrelated_service() {
+    let got = hops(
+        &[
+            ("apps/web/src/lib/http.ts", WRAPPER),
+            ("apps/web/src/queries/tables.ts", WRAPPED_CALL),
+            ("apps/web/src/app/api/tables/route.ts", NEXT_ROUTE),
+            ("apps/other/src/app/api/tables/route.ts", NEXT_ROUTE),
+        ],
+        "apps/web/src/queries/tables.listTables",
+    );
+    assert!(
+        got.iter().all(|(f, _)| !f.starts_with("apps/other/")),
+        "wrapper call bridged into unrelated service: {got:?}"
+    );
+    assert!(
+        got.iter().any(|(f, _)| f.starts_with("apps/web/")),
+        "same-service bridge missing: {got:?}"
+    );
+}
+
+const PY_POST_SERVER: &str = r#"
+from aiohttp import web
+
+class Api:
+    def __init__(self):
+        self.app = web.Application()
+        self.app.router.add_post("/api/tables", self._create)
+
+    async def _create(self, request):
+        return web.Response(text="ok")
+"#;
+const TS_POST_CALL: &str = "export async function create() {\n  \
+    return fetch(\"/api/tables\", { method: \"POST\" });\n}\n";
+const TS_GET_CALL: &str = "export async function list() {\n  return fetch(\"/api/tables\");\n}\n";
+
+/// The method filter must keep bridging a call to a route of the same method
+/// (here a Python route), and drop one of a different method.
+#[test]
+fn http_bridge_pairs_methods_across_languages() {
+    let post = hops(
+        &[
+            ("svc/src/api.py", PY_POST_SERVER),
+            ("svc/src/client.ts", TS_POST_CALL),
+        ],
+        "svc/src/client.create",
+    );
+    assert!(
+        post.iter()
+            .any(|(f, q)| f == "svc/src/api.py" && q.ends_with("_create")),
+        "POST call lost its POST route: {post:?}"
+    );
+    let get = hops(
+        &[
+            ("svc/src/api.py", PY_POST_SERVER),
+            ("svc/src/client.ts", TS_GET_CALL),
+        ],
+        "svc/src/client.list",
+    );
+    assert!(get.is_empty(), "GET call bridged to a POST route: {get:?}");
+}

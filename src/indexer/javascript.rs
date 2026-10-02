@@ -11,6 +11,7 @@ use crate::indexer::tree_helpers::{
 };
 use crate::util;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -82,6 +83,8 @@ struct Context {
     /// Same-file `const api = axios.create({ baseURL })` instances: name to
     /// the normalized static base path, when there is one.
     axios_instances: Rc<HashMap<String, Option<String>>>,
+    /// Same-file in-repo HTTP wrappers (`collect_http_wrappers`).
+    http_wrappers: Rc<WrapperTable>,
     grpc_clients: HashMap<String, GrpcService>,
     /// Names that count as positive gRPC evidence for `new Ctor(..)` (#204).
     grpc_evidence: Rc<GrpcEvidence>,
@@ -333,6 +336,7 @@ pub fn resolve_import_file_edges(
     // Re-exports (`export { x } from`, `export * from`) and default exports
     // are chased on disk (`chase_export`), so the candidate names the
     // original declaration rather than the barrel.
+    resolve_pending_wrapper_calls(repo_root, file_rel_path, edges);
     let mut resolved_specs: HashMap<String, Option<String>> = HashMap::new();
     let mut rewrite = |candidate: &str| -> Option<String> {
         let (spec, member) = candidate.split_once(IMPORT_PLACEHOLDER_SEP)?;
@@ -492,7 +496,8 @@ impl FileExports {
     }
 }
 
-fn scan_exports(repo_root: &Path, rel: &str) -> Option<FileExports> {
+/// Parses the JS/TS file `rel` (grammar by extension) and runs `f` on it.
+fn parse_js_file<T>(repo_root: &Path, rel: &str, f: impl FnOnce(Node<'_>, &str) -> T) -> Option<T> {
     let source = util::read_to_string(&repo_root.join(rel)).ok()?;
     let mut parser = Parser::new();
     let language = match Path::new(rel).extension().and_then(|e| e.to_str()) {
@@ -502,7 +507,23 @@ fn scan_exports(repo_root: &Path, rel: &str) -> Option<FileExports> {
     };
     parser.set_language(&language.into()).ok()?;
     let tree = parser.parse(&source, None)?;
-    Some(exports_from_root(tree.root_node(), &source))
+    Some(f(tree.root_node(), &source))
+}
+
+fn scan_exports(repo_root: &Path, rel: &str) -> Option<FileExports> {
+    parse_js_file(repo_root, rel, exports_from_root)
+}
+
+/// Hash of what importers can see of a file: its export surface plus its HTTP
+/// wrapper table (an importer's `HTTP_CALL` edges depend on it).
+fn surface_hash(root: Node<'_>, source: &str, wrappers: &WrapperTable) -> i64 {
+    let mut table: Vec<_> = wrappers.iter().collect();
+    table.sort();
+    let text = format!(
+        "{}|{table:?}",
+        exports_from_root(root, source).surface_text()
+    );
+    crate::indexer::scan::hash_i64(text.as_bytes())
 }
 
 fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
@@ -587,10 +608,9 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
 /// `None` when the file can't be read. A body-only edit leaves it unchanged,
 /// so importers chased through the file needn't be re-extracted.
 pub fn export_surface_hash(repo_root: &Path, rel: &str) -> Option<i64> {
-    let exports = scan_exports(repo_root, rel)?;
-    Some(crate::indexer::scan::hash_i64(
-        exports.surface_text().as_bytes(),
-    ))
+    parse_js_file(repo_root, rel, |root, source| {
+        surface_hash(root, source, &collect_http_wrappers(root, source))
+    })
 }
 
 /// Whether `rel` re-exports other modules' exports (see
@@ -1280,6 +1300,7 @@ fn extract_with_parser(
         .extend(next_api_route_edges(module_name, root, source));
     let grpc_evidence = Rc::new(collect_grpc_evidence(root, source));
     let grpc_clients = collect_grpc_clients(root, source, &grpc_evidence);
+    let http_wrappers = Rc::new(collect_http_wrappers(root, source));
     let ctx = Context {
         string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
             crate::indexer::string_consts::ConstLang::JavaScript,
@@ -1294,6 +1315,7 @@ fn extract_with_parser(
         route_prefix: None,
         router_aliases: Vec::new(),
         axios_instances: Rc::new(collect_axios_instances(root, source)),
+        http_wrappers: Rc::clone(&http_wrappers),
         grpc_clients,
         grpc_evidence,
         local_types: Rc::new(infer_module_level_types(root, source)),
@@ -1306,12 +1328,43 @@ fn extract_with_parser(
         is_esm: is_esm_file(root),
     };
     walk_node(root, &ctx, source, &mut output);
+    bind_next_routes_to_handlers(&mut output, module_name);
     dedup_namespace_symbols(&mut output);
     mark_unexported_private(root, source, module_name, &mut output);
-    output.export_surface = Some(crate::indexer::scan::hash_i64(
-        exports_from_root(root, source).surface_text().as_bytes(),
-    ));
+    output.export_surface = Some(surface_hash(root, source, &http_wrappers));
     Ok(output)
+}
+
+/// An App Router `HTTP_ROUTE` edge belongs to its method's handler symbol
+/// (`app/api/tables/route.GET`) when the module declares one, so callers of
+/// `/api/tables` land on the handler and a POST call binds to `POST`, not
+/// `GET`. Re-exported handlers (`export { h as GET }`) stay on the module.
+fn bind_next_routes_to_handlers(output: &mut ExtractedFile, module_name: &str) {
+    let declared: HashSet<&str> = output.symbols.iter().map(|s| s.qualname.as_str()).collect();
+    let mut rebind = Vec::new();
+    for (i, edge) in output.edges.iter().enumerate() {
+        if edge.kind != http::HTTP_ROUTE_KIND
+            || edge.source_qualname.as_deref() != Some(module_name)
+        {
+            continue;
+        }
+        if !edge
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("\"nextjs\""))
+        {
+            continue;
+        }
+        if let Some(method) = http::detail_method(edge.detail.as_deref()) {
+            let handler = format!("{module_name}.{method}");
+            if declared.contains(handler.as_str()) {
+                rebind.push((i, handler));
+            }
+        }
+    }
+    for (i, handler) in rebind {
+        output.edges[i].source_qualname = Some(handler);
+    }
 }
 
 /// `namespace Foo {}` merges with a same-named class/function/etc. (TS
@@ -2674,7 +2727,7 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     if let Some(edge) = fetch_call_edge(node, ctx, source) {
         return Some(edge);
     }
-    axios_call_edge(node, ctx, source)
+    axios_call_edge(node, ctx, source).or_else(|| wrapper_call_edge(node, ctx, source))
 }
 
 fn grpc_impl_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
@@ -3560,16 +3613,7 @@ fn fetch_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeIn
         .and_then(|raw| http::normalize_method(&raw))
         .unwrap_or_else(|| "GET".to_string());
     let detail = http::build_call_detail(&method, &normalized, &raw_path, "fetch");
-    Some(EdgeInput {
-        kind: http::HTTP_CALL_KIND.to_string(),
-        source_qualname: Some(ctx.current_scope.clone()),
-        target_qualname: Some(normalized),
-        detail: Some(detail),
-        evidence_snippet: None,
-        evidence_start_line: Some(span(node).0),
-        evidence_end_line: Some(span(node).2),
-        ..Default::default()
-    })
+    Some(http_call_input(node, ctx, normalized, detail))
 }
 
 fn axios_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
@@ -3582,16 +3626,7 @@ fn axios_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeIn
         };
         let normalized = http::normalize_path(&full)?;
         let detail = http::build_call_detail(&method, &normalized, &raw_path, "axios");
-        Some(EdgeInput {
-            kind: http::HTTP_CALL_KIND.to_string(),
-            source_qualname: Some(ctx.current_scope.clone()),
-            target_qualname: Some(normalized),
-            detail: Some(detail),
-            evidence_snippet: None,
-            evidence_start_line: Some(span(node).0),
-            evidence_end_line: Some(span(node).2),
-            ..Default::default()
-        })
+        Some(http_call_input(node, ctx, normalized, detail))
     };
     let config_method = |config: &Node<'_>| {
         object_property_string(config, "method", source)
@@ -3632,6 +3667,431 @@ fn is_http_client_call(node: Node<'_>, ctx: &Context, source: &str) -> bool {
     is_fetch_callee(target_node, source)
         || is_axios_callee(target_node, source)
         || axios_instance_of(target_node, ctx, source).is_some()
+        || ctx
+            .http_wrappers
+            .contains_key(&collapse_call_target_whitespace(&node_text(
+                target_node,
+                source,
+            )))
+}
+
+/// Placeholder kind for a call through an imported wrapper. Never persisted:
+/// `resolve_import_file_edges` turns each into an `HTTP_CALL` or drops it.
+const PENDING_HTTP_WRAPPER_KIND: &str = "__pending_http_wrapper_call__";
+
+/// How an in-repo HTTP wrapper chooses the request method.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum WrapperMethod {
+    /// The wrapper pins it (`get: ...`, or a literal `method:` option).
+    Fixed(String),
+    /// The call site's options argument, else GET.
+    CallSite,
+    /// The wrapper's parameter at this index (`request(method, url)`).
+    Param(usize),
+}
+
+/// A function that forwards its parameter `url` as the URL of an HTTP call.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct HttpWrapper {
+    url: usize,
+    method: WrapperMethod,
+}
+
+/// Wrapper key (`f`, `obj.m`, `default.m`) to wrapper, for one file.
+type WrapperTable = HashMap<String, HttpWrapper>;
+
+/// What a wrapper call site needs to know about one argument.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CallArg {
+    /// URL path of a string/template literal argument.
+    url: Option<String>,
+    /// String-literal argument value (`request("POST", ..)`).
+    literal: Option<String>,
+    /// `method` option of an object argument.
+    method: Option<String>,
+}
+
+const CALL_ARGS_SEEN: usize = 4;
+
+fn call_arg_info(args: &[Node<'_>], source: &str) -> Vec<CallArg> {
+    args.iter()
+        .take(CALL_ARGS_SEEN)
+        .map(|arg| CallArg {
+            url: http_url_argument(*arg, source),
+            literal: extract_string_literal(*arg, source),
+            method: object_property_string(arg, "method", source)
+                .and_then(|raw| http::normalize_method(&raw)),
+        })
+        .collect()
+}
+
+/// The `(raw path, normalized path, method)` a call to `wrapper` makes.
+fn wrapper_call_target(
+    wrapper: &HttpWrapper,
+    args: &[CallArg],
+) -> Option<(String, String, String)> {
+    let raw = args.get(wrapper.url)?.url.clone()?;
+    if !raw.starts_with('/') && !raw.contains("://") {
+        return None;
+    }
+    let normalized = http::normalize_path(&raw)?;
+    let method = match &wrapper.method {
+        WrapperMethod::Fixed(m) => m.clone(),
+        WrapperMethod::Param(i) => args
+            .get(*i)
+            .and_then(|a| a.literal.as_deref())
+            .and_then(http::normalize_method)
+            .unwrap_or_else(|| http::HTTP_ANY.to_string()),
+        WrapperMethod::CallSite => args
+            .get(wrapper.url + 1)
+            .and_then(|a| a.method.clone())
+            .unwrap_or_else(|| "GET".to_string()),
+    };
+    Some((raw, normalized, method))
+}
+
+/// A call to an in-repo function or object method that forwards a parameter
+/// as the URL of a `fetch`/axios call (see `collect_http_wrappers`) is an HTTP
+/// call to the URL the call site supplies. A wrapper in the same file yields
+/// an `HTTP_CALL` directly; an imported one yields a placeholder.
+fn wrapper_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let target_node = call_target_node(node)?;
+    let raw = collapse_call_target_whitespace(&node_text(target_node, source));
+    if !is_simple_call_target(&raw) {
+        return None;
+    }
+    let local = ctx.http_wrappers.get(&raw);
+    let placeholder = match local {
+        Some(_) => None,
+        None => Some(import_placeholder(&raw, ctx)?),
+    };
+    let args = call_arg_info(&call_arguments(node), source);
+    if !args.iter().any(|a| a.url.is_some()) {
+        return None;
+    }
+    if let Some(wrapper) = local {
+        let (raw_path, normalized, method) = wrapper_call_target(wrapper, &args)?;
+        let detail = http::build_call_detail(&method, &normalized, &raw_path, "wrapper");
+        return Some(http_call_input(node, ctx, normalized, detail));
+    }
+    let mut edge = http_call_input(
+        node,
+        ctx,
+        String::new(),
+        json!({ "args": args }).to_string(),
+    );
+    edge.kind = PENDING_HTTP_WRAPPER_KIND.to_string();
+    edge.target_qualname = None;
+    edge.import_candidates = placeholder.into_iter().collect();
+    Some(edge)
+}
+
+/// An `HTTP_CALL` edge from the enclosing scope to `normalized`.
+fn http_call_input(node: Node<'_>, ctx: &Context, normalized: String, detail: String) -> EdgeInput {
+    EdgeInput {
+        kind: http::HTTP_CALL_KIND.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(normalized),
+        detail: Some(detail),
+        evidence_snippet: None,
+        evidence_start_line: Some(span(node).0),
+        evidence_end_line: Some(span(node).2),
+        ..Default::default()
+    }
+}
+
+/// Finishes the `PENDING_HTTP_WRAPPER_KIND` placeholders in `edges`: each is
+/// looked up in the wrapper table of the file its callee is imported from,
+/// becoming an `HTTP_CALL` when found and dropped otherwise.
+fn resolve_pending_wrapper_calls(
+    repo_root: &Path,
+    file_rel_path: &str,
+    edges: &mut Vec<EdgeInput>,
+) {
+    let mut tables: HashMap<String, WrapperTable> = HashMap::new();
+    for edge in edges.iter_mut() {
+        if edge.kind != PENDING_HTTP_WRAPPER_KIND {
+            continue;
+        }
+        let resolved = edge.import_candidates.first().and_then(|cand| {
+            let (spec, member) = cand.split_once(IMPORT_PLACEHOLDER_SEP)?;
+            let dst = resolve_import_path(repo_root, file_rel_path, spec)?;
+            let (path, member) =
+                EXPORT_CACHE.with(|c| chase_member(repo_root, &dst, member, &mut c.borrow_mut()));
+            let table = tables
+                .entry(path.clone())
+                .or_insert_with(|| scan_http_wrappers(repo_root, &path).unwrap_or_default());
+            let wrapper = table.get(&member)?;
+            let detail: serde_json::Value = serde_json::from_str(edge.detail.as_deref()?).ok()?;
+            let args: Vec<CallArg> = serde_json::from_value(detail["args"].clone()).ok()?;
+            let (raw_path, normalized, method) = wrapper_call_target(wrapper, &args)?;
+            Some((
+                normalized.clone(),
+                http::build_call_detail(&method, &normalized, &raw_path, "wrapper"),
+            ))
+        });
+        edge.import_candidates.clear();
+        if let Some((normalized, detail)) = resolved {
+            edge.kind = http::HTTP_CALL_KIND.to_string();
+            edge.target_qualname = Some(normalized);
+            edge.detail = Some(detail);
+        }
+    }
+    edges.retain(|e| e.kind != PENDING_HTTP_WRAPPER_KIND);
+}
+
+fn scan_http_wrappers(repo_root: &Path, rel: &str) -> Option<WrapperTable> {
+    parse_js_file(repo_root, rel, collect_http_wrappers)
+}
+
+/// Names of a function's parameters, in order.
+fn param_names(func: Node<'_>, source: &str) -> Vec<String> {
+    if let Some(params) = func.child_by_field_name("parameters") {
+        let mut cursor = params.walk();
+        return params
+            .named_children(&mut cursor)
+            .map(|p| node_text(p.child_by_field_name("pattern").unwrap_or(p), source))
+            .collect();
+    }
+    func.child_by_field_name("parameter")
+        .map(|p| vec![node_text(p, source)])
+        .unwrap_or_default()
+}
+
+/// In-repo HTTP wrappers declared in a file: a function (`f`) or object-literal
+/// method (`obj.m`, or `default.m` for an anonymous default export) whose body
+/// passes one of its parameters on as the URL of a `fetch`/axios call or of
+/// another wrapper, so `apiClient.get -> apiClientFetch -> fetch` resolves.
+fn collect_http_wrappers(root: Node<'_>, source: &str) -> WrapperTable {
+    fn object_methods<'a>(
+        prefix: &str,
+        object: Node<'a>,
+        source: &str,
+        out: &mut Vec<(String, Node<'a>)>,
+    ) {
+        let mut cursor = object.walk();
+        for member in object.named_children(&mut cursor) {
+            let (key, func) = match member.kind() {
+                "method_definition" => (member.child_by_field_name("name"), Some(member)),
+                "pair" => (
+                    member.child_by_field_name("key"),
+                    member
+                        .child_by_field_name("value")
+                        .filter(|v| is_function_value(*v)),
+                ),
+                _ => continue,
+            };
+            if let (Some(key), Some(func)) = (key, func) {
+                out.push((format!("{prefix}.{}", node_text(key, source)), func));
+            }
+        }
+    }
+    /// Binds `value` (a function or object of methods) under `name`.
+    fn bind_value<'a>(
+        name: &str,
+        value: Node<'a>,
+        source: &str,
+        out: &mut Vec<(String, Node<'a>)>,
+    ) {
+        let value = unwrap_expression(value);
+        if is_function_value(value) {
+            out.push((name.to_string(), value));
+        } else if value.kind() == "object" {
+            object_methods(name, value, source, out);
+        }
+    }
+    fn gather<'a>(node: Node<'a>, source: &str, out: &mut Vec<(String, Node<'a>)>) {
+        match node.kind() {
+            "function_declaration" | "generator_function_declaration" => {
+                let name = node
+                    .child_by_field_name("name")
+                    .map(|n| node_text(n, source))
+                    .or_else(|| {
+                        node.parent()
+                            .filter(|p| p.kind() == "export_statement")
+                            .map(|_| DEFAULT_EXPORT.to_string())
+                    });
+                if let Some(name) = name {
+                    out.push((name, node));
+                }
+            }
+            "variable_declarator" => {
+                let name = node
+                    .child_by_field_name("name")
+                    .filter(|n| n.kind() == "identifier");
+                if let (Some(name), Some(value)) = (name, node.child_by_field_name("value")) {
+                    bind_value(&node_text(name, source), value, source, out);
+                }
+            }
+            // `export default { get(url) {} }` / `export default (url) => ..`
+            "export_statement" => {
+                if let Some(value) = node.child_by_field_name("value") {
+                    bind_value(DEFAULT_EXPORT, value, source, out);
+                }
+            }
+            _ => {}
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            gather(child, source, out);
+        }
+    }
+    fn mentions(node: Node<'_>, name: &str, source: &str) -> bool {
+        if node.kind() == "identifier" && node_text(node, source) == name {
+            return true;
+        }
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .any(|c| mentions(c, name, source))
+    }
+    /// The method an options object pins: a literal, or a parameter of the
+    /// wrapper being analysed.
+    fn options_method(opts: Node<'_>, params: &[String], source: &str) -> Option<WrapperMethod> {
+        let param = |name: &str| {
+            params
+                .iter()
+                .position(|p| p == name)
+                .map(WrapperMethod::Param)
+        };
+        if let Some(raw) = object_property_string(&opts, "method", source) {
+            return http::normalize_method(&raw).map(WrapperMethod::Fixed);
+        }
+        let value = object_property_node(&opts, "method", source)
+            .filter(|v| v.kind() == "identifier")
+            .map(|v| node_text(v, source));
+        let mut cursor = opts.walk();
+        let shorthand = opts
+            .named_children(&mut cursor)
+            .find(|c| {
+                c.kind() == "shorthand_property_identifier" && node_text(*c, source) == "method"
+            })
+            .map(|_| "method".to_string());
+        value.or(shorthand).and_then(|n| param(&n))
+    }
+    /// Locals assigned from an expression built from a parameter (`const url =
+    /// p.startsWith('/') ? p : `/${p}``), each mapped to that parameter's
+    /// index, after the parameters themselves.
+    fn url_names(body: Node<'_>, params: &[String], source: &str) -> Vec<(String, usize)> {
+        fn walk(node: Node<'_>, source: &str, names: &mut Vec<(String, usize)>) {
+            if node.kind() == "variable_declarator"
+                && let (Some(name), Some(value)) = (
+                    node.child_by_field_name("name")
+                        .filter(|n| n.kind() == "identifier"),
+                    node.child_by_field_name("value"),
+                )
+                && let Some(idx) = names
+                    .iter()
+                    .find(|(n, _)| mentions(value, n, source))
+                    .map(|(_, i)| *i)
+            {
+                names.push((node_text(name, source), idx));
+            }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                walk(child, source, names);
+            }
+        }
+        let mut names: Vec<(String, usize)> = params.iter().cloned().zip(0..).collect();
+        walk(body, source, &mut names);
+        names
+    }
+    /// The wrapper `params` make of `node`'s first URL-forwarding call, if any.
+    fn analyze(
+        node: Node<'_>,
+        params: &[String],
+        names: &[(String, usize)],
+        key: &str,
+        known: &WrapperTable,
+        source: &str,
+    ) -> Option<HttpWrapper> {
+        if node.kind() == "call_expression"
+            && let Some(callee) = call_target_node(node)
+        {
+            let args = call_arguments(node);
+            let callee_text = collapse_call_target_whitespace(&node_text(callee, source));
+            let axios_method = member_receiver_and_method(callee, source)
+                .filter(|(recv, m)| recv == "axios" && HTTP_METHOD_NAMES.contains(&m.as_str()))
+                .and_then(|(_, m)| http::normalize_method(&m));
+            let inner = known.get(&callee_text);
+            let url_idx = if inner.is_some() {
+                inner.map(|w| w.url)
+            } else if is_fetch_callee(callee, source) || axios_method.is_some() {
+                Some(0)
+            } else {
+                None
+            };
+            let forwarded = url_idx.and_then(|u| {
+                let arg = *args.get(u)?;
+                if !(arg.kind() == "identifier"
+                    || matches!(arg.kind(), "template_string" | "binary_expression"))
+                {
+                    return None;
+                }
+                let i = names.iter().find(|(n, _)| mentions(arg, n, source))?.1;
+                Some((u, i))
+            });
+            if let Some((u, url)) = forwarded {
+                let literal_or_param = args
+                    .get(u + 1)
+                    .and_then(|a| options_method(*a, params, source));
+                let by_key = key
+                    .rsplit_once('.')
+                    .map(|(_, k)| k)
+                    .filter(|k| HTTP_METHOD_NAMES.contains(k))
+                    .and_then(http::normalize_method)
+                    .map(WrapperMethod::Fixed);
+                let inherited = match inner.map(|w| &w.method) {
+                    Some(WrapperMethod::Fixed(m)) => Some(WrapperMethod::Fixed(m.clone())),
+                    // The inner wrapper reads its method from our argument: a
+                    // literal pins it, one of our parameters passes it on.
+                    Some(WrapperMethod::Param(j)) => args.get(*j).and_then(|a| {
+                        match extract_string_literal(*a, source)
+                            .and_then(|m| http::normalize_method(&m))
+                        {
+                            Some(m) => Some(WrapperMethod::Fixed(m)),
+                            None => params
+                                .iter()
+                                .position(|p| *p == node_text(*a, source))
+                                .map(WrapperMethod::Param),
+                        }
+                    }),
+                    _ => None,
+                };
+                let method = literal_or_param
+                    .or(axios_method.map(WrapperMethod::Fixed))
+                    .or(by_key)
+                    .or(inherited)
+                    .unwrap_or(WrapperMethod::CallSite);
+                return Some(HttpWrapper { url, method });
+            }
+        }
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .find_map(|c| analyze(c, params, names, key, known, source))
+    }
+    let mut candidates = Vec::new();
+    gather(root, source, &mut candidates);
+    let mut found = WrapperTable::new();
+    loop {
+        let mut changed = false;
+        for (key, func) in &candidates {
+            if found.contains_key(key) {
+                continue;
+            }
+            let params = param_names(*func, source);
+            let Some(body) = func.child_by_field_name("body") else {
+                continue;
+            };
+            let names = url_names(body, &params, source);
+            if let Some(wrapper) = analyze(body, &params, &names, key, &found, source) {
+                found.insert(key.clone(), wrapper);
+                changed = true;
+            }
+        }
+        if !changed {
+            return found;
+        }
+    }
 }
 
 /// The `axios.create` instance a callee (`api(...)` or `api.get`) refers to,
@@ -4209,13 +4669,30 @@ fn http_url_argument(node: Node<'_>, source: &str) -> Option<String> {
 
 enum TemplatePiece {
     Text(String),
-    Substitution,
+    /// A `${expr}` with its source text.
+    Substitution(String),
 }
 
 /// Static path of a template-literal URL such as `${BASE}/api/t/${id}?x=${y}`.
 /// A leading `${...}` base URL is dropped, substitutions between path
 /// separators become param segments, a substitution glued to path text ends
 /// the path, and `?query` / `#fragment` are cut. `None` without a static path.
+/// Whether a leading `${expr}` of a template URL is clearly a base URL
+/// (`BASE`, `baseUrl`, `process.env.API_BASE`, `HOST`), not an arbitrary value
+/// (`${id}/api/x`) whose path we would be inventing.
+fn is_base_url_expr(expr: &str) -> bool {
+    let name = expr
+        .rsplit(['.', ']'])
+        .next()
+        .unwrap_or(expr)
+        .to_ascii_lowercase();
+    [
+        "base", "url", "host", "origin", "api", "server", "endpoint", "root",
+    ]
+    .iter()
+    .any(|k| name.contains(k))
+}
+
 fn template_url_path(text: &str) -> Option<String> {
     use TemplatePiece::{Substitution, Text};
     let inner = text.trim().strip_prefix('`')?.strip_suffix('`')?;
@@ -4242,19 +4719,22 @@ fn template_url_path(text: &str) -> Option<String> {
                 _ => {}
             }
         }
-        pieces.push(Substitution);
+        pieces.push(Substitution(rest[start + 2..end? - 1].trim().to_string()));
         rest = &rest[end?..];
     }
     let mut iter = pieces.into_iter().peekable();
     let mut out = String::new();
     // Drop a leading base URL substitution, or `https://${host}`.
     match iter.peek() {
-        Some(Substitution) => {
+        Some(Substitution(expr)) => {
+            if !is_base_url_expr(expr) {
+                return None;
+            }
             iter.next();
         }
         Some(Text(first)) if first.ends_with("://") => {
             iter.next();
-            if matches!(iter.peek(), Some(Substitution)) {
+            if matches!(iter.peek(), Some(Substitution(_))) {
                 iter.next();
                 // Host remainder, e.g. `:3000/api/x`; keep from the first slash.
                 match iter.next() {
@@ -4276,7 +4756,7 @@ fn template_url_path(text: &str) -> Option<String> {
     let mut prev_text = false;
     for piece in iter {
         match piece {
-            Substitution => {
+            Substitution(_) => {
                 if prev_text && !out.ends_with('/') {
                     break;
                 }
@@ -5841,6 +6321,118 @@ async function go() {
             assert_eq!(got.len(), 1, "{module}");
             assert_eq!(got[0].1, path);
         }
+    }
+
+    fn http_calls(source: &str) -> Vec<(String, String)> {
+        ts_edges(source, "client", http::HTTP_CALL_KIND)
+    }
+
+    fn call(method: &str, path: &str) -> (String, String) {
+        (method.to_string(), path.to_string())
+    }
+
+    #[test]
+    fn wrapper_object_method_over_function_chain() {
+        let source = r#"
+function request(url: string, init?: RequestInit) { return fetch(url, init); }
+const api = { get: (url: string) => request(url, { method: "GET" }) };
+function go(id: string, v: string) {
+  api.get(`/api/t/${id}?x=${v}`);
+  request("/api/r", { method: "DELETE" });
+}
+"#;
+        assert_eq!(
+            http_calls(source),
+            vec![call("GET", "/api/t/{}"), call("DELETE", "/api/r")]
+        );
+        // `api` is also an Express router receiver name; a wrapper is no route.
+        assert!(ts_edges(source, "client", http::HTTP_ROUTE_KIND).is_empty());
+    }
+
+    #[test]
+    fn wrapper_over_axios_method() {
+        let source = r#"
+const api = { put: (url: string, body: unknown) => axios.put(url, body) };
+function go() { api.put("/api/t/1", {}); }
+"#;
+        assert_eq!(http_calls(source), vec![call("PUT", "/api/t/{}")]);
+    }
+
+    #[test]
+    fn wrapper_calls_without_a_determinable_url_emit_nothing() {
+        let source = r#"
+function request(url: string) { return fetch(url); }
+const api = { get: (url: string) => request(url) };
+function go(v: string) {
+  request(v);
+  api.get(v);
+}
+"#;
+        assert!(http_calls(source).is_empty());
+    }
+
+    #[test]
+    fn non_http_local_function_emits_nothing() {
+        let source = r#"
+function log(msg: string) { console.log(msg); }
+function go() { log("/api/t"); }
+"#;
+        assert!(http_calls(source).is_empty());
+    }
+
+    #[test]
+    fn wrapper_url_may_be_a_later_parameter() {
+        let source = r#"
+function request(method: string, url: string) { return fetch(url, { method }); }
+function go() { request("PATCH", "/api/t"); request(`x`, "/api/u"); }
+"#;
+        assert_eq!(
+            http_calls(source),
+            vec![call("PATCH", "/api/t"), call("ANY", "/api/u")]
+        );
+    }
+
+    #[test]
+    fn wrapper_leading_interpolation_must_be_a_base_url() {
+        let source = r#"
+function request(url: string) { return fetch(url); }
+function go(id: string) {
+  request(`${id}/api/x`);
+  request(`${BASE_URL}/api/y`);
+}
+"#;
+        assert_eq!(http_calls(source), vec![call("GET", "/api/y")]);
+    }
+
+    #[test]
+    fn direct_fetch_keeps_conventional_base_url_interpolations() {
+        let source = r#"
+function go() {
+  fetch(`${API_URL}/a`);
+  fetch(`${apiUrl}/b`);
+  fetch(`${process.env.NEXT_PUBLIC_API_URL}/c`);
+  fetch(`${this.baseUrl}/d`);
+  fetch(`${config.api.baseUrl}/e`);
+  fetch(`${window.location.origin}/f`);
+  fetch(`${HOST}/g`);
+  fetch(`${basePath}/h`);
+  fetch(`${id}/i`);
+}
+"#;
+        let paths: Vec<_> = http_calls(source).into_iter().map(|c| c.1).collect();
+        assert_eq!(paths, ["/a", "/b", "/c", "/d", "/e", "/f", "/g", "/h"]);
+    }
+
+    #[test]
+    fn direct_fetch_is_unchanged_by_wrappers() {
+        let source = r#"
+function health() { return fetch("/health"); }
+function go() { fetch("/api/direct"); }
+"#;
+        assert_eq!(
+            http_calls(source),
+            vec![call("GET", "/health"), call("GET", "/api/direct")]
+        );
     }
 
     #[test]
