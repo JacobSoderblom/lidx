@@ -341,6 +341,10 @@ pub struct BatchImpactEntry {
     /// seed through the graph: the reason and follow-up queries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_layer: Option<serde_json::Value>,
+    /// Present only for an upstream config-URI seed: which URIs the seeds
+    /// were read from, and whether each match was exact or a section prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_seeds: Option<serde_json::Value>,
 }
 
 /// Result of batch impact analysis (multiple seeds in one call)
