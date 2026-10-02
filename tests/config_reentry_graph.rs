@@ -141,11 +141,11 @@ fn hops_json(r: &lidx::traversal::TraceResult) -> Vec<String> {
 fn edge_order_does_not_change_hops_or_reached_nodes() {
     let names = ["S", "M", "X", "Z"];
     let edges = [
-        ("CONFIG_READ", "S", "env://A"),
+        ("CONFIG_SOURCE", "S", "env://A"),
         ("CALLS", "S", "X"),
         ("CALLS", "S", "M"),
         ("CALLS", "M", "X"),
-        ("CONFIG_SOURCE", "X", "env://A"),
+        ("CONFIG_READ", "X", "env://A"),
         ("CONFIG_SOURCE", "X", "env://B"),
         ("CONFIG_READ", "Z", "env://B"),
     ];
@@ -160,8 +160,10 @@ fn edge_order_does_not_change_hops_or_reached_nodes() {
         hop_names(&tf),
         ["M", "X", "Z"].iter().map(|s| s.to_string()).collect()
     );
-    // X is reported once per scope: unscoped, env://A (from S), env://B (from Z).
-    assert_eq!(tf.hops.iter().filter(|h| h.symbol.name == "X").count(), 3);
+    // X is reported once per scope: unscoped and env://A (from its provider
+    // S). Z reads env://B, but a downstream walk never crosses from a
+    // reader back to the source (issue #201).
+    assert_eq!(tf.hops.iter().filter(|h| h.symbol.name == "X").count(), 2);
 
     // Two parents at the same level reach the same (X, unscoped) pair with
     // different edge kinds (CALLS vs a channel bridge): the hop content must
@@ -248,11 +250,11 @@ fn reentry_keeps_min_distance_and_records_both_paths() {
     let g = graph(
         &["S", "M", "X"],
         &[
-            ("CONFIG_READ", "S", "env://A"),
+            ("CONFIG_SOURCE", "S", "env://A"),
             ("CALLS", "S", "M"),
-            ("CONFIG_READ", "M", "env://B"),
-            ("CONFIG_SOURCE", "X", "env://A"),
-            ("CONFIG_SOURCE", "X", "env://B"),
+            ("CONFIG_SOURCE", "M", "env://B"),
+            ("CONFIG_READ", "X", "env://A"),
+            ("CONFIG_READ", "X", "env://B"),
         ],
     );
     let r = impact(&g, "S");
@@ -280,13 +282,13 @@ fn reentry_keeps_min_distance_and_records_both_paths() {
 fn fan_in_graph(reversed: bool) -> Graph {
     let mut edges: Vec<(&str, &str, String)> = Vec::new();
     for i in 0..10 {
-        edges.push(("CONFIG_SOURCE", "X", format!("env://U{i}")));
+        edges.push(("CONFIG_READ", "X", format!("env://U{i}")));
     }
     for i in 2..10 {
-        edges.push(("CONFIG_READ", "S", format!("env://U{i}")));
+        edges.push(("CONFIG_SOURCE", "S", format!("env://U{i}")));
     }
     for i in 0..2 {
-        edges.push(("CONFIG_READ", "M", format!("env://U{i}")));
+        edges.push(("CONFIG_SOURCE", "M", format!("env://U{i}")));
     }
     edges.push(("CALLS", "S", "M".to_string()));
     if reversed {
@@ -335,8 +337,8 @@ fn reentry_cap_is_reported_and_independent_of_arrival_order() {
     let g = graph(
         &["S", "X"],
         &[
-            ("CONFIG_READ", "S", "env://U0"),
-            ("CONFIG_SOURCE", "X", "env://U0"),
+            ("CONFIG_SOURCE", "S", "env://U0"),
+            ("CONFIG_READ", "X", "env://U0"),
         ],
     );
     let t = trace(&g, "S");

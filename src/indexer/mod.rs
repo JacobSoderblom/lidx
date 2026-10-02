@@ -424,6 +424,7 @@ impl Indexer {
                 any_symbols_deleted,
                 "incremental sync",
             )?;
+            self.db.reconcile_rpc_edges(self.graph_version)?;
 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -852,6 +853,7 @@ impl Indexer {
                 any_symbols_deleted || stats.deleted > 0,
                 "reindex",
             )?;
+            self.db.reconcile_rpc_edges(self.graph_version)?;
 
             let remaining = unresolved_edge_count(&self.db, self.graph_version)?;
             self.db.set_meta_i64("unresolved_edge_floor", remaining)?;
