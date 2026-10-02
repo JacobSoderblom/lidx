@@ -121,6 +121,9 @@ struct Context {
     /// clause), so an inherent and a trait-impl method, or methods of two
     /// differently-parameterized impls, of the same name differ.
     impl_identity: Option<ImplIdentity>,
+    /// One parser per file, reused to re-parse every known-macro argument
+    /// list (`handle_macro_invocation`).
+    macro_parser: Rc<RefCell<Parser>>,
 }
 
 impl Context {
@@ -234,6 +237,8 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             "::",
             None,
         ));
+        let mut macro_parser = Parser::new();
+        macro_parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
         let ctx = Context {
             string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
                 crate::indexer::string_consts::ConstLang::Rust,
@@ -255,6 +260,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             in_trait_impl: None,
             cfg_chain: Vec::new(),
             impl_identity: None,
+            macro_parser: Rc::new(RefCell::new(macro_parser)),
         };
         walk_node(root, &ctx, source, &mut output);
         collect_uses(root, &ctx, source, &mut output, &mut HashSet::new());
@@ -366,6 +372,10 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         handle_call(node, ctx, source, output);
     }
     match node.kind() {
+        "macro_invocation" => {
+            handle_macro_invocation(node, ctx, source, output);
+            return;
+        }
         "mod_item" => {
             handle_mod(node, ctx, source, output);
             return;
@@ -928,6 +938,100 @@ fn handle_use(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
             evidence_snippet: None,
             ..Default::default()
         });
+    }
+}
+
+/// Std macros whose arguments are ordinary expressions (modulo the format
+/// string / `matches!` pattern), so calls inside them are real calls.
+const EXPR_ARG_MACROS: &[&str] = &[
+    "format",
+    "println",
+    "print",
+    "eprintln",
+    "eprint",
+    "vec",
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "matches",
+    "write",
+    "writeln",
+    "panic",
+];
+
+/// tree-sitter leaves macro arguments as an opaque `token_tree`; for the
+/// known std macros, re-parse just that byte range as an expression (the
+/// included range keeps byte/line offsets identical to the real file) and
+/// extract calls from it. Other macros are skipped.
+fn handle_macro_invocation(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let Some(name_node) = node.child_by_field_name("macro") else {
+        return;
+    };
+    let path = node_text(name_node, source);
+    let name = path.rsplit("::").next().unwrap_or(&path);
+    if !EXPR_ARG_MACROS.contains(&name) {
+        return;
+    }
+    let mut cursor = node.walk();
+    let Some(tokens) = node
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "token_tree")
+    else {
+        return;
+    };
+    let range = tree_sitter::Range {
+        start_byte: tokens.start_byte(),
+        end_byte: tokens.end_byte(),
+        start_point: tokens.start_position(),
+        end_point: tokens.end_position(),
+    };
+    let tree = {
+        let mut parser = ctx.macro_parser.borrow_mut();
+        if parser.set_included_ranges(&[range]).is_err() {
+            return;
+        }
+        parser.parse(source, None)
+    };
+    let Some(tree) = tree else {
+        return;
+    };
+    let mut root = tree.root_node();
+    if name == "matches" {
+        match matches_scrutinee(root) {
+            Some(scrutinee) => root = scrutinee,
+            None => return,
+        }
+    }
+    walk_macro_exprs(root, ctx, source, output);
+}
+
+/// `matches!(scrutinee, pattern)` re-parses as a tuple expression; only its
+/// first element is an expression (the pattern and guard are not).
+fn matches_scrutinee(root: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = root.walk();
+    root.named_children(&mut cursor)
+        .next()
+        .and_then(|stmt| stmt.named_child(0))
+        .and_then(|tuple| tuple.named_child(0))
+}
+
+fn walk_macro_exprs(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    match node.kind() {
+        "call_expression" => handle_call(node, ctx, source, output),
+        "macro_invocation" => {
+            handle_macro_invocation(node, ctx, source, output);
+            return;
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_macro_exprs(child, ctx, source, output);
     }
 }
 
