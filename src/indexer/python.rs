@@ -559,31 +559,30 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             }
         }
         "import_statement" | "import_from_statement" => {
-            if ctx.fn_depth == 0 {
-                let module = ctx.module.clone();
-                let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
-                let snippet =
-                    util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
-                let bindings = parse_import_bindings(node, source);
-                for target in parse_imports(node, source) {
-                    // Issue #116: persist the name this import binds (`np`
-                    // for `import numpy as np`) so `unused_imports` can look
-                    // for it; the target text alone can't say.
-                    let detail = bindings
-                        .iter()
-                        .find(|(_, bound_target)| *bound_target == target)
-                        .map(|(bound, _)| serde_json::json!({ "bound_name": bound }).to_string());
-                    output.edges.push(EdgeInput {
-                        kind: "IMPORTS".to_string(),
-                        source_qualname: Some(module.clone()),
-                        target_qualname: Some(target),
-                        detail,
-                        evidence_snippet: snippet.clone(),
-                        evidence_start_line: Some(start_line),
-                        evidence_end_line: Some(end_line),
-                        ..Default::default()
-                    });
-                }
+            // Function/method-scoped (lazy) imports emit the same module-sourced edges (#336).
+            let module = ctx.module.clone();
+            let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+            let snippet =
+                util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+            let bindings = parse_import_bindings(node, source);
+            for target in parse_imports(node, source) {
+                // Issue #116: persist the name this import binds (`np`
+                // for `import numpy as np`) so `unused_imports` can look
+                // for it; the target text alone can't say.
+                let detail = bindings
+                    .iter()
+                    .find(|(_, bound_target)| *bound_target == target)
+                    .map(|(bound, _)| serde_json::json!({ "bound_name": bound }).to_string());
+                output.edges.push(EdgeInput {
+                    kind: "IMPORTS".to_string(),
+                    source_qualname: Some(module.clone()),
+                    target_qualname: Some(target),
+                    detail,
+                    evidence_snippet: snippet.clone(),
+                    evidence_start_line: Some(start_line),
+                    evidence_end_line: Some(end_line),
+                    ..Default::default()
+                });
             }
             return;
         }
