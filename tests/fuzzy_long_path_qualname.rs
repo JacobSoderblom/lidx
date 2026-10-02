@@ -2,15 +2,10 @@
 //! the fuzzy prefilter's token cap.
 use lidx::indexer::Indexer;
 use lidx::resolve::find_candidates;
-use std::path::PathBuf;
 
-fn indexed(label: &str) -> (PathBuf, Indexer) {
-    let mut root = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    root.push(format!("lidx-fuzzy-long-{label}-{nanos}"));
+fn indexed() -> (tempfile::TempDir, Indexer) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("src/get.ts"),
@@ -27,9 +22,10 @@ fn indexed(label: &str) -> (PathBuf, Indexer) {
         .map(|i| format!("export function datacatalogTables{i}() {{}}\nexport function featuresApi{i}() {{}}\n"))
         .collect();
     std::fs::write(root.join("src/decoys.ts"), decoys).unwrap();
-    let mut indexer = Indexer::new(root.clone(), root.join(".lidx").join(".lidx.sqlite")).unwrap();
+    let mut indexer =
+        Indexer::new(root.to_path_buf(), root.join(".lidx").join(".lidx.sqlite")).unwrap();
     indexer.reindex().unwrap();
-    (root, indexer)
+    (dir, indexer)
 }
 
 fn names(indexer: &Indexer, q: &str) -> Vec<String> {
@@ -39,40 +35,52 @@ fn names(indexer: &Indexer, q: &str) -> Vec<String> {
         .collect()
 }
 
-fn has(names: &[String], bare: &str) -> bool {
+fn suggests(names: &[String], bare: &str) -> bool {
     names.iter().any(|n| n.ends_with(bare))
 }
 
 #[test]
-fn long_path_qualname_still_suggests_final_segment() {
-    let (root, indexer) = indexed("ts");
-    let long = "node/datacatalog-api/src/features/datacatalog/tables/get.findCatalogItem";
-    assert!(has(&names(&indexer, long), "findCatalogItem"), "11 tokens");
-    let short = "features/get.findCatalogItem";
-    assert!(has(&names(&indexer, short), "findCatalogItem"), "5 tokens");
+fn eleven_token_path_qualname_suggests_final_segment() {
+    let (_dir, indexer) = indexed();
+    let q = "node/datacatalog-api/src/features/datacatalog/tables/get.findCatalogItem";
+    assert!(suggests(&names(&indexer, q), "findCatalogItem"));
+}
+
+#[test]
+fn five_token_path_qualname_suggests_final_segment() {
+    let (_dir, indexer) = indexed();
+    let q = "features/get.findCatalogItem";
+    assert!(suggests(&names(&indexer, q), "findCatalogItem"));
+}
+
+#[test]
+fn suggestion_is_monotonic_in_prefix_length() {
+    let (_dir, indexer) = indexed();
     for n in [3, 6, 9, 12] {
         let prefix: Vec<String> = (0..n).map(|i| format!("datacatalog{i}")).collect();
         let q = format!("{}/get.findCatalogItem", prefix.join("/"));
         let r = names(&indexer, &q);
-        assert!(has(&r, "findCatalogItem"), "{n} prefix tokens: {r:?}");
+        assert!(suggests(&r, "findCatalogItem"), "{n} prefix tokens: {r:?}");
     }
-    // Pathological 50-token query still answers (prefilter stays bounded).
+}
+
+#[test]
+fn fifty_token_query_still_suggests_final_segment() {
+    let (_dir, indexer) = indexed();
     let huge = format!("{}/findCatalogItem", vec!["segment"; 50].join("/"));
-    assert!(has(&names(&indexer, &huge), "findCatalogItem"));
-    let _ = std::fs::remove_dir_all(root);
+    assert!(suggests(&names(&indexer, &huge), "findCatalogItem"));
 }
 
 #[test]
 fn markdown_style_path_qualname_suggests_final_segment() {
-    let (root, indexer) = indexed("md");
+    let (_dir, indexer) = indexed();
     let q = "docs/guides/api/reference/catalog/tables/getting-started.md.findCatalogItem";
-    assert!(has(&names(&indexer, q), "findCatalogItem"));
-    let _ = std::fs::remove_dir_all(root);
+    assert!(suggests(&names(&indexer, q), "findCatalogItem"));
 }
 
 #[test]
 fn dotted_csharp_qualname_unchanged() {
-    let (root, indexer) = indexed("cs");
+    let (_dir, indexer) = indexed();
     let r = names(
         &indexer,
         "Dpb.Wrong.Namespace.DeployRequestValidator.ValidateAsync",
@@ -81,13 +89,11 @@ fn dotted_csharp_qualname_unchanged() {
         r.first().is_some_and(|n| n.ends_with("ValidateAsync")),
         "{r:?}"
     );
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn no_matching_final_segment_returns_nothing() {
-    let (root, indexer) = indexed("none");
+    let (_dir, indexer) = indexed();
     let q = "a/b/c/d/e/f/g/h/i/j/k/Zzyzx.Qqqrrsttuv";
     assert!(names(&indexer, q).is_empty());
-    let _ = std::fs::remove_dir_all(root);
 }

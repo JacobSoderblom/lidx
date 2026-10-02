@@ -458,15 +458,20 @@ fn fuzzy_score(query_tokens: &[String], query_last: &str, sym: &Symbol) -> Optio
     (score >= FUZZY_MIN_SCORE || best >= FUZZY_MIN_TOKEN_MATCH).then_some(score)
 }
 
+/// Cap `tokens` at `FUZZY_MAX_QUERY_TOKENS`, dropping leading tokens, not
+/// trailing: the final segment names the symbol, while a path prefix is the
+/// least identifying part (#245).
+fn cap_query_tokens(tokens: &mut Vec<String>) {
+    let excess = tokens.len().saturating_sub(FUZZY_MAX_QUERY_TOKENS);
+    tokens.drain(..excess);
+}
+
 /// Typo / retired-name suggestions: prefilter symbols by SQL LIKE on the
 /// query's tokens (bounded by `FUZZY_SCAN_CAP`), then rank in Rust by token
 /// overlap and Levenshtein distance on the last name segment.
 fn fuzzy_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
     let mut query_tokens = name_tokens(query);
-    // Drop leading tokens, not trailing: the final segment names the symbol,
-    // while a path prefix is the least identifying part (#245).
-    let excess = query_tokens.len().saturating_sub(FUZZY_MAX_QUERY_TOKENS);
-    query_tokens.drain(..excess);
+    cap_query_tokens(&mut query_tokens);
     if query_tokens.is_empty() {
         return Vec::new();
     }
@@ -817,6 +822,14 @@ pub fn expand_seeds(db: &Db, symbol_id: i64, graph_version: i64) -> Result<Vec<i
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cap_query_tokens_bounds_long_queries_and_keeps_final_token() {
+        let mut tokens: Vec<String> = (0..50).map(|i| format!("t{i}")).collect();
+        super::cap_query_tokens(&mut tokens);
+        assert_eq!(tokens.len(), super::FUZZY_MAX_QUERY_TOKENS);
+        assert_eq!(tokens.last().map(String::as_str), Some("t49"));
+    }
+
     #[test]
     fn dedup_hops_ignores_description_and_key_order_but_keeps_distinct_params() {
         let hops: Vec<Value> = [
