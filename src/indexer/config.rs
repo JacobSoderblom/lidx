@@ -151,6 +151,9 @@ pub struct BridgeTarget {
     /// Keyed bridges (this one, or the node's own entry) never turn back to
     /// the node they came from: see `ConfigScope::note_bridge`.
     pub no_return: bool,
+    /// The walk direction the bridge was found in; it decides which
+    /// complements the bridge may cross to.
+    pub walk: crate::indexer::channel::WalkDirection,
 }
 
 /// What a traversal step may expand a node under: everything (`Unscoped`), or
@@ -449,6 +452,7 @@ impl ConfigScope {
         edge: &Edge,
         uri: &str,
         source_id: i64,
+        walk: crate::indexer::channel::WalkDirection,
     ) -> Vec<BridgeTarget> {
         let mut keys: Vec<String> = match (edge.kind.as_str(), entry) {
             (_, Entry::Key(u, k)) if u == uri => vec![k.clone()],
@@ -484,6 +488,7 @@ impl ConfigScope {
             source_id,
             no_return: key.is_some() || entry.key().is_some(),
             key,
+            walk,
         };
         if keys.is_empty() {
             vec![target(None)]

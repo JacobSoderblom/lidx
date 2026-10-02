@@ -923,8 +923,10 @@ impl Db {
         // The other side may be the wrong guess: pull in its edges whose
         // guessed path resolves to our route.
         // Symmetric in edge kind: callers (RPC_CALL) and implementers
-        // (RPC_IMPL) both store guessed paths.
-        if own.is_none() {
+        // (RPC_IMPL) both store guessed paths. Pull in the other side's
+        // edges whose guessed path resolves to our route, whether or not
+        // our own path was itself a guess.
+        {
             let (_, svc_method) = rpc_split(target_qualname);
             let conn = self.read_conn()?;
             let mut stmt = conn.prepare(
@@ -940,17 +942,15 @@ impl Db {
                 }
                 let guesses: Vec<String> = stmt
                     .query_map(
-                        rusqlite::params![graph_version, target_qualname, svc_method, kind],
+                        rusqlite::params![graph_version, route, svc_method, kind],
                         |r| r.get(0),
                     )?
                     .collect::<rusqlite::Result<_>>()?;
                 for guess in guesses {
-                    if self.resolve_rpc_route(&guess, graph_version)?.as_deref()
-                        == Some(target_qualname)
-                    {
+                    if self.resolve_rpc_route(&guess, graph_version)?.as_deref() == Some(route) {
                         edges.extend(self.edges_by_exact_target(
                             &guess,
-                            target_qualname,
+                            route,
                             &[kind],
                             languages,
                             graph_version,

@@ -383,3 +383,46 @@ message Req {}\nmessage Res {}\n";
     );
     assert!(explain["callers_total"].as_u64().unwrap() >= 1, "{explain}");
 }
+
+const HANDLER_Q: &str = "src/features/datacatalog/tables/get.getTables";
+const CLIENT_Q: &str = "src/client/tables.loadTables";
+
+fn trace(repo: &Repo, start: &str, direction: &str) -> String {
+    call(
+        repo,
+        "trace_flow",
+        serde_json::json!({"start_qualname": start, "direction": direction, "max_hops": 4,
+            "kinds": ["RPC_CALL", "RPC_IMPL", "RPC_ROUTE", "CALLS"]}),
+    )
+    .to_string()
+}
+
+fn impact(repo: &Repo, start: &str, direction: &str) -> String {
+    call(
+        repo,
+        "analyze_impact",
+        serde_json::json!({"qualname": start, "direction": direction, "max_depth": 4}),
+    )["affected"]
+        .to_string()
+}
+
+#[test]
+fn rpc_route_in_the_middle_connects_client_proto_and_handler_both_ways() {
+    let repo = repo();
+    // Proto rpc: callers upstream, implementer downstream.
+    assert!(trace(&repo, RPC_SYMBOL, "upstream").contains("loadTables"));
+    assert!(impact(&repo, RPC_SYMBOL, "upstream").contains("loadTables"));
+    assert!(impact(&repo, RPC_SYMBOL, "downstream").contains("getTables"));
+    // Handler upstream: the proto rpc and the client (guessed-path caller).
+    let up = trace(&repo, HANDLER_Q, "upstream");
+    assert!(
+        up.contains("GetTables") && up.contains("loadTables"),
+        "{up}"
+    );
+    let up = impact(&repo, HANDLER_Q, "upstream");
+    assert!(up.contains("loadTables"), "{up}");
+    // Client downstream: the handler (and its proto route).
+    let down = trace(&repo, CLIENT_Q, "downstream");
+    assert!(down.contains("getTables"), "{down}");
+    assert!(impact(&repo, CLIENT_Q, "downstream").contains("getTables"));
+}
