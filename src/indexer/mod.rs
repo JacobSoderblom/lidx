@@ -27,9 +27,6 @@ pub fn validate_repo_root(repo: &Path) -> Result<PathBuf> {
         .with_context(|| format!("canonicalize repo root {}", repo.display()))
 }
 
-/// Bump whenever extractor output changes (anything under `src/indexer/`), so
-/// existing indexes re-extract unchanged files instead of hash-skipping them.
-/// Enforced by `tests/extractor_version.rs`.
 /// The stored record of `file` when a reindex can carry it forward instead
 /// of re-extracting it: same hash, no forced re-extraction, not stale.
 fn unchanged_record<'a>(
@@ -43,6 +40,9 @@ fn unchanged_record<'a>(
     })
 }
 
+/// Bump whenever extractor output changes (anything under `src/indexer/`), so
+/// existing indexes re-extract unchanged files instead of hash-skipping them.
+/// Enforced by `tests/extractor_version.rs`.
 pub const EXTRACTOR_VERSION: i64 = 12;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
