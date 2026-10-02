@@ -151,6 +151,9 @@ pub struct BridgeTarget {
     /// Keyed bridges (this one, or the node's own entry) never turn back to
     /// the node they came from: see `ConfigScope::note_bridge`.
     pub no_return: bool,
+    /// HTTP method of the edge (`detail.method`), so a bridge pairs a POST
+    /// call with POST routes only (see `prefer_same_service`).
+    pub method: Option<String>,
 }
 
 /// What a traversal step may expand a node under: everything (`Unscoped`), or
@@ -484,6 +487,7 @@ impl ConfigScope {
             source_id,
             no_return: key.is_some() || entry.key().is_some(),
             key,
+            method: http_method(edge),
         };
         if keys.is_empty() {
             vec![target(None)]
@@ -569,6 +573,7 @@ pub const CROSS_SERVICE_KIND: &str = "cross_service_http";
 pub fn prefer_same_service<'a>(
     uri: &str,
     origin_path: &str,
+    origin_method: Option<&str>,
     bridged: &'a [Edge],
 ) -> Vec<(&'a Edge, bool)> {
     let all = |speculative: bool| bridged.iter().map(|e| (e, speculative)).collect();
@@ -576,19 +581,28 @@ pub fn prefer_same_service<'a>(
         if bridged.is_empty() || !bridged.iter().all(|e| e.kind.starts_with("HTTP_")) {
             return all(false);
         }
+        // A POST call never reaches a GET handler; an unknown or ANY method
+        // on either side matches everything.
+        let bridged: Vec<&Edge> = bridged
+            .iter()
+            .filter(|e| match (origin_method, http_method(e).as_deref()) {
+                (Some(a), Some(b)) => a == b || a == "ANY" || b == "ANY",
+                _ => true,
+            })
+            .collect();
         let origin = service_root(origin_path);
         let keys: Vec<String> = bridged.iter().map(|e| service_root(&e.file_path)).collect();
         let same: Vec<(&Edge, bool)> = bridged
             .iter()
             .zip(&keys)
             .filter(|(_, k)| **k == origin)
-            .map(|(e, _)| (e, false))
+            .map(|(e, _)| (*e, false))
             .collect();
         if !same.is_empty() {
             return same;
         }
         return if keys.iter().all(|k| *k == keys[0]) {
-            all(true)
+            bridged.into_iter().map(|e| (e, true)).collect()
         } else {
             Vec::new()
         };
@@ -599,6 +613,15 @@ pub fn prefer_same_service<'a>(
         .map(|e| (e, false))
         .collect();
     if same.is_empty() { all(false) } else { same }
+}
+
+/// The HTTP method an `HTTP_CALL`/`HTTP_ROUTE` edge's detail records.
+pub fn http_method(edge: &Edge) -> Option<String> {
+    if !edge.kind.starts_with("HTTP_") {
+        return None;
+    }
+    let detail: serde_json::Value = serde_json::from_str(edge.detail.as_deref()?).ok()?;
+    detail["method"].as_str().map(str::to_string)
 }
 
 /// Service identity for a *code* path, used for HTTP code-vs-code narrowing.

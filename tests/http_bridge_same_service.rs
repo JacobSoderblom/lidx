@@ -295,3 +295,32 @@ fn caller_in_neither_of_two_backends_gets_no_definite_bridge() {
     let i = impact(&files, "web/src/api.loadX");
     assert!(!i.contains("get_x") && !i.contains("GetX"), "{i}");
 }
+
+const WRAPPER: &str = "export async function request(url: string, init?: RequestInit) {\n  \
+    return fetch(url, init);\n}\n";
+const WRAPPED_CALL: &str = "import { request } from \"../lib/http\";\n\
+    export function listTables() {\n  return request(`/api/tables?type=${1}`);\n}\n";
+const NEXT_ROUTE: &str = "export async function GET() { return Response.json([]); }\n";
+
+/// Issue #211: an HTTP_CALL made through an in-repo wrapper bridges like any
+/// other, so it must stay inside its own service.
+#[test]
+fn wrapper_call_does_not_bridge_to_unrelated_service() {
+    let got = hops(
+        &[
+            ("apps/web/src/lib/http.ts", WRAPPER),
+            ("apps/web/src/queries/tables.ts", WRAPPED_CALL),
+            ("apps/web/src/app/api/tables/route.ts", NEXT_ROUTE),
+            ("apps/other/src/app/api/tables/route.ts", NEXT_ROUTE),
+        ],
+        "apps/web/src/queries/tables.listTables",
+    );
+    assert!(
+        got.iter().all(|(f, _)| !f.starts_with("apps/other/")),
+        "wrapper call bridged into unrelated service: {got:?}"
+    );
+    assert!(
+        got.iter().any(|(f, _)| f.starts_with("apps/web/")),
+        "same-service bridge missing: {got:?}"
+    );
+}

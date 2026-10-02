@@ -80,6 +80,8 @@ struct Context {
     /// Same-file `const api = axios.create({ baseURL })` instances: name to
     /// the normalized static base path, when there is one.
     axios_instances: Rc<HashMap<String, Option<String>>>,
+    /// Same-file in-repo HTTP wrappers (`collect_http_wrappers`).
+    http_wrappers: Rc<HashMap<String, Option<String>>>,
     grpc_clients: HashMap<String, GrpcService>,
     /// Names that count as positive gRPC evidence for `new Ctor(..)` (#204).
     grpc_evidence: Rc<GrpcEvidence>,
@@ -298,6 +300,7 @@ pub fn resolve_import_file_edges(
     // Re-exports (`export { x } from`, `export * from`) and default exports
     // are chased on disk (`chase_export`), so the candidate names the
     // original declaration rather than the barrel.
+    resolve_pending_wrapper_calls(repo_root, file_rel_path, edges);
     let mut resolved_specs: HashMap<String, Option<String>> = HashMap::new();
     for edge in edges.iter_mut() {
         for candidate in edge.import_candidates.iter_mut() {
@@ -1254,6 +1257,7 @@ fn extract_with_parser(
         route_prefix: None,
         router_aliases: Vec::new(),
         axios_instances: Rc::new(collect_axios_instances(root, source)),
+        http_wrappers: Rc::new(collect_http_wrappers(root, source)),
         grpc_clients,
         grpc_evidence,
         local_types: Rc::new(infer_module_level_types(root, source)),
@@ -1266,12 +1270,44 @@ fn extract_with_parser(
         is_esm: is_esm_file(root),
     };
     walk_node(root, &ctx, source, &mut output);
+    bind_next_routes_to_handlers(&mut output, module_name);
     dedup_namespace_symbols(&mut output);
     mark_unexported_private(root, source, module_name, &mut output);
     output.export_surface = Some(crate::indexer::scan::hash_i64(
         exports_from_root(root, source).surface_text().as_bytes(),
     ));
     Ok(output)
+}
+
+/// An App Router `HTTP_ROUTE` edge belongs to its method's handler symbol
+/// (`app/api/tables/route.GET`) when the module declares one, so callers of
+/// `/api/tables` land on the handler and a POST call binds to `POST`, not
+/// `GET`. Re-exported handlers (`export { h as GET }`) stay on the module.
+fn bind_next_routes_to_handlers(output: &mut ExtractedFile, module_name: &str) {
+    let declared: HashSet<&str> = output.symbols.iter().map(|s| s.qualname.as_str()).collect();
+    let mut rebind = Vec::new();
+    for (i, edge) in output.edges.iter().enumerate() {
+        if edge.kind != http::HTTP_ROUTE_KIND
+            || edge.source_qualname.as_deref() != Some(module_name)
+        {
+            continue;
+        }
+        let method = edge
+            .detail
+            .as_deref()
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+            .filter(|d| d["framework"] == "nextjs")
+            .and_then(|d| d["method"].as_str().map(str::to_string));
+        if let Some(method) = method {
+            let handler = format!("{module_name}.{method}");
+            if declared.contains(handler.as_str()) {
+                rebind.push((i, handler));
+            }
+        }
+    }
+    for (i, handler) in rebind {
+        output.edges[i].source_qualname = Some(handler);
+    }
 }
 
 /// `namespace Foo {}` merges with a same-named class/function/etc. (TS
@@ -2604,7 +2640,7 @@ fn http_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInp
     if let Some(edge) = fetch_call_edge(node, ctx, source) {
         return Some(edge);
     }
-    axios_call_edge(node, ctx, source)
+    axios_call_edge(node, ctx, source).or_else(|| wrapper_call_edge(node, ctx, source))
 }
 
 fn grpc_impl_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
@@ -3514,6 +3550,265 @@ fn is_http_client_call(node: Node<'_>, ctx: &Context, source: &str) -> bool {
     is_fetch_callee(target_node, source)
         || is_axios_callee(target_node, source)
         || axios_instance_of(target_node, ctx, source).is_some()
+        || ctx
+            .http_wrappers
+            .contains_key(&collapse_call_target_whitespace(&node_text(
+                target_node,
+                source,
+            )))
+}
+
+/// Placeholder kind for a call through an imported wrapper; finished (or
+/// dropped) by `resolve_pending_wrapper_calls` once the wrapper's file can be
+/// read.
+const PENDING_HTTP_WRAPPER_KIND: &str = "__pending_http_wrapper_call__";
+
+/// A call to an in-repo function or object method that forwards its first
+/// parameter as the URL of a `fetch`/axios call (see `collect_http_wrappers`)
+/// is an HTTP call to the URL the call site supplies. A wrapper in the same
+/// file yields an `HTTP_CALL` directly; an imported one yields a placeholder.
+fn wrapper_call_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    let target_node = call_target_node(node)?;
+    let raw = collapse_call_target_whitespace(&node_text(target_node, source));
+    if !is_simple_call_target(&raw) {
+        return None;
+    }
+    let local = ctx.http_wrappers.get(&raw);
+    let placeholder = if local.is_some() {
+        None
+    } else {
+        Some(import_placeholder(&raw, ctx)?)
+    };
+    let args = call_arguments(node);
+    let raw_path = args
+        .first()
+        .and_then(|arg| http_url_argument(*arg, source))?;
+    if !raw_path.starts_with('/') && !raw_path.contains("://") {
+        return None;
+    }
+    let normalized = http::normalize_path(&raw_path)?;
+    let call_method = args
+        .get(1)
+        .and_then(|arg| object_property_string(arg, "method", source))
+        .and_then(|raw| http::normalize_method(&raw));
+    let (start, _, end, ..) = span(node);
+    let mut edge = EdgeInput {
+        source_qualname: Some(ctx.current_scope.clone()),
+        evidence_start_line: Some(start),
+        evidence_end_line: Some(end),
+        ..Default::default()
+    };
+    if let Some(wrapper_method) = local {
+        let method = wrapper_method.clone().or(call_method);
+        edge.kind = http::HTTP_CALL_KIND.to_string();
+        edge.detail = Some(wrapper_call_detail(method, &normalized, &raw_path));
+        edge.target_qualname = Some(normalized);
+    } else {
+        edge.kind = PENDING_HTTP_WRAPPER_KIND.to_string();
+        edge.detail = Some(wrapper_call_detail(call_method, &normalized, &raw_path));
+        edge.target_qualname = Some(normalized);
+        edge.import_candidates = placeholder.into_iter().collect();
+    }
+    Some(edge)
+}
+
+fn wrapper_call_detail(method: Option<String>, normalized: &str, raw_path: &str) -> String {
+    let method = method.unwrap_or_else(|| "GET".to_string());
+    http::build_call_detail(&method, normalized, raw_path, "wrapper")
+}
+
+/// Finishes the `PENDING_HTTP_WRAPPER_KIND` placeholders in `edges`: each is
+/// looked up in the wrapper table of the file its callee is imported from,
+/// becoming an `HTTP_CALL` when found and dropped otherwise.
+fn resolve_pending_wrapper_calls(
+    repo_root: &Path,
+    file_rel_path: &str,
+    edges: &mut Vec<EdgeInput>,
+) {
+    let mut tables: HashMap<String, HashMap<String, Option<String>>> = HashMap::new();
+    for edge in edges.iter_mut() {
+        if edge.kind != PENDING_HTTP_WRAPPER_KIND {
+            continue;
+        }
+        let wrapper = edge.import_candidates.first().and_then(|cand| {
+            let (spec, member) = cand.split_once(IMPORT_PLACEHOLDER_SEP)?;
+            if member.starts_with(DEFAULT_IMPORT_MARK) {
+                return None;
+            }
+            let dst = resolve_import_path(repo_root, file_rel_path, spec)?;
+            let (path, member) =
+                EXPORT_CACHE.with(|c| chase_member(repo_root, &dst, member, &mut c.borrow_mut()));
+            let table = tables
+                .entry(path.clone())
+                .or_insert_with(|| scan_http_wrappers(repo_root, &path).unwrap_or_default());
+            table.get(&member).cloned()
+        });
+        edge.import_candidates.clear();
+        let Some(wrapper_method) = wrapper else {
+            continue;
+        };
+        edge.kind = http::HTTP_CALL_KIND.to_string();
+        if let Some(wrapper_method) = wrapper_method
+            && let Some(detail) = edge.detail.as_mut()
+            && let Ok(mut v) = serde_json::from_str::<serde_json::Value>(detail)
+        {
+            v["method"] = serde_json::Value::String(wrapper_method);
+            *detail = v.to_string();
+        }
+    }
+    edges.retain(|e| e.kind != PENDING_HTTP_WRAPPER_KIND);
+}
+
+fn scan_http_wrappers(repo_root: &Path, rel: &str) -> Option<HashMap<String, Option<String>>> {
+    let source = util::read_to_string(&repo_root.join(rel)).ok()?;
+    let mut parser = Parser::new();
+    let language = match Path::new(rel).extension().and_then(|e| e.to_str()) {
+        Some("ts" | "mts" | "cts") => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+        Some("tsx") => tree_sitter_typescript::LANGUAGE_TSX,
+        _ => tree_sitter_javascript::LANGUAGE,
+    };
+    parser.set_language(&language.into()).ok()?;
+    let tree = parser.parse(&source, None)?;
+    Some(collect_http_wrappers(tree.root_node(), &source))
+}
+
+/// In-repo HTTP wrappers declared in a file: a function (`f`) or object-literal
+/// method (`obj.m`) whose body passes its first parameter on as the URL of a
+/// `fetch`/axios call or of another wrapper, so `apiClient.get ->
+/// apiClientFetch -> fetch` resolves. The value is the method the wrapper
+/// fixes (`get: ...` or a literal `method:` option), `None` when the call site
+/// chooses. Only the first-parameter-is-URL shape is recognised.
+fn collect_http_wrappers(root: Node<'_>, source: &str) -> HashMap<String, Option<String>> {
+    fn gather<'a>(node: Node<'a>, source: &str, out: &mut Vec<(String, Node<'a>)>) {
+        match node.kind() {
+            "function_declaration" | "generator_function_declaration" => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    out.push((node_text(name, source), node));
+                }
+            }
+            "variable_declarator" => {
+                let name = node
+                    .child_by_field_name("name")
+                    .filter(|n| n.kind() == "identifier");
+                let value = node.child_by_field_name("value").map(unwrap_expression);
+                if let (Some(name), Some(value)) = (name, value) {
+                    let name = node_text(name, source);
+                    if is_function_value(value) {
+                        out.push((name, value));
+                    } else if value.kind() == "object" {
+                        let mut cursor = value.walk();
+                        for member in value.named_children(&mut cursor) {
+                            let (key, func) = match member.kind() {
+                                "method_definition" => {
+                                    (member.child_by_field_name("name"), Some(member))
+                                }
+                                "pair" => (
+                                    member.child_by_field_name("key"),
+                                    member
+                                        .child_by_field_name("value")
+                                        .filter(|v| is_function_value(*v)),
+                                ),
+                                _ => continue,
+                            };
+                            if let (Some(key), Some(func)) = (key, func) {
+                                out.push((format!("{name}.{}", node_text(key, source)), func));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            gather(child, source, out);
+        }
+    }
+    fn mentions(node: Node<'_>, name: &str, source: &str) -> bool {
+        if node.kind() == "identifier" && node_text(node, source) == name {
+            return true;
+        }
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .any(|c| mentions(c, name, source))
+    }
+    /// The method a wrapper fixes via its first URL-forwarding call, if it has
+    /// one: `Some(method)` (possibly `None` inside) when `func` qualifies.
+    fn analyze(
+        node: Node<'_>,
+        param: &str,
+        key: &str,
+        known: &HashMap<String, Option<String>>,
+        source: &str,
+    ) -> Option<Option<String>> {
+        if node.kind() == "call_expression"
+            && let Some(callee) = call_target_node(node)
+        {
+            let args = call_arguments(node);
+            let forwards = args.first().is_some_and(|a| {
+                (a.kind() == "identifier"
+                    || matches!(a.kind(), "template_string" | "binary_expression"))
+                    && mentions(*a, param, source)
+            });
+            if forwards {
+                let callee_text = collapse_call_target_whitespace(&node_text(callee, source));
+                let (is_client, client_method, inner) = if is_fetch_callee(callee, source) {
+                    (true, None, None)
+                } else if let Some((recv, m)) = member_receiver_and_method(callee, source)
+                    && recv == "axios"
+                    && HTTP_METHOD_NAMES.contains(&m.as_str())
+                {
+                    (true, http::normalize_method(&m), None)
+                } else {
+                    (false, None, known.get(&callee_text))
+                };
+                if is_client || inner.is_some() {
+                    let literal = args
+                        .get(1)
+                        .and_then(|a| object_property_string(a, "method", source))
+                        .and_then(|raw| http::normalize_method(&raw));
+                    let by_key = key
+                        .rsplit_once('.')
+                        .map(|(_, k)| k)
+                        .filter(|k| HTTP_METHOD_NAMES.contains(k))
+                        .and_then(http::normalize_method);
+                    return Some(
+                        literal
+                            .or(client_method)
+                            .or(by_key)
+                            .or_else(|| inner.and_then(|m| m.clone())),
+                    );
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .find_map(|c| analyze(c, param, key, known, source))
+    }
+    let mut candidates = Vec::new();
+    gather(root, source, &mut candidates);
+    let mut found: HashMap<String, Option<String>> = HashMap::new();
+    loop {
+        let mut changed = false;
+        for (key, func) in &candidates {
+            if found.contains_key(key) {
+                continue;
+            }
+            let (Some(param), Some(body)) = (
+                first_param_name(*func, source),
+                func.child_by_field_name("body"),
+            ) else {
+                continue;
+            };
+            if let Some(method) = analyze(body, &param, key, &found, source) {
+                found.insert(key.clone(), method);
+                changed = true;
+            }
+        }
+        if !changed {
+            return found;
+        }
+    }
 }
 
 /// The `axios.create` instance a callee (`api(...)` or `api.get`) refers to,
@@ -5696,6 +5991,40 @@ async function go() {
             assert_eq!(got.len(), 1, "{module}");
             assert_eq!(got[0].1, path);
         }
+    }
+
+    #[test]
+    fn same_file_wrappers_produce_http_calls() {
+        let source = r#"
+function request(url: string, init?: RequestInit) { return fetch(url, init); }
+const api = {
+  get: (url: string) => request(url, { method: "GET" }),
+  put: (url: string, body: unknown) => axios.put(url, body),
+};
+function log(msg: string) { console.log(msg); }
+function health() { return fetch("/health"); }
+async function go(id: string, v: string) {
+  api.get(`/api/t/${id}?x=${v}`);
+  api.put("/api/t/1", {});
+  request("/api/r", { method: "DELETE" });
+  request(v);
+  api.get(v);
+  log("/api/t");
+  fetch("/api/direct");
+}
+"#;
+        assert_eq!(
+            ts_edges(source, "client", http::HTTP_CALL_KIND),
+            vec![
+                ("GET".to_string(), "/health".to_string()),
+                ("GET".to_string(), "/api/t/{}".to_string()),
+                ("PUT".to_string(), "/api/t/{}".to_string()),
+                ("DELETE".to_string(), "/api/r".to_string()),
+                ("GET".to_string(), "/api/direct".to_string()),
+            ]
+        );
+        // `api` is also an Express router receiver name; a wrapper is no route.
+        assert!(ts_edges(source, "client", http::HTTP_ROUTE_KIND).is_empty());
     }
 
     #[test]

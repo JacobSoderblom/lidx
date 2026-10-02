@@ -413,6 +413,7 @@ pub fn trace_flow(
                     edge_kind,
                     origin_path,
                     key,
+                    method,
                     ..
                 } = bridge;
                 if let Some(complement_kinds) = bridge_complement(edge_kind) {
@@ -426,7 +427,7 @@ pub fn trace_flow(
                         .unwrap_or_default();
                     let b_type = boundary_type_for_kind(edge_kind);
                     for (bridged_edge, speculative) in
-                        prefer_same_service(tq, origin_path, &bridged)
+                        prefer_same_service(tq, origin_path, method.as_deref(), &bridged)
                     {
                         let Some(bridged_id) = bridged_edge.source_symbol_id else {
                             continue;
