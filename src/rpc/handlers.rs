@@ -2089,8 +2089,13 @@ fn analyze_impact_inner(
         }
 
         // Build config once (shared across all seeds)
+        // The floor of 50 only raises a *derived* per-seed value; an explicit
+        // `limit` is an upper bound on affected symbols per seed.
         let total_limit = params.limit.unwrap_or(500).min(2000);
-        let per_seed_limit = (total_limit / qualnames.len()).max(50);
+        let per_seed_limit = {
+            let derived = (total_limit / qualnames.len()).max(50);
+            params.limit.map_or(derived, |l| derived.min(l))
+        };
 
         let base_config = build_impact_config(&params, per_seed_limit, ctx.languages.as_deref());
 

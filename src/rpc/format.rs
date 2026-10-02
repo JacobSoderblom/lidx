@@ -66,15 +66,42 @@ pub(super) fn truncate_response(
     value: serde_json::Value,
     max_bytes: usize,
 ) -> (serde_json::Value, bool, Option<usize>) {
+    truncate_inner(value, max_bytes, false)
+}
+
+/// `nested` is true below the top level: there the caller can't see a sibling
+/// `total_available`, so each truncated array reports its own `<key>_total_available`.
+fn truncate_inner(
+    value: serde_json::Value,
+    max_bytes: usize,
+    nested: bool,
+) -> (serde_json::Value, bool, Option<usize>) {
     let serialized = serde_json::to_string(&value).unwrap_or_default();
     if serialized.len() <= max_bytes {
         return (value, false, None);
     }
 
     match value {
-        serde_json::Value::Array(arr) => {
-            // Binary search for how many elements fit
+        serde_json::Value::Array(mut arr) => {
             let original_len = arr.len();
+            // Elements that carry their own array (e.g. batch results, each
+            // with an `affected` list) are shrunk in place, each to an equal
+            // share, rather than treated as atomic and dropped whole.
+            let is_bulky = |e: &serde_json::Value| {
+                e.as_object()
+                    .is_some_and(|m| m.values().any(|v| v.is_array()))
+            };
+            if !arr.is_empty() && arr.iter().all(is_bulky) {
+                let share = max_bytes.saturating_sub(arr.len() + 1) / arr.len();
+                arr = arr
+                    .into_iter()
+                    .map(|e| truncate_inner(e, share, true).0)
+                    .collect();
+                if serde_json::to_string(&arr).unwrap_or_default().len() <= max_bytes {
+                    return (serde_json::Value::Array(arr), true, Some(original_len));
+                }
+            }
+            // Binary search for how many elements fit
             let mut low = 0usize;
             let mut high = arr.len();
             while low < high {
@@ -126,17 +153,37 @@ pub(super) fn truncate_response(
                     .len()
             };
 
-            let available = max_bytes.saturating_sub(overhead);
+            // Room for the `<key>_total_available` counts added below.
+            let reserve = if nested { 48 * array_keys.len() } else { 0 };
+            let available = max_bytes.saturating_sub(overhead + reserve);
             let per_array = available / array_keys.len().max(1);
 
             let mut did_truncate = false;
+            let mut dropped_all = false;
             for key in &array_keys {
                 if let Some(serde_json::Value::Array(arr)) = map.remove(key) {
+                    let original_len = arr.len();
                     let (truncated_arr, was_truncated, _) =
-                        truncate_response(serde_json::Value::Array(arr), per_array);
+                        truncate_inner(serde_json::Value::Array(arr), per_array, true);
                     did_truncate = did_truncate || was_truncated;
+                    if was_truncated {
+                        if nested {
+                            map.insert(
+                                format!("{key}_total_available"),
+                                serde_json::json!(original_len),
+                            );
+                        }
+                        dropped_all =
+                            dropped_all || truncated_arr.as_array().is_some_and(|a| a.is_empty());
+                    }
                     map.insert(key.clone(), truncated_arr);
                 }
+            }
+            if dropped_all {
+                map.insert(
+                    "truncation_note".to_string(),
+                    serde_json::json!("max_response_bytes too small to fit even one entry; raise it or narrow the query"),
+                );
             }
 
             // A handler's own result can carry a sibling `truncated` bool that
@@ -497,5 +544,38 @@ mod tests {
         let val = json!({"a": 1, "b": 2});
         let result = apply_field_filters(val.clone(), false, None, &["a"]);
         assert_eq!(result, val);
+    }
+
+    #[test]
+    fn truncate_response_shrinks_array_nested_two_levels_deep() {
+        // {"results":[{"affected":[...400]}]}: the bulk is one level below
+        // the top-level array, so the element must be shrunk, not dropped.
+        let affected: Vec<serde_json::Value> = (0..400).map(|i| json!({"id": i})).collect();
+        let val =
+            json!({"results": [{"seed": "hub", "affected": affected}], "total_affected": 400});
+        let (result, was_truncated, _) = truncate_response(val, 1000);
+        assert!(was_truncated);
+        let results = result["results"].as_array().unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "oversized entry must be shrunk, not dropped"
+        );
+        let entry = &results[0];
+        let kept = entry["affected"].as_array().unwrap().len();
+        assert!(kept > 0 && kept < 400);
+        assert_eq!(entry["affected_total_available"], json!(400));
+        assert!(serde_json::to_string(&result).unwrap().len() <= 1000);
+    }
+
+    #[test]
+    fn truncate_response_budget_below_one_entry_is_explicit() {
+        let affected: Vec<serde_json::Value> = (0..50).map(|i| json!({"id": i})).collect();
+        let val = json!({"results": [{"seed": "hub", "affected": affected}]});
+        let (result, was_truncated, total) = truncate_response(val, 20);
+        assert!(was_truncated);
+        assert_eq!(total, Some(1));
+        assert!(result["results"].as_array().unwrap().is_empty());
+        assert!(result["truncation_note"].is_string());
     }
 }
