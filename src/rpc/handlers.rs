@@ -1512,6 +1512,17 @@ fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Edge kinds for a "re-trace with CONFIG edges only" next_hop.
+const CONFIG_EDGE_KINDS: [&str; 3] = ["CONFIG_SOURCE", "CONFIG_READ", "CONFIG_BIND"];
+
+/// Start of a trace_flow next_hop's params: the originating request, so the
+/// hop preserves every parameter (query, direction, max_hops, ...) except
+/// those the caller then overrides. `raw_params` already parsed as a
+/// `TraceFlowParams` struct, so it is always an object.
+fn trace_hop_params(raw_params: &Value) -> serde_json::Map<String, Value> {
+    raw_params.as_object().cloned().unwrap_or_default()
+}
+
 pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let raw_params = params.clone();
     let mut params: TraceFlowParams = super::parse_params("trace_flow", params)?;
@@ -1681,14 +1692,11 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         }));
     }
     if truncated && params.kinds.is_none() {
-        // Suggest narrowing by edge kind when trace was truncated and no filter was used
-        let mut narrow_params = json!({"max_bytes": (max_bytes * 2).min(200_000)});
-        if let Some(ref qn) = params.start_qualname {
-            narrow_params["start_qualname"] = json!(qn);
-        } else if let Some(id) = params.start_id {
-            narrow_params["start_id"] = json!(id);
-        }
-        narrow_params["kinds"] = json!(["CONFIG_BIND", "CONFIG_SOURCE", "CONFIG_READ"]);
+        // Suggest narrowing by edge kind when trace was truncated and no filter was used.
+        // #230: clone-and-override -- only `kinds` and `max_bytes` change.
+        let mut narrow_params = trace_hop_params(&raw_params);
+        narrow_params.insert("max_bytes".to_string(), json!((max_bytes * 2).min(200_000)));
+        narrow_params.insert("kinds".to_string(), json!(CONFIG_EDGE_KINDS));
         next_hops.push(json!({
             "method": "trace_flow",
             "params": narrow_params,
@@ -1704,6 +1712,8 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     }
     // When trace is empty, suggest analyze_impact as an alternative
     if trace.is_empty() {
+        // Different method schema (analyze_impact takes no query/max_hops/...),
+        // so its params are built from scratch rather than cloned.
         let mut impact_params = json!({"id": start.id, "direction": "upstream"});
         if matches!(start.kind.as_str(), "class" | "property") {
             impact_params["kinds"] =
@@ -1714,15 +1724,12 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             "params": impact_params,
             "description": format!("Try analyze_impact on {} (finds consumers via CONFIG/DI edges)", start.name),
         }));
-        // Also suggest with CONFIG-only kinds if default kinds were used
+        // Also suggest with CONFIG-only kinds if default kinds were used.
+        // #230: clone-and-override -- only `kinds` changes (a query-started
+        // trace keeps its `query`, an upstream one keeps its `direction`).
         if params.kinds.is_none() {
-            let mut retry_params = json!({"include_snippets": include_snippets});
-            if let Some(ref qn) = params.start_qualname {
-                retry_params["start_qualname"] = json!(qn);
-            } else {
-                retry_params["start_id"] = json!(start.id);
-            }
-            retry_params["kinds"] = json!(["CONFIG_SOURCE", "CONFIG_READ", "CONFIG_BIND"]);
+            let mut retry_params = trace_hop_params(&raw_params);
+            retry_params.insert("kinds".to_string(), json!(CONFIG_EDGE_KINDS));
             next_hops.push(json!({
                 "method": "trace_flow",
                 "params": retry_params,
@@ -1747,46 +1754,25 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         .exclude_resolution_kinds
         .as_ref()
         .is_some_and(|k| !k.is_empty());
-    // R2/R4: a retry hop must reconstruct the same trace, not a bare start --
-    // a call started via `query`/`start_query` has neither start_qualname nor
-    // start_id, so it falls back to the symbol `resolve_symbol` already
-    // resolved it to (`start.id`); end_qualname/end_id/kinds/max_hops/
-    // include_snippets all carry over too, so only the filter itself changes.
-    let hop_start_params = |extra: &mut serde_json::Map<String, serde_json::Value>| {
-        if let Some(ref qn) = params.start_qualname {
-            extra.insert("start_qualname".to_string(), json!(qn));
-        } else if let Some(id) = params.start_id {
-            extra.insert("start_id".to_string(), json!(id));
-        } else {
-            extra.insert("start_id".to_string(), json!(start.id));
+    // R2/R4 + #230: a retry hop must reconstruct the same trace, so it clones
+    // the request (end_*, kinds, max_hops, include_snippets, languages, ...
+    // all carry over) and only the filter changes. `trace_offset` is dropped
+    // (a different filter restarts the trace), and a call started via
+    // `query`/`start_query` has neither start_qualname nor start_id, so it
+    // falls back to the symbol `resolve_symbol` already resolved it to.
+    let retry_base = || {
+        let mut m = trace_hop_params(&raw_params);
+        m.remove("trace_offset");
+        if params.start_qualname.is_none() && params.start_id.is_none() {
+            m.remove("query");
+            m.remove("start_query");
+            m.insert("start_id".to_string(), json!(start.id));
         }
-        if let Some(id) = params.end_id {
-            extra.insert("end_id".to_string(), json!(id));
-        } else if let Some(ref qn) = params.end_qualname {
-            extra.insert("end_qualname".to_string(), json!(qn));
-        }
-        if let Some(ref d) = params.direction {
-            extra.insert("direction".to_string(), json!(d));
-        }
-        if let Some(ref k) = params.kinds {
-            extra.insert("kinds".to_string(), json!(k));
-        }
-        if let Some(h) = params.max_hops {
-            extra.insert("max_hops".to_string(), json!(h));
-        }
-        if let Some(s) = params.include_snippets {
-            extra.insert("include_snippets".to_string(), json!(s));
-        }
-        if let Some(ref langs) = params.common.languages {
-            extra.insert("languages".to_string(), json!(langs));
-        }
-        if let Some(gv) = params.common.graph_version {
-            extra.insert("graph_version".to_string(), json!(gv));
-        }
+        m
     };
     if has_exclude_filter {
-        let mut retry_params = serde_json::Map::new();
-        hop_start_params(&mut retry_params);
+        let mut retry_params = retry_base();
+        retry_params.remove("exclude_resolution_kinds");
         next_hops.push(json!({
             "method": "trace_flow",
             "params": retry_params,
@@ -1797,8 +1783,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         // actually traversed -- a non-empty trace made entirely of exact/
         // import/receiver_type/inherited edges has nothing for the filter
         // to remove.
-        let mut retry_params = serde_json::Map::new();
-        hop_start_params(&mut retry_params);
+        let mut retry_params = retry_base();
         retry_params.insert(
             "exclude_resolution_kinds".to_string(),
             json!(crate::db::resolver::HEURISTIC_RESOLUTION_KINDS),
@@ -1896,6 +1881,102 @@ fn build_impact_config(
 struct ImpactSeeds {
     ids: Vec<i64>,
     upstream_only: Vec<i64>,
+    config_seeds: Option<Value>,
+}
+
+/// Seeds resolved from a config URI, plus (upstream only) the `config_seeds`
+/// note naming the URI each seed was read from.
+struct ConfigUriSeeds {
+    ids: Vec<i64>,
+    note: Option<Value>,
+}
+
+/// Seeds an impact analysis from a config URI. Downstream seeds from
+/// providers (CONFIG_SOURCE), upstream from consumers (CONFIG_READ /
+/// CONFIG_BIND), both from all. Upstream also seeds from the readers of each
+/// `__` section ancestor of an `env://` URI (#227): a service reading section
+/// `Database` depends on `Database__ConnectionString`. A seed found under more
+/// than one URI keeps its most specific match.
+fn config_uri_seeds(
+    db: &crate::db::Db,
+    uri: &str,
+    direction: crate::impact::TraversalDirection,
+    graph_version: i64,
+) -> Result<ConfigUriSeeds> {
+    use crate::impact::TraversalDirection;
+    let kinds: &[&str] = match direction {
+        TraversalDirection::Downstream => &["CONFIG_SOURCE"],
+        TraversalDirection::Upstream => &["CONFIG_READ", "CONFIG_BIND"],
+        TraversalDirection::Both => &[],
+    };
+    if direction != TraversalDirection::Upstream {
+        let ids = db.source_symbols_for_config_uri(uri, kinds, graph_version)?;
+        return Ok(ConfigUriSeeds { ids, note: None });
+    }
+    let mut ids: Vec<i64> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut matches = Vec::new();
+    let sections = crate::indexer::config::env_section_prefixes(uri);
+    for (candidate, kind) in std::iter::once((uri.to_string(), "exact"))
+        .chain(sections.into_iter().map(|s| (s, "section")))
+    {
+        let mut symbols = Vec::new();
+        for id in db.source_symbols_for_config_uri(&candidate, kinds, graph_version)? {
+            if seen.insert(id) {
+                ids.push(id);
+                if let Some(sym) = db.get_symbol_by_id(id)? {
+                    symbols.push(sym.qualname);
+                }
+            }
+        }
+        if !symbols.is_empty() {
+            matches.push(json!({"uri": candidate, "match": kind, "symbols": symbols}));
+        }
+    }
+    let note = (!ids.is_empty()).then(|| json!({"seed_uri": uri, "matches": matches}));
+    Ok(ConfigUriSeeds { ids, note })
+}
+
+/// Response for a config URI that yielded no seeds: it is not an unresolved
+/// symbol, so say what is true of the URI and point at a retry and a text
+/// search instead. Distinguishes a URI the graph knows (declared but with no
+/// match for `direction`) from one it has never seen.
+fn config_uri_not_found_payload(
+    db: &crate::db::Db,
+    uri: &str,
+    direction: crate::impact::TraversalDirection,
+    graph_version: i64,
+) -> Value {
+    let name = uri.split_once("://").map_or(uri, |(_, n)| n);
+    let both = direction == crate::impact::TraversalDirection::Both;
+    let known = db
+        .source_symbols_for_config_uri(uri, &[], graph_version)
+        .is_ok_and(|ids| !ids.is_empty());
+    let mut next_hops = vec![json!({
+        "method": "search",
+        "params": {"query": name, "limit": 10, "fixed_string": true},
+        "description": format!("Text search for '{name}' to find where it is declared or read"),
+    })];
+    if !both {
+        next_hops.insert(
+            0,
+            json!({
+                "method": "analyze_impact",
+                "params": {"qualname": uri, "direction": "both"},
+                "description": "Retry across all CONFIG edge kinds and both directions",
+            }),
+        );
+    }
+    let message = if known {
+        format!(
+            "No config source or reader matches '{uri}' for this direction. The URI is in the index, but has no CONFIG_READ/CONFIG_BIND reader (upstream) or CONFIG_SOURCE provider (downstream); try direction 'both'."
+        )
+    } else {
+        format!(
+            "No config source or reader was found for '{uri}'. The URI appears in no CONFIG_SOURCE, CONFIG_READ or CONFIG_BIND edge; it may be spelled differently or declared outside the indexed files."
+        )
+    };
+    json!({"resolved": false, "message": message, "next_hops": next_hops})
 }
 
 /// Widens `ids` with the members of a container symbol (issue #249): nothing
@@ -1932,32 +2013,29 @@ fn resolve_batch_seed_ids(
     graph_version: i64,
 ) -> Result<ImpactSeeds> {
     let dir = config.direct.direction.as_str();
+    let direction = crate::impact::TraversalDirection::from(dir);
 
     if crate::indexer::config::is_config_uri(qualname) {
-        let uri_kinds: &[&str] = match dir {
-            "downstream" => &["CONFIG_SOURCE"],
-            "upstream" => &["CONFIG_READ", "CONFIG_BIND"],
-            _ => &[],
-        };
-        let ids = indexer
-            .db()
-            .source_symbols_for_config_uri(qualname, uri_kinds, graph_version)?;
+        let ConfigUriSeeds { ids, note } =
+            config_uri_seeds(indexer.db(), qualname, direction, graph_version)?;
         if ids.is_empty() {
+            let payload =
+                config_uri_not_found_payload(indexer.db(), qualname, direction, graph_version);
             return Err(anyhow::anyhow!(
-                "no symbols found for config URI: {}",
-                qualname
+                "{}",
+                payload["message"].as_str().unwrap_or_default()
             ));
         }
         Ok(ImpactSeeds {
             ids,
             upstream_only: Vec::new(),
+            config_seeds: note,
         })
     } else {
         let symbol = indexer
             .db()
             .get_symbol_by_qualname(qualname, graph_version)?
             .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", qualname))?;
-        let direction = crate::impact::TraversalDirection::from(dir);
         let mut ids = vec![symbol.id];
         let members =
             expand_container_members(indexer.db(), symbol.id, &mut ids, direction, graph_version)?;
@@ -1966,7 +2044,11 @@ fn resolve_batch_seed_ids(
         } else {
             Vec::new()
         };
-        Ok(ImpactSeeds { ids, upstream_only })
+        Ok(ImpactSeeds {
+            ids,
+            upstream_only,
+            config_seeds: None,
+        })
     }
 }
 
@@ -1982,6 +2064,7 @@ fn batch_error_entry(
     crate::impact::types::BatchImpactEntry {
         seed_qualname: qn.to_string(),
         test_layer: None,
+        config_seeds: None,
         seeds: vec![],
         affected: vec![],
         summary: crate::impact::types::ImpactSummary {
@@ -2109,7 +2192,12 @@ fn analyze_impact_inner(
 
         // Build config once (shared across all seeds)
         let total_limit = params.limit.unwrap_or(500).min(2000);
-        let per_seed_limit = (total_limit / qualnames.len()).max(50);
+        // The floor of 50 only raises a *derived* per-seed value; an explicit
+        // `limit` is an upper bound on affected symbols per seed.
+        let per_seed_limit = {
+            let derived = (total_limit / qualnames.len()).max(50);
+            params.limit.map_or(derived, |l| derived.min(l))
+        };
 
         let base_config = build_impact_config(&params, per_seed_limit, ctx.languages.as_deref());
 
@@ -2122,6 +2210,7 @@ fn analyze_impact_inner(
                 Ok(ImpactSeeds {
                     ids: seed_ids,
                     upstream_only,
+                    config_seeds,
                 }) => match crate::impact::analyze_impact_multi_layer(
                     indexer.db(),
                     &seed_ids,
@@ -2152,6 +2241,7 @@ fn analyze_impact_inner(
                             layers: result.layers,
                             lower_bound: result.lower_bound,
                             recovery: None,
+                            config_seeds,
                         }
                     }
                     Err(e) => {
@@ -2171,16 +2261,27 @@ fn analyze_impact_inner(
                     // candidates aren't already computed the way resolve_by_query's
                     // failure carries them -- find them the same way (find_candidates
                     // is the one candidate-search algorithm).
-                    let candidates =
-                        crate::resolve::find_candidates(indexer.db(), qn, ctx.graph_version);
-                    let recovery = crate::resolve::build_resolution_recovery_payload(
-                        indexer.db(),
-                        qn,
-                        &candidates,
-                        ctx.graph_version,
-                        "analyze_impact",
-                        &raw_params,
-                    );
+                    let recovery = if crate::indexer::config::is_config_uri(qn) {
+                        config_uri_not_found_payload(
+                            indexer.db(),
+                            qn,
+                            crate::impact::TraversalDirection::from(
+                                base_config.direct.direction.as_str(),
+                            ),
+                            ctx.graph_version,
+                        )
+                    } else {
+                        let candidates =
+                            crate::resolve::find_candidates(indexer.db(), qn, ctx.graph_version);
+                        crate::resolve::build_resolution_recovery_payload(
+                            indexer.db(),
+                            qn,
+                            &candidates,
+                            ctx.graph_version,
+                            "analyze_impact",
+                            &raw_params,
+                        )
+                    };
                     batch_error_entry(qn, e.to_string(), Some(recovery))
                 }
             };
@@ -2212,30 +2313,24 @@ fn analyze_impact_inner(
         crate::impact::TraversalDirection::from(params.direction.as_deref().unwrap_or("both"));
 
     // Check for config URI in qualname (e.g., "secret://datamgr-db-conn-str", "env://DATABASE")
-    // Direction-aware: downstream seeds from providers (CONFIG_SOURCE),
-    // upstream seeds from consumers (CONFIG_READ), both uses all.
+    let mut config_seeds_note: Option<Value> = None;
     let seed_ids: Vec<i64> = if let Some(qualname) = params.qualname.as_deref() {
         if crate::indexer::config::is_config_uri(qualname) {
-            let uri_kinds: &[&str] = match traversal_direction {
-                crate::impact::TraversalDirection::Downstream => &["CONFIG_SOURCE"],
-                crate::impact::TraversalDirection::Upstream => &["CONFIG_READ", "CONFIG_BIND"],
-                crate::impact::TraversalDirection::Both => &[],
-            };
-            let ids = indexer.db().source_symbols_for_config_uri(
+            let ConfigUriSeeds { ids, note } = config_uri_seeds(
+                indexer.db(),
                 qualname,
-                uri_kinds,
+                traversal_direction,
                 ctx.graph_version,
             )?;
             if ids.is_empty() {
-                return Ok(crate::resolve::build_resolution_recovery_payload(
+                return Ok(config_uri_not_found_payload(
                     indexer.db(),
                     qualname,
-                    &[],
+                    traversal_direction,
                     ctx.graph_version,
-                    "analyze_impact",
-                    &raw_params,
                 ));
             }
+            config_seeds_note = note;
             ids
         } else {
             vec![]
@@ -2454,19 +2549,18 @@ fn analyze_impact_inner(
     // forward instead of a dead-end payload.
     if result.affected.is_empty() {
         let seed_id = seed_ids.first().copied();
+        // #230: clone-and-override the original request (so max_depth, kinds,
+        // limit, languages, filters, ... survive); only the start and
+        // direction change.
         let seed_params = |dir: &str| {
-            let mut map = serde_json::Map::new();
+            let mut map = raw_params.as_object().cloned().unwrap_or_default();
             if let Some(id) = seed_id {
+                for k in ["id", "qualname", "query"] {
+                    map.remove(k);
+                }
                 map.insert("id".to_string(), json!(id));
             }
             map.insert("direction".to_string(), json!(dir));
-            // Keep a filtered call's filter so following the hop doesn't
-            // silently widen it.
-            if let Some(ref exclude) = params.exclude_resolution_kinds
-                && !exclude.is_empty()
-            {
-                map.insert("exclude_resolution_kinds".to_string(), json!(exclude));
-            }
             map
         };
         let mut next_hops: Vec<serde_json::Value> = Vec::new();
@@ -2531,9 +2625,12 @@ fn analyze_impact_inner(
                 .get_symbol_by_qualname(parent_qn, ctx.graph_version)
             && !seed_ids.contains(&parent.id)
         {
+            let mut parent_params = seed_params(&direction);
+            parent_params.remove("id");
+            parent_params.insert("qualname".to_string(), json!(parent_qn));
             next_hops.push(json!({
                 "method": "analyze_impact",
-                "params": {"qualname": parent_qn, "direction": direction},
+                "params": parent_params,
                 "description": format!("Seed parent {} '{}' instead", parent.kind, parent_qn),
             }));
         }
@@ -2545,11 +2642,14 @@ fn analyze_impact_inner(
             if let Some(note) = test_layer_note {
                 obj.insert("test_layer".to_string(), note);
             }
+            if let Some(note) = config_seeds_note {
+                obj.insert("config_seeds".to_string(), note);
+            }
         }
         return Ok(value);
     }
 
-    if resolution_next_hops.is_empty() && test_layer_note.is_none() {
+    if resolution_next_hops.is_empty() && test_layer_note.is_none() && config_seeds_note.is_none() {
         Ok(json!(result))
     } else {
         let mut value = serde_json::to_value(&result)?;
@@ -2559,6 +2659,9 @@ fn analyze_impact_inner(
             }
             if let Some(note) = test_layer_note {
                 obj.insert("test_layer".to_string(), note);
+            }
+            if let Some(note) = config_seeds_note {
+                obj.insert("config_seeds".to_string(), note);
             }
         }
         Ok(value)
