@@ -157,14 +157,73 @@ fn namespace_package_gets_importable_name() {
 }
 
 #[test]
-fn pure_namespace_package_without_any_regular_package() {
+fn pure_namespace_package_needs_declared_root() {
     let idx = index(&[
-        ("pyproject.toml", PYPROJECT),
+        (
+            "pyproject.toml",
+            "[tool.setuptools.packages.find]\nwhere = [\"src\"]\n",
+        ),
         ("src/ns/a.py", "def f():\n    return 1\n"),
         ("tests/test_a.py", "from ns.a import f\n"),
     ]);
     assert_eq!(idx.modules(), ["ns.a", "tests.test_a"].map(String::from));
     assert_exact(&idx.imports("tests.test_a"), "ns.a.f");
+}
+
+#[test]
+fn undeclared_namespace_dirs_keep_path_names() {
+    // No __init__.py and no declared root: Python cannot know the root, so
+    // names stay path-based, as before package-root detection.
+    let idx = index(&[
+        ("pyproject.toml", PYPROJECT),
+        ("app/routes/x.py", "def y():\n    return 1\n"),
+        ("app/models/m.py", ""),
+        ("main.py", "from app.routes.x import y\n"),
+        ("docs/conf/c.py", ""),
+        ("mypkg/__init__.py", ""),
+        ("tests/unit/test_a.py", ""),
+    ]);
+    assert_eq!(
+        idx.modules(),
+        [
+            "app.models.m",
+            "app.routes.x",
+            "docs.conf.c",
+            "main",
+            "mypkg",
+            "tests.unit.test_a"
+        ]
+        .map(String::from)
+    );
+    assert_exact(&idx.imports("main"), "app.routes.x.y");
+}
+
+#[test]
+fn sync_adding_regular_package_makes_parent_a_container() {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-py-container-")
+        .tempdir()
+        .unwrap();
+    let root = tmp.path();
+    common::write_files(
+        root,
+        &[("pyproject.toml", PYPROJECT), ("lib/mypkg/util.py", UTIL)],
+    );
+    let mut indexer =
+        Indexer::new(root.to_path_buf(), root.join(".lidx").join(".lidx.sqlite")).unwrap();
+    indexer.reindex().unwrap();
+    assert_eq!(module_map(root)[0].1, "lib.mypkg.util");
+    let after = [
+        ("pyproject.toml", PYPROJECT),
+        ("lib/mypkg/__init__.py", ""),
+        ("lib/mypkg/util.py", UTIL),
+    ];
+    common::write_files(root, &after);
+    indexer
+        .sync_rel_paths(&["lib/mypkg/__init__.py".to_string()])
+        .unwrap();
+    assert_eq!(module_map(root), fresh_modules(&after));
+    assert_eq!(module_map(root)[1].1, "mypkg.util");
 }
 
 #[test]

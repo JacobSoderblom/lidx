@@ -93,40 +93,20 @@ impl PyLayout {
     }
 
     /// Source containers of `project`: direct child directories without an
-    /// `__init__.py` that hold a regular package. When there is none, a lone
-    /// child directory with no `.py` of its own that holds Python files in
-    /// subdirectories (a pure namespace layout such as `src/ns/a.py`). Found
-    /// structurally, never by name.
+    /// `__init__.py` that hold a regular package. Found structurally, never
+    /// by name; the only input besides declared roots is `__init__.py`
+    /// presence, a layout marker.
     fn containers(&self, project: &Path) -> Vec<PathBuf> {
-        let children: Vec<PathBuf> = subdirs(&self.repo_root.join(project))
+        subdirs(&self.repo_root.join(project))
             .into_iter()
             .map(|name| project.join(name))
             .filter(|dir| !self.has_init(dir))
-            .collect();
-        let regular: Vec<PathBuf> = children
-            .iter()
             .filter(|dir| {
                 subdirs(&self.repo_root.join(dir))
                     .iter()
                     .any(|c| self.has_init(&dir.join(c)))
             })
-            .cloned()
-            .collect();
-        if !regular.is_empty() {
-            return regular;
-        }
-        let namespace: Vec<PathBuf> = children
-            .into_iter()
-            .filter(|dir| {
-                let abs = self.repo_root.join(dir);
-                !has_py_file(&abs) && subdirs(&abs).iter().any(|c| has_py_tree(&abs.join(c), 3))
-            })
-            .collect();
-        if namespace.len() == 1 {
-            namespace
-        } else {
-            Vec::new()
-        }
+            .collect()
     }
 
     /// `project`, or the declared root / source container `dir` lies under.
@@ -247,22 +227,6 @@ fn subdirs(abs: &Path) -> Vec<std::ffi::OsString> {
         .collect();
     out.sort();
     out
-}
-
-fn has_py_file(abs: &Path) -> bool {
-    std::fs::read_dir(abs)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|e| e.path().extension().is_some_and(|x| x == "py"))
-}
-
-fn has_py_tree(abs: &Path, depth: usize) -> bool {
-    has_py_file(abs)
-        || (depth > 0
-            && subdirs(abs)
-                .iter()
-                .any(|c| has_py_tree(&abs.join(c), depth - 1)))
 }
 
 /// Source roots the project at `project` declares in its build config.
