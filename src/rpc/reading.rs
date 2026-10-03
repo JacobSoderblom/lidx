@@ -6,6 +6,9 @@
 //! in `handle_method`'s dispatch table.
 
 use super::*;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Extensions treated as Markdown for `outline`. Markdown files get a
 /// `files` row (issue #133) but no `symbols` rows, so `outline` reads
@@ -530,6 +533,80 @@ fn container_children(
 /// so a large class/module doesn't blow the response on hop suggestions alone.
 const MAX_SKELETON_CHILD_HOPS: usize = 25;
 
+/// Per-request cache of each file's indexed symbols, so a batched read of
+/// several symbols from one file loads them at most once.
+type FileSymbolsCache = RefCell<HashMap<String, Rc<Vec<Symbol>>>>;
+
+/// Languages whose extractor spans start/end mid-line (TS `export`/`const`,
+/// C# field modifiers, a trailing `;`, T-SQL `);`). Others (Python, Rust, ...)
+/// keep the indentation-only widening.
+fn widens_midline(file_path: &str) -> bool {
+    matches!(
+        file_path.rsplit_once('.').map(|(_, e)| e),
+        Some("ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "cs" | "sql")
+    )
+}
+
+/// True when `outer`'s byte span fully contains `inner`'s.
+fn contains_span(outer: &Symbol, inner: &Symbol) -> bool {
+    outer.start_byte <= inner.start_byte && outer.end_byte >= inner.end_byte
+}
+
+/// Byte range to slice for `symbol`: the exact span, widened at each end to
+/// the real line boundary when no other symbol starts or ends on that line
+/// (containers such as the file module or enclosing class don't count). A
+/// whitespace-only prefix always widens (indented methods). File symbols are
+/// loaded lazily, only when an end is actually mid-line.
+fn widen_to_line_bounds(
+    symbol: &Symbol,
+    content: &str,
+    start: usize,
+    file_symbols: &dyn Fn() -> Result<Rc<Vec<Symbol>>>,
+) -> Result<(i64, i64)> {
+    let line_start = content[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let prefix_blank = content[line_start..start]
+        .chars()
+        .all(|c| c == ' ' || c == '\t');
+    let end = (symbol.end_byte.max(0) as usize).min(content.len());
+    let end_ok = end >= start && content.is_char_boundary(end);
+    let line_end = if end_ok {
+        let rest = &content[end..];
+        let len = rest.find('\n').unwrap_or(rest.len());
+        end + rest[..len].trim_end_matches('\r').len()
+    } else {
+        end
+    };
+    let mid_start = !prefix_blank;
+    let mid_end = end_ok && line_end > end;
+    if !widens_midline(&symbol.file_path) || !(mid_start || mid_end) {
+        let s = if prefix_blank {
+            line_start as i64
+        } else {
+            symbol.start_byte
+        };
+        return Ok((s, symbol.end_byte));
+    }
+    let all = file_symbols()?;
+    let shares_line = |line: i64| {
+        all.iter().any(|o| {
+            o.id != symbol.id
+                && !contains_span(o, symbol)
+                && (o.start_line == line || o.end_line == line)
+        })
+    };
+    let s = if prefix_blank || !shares_line(symbol.start_line) {
+        line_start as i64
+    } else {
+        symbol.start_byte
+    };
+    let e = if mid_end && !shares_line(symbol.end_line) {
+        line_end as i64
+    } else {
+        symbol.end_byte
+    };
+    Ok((s, e))
+}
+
 /// Builds the non-skeleton `read_symbol` result: exact source from disk (by
 /// stored byte span, no re-parse), optionally widened by `context_lines` of
 /// surrounding lines (clamped at file bounds), line-numbered against the real
@@ -542,6 +619,7 @@ fn build_source_response(
     content: &str,
     context_lines: usize,
     stale: bool,
+    file_symbols: &dyn Fn() -> Result<Rc<Vec<Symbol>>>,
 ) -> Result<ReadSymbolEntry> {
     let stale_span_err = || {
         anyhow::anyhow!(
@@ -564,19 +642,10 @@ fn build_source_response(
     if !content.is_char_boundary(start) {
         return Err(stale_span_err());
     }
-    let effective_start_byte = {
-        let line_start = content[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        if content[line_start..start]
-            .chars()
-            .all(|c| c == ' ' || c == '\t')
-        {
-            line_start as i64
-        } else {
-            symbol.start_byte
-        }
-    };
+    let (effective_start_byte, effective_end_byte) =
+        widen_to_line_bounds(symbol, content, start, file_symbols)?;
 
-    let raw_source = crate::util::slice_bytes(content, effective_start_byte, symbol.end_byte)
+    let raw_source = crate::util::slice_bytes(content, effective_start_byte, effective_end_byte)
         .ok_or_else(stale_span_err)?;
 
     let (source_text, numbering_start_line) = if context_lines > 0 {
@@ -638,6 +707,7 @@ fn build_symbol_entry(
     skeleton: bool,
     context_lines: usize,
     graph_version: i64,
+    cache: &FileSymbolsCache,
 ) -> Result<ReadSymbolEntry> {
     let repo_root = indexer.repo_root().clone();
     let full_path = repo_root.join(&symbol.file_path);
@@ -659,6 +729,20 @@ fn build_symbol_entry(
         .map(|f| f.hash);
     let stale = indexed_hash.is_some_and(|indexed| indexed != hash);
 
+    let file_symbols = || -> Result<Rc<Vec<Symbol>>> {
+        if let Some(hit) = cache.borrow().get(&symbol.file_path) {
+            return Ok(hit.clone());
+        }
+        let loaded = Rc::new(
+            indexer
+                .db()
+                .get_symbols_for_file(&symbol.file_path, graph_version)?,
+        );
+        cache
+            .borrow_mut()
+            .insert(symbol.file_path.clone(), loaded.clone());
+        Ok(loaded)
+    };
     let mut next_hops: Vec<Value> = Vec::new();
     let mut entry = if skeleton {
         let children = container_children(indexer.db(), symbol, graph_version)?;
@@ -666,7 +750,7 @@ fn build_symbol_entry(
             // Not a container (or has none in this file) -- skeleton has
             // nothing to skeletonize, so fall back to a normal read rather
             // than returning an empty, useless response.
-            build_source_response(symbol, &content, context_lines, stale)?
+            build_source_response(symbol, &content, context_lines, stale, &file_symbols)?
         } else {
             for child in children.iter().take(MAX_SKELETON_CHILD_HOPS) {
                 next_hops.push(json!({
@@ -678,7 +762,7 @@ fn build_symbol_entry(
             ReadSymbolEntry::skeleton(symbol, stale, children)
         }
     } else {
-        build_source_response(symbol, &content, context_lines, stale)?
+        build_source_response(symbol, &content, context_lines, stale, &file_symbols)?
     };
 
     if stale {
@@ -766,6 +850,7 @@ fn overload_response(
         context_lines,
         max_bytes,
         graph_version,
+        &FileSymbolsCache::default(),
     )?;
     let mut response = overload_set_response(qn, overloads.len(), json!(entries));
     response["omitted"] = json!(omitted);
@@ -782,12 +867,20 @@ fn overload_entries(
     context_lines: usize,
     max_bytes: usize,
     graph_version: i64,
+    cache: &FileSymbolsCache,
 ) -> Result<(Vec<ReadSymbolEntry>, Vec<String>)> {
     let mut entries: Vec<ReadSymbolEntry> = Vec::new();
     let mut omitted: Vec<String> = Vec::new();
     let mut used = 0usize;
     for symbol in overloads {
-        let entry = build_symbol_entry(indexer, symbol, skeleton, context_lines, graph_version)?;
+        let entry = build_symbol_entry(
+            indexer,
+            symbol,
+            skeleton,
+            context_lines,
+            graph_version,
+            cache,
+        )?;
         let len = serde_json::to_string(&entry).map(|s| s.len()).unwrap_or(0);
         if !entries.is_empty() && used + len > max_bytes {
             // Twins can share qualname and signature: the line tells them apart.
@@ -861,6 +954,7 @@ fn handle_read_symbol_multi(
 
     let mut running_symbol_bytes = 0usize;
     let mut budget_exhausted = false;
+    let cache = FileSymbolsCache::default();
 
     for qn in qualnames {
         if budget_exhausted {
@@ -881,8 +975,15 @@ fn handle_read_symbol_multi(
             // A single qualname's file being missing/stale-beyond-repair
             // shouldn't abort the whole batch -- record it and keep going so
             // the rest of the request still resolves.
-            build_symbol_entry(indexer, &symbol, skeleton, context_lines, graph_version)
-                .and_then(|e| Ok(vec![serde_json::to_value(e)?]))
+            build_symbol_entry(
+                indexer,
+                &symbol,
+                skeleton,
+                context_lines,
+                graph_version,
+                &cache,
+            )
+            .and_then(|e| Ok(vec![serde_json::to_value(e)?]))
         } else {
             overload_entries(
                 indexer,
@@ -891,6 +992,7 @@ fn handle_read_symbol_multi(
                 context_lines,
                 max_bytes,
                 graph_version,
+                &cache,
             )
             .and_then(|(entries, _)| {
                 entries
@@ -1106,7 +1208,14 @@ fn read_resolved_symbol(
         );
     }
 
-    let entry = build_symbol_entry(indexer, symbol, skeleton, context_lines, graph_version)?;
+    let entry = build_symbol_entry(
+        indexer,
+        symbol,
+        skeleton,
+        context_lines,
+        graph_version,
+        &FileSymbolsCache::default(),
+    )?;
 
     // A single symbol's response is otherwise uncapped (the outer generic
     // response-size cap can't safely shrink a plain object with no array
