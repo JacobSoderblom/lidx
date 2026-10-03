@@ -2524,16 +2524,6 @@ fn ts_dynamic_import_emits_imports_file_and_matches_fresh() {
     let static_target = importers_of_index("src/sub/static");
     assert_eq!(static_target.len(), 1, "{snapshot:#?}");
     assert_eq!(importers_of_index("src/sub/dynamic"), static_target);
-    // Calls through dynamic-import bindings resolve via the import tier,
-    // like static named / namespace imports.
-    for want in ["src/app.buildApp", "src/plugin.plugin", "src/ns.go"] {
-        let kinds: Vec<_> = snapshot
-            .iter()
-            .filter(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some(want))
-            .map(|e| e.resolution_kind.as_deref())
-            .collect();
-        assert_eq!(kinds, [Some("import")], "{want}: {snapshot:#?}");
-    }
     assert!(
         !snapshot.iter().any(|e| e
             .target_qualname

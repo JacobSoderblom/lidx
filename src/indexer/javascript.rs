@@ -2500,90 +2500,7 @@ fn collect_import_bindings(root: Node<'_>, source: &str) -> ImportBindings {
             }
         }
     }
-    collect_dynamic_import_bindings(root, source, &mut bindings);
     bindings
-}
-
-/// Bindings of `const { a, b: c } = await import('x')` / `const m = await
-/// import('x')` at any scope, recorded like the static named / namespace
-/// imports of `x`. A static binding of the same name wins.
-fn collect_dynamic_import_bindings(root: Node<'_>, source: &str, out: &mut ImportBindings) {
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        let mut cursor = node.walk();
-        stack.extend(node.named_children(&mut cursor));
-        if node.kind() != "variable_declarator" {
-            continue;
-        }
-        let (Some(name), Some(mut value)) = (
-            node.child_by_field_name("name"),
-            node.child_by_field_name("value"),
-        ) else {
-            continue;
-        };
-        while matches!(
-            value.kind(),
-            "await_expression" | "parenthesized_expression"
-        ) {
-            let Some(inner) = value.named_child(0) else {
-                break;
-            };
-            value = inner;
-        }
-        if !is_dynamic_import(value) {
-            continue;
-        }
-        let Some(spec) = dynamic_import_specifier(value, source) else {
-            continue;
-        };
-        let mut bind = |local: String, imported: Option<String>| {
-            out.entry(local).or_insert((spec.clone(), imported));
-        };
-        match name.kind() {
-            "identifier" => bind(node_text(name, source), None),
-            "object_pattern" => {
-                let mut c = name.walk();
-                for prop in name.named_children(&mut c) {
-                    match prop.kind() {
-                        "shorthand_property_identifier_pattern" => {
-                            let n = node_text(prop, source);
-                            bind(n.clone(), Some(n));
-                        }
-                        "object_assignment_pattern" => {
-                            if let Some(left) = prop.child_by_field_name("left") {
-                                let n = node_text(left, source);
-                                bind(n.clone(), Some(n));
-                            }
-                        }
-                        "pair_pattern" => {
-                            let (Some(key), Some(val)) = (
-                                prop.child_by_field_name("key"),
-                                prop.child_by_field_name("value"),
-                            ) else {
-                                continue;
-                            };
-                            let val = match val.kind() {
-                                "assignment_pattern" => val.child_by_field_name("left"),
-                                _ => Some(val),
-                            };
-                            if let Some(val) = val.filter(|v| v.kind() == "identifier") {
-                                let key = node_text(key, source);
-                                let key = unquote_string_literal(&key).unwrap_or(key);
-                                let imported = if key == "default" {
-                                    DEFAULT_EXPORT.to_string()
-                                } else {
-                                    key
-                                };
-                                bind(node_text(val, source), Some(imported));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 /// Names bound from `require(..)` / `import(..)` at any scope.
@@ -2681,7 +2598,7 @@ fn import_placeholder(raw: &str, ctx: &Context) -> Option<String> {
         Some((root, rest)) => (root, Some(rest)),
         None => (raw.as_str(), None),
     };
-    if ctx.local_types.contains_key(root) && !ctx.required_names.contains(root) {
+    if ctx.local_types.contains_key(root) {
         return None;
     }
     let (spec, imported) = ctx.import_bindings.get(root)?;
