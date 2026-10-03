@@ -3231,6 +3231,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 
 pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: RgParams = super::parse_params("search", params)?;
+    super::validate::require_non_empty_query(&params.query)?;
     super::validate::validate_pattern_length(&params.query, "search_rg")?;
     super::validate::require_at_least_one("limit", params.limit)?;
     let limit = params.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);

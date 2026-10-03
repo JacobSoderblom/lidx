@@ -129,6 +129,15 @@ pub(super) fn validate_pattern_length(pattern: &str, operation: &str) -> anyhow:
     Ok(())
 }
 
+/// Rejects an empty query string. Whitespace-only queries are valid (e.g.,
+/// searching for indentation patterns).
+pub(super) fn require_non_empty_query(query: &str) -> anyhow::Result<()> {
+    if query.is_empty() {
+        anyhow::bail!("query must not be empty");
+    }
+    Ok(())
+}
+
 /// serde's "invalid value: integer `-5`, expected usize" never says which
 /// param it was. When deserialization fails, name the offending top-level
 /// param: a negative or fractional number given for a field the schema
