@@ -70,16 +70,22 @@ const SUBSCRIBE_METHODS: &[&str] = &[
     "Listen",
 ];
 
+/// Azure Service Bus naming prefixes (topic, queue, subscription) stripped from
+/// a channel name so infrastructure names and code literals share one key.
+const AZURE_NAME_PREFIXES: &[&str] = &["sbt-", "sbts-", "sbq-"];
+
 /// Normalize a channel/topic name to a canonical form.
 ///
-/// Strips the container prefix (Topics., TopicName., etc.), removes underscores,
-/// and lowercases everything so that C# PascalCase and Python SCREAMING_SNAKE
-/// produce identical keys.
+/// The single normalizer for the Bicep extractor and every code extractor.
+/// Strips the container prefix (Topics., TopicName., etc.) and an Azure
+/// Service Bus prefix (`sbt-`, `sbq-`, `sbts-`), removes hyphens and
+/// underscores, and lowercases, so Bicep resource names, C# PascalCase,
+/// string literals and Python SCREAMING_SNAKE produce identical keys.
 ///
 /// # Examples
-/// - `Topics.OrchestratorTriggers` → `channel://orchestratortriggers`
-/// - `TopicName.ORCHESTRATOR_TRIGGERS` → `channel://orchestratortriggers`
+/// - `sbt-dataproxy-commands` → `channel://dataproxycommands`
 /// - `Topics.DataProxyCommands` → `channel://dataproxycommands`
+/// - `TopicName.ORCHESTRATOR_TRIGGERS` → `channel://orchestratortriggers`
 /// - `DATAPROXY_COMMANDS` → `channel://dataproxycommands`
 pub fn normalize_channel_name(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
@@ -89,14 +95,12 @@ pub fn normalize_channel_name(raw: &str) -> Option<String> {
 
     // Strip known container prefix (Topics.X → X)
     let topic_part = strip_topic_container(trimmed);
-    if topic_part.is_empty() {
-        return None;
-    }
+    let topic_part = strip_azure_prefix(topic_part);
 
-    // Remove underscores and lowercase
+    // Remove hyphens/underscores and lowercase
     let normalized: String = topic_part
         .chars()
-        .filter(|ch| *ch != '_')
+        .filter(|ch| *ch != '_' && *ch != '-')
         .flat_map(|ch| ch.to_lowercase())
         .collect();
 
@@ -139,6 +143,18 @@ fn strip_topic_container(raw: &str) -> &str {
         }
     }
     raw
+}
+
+/// Strip a leading Azure Service Bus prefix (`sbt-`, `sbts-`, `sbq-`), ignoring case.
+fn strip_azure_prefix(name: &str) -> &str {
+    AZURE_NAME_PREFIXES
+        .iter()
+        .find(|p| {
+            name.as_bytes()
+                .get(..p.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(p.as_bytes()))
+        })
+        .map_or(name, |p| &name[p.len()..])
 }
 
 /// Check if a receiver expression looks like a message bus.
@@ -426,5 +442,42 @@ mod tests {
             Some(vec!["CONFIG_SOURCE"])
         );
         assert_eq!(bridge_complement("CALLS"), None);
+    }
+
+    #[test]
+    fn normalize_azure_prefixes_and_hyphens() {
+        for (raw, want) in [
+            ("sbt-x-y", "channel://xy"),
+            ("sbq-x", "channel://x"),
+            ("sbts-x", "channel://x"),
+            ("sbt-dataproxy-commands", "channel://dataproxycommands"),
+            (
+                "sbt-orchestrator-triggers",
+                "channel://orchestratortriggers",
+            ),
+            ("sbq-dead-letter", "channel://deadletter"),
+            ("sbts-my-subscription", "channel://mysubscription"),
+            ("my-topic-name", "channel://mytopicname"),
+            ("MyTopic", "channel://mytopic"),
+            ("Topics.XY", "channel://xy"),
+            ("TOPIC_NAME", "channel://topicname"),
+        ] {
+            assert_eq!(normalize_channel_name(raw), Some(want.to_string()), "{raw}");
+        }
+    }
+
+    #[test]
+    fn normalize_azure_prefix_is_case_insensitive() {
+        assert_eq!(
+            normalize_channel_name("SBT-Foo"),
+            Some("channel://foo".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_empty_inputs_yield_none() {
+        assert_eq!(normalize_channel_name(""), None);
+        assert_eq!(normalize_channel_name("   "), None);
+        assert_eq!(normalize_channel_name("sbt-"), None);
     }
 }
