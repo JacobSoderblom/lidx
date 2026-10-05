@@ -67,6 +67,7 @@ impl crate::indexer::extract::LanguageExtractor for SqlExtractor {
         // nodes and one bad statement (MERGE, IF/BEGIN, GO) can swallow later
         // CREATE TABLEs. Recover them with a line scan.
         extract_tsql_fallback(source, module_name, &suspects, &mut output);
+        extract_tsql_exec_calls(source, &mut output);
         resolve_overlaps(&mut output);
 
         Ok(output)
@@ -736,6 +737,15 @@ fn strip_quotes(s: &str) -> String {
 /// `text` with string literals and comments blanked out, so keyword searches
 /// only see code.
 fn mask_noise(text: &str) -> String {
+    mask_noise_impl::<false>(text)
+}
+
+/// `mask_noise`, but `[bracketed]` identifiers stay readable.
+fn mask_noise_keep_brackets(text: &str) -> String {
+    mask_noise_impl::<true>(text)
+}
+
+fn mask_noise_impl<const KEEP_BRACKETS: bool>(text: &str) -> String {
     let b = text.as_bytes();
     let mut out = text.as_bytes().to_vec();
     let mut i = 0;
@@ -749,6 +759,12 @@ fn mask_noise(text: &str) -> String {
     while i < b.len() {
         let start = i;
         match b[i] {
+            b'[' if KEEP_BRACKETS => {
+                while i < b.len() && b[i] != b']' {
+                    i += 1;
+                }
+                i += 1;
+            }
             b'\'' | b'"' | b'[' => {
                 let close = if b[i] == b'[' { b']' } else { b[i] };
                 i += 1;
@@ -864,6 +880,128 @@ fn extract_tsql_fallback(
             ..Default::default()
         });
     }
+}
+
+/// Declared symbol whose qualname matches `qualname` case-insensitively and
+/// ignoring quoting, else `qualname` unchanged.
+fn declared_qualname(output: &ExtractedFile, qualname: &str) -> String {
+    let norm = normalize_qualname(qualname);
+    output
+        .symbols
+        .iter()
+        .find(|s| s.kind != "module" && normalize_qualname(&s.qualname) == norm)
+        .map_or_else(|| qualname.to_string(), |s| s.qualname.clone())
+}
+
+/// Byte offsets (relative to `masked`) and procedure names of the `EXEC`
+/// statements in `masked`, skipping dynamic forms and `sp_*`/`xp_*` procs.
+fn scan_exec_targets(masked: &str) -> Vec<(usize, String)> {
+    let mb = masked.as_bytes();
+    let is_ident = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'@' | b'#' | b'.');
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < mb.len() {
+        if !(mb[i].is_ascii_alphabetic() && (i == 0 || !is_ident(mb[i - 1]))) {
+            i += 1;
+            continue;
+        }
+        let word_end = i + mb[i..]
+            .iter()
+            .take_while(|&&c| c.is_ascii_alphanumeric() || c == b'_')
+            .count();
+        let word = &masked[i..word_end];
+        let at = i;
+        i = word_end;
+        if !(word.eq_ignore_ascii_case("exec") || word.eq_ignore_ascii_case("execute")) {
+            continue;
+        }
+        let Some(target) = parse_exec_target(&masked[word_end..]) else {
+            continue;
+        };
+        let last = target.rsplit('.').next().unwrap_or(&target);
+        if last.len() >= 3
+            && last.is_char_boundary(3)
+            && matches!(last[..3].to_ascii_lowercase().as_str(), "sp_" | "xp_")
+        {
+            continue;
+        }
+        found.push((at, target));
+    }
+    found
+}
+
+/// CALLS edges for T-SQL `EXEC`/`EXECUTE [@rc =] [schema.]proc` statements
+/// inside procedure (and undelimited function/trigger) bodies.
+fn extract_tsql_exec_calls(source: &str, output: &mut ExtractedFile) {
+    for cand in scan_candidates(source) {
+        if !matches!(cand.kind, "procedure" | "function" | "trigger") {
+            continue;
+        }
+        let body = &source[cand.start..cand.end];
+        if body.contains("$$") {
+            continue;
+        }
+        let caller = declared_qualname(output, &cand.qualname);
+        for (at, target) in scan_exec_targets(&mask_noise_keep_brackets(body)) {
+            let target = declared_qualname(output, &target);
+            let line_start = source[..cand.start + at].rfind('\n').map_or(0, |n| n + 1);
+            let line_end = source[cand.start + at..]
+                .find('\n')
+                .map_or(source.len(), |n| cand.start + at + n);
+            let line = line_col(source, line_start).0;
+            output.edges.push(EdgeInput {
+                kind: "CALLS".to_string(),
+                source_qualname: Some(caller.clone()),
+                target_qualname: Some(target),
+                detail: Some("EXEC".to_string()),
+                evidence_snippet: Some(source[line_start..line_end].trim().to_string()),
+                evidence_start_line: Some(line),
+                evidence_end_line: Some(line),
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/// Procedure name following an `EXEC` keyword: `[@rc =] [a].[b]`. `None` for
+/// `EXEC (...)`, `EXEC @proc`, `EXEC AS ...` and anything not a plain name.
+fn parse_exec_target(rest: &str) -> Option<String> {
+    let mut r = rest.trim_start();
+    if r.len() == rest.len() && !r.starts_with('[') {
+        return None;
+    }
+    if let Some(after) = r.strip_prefix('@') {
+        let after = after.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        r = after.trim_start().strip_prefix('=')?.trim_start();
+    }
+    let mut name = String::new();
+    loop {
+        if let Some(inner) = r.strip_prefix('[') {
+            let end = inner.find(']')?;
+            name.push_str(&inner[..end]);
+            r = &inner[end + 1..];
+        } else {
+            let n = r
+                .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '#' | '$')))
+                .unwrap_or(r.len());
+            if n == 0 {
+                return None;
+            }
+            name.push_str(&r[..n]);
+            r = &r[n..];
+        }
+        match r.strip_prefix('.') {
+            Some(next) => {
+                name.push('.');
+                r = next;
+            }
+            None => break,
+        }
+    }
+    if name.eq_ignore_ascii_case("as") || r.starts_with('(') {
+        return None;
+    }
+    Some(name)
 }
 
 /// Last line of defence for the "no overlapping symbols" invariant: when a
