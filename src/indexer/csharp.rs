@@ -2017,7 +2017,8 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             }
             _ => false,
         });
-    let bare_identifier = target_node.is_some_and(|target| target.kind() == "identifier");
+    let bare_identifier =
+        target_node.is_some_and(|target| matches!(target.kind(), "identifier" | "generic_name"));
     if bare_identifier && implicit_this && calls_local_function(node, &raw, source) {
         return;
     }

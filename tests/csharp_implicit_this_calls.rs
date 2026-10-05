@@ -356,37 +356,58 @@ namespace App { public class Base { protected int Q() { return 1; } }
 }
 
 // Issue #370: a bare generic call `Q<int>(..)` keeps the implicit receiver.
-const GENERIC_BASE_B: &str = "namespace Bases { public abstract class BaseB {
+const INHERITED_GENERIC_BASE: &str = "namespace Bases { public abstract class BaseB {
     protected int Q<T>(string s) { return 2; } } }";
-const GENERIC_BASE_A: &str = "namespace Other { public abstract class BaseA {
+const DECOY_GENERIC_CLASS: &str = "namespace Other { public abstract class BaseA {
     protected int Q<T>(string s) { return 1; } } }";
 
-#[test]
-fn bare_generic_call_resolves_inherited_member() {
-    let repo = "namespace App { public class Repo : Bases.BaseB {
-    public int Get() { return Q<int>(\"a\"); } } }";
+impl Fixture {
+    fn resolution_kinds(&self, caller: &str) -> Vec<String> {
+        let conn = self.indexer.db().read_conn().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT e.resolution_kind FROM edges e
+                 JOIN symbols s ON s.id = e.source_symbol_id
+                 JOIN symbols t ON t.id = e.target_symbol_id
+                 WHERE e.kind = 'CALLS' AND s.qualname = ? AND e.graph_version = ?
+                   AND t.kind != 'external'",
+            )
+            .unwrap();
+        stmt.query_map(params![caller, self.gv], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+}
+
+fn repo_calling(call: &str) -> String {
+    format!(
+        "namespace App {{ public class Repo : Bases.BaseB {{
+    public int Get() {{ return {call}; }} }} }}"
+    )
+}
+
+fn assert_generic_call_inherited(call: &str) {
+    let repo = repo_calling(call);
     both_orders(
-        GENERIC_BASE_B,
-        &[("B_other.cs", GENERIC_BASE_A), ("C_repo.cs", repo)],
+        INHERITED_GENERIC_BASE,
+        &[("B_decoy.cs", DECOY_GENERIC_CLASS), ("C_repo.cs", &repo)],
         |f| {
             assert_eq!(f.targets("App.Repo.Get"), vec!["Bases.BaseB.Q"]);
+            assert_eq!(f.resolution_kinds("App.Repo.Get"), vec!["inherited"]);
             assert!(f.unresolved_reasons("App.Repo.Get").is_empty());
         },
     );
 }
 
 #[test]
+fn bare_generic_call_resolves_inherited_member() {
+    assert_generic_call_inherited("Q<int>(\"a\")");
+}
+
+#[test]
 fn this_generic_call_resolves_inherited_member() {
-    let repo = "namespace App { public class Repo : Bases.BaseB {
-    public int Get() { return this.Q<int>(\"a\"); } } }";
-    both_orders(
-        GENERIC_BASE_B,
-        &[("B_other.cs", GENERIC_BASE_A), ("C_repo.cs", repo)],
-        |f| {
-            assert_eq!(f.targets("App.Repo.Get"), vec!["Bases.BaseB.Q"]);
-            assert!(f.unresolved_reasons("App.Repo.Get").is_empty());
-        },
-    );
+    assert_generic_call_inherited("this.Q<int>(\"a\")");
 }
 
 #[test]
@@ -395,8 +416,8 @@ fn bare_generic_call_to_unrelated_classes_is_not_bound() {
     let repo = "namespace App { public class Repo {
     public int Get() { return Q<int>(\"a\"); } } }";
     both_orders(
-        GENERIC_BASE_A,
-        &[("B_b.cs", GENERIC_BASE_B), ("C_repo.cs", repo)],
+        DECOY_GENERIC_CLASS,
+        &[("B_b.cs", INHERITED_GENERIC_BASE), ("C_repo.cs", repo)],
         |f| {
             assert!(f.targets("App.Repo.Get").is_empty());
             assert_eq!(f.unresolved_reasons("App.Repo.Get"), vec!["ambiguous"]);
@@ -405,13 +426,49 @@ fn bare_generic_call_to_unrelated_classes_is_not_bound() {
 }
 
 #[test]
-fn bare_generic_call_incremental_reindex_matches_fresh_index() {
+fn generic_call_to_single_unrelated_class_matches_non_generic_outcome() {
+    // Parity, not a new rule: whatever `Q("a")` does today for a name that
+    // only an unrelated class declares, `Q<int>("a")` does too.
+    let outcome = |decl: &str, call: &str| {
+        let repo = format!(
+            "namespace App {{ public class Repo {{
+    public int Get() {{ return {call}; }} }} }}"
+        );
+        let f = index(&[("A_decoy.cs", decl), ("B_repo.cs", &repo)]);
+        (
+            f.targets("App.Repo.Get"),
+            f.resolution_kinds("App.Repo.Get"),
+            f.unresolved_reasons("App.Repo.Get"),
+        )
+    };
+    let plain = "namespace Other { public abstract class BaseA {
+    protected int Q(string s) { return 1; } } }";
+    assert_eq!(
+        outcome(DECOY_GENERIC_CLASS, "Q<int>(\"a\")"),
+        outcome(plain, "Q(\"a\")")
+    );
+}
+
+#[test]
+fn local_generic_function_shadows_inherited_generic_method() {
     let repo = "namespace App { public class Repo : Bases.BaseB {
-    public int Get() { return Q<int>(\"a\"); } } }";
+    public int Get() { int Q<T>(string s) { return 3; } return Q<int>(\"a\"); } } }";
+    both_orders(INHERITED_GENERIC_BASE, &[("B_repo.cs", repo)], |f| {
+        assert!(
+            !f.targets("App.Repo.Get")
+                .contains(&"Bases.BaseB.Q".to_string()),
+            "a local generic function shadows the base method"
+        );
+    });
+}
+
+#[test]
+fn bare_generic_call_incremental_reindex_matches_fresh_index() {
+    let repo = repo_calling("Q<int>(\"a\")");
     let mut f = index(&[
-        ("A_base.cs", GENERIC_BASE_B),
-        ("B_other.cs", GENERIC_BASE_A),
-        ("C_repo.cs", repo),
+        ("A_base.cs", INHERITED_GENERIC_BASE),
+        ("B_decoy.cs", DECOY_GENERIC_CLASS),
+        ("C_repo.cs", &repo),
     ]);
     let fresh = f.targets("App.Repo.Get");
     assert_eq!(fresh, vec!["Bases.BaseB.Q"]);
@@ -420,11 +477,11 @@ fn bare_generic_call_incremental_reindex_matches_fresh_index() {
     f.indexer
         .sync_rel_paths(&["C_repo.cs".to_string()])
         .unwrap();
-    std::fs::write(&path, repo).unwrap();
+    std::fs::write(&path, &repo).unwrap();
     f.indexer
         .sync_rel_paths(&["C_repo.cs".to_string()])
         .unwrap();
     f.gv = f.indexer.db().current_graph_version().unwrap();
     assert_eq!(f.targets("App.Repo.Get"), fresh);
-    assert!(f.unresolved_reasons("App.Repo.Get").is_empty());
+    assert_eq!(f.resolution_kinds("App.Repo.Get"), vec!["inherited"]);
 }
