@@ -1776,7 +1776,23 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     // Build next_hops with continuation when truncated
     let mut next_hops: Vec<serde_json::Value> = Vec::new();
     // An end-target trace that missed has no hops to continue from.
-    if truncated && !(end_id.is_some() && trace.is_empty()) {
+    let depth_limited = trace_result.depth_limited;
+    let byte_truncated = trace_result.byte_truncated;
+    // Hop-ceiling truncation already returned every settled hop, so an
+    // offset continuation would be empty (#354): offer a deeper re-trace.
+    if depth_limited && max_hops < 10 && !(end_id.is_some() && trace.is_empty()) {
+        let mut deeper = trace_hop_params(&raw_params);
+        deeper.remove("trace_offset");
+        let new_hops = (max_hops + 1).min(10);
+        deeper.insert("max_hops".to_string(), json!(new_hops));
+        next_hops.push(json!({
+            "method": "trace_flow",
+            "params": deeper,
+            "description": format!("Re-trace deeper (max_hops {})", new_hops),
+        }));
+    }
+    let offer_offset = truncated && (byte_truncated || !depth_limited);
+    if offer_offset && !(end_id.is_some() && trace.is_empty()) {
         let next_offset = trace_offset + trace.len();
         // #119: echo every original param (direction, max_bytes,
         // exclude_resolution_kinds, languages, end_qualname, query, ...) by
@@ -1904,11 +1920,13 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         paths_found: trace_result.paths_found,
         reached_target: trace_result.reached_target,
         truncated,
+        depth_limited,
+        no_more_results: trace_result.no_more_results,
         truncation_reason: trace_result.truncation_reason,
         budget: BudgetInfo {
             budget_bytes: trace_result.budget_bytes,
             used_bytes: trace_result.used_bytes,
-            truncated,
+            truncated: byte_truncated,
             requested_bytes: None,
         },
         lower_bound,

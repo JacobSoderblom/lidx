@@ -92,6 +92,14 @@ pub struct TraceResult {
     pub paths_found: usize,
     pub reached_target: bool,
     pub truncated: bool,
+    /// The `max_hops` ceiling cut the trace while the frontier still had
+    /// edges. All settled hops were returned, so an offset continuation
+    /// yields nothing: the remedy is a larger `max_hops` (#354).
+    pub depth_limited: bool,
+    /// The byte budget cut hops that a `trace_offset` continuation returns.
+    pub byte_truncated: bool,
+    /// `trace_offset` was at or past the end of the settled trace.
+    pub no_more_results: bool,
     /// Why `truncated` is set when it is not a depth/byte limit.
     pub truncation_reason: Option<String>,
     pub budget_bytes: usize,
@@ -210,6 +218,8 @@ pub fn trace_flow(
     // replaced by a same-level tie-break cannot change truncation.
     let mut last_level: usize = 0;
     let mut truncated = false;
+    let mut depth_limited = false;
+    let mut byte_truncated = false;
     let mut reached_target = false;
     let is_upstream = matches!(config.direction, TraceDirection::Upstream);
     let walk = walk_direction(is_upstream);
@@ -262,6 +272,7 @@ pub fn trace_flow(
                         graph_version,
                     )? {
                         truncated = true;
+                        depth_limited = true;
                         break;
                     }
                 }
@@ -272,6 +283,7 @@ pub fn trace_flow(
             last_level = dist;
             if budget_exhausted(&trace, config) {
                 truncated = true;
+                byte_truncated = true;
                 break;
             }
         }
@@ -588,6 +600,15 @@ pub fn trace_flow(
     if keep < trace.len() {
         trace.truncate(keep);
         truncated = true;
+        byte_truncated = true;
+    }
+    // An offset at/past the end has nothing left to return: report that
+    // plainly instead of echoing the original truncation (#354).
+    let no_more_results = config.trace_offset > 0 && trace.is_empty();
+    if no_more_results {
+        truncated = false;
+        depth_limited = false;
+        byte_truncated = false;
     }
 
     let end_sym = if let Some(eid) = end_id {
@@ -629,6 +650,9 @@ pub fn trace_flow(
         paths_found,
         reached_target,
         truncated,
+        depth_limited,
+        byte_truncated,
+        no_more_results,
         truncation_reason,
         budget_bytes: config.max_bytes,
         used_bytes,

@@ -1154,6 +1154,13 @@ pub struct TraceFlowResult {
     pub paths_found: usize,
     pub reached_target: bool,
     pub truncated: bool,
+    /// The `max_hops` ceiling cut the trace (`truncated` is also true); raise
+    /// `max_hops` rather than paging with `trace_offset`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub depth_limited: bool,
+    /// `trace_offset` was at or past the end of the trace: nothing left.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub no_more_results: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncation_reason: Option<String>,
     pub budget: BudgetInfo,
