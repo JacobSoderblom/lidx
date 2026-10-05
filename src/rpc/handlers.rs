@@ -744,14 +744,37 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             ctx.languages.as_deref(),
             ctx.graph_version,
         )?;
+        // Issue #365: for a class, tests calling any member count too (the
+        // same member set `callers` aggregates over).
+        let mut own_ids = std::collections::HashSet::from([symbol.id]);
+        let mut member_edges = Vec::new();
+        if crate::resolve::is_type_container_kind(&symbol.kind) {
+            for m in indexer
+                .db()
+                .get_symbols_for_file(&symbol.file_path, ctx.graph_version)?
+            {
+                if (m.kind == "method" || m.kind == "function")
+                    && m.start_line >= symbol.start_line
+                    && m.end_line <= symbol.end_line
+                    && own_ids.insert(m.id)
+                {
+                    member_edges.extend(indexer.db().edges_for_symbol(
+                        m.id,
+                        ctx.languages.as_deref(),
+                        ctx.graph_version,
+                    )?);
+                }
+            }
+        }
         for (edge, via_interface) in edges
             .iter()
+            .chain(member_edges.iter())
             .filter(|e| !e.is_synthetic())
             .map(|e| (e, false))
             .chain(interface_edges.iter().map(|e| (e, true)))
         {
             if edge.kind == "CALLS"
-                && (via_interface || edge.target_symbol_id == Some(symbol.id))
+                && (via_interface || edge.target_symbol_id.is_some_and(|t| own_ids.contains(&t)))
                 && meets_min_resolution(&edge.resolution_kind)
                 && let Some(source_id) = edge.source_symbol_id
                 && let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id)
@@ -1035,6 +1058,11 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let graph_version = symbol.graph_version;
     let commit_sha = symbol.commit_sha.clone();
 
+    let tests_note = (callers.is_some() && tests.is_some()).then(|| {
+        "tests is the subset of callers that live in test-scope files; \
+         a test caller appears in both lists."
+            .to_string()
+    });
     let result = ExplainSymbolResult {
         symbol,
         source,
@@ -1043,6 +1071,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         callees_total: callees.as_ref().map(|_| callees_total),
         callees,
         tests_total: tests.as_ref().map(|_| tests_total),
+        tests_note,
         tests,
         implements_total: implements.as_ref().map(|_| implements_total),
         implements,
