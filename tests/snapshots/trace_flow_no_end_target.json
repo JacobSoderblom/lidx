@@ -25,7 +25,8 @@
       "params": {}
     }
   ],
-  "paths_found": 2,
+  "nodes_found": 5,
+  "paths_found": 4,
   "reached_target": false,
   "start": {
     "end_byte": 229,

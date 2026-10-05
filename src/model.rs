@@ -1145,7 +1145,14 @@ pub struct TraceFlowResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end: Option<Symbol>,
     pub trace: Vec<TraceHop>,
+    /// Without an end target: number of leaf hops (hops nothing else was
+    /// reached through, including hops at the `max_hops` ceiling); the trace
+    /// is node-deduplicated, so this is not a distinct-path count.
+    /// Non-decreasing in `max_hops`. With an end target: 1 if reached, else 0.
     pub paths_found: usize,
+    /// Total settled trace nodes, independent of `trace_offset` and byte
+    /// truncation.
+    pub nodes_found: usize,
     pub reached_target: bool,
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

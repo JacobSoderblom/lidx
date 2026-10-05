@@ -253,3 +253,45 @@ fn no_end_target_returns_frontier_with_predecessors() {
         ["flow.other_leaf", "flow.mid", "flow.start"]
     );
 }
+
+/// Issue #355: without an end target `paths_found` counts leaf hops (hops
+/// nothing else was reached through) and never falls as `max_hops` grows;
+/// `nodes_found` is the full settled trace size.
+const DIAMOND_FLOW: &str = "def e():\n    pass\n\n\ndef d():\n    e()\n\n\ndef b():\n    d()\n\n\ndef c():\n    d()\n\n\ndef a():\n    b()\n    c()\n";
+
+#[test]
+fn paths_found_is_leaf_count_and_non_decreasing_in_max_hops() {
+    let env = setup(&[("a.py", DIAMOND_FLOW)]);
+    let mut prev = 0;
+    let mut got = Vec::new();
+    for hops in 1..=4 {
+        let r = call(
+            &env,
+            &format!(r#"{{"start_qualname":"a.a","direction":"downstream","max_hops":{hops}}}"#),
+        );
+        let paths = r["paths_found"].as_u64().unwrap();
+        let nodes = r["nodes_found"].as_u64().unwrap();
+        assert_eq!(nodes as usize, r["trace"].as_array().unwrap().len(), "{r}");
+        assert!(paths >= prev, "hops {hops}: {paths} < {prev}: {r}");
+        prev = paths;
+        got.push((nodes, paths));
+    }
+    assert_eq!(got, [(2, 2), (3, 2), (4, 2), (4, 2)]);
+}
+
+#[test]
+fn nodes_found_ignores_offset_and_byte_truncation() {
+    let env = setup(&[("a.py", DIAMOND_FLOW)]);
+    let r = call(
+        &env,
+        r#"{"start_qualname":"a.a","direction":"downstream","max_hops":4,"trace_offset":1}"#,
+    );
+    assert_eq!(r["trace"].as_array().unwrap().len(), 3, "{r}");
+    assert_eq!(r["nodes_found"], 4, "{r}");
+    let r = call(
+        &env,
+        r#"{"start_qualname":"a.a","direction":"downstream","max_hops":4,"max_bytes":1}"#,
+    );
+    assert_eq!(r["trace"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["nodes_found"], 4, "{r}");
+}

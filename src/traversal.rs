@@ -81,7 +81,13 @@ pub struct TraceResult {
     pub start: Symbol,
     pub end: Option<Symbol>,
     pub hops: Vec<TraceHop>,
+    /// Without an end target: the number of leaf hops -- hops no other hop
+    /// was reached through (including hops at the `max_hops` ceiling).
+    /// Non-decreasing in `max_hops`. With an end target: 1 if reached, else 0.
     pub paths_found: usize,
+    /// Total settled trace hops, independent of `trace_offset` and the byte
+    /// budget.
+    pub nodes_found: usize,
     pub reached_target: bool,
     pub truncated: bool,
     /// Why `truncated` is set when it is not a depth/byte limit.
@@ -199,8 +205,11 @@ pub fn trace_flow(
 
     // Byte budget is applied to the settled, canonically ordered hops (at
     // level boundaries and once at the end), never per arrival, so a hop
-    // replaced by a same-level tie-break cannot change truncation.
+    // replaced by a same-level tie-break cannot change truncation. The walk
+    // itself is not cut short by the budget, so `nodes_found` is independent
+    // of it (#355).
     let mut last_level: usize = 0;
+    let mut budget_hit = false;
     let mut truncated = false;
     let mut reached_target = false;
     let is_upstream = matches!(config.direction, TraceDirection::Upstream);
@@ -262,10 +271,7 @@ pub fn trace_flow(
         }
         if dist > last_level {
             last_level = dist;
-            if budget_exhausted(&trace, config) {
-                truncated = true;
-                break;
-            }
+            budget_hit |= budget_exhausted(&trace, config);
         }
 
         let edges = db.edges_for_symbol_with_dispatch(current_id, languages, graph_version)?;
@@ -536,7 +542,7 @@ pub fn trace_flow(
     }
 
     let truncation_reason = scope.capped().then(|| CAP_TRUNCATION_REASON.to_string());
-    truncated |= scope.capped();
+    truncated |= scope.capped() | budget_hit;
 
     // With an end target the answer is the path to it, not the visited
     // frontier: keep only the hops on the predecessor chain, or none when
@@ -556,6 +562,10 @@ pub fn trace_flow(
 
     // Canonical order: independent of the order edges were processed in.
     trace.sort_by_cached_key(canonical_key);
+    // Counted over the whole settled trace, before offset/byte truncation
+    // trim what is returned (#355).
+    let nodes_found = trace.len();
+    let leaf_count = count_leaves(&trace);
     let mut trace: Vec<TraceHop> = trace.into_iter().skip(config.trace_offset).collect();
 
     // Apply the byte budget to the settled hops: keep hops while they fit,
@@ -589,8 +599,7 @@ pub fn trace_flow(
     } else if end_id.is_some() {
         if reached_target { 1 } else { 0 }
     } else {
-        let max_dist = trace.iter().map(|h| h.distance).max().unwrap_or(0);
-        trace.iter().filter(|h| h.distance == max_dist).count()
+        leaf_count
     };
 
     // Issue #81: lower-bound signal over every symbol this traversal
@@ -618,6 +627,7 @@ pub fn trace_flow(
         end: end_sym,
         hops: trace,
         paths_found,
+        nodes_found,
         reached_target,
         truncated,
         truncation_reason,
@@ -697,6 +707,22 @@ fn has_further_edges(
         }
     }
     Ok(false)
+}
+
+/// Hops that no other hop names as its predecessor. A trace is
+/// node-deduplicated (a node reachable two ways records one predecessor), so
+/// this counts leaves, not distinct root-to-leaf paths. Growing `max_hops`
+/// only turns ceiling leaves into parents of at least one new hop, so the
+/// count never shrinks.
+fn count_leaves(trace: &[TraceHop]) -> usize {
+    let parents: HashSet<(i64, usize)> = trace
+        .iter()
+        .filter_map(|h| Some((h.predecessor_id, h.distance.checked_sub(1)?)))
+        .collect();
+    trace
+        .iter()
+        .filter(|h| !parents.contains(&(h.symbol.id, h.distance)))
+        .count()
 }
 
 /// Indices of the hops on the chain from the hop reaching `end_id` back to
