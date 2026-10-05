@@ -398,7 +398,9 @@ fn upstream_from_options_reaches_only_its_own_bicep_secret() {
         "container revisited: {:?}",
         hops(&r)
     );
-    assert_eq!(r["paths_found"], 1, "{r}");
+    // Leaves (#355): the Bicep secret plus the DatabaseConnectionFactory
+    // dead end that hangs directly off the options class.
+    assert_eq!(r["paths_found"], 2, "{r}");
 
     let a = impact(&repo, DB_OPTIONS, "upstream");
     assert!(has(&a, "infra/main.secretDataMgrDbConnStr"), "{a:?}");
