@@ -1016,14 +1016,6 @@ fn gather_context_caps_test_callers() {
     let items = gather_target(&temp, r#""depth":2"#);
     let tests = items.iter().filter(|i| is_test_item(i)).count();
     assert!(tests > 0 && tests <= 8, "default cap is 8, got {tests}");
-
-    let capped = gather_target(&temp, r#""depth":2,"max_test_nodes":2"#);
-    // The cap also counts the test file's module node (not emitted as an item).
-    let n = capped.iter().filter(|i| is_test_item(i)).count();
-    assert!((1..=2).contains(&n), "{n}");
-    let none = gather_target(&temp, r#""depth":2,"max_test_nodes":0"#);
-    assert_eq!(none.iter().filter(|i| is_test_item(i)).count(), 0);
-    assert!(names(&none).iter().any(|n| n == "app.api"));
 }
 
 #[test]

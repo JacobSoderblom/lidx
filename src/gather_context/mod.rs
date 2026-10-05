@@ -22,14 +22,13 @@ pub const STRATEGY_FILE: &str = "file";
 /// Valid `strategy` values; the request validator checks against this.
 pub const STRATEGIES: &[&str] = &[STRATEGY_SYMBOL, STRATEGY_FILE];
 
-pub const DEFAULT_MAX_TEST_NODES: usize = 8;
+/// Cap on test-code nodes admitted into related context (issue #359).
+pub(crate) const MAX_TEST_NODES: usize = 8;
 
 pub struct GatherConfig {
     pub max_bytes: usize,
     pub depth: usize,
     pub max_nodes: usize,
-    /// Cap on test-code nodes admitted into related context (default 8)
-    pub max_test_nodes: usize,
     pub include_snippets: bool,
     pub include_related: bool,
     pub dry_run: bool,
@@ -46,7 +45,6 @@ impl Default for GatherConfig {
             max_bytes: 100_000,
             depth: 2,
             max_nodes: 200,
-            max_test_nodes: DEFAULT_MAX_TEST_NODES,
             include_snippets: true,
             include_related: true,
             dry_run: false,

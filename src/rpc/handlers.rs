@@ -3589,9 +3589,6 @@ pub(super) fn handle_gather_context(indexer: &mut Indexer, params: Value) -> Res
         max_bytes,
         depth: params.depth.unwrap_or(2),
         max_nodes: params.max_nodes.unwrap_or(50),
-        max_test_nodes: params
-            .max_test_nodes
-            .unwrap_or(gather_context::DEFAULT_MAX_TEST_NODES),
         include_snippets: params.include_snippets.unwrap_or(true),
         include_related: params.include_related.unwrap_or(true),
         dry_run: params.dry_run.unwrap_or(false),

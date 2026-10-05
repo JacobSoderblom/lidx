@@ -5,11 +5,11 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use super::GatherConfig;
 use super::format::{
     format_tier0, format_tier1, format_tier2, read_file_region, read_symbol_content,
 };
 use super::resolve::ResolvedSeed;
+use super::{GatherConfig, MAX_TEST_NODES};
 
 /// Tracks deduplication state
 pub(super) struct DeduplicationTracker {
@@ -525,7 +525,7 @@ fn collect_content_file_strategy(
                 break;
             }
             if is_test_file(&caller.file_path) {
-                if tests_added >= config.max_test_nodes {
+                if tests_added >= MAX_TEST_NODES {
                     continue;
                 }
                 tests_added += 1;
@@ -679,7 +679,7 @@ fn collect_content_symbol_strategy(
 
             // Gather candidates first so test code is deprioritised: non-test
             // neighbours are added before any test neighbour, and test
-            // neighbours are capped at `max_test_nodes` (issue #359).
+            // neighbours are capped at MAX_TEST_NODES (issue #359).
             let mut candidates: Vec<(Symbol, &'static str, Edge)> = Vec::new();
             for seed_id in &seed_symbol_ids {
                 let edges = db.edges_for_symbol_with_dispatch(
@@ -717,7 +717,7 @@ fn collect_content_symbol_strategy(
                     break;
                 }
                 if is_test_file(&target_symbol.file_path) {
-                    if tests_in_context >= config.max_test_nodes {
+                    if tests_in_context >= MAX_TEST_NODES {
                         continue;
                     }
                     tests_in_context += 1;

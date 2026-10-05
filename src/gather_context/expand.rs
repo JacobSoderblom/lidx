@@ -3,7 +3,7 @@ use crate::indexer::test_detection::is_test_file;
 use crate::model::Symbol;
 use anyhow::Result;
 
-use super::GatherConfig;
+use super::{GatherConfig, MAX_TEST_NODES};
 
 /// Expand symbol seeds via subgraph to find related symbols
 pub(super) fn expand_via_subgraph(
@@ -52,12 +52,12 @@ pub(super) fn expand_via_subgraph(
     };
 
     // Test code is deprioritised (issue #359): admitted only after all
-    // non-test nodes within `depth`, capped at `max_test_nodes`. Test-scope
+    // non-test nodes within `depth`, capped at MAX_TEST_NODES. Test-scope
     // files stay leaf nodes (their own callers/callees are not expanded).
     let defer_tests = |s: &Symbol| is_test_file(&s.file_path);
     let deferral = Deferral {
         is_deferred: &defer_tests,
-        max: config.max_test_nodes,
+        max: MAX_TEST_NODES,
     };
     let subgraph = build_subgraph_deferring(
         db,

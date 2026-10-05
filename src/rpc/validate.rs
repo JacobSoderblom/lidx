@@ -410,7 +410,6 @@ mod tests {
             max_bytes: None,
             depth: None,
             max_nodes: None,
-            max_test_nodes: None,
             include_snippets: None,
             include_related: None,
             dry_run: None,

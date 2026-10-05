@@ -220,9 +220,6 @@ struct GatherContextParams {
     depth: Option<usize>,
     /// Maximum nodes in subgraph (default: 50)
     max_nodes: Option<usize>,
-    /// Maximum test-code nodes among related symbols; tests are always ordered after
-    /// non-test code (default: 8)
-    max_test_nodes: Option<usize>,
     /// Include full bodies for related symbols (default: true). When false, related symbols
     /// are still expanded but returned as signature stubs; seed bodies are always returned.
     include_snippets: Option<bool>,
