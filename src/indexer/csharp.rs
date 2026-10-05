@@ -6055,6 +6055,8 @@ fn reachable<T: PartialEq>(
     // A nested call is the receiver's own deferred call (`a.B().C()`).
     let ty = match &call.base {
         DeferredBase::Type(ty) => ty.clone(),
+        // Python-only base (exhaustiveness): a C# chain never builds one.
+        DeferredBase::Function(_) => return Ok(None),
         DeferredBase::Call(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
         DeferredBase::Call(inner) => match receiver_type(inner, index, depth + 1)? {
             Some(ty) => ty,

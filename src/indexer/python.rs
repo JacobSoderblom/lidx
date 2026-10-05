@@ -1,7 +1,10 @@
-use crate::db::resolver::{ImportMissPolicy, LanguageProfile};
+use crate::db::resolver::{DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
+use crate::indexer::extract::{
+    DeferredBase, DeferredMarker, DeferredReturn, EdgeInput, ExtractedFile, MAX_DEFERRED_DEPTH,
+    ReceiverType, SymbolInput,
+};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::py_layout::PyLayout;
@@ -30,6 +33,7 @@ use tree_sitter::{Node, Parser};
 /// resolver-only heuristic, not data this extractor supplies.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     import_miss: ImportMissPolicy::PythonRepoHeuristic,
+    deferred_receiver: Some(resolve_deferred),
     ..LanguageProfile::DEFAULT
 };
 
@@ -718,6 +722,25 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return;
     }
+    if let Some((name, receiver_type)) = chained_call_receiver(function_node, source, ctx) {
+        let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+        output.edges.push(EdgeInput {
+            kind: "CALLS".to_string(),
+            source_qualname: Some(ctx.current_scope.clone()),
+            // The callee's name is all the text there is (`make().stage`
+            // has no printable receiver); the receiver type binds it.
+            target_qualname: Some(name),
+            detail: Some(raw),
+            evidence_snippet: util::edge_evidence_snippet(
+                source, start_byte, end_byte, start_line, end_line,
+            ),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            receiver_type,
+            ..Default::default()
+        });
+        return;
+    }
     let receiver_type = infer_receiver_type(function_node, source, ctx);
     // Import-aware qualification only makes sense when the receiver isn't
     // already gated by receiver-type inference — see
@@ -846,6 +869,230 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     // class-level list/dict attribute colliding with an unrelated
     // same-named method elsewhere in the index).
     ReceiverType::Unresolved
+}
+
+/// What is known of the value a call expression returns, while building a
+/// chained call's receiver (`make().stage(1).storage()`).
+enum Chain {
+    /// The value's type is known now.
+    Known(String),
+    /// The value is the return of a call whose declaration lives elsewhere.
+    Deferred(DeferredReturn),
+    /// Nothing usable (builtin, local of unknown type, subscript, ...).
+    Unknown,
+}
+
+impl Chain {
+    /// The receiver type of a call made on this value.
+    fn receiver(self, name_only: bool) -> ReceiverType {
+        match self {
+            Chain::Known(ty) => ReceiverType::Known(ty),
+            Chain::Deferred(call) => ReceiverType::Deferred(DeferredReturn { name_only, ..call }),
+            Chain::Unknown => ReceiverType::Unresolved,
+        }
+    }
+
+    /// The value of calling method `name` on this value.
+    fn call_method(self, name: &str) -> Chain {
+        match self {
+            Chain::Known(ty) => Chain::Deferred(DeferredReturn::on_type(&ty, name, false, false)),
+            Chain::Deferred(inner) if inner.depth() < MAX_DEFERRED_DEPTH => {
+                Chain::Deferred(DeferredReturn::on_call(inner, name, false))
+            }
+            _ => Chain::Unknown,
+        }
+    }
+}
+
+/// `(method name, receiver type)` of a call whose callee is an attribute of
+/// another call's result (`make().stage(1)`, whose receiver `make()` has no
+/// printable name); `None` for any other callee shape.
+fn chained_call_receiver(
+    function_node: Node<'_>,
+    source: &str,
+    ctx: &Context,
+) -> Option<(String, ReceiverType)> {
+    if function_node.kind() != "attribute" {
+        return None;
+    }
+    let object = unwrap_parens(function_node.child_by_field_name("object")?);
+    let name = node_text(function_node.child_by_field_name("attribute")?, source);
+    if object.kind() == "call" {
+        return Some((name, call_value(object, source, ctx).receiver(true)));
+    }
+    // Any other receiver the callee's text can't spell (`items[0].stage`,
+    // `(a or b).stage`) is recorded as an unresolved call by name.
+    let text = collapse_call_target_whitespace(&node_text(function_node, source));
+    (!is_simple_call_target(&text)).then_some((name, ReceiverType::Unresolved))
+}
+
+fn unwrap_parens(mut node: Node<'_>) -> Node<'_> {
+    while node.kind() == "parenthesized_expression" {
+        match node.named_child(0) {
+            Some(inner) => node = inner,
+            None => break,
+        }
+    }
+    node
+}
+
+/// The value the call expression `call` returns.
+fn call_value(call: Node<'_>, source: &str, ctx: &Context) -> Chain {
+    let Some(func) = call.child_by_field_name("function") else {
+        return Chain::Unknown;
+    };
+    match func.kind() {
+        "identifier" => {
+            let name = node_text(func, source);
+            if ctx.local_types.contains_key(&name) {
+                return Chain::Unknown;
+            }
+            if let Some(f) = ctx.factories.get(&name) {
+                return match factory_return_type(&f.ret, f.is_async, false) {
+                    LocalType::Known(ty) => Chain::Known(ty),
+                    LocalType::Other => Chain::Unknown,
+                };
+            }
+            let mut candidates = vec![format!("{}.{name}", ctx.module)];
+            candidates.extend(ctx.imports.get(&name).cloned().unwrap_or_default());
+            Chain::Deferred(DeferredReturn::on_function(candidates, &name))
+        }
+        "attribute" => {
+            let (Some(object), Some(attr)) = (
+                func.child_by_field_name("object"),
+                func.child_by_field_name("attribute"),
+            ) else {
+                return Chain::Unknown;
+            };
+            let attr = node_text(attr, source);
+            let object = unwrap_parens(object);
+            if object.kind() == "call" {
+                return call_value(object, source, ctx).call_method(&attr);
+            }
+            let (root, hops) = attribute_chain_root(object);
+            if root.kind() != "identifier" {
+                return Chain::Unknown;
+            }
+            let root_name = node_text(root, source);
+            if root_name == "self" || root_name == "cls" {
+                return match (hops, ctx.class_stack.last()) {
+                    (0, Some(class)) => Chain::Known(class.clone()).call_method(&attr),
+                    _ => Chain::Unknown,
+                };
+            }
+            if hops == 0 {
+                match ctx.local_types.get(&root_name) {
+                    Some(LocalType::Known(ty)) => {
+                        return Chain::Known(ty.clone()).call_method(&attr);
+                    }
+                    Some(LocalType::Other) => return Chain::Unknown,
+                    None => {}
+                }
+            }
+            // A class or module reference (`Builder.create()`,
+            // `pkg.make()`): the callee's dotted name, local or imported.
+            let text = node_text(object, source);
+            let rest = &text[root_name.len()..];
+            let mut candidates = vec![format!("{}.{text}.{attr}", ctx.module)];
+            for target in ctx.imports.get(&root_name).into_iter().flatten() {
+                candidates.push(format!("{target}{rest}.{attr}"));
+            }
+            Chain::Deferred(DeferredReturn::on_function(candidates, &attr))
+        }
+        _ => Chain::Unknown,
+    }
+}
+
+/// `LanguageProfile::deferred_receiver` for Python: the class a chained
+/// call's receiver is, read from return annotations (or, for a class, the
+/// class itself). `""` when it cannot be told: never a guess.
+fn resolve_deferred(
+    marker: &DeferredMarker,
+    index: &dyn DeclarationIndex,
+) -> Result<Option<Option<String>>> {
+    match marker {
+        DeferredMarker::Return(call) => Ok(Some(Some(
+            deferred_class(call, index, 0)?.unwrap_or_default(),
+        ))),
+        _ => Ok(None),
+    }
+}
+
+fn deferred_class(
+    call: &DeferredReturn,
+    index: &dyn DeclarationIndex,
+    depth: usize,
+) -> Result<Option<String>> {
+    let returns = match &call.base {
+        DeferredBase::Function(candidates) => function_returns(candidates, index)?,
+        DeferredBase::Type(ty) => member_returns(ty, &call.method, index)?,
+        DeferredBase::Call(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
+        DeferredBase::Call(inner) => match deferred_class(inner, index, depth + 1)? {
+            Some(ty) => member_returns(&ty, &call.method, index)?,
+            None => return Ok(None),
+        },
+    };
+    let mut agreed: Option<String> = None;
+    for ret in returns {
+        let Some(ret) = ret else { return Ok(None) };
+        match &agreed {
+            Some(prev) if *prev != ret => return Ok(None),
+            _ => agreed = Some(ret),
+        }
+    }
+    match agreed {
+        Some(ty) if index.is_repo_type(&ty)? => Ok(Some(ty)),
+        _ => Ok(None),
+    }
+}
+
+/// The annotated return class of each declaration a call of one of
+/// `candidates` may reach (`None`: unannotated); a candidate that is a class
+/// (`Cls()`) constructs that class.
+fn function_returns(
+    candidates: &[String],
+    index: &dyn DeclarationIndex,
+) -> Result<Vec<Option<String>>> {
+    let mut returns = Vec::new();
+    for qualname in candidates {
+        let callables = index.declarations(DeclarationQuery::Callable(qualname))?;
+        for decl in &callables {
+            returns.push(signature_return_class(decl.signature.as_deref()));
+        }
+        if callables.is_empty() {
+            let name = qualname.rsplit('.').next().unwrap_or(qualname);
+            let is_class = index
+                .declarations(DeclarationQuery::Type(name))?
+                .iter()
+                .any(|d| d.qualname == *qualname);
+            if is_class {
+                returns.push(Some(name.to_string()));
+            }
+        }
+    }
+    Ok(returns)
+}
+
+/// The annotated return class of each `ty.method` (own, else inherited).
+fn member_returns(
+    ty: &str,
+    method: &str,
+    index: &dyn DeclarationIndex,
+) -> Result<Vec<Option<String>>> {
+    Ok(index
+        .inherited_members(ty, method)?
+        .iter()
+        .map(|decl| signature_return_class(decl.signature.as_deref()))
+        .collect())
+}
+
+/// The class a `(params) -> Ret` signature is annotated to return.
+fn signature_return_class(signature: Option<&str>) -> Option<String> {
+    let (_, ret) = signature?.rsplit_once(" -> ")?;
+    match factory_return_type(ret, false, false) {
+        LocalType::Known(ty) => Some(ty),
+        LocalType::Other => None,
+    }
 }
 
 /// Walk a (possibly nested) `attribute` chain down to its root node,
@@ -2870,9 +3117,96 @@ fn package_prefixes_have_init(base: &Path, parts: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::PythonExtractor;
+    use crate::db::resolver::{Declaration, DeclarationIndex, DeclarationQuery, ScopeImports};
+    use crate::indexer::extract::{DeferredMarker, DeferredReturn};
     use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor, ReceiverType};
     use crate::indexer::http;
     use crate::indexer::proto;
+
+    /// A declaration index over `(qualname, kind, signature)` rows.
+    struct Stub(Vec<(&'static str, &'static str, &'static str)>);
+
+    impl DeclarationIndex for Stub {
+        fn declarations(&self, query: DeclarationQuery<'_>) -> anyhow::Result<Vec<Declaration>> {
+            let keep = |q: &str, kind: &str| match &query {
+                DeclarationQuery::Callable(c) => q == *c && matches!(kind, "function" | "method"),
+                DeclarationQuery::Type(n) => kind == "class" && q.rsplit('.').next() == Some(n),
+                DeclarationQuery::Member { ty, method } => {
+                    kind == "method" && q.ends_with(&format!("{ty}.{method}"))
+                }
+                _ => false,
+            };
+            Ok(self
+                .0
+                .iter()
+                .filter(|(q, k, _)| keep(q, k))
+                .map(|(q, _, sig)| Declaration {
+                    qualname: q.to_string(),
+                    signature: Some(sig.to_string()),
+                    visibility: None,
+                    file_id: 1,
+                })
+                .collect())
+        }
+        fn is_repo_type(&self, name: &str) -> anyhow::Result<bool> {
+            Ok(!self.declarations(DeclarationQuery::Type(name))?.is_empty())
+        }
+        fn inherited_members(&self, ty: &str, method: &str) -> anyhow::Result<Vec<Declaration>> {
+            self.declarations(DeclarationQuery::Member { ty, method })
+        }
+        fn imports_in_scope(&self, _: &Declaration) -> anyhow::Result<ScopeImports> {
+            unreachable!()
+        }
+    }
+
+    fn receiver_of(index: &Stub, marker: DeferredReturn) -> Option<String> {
+        super::resolve_deferred(&DeferredMarker::Return(marker), index)
+            .unwrap()
+            .unwrap()
+            .filter(|ty| !ty.is_empty())
+    }
+
+    /// `make().stage(1).storage()`: the receiver of `storage` is
+    /// `make().stage(1)`; each link's annotated return types the next.
+    #[test]
+    fn deferred_chain_follows_return_annotations() {
+        let chain = || {
+            DeferredReturn::on_call(
+                DeferredReturn::on_function(vec!["b.make".into()], "make"),
+                "stage",
+                false,
+            )
+        };
+        let annotated = Stub(vec![
+            ("b.Builder", "class", ""),
+            ("b.make", "function", "() -> Builder"),
+            ("b.Builder.stage", "method", "(self, x) -> \"Builder\""),
+        ]);
+        assert_eq!(receiver_of(&annotated, chain()), Some("Builder".into()));
+
+        // Unannotated `make`: nothing is guessed from the body.
+        let unannotated = Stub(vec![
+            ("b.Builder", "class", ""),
+            ("b.make", "function", "()"),
+            ("b.Builder.stage", "method", "(self, x) -> \"Builder\""),
+        ]);
+        assert_eq!(receiver_of(&unannotated, chain()), None);
+
+        // Unannotated middle method breaks the chain after its own link.
+        let middle = Stub(vec![
+            ("b.Builder", "class", ""),
+            ("b.make", "function", "() -> Builder"),
+            ("b.Builder.stage", "method", "(self, x)"),
+        ]);
+        assert_eq!(receiver_of(&middle, chain()), None);
+        assert_eq!(
+            receiver_of(
+                &middle,
+                DeferredReturn::on_function(vec!["b.make".into()], "make")
+            ),
+            Some("Builder".into())
+        );
+    }
 
     #[test]
     fn extracts_fastapi_route_and_requests_call() {
