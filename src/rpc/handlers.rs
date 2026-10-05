@@ -7,6 +7,7 @@ use crate::indexer::test_detection::is_file_level_test;
 use crate::search::{
     RgSearchOptions, annotate_grep_hits, normalize_rg_context, resolve_rg_paths, search_rg,
 };
+use crate::traversal::{MAX_TRACE_HOPS, TraceTruncation};
 
 // ---------------------------------------------------------------------------
 // GROUP 1 -- Symbol query handlers
@@ -1638,7 +1639,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         super::validate::TRACE_FORMATS,
     )?;
     let ctx = HandlerContext::new(indexer, params.common.clone())?;
-    let max_hops = params.max_hops.unwrap_or(5).min(10);
+    let max_hops = params.max_hops.unwrap_or(5).min(MAX_TRACE_HOPS);
     let include_snippets = params.include_snippets.unwrap_or(true);
     let max_bytes = params.max_bytes.unwrap_or(30_000).min(200_000);
     let trace_offset = params.trace_offset.unwrap_or(0);
@@ -1771,12 +1772,38 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
     )?;
 
     let trace = &trace_result.hops;
-    let truncated = trace_result.truncated;
+    let truncated = trace_result.truncated();
 
     // Build next_hops with continuation when truncated
     let mut next_hops: Vec<serde_json::Value> = Vec::new();
     // An end-target trace that missed has no hops to continue from.
-    if truncated && !(end_id.is_some() && trace.is_empty()) {
+    let has_hops_to_continue = !(end_id.is_some() && trace.is_empty());
+    let TraceTruncation {
+        depth_limited,
+        byte_limited,
+        ..
+    } = trace_result.truncation;
+    let no_more_results = trace_result.no_more_results;
+    // Hop-ceiling truncation already returned every settled hop, so an
+    // offset continuation would be empty (#354): offer a deeper re-trace.
+    // Kept on a `no_more_results` page too, where the offset ran past the end
+    // but the trace is still depth-limited.
+    if depth_limited && max_hops < MAX_TRACE_HOPS && (has_hops_to_continue || no_more_results) {
+        let mut deeper = trace_hop_params(&raw_params);
+        deeper.remove("trace_offset");
+        // `max_hops < MAX_TRACE_HOPS`, so +1 stays within the cap.
+        let new_hops = max_hops + 1;
+        deeper.insert("max_hops".to_string(), json!(new_hops));
+        next_hops.push(json!({
+            "method": "trace_flow",
+            "params": deeper,
+            "description": format!("Re-trace deeper (max_hops {})", new_hops),
+        }));
+    }
+    // Offset paging only recovers hops the byte budget cut: hop-ceiling and
+    // config-cap truncation leave nothing past the returned hops, so an
+    // offset continuation there would be empty.
+    if byte_limited && has_hops_to_continue {
         let next_offset = trace_offset + trace.len();
         // #119: echo every original param (direction, max_bytes,
         // exclude_resolution_kinds, languages, end_qualname, query, ...) by
@@ -1793,10 +1820,14 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             "description": format!("Continue trace (offset {})", next_offset),
         }));
     }
-    if truncated && params.kinds.is_none() {
-        // Suggest narrowing by edge kind when trace was truncated and no filter was used.
-        // #230: clone-and-override -- only `kinds` and `max_bytes` change.
+    if byte_limited && params.kinds.is_none() {
+        // Suggest narrowing by edge kind when the byte budget cut the trace
+        // and no filter was used (a depth-only truncation keeps `max_hops`,
+        // so narrowing would not avoid it).
+        // #230: clone-and-override -- only `kinds` and `max_bytes` change;
+        // `trace_offset` is dropped (a different filter restarts the trace).
         let mut narrow_params = trace_hop_params(&raw_params);
+        narrow_params.remove("trace_offset");
         narrow_params.insert("max_bytes".to_string(), json!((max_bytes * 2).min(200_000)));
         narrow_params.insert("kinds".to_string(), json!(CONFIG_EDGE_KINDS));
         next_hops.push(json!({
@@ -1812,8 +1843,10 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
             "description": format!("Explain {}", h.symbol.name),
         }));
     }
-    // When trace is empty, suggest analyze_impact as an alternative
-    if trace.is_empty() {
+    // When trace is empty, suggest analyze_impact as an alternative. Not on a
+    // `no_more_results` page: the trace there is only empty because the offset
+    // ran past the end, so these hints would be misleading or repeat.
+    if trace.is_empty() && !no_more_results {
         // Different method schema (analyze_impact takes no query/max_hops/...),
         // so its params are built from scratch rather than cloned.
         let mut impact_params = json!({"id": start.id, "direction": "upstream"});
@@ -1831,6 +1864,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         // trace keeps its `query`, an upstream one keeps its `direction`).
         if params.kinds.is_none() {
             let mut retry_params = trace_hop_params(&raw_params);
+            retry_params.remove("trace_offset");
             retry_params.insert("kinds".to_string(), json!(CONFIG_EDGE_KINDS));
             next_hops.push(json!({
                 "method": "trace_flow",
@@ -1904,11 +1938,13 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         paths_found: trace_result.paths_found,
         reached_target: trace_result.reached_target,
         truncated,
+        depth_limited,
+        no_more_results,
         truncation_reason: trace_result.truncation_reason,
         budget: BudgetInfo {
             budget_bytes: trace_result.budget_bytes,
             used_bytes: trace_result.used_bytes,
-            truncated,
+            truncated: byte_limited,
             requested_bytes: None,
         },
         lower_bound,

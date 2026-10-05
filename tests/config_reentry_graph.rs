@@ -211,8 +211,8 @@ fn edge_order_does_not_change_hops_or_reached_nodes() {
             trace_with_budget(&g2, "S", budget),
         );
         assert_eq!(hops_json(&a), hops_json(&b), "budget {budget}");
-        assert_eq!(a.truncated, expect_truncated, "budget {budget}");
-        assert_eq!(b.truncated, expect_truncated, "budget {budget}");
+        assert_eq!(a.truncated(), expect_truncated, "budget {budget}");
+        assert_eq!(b.truncated(), expect_truncated, "budget {budget}");
         assert_eq!(a.used_bytes, b.used_bytes, "budget {budget}");
         assert_eq!(a.hops.len(), t1.hops.len(), "budget {budget}");
     }
@@ -223,7 +223,7 @@ fn edge_order_does_not_change_hops_or_reached_nodes() {
             trace_with_budget(&g2, "S", budget),
         );
         assert_eq!(hops_json(&a), hops_json(&b), "budget {budget}");
-        assert!(a.truncated && b.truncated);
+        assert!(a.truncated() && b.truncated());
     }
 
     // Same parent and kind, differing only in snippet: the smaller snippet
@@ -307,7 +307,7 @@ fn reentry_cap_is_reported_and_independent_of_arrival_order() {
     for reversed in [false, true] {
         let g = fan_in_graph(reversed);
         let t = trace(&g, "S");
-        assert!(t.truncated, "cap must set truncated");
+        assert!(t.truncated(), "cap must set truncated");
         assert!(
             t.truncation_reason
                 .as_deref()
@@ -342,7 +342,34 @@ fn reentry_cap_is_reported_and_independent_of_arrival_order() {
         ],
     );
     let t = trace(&g, "S");
-    assert!(!t.truncated && t.truncation_reason.is_none());
+    assert!(!t.truncated() && t.truncation_reason.is_none());
     let r = impact(&g, "S");
     assert!(!r.truncated && r.truncation_reason.is_none());
+}
+
+/// Config re-entry cap truncation sets top-level `truncated` but no offset
+/// continuation is offered (paging past the end returns nothing), and
+/// `budget.truncated` stays false.
+#[test]
+fn cap_truncation_offers_no_offset_continuation() {
+    let g = fan_in_graph(false);
+    let raw = lidx::rpc::call(
+        g._tmp.path().to_path_buf(),
+        g._tmp.path().join("g.db"),
+        "trace_flow".to_string(),
+        r#"{"start_qualname":"app.S","direction":"downstream","max_hops":6}"#,
+        "1",
+    )
+    .unwrap();
+    let env: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let r = &env["result"];
+    assert_eq!(r["truncated"], serde_json::json!(true), "{r}");
+    assert_eq!(r["budget"]["truncated"], serde_json::json!(false), "{r}");
+    let hops = r["next_hops"].as_array().unwrap();
+    assert!(
+        !hops.iter().any(|h| h["description"]
+            .as_str()
+            .is_some_and(|d| d.starts_with("Continue trace"))),
+        "{r}"
+    );
 }

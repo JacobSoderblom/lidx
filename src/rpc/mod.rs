@@ -294,7 +294,11 @@ struct ExplainSymbolParams {
 /// including hops at the `max_hops` ceiling), not distinct root-to-leaf paths
 /// since the trace is node-deduplicated; it is non-decreasing in `max_hops`
 /// and unaffected by `trace_offset`/`max_bytes` paging. With an end target it
-/// is 1 if the target was reached, else 0.
+/// is 1 if the target was reached, else 0. `depth_limited: true` means the
+/// `max_hops` ceiling cut the trace (re-trace with a larger `max_hops`;
+/// `trace_offset` would return nothing); `budget.truncated` reflects byte
+/// truncation only, and a `trace_offset` past the end returns an empty trace
+/// with `no_more_results: true`.
 #[derive(Deserialize, schemars::JsonSchema)]
 struct TraceFlowParams {
     start_id: Option<i64>,

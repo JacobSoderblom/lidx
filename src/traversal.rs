@@ -75,6 +75,31 @@ impl Default for TraceConfig {
     }
 }
 
+/// Hard cap on `max_hops` for `trace_flow`.
+pub const MAX_TRACE_HOPS: usize = 10;
+
+/// Why a trace is incomplete. The causes are independent (a trace can hit the
+/// hop ceiling and the byte budget at once), so any combination is valid.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TraceTruncation {
+    /// The `max_hops` ceiling cut the trace while the frontier still had
+    /// edges. Every settled hop was returned, so a `trace_offset`
+    /// continuation yields nothing: the remedy is a larger `max_hops` (#354).
+    pub depth_limited: bool,
+    /// The byte budget cut settled hops; a `trace_offset` continuation
+    /// returns the rest.
+    pub byte_limited: bool,
+    /// The config re-entry cap refused some URIs (see `truncation_reason`).
+    /// Neither a larger `max_hops` nor an offset recovers them.
+    pub capped: bool,
+}
+
+impl TraceTruncation {
+    pub fn any(self) -> bool {
+        self.depth_limited || self.byte_limited || self.capped
+    }
+}
+
 /// Result of a `trace_flow` BFS traversal.
 #[derive(Debug)]
 pub struct TraceResult {
@@ -91,8 +116,14 @@ pub struct TraceResult {
     /// reached, else 0.
     pub paths_found: usize,
     pub reached_target: bool,
-    pub truncated: bool,
-    /// Why `truncated` is set when it is not a depth/byte limit.
+    /// Causes of incompleteness. On a `no_more_results` page only
+    /// `depth_limited` is kept (it is a property of the traversal, so the
+    /// deeper re-trace hint survives); byte/cap causes describe a page that
+    /// has no hops and are cleared.
+    pub truncation: TraceTruncation,
+    /// `trace_offset` was at or past the end of the settled trace.
+    pub no_more_results: bool,
+    /// Why `truncation.capped` is set.
     pub truncation_reason: Option<String>,
     pub budget_bytes: usize,
     pub used_bytes: usize,
@@ -104,6 +135,14 @@ pub struct TraceResult {
     /// "retry excluding heuristics" next_hops suggestion in
     /// `handle_trace_flow`.
     pub traversed_heuristic_kind: bool,
+}
+
+impl TraceResult {
+    /// Whether the result is incomplete. False on a `no_more_results` page
+    /// even if the underlying traversal was depth-limited.
+    pub fn truncated(&self) -> bool {
+        !self.no_more_results && self.truncation.any()
+    }
 }
 
 /// Every config URI `id`'s own config edges carry: the only URIs a config
@@ -209,7 +248,8 @@ pub fn trace_flow(
     // level boundaries and once at the end), never per arrival, so a hop
     // replaced by a same-level tie-break cannot change truncation.
     let mut last_level: usize = 0;
-    let mut truncated = false;
+    let mut depth_limited = false;
+    let mut byte_limited = false;
     let mut reached_target = false;
     let is_upstream = matches!(config.direction, TraceDirection::Upstream);
     let walk = walk_direction(is_upstream);
@@ -244,26 +284,24 @@ pub fn trace_flow(
         // filtered out) is complete, not truncated -- reporting truncation
         // there would be a false positive. But a frontier that still has
         // edges we're declining to follow genuinely lost information to
-        // the depth cutoff, so `truncated` must reflect that: it gates the
-        // "continue trace" next_hops in `handle_trace_flow`, one of lidx's
+        // the depth cutoff, so `depth_limited` must reflect that: it gates the
+        // deeper re-trace next_hop in `handle_trace_flow`, one of lidx's
         // most valuable affordances.
         if dist >= config.max_hops {
-            if !truncated {
-                let ceiling_frontier = std::iter::once((current_id, entry.clone()))
-                    .chain(queue.iter().map(|q| (q.id, q.entry.clone())));
-                for (candidate, candidate_entry) in ceiling_frontier {
-                    if has_further_edges(
-                        db,
-                        candidate,
-                        is_upstream,
-                        config,
-                        &candidate_entry,
-                        languages,
-                        graph_version,
-                    )? {
-                        truncated = true;
-                        break;
-                    }
+            let ceiling_frontier = std::iter::once((current_id, entry.clone()))
+                .chain(queue.iter().map(|q| (q.id, q.entry.clone())));
+            for (candidate, candidate_entry) in ceiling_frontier {
+                if has_further_edges(
+                    db,
+                    candidate,
+                    is_upstream,
+                    config,
+                    &candidate_entry,
+                    languages,
+                    graph_version,
+                )? {
+                    depth_limited = true;
+                    break;
                 }
             }
             break;
@@ -271,7 +309,7 @@ pub fn trace_flow(
         if dist > last_level {
             last_level = dist;
             if budget_exhausted(&trace, config) {
-                truncated = true;
+                byte_limited = true;
                 break;
             }
         }
@@ -418,7 +456,7 @@ pub fn trace_flow(
             }
         }
 
-        if !reached_target && !truncated {
+        if !reached_target {
             bridge_targets.sort();
             for bridge in &bridge_targets {
                 let BridgeTarget {
@@ -531,20 +569,19 @@ pub fn trace_flow(
                             }
                         }
                     }
-                    if reached_target || truncated {
+                    if reached_target {
                         break;
                     }
                 }
             }
         }
 
-        if reached_target || truncated {
+        if reached_target {
             break;
         }
     }
 
     let truncation_reason = scope.capped().then(|| CAP_TRUNCATION_REASON.to_string());
-    truncated |= scope.capped();
 
     // With an end target the answer is the path to it, not the visited
     // frontier: keep only the hops on the predecessor chain, or none when
@@ -587,8 +624,16 @@ pub fn trace_flow(
     }
     if keep < trace.len() {
         trace.truncate(keep);
-        truncated = true;
+        byte_limited = true;
     }
+    // An offset at/past the end has nothing left to return: report that
+    // plainly instead of echoing the original truncation (#354).
+    let no_more_results = config.trace_offset > 0 && trace.is_empty();
+    let truncation = TraceTruncation {
+        depth_limited,
+        byte_limited: byte_limited && !no_more_results,
+        capped: scope.capped() && !no_more_results,
+    };
 
     let end_sym = if let Some(eid) = end_id {
         db.get_symbol_by_id(eid)?
@@ -628,7 +673,8 @@ pub fn trace_flow(
         hops: trace,
         paths_found,
         reached_target,
-        truncated,
+        truncation,
+        no_more_results,
         truncation_reason,
         budget_bytes: config.max_bytes,
         used_bytes,
@@ -1549,7 +1595,7 @@ mod tests {
 
         let result = trace_flow(indexer.db(), seeds, None, None, gv, &config).unwrap();
 
-        assert!(result.truncated, "should be truncated with 1-byte budget");
+        assert!(result.truncated(), "should be truncated with 1-byte budget");
     }
 
     #[test]
