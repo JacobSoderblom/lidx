@@ -415,86 +415,9 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         let mut still_adding = true;
         let mut seen_caller_ids = std::collections::HashSet::new();
 
-        // Determine which symbol IDs to collect callers for
-        let is_class_symbol = crate::resolve::is_type_container_kind(&symbol.kind);
-        let target_ids: Vec<i64> = if is_class_symbol {
-            // For class symbols, find all methods and collect callers for each
-            let all_symbols = indexer
-                .db()
-                .get_symbols_for_file(&symbol.file_path, ctx.graph_version)?;
-            let mut ids: Vec<i64> = all_symbols
-                .into_iter()
-                .filter(|s| {
-                    (s.kind == "method" || s.kind == "function")
-                        && s.start_line >= symbol.start_line
-                        && s.end_line <= symbol.end_line
-                })
-                .map(|s| s.id)
-                .collect();
-            // Also include the class itself
-            ids.push(symbol.id);
-            ids
-        } else {
-            vec![symbol.id]
-        };
-        // Issue #122: calls through an interface-typed receiver bind to the
-        // interface method; count them as callers of the implementing method.
-        let mut target_ids = target_ids;
-        let mut via_interface_ids = std::collections::HashSet::new();
-        // Closed generic args of the impls each dispatch-only interface
-        // method stands in for (issue #185): a call typed `IA<int>` is not a
-        // caller of the `IA<string>` explicit impl.
-        let own_ids = target_ids.clone();
-        let mut via_impl_args: std::collections::HashMap<i64, Vec<Option<String>>> =
-            std::collections::HashMap::new();
-        for (iface, imp) in indexer.db().dispatch_pairs(&own_ids, ctx.graph_version)? {
-            if own_ids.contains(&imp) && !own_ids.contains(&iface) {
-                if !target_ids.contains(&iface) {
-                    target_ids.push(iface);
-                }
-                via_interface_ids.insert(iface);
-                let args = indexer.db().get_symbol_by_id(imp)?.and_then(|s| {
-                    crate::db::closed_impl_args(&s.qualname, &s.name).map(String::from)
-                });
-                via_impl_args.entry(iface).or_default().push(args);
-            }
-        }
-
-        for target_id in &target_ids {
-            // Get edges for this target
-            let target_edges = if *target_id == symbol.id {
-                edges.clone()
-            } else {
-                indexer.db().edges_for_symbol(
-                    *target_id,
-                    ctx.languages.as_deref(),
-                    ctx.graph_version,
-                )?
-            };
-
-            let receivers = match via_impl_args.get(target_id) {
-                Some(_) => indexer
-                    .db()
-                    .call_receiver_types(&target_edges.iter().map(|e| e.id).collect::<Vec<_>>())?,
-                None => Default::default(),
-            };
-            // Collect resolved callers
-            for edge in &target_edges {
-                if let Some(impls) = via_impl_args.get(target_id) {
-                    let call_args = receivers
-                        .get(&edge.id)
-                        .and_then(|t| crate::db::type_args(t));
-                    if !impls
-                        .iter()
-                        .any(|args| crate::db::dispatch_compatible(call_args, args.as_deref()))
-                    {
-                        continue;
-                    }
-                }
-                if edge.kind == "CALLS"
-                    && !edge.is_synthetic()
-                    && edge.target_symbol_id == Some(*target_id)
-                    && meets_min_resolution(&edge.resolution_kind)
+        for (edge, via_interface) in &member_caller_edges(indexer, &ctx, &symbol, &edges)? {
+            {
+                if meets_min_resolution(&edge.resolution_kind)
                     && let Some(source_id) = edge.source_symbol_id
                     && seen_caller_ids.insert(source_id)
                 {
@@ -526,7 +449,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             edge_kind: "CALLS".to_string(),
                             protocol_context: None,
                             resolution_kind: edge.resolution_kind.clone(),
-                            via_interface: via_interface_ids.contains(target_id),
+                            via_interface: *via_interface,
                             file_level: false,
                         });
                     }
@@ -579,18 +502,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         let is_class_symbol = crate::resolve::is_type_container_kind(&symbol.kind);
 
         if is_class_symbol {
-            // For class symbols, find all methods in the same file within the class's line range
-            let all_symbols = indexer
-                .db()
-                .get_symbols_for_file(&symbol.file_path, ctx.graph_version)?;
-            let methods: Vec<_> = all_symbols
-                .into_iter()
-                .filter(|s| {
-                    (s.kind == "method" || s.kind == "function")
-                        && s.start_line >= symbol.start_line
-                        && s.end_line <= symbol.end_line
-                })
-                .collect();
+            let methods: Vec<_> = class_member_symbols(indexer, &symbol, ctx.graph_version)?;
 
             // Get callees from all methods
             for method in methods {
@@ -744,14 +656,15 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
             ctx.languages.as_deref(),
             ctx.graph_version,
         )?;
-        for (edge, via_interface) in edges
+        // Issue #365: same member + dispatch aggregation as `callers`;
+        // `tests` is its test-scope subset.
+        let caller_edges = member_caller_edges(indexer, &ctx, &symbol, &edges)?;
+        for (edge, via_interface) in caller_edges
             .iter()
-            .filter(|e| !e.is_synthetic())
-            .map(|e| (e, false))
+            .map(|(e, v)| (e, *v))
             .chain(interface_edges.iter().map(|e| (e, true)))
         {
             if edge.kind == "CALLS"
-                && (via_interface || edge.target_symbol_id == Some(symbol.id))
                 && meets_min_resolution(&edge.resolution_kind)
                 && let Some(source_id) = edge.source_symbol_id
                 && let Ok(Some(test_sym)) = indexer.db().get_symbol_by_id(source_id)
@@ -1035,6 +948,8 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let graph_version = symbol.graph_version;
     let commit_sha = symbol.commit_sha.clone();
 
+    let tests_note = (callers.is_some() && tests.as_ref().is_some_and(|t| !t.is_empty()))
+        .then(|| "tests lists test-scope callers; they may also appear in callers.".to_string());
     let result = ExplainSymbolResult {
         symbol,
         source,
@@ -1043,6 +958,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         callees_total: callees.as_ref().map(|_| callees_total),
         callees,
         tests_total: tests.as_ref().map(|_| tests_total),
+        tests_note,
         tests,
         implements_total: implements.as_ref().map(|_| implements_total),
         implements,
@@ -1085,6 +1001,103 @@ const SERVER_BRIDGE_KINDS: &[&str] = &[
     "CHANNEL_SUBSCRIBE",
     "CONFIG_SOURCE",
 ];
+
+/// Methods/functions declared inside a type-container symbol's line range.
+fn class_member_symbols(
+    indexer: &Indexer,
+    symbol: &Symbol,
+    graph_version: i64,
+) -> Result<Vec<Symbol>> {
+    Ok(indexer
+        .db()
+        .get_symbols_for_file(&symbol.file_path, graph_version)?
+        .into_iter()
+        .filter(|s| {
+            (s.kind == "method" || s.kind == "function")
+                && s.start_line >= symbol.start_line
+                && s.end_line <= symbol.end_line
+        })
+        .collect())
+}
+
+/// Incoming CALLS edges of `symbol`, aggregated over its members when it is a
+/// type container, plus calls through an interface-typed receiver (#122,
+/// #185). The bool marks edges that reached the symbol only via dispatch.
+/// Shared by explain_symbol's `callers` and `tests` (issue #365).
+fn member_caller_edges(
+    indexer: &Indexer,
+    ctx: &HandlerContext,
+    symbol: &Symbol,
+    edges: &[crate::model::Edge],
+) -> Result<Vec<(crate::model::Edge, bool)>> {
+    let mut target_ids: Vec<i64> = if crate::resolve::is_type_container_kind(&symbol.kind) {
+        class_member_symbols(indexer, symbol, ctx.graph_version)?
+            .into_iter()
+            .map(|s| s.id)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    target_ids.push(symbol.id);
+    let mut via_interface_ids = std::collections::HashSet::new();
+    // Closed generic args of the impls each dispatch-only interface method
+    // stands in for (issue #185): a call typed `IA<int>` is not a caller of
+    // the `IA<string>` explicit impl.
+    let own_ids = target_ids.clone();
+    let mut via_impl_args: std::collections::HashMap<i64, Vec<Option<String>>> =
+        std::collections::HashMap::new();
+    for (iface, imp) in indexer.db().dispatch_pairs(&own_ids, ctx.graph_version)? {
+        if own_ids.contains(&imp) && !own_ids.contains(&iface) {
+            if !target_ids.contains(&iface) {
+                target_ids.push(iface);
+            }
+            via_interface_ids.insert(iface);
+            let args = indexer
+                .db()
+                .get_symbol_by_id(imp)?
+                .and_then(|s| crate::db::closed_impl_args(&s.qualname, &s.name).map(String::from));
+            via_impl_args.entry(iface).or_default().push(args);
+        }
+    }
+    let mut out = Vec::new();
+    for target_id in &target_ids {
+        let target_edges = if *target_id == symbol.id {
+            edges.to_vec()
+        } else {
+            indexer.db().edges_for_symbol(
+                *target_id,
+                ctx.languages.as_deref(),
+                ctx.graph_version,
+            )?
+        };
+        let receivers = match via_impl_args.get(target_id) {
+            Some(_) => indexer
+                .db()
+                .call_receiver_types(&target_edges.iter().map(|e| e.id).collect::<Vec<_>>())?,
+            None => Default::default(),
+        };
+        for edge in target_edges {
+            if let Some(impls) = via_impl_args.get(target_id) {
+                let call_args = receivers
+                    .get(&edge.id)
+                    .and_then(|t| crate::db::type_args(t));
+                if !impls
+                    .iter()
+                    .any(|args| crate::db::dispatch_compatible(call_args, args.as_deref()))
+                {
+                    continue;
+                }
+            }
+            if edge.kind == "CALLS"
+                && !edge.is_synthetic()
+                && edge.target_symbol_id == Some(*target_id)
+            {
+                out.push((edge, via_interface_ids.contains(target_id)));
+            }
+        }
+    }
+    Ok(out)
+}
 
 /// One-hop cross-boundary neighbours of `seeds` for explain_symbol, found by
 /// running trace_flow's own traversal (direct resolved edges + bridge

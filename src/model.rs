@@ -940,6 +940,10 @@ pub struct ExplainSymbolResult {
     pub tests: Option<Vec<ExplainRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tests_total: Option<usize>,
+    /// Present when both `callers` and `tests` are returned: `tests` is the
+    /// test-scope subset of `callers`, so test callers appear in both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tests_note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub implements: Option<Vec<Symbol>>,
     /// True count of matching supertypes/interfaces found, before
