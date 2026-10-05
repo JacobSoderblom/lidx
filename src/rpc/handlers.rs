@@ -3334,12 +3334,17 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
     let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
     // resolve_rg_paths handles path/paths with its own normalization for ripgrep
     let paths = resolve_rg_paths(indexer.repo_root(), params.path, params.paths)?;
-    let globs = params.globs.unwrap_or_default();
+    let mut globs = params.globs.unwrap_or_default();
+    let hidden = params.hidden.unwrap_or(true);
+    // When searching hidden directories, add default exclusions to match the scanner's behavior
+    if hidden && globs.is_empty() {
+        globs.extend(vec!["!.git/".to_string(), "!.lidx/".to_string()]);
+    }
     let options = RgSearchOptions {
         include_text,
         case_sensitive: params.case_sensitive,
         fixed_string: params.fixed_string.unwrap_or(false),
-        hidden: params.hidden.unwrap_or(false),
+        hidden,
         no_ignore: params.no_ignore.unwrap_or(false),
         follow: params.follow.unwrap_or(false),
         globs,
