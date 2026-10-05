@@ -1,4 +1,6 @@
-use crate::indexer::channel::{CHANNEL_PUBLISH_KIND, CHANNEL_SUBSCRIBE_KIND};
+use crate::indexer::channel::{
+    CHANNEL_PUBLISH_KIND, CHANNEL_SUBSCRIBE_KIND, normalize_channel_name,
+};
 use crate::indexer::config::{self, CONFIG_SOURCE_KIND};
 use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor, SymbolInput};
 use crate::indexer::tree_helpers::module_symbol_fallback;
@@ -91,7 +93,7 @@ impl LanguageExtractor for BicepExtractor {
                 && let Some(ref azure_type) = decl.type_or_path
                 && is_service_bus_topic_or_queue(azure_type)
                 && let Some(ref resource_name) = decl.resource_name
-                && let Some(channel) = normalize_azure_channel_name(resource_name)
+                && let Some(channel) = normalize_channel_name(resource_name)
             {
                 let detail = json!({
                     "channel": channel,
@@ -801,26 +803,6 @@ fn build_signature(decl: &BicepDecl) -> Option<String> {
     }
 }
 
-/// Normalize an Azure Service Bus topic/queue name to a channel:// target.
-/// Strips common naming prefixes (sbt-, sbq-, sbts-), removes hyphens/underscores, lowercases.
-fn normalize_azure_channel_name(azure_name: &str) -> Option<String> {
-    let trimmed = azure_name.trim();
-    let stripped = trimmed
-        .strip_prefix("sbt-")
-        .or_else(|| trimmed.strip_prefix("sbq-"))
-        .or_else(|| trimmed.strip_prefix("sbts-"))
-        .unwrap_or(trimmed);
-    let normalized: String = stripped
-        .chars()
-        .filter(|ch| *ch != '-' && *ch != '_')
-        .flat_map(|ch| ch.to_lowercase())
-        .collect();
-    if normalized.is_empty() {
-        return None;
-    }
-    Some(format!("channel://{normalized}"))
-}
-
 /// Check if an Azure resource type is a Key Vault secret.
 fn is_keyvault_secret(azure_type: &str) -> bool {
     azure_type
@@ -1038,37 +1020,37 @@ mod tests {
     }
 
     #[test]
-    fn normalize_azure_channel_name_strips_prefix() {
+    fn normalize_channel_name_strips_prefix() {
         assert_eq!(
-            normalize_azure_channel_name("sbt-orchestrator-triggers"),
+            normalize_channel_name("sbt-orchestrator-triggers"),
             Some("channel://orchestratortriggers".to_string())
         );
         assert_eq!(
-            normalize_azure_channel_name("sbq-dead-letter"),
+            normalize_channel_name("sbq-dead-letter"),
             Some("channel://deadletter".to_string())
         );
         assert_eq!(
-            normalize_azure_channel_name("sbts-my-subscription"),
+            normalize_channel_name("sbts-my-subscription"),
             Some("channel://mysubscription".to_string())
         );
     }
 
     #[test]
-    fn normalize_azure_channel_name_no_prefix() {
+    fn normalize_channel_name_no_prefix() {
         assert_eq!(
-            normalize_azure_channel_name("my-topic-name"),
+            normalize_channel_name("my-topic-name"),
             Some("channel://mytopicname".to_string())
         );
         assert_eq!(
-            normalize_azure_channel_name("MyTopic"),
+            normalize_channel_name("MyTopic"),
             Some("channel://mytopic".to_string())
         );
     }
 
     #[test]
-    fn normalize_azure_channel_name_empty() {
-        assert_eq!(normalize_azure_channel_name(""), None);
-        assert_eq!(normalize_azure_channel_name("   "), None);
+    fn normalize_channel_name_empty() {
+        assert_eq!(normalize_channel_name(""), None);
+        assert_eq!(normalize_channel_name("   "), None);
     }
 
     #[test]
