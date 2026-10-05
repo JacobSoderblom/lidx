@@ -677,7 +677,8 @@ const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.ki
      JOIN files f ON s.file_id = f.id
      WHERE s.name IN (:tail, '.' || :tail)
        AND (s.qualname = :name OR s.qualname LIKE :p1 OR s.qualname LIKE :p2)
-       AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
+       AND (s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
+            OR (:allow_values = 1 AND s.kind IN ('variable', 'const', 'field')))
        AND (:exclude_method = 0 OR s.kind != 'method')
        AND s.graph_version = :gv
        AND (f.deleted_version IS NULL OR f.deleted_version > :gv)
@@ -789,6 +790,9 @@ struct FallbackGuard {
     /// Refuse a cross-file candidate the language's `VisibilityRule`
     /// deems not visible.
     enforce_visibility: bool,
+    /// Also admit `variable`/`const`/`field` candidates — set for `IMPORTS`
+    /// edges, which can name a module-level value (issue #333).
+    allow_values: bool,
 }
 
 impl FallbackGuard {
@@ -797,6 +801,7 @@ impl FallbackGuard {
     const NONE: FallbackGuard = FallbackGuard {
         exclude_method: false,
         enforce_visibility: false,
+        allow_values: false,
     };
 }
 
@@ -1734,7 +1739,8 @@ impl<'c> Resolver<'c> {
         let gv = self.graph_version;
         let named = named_params! {
             ":tail": tail, ":name": name, ":p1": patterns.0, ":p2": patterns.1,
-            ":exclude_method": i64::from(guard.exclude_method), ":gv": gv, ":lang": source_lang,
+            ":exclude_method": i64::from(guard.exclude_method),
+            ":allow_values": i64::from(guard.allow_values), ":gv": gv, ":lang": source_lang,
         };
         let mut rows = if name_prefilter_applies(tail) {
             self.same_lang.query(named)?
@@ -1879,6 +1885,7 @@ impl<'c> Resolver<'c> {
                 let guard = FallbackGuard {
                     exclude_method: edge_kind == "CALLS" && bare_call,
                     enforce_visibility: true,
+                    allow_values: edge_kind == "IMPORTS",
                 };
                 if let Some((seg, dot, colons)) = two_segment_qualname_patterns(target_qualname)
                     && let Some(id) = self.unique_by_pattern(
