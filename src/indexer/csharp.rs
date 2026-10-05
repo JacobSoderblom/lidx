@@ -108,6 +108,14 @@ struct Context {
     /// The enclosing class's first base type, generic arguments stripped: what `: base(..)` constructs, known
     /// even when the type is generic or lives in another file.
     base_class_name: Option<String>,
+    /// Named receiver of the enclosing C# 14 `extension(Kind k) { .. }`
+    /// block as (name, declared type text): a member's body sees it like a
+    /// parameter. `None` outside such a block.
+    extension_receiver: Option<(String, String)>,
+    /// Header start byte -> receiver of every C# 14 `extension(..) { }`
+    /// block in the file, whose header `patch_extension_headers` swapped
+    /// for a same-length `class _` before the single parse.
+    extension_blocks: Rc<ExtensionBlocks>,
     /// This file's `using` directives, collected once in `extract()` before
     /// the main walk — see `ImportContext` / `collect_import_context`. Set
     /// once and inherited unchanged through every `ctx.clone()` (unlike
@@ -414,6 +422,8 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
         let mut output = ExtractedFile::default();
+        let (patched, extension_blocks) = patch_extension_headers(source);
+        let source = patched.as_deref().unwrap_or(source);
         let tree = match self.parser.parse(source, None) {
             Some(tree) => tree,
             None => {
@@ -455,6 +465,8 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             class_attr_raw: Rc::new(HashMap::new()),
             base_type: LocalType::Other,
             base_class_name: None,
+            extension_receiver: None,
+            extension_blocks: Rc::new(extension_blocks),
             imports: Rc::new({
                 let mut imports = collect_import_context(root, source);
                 imports.apply_globals(&self.project_globals);
@@ -674,6 +686,10 @@ fn walk_node_inner(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     match node.kind() {
         "namespace_declaration" => {
             handle_namespace(node, ctx, source, output);
+            return;
+        }
+        "class_declaration" if ctx.extension_blocks.contains_key(&node.start_byte()) => {
+            handle_extension_block(node, ctx, source, output);
             return;
         }
         "class_declaration" => {
@@ -1303,6 +1319,198 @@ fn normalize_type_args(text: &str) -> String {
         }
     }
     out
+}
+
+/// Header start byte -> optional named receiver (name, type).
+type ExtensionBlocks = HashMap<usize, Option<(String, String)>>;
+
+/// C# 14 `extension(T x) { members }` blocks are not understood by the
+/// grammar (non-generic ones parse as a constructor, generic ones as ERROR
+/// nodes; properties and calls inside are mangled). Their members belong to
+/// the enclosing static class, so swap each header (`extension<T>(..)`,
+/// up to the opening brace) for a same-length `class _` -- byte offsets and
+/// lines stay identical -- and parse the patched text once. Returns the
+/// patched source (None when the file has no such block) and each header's
+/// start byte with its named receiver (name, type).
+fn patch_extension_headers(source: &str) -> (Option<String>, ExtensionBlocks) {
+    let mut blocks = HashMap::new();
+    if !source.contains("extension") {
+        return (None, blocks);
+    }
+    let b = source.as_bytes();
+    let n = b.len();
+    let mut patched = b.to_vec();
+    let mut prev: Option<u8> = None;
+    let mut i = 0;
+    let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    // Skip whitespace and comments from `i`.
+    let skip_trivia = |mut i: usize| {
+        while i < n {
+            if b[i].is_ascii_whitespace() {
+                i += 1;
+            } else if b[i..].starts_with(b"//") {
+                while i < n && b[i] != b'\n' {
+                    i += 1;
+                }
+            } else if b[i..].starts_with(b"/*") {
+                i += 2;
+                while i < n && !b[i..].starts_with(b"*/") {
+                    i += 1;
+                }
+                i = (i + 2).min(n);
+            } else {
+                break;
+            }
+        }
+        i
+    };
+    // Index just past the bracket pair opening at `i`.
+    let skip_balanced = |mut i: usize, open: u8, close: u8| {
+        let mut depth = 0;
+        while i < n {
+            if b[i] == open {
+                depth += 1;
+            } else if b[i] == close {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            i += 1;
+        }
+        None
+    };
+    while i < n {
+        let c = b[i];
+        if b[i..].starts_with(b"//") || b[i..].starts_with(b"/*") {
+            i = skip_trivia(i);
+            continue;
+        }
+        if c == b'"' {
+            let raw = b[i..].iter().take_while(|&&q| q == b'"').count();
+            let verbatim =
+                i > 0 && b[i - 1] == b'@' || i > 1 && b[i - 1] == b'$' && b[i - 2] == b'@';
+            if raw >= 3 {
+                let close = vec![b'"'; raw];
+                i += raw;
+                while i < n && !b[i..].starts_with(&close) {
+                    i += 1;
+                }
+                i = (i + raw).min(n);
+            } else {
+                i += 1;
+                while i < n {
+                    if (b[i] == b'"' && verbatim && b.get(i + 1) == Some(&b'"'))
+                        || (b[i] == b'\\' && !verbatim)
+                    {
+                        i += 2;
+                    } else if b[i] == b'"' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            prev = Some(b'"');
+            continue;
+        }
+        if c == b'\'' {
+            i += 1;
+            while i < n && b[i] != b'\'' {
+                i += if b[i] == b'\\' { 2 } else { 1 };
+            }
+            i += 1;
+            prev = Some(b'\'');
+            continue;
+        }
+        if is_ident(c) {
+            let start = i;
+            while i < n && is_ident(b[i]) {
+                i += 1;
+            }
+            if &b[start..i] == b"extension"
+                && matches!(prev, None | Some(b'{' | b'}' | b';'))
+                && let Some(header) = (|| {
+                    let mut j = skip_trivia(i);
+                    if b.get(j) == Some(&b'<') {
+                        j = skip_trivia(skip_balanced(j, b'<', b'>')?);
+                    }
+                    if b.get(j) != Some(&b'(') {
+                        return None;
+                    }
+                    let params = j;
+                    j = skip_trivia(skip_balanced(j, b'(', b')')?);
+                    (b.get(j) == Some(&b'{')).then_some((params, j))
+                })()
+            {
+                let (params, brace) = header;
+                let inner = &source
+                    [params + 1..skip_balanced(params, b'(', b')').unwrap_or(params + 1) - 1];
+                blocks.insert(start, extension_receiver(inner));
+                for (k, byte) in patched[start..brace].iter_mut().enumerate() {
+                    *byte = match (*byte, k) {
+                        (b'\n', _) => b'\n',
+                        (_, k) if k < 7 => b"class _"[k],
+                        _ => b' ',
+                    };
+                }
+                i = brace;
+                prev = Some(b'}');
+                continue;
+            }
+            prev = Some(b[i - 1]);
+            continue;
+        }
+        if !c.is_ascii_whitespace() {
+            prev = Some(c);
+        }
+        i += 1;
+    }
+    if blocks.is_empty() {
+        return (None, blocks);
+    }
+    (String::from_utf8(patched).ok(), blocks)
+}
+
+/// `Kind k` / `IEnumerable<T> src` / `in Kind k` -> (name, type); `None`
+/// for an unnamed receiver (`extension(Kind)`).
+fn extension_receiver(params: &str) -> Option<(String, String)> {
+    let params = params.trim();
+    let name_start = params.rfind(|c: char| c.is_whitespace())?;
+    let name = params[name_start..].trim();
+    let mut ty = params[..name_start].trim();
+    while let Some(rest) = ["in ", "ref ", "readonly ", "scoped ", "out "]
+        .iter()
+        .find_map(|m| ty.strip_prefix(m))
+    {
+        ty = rest.trim_start();
+    }
+    (!name.is_empty() && !ty.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'))
+        .then(|| (name.to_string(), ty.to_string()))
+}
+
+/// Members of a patched `class _` extension block are members of the
+/// enclosing class; the named receiver reads like a parameter in them.
+fn handle_extension_block(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let Some(members) = node.child_by_field_name("body") else {
+        return;
+    };
+    let mut ctx = ctx.clone();
+    ctx.extension_receiver = ctx
+        .extension_blocks
+        .get(&node.start_byte())
+        .cloned()
+        .flatten();
+    if let Some((name, ty)) = &ctx.extension_receiver {
+        let mut types = (*ctx.local_types).clone();
+        types.insert(name.clone(), classify_annotation(ty));
+        ctx.local_types = Rc::new(types);
+    }
+    let mut cursor = members.walk();
+    for member in members.named_children(&mut cursor) {
+        walk_node(member, &ctx, source, output);
+    }
 }
 
 fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -6247,6 +6455,10 @@ fn infer_local_types(
         locals: HashMap::new(),
         class: &ctx.class_attr_raw,
     };
+    if let Some((name, ty)) = &ctx.extension_receiver {
+        raw.record(name, Some(ty.clone()));
+        bindings.push((name.clone(), classify_annotation(ty)));
+    }
     if let Some(params) = function_node.child_by_field_name("parameters") {
         let mut cursor = params.walk();
         for param in params.named_children(&mut cursor) {
@@ -6813,6 +7025,270 @@ mod tests {
     use crate::indexer::extract::LanguageExtractor;
     use crate::indexer::http;
     use crate::indexer::proto;
+
+    #[test]
+    fn extension_block_members_are_class_members_not_ctor() {
+        let source = r#"namespace Demo;
+
+internal static class Mapper
+{
+    extension(Kind)
+    {
+        public static Kind Create(string value) => ToKind(value);
+    }
+
+    private static Kind ToKind(string kind) => new Kind();
+}
+
+public sealed class Kind { }
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        assert!(
+            !file.symbols.iter().any(|s| s.qualname.ends_with(".ctor")),
+            "bogus ctor: {:?}",
+            file.symbols.iter().map(|s| &s.qualname).collect::<Vec<_>>()
+        );
+        let create = file
+            .symbols
+            .iter()
+            .find(|s| s.qualname == "Demo.Mapper.Create")
+            .expect("Create symbol");
+        assert_eq!(create.kind, "method");
+        assert_eq!((create.start_line, create.end_line), (7, 7));
+        assert!(file.edges.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname.as_deref() == Some("Demo.Mapper.Create")
+            && e.target_qualname.as_deref() == Some("Demo.Mapper.ToKind")));
+    }
+
+    fn extract_cs(source: &str) -> ExtractedFile {
+        CSharpExtractor::new()
+            .unwrap()
+            .extract(source, "module")
+            .unwrap()
+    }
+
+    fn has_call(file: &ExtractedFile, from: &str, to: &str) -> bool {
+        file.edges.iter().any(|e| {
+            e.kind == "CALLS"
+                && e.source_qualname.as_deref() == Some(from)
+                && e.target_qualname.as_deref() == Some(to)
+        })
+    }
+
+    #[test]
+    fn extension_property_is_class_property_with_calls() {
+        let file = extract_cs(
+            r#"static class Ext
+{
+    extension(Kind k)
+    {
+        public bool IsEmpty => Probe();
+        public int Count { get { return Tally(); } }
+    }
+    static bool Probe() => true;
+    static int Tally() => 1;
+}
+"#,
+        );
+        let names: Vec<_> = file
+            .symbols
+            .iter()
+            .map(|s| (&s.kind, &s.qualname))
+            .collect();
+        for q in ["module.Ext.IsEmpty", "module.Ext.Count"] {
+            let sym = file
+                .symbols
+                .iter()
+                .find(|s| s.qualname == q)
+                .unwrap_or_else(|| panic!("{q} missing: {names:?}"));
+            assert_eq!(sym.kind, "property");
+        }
+        assert!(!file.symbols.iter().any(|s| s.qualname.contains("ctor")));
+        let empty = file.symbols.iter().find(|s| s.name == "IsEmpty").unwrap();
+        assert_eq!((empty.start_line, empty.end_line), (5, 5));
+        assert!(has_call(&file, "module.Ext.IsEmpty", "module.Ext.Probe"));
+        assert!(has_call(&file, "module.Ext.Count", "module.Ext.Tally"));
+    }
+
+    #[test]
+    fn generic_extension_block_keeps_members_without_bogus_symbols() {
+        let file = extract_cs(
+            r#"static class Ext
+{
+    extension<T>(IEnumerable<T> src)
+    {
+        public static int Count2() => Helper();
+    }
+    static int Helper() => 0;
+}
+"#,
+        );
+        let names: Vec<_> = file.symbols.iter().map(|s| s.qualname.as_str()).collect();
+        assert!(names.contains(&"module.Ext.Count2"), "{names:?}");
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.contains("ctor") || n.contains("extension")),
+            "{names:?}"
+        );
+        assert!(has_call(&file, "module.Ext.Count2", "module.Ext.Helper"));
+    }
+
+    #[test]
+    fn two_extension_blocks_in_one_class() {
+        let file = extract_cs(
+            r#"static class Ext
+{
+    extension(A a)
+    {
+        public void F() => Shared();
+    }
+    extension(B b)
+    {
+        public bool P => Shared2();
+        public void G() => Shared();
+    }
+    static void Shared() { }
+    static bool Shared2() => true;
+}
+"#,
+        );
+        let names: Vec<_> = file.symbols.iter().map(|s| s.qualname.as_str()).collect();
+        for q in ["module.Ext.F", "module.Ext.P", "module.Ext.G"] {
+            assert!(names.contains(&q), "{q}: {names:?}");
+        }
+        assert!(!names.iter().any(|n| n.contains("ctor")));
+        assert!(has_call(&file, "module.Ext.F", "module.Ext.Shared"));
+        assert!(has_call(&file, "module.Ext.G", "module.Ext.Shared"));
+        assert!(has_call(&file, "module.Ext.P", "module.Ext.Shared2"));
+    }
+
+    #[test]
+    fn extension_receiver_is_typed_local_in_members() {
+        let file = extract_cs(
+            r#"static class Ext
+{
+    extension(Kind k)
+    {
+        public bool IsX() => k.Check();
+        public bool IsY => k.Check();
+    }
+}
+sealed class Kind
+{
+    public bool Check() => true;
+}
+"#,
+        );
+        for member in ["module.Ext.IsX", "module.Ext.IsY"] {
+            let edge = file
+                .edges
+                .iter()
+                .find(|e| e.kind == "CALLS" && e.source_qualname.as_deref() == Some(member))
+                .expect("call edge");
+            assert!(
+                matches!(&edge.receiver_type, ReceiverType::Known(t) if t == "Kind"),
+                "{member}: {:?}",
+                edge.receiver_type
+            );
+        }
+    }
+
+    #[test]
+    fn generic_extension_block_types_receiver_and_extracts_properties() {
+        let file = extract_cs(
+            r#"static class Ext
+{
+    extension<T>(IEnumerable<T> src)
+    {
+        public static int Count2() => src.Foo();
+        public bool Any2 => src.Foo2();
+    }
+}
+"#,
+        );
+        // A plain generic parameter is the reference for how `src` types.
+        let plain = extract_cs(
+            "static class P { public static int C<T>(IEnumerable<T> src) => src.Foo(); }",
+        );
+        let expected = plain
+            .edges
+            .iter()
+            .find(|e| e.kind == "CALLS")
+            .expect("plain call")
+            .receiver_type
+            .clone();
+        let names: Vec<_> = file
+            .symbols
+            .iter()
+            .map(|s| (&s.kind, &s.qualname))
+            .collect();
+        assert!(
+            file.symbols
+                .iter()
+                .any(|s| s.qualname == "module.Ext.Any2" && s.kind == "property"),
+            "{names:?}"
+        );
+        assert!(!file.symbols.iter().any(|s| s.qualname.contains("ctor")));
+        for member in ["module.Ext.Count2", "module.Ext.Any2"] {
+            let edge = file
+                .edges
+                .iter()
+                .find(|e| e.kind == "CALLS" && e.source_qualname.as_deref() == Some(member))
+                .unwrap_or_else(|| panic!("{member} call: {names:?}"));
+            assert_eq!(edge.receiver_type, expected, "{member}");
+        }
+    }
+
+    #[test]
+    fn patch_extension_headers_swaps_every_header_in_one_pass() {
+        let source = "static class E\n{\n    extension(A a)\n    {\n        void F() { var s = \"extension(X x) {\"; }\n    }\n    // extension(B b) {\n    extension<T>(IList<T> l)\n    {\n    }\n}\n";
+        let (patched, blocks) = patch_extension_headers(source);
+        let patched = patched.expect("patched");
+        assert_eq!(patched.len(), source.len());
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert_eq!(patched.matches("class _").count(), 2);
+        assert!(patched.contains("\"extension(X x) {\""));
+        assert!(patched.contains("// extension(B b) {"));
+        assert_eq!(patched.lines().count(), source.lines().count());
+        let mut recv: Vec<_> = blocks.values().flatten().cloned().collect();
+        recv.sort();
+        assert_eq!(
+            recv,
+            vec![
+                ("a".to_string(), "A".to_string()),
+                ("l".to_string(), "IList<T>".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn real_constructor_next_to_extension_block_stays_ctor() {
+        let source = r#"class Mapper
+{
+    public Mapper() { }
+    extension(Kind)
+    {
+        public static Kind Create(string value) => null;
+    }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let ctors: Vec<_> = file
+            .symbols
+            .iter()
+            .filter(|s| s.qualname.ends_with(".ctor"))
+            .collect();
+        assert_eq!(ctors.len(), 1);
+        assert_eq!(ctors[0].qualname, "module.Mapper..ctor");
+        assert!(
+            file.symbols
+                .iter()
+                .any(|s| s.qualname == "module.Mapper.Create")
+        );
+    }
 
     #[test]
     fn extracts_map_route_and_httpclient_call() {
