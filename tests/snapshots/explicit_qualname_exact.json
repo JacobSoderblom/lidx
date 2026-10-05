@@ -118,7 +118,7 @@
             {
               "edge_kind": "IMPORTS",
               "from_symbol": "pkg.core",
-              "resolution_kind": "two_segment",
+              "resolution_kind": "exact",
               "to_symbol": "pkg.utils.Helper"
             }
           ]
@@ -159,7 +159,7 @@
     },
     "lower_bound": {
       "is_lower_bound": true,
-      "unresolved_count": 2
+      "unresolved_count": 1
     },
     "next_hops": [
       {
