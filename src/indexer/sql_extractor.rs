@@ -166,14 +166,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                     let node_text_str = node_text(node, source);
                     let refs = extract_foreign_key_references(&node_text_str);
                     for target_table in refs {
-                        output.edges.push(EdgeInput {
-                            kind: REFERENCES_KIND.to_string(),
-                            source_qualname: Some(qualname_owned.clone()),
-                            target_qualname: Some(target_table),
-                            detail: Some("foreign key".to_string()),
-                            evidence_snippet: None,
-                            ..Default::default()
-                        });
+                        output.edges.push(fk_edge(&qualname_owned, target_table));
                     }
                 }
                 _ => {}
@@ -598,42 +591,75 @@ fn extract_trigger_function(text: &str) -> Option<String> {
 }
 
 fn extract_foreign_key_references(text: &str) -> Vec<String> {
+    let masked = mask_noise_keep_identifiers(text);
+    // ASCII uppercasing keeps byte offsets aligned with `masked`
+    let upper = masked.to_ascii_uppercase();
+    let is_ident_byte = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
     let mut results = Vec::new();
-    // ASCII uppercasing keeps byte offsets aligned with `text`
-    let text_upper = text.to_ascii_uppercase();
-
-    // Find all occurrences of REFERENCES
-    let mut search_start = 0;
-    while let Some(ref_idx) = text_upper[search_start..].find("REFERENCES") {
-        let abs_idx = search_start + ref_idx;
-        let after_ref = &text[abs_idx + 10..];
-
-        // Extract table name after REFERENCES
-        if let Some(table_name) = extract_table_name(after_ref) {
-            results.push(table_name);
+    let mut scan_from = 0;
+    while let Some(i) = upper[scan_from..].find("REFERENCES") {
+        let at = scan_from + i;
+        scan_from = at + 10;
+        let bytes = upper.as_bytes();
+        if (at > 0 && is_ident_byte(bytes[at - 1]))
+            || bytes.get(scan_from).is_some_and(|&c| is_ident_byte(c))
+        {
+            continue;
         }
-
-        search_start = abs_idx + 10;
+        let target = strip_quotes(&leading_table_name(masked[scan_from..].trim_start()));
+        if !target.is_empty() {
+            results.push(target);
+        }
     }
-
     results
 }
 
-fn extract_table_name(text: &str) -> Option<String> {
-    let trimmed = text.trim_start();
+/// The dotted, optionally `[bracketed]` / `"quoted"` name at the start of `s`.
+fn leading_table_name(s: &str) -> String {
     let mut name = String::new();
-
-    for ch in trimmed.chars() {
-        if ch.is_alphanumeric() || ch == '_' || ch == '.' {
-            name.push(ch);
-        } else if ch == '(' || ch.is_whitespace() {
-            break;
-        } else {
-            return None;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        let close = match c {
+            '[' => ']',
+            '"' => '"',
+            c if c.is_alphanumeric() || matches!(c, '_' | '.') => {
+                name.push(c);
+                continue;
+            }
+            _ => break,
+        };
+        name.push(c);
+        for q in chars.by_ref() {
+            name.push(q);
+            if q == close {
+                break;
+            }
         }
     }
+    name
+}
 
-    if !name.is_empty() { Some(name) } else { None }
+/// `REFERENCES` edge for a foreign key from table `source` to `target`.
+fn fk_edge(source: &str, target: String) -> EdgeInput {
+    EdgeInput {
+        kind: REFERENCES_KIND.to_string(),
+        source_qualname: Some(source.to_string()),
+        target_qualname: Some(target),
+        detail: Some("foreign key".to_string()),
+        evidence_snippet: None,
+        ..Default::default()
+    }
+}
+
+/// Whether `edge` is a REFERENCES edge from `src_norm` to `tnorm` (both
+/// already `normalize_qualname`d).
+fn is_reference_edge(edge: &EdgeInput, src_norm: &str, tnorm: &str) -> bool {
+    let matches = |q: &Option<String>, norm: &str| {
+        q.as_deref().is_some_and(|q| normalize_qualname(q) == norm)
+    };
+    edge.kind == REFERENCES_KIND
+        && matches(&edge.source_qualname, src_norm)
+        && matches(&edge.target_qualname, tnorm)
 }
 
 fn extract_do_blocks(source: &str, module_name: &str, output: &mut ExtractedFile) {
@@ -758,15 +784,33 @@ fn strip_quotes(s: &str) -> String {
 /// `text` with string literals and comments blanked out, so keyword searches
 /// only see code.
 fn mask_noise(text: &str) -> String {
-    mask_noise_impl::<false>(text)
+    mask_noise_impl::<MASK_ALL>(text)
 }
 
 /// `mask_noise`, but `[bracketed]` identifiers stay readable.
 fn mask_noise_keep_brackets(text: &str) -> String {
-    mask_noise_impl::<true>(text)
+    mask_noise_impl::<KEEP_BRACKETS>(text)
 }
 
-fn mask_noise_impl<const KEEP_BRACKETS: bool>(text: &str) -> String {
+/// `mask_noise`, but `[bracketed]` and `"quoted"` identifiers stay readable.
+fn mask_noise_keep_identifiers(text: &str) -> String {
+    mask_noise_impl::<KEEP_IDENTIFIERS>(text)
+}
+
+const MASK_ALL: u8 = 0;
+const KEEP_BRACKETS: u8 = 1;
+const KEEP_IDENTIFIERS: u8 = 2;
+
+/// Length of a `$tag$` / `$$` dollar-quote opener at the start of `b`.
+fn dollar_tag_len(b: &[u8]) -> Option<usize> {
+    let tag = b[1..]
+        .iter()
+        .position(|&c| !(c.is_ascii_alphanumeric() || c == b'_'))?;
+    let valid = b[1 + tag] == b'$' && !b.get(1).is_some_and(|c| c.is_ascii_digit());
+    valid.then_some(tag + 2)
+}
+
+fn mask_noise_impl<const MODE: u8>(text: &str) -> String {
     let b = text.as_bytes();
     let mut out = text.as_bytes().to_vec();
     let mut i = 0;
@@ -777,22 +821,44 @@ fn mask_noise_impl<const KEEP_BRACKETS: bool>(text: &str) -> String {
             }
         }
     };
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
     while i < b.len() {
         let start = i;
         match b[i] {
-            b'[' if KEEP_BRACKETS => {
+            b'[' if MODE >= KEEP_BRACKETS => {
                 while i < b.len() && b[i] != b']' {
                     i += 1;
                 }
                 i += 1;
             }
-            b'\'' | b'"' | b'[' => {
-                let close = if b[i] == b'[' { b']' } else { b[i] };
+            b'"' if MODE >= KEEP_IDENTIFIERS => {
                 i += 1;
-                while i < b.len() && b[i] != close {
+                while i < b.len() && b[i] != b'"' {
                     i += 1;
                 }
                 i += 1;
+            }
+            b'\'' | b'"' | b'[' => {
+                // `E'..'` strings take backslash escapes
+                let escapes = b[i] == b'\''
+                    && i > 0
+                    && matches!(b[i - 1], b'e' | b'E')
+                    && (i < 2 || !is_word(b[i - 2]));
+                let close = if b[i] == b'[' { b']' } else { b[i] };
+                i += 1;
+                while i < b.len() && b[i] != close {
+                    i += if escapes && b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+                blank(&mut out, start, i);
+            }
+            b'$' if (i == 0 || !is_word(b[i - 1])) && dollar_tag_len(&b[i..]).is_some() => {
+                let tag = &b[i..i + dollar_tag_len(&b[i..]).unwrap_or(0)];
+                i += tag.len();
+                while i < b.len() && !b[i..].starts_with(tag) {
+                    i += 1;
+                }
+                i = (i + tag.len()).min(b.len());
                 blank(&mut out, start, i);
             }
             b'-' if b.get(i + 1) == Some(&b'-') => {
@@ -802,11 +868,19 @@ fn mask_noise_impl<const KEEP_BRACKETS: bool>(text: &str) -> String {
                 blank(&mut out, start, i);
             }
             b'/' if b.get(i + 1) == Some(&b'*') => {
+                // PostgreSQL block comments nest
+                let mut nest = 1;
                 i += 2;
-                while i < b.len() && !(b[i] == b'*' && b.get(i + 1) == Some(&b'/')) {
+                while i < b.len() && nest > 0 {
+                    if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                        nest += 1;
+                        i += 1;
+                    } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
+                        nest -= 1;
+                        i += 1;
+                    }
                     i += 1;
                 }
-                i += 2;
                 blank(&mut out, start, i);
             }
             _ => i += 1,
@@ -850,6 +924,9 @@ fn extract_tsql_fallback(
 ) {
     for cand in scan_candidates(source) {
         let norm = normalize_qualname(&cand.qualname);
+        if cand.kind == "table" {
+            add_fallback_fk_edges(source, &cand, &norm, output);
+        }
         let existing = output
             .symbols
             .iter()
@@ -900,6 +977,36 @@ fn extract_tsql_fallback(
             evidence_snippet: None,
             ..Default::default()
         });
+    }
+}
+
+/// REFERENCES edges for a line-scanned `CREATE TABLE` the grammar could not
+/// fully parse. Each FK the grammar path already emitted for the table is
+/// matched one-to-one and skipped; the rest are added.
+fn add_fallback_fk_edges(source: &str, cand: &Candidate, norm: &str, output: &mut ExtractedFile) {
+    let Some(text) = source.get(cand.start..cand.end) else {
+        return;
+    };
+    let source_qualname = declared_qualname(output, &cand.qualname);
+    let mut grammar_edges: Vec<usize> = (0..output.edges.len())
+        .filter(|&i| {
+            let e = &output.edges[i];
+            e.kind == REFERENCES_KIND
+                && e.source_qualname
+                    .as_deref()
+                    .is_some_and(|q| normalize_qualname(q) == norm)
+        })
+        .collect();
+    for target in extract_foreign_key_references(text) {
+        let tnorm = normalize_qualname(&target);
+        if let Some(pos) = grammar_edges
+            .iter()
+            .position(|&i| is_reference_edge(&output.edges[i], norm, &tnorm))
+        {
+            grammar_edges.remove(pos);
+        } else {
+            output.edges.push(fk_edge(&source_qualname, target));
+        }
     }
 }
 

@@ -330,3 +330,108 @@ fn tsql_fallback_multiline_create_and_spaced_names() {
     assert_eq!((t.start_line, t.end_line), (10, 14));
     assert!(out.symbols.iter().any(|s| s.qualname == "dbo.next"));
 }
+
+fn references_from(source: &str) -> Vec<(String, String)> {
+    let mut extractor = SqlExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "m").unwrap();
+    extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "REFERENCES")
+        .map(|e| {
+            (
+                e.source_qualname.clone().unwrap_or_default(),
+                e.target_qualname.clone().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn tsql_fallback_table_foreign_keys_produce_references_edges() {
+    let identity = "CREATE TABLE dpb.ptr\n(\n    id INT IDENTITY(1,1) PRIMARY KEY,\n    run_id INT NOT NULL,\n    CONSTRAINT FK_ptr_run FOREIGN KEY (run_id)\n        REFERENCES dpb.pipeline_run(pipeline_run_id) ON DELETE CASCADE\n);\n";
+    assert_eq!(
+        references_from(identity),
+        vec![("dpb.ptr".to_string(), "dpb.pipeline_run".to_string())]
+    );
+
+    let dto = "CREATE TABLE dpb.ptr2\n(\n    id INT PRIMARY KEY, at DATETIMEOFFSET NULL,\n    run_id INT NOT NULL,\n    CONSTRAINT FK_ptr_run FOREIGN KEY (run_id)\n        REFERENCES dpb.pipeline_run(pipeline_run_id) ON DELETE CASCADE\n);\n";
+    assert_eq!(
+        references_from(dto),
+        vec![("dpb.ptr2".to_string(), "dpb.pipeline_run".to_string())]
+    );
+
+    // Multiple FKs, bracketed names, comments ignored.
+    let multi = "CREATE TABLE [dpb].[t3]\n(\n    id INT IDENTITY(1,1) PRIMARY KEY,\n    a INT, b INT,\n    -- REFERENCES dpb.ignored(id)\n    CONSTRAINT fk_a FOREIGN KEY (a) REFERENCES [dpb].[pipeline_run](id),\n    CONSTRAINT fk_b FOREIGN KEY (b) REFERENCES dpb.status_code(id)\n);\n";
+    let refs = references_from(multi);
+    assert_eq!(refs.len(), 2, "{refs:?}");
+    assert!(refs.iter().any(|r| r.1 == "dpb.pipeline_run"));
+    assert!(refs.iter().any(|r| r.1 == "dpb.status_code"));
+}
+
+#[test]
+fn grammar_parsed_table_foreign_key_is_not_duplicated() {
+    let src = "CREATE TABLE dpb.a\n(\n    id INT PRIMARY KEY,\n    run_id INT NOT NULL,\n    CONSTRAINT FK_a FOREIGN KEY (run_id)\n        REFERENCES dpb.parent(id) ON DELETE CASCADE\n);\n";
+    assert_eq!(
+        references_from(src),
+        vec![("dpb.a".to_string(), "dpb.parent".to_string())]
+    );
+}
+
+fn targets(source: &str) -> Vec<String> {
+    let mut t: Vec<String> = references_from(source).into_iter().map(|r| r.1).collect();
+    t.sort();
+    t
+}
+
+#[test]
+fn quoted_reference_targets_keep_identifier_text() {
+    let cols = "a INT REFERENCES public.\"x\"(id),\n    b INT REFERENCES \"public\".\"y\"(id)";
+    let grammar = format!("CREATE TABLE dpb.q (\n    id INT PRIMARY KEY,\n    {cols}\n);\n");
+    let fallback = format!(
+        "CREATE TABLE dpb.q (\n    id INT IDENTITY(1,1) PRIMARY KEY, at DATETIMEOFFSET NULL,\n    {cols}\n);\n"
+    );
+    for src in [grammar, fallback] {
+        assert_eq!(targets(&src), vec!["public.x", "public.y"], "{src}");
+    }
+}
+
+#[test]
+fn fallback_fk_scan_ignores_comments_strings_and_dollar_bodies() {
+    let cases = [
+        "/* a /* nested */ REFERENCES ghost(id) */",
+        "note TEXT DEFAULT E'it\\'s REFERENCES ghost(id)'",
+        "note TEXT DEFAULT $$ REFERENCES ghost(id) $$",
+        "note TEXT DEFAULT $tag$ REFERENCES ghost(id) $tag$",
+        "note TEXT DEFAULT 'REFERENCES ghost(id)'",
+    ];
+    for noise in cases {
+        let src = format!(
+            "CREATE TABLE dpb.n (\n    id INT IDENTITY(1,1) PRIMARY KEY, at DATETIMEOFFSET NULL,\n    {noise},\n    p INT REFERENCES dpb.real(id)\n);\n"
+        );
+        assert_eq!(targets(&src), vec!["dpb.real"], "{src}");
+    }
+}
+
+#[test]
+fn repeated_fk_to_same_parent_matches_grammar_path_count() {
+    let body = "a INT NOT NULL, b INT NOT NULL,\n    CONSTRAINT fk_a FOREIGN KEY (a) REFERENCES dpb.parent(id) ON DELETE CASCADE,\n    CONSTRAINT fk_b FOREIGN KEY (b) REFERENCES dpb.parent(id) ON DELETE CASCADE";
+    let grammar = format!("CREATE TABLE dpb.t (\n    id INT PRIMARY KEY,\n    {body}\n);\n");
+    let fallback = format!(
+        "CREATE TABLE dpb.t (\n    id INT IDENTITY(1,1) PRIMARY KEY, at DATETIMEOFFSET NULL,\n    {body}\n);\n"
+    );
+    assert_eq!(targets(&grammar), vec!["dpb.parent", "dpb.parent"]);
+    assert_eq!(targets(&fallback), vec!["dpb.parent", "dpb.parent"]);
+}
+
+#[test]
+fn fallback_inline_and_unspaced_references() {
+    let src = "CREATE TABLE dpb.i (\n    id INT IDENTITY(1,1) PRIMARY KEY, at DATETIMEOFFSET NULL,\n    a INT NOT NULL REFERENCES dpb.one(id) ON DELETE CASCADE,\n    b INT NOT NULL REFERENCES dpb.two (id) ON DELETE CASCADE,\n    c INT NOT NULL REFERENCES dpb.three(id) ON DELETE CASCADE\n);\n";
+    assert_eq!(targets(src), vec!["dpb.one", "dpb.three", "dpb.two"]);
+}
+
+#[test]
+fn postgres_path_ignores_references_in_comments() {
+    let src = "CREATE TABLE orders (\n    id SERIAL PRIMARY KEY,\n    -- REFERENCES ghost(id)\n    /* REFERENCES ghost2(id) */\n    user_id INTEGER REFERENCES users(id)\n);\n";
+    assert_eq!(targets(src), vec!["users"]);
+}
