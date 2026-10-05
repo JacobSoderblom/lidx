@@ -3305,6 +3305,10 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 // GROUP 5 -- Search handlers
 // ---------------------------------------------------------------------------
 
+fn is_dot_path(path: &str) -> bool {
+    path.split('/').any(|part| part.starts_with('.'))
+}
+
 pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: RgParams = super::parse_params("search", params)?;
     super::validate::require_non_empty_query(&params.query)?;
@@ -3336,10 +3340,17 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
     let paths = resolve_rg_paths(indexer.repo_root(), params.path, params.paths)?;
     let mut globs = params.globs.unwrap_or_default();
     let hidden = params.hidden.unwrap_or(true);
-    // When searching hidden directories, add default exclusions to match the scanner's behavior
-    if hidden && globs.is_empty() {
-        globs.extend(vec!["!.git/".to_string(), "!.lidx/".to_string()]);
+    // Skip the scanner's ignored dirs up front (search_rg also filters hits, which
+    // covers explicit paths into them); user globs can't re-enable them.
+    if hidden {
+        globs.extend(
+            scan::IGNORED_DIR_NAMES
+                .iter()
+                .map(|name| format!("!{name}/")),
+        );
     }
+    // Hidden defaulted on (not requested): only surface dot-path hits for indexed files.
+    let restrict_hidden_to_index = params.hidden.is_none();
     let options = RgSearchOptions {
         include_text,
         case_sensitive: params.case_sensitive,
@@ -3354,6 +3365,15 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
     };
     // Fetch one extra hit so we can tell whether the limit cut the results.
     let mut results = search_rg(indexer.repo_root(), &params.query, limit + 1, options)?;
+    if restrict_hidden_to_index && results.iter().any(|hit| is_dot_path(&hit.path)) {
+        let indexed: std::collections::HashSet<String> = indexer
+            .db()
+            .list_files(ctx.graph_version)?
+            .into_iter()
+            .map(|file| file.path)
+            .collect();
+        results.retain(|hit| !is_dot_path(&hit.path) || indexed.contains(&hit.path));
+    }
     let limit_cut = results.len() > limit;
     results.truncate(limit);
     for hit in &mut results {
