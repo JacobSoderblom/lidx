@@ -601,6 +601,7 @@ impl Indexer {
             symbols: 0,
             edges: 0,
             duration_ms: 0,
+            prune_error: None,
         };
 
         // Phase 4: Use batch writing for reindex
@@ -898,7 +899,10 @@ impl Indexer {
                     );
                 }
             }
-            Err(err) => eprintln!("Warning: graph version prune failed: {err}"),
+            Err(err) => {
+                eprintln!("Warning: graph version prune failed: {err}");
+                stats.prune_error = Some(err.to_string());
+            }
         }
 
         stats.duration_ms = started.elapsed().as_millis() as u64;
