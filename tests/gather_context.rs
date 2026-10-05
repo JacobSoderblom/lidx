@@ -948,3 +948,93 @@ fn gather_context_symbol_strategy_large_cross_file_body_not_dropped_by_subcap() 
         with["total_bytes"].as_u64().unwrap() > without["total_bytes"].as_u64().unwrap() + 2000
     );
 }
+
+// Regression tests for issue #359: test callers must not consume the node cap
+// ahead of non-test callers, so `depth` takes effect.
+
+fn write_test_caller_flood_fixture(repo_root: &Path) {
+    std::fs::write(repo_root.join("lib.py"), "def target():\n    pass\n").unwrap();
+    std::fs::write(
+        repo_root.join("app.py"),
+        "from lib import target\n\n\ndef svc():\n    target()\n\n\ndef api():\n    svc()\n",
+    )
+    .unwrap();
+    let mut tests = String::from("from lib import target\n\n");
+    for n in 0..60 {
+        tests.push_str(&format!("\ndef test_{n}():\n    target()\n"));
+    }
+    std::fs::write(repo_root.join("test_lib.py"), tests).unwrap();
+}
+
+fn gather_symbol_items(temp: &TempRepo, params: &str) -> Vec<serde_json::Value> {
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "gather_context".to_string(),
+        params,
+        "1",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    value["result"]["items"].as_array().unwrap().clone()
+}
+
+fn item_names(items: &[serde_json::Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|i| i["symbol"]["qualname"].as_str().map(String::from))
+        .collect()
+}
+
+#[test]
+fn gather_context_test_callers_do_not_displace_non_test_callers() {
+    let temp = TempRepo::new("py_mvp");
+    write_test_caller_flood_fixture(&temp.repo_root);
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let d2 = gather_symbol_items(
+        &temp,
+        r#"{"seeds":[{"type":"symbol","qualname":"lib.target"}],"depth":2}"#,
+    );
+    let names = item_names(&d2);
+    assert!(names.iter().any(|n| n == "app.svc"), "{names:?}");
+    assert!(names.iter().any(|n| n == "app.api"), "{names:?}");
+
+    // Test items come after every non-test item.
+    let is_test = |i: &serde_json::Value| i["path"].as_str().unwrap().contains("test_");
+    let first_test = d2.iter().position(is_test).expect("some test caller");
+    assert!(d2[first_test..].iter().all(is_test), "tests must sort last");
+
+    let d1 = gather_symbol_items(
+        &temp,
+        r#"{"seeds":[{"type":"symbol","qualname":"lib.target"}],"depth":1}"#,
+    );
+    let n1 = item_names(&d1);
+    assert!(n1.iter().any(|n| n == "app.svc"));
+    assert!(!n1.iter().any(|n| n == "app.api"), "{n1:?}");
+    assert_ne!(item_names(&d1), names);
+
+    // Fresh vs incremental index agree.
+    let shape = |items: &[serde_json::Value]| -> Vec<(String, String)> {
+        items
+            .iter()
+            .map(|i| {
+                (
+                    i["path"].as_str().unwrap().to_string(),
+                    format!(
+                        "{}|{}",
+                        i["symbol"]["qualname"], i["source"]["relationship"]
+                    ),
+                )
+            })
+            .collect()
+    };
+    let before = shape(&d2);
+    indexer.reindex().unwrap();
+    let again = gather_symbol_items(
+        &temp,
+        r#"{"seeds":[{"type":"symbol","qualname":"lib.target"}],"depth":2}"#,
+    );
+    assert_eq!(before, shape(&again));
+}

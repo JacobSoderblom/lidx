@@ -214,7 +214,7 @@ fn edge_rank(kind: &str) -> u8 {
     }
 }
 
-fn edge_allowed(edge: &Edge, filter: &EdgeFilter) -> bool {
+pub(crate) fn edge_allowed(edge: &Edge, filter: &EdgeFilter) -> bool {
     if filter.resolved_only && (edge.source_symbol_id.is_none() || edge.target_symbol_id.is_none())
     {
         return false;
