@@ -183,3 +183,18 @@ fn read_symbol_includes_attributes_and_incremental_matches_fresh() {
     assert_eq!(incremental, snapshot(&fresh));
     assert!(incremental.contains(&("crate::A".to_string(), 2, 5)));
 }
+
+#[test]
+fn bodiless_mod_file_edge_evidence_starts_at_attribute() {
+    let mut extractor = RustExtractor::new().unwrap();
+    let extracted = extractor
+        .extract("#[cfg(unix)]\nmod foo;\n", "crate")
+        .unwrap();
+    let edge = extracted
+        .edges
+        .iter()
+        .find(|e| e.kind == "MODULE_FILE")
+        .unwrap();
+    assert_eq!(edge.evidence_start_line, Some(1));
+    assert_eq!(edge.evidence_end_line, Some(2));
+}

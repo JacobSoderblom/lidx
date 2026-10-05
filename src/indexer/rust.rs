@@ -69,6 +69,16 @@ fn normalize_import_target(raw: &str, module: &str) -> Option<String> {
     None
 }
 
+/// Where an item's first outer attribute begins (issue #348).
+#[derive(Clone, Copy)]
+struct AttrStart {
+    /// Id of the item node the attribute belongs to.
+    item_id: usize,
+    line: i64,
+    col: i64,
+    byte: i64,
+}
+
 #[derive(Clone)]
 struct Context {
     /// Same-file string constants (see `string_consts`), used to resolve
@@ -128,7 +138,7 @@ struct Context {
     /// outer attribute preceding that item (issue #348), set by
     /// `walk_declaration_list`. Keyed by node id so it can never leak onto
     /// a nested item that inherits this context.
-    attr_start: Option<(usize, i64, i64, i64)>,
+    attr_start: Option<AttrStart>,
 }
 
 impl Context {
@@ -136,10 +146,10 @@ impl Context {
     /// `walk_declaration_list` recorded one for exactly this node.
     fn item_span(&self, node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
         let (mut sl, mut sc, el, ec, mut sb, eb) = span(node);
-        if let Some((id, l, c, b)) = self.attr_start
-            && id == node.id()
+        if let Some(a) = self.attr_start
+            && a.item_id == node.id()
         {
-            (sl, sc, sb) = (l, c, b);
+            (sl, sc, sb) = (a.line, a.col, a.byte);
         }
         (sl, sc, el, ec, sb, eb)
     }
@@ -477,8 +487,13 @@ fn walk_declaration_list(node: Node<'_>, ctx: &Context, source: &str, output: &m
         // inside it) distinct from a same-named twin under another `cfg`.
         let mut item_ctx = ctx.with_cfg(&pending_attrs, source);
         item_ctx.attr_start = pending_attrs.first().map(|attr| {
-            let (l, c, _, _, b, _) = span(*attr);
-            (child.id(), l, c, b)
+            let (line, col, _, _, byte, _) = span(*attr);
+            AttrStart {
+                item_id: child.id(),
+                line,
+                col,
+                byte,
+            }
         });
         // Declarations sharing a qualname each keep their own edges,
         // including those emitted before the symbol itself (route
@@ -580,7 +595,8 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     };
     let module_name = format!("{}::{}", ctx.module, name);
     let Some(body) = body_node(node) else {
-        let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+        let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) =
+            ctx.item_span(node);
         let snippet =
             util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
         output.edges.push(EdgeInput {
