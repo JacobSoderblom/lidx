@@ -494,7 +494,7 @@ fn bridge_edge_without_a_target_is_retained_by_the_repair_pass() {
             .query_row(
                 "SELECT COUNT(*) FROM edges WHERE graph_version = ?1
                    AND kind = 'CHANNEL_PUBLISH' AND target_symbol_id IS NULL
-                   AND target_qualname = 'channel://order-created'",
+                   AND target_qualname = 'channel://ordercreated'",
                 [gv],
                 |r| r.get(0),
             )

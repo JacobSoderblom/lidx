@@ -81,6 +81,14 @@ pub struct TraceResult {
     pub start: Symbol,
     pub end: Option<Symbol>,
     pub hops: Vec<TraceHop>,
+    /// Canonical definition of `paths_found` (also surfaced by
+    /// `TraceFlowResult` and the trace_flow schema text). Without an end
+    /// target: the number of leaf hops in the settled trace -- hops no other
+    /// hop was reached through, including hops at the `max_hops` ceiling.
+    /// The trace is node-deduplicated, so this is a leaf count, not a count
+    /// of distinct root-to-leaf paths. Counted before `trace_offset` / byte
+    /// paging, and non-decreasing in `max_hops`. With an end target: 1 if
+    /// reached, else 0.
     pub paths_found: usize,
     pub reached_target: bool,
     pub truncated: bool,
@@ -556,6 +564,10 @@ pub fn trace_flow(
 
     // Canonical order: independent of the order edges were processed in.
     trace.sort_by_cached_key(canonical_key);
+    // Counted over the whole settled trace, before offset/byte paging trims
+    // what is returned (#355).
+    let settled_any = !trace.is_empty();
+    let leaf_count = count_leaves(&trace);
     let mut trace: Vec<TraceHop> = trace.into_iter().skip(config.trace_offset).collect();
 
     // Apply the byte budget to the settled hops: keep hops while they fit,
@@ -584,13 +596,10 @@ pub fn trace_flow(
         None
     };
 
-    let paths_found = if trace.is_empty() {
-        0
-    } else if end_id.is_some() {
-        if reached_target { 1 } else { 0 }
+    let paths_found = if end_id.is_some() {
+        usize::from(settled_any && reached_target)
     } else {
-        let max_dist = trace.iter().map(|h| h.distance).max().unwrap_or(0);
-        trace.iter().filter(|h| h.distance == max_dist).count()
+        leaf_count
     };
 
     // Issue #81: lower-bound signal over every symbol this traversal
@@ -697,6 +706,26 @@ fn has_further_edges(
         }
     }
     Ok(false)
+}
+
+/// Hops that no other hop names as its predecessor. A trace is
+/// node-deduplicated (a node reachable two ways records one predecessor), so
+/// this counts leaves, not distinct root-to-leaf paths. Growing `max_hops`
+/// only turns ceiling leaves into parents of at least one new hop, so the
+/// count never shrinks.
+///
+/// The key includes the distance because a symbol can appear at several
+/// distances (config-scoped re-entry); a hop's parent is the hop for its
+/// `predecessor_id` exactly one level closer to the seed.
+fn count_leaves(trace: &[TraceHop]) -> usize {
+    let parents: HashSet<(i64, usize)> = trace
+        .iter()
+        .filter_map(|h| Some((h.predecessor_id, h.distance.checked_sub(1)?)))
+        .collect();
+    trace
+        .iter()
+        .filter(|h| !parents.contains(&(h.symbol.id, h.distance)))
+        .count()
 }
 
 /// Indices of the hops on the chain from the hop reaching `end_id` back to
@@ -1751,7 +1780,8 @@ mod tests {
             result.hops.is_empty(),
             "large offset should produce no hops"
         );
-        assert_eq!(result.paths_found, 0);
+        // paths_found is counted before paging, so it still reports leaves.
+        assert!(result.paths_found > 0);
     }
 
     #[test]

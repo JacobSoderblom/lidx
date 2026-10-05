@@ -289,6 +289,12 @@ struct ExplainSymbolParams {
     extra: HashMap<String, Value>,
 }
 
+/// Trace calls/edges from a start symbol. The result's `paths_found` is the
+/// number of leaf hops in the trace (hops nothing else was reached through,
+/// including hops at the `max_hops` ceiling), not distinct root-to-leaf paths
+/// since the trace is node-deduplicated; it is non-decreasing in `max_hops`
+/// and unaffected by `trace_offset`/`max_bytes` paging. With an end target it
+/// is 1 if the target was reached, else 0.
 #[derive(Deserialize, schemars::JsonSchema)]
 struct TraceFlowParams {
     start_id: Option<i64>,

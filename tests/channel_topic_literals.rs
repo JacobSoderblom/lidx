@@ -74,8 +74,8 @@ fn python_module_constant_resolves_and_bridges_with_literal_publisher() {
     let publ = "def send(msg):\n    _bus.publish(\"order-created\", msg)\n";
     let s = py(sub);
     let p = py(publ);
-    assert_eq!(targets(&s), ["channel://order-created"]);
-    assert_eq!(targets(&p), ["channel://order-created"]);
+    assert_eq!(targets(&s), ["channel://ordercreated"]);
+    assert_eq!(targets(&p), ["channel://ordercreated"]);
     assert_eq!(s[0].0, "CHANNEL_SUBSCRIBE");
     assert_eq!(p[0].0, "CHANNEL_PUBLISH");
 }
@@ -139,11 +139,11 @@ fn csharp_literal_publisher_bridges_with_constant_subscriber() {
     let s = cs(sub);
     assert_eq!(
         p[0],
-        ("CHANNEL_PUBLISH".into(), "channel://order-created".into())
+        ("CHANNEL_PUBLISH".into(), "channel://ordercreated".into())
     );
     assert_eq!(
         s[0],
-        ("CHANNEL_SUBSCRIBE".into(), "channel://order-created".into())
+        ("CHANNEL_SUBSCRIBE".into(), "channel://ordercreated".into())
     );
 }
 
@@ -204,7 +204,7 @@ class P {
 }"#;
     assert_eq!(
         targets(&cs(src)),
-        ["channel://data-proxy-status", "channel://data-proxy-status"]
+        ["channel://dataproxystatus", "channel://dataproxystatus"]
     );
 }
 

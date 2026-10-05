@@ -253,3 +253,81 @@ fn no_end_target_returns_frontier_with_predecessors() {
         ["flow.other_leaf", "flow.mid", "flow.start"]
     );
 }
+
+/// Issue #355: without an end target `paths_found` counts leaf hops (hops
+/// nothing else was reached through) and never falls as `max_hops` grows.
+const DIAMOND_FLOW: &str = "def e():\n    pass\n\n\ndef d():\n    e()\n\n\ndef b():\n    d()\n\n\ndef c():\n    d()\n\n\ndef a():\n    b()\n    c()\n";
+
+fn paths_found_at(env: &Env, start: &str, direction: &str, hops: usize, extra: &str) -> Value {
+    call(
+        env,
+        &format!(
+            r#"{{"start_qualname":"{start}","direction":"{direction}","max_hops":{hops}{extra}}}"#
+        ),
+    )
+}
+
+#[test]
+fn paths_found_is_leaf_count_and_non_decreasing_in_max_hops() {
+    let env = setup(&[("a.py", DIAMOND_FLOW)]);
+    let mut got = Vec::new();
+    for hops in 1..=4 {
+        let r = paths_found_at(&env, "a.a", "downstream", hops, "");
+        got.push((
+            r["trace"].as_array().unwrap().len(),
+            r["paths_found"].as_u64().unwrap(),
+        ));
+    }
+    // (hop count, leaves): the old frontier rule gave 2/1/1/1.
+    assert_eq!(got, [(2, 2), (3, 2), (4, 2), (4, 2)]);
+    assert!(got.windows(2).all(|w| w[0].1 <= w[1].1), "{got:?}");
+}
+
+#[test]
+fn paths_found_survives_trace_offset_paging() {
+    let env = setup(&[("a.py", DIAMOND_FLOW)]);
+    let r = paths_found_at(&env, "a.a", "downstream", 4, r#","trace_offset":100"#);
+    assert!(r["trace"].as_array().unwrap().is_empty(), "{r}");
+    assert_eq!(r["paths_found"], 2, "{r}");
+}
+
+#[test]
+fn paths_found_survives_byte_truncation() {
+    let env = setup(&[("a.py", DIAMOND_FLOW)]);
+    let r = paths_found_at(&env, "a.a", "downstream", 4, r#","max_bytes":1"#);
+    assert_eq!(r["trace"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["paths_found"], 2, "{r}");
+}
+
+fn bridge_env() -> Env {
+    setup(&[
+        (
+            "pub.py",
+            "def send(msg):\n    _bus.publish(\"order-created\", msg)\n\n\ndef other():\n    pass\n\n\ndef entry(msg):\n    send(msg)\n    other()\n\n\ndef entry2(msg):\n    send(msg)\n",
+        ),
+        (
+            "sub.py",
+            "@router.subscribe(topic=\"order-created\")\ndef handle(msg):\n    pass\n",
+        ),
+    ])
+}
+
+#[test]
+fn paths_found_counts_leaves_across_a_bridge_downstream() {
+    let env = bridge_env();
+    // entry -> send -> (bridge) handle, and entry -> other: two leaves.
+    let r = paths_found_at(&env, "pub.entry", "downstream", 3, "");
+    let names = qualnames(&r);
+    assert!(names.contains(&"sub.handle".to_string()), "{r}");
+    assert_eq!(r["paths_found"], 2, "{r}");
+}
+
+#[test]
+fn paths_found_counts_leaves_across_a_bridge_upstream() {
+    let env = bridge_env();
+    // handle <- (bridge) send <- entry / entry2: two leaves.
+    let r = paths_found_at(&env, "sub.handle", "upstream", 3, "");
+    let names = qualnames(&r);
+    assert!(names.contains(&"pub.send".to_string()), "{r}");
+    assert_eq!(r["paths_found"], 2, "{r}");
+}
