@@ -94,7 +94,6 @@ pub fn build_subgraph_deferring(
         languages,
         graph_version,
         None,
-        &mut deferred_ids,
     )?;
 
     if languages.is_some() {
@@ -139,8 +138,7 @@ pub fn build_subgraph_deferring(
             &lookup_ids,
             languages,
             graph_version,
-            deferral.map(|d| d.is_deferred),
-            &mut deferred_ids,
+            deferral.map(|d| (d.is_deferred, &mut deferred_ids)),
         )?;
 
         neighbors.sort_by_key(|a| edge_sort_key(a, &symbol_cache));
@@ -207,6 +205,9 @@ pub fn build_subgraph_deferring(
     Ok(Subgraph { nodes, edges })
 }
 
+/// Predicate plus the set that collects ids it matched.
+type DeferSink<'a> = (&'a dyn Fn(&Symbol) -> bool, &'a mut HashSet<i64>);
+
 fn cache_symbols(
     db: &Db,
     cache: &mut HashMap<i64, String>,
@@ -214,9 +215,12 @@ fn cache_symbols(
     ids: &[i64],
     languages: Option<&[String]>,
     graph_version: i64,
-    is_deferred: Option<&dyn Fn(&Symbol) -> bool>,
-    deferred: &mut HashSet<i64>,
+    defer: Option<DeferSink>,
 ) -> Result<()> {
+    let (is_deferred, mut deferred) = match defer {
+        Some((f, set)) => (Some(f), Some(set)),
+        None => (None, None),
+    };
     let mut missing: Vec<i64> = ids
         .iter()
         .copied()
@@ -229,8 +233,10 @@ fn cache_symbols(
     missing.dedup();
     let symbols = db.symbols_by_ids(&missing, languages, graph_version)?;
     for symbol in symbols {
-        if is_deferred.is_some_and(|f| f(&symbol)) {
-            deferred.insert(symbol.id);
+        if let (Some(f), Some(set)) = (is_deferred, deferred.as_deref_mut())
+            && f(&symbol)
+        {
+            set.insert(symbol.id);
         }
         cache.insert(symbol.id, symbol.qualname);
     }
