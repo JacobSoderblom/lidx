@@ -107,6 +107,11 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         if node.kind() == "create_type" && !is_real_create_type(&node_text(node, source)) {
             return;
         }
+        // T-SQL `#temp` / `##temp` tables are procedure-local scratch
+        // objects, not schema tables (#340).
+        if node.kind() == "create_table" && is_tsql_temp_table(node, source) {
+            return;
+        }
         if let Some((qualname, name)) = extract_object_name(node, source) {
             let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
             let qualname_owned = qualname.clone();
@@ -181,6 +186,22 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     for child in node.named_children(&mut cursor) {
         walk_node(child, ctx, source, output);
     }
+}
+
+/// T-SQL `#local` / `##global` temp tables and `@table` variables are
+/// procedure-local scratch objects, never schema objects. A leading quote or
+/// bracket is ignored.
+fn is_temp_name(name: &str) -> bool {
+    name.trim_start_matches(['[', '"', '`'])
+        .starts_with(['#', '@'])
+}
+
+/// The grammar parses the `#` of `CREATE TABLE #x` as an `ERROR` node just
+/// before the name's `object_reference`, so the sigil is read from there.
+fn is_tsql_temp_table(node: Node<'_>, source: &str) -> bool {
+    find_object_reference(node)
+        .and_then(|name| name.prev_sibling())
+        .is_some_and(|prev| prev.is_error() && is_temp_name(node_text(prev, source).trim()))
 }
 
 fn create_kind(kind: &str) -> Option<&'static str> {
@@ -1042,8 +1063,7 @@ fn block_end(
         if is_go(l) {
             return js + l.trim_end().len();
         }
-        if l.starts_with(['c', 'C'])
-            && create_at(lines, j).is_some_and(|(_, n)| !n.starts_with(['#', '@']))
+        if l.starts_with(['c', 'C']) && create_at(lines, j).is_some_and(|(_, n)| !is_temp_name(&n))
         {
             end = js;
             break;
@@ -1101,7 +1121,7 @@ fn scan_candidates(source: &str) -> Vec<Candidate> {
         let Some((kind, raw)) = create_at(&lines, i) else {
             continue;
         };
-        if raw.starts_with(['#', '@']) {
+        if is_temp_name(&raw) {
             continue;
         }
         let qualname = strip_quotes(&raw);

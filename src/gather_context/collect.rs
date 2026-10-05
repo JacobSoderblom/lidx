@@ -638,14 +638,20 @@ fn collect_content_symbol_strategy(
             &graph_related,
             match_locations,
             &labels,
-            true,
+            !config.include_snippets,
             false,
         )?;
 
-        // Cross-file expansion via CALLS edges (up to 30% of remaining budget)
+        // Cross-file expansion via CALLS edges
         if config.include_related && !c.over_budget() {
-            let cross_file_budget = (c.remaining() * 30 / 100).max(1000);
-            let mut cross_file_bytes = 0usize;
+            // Stub mode is capped at 30% of the remaining budget; snippet mode may use
+            // all of it so related bodies that fit are not dropped by the sub-cap.
+            let cross_file_budget = if config.include_snippets {
+                c.remaining()
+            } else {
+                (c.remaining() * 30 / 100).max(1000)
+            };
+            let cross_start = c.total_bytes;
 
             let current_file_paths: HashSet<String> = c
                 .items
@@ -656,7 +662,7 @@ fn collect_content_symbol_strategy(
                 .collect();
 
             for seed_id in &seed_symbol_ids {
-                if cross_file_bytes >= cross_file_budget {
+                if c.total_bytes - cross_start >= cross_file_budget {
                     break;
                 }
                 let edges = db.edges_for_symbol_with_dispatch(
@@ -665,7 +671,7 @@ fn collect_content_symbol_strategy(
                     config.graph_version,
                 )?;
                 for edge in &edges {
-                    if cross_file_bytes >= cross_file_budget {
+                    if c.total_bytes - cross_start >= cross_file_budget {
                         break;
                     }
                     if edge.kind == "CALLS" {
@@ -680,22 +686,31 @@ fn collect_content_symbol_strategy(
                             && let Some(target_symbol) = db.get_symbol_by_id(tid)?
                             && !current_file_paths.contains(&target_symbol.file_path)
                         {
-                            let content = format_tier1(&target_symbol, Some(edge));
                             let source = ItemSource {
                                 source_type: SourceType::Subgraph,
                                 seed_index: None,
                                 relationship: Some(relationship.to_string()),
                                 distance: Some(1),
                             };
-                            if content.len() <= cross_file_budget - cross_file_bytes
-                                && c.try_add_formatted(
+                            // Account for added bytes identically in both modes: the
+                            // collector total delta, checked against the sub-budget.
+                            let left =
+                                cross_file_budget.saturating_sub(c.total_bytes - cross_start);
+                            if config.include_snippets {
+                                // Bodies are fit-checked by the collector against the
+                                // overall budget (sub-budget equals remaining budget).
+                                c.try_add_symbol(
                                     &target_symbol,
-                                    content.clone(),
+                                    target_symbol.start_byte,
+                                    target_symbol.end_byte,
                                     source,
                                     None,
-                                )
-                            {
-                                cross_file_bytes += content.len();
+                                )?;
+                            } else {
+                                let content = format_tier1(&target_symbol, Some(edge));
+                                if content.len() <= left {
+                                    c.try_add_formatted(&target_symbol, content, source, None);
+                                }
                             }
                         }
                     }

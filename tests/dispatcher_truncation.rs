@@ -268,7 +268,7 @@ fn truncated_and_untruncated_search_have_the_same_top_level_keys() {
     let small = call(
         &fx,
         "search",
-        &json!({"query": "leaf_function_number_00", "limit": 2}),
+        &json!({"query": "leaf_function_number_00", "limit": 50}),
     );
     let mut big_params = json!({"query": "leaf_function", "limit": 500});
     big_params["max_response_bytes"] = json!(2_000);
@@ -281,7 +281,12 @@ fn truncated_and_untruncated_search_have_the_same_top_level_keys() {
     assert_eq!(big["truncated"], json!(true));
     assert!(small["results"].is_array() && big["results"].is_array());
     let mut big_keys = keys(&big);
-    for k in ["truncated", "max_response_bytes", "total_available"] {
+    for k in [
+        "truncated",
+        "max_response_bytes",
+        "total_available",
+        "total_available_is_lower_bound",
+    ] {
         big_keys.remove(k);
     }
     assert_eq!(keys(&small), big_keys);
