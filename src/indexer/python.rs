@@ -3022,7 +3022,7 @@ fn import_kind_and_base(snippet: Option<&str>) -> (ImportKind, Option<String>) {
     (ImportKind::Import, None)
 }
 
-fn base_package_parts(file_rel_path: &str, file_module: &str) -> Vec<String> {
+pub(crate) fn base_package_parts(file_rel_path: &str, file_module: &str) -> Vec<String> {
     let is_init = Path::new(file_rel_path)
         .file_name()
         .and_then(|s| s.to_str())
@@ -3039,7 +3039,7 @@ fn base_package_parts(file_rel_path: &str, file_module: &str) -> Vec<String> {
     parts[..keep].iter().map(|part| part.to_string()).collect()
 }
 
-fn absolutize_module(candidate: &str, base_package: &[String]) -> Option<String> {
+pub(crate) fn absolutize_module(candidate: &str, base_package: &[String]) -> Option<String> {
     let trimmed = candidate.trim();
     if trimmed.is_empty() {
         return None;

@@ -536,12 +536,29 @@ fn non_zero_affected_analyze_impact_suggests_hop_when_heuristic_edge_traversed()
 
     let followed = follow_hop(&temp, hop);
     let followed_affected = followed["result"]["affected"].as_array().unwrap();
+    // Base stays reachable through a non-heuristic path (IMPORTS_FILE +
+    // CONTAINS), so the *set* need not shrink; what the hop must do is drop
+    // every heuristic-resolved step from the paths it reports.
+    let heuristic_steps = |items: &[serde_json::Value]| {
+        items
+            .iter()
+            .flat_map(|a| a["path"]["steps"].as_array().unwrap().iter())
+            .filter(|s| {
+                matches!(
+                    s["resolution_kind"].as_str(),
+                    Some("bare_name" | "two_segment")
+                )
+            })
+            .count()
+    };
     assert!(
-        followed_affected.len() < affected.len(),
-        "excluding heuristic edges must remove at least the bare_name-resolved \
-         EXTENDS edge to Base, got {} affected before and {} after",
-        affected.len(),
-        followed_affected.len()
+        heuristic_steps(affected) > 0,
+        "precondition: a heuristic-resolved step is traversed"
+    );
+    assert_eq!(
+        heuristic_steps(followed_affected),
+        0,
+        "excluding heuristic edges must remove every bare_name/two_segment step, got {followed_affected:?}"
     );
 }
 

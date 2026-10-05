@@ -1296,7 +1296,12 @@ impl<'c> Resolver<'c> {
                 }
             }
         } else if !is_locally_bound_bare_call(r) {
-            if let Some(qn) = r.target_qualname
+            // Issue #333: a Python relative import (`.plan.X`) is made
+            // absolute against the importing module's package first, so it
+            // binds by exact qualname whatever the target's kind (a
+            // module-level variable included).
+            let absolute = python_relative_import_target(r);
+            if let Some(qn) = absolute.as_deref().or(r.target_qualname)
                 && let Some(id) = self.exact(qn, symbol_map, r.source_file_path, types_only)?
             {
                 return Ok(resolved(id, ResolutionKind::Exact));
@@ -4343,6 +4348,17 @@ fn qualname_trailing_two_segments(qn: &str) -> Option<&str> {
 /// type inference: it won't help one-segment qualnames or two unrelated
 /// types sharing both segments. Resolving the receiver's actual type is the
 /// upgrade path.
+/// The absolute qualname of a Python relative `IMPORTS` target (`.plan.X`
+/// in `pkg.sub` -> `pkg.sub.plan.X`), or `None` for any other edge.
+fn python_relative_import_target(r: &Reference<'_>) -> Option<String> {
+    if r.source_lang != "python" || r.edge_kind != "IMPORTS" {
+        return None;
+    }
+    let target = r.target_qualname.filter(|t| t.starts_with('.'))?;
+    let base = crate::indexer::python::base_package_parts(r.source_file_path, r.source_qualname?);
+    crate::indexer::python::absolutize_module(target, &base)
+}
+
 fn two_segment_qualname_patterns(qn: &str) -> Option<(String, String, String)> {
     let two = qualname_trailing_two_segments(qn)?;
     Some((two.to_string(), format!("%.{two}"), format!("%::{two}")))
