@@ -3416,15 +3416,14 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
             }));
         }
 
-        let mut out = json!({
-            "results": [],
-            "query": query,
-            "next_hops": next_hops,
-        });
-        if !clamped.is_empty() {
-            out["_meta"] = json!({"clamped": clamped});
-        }
-        return Ok(out);
+        return Ok(attach_clamped(
+            json!({
+                "results": [],
+                "query": query,
+                "next_hops": next_hops,
+            }),
+            clamped,
+        ));
     }
 
     // Issue #97: point each hit toward an `outline` of its file -- one hop per
@@ -3460,10 +3459,15 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
         out["truncated"] = json!(true);
         out["total_available_is_lower_bound"] = json!(true);
     }
+    Ok(attach_clamped(out, clamped))
+}
+
+/// Adds `_meta.clamped` to a `search` result when any param was clamped (#368).
+fn attach_clamped(mut out: Value, clamped: serde_json::Map<String, Value>) -> Value {
     if !clamped.is_empty() {
         out["_meta"] = json!({"clamped": clamped});
     }
-    Ok(out)
+    out
 }
 
 // ---------------------------------------------------------------------------
