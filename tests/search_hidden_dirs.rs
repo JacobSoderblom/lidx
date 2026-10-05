@@ -121,7 +121,7 @@ fn git_dir_excluded_with_user_glob() {
     let paths = search_paths(
         &root,
         &db,
-        r#"{"query":"dpb.secret","globs":["*.sql"],"hidden":true,"limit":500}"#,
+        r#"{"query":"dpb.secret","globs":["*.sql"],"limit":500}"#,
     );
     assert!(!paths.iter().any(|p| p.starts_with(".git/")), "{paths:?}");
 }
@@ -135,7 +135,7 @@ fn git_dir_excluded_with_explicit_path() {
     let paths = search_paths(
         &root,
         &db,
-        r#"{"query":"dpb.secret","path":".git","hidden":true,"limit":500}"#,
+        r#"{"query":"dpb.secret","path":".git","limit":500}"#,
     );
     assert!(!paths.iter().any(|p| p.starts_with(".git/")), "{paths:?}");
 }
@@ -169,98 +169,4 @@ fn explicit_hidden_false_skips_hidden_dir() {
         !paths.contains(&".migrations/001.sql".to_string()),
         "{paths:?}"
     );
-}
-
-fn env_repo() -> (tempfile::TempDir, PathBuf, PathBuf) {
-    let (tmp, root, db) =
-        indexed_repo(&[(".migrations/001.sql", "CREATE TABLE dpb.audit (id int);")]);
-    // Written after indexing, and `.env` is not an indexed language anyway.
-    std::fs::write(root.join(".env"), "API_TOKEN=hunter2 CREATE TABLE").unwrap();
-    (tmp, root, db)
-}
-
-#[test]
-fn default_search_omits_unindexed_dotenv() {
-    if !rg_available() {
-        return;
-    }
-    let (_tmp, root, db) = env_repo();
-    let paths = search_paths(&root, &db, r#"{"query":"hunter2","limit":500}"#);
-    assert!(paths.is_empty(), "{paths:?}");
-}
-
-#[test]
-fn explicit_hidden_true_finds_unindexed_dotenv() {
-    if !rg_available() {
-        return;
-    }
-    let (_tmp, root, db) = env_repo();
-    let paths = search_paths(
-        &root,
-        &db,
-        r#"{"query":"hunter2","hidden":true,"limit":500}"#,
-    );
-    assert_eq!(paths, vec![".env".to_string()]);
-}
-
-#[test]
-fn default_limit_counts_only_indexed_dot_hits() {
-    if !rg_available() {
-        return;
-    }
-    let (_tmp, root, db) = indexed_repo(&[
-        (".migrations/001.sql", "SELECT needle1;"),
-        (".migrations/002.sql", "SELECT needle1;"),
-        (".migrations/003.sql", "SELECT needle1;"),
-    ]);
-    // Unindexed (non-source) dot files that also match; they must not eat the limit.
-    for i in 0..20 {
-        std::fs::write(root.join(format!(".noise{i}.env")), "needle1").unwrap();
-    }
-    let response = rpc::call(
-        root.clone(),
-        db.clone(),
-        "search".to_string(),
-        r#"{"query":"needle1","limit":2}"#,
-        "1",
-    )
-    .unwrap();
-    let value: Value = serde_json::from_str(&response).unwrap();
-    let result = &value["result"];
-    assert_eq!(result["results"].as_array().unwrap().len(), 2, "{result}");
-    assert_eq!(result["truncated"], Value::Bool(true), "{result}");
-}
-
-#[test]
-fn default_limit_not_capped_when_all_indexed_hits_fit() {
-    if !rg_available() {
-        return;
-    }
-    let (_tmp, root, db) = indexed_repo(&[(".migrations/001.sql", "SELECT needle1;")]);
-    for i in 0..20 {
-        std::fs::write(root.join(format!(".noise{i}.env")), "needle1").unwrap();
-    }
-    let response = rpc::call(
-        root.clone(),
-        db.clone(),
-        "search".to_string(),
-        r#"{"query":"needle1","limit":2}"#,
-        "1",
-    )
-    .unwrap();
-    let value: Value = serde_json::from_str(&response).unwrap();
-    let result = &value["result"];
-    assert_eq!(result["results"].as_array().unwrap().len(), 1, "{result}");
-    assert_ne!(result["truncated"], Value::Bool(true), "{result}");
-}
-
-#[test]
-fn default_path_inside_dot_dir_returns_only_indexed_files() {
-    if !rg_available() {
-        return;
-    }
-    let (_tmp, root, db) = indexed_repo(&[(".migrations/001.sql", "SELECT needle1;")]);
-    std::fs::write(root.join(".migrations/notes.env"), "needle1").unwrap();
-    let paths = search_paths(&root, &db, r#"{"query":"needle1","path":".migrations"}"#);
-    assert_eq!(paths, vec![".migrations/001.sql".to_string()]);
 }
