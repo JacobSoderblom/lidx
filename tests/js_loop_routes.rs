@@ -111,15 +111,73 @@ fn chained_route_accepts_template_and_const() {
     let src = r#"const P = '/api/items';
 function r(router: any) {
   router.route(P).get(h);
-  router.route(`/api/other/${id}`).post(h);
-}"#;
-    assert_eq!(targets(src), vec!["/api/items", "/api/other/{}"]);
+  router.route(`/api/other/${LATER}`).post(h);
+  for (const p of ['a']) { router.route(`/api/loop/${p}`).post(h); }
+}
+const LATER = 'x';"#;
+    assert_eq!(
+        targets(src),
+        vec!["/api/items", "/api/loop/a", "/api/other/x"]
+    );
 }
 
 #[test]
-fn unresolvable_hole_becomes_param_segment() {
-    let src = "function r(app: any, id: string) { app.get(`/api/items/${id}`, h); }";
-    assert_eq!(targets(src), vec!["/api/items/{}"]);
+fn unresolvable_non_loop_hole_emits_nothing() {
+    let src = r#"import { API_PREFIX } from './cfg';
+function r(app: any, id: string) {
+  app.get(`/api/items/${id}`, h);
+  app.get(`${API_PREFIX}/x`, h);
+  app.get(`/api/${UNKNOWN}/y`, h);
+  app.get(imported, h);
+}"#;
+    assert!(targets(src).is_empty(), "{:?}", targets(src));
+}
+
+#[test]
+fn parameter_shadowing_the_loop_variable_is_not_substituted() {
+    let src = r#"function r(app: any) {
+  for (const p of ['a', 'b']) {
+    register((p: string) => { app.get(`/s/${p}`, h); });
+    register(function (p) { app.get(`/t/${p}`, h); });
+    app.get(`/u/${p}`, h);
+  }
+}"#;
+    assert_eq!(targets(src), vec!["/u/a", "/u/b"]);
+}
+
+#[test]
+fn combination_cap_falls_back_to_param_segments() {
+    let nine = "['a','b','c','d','e','f','g','h','i']";
+    let eight = "['a','b','c','d','e','f','g','h']";
+    let src = format!(
+        "function r(app: any) {{ for (const a of {nine}) {{ for (const b of {eight}) {{ \
+         app.get(`/p/${{a}}/${{b}}`, h); }} }} }}"
+    );
+    assert_eq!(targets(&src), vec!["/p/{}/{}"]);
+    let ok = format!(
+        "function r(app: any) {{ for (const a of {eight}) {{ for (const b of {eight}) {{ \
+         app.get(`/p/${{a}}/${{b}}`, h); }} }} }}"
+    );
+    assert_eq!(targets(&ok).len(), 64);
+}
+
+#[test]
+fn fastify_object_form_in_loop_is_expanded() {
+    let src = r#"export async function routes(app: any) {
+  for (const p of ['alpha', 'beta']) {
+    app.route({ method: 'GET', url: `/x/${p}`, handler: async () => 1 });
+  }
+  app.route({ method: ['GET', 'POST'], url: '/plain', handler: async () => 1 });
+}"#;
+    assert_eq!(
+        routes(src),
+        vec![
+            ("GET".to_string(), "/plain".to_string(), 5),
+            ("GET".to_string(), "/x/alpha".to_string(), 3),
+            ("GET".to_string(), "/x/beta".to_string(), 3),
+            ("POST".to_string(), "/plain".to_string(), 5),
+        ]
+    );
 }
 
 #[test]
@@ -189,5 +247,52 @@ fn incremental_reindex_matches_fresh_index() {
             "/llm/lineage/impact",
             "/llm/lineage/tracing"
         ]
+    );
+}
+
+/// Targets of the HTTP_ROUTE edges a client HTTP_CALL is bridged to, by trace.
+#[test]
+fn client_call_bridges_to_the_generated_route_not_the_param_route() {
+    let routes_ts = r#"export async function routes(app: any) {
+  app.get('/llm/dataproducts/:id', async function byId() { return 1; });
+  for (const p of ['dataproducts']) {
+    app.get(`/llm/${p}`, async function list() { return 2; });
+  }
+}
+"#;
+    let client_ts = "export async function load() { await fetch('/llm/dataproducts'); }\n";
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-loop-bridge-")
+        .tempdir()
+        .unwrap();
+    common::write_files(
+        tmp.path(),
+        &[("svc/routes.ts", routes_ts), ("svc/client.ts", client_ts)],
+    );
+    let db = tmp.path().join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(tmp.path().to_path_buf(), db.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let params = serde_json::json!({
+        "start_qualname": "client.load",
+        "max_hops": 2,
+        "kinds": ["CALLS", "HTTP_CALL", "HTTP_ROUTE"],
+    })
+    .to_string();
+    let resp = lidx::rpc::call(
+        tmp.path().to_path_buf(),
+        db,
+        "trace_flow".to_string(),
+        &params,
+        "1",
+    )
+    .unwrap();
+    assert!(resp.contains("\"HTTP_ROUTE\""), "no route hop: {resp}");
+    assert!(
+        resp.contains(r#""path":"/llm/dataproducts""#),
+        "generated route not reached: {resp}"
+    );
+    assert!(
+        !resp.contains("/llm/dataproducts/{}"),
+        "bridged to the param route: {resp}"
     );
 }
