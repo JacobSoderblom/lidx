@@ -1045,6 +1045,7 @@ impl Db {
     ///   imported handler) is sourced at the first candidate that is a
     ///   function or method, else at its enclosing scope (`detail.enclosing`).
     pub fn reconcile_rpc_edges(&self, graph_version: i64) -> Result<usize> {
+        let pruned = self.prune_csharp_rpc_impl_candidates(graph_version)?;
         struct Row {
             id: i64,
             kind: String,
@@ -1146,8 +1147,8 @@ impl Db {
                 updates.push((row.id, source, detail.to_string()));
             }
         }
-        let changed = updates.len();
-        if changed > 0 {
+        let changed = updates.len() + pruned;
+        if !updates.is_empty() {
             let mut conn = self.conn();
             let tx = conn.transaction()?;
             for (id, source, detail) in updates {
@@ -1158,6 +1159,163 @@ impl Db {
             }
             tx.commit()?;
         }
+        Ok(changed)
+    }
+
+    /// A C# `*ServiceBase` impl emits one RPC_IMPL candidate per bare `using`
+    /// as the proto package guess (#327). Per (file, source, service, rpc)
+    /// group: when a candidate's path is an indexed RPC_ROUTE, the candidates
+    /// that are not are deleted and remembered in the survivor's
+    /// `detail.pruned` (`[{target, package}]`); when no candidate is backed
+    /// any more (the `.proto` went away) the remembered ones are restored.
+    /// Recomputed from current rows, so incremental sync equals a fresh index.
+    /// Returns the number of rows deleted or restored.
+    fn prune_csharp_rpc_impl_candidates(&self, graph_version: i64) -> Result<usize> {
+        struct Row {
+            id: i64,
+            target: String,
+            detail: serde_json::Value,
+            backed: bool,
+        }
+        let routes: HashSet<String> = {
+            let conn = self.read_conn()?;
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT target_qualname FROM edges
+                 WHERE kind = 'RPC_ROUTE' AND graph_version = ?1
+                   AND target_qualname IS NOT NULL",
+            )?;
+            stmt.query_map([graph_version], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let mut groups: HashMap<(i64, Option<i64>, String, String), Vec<Row>> = HashMap::new();
+        {
+            let conn = self.read_conn()?;
+            let mut stmt = conn.prepare(
+                "SELECT e.id, e.file_id, e.source_symbol_id, e.target_qualname, e.detail
+                 FROM edges e JOIN files f ON f.id = e.file_id
+                 WHERE e.graph_version = ?1 AND e.kind = 'RPC_IMPL'
+                   AND e.target_qualname LIKE '/%'
+                   AND e.detail LIKE '%\"grpc-csharp\"%'
+                   AND (f.deleted_version IS NULL OR f.deleted_version > ?1)
+                 ORDER BY e.id",
+            )?;
+            let rows = stmt.query_map([graph_version], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, file_id, source, target, detail) = row?;
+                let Ok(detail) = serde_json::from_str::<serde_json::Value>(&detail) else {
+                    continue;
+                };
+                if detail["framework"] != "grpc-csharp" {
+                    continue;
+                }
+                let key = (
+                    file_id,
+                    source,
+                    detail["service"].as_str().unwrap_or_default().to_string(),
+                    detail["rpc"].as_str().unwrap_or_default().to_string(),
+                );
+                let backed = routes.contains(&target);
+                groups.entry(key).or_default().push(Row {
+                    id,
+                    target,
+                    detail,
+                    backed,
+                });
+            }
+        }
+        let mut deletes: Vec<i64> = Vec::new();
+        let mut detail_updates: Vec<(i64, String)> = Vec::new();
+        // (template edge id, target, detail) rows to re-insert.
+        let mut restores: Vec<(i64, String, String)> = Vec::new();
+        for rows in groups.values() {
+            if rows.iter().any(|r| r.backed) {
+                let dropped: Vec<&Row> = rows.iter().filter(|r| !r.backed).collect();
+                let Some(survivor) = rows.iter().find(|r| r.backed) else {
+                    continue;
+                };
+                if dropped.is_empty() {
+                    continue;
+                }
+                let mut detail = survivor.detail.clone();
+                let mut pruned = detail["pruned"].as_array().cloned().unwrap_or_default();
+                for r in &dropped {
+                    pruned.push(serde_json::json!({
+                        "target": r.target,
+                        "package": r.detail["package"],
+                    }));
+                    deletes.push(r.id);
+                }
+                detail["pruned"] = pruned.into();
+                detail_updates.push((survivor.id, detail.to_string()));
+            } else {
+                for r in rows {
+                    let Some(pruned) = r.detail["pruned"].as_array() else {
+                        continue;
+                    };
+                    let mut detail = r.detail.clone();
+                    if let Some(map) = detail.as_object_mut() {
+                        map.remove("pruned");
+                    }
+                    detail_updates.push((r.id, detail.to_string()));
+                    for p in pruned {
+                        let (Some(target), mut d) = (p["target"].as_str(), detail.clone()) else {
+                            continue;
+                        };
+                        d["package"] = p["package"].clone();
+                        restores.push((r.id, target.to_string(), d.to_string()));
+                    }
+                }
+            }
+        }
+        let changed = deletes.len() + restores.len();
+        if changed == 0 && detail_updates.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let columns: Vec<String> = {
+            let mut stmt = tx.prepare("PRAGMA table_info(edges)")?;
+            stmt.query_map([], |r| r.get::<_, String>(1))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|c| c != "id")
+                .collect()
+        };
+        let cols = columns.join(", ");
+        let sel = columns
+            .iter()
+            .map(|c| match c.as_str() {
+                "target_qualname" => "?2".to_string(),
+                "detail" => "?3".to_string(),
+                "target_symbol_id" => "NULL".to_string(),
+                other => other.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        for (template, target, detail) in &restores {
+            tx.execute(
+                &format!("INSERT INTO edges ({cols}) SELECT {sel} FROM edges WHERE id = ?1"),
+                rusqlite::params![template, target, detail],
+            )?;
+        }
+        for (id, detail) in &detail_updates {
+            tx.execute(
+                "UPDATE edges SET detail = ?1 WHERE id = ?2",
+                rusqlite::params![detail, id],
+            )?;
+        }
+        for id in &deletes {
+            tx.execute("DELETE FROM edges WHERE id = ?1", [id])?;
+        }
+        tx.commit()?;
         Ok(changed)
     }
 

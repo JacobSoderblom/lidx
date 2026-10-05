@@ -6984,7 +6984,9 @@ namespace Dpb.DataMgr.Datasource.Grpc {
         // namespace brought in scope by a bare `using`, not an alias).
         // Every bare `using` in the file becomes a candidate; a wrong one
         // just never matches a real RPC_ROUTE downstream, so this is safe
-        // even when ambiguous.
+        // even when ambiguous. The extractor keeps the full fan-out; once a
+        // route backs one candidate, `Db::reconcile_rpc_edges` drops the
+        // rest (#327, tests/csharp_rpc_impl_prune.rs).
         let source = r#"
 using DataProduct.Team.V1;
 using Inventory.V1;
