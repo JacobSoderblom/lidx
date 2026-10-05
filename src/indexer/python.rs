@@ -1,7 +1,10 @@
-use crate::db::resolver::{ImportMissPolicy, LanguageProfile};
+use crate::db::resolver::{DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
+use crate::indexer::extract::{
+    DeferredBase, DeferredMarker, DeferredReturn, EdgeInput, ExtractedFile, MAX_DEFERRED_DEPTH,
+    ReceiverType, SymbolInput,
+};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::py_layout::PyLayout;
@@ -30,6 +33,7 @@ use tree_sitter::{Node, Parser};
 /// resolver-only heuristic, not data this extractor supplies.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     import_miss: ImportMissPolicy::PythonRepoHeuristic,
+    deferred_receiver: Some(resolve_deferred),
     ..LanguageProfile::DEFAULT
 };
 
@@ -57,6 +61,12 @@ struct Context {
     /// assigned from `factory()` can take the annotated type — see
     /// `collect_factory_returns`. Same-file callees only.
     factories: Rc<FactoryReturns>,
+    /// `Class.method` -> return type of this file's methods, annotated or
+    /// (unannotated) only ever `return self` — see `collect_method_returns`.
+    method_returns: Rc<FactoryReturns>,
+    /// Unannotated top-level functions that only `return Cls(..)`: used to
+    /// type chained-call receivers only, never locals.
+    inferred_factories: Rc<FactoryReturns>,
     /// This file's import bindings — bound name -> fully-qualified
     /// target(s) it stands for, from `from x import Y [as Z]` / `import
     /// x.y as z` — collected once in `extract()` before the main walk (see
@@ -161,7 +171,8 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             ".",
             module_docstring,
         ));
-        let factories = Rc::new(collect_factory_returns(root, source));
+        let (factories, inferred_factories) = collect_factory_returns(root, source);
+        let factories = Rc::new(factories);
         let ctx = Context {
             string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
                 crate::indexer::string_consts::ConstLang::Python,
@@ -174,6 +185,8 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             current_scope: module_name.to_string(),
             grpc_service: None,
             local_types: Rc::new(infer_module_level_types(root, source, &factories)),
+            method_returns: Rc::new(collect_method_returns(root, source)),
+            inferred_factories: Rc::new(inferred_factories),
             factories,
             class_attr_types: Rc::new(HashMap::new()),
             imports: Rc::new(collect_import_bindings(root, source)),
@@ -718,6 +731,25 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return;
     }
+    if let Some((name, receiver_type)) = chained_call_receiver(function_node, source, ctx) {
+        let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+        output.edges.push(EdgeInput {
+            kind: "CALLS".to_string(),
+            source_qualname: Some(ctx.current_scope.clone()),
+            // The callee's name is all the text there is (`make().stage`
+            // has no printable receiver); the receiver type binds it.
+            target_qualname: Some(name),
+            detail: Some(raw),
+            evidence_snippet: util::edge_evidence_snippet(
+                source, start_byte, end_byte, start_line, end_line,
+            ),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            receiver_type,
+            ..Default::default()
+        });
+        return;
+    }
     let receiver_type = infer_receiver_type(function_node, source, ctx);
     // Import-aware qualification only makes sense when the receiver isn't
     // already gated by receiver-type inference — see
@@ -846,6 +878,232 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     // class-level list/dict attribute colliding with an unrelated
     // same-named method elsewhere in the index).
     ReceiverType::Unresolved
+}
+
+/// What is known of the value a call expression returns, while building a
+/// chained call's receiver (`make().stage(1).storage()`).
+enum Chain {
+    /// The value's type is known now.
+    Known(String),
+    /// The value is the return of a call whose declaration lives elsewhere.
+    Deferred(DeferredReturn),
+    /// Nothing usable (builtin, local of unknown type, subscript, ...).
+    Unknown,
+}
+
+impl Chain {
+    /// The receiver type of a call made on this value.
+    fn receiver(self, name_only: bool) -> ReceiverType {
+        match self {
+            Chain::Known(ty) => ReceiverType::Known(ty),
+            Chain::Deferred(call) => ReceiverType::Deferred(DeferredReturn { name_only, ..call }),
+            Chain::Unknown => ReceiverType::Unresolved,
+        }
+    }
+
+    /// The value of calling method `name` on this value.
+    fn call_method(self, name: &str, ctx: &Context) -> Chain {
+        match self {
+            Chain::Known(ty) => match ctx.method_returns.get(&format!("{ty}.{name}")) {
+                // Declared in this file: read it here.
+                Some(f) => match factory_return_type(&f.ret, f.is_async, false) {
+                    LocalType::Known(ret) if ret == "Self" => Chain::Known(ty),
+                    LocalType::Known(ret) => Chain::Known(ret),
+                    LocalType::Other => Chain::Unknown,
+                },
+                None => Chain::Deferred(DeferredReturn::on_type(&ty, name, false, false)),
+            },
+            Chain::Deferred(inner) if inner.depth() < MAX_DEFERRED_DEPTH => {
+                Chain::Deferred(DeferredReturn::on_call(inner, name, false))
+            }
+            _ => Chain::Unknown,
+        }
+    }
+}
+
+/// `(method name, receiver type)` of a call whose callee is an attribute of
+/// another call's result (`make().stage(1)`, whose receiver `make()` has no
+/// printable name); `None` for any other callee shape.
+fn chained_call_receiver(
+    function_node: Node<'_>,
+    source: &str,
+    ctx: &Context,
+) -> Option<(String, ReceiverType)> {
+    if function_node.kind() != "attribute" {
+        return None;
+    }
+    let object = unwrap_parens(function_node.child_by_field_name("object")?);
+    let name = node_text(function_node.child_by_field_name("attribute")?, source);
+    if object.kind() == "call" {
+        return Some((name, call_value(object, source, ctx).receiver(true)));
+    }
+    // Any other receiver the callee's text can't spell (`items[0].stage`,
+    // `(a or b).stage`) is recorded as an unresolved call by name.
+    let text = collapse_call_target_whitespace(&node_text(function_node, source));
+    (!is_simple_call_target(&text)).then_some((name, ReceiverType::Unresolved))
+}
+
+fn unwrap_parens(mut node: Node<'_>) -> Node<'_> {
+    while node.kind() == "parenthesized_expression" {
+        match node.named_child(0) {
+            Some(inner) => node = inner,
+            None => break,
+        }
+    }
+    node
+}
+
+/// The value the call expression `call` returns.
+fn call_value(call: Node<'_>, source: &str, ctx: &Context) -> Chain {
+    let Some(func) = call.child_by_field_name("function") else {
+        return Chain::Unknown;
+    };
+    match func.kind() {
+        "identifier" => {
+            let name = node_text(func, source);
+            if ctx.local_types.contains_key(&name) {
+                return Chain::Unknown;
+            }
+            if let Some(f) = ctx
+                .factories
+                .get(&name)
+                .or_else(|| ctx.inferred_factories.get(&name))
+            {
+                return match factory_return_type(&f.ret, f.is_async, false) {
+                    LocalType::Known(ty) => Chain::Known(ty),
+                    LocalType::Other => Chain::Unknown,
+                };
+            }
+            let mut candidates = vec![format!("{}.{name}", ctx.module)];
+            candidates.extend(ctx.imports.get(&name).cloned().unwrap_or_default());
+            Chain::Deferred(DeferredReturn::on_function(candidates, &name))
+        }
+        "attribute" => {
+            let (Some(object), Some(attr)) = (
+                func.child_by_field_name("object"),
+                func.child_by_field_name("attribute"),
+            ) else {
+                return Chain::Unknown;
+            };
+            let attr = node_text(attr, source);
+            let object = unwrap_parens(object);
+            if object.kind() == "call" {
+                return call_value(object, source, ctx).call_method(&attr, ctx);
+            }
+            let (root, hops) = attribute_chain_root(object);
+            if root.kind() != "identifier" {
+                return Chain::Unknown;
+            }
+            let root_name = node_text(root, source);
+            if root_name == "self" || root_name == "cls" {
+                return match (hops, ctx.class_stack.last()) {
+                    (0, Some(class)) => Chain::Known(class.clone()).call_method(&attr, ctx),
+                    _ => Chain::Unknown,
+                };
+            }
+            if hops == 0 {
+                match ctx.local_types.get(&root_name) {
+                    Some(LocalType::Known(ty)) => {
+                        return Chain::Known(ty.clone()).call_method(&attr, ctx);
+                    }
+                    Some(LocalType::Other) => return Chain::Unknown,
+                    None => {}
+                }
+            }
+            // A class or module reference (`Builder.create()`,
+            // `pkg.make()`): the callee's dotted name, local or imported.
+            let text = node_text(object, source);
+            let rest = &text[root_name.len()..];
+            let mut candidates = vec![format!("{}.{text}.{attr}", ctx.module)];
+            for target in ctx.imports.get(&root_name).into_iter().flatten() {
+                candidates.push(format!("{target}{rest}.{attr}"));
+            }
+            Chain::Deferred(DeferredReturn::on_function(candidates, &attr))
+        }
+        _ => Chain::Unknown,
+    }
+}
+
+/// `LanguageProfile::deferred_receiver` for Python: the class a chained
+/// call's receiver is, read from return annotations (or, for a class, the
+/// class itself). `""` when it cannot be told: never a guess.
+fn resolve_deferred(
+    marker: &DeferredMarker,
+    index: &dyn DeclarationIndex,
+) -> Result<Option<Option<String>>> {
+    match marker {
+        DeferredMarker::Return(call) => Ok(Some(Some(
+            deferred_class(call, index, 0)?.unwrap_or_default(),
+        ))),
+        _ => Ok(None),
+    }
+}
+
+fn deferred_class(
+    call: &DeferredReturn,
+    index: &dyn DeclarationIndex,
+    depth: usize,
+) -> Result<Option<String>> {
+    let mut returns: Vec<Option<String>> = Vec::new();
+    match &call.base {
+        DeferredBase::Function(candidates) => {
+            for qualname in candidates {
+                let callables = index.declarations(DeclarationQuery::Callable(qualname))?;
+                let is_class = !callables.is_empty() || {
+                    let name = qualname.rsplit('.').next().unwrap_or(qualname);
+                    index
+                        .declarations(DeclarationQuery::Type(name))?
+                        .iter()
+                        .any(|d| d.qualname == *qualname)
+                };
+                if callables.is_empty() && is_class {
+                    // `Cls()` constructs the class.
+                    returns.push(Some(
+                        qualname.rsplit('.').next().unwrap_or(qualname).to_string(),
+                    ));
+                }
+                for decl in &callables {
+                    returns.push(signature_return_class(decl.signature.as_deref(), None));
+                }
+            }
+        }
+        DeferredBase::Type(_) | DeferredBase::Call(_) => {
+            let ty = match &call.base {
+                DeferredBase::Type(ty) => ty.clone(),
+                DeferredBase::Call(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
+                DeferredBase::Call(inner) => match deferred_class(inner, index, depth + 1)? {
+                    Some(ty) => ty,
+                    None => return Ok(None),
+                },
+                DeferredBase::Function(_) => return Ok(None),
+            };
+            for decl in index.inherited_members(&ty, &call.method)? {
+                returns.push(signature_return_class(decl.signature.as_deref(), Some(&ty)));
+            }
+        }
+    }
+    let mut agreed: Option<String> = None;
+    for ret in returns {
+        let Some(ret) = ret else { return Ok(None) };
+        match &agreed {
+            Some(prev) if *prev != ret => return Ok(None),
+            _ => agreed = Some(ret),
+        }
+    }
+    match agreed {
+        Some(ty) if index.is_repo_type(&ty)? => Ok(Some(ty)),
+        _ => Ok(None),
+    }
+}
+
+/// The class a `(params) -> Ret` signature returns; `Self` is `owner`.
+fn signature_return_class(signature: Option<&str>, owner: Option<&str>) -> Option<String> {
+    let (_, ret) = signature?.rsplit_once(" -> ")?;
+    match factory_return_type(ret, false, false) {
+        LocalType::Known(ty) if ty == "Self" => owner.map(str::to_string),
+        LocalType::Known(ty) => Some(ty),
+        LocalType::Other => None,
+    }
 }
 
 /// Walk a (possibly nested) `attribute` chain down to its root node,
@@ -1376,8 +1634,9 @@ fn last_type_arg<'a>(ann: &'a str, names: &[&str]) -> Option<&'a str> {
 
 /// Return annotations of module-top-level `def`s (decorated or not). A name
 /// defined more than once is dropped — which definition wins is unknowable.
-fn collect_factory_returns(root: Node<'_>, source: &str) -> FactoryReturns {
+fn collect_factory_returns(root: Node<'_>, source: &str) -> (FactoryReturns, FactoryReturns) {
     let mut found: FactoryReturns = HashMap::new();
+    let mut inferred: FactoryReturns = HashMap::new();
     let mut seen: Vec<String> = Vec::new();
     let mut cursor = root.walk();
     for stmt in root.named_children(&mut cursor) {
@@ -1395,23 +1654,169 @@ fn collect_factory_returns(root: Node<'_>, source: &str) -> FactoryReturns {
         let name = node_text(name, source);
         if seen.contains(&name) {
             found.remove(&name);
+            inferred.remove(&name);
             continue;
         }
         seen.push(name.clone());
-        let Some(ret) = def.child_by_field_name("return_type") else {
-            continue;
-        };
         let is_async =
             (0..def.child_count()).any(|i| def.child(i).is_some_and(|c| c.kind() == "async"));
-        found.insert(
-            name,
-            FactoryReturn {
-                ret: annotation_text(ret, source),
-                is_async,
-            },
-        );
+        let ret = match def.child_by_field_name("return_type") {
+            Some(ret) => annotation_text(ret, source),
+            // No annotation: a function that only ever `return Cls(..)`s
+            // one class returns it. Kept out of `factories` (which types
+            // locals, annotation-only) -- see `Context::inferred_factories`.
+            None => {
+                if let Some(class) = def
+                    .child_by_field_name("body")
+                    .and_then(|body| constructed_return_class(body, source))
+                {
+                    inferred.insert(
+                        name,
+                        FactoryReturn {
+                            ret: class,
+                            is_async,
+                        },
+                    );
+                }
+                continue;
+            }
+        };
+        found.insert(name, FactoryReturn { ret, is_async });
     }
+    (found, inferred)
+}
+
+/// Return types of the methods of this file's classes, keyed `Class.method`
+/// (a name defined twice is dropped): the annotation, else the class itself
+/// when every `return` in the body is `return self`.
+fn collect_method_returns(root: Node<'_>, source: &str) -> FactoryReturns {
+    fn visit(node: Node<'_>, source: &str, found: &mut FactoryReturns, seen: &mut Vec<String>) {
+        let mut cursor = node.walk();
+        for stmt in node.named_children(&mut cursor) {
+            let def = if stmt.kind() == "decorated_definition" {
+                stmt.child_by_field_name("definition").unwrap_or(stmt)
+            } else {
+                stmt
+            };
+            if def.kind() != "class_definition" {
+                continue;
+            }
+            let (Some(name), Some(body)) = (
+                def.child_by_field_name("name"),
+                def.child_by_field_name("body"),
+            ) else {
+                continue;
+            };
+            let class = node_text(name, source);
+            let mut inner = body.walk();
+            for member in body.named_children(&mut inner) {
+                let method = if member.kind() == "decorated_definition" {
+                    member.child_by_field_name("definition").unwrap_or(member)
+                } else {
+                    member
+                };
+                let Some(mname) = method
+                    .child_by_field_name("name")
+                    .filter(|_| method.kind() == "function_definition")
+                else {
+                    continue;
+                };
+                let key = format!("{class}.{}", node_text(mname, source));
+                if seen.contains(&key) {
+                    found.remove(&key);
+                    continue;
+                }
+                seen.push(key.clone());
+                let is_async = (0..method.child_count())
+                    .any(|i| method.child(i).is_some_and(|c| c.kind() == "async"));
+                let ret = match method.child_by_field_name("return_type") {
+                    Some(ret) => annotation_text(ret, source),
+                    None if method
+                        .child_by_field_name("body")
+                        .is_some_and(|b| only_returns_self(b, source)) =>
+                    {
+                        class.clone()
+                    }
+                    None => continue,
+                };
+                found.insert(key, FactoryReturn { ret, is_async });
+            }
+            visit(body, source, found, seen);
+        }
+    }
+    let mut found = HashMap::new();
+    visit(root, source, &mut found, &mut Vec::new());
     found
+}
+
+/// Whether a body has at least one `return` and every one is `return self`
+/// (nested `def`/`class`/`lambda` bodies excluded).
+fn only_returns_self(body: Node<'_>, source: &str) -> bool {
+    fn walk(node: Node<'_>, source: &str, count: &mut usize) -> bool {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "function_definition" | "class_definition" | "lambda" => {}
+                "return_statement" => {
+                    let is_self = child.named_child(0).is_some_and(|v| {
+                        v.kind() == "identifier" && node_text(v, source) == "self"
+                    });
+                    if !is_self {
+                        return false;
+                    }
+                    *count += 1;
+                }
+                _ => {
+                    if !walk(child, source, count) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+    let mut count = 0;
+    walk(body, source, &mut count) && count > 0
+}
+
+/// The class every `return` in a function body constructs (`return Cls(..)`,
+/// `Cls` capitalised like `classify_call_value` requires), if they all agree.
+/// Nested `def`/`class`/`lambda` bodies are not this function's returns.
+fn constructed_return_class(body: Node<'_>, source: &str) -> Option<String> {
+    fn walk(node: Node<'_>, source: &str, found: &mut Option<String>) -> bool {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "function_definition" | "class_definition" | "lambda" => {}
+                "return_statement" => {
+                    let class = child
+                        .named_child(0)
+                        .filter(|v| v.kind() == "call")
+                        .and_then(|v| v.child_by_field_name("function"))
+                        .filter(|f| f.kind() == "identifier")
+                        .map(|f| node_text(f, source))
+                        .filter(|n| n.chars().next().is_some_and(|c| c.is_uppercase()));
+                    match (class, &*found) {
+                        (Some(c), None) => *found = Some(c),
+                        (Some(c), Some(prev)) if c == *prev => {}
+                        _ => return false,
+                    }
+                }
+                _ => {
+                    if !walk(child, source, found) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+    let mut found = None;
+    if walk(body, source, &mut found) {
+        found
+    } else {
+        None
+    }
 }
 
 /// Class-level (PEP 526) annotated attributes declared directly in a class
