@@ -598,42 +598,29 @@ fn extract_trigger_function(text: &str) -> Option<String> {
 }
 
 fn extract_foreign_key_references(text: &str) -> Vec<String> {
+    let masked = mask_noise_keep_brackets(text);
+    // ASCII uppercasing keeps byte offsets aligned with `masked`
+    let upper = masked.to_ascii_uppercase();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
     let mut results = Vec::new();
-    // ASCII uppercasing keeps byte offsets aligned with `text`
-    let text_upper = text.to_ascii_uppercase();
-
-    // Find all occurrences of REFERENCES
-    let mut search_start = 0;
-    while let Some(ref_idx) = text_upper[search_start..].find("REFERENCES") {
-        let abs_idx = search_start + ref_idx;
-        let after_ref = &text[abs_idx + 10..];
-
-        // Extract table name after REFERENCES
-        if let Some(table_name) = extract_table_name(after_ref) {
-            results.push(table_name);
+    let mut from = 0;
+    while let Some(i) = upper[from..].find("REFERENCES") {
+        let at = from + i;
+        from = at + 10;
+        let bytes = upper.as_bytes();
+        if (at > 0 && ident(bytes[at - 1])) || bytes.get(from).is_some_and(|&c| ident(c)) {
+            continue;
         }
-
-        search_start = abs_idx + 10;
+        let rest = masked[from..].trim_start();
+        let end = rest
+            .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '[' | ']' | '"')))
+            .unwrap_or(rest.len());
+        let target = strip_quotes(&rest[..end]);
+        if !target.is_empty() {
+            results.push(target);
+        }
     }
-
     results
-}
-
-fn extract_table_name(text: &str) -> Option<String> {
-    let trimmed = text.trim_start();
-    let mut name = String::new();
-
-    for ch in trimmed.chars() {
-        if ch.is_alphanumeric() || ch == '_' || ch == '.' {
-            name.push(ch);
-        } else if ch == '(' || ch.is_whitespace() {
-            break;
-        } else {
-            return None;
-        }
-    }
-
-    if !name.is_empty() { Some(name) } else { None }
 }
 
 fn extract_do_blocks(source: &str, module_name: &str, output: &mut ExtractedFile) {
@@ -850,6 +837,9 @@ fn extract_tsql_fallback(
 ) {
     for cand in scan_candidates(source) {
         let norm = normalize_qualname(&cand.qualname);
+        if cand.kind == "table" {
+            add_fallback_fk_edges(source, &cand, output);
+        }
         let existing = output
             .symbols
             .iter()
@@ -897,6 +887,39 @@ fn extract_tsql_fallback(
             source_qualname: Some(module_name.to_string()),
             target_qualname: Some(cand.qualname),
             detail: None,
+            evidence_snippet: None,
+            ..Default::default()
+        });
+    }
+}
+
+/// REFERENCES edges for a line-scanned `CREATE TABLE` the grammar could not
+/// parse; skips targets the grammar path already emitted.
+fn add_fallback_fk_edges(source: &str, cand: &Candidate, output: &mut ExtractedFile) {
+    let Some(text) = source.get(cand.start..cand.end) else {
+        return;
+    };
+    let src_norm = normalize_qualname(&cand.qualname);
+    let source_qualname = declared_qualname(output, &cand.qualname);
+    for target in extract_foreign_key_references(text) {
+        let tnorm = normalize_qualname(&target);
+        let dup = output.edges.iter().any(|e| {
+            e.kind == REFERENCES_KIND
+                && e.source_qualname
+                    .as_deref()
+                    .is_some_and(|q| normalize_qualname(q) == src_norm)
+                && e.target_qualname
+                    .as_deref()
+                    .is_some_and(|q| normalize_qualname(q) == tnorm)
+        });
+        if dup {
+            continue;
+        }
+        output.edges.push(EdgeInput {
+            kind: REFERENCES_KIND.to_string(),
+            source_qualname: Some(source_qualname.clone()),
+            target_qualname: Some(target),
+            detail: Some("foreign key".to_string()),
             evidence_snippet: None,
             ..Default::default()
         });
