@@ -168,6 +168,8 @@ struct RgParams {
     globs: Option<Vec<String>>,
     case_sensitive: Option<bool>,
     fixed_string: Option<bool>,
+    /// Search dot-directories/dot-files (default true, matching the indexer). `.git/` and
+    /// `.lidx/` are always excluded; pass false to skip every hidden path.
     hidden: Option<bool>,
     no_ignore: Option<bool>,
     follow: Option<bool>,

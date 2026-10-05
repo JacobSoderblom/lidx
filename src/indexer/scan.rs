@@ -334,12 +334,13 @@ pub fn scan_repo_with_options(repo_root: &Path, options: ScanOptions) -> Result<
     Ok(files)
 }
 
+/// Directory names the scanner never descends into (and `search` never reports hits from).
+pub const IGNORED_DIR_NAMES: [&str; 2] = [".lidx", ".git"];
+
 fn is_ignored_entry(entry: &ignore::DirEntry) -> bool {
-    match entry.file_name() {
-        name if name == OsStr::new(".lidx") => true,
-        name if name == OsStr::new(".git") => true,
-        _ => false,
-    }
+    IGNORED_DIR_NAMES
+        .iter()
+        .any(|ignored| entry.file_name() == OsStr::new(ignored))
 }
 
 pub fn scan_path(repo_root: &Path, path: &Path) -> Result<Option<ScannedFile>> {

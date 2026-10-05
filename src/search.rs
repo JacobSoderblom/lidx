@@ -1065,6 +1065,14 @@ pub fn search_rg(
             Ok(rel) => util::normalize_path(rel),
             Err(_) => raw_path.to_string(),
         };
+        // Same exclusions as the scanner, whatever globs or paths the caller gave.
+        if options.hidden
+            && path
+                .split('/')
+                .any(|part| crate::indexer::scan::IGNORED_DIR_NAMES.contains(&part))
+        {
+            continue;
+        }
         let line_number = data["line_number"].as_u64().unwrap_or(0) as usize;
         let line_text = data["lines"]["text"]
             .as_str()
