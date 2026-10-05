@@ -513,3 +513,56 @@ fn exec_inside_function_and_trigger_bodies() {
         "{edges:?}"
     );
 }
+
+/// Issue #340: `#temp` / `##temp` tables are procedure-local scratch objects,
+/// never schema `table` symbols or edge targets.
+const TEMP_FIXTURE: &str = "CREATE OR ALTER PROCEDURE dpb.do_work
+AS
+BEGIN
+    SET NOCOUNT ON;
+    CREATE TABLE #scratch (id INT NOT NULL);
+    CREATE TABLE ##global_scratch (id INT NOT NULL);
+    CREATE TABLE [#br] (id INT NOT NULL);
+    INSERT INTO #scratch VALUES (1);
+    SELECT id INTO #into_t FROM dpb.x;
+    SELECT s.id FROM dpb.x AS a JOIN #scratch s ON s.id = a.id;
+    UPDATE #scratch SET id = 2;
+    DELETE FROM #scratch WHERE id = 3;
+    DROP TABLE #scratch;
+END;
+GO
+CREATE TABLE dpb.x (id INT NOT NULL);
+GO
+";
+
+const TEMP_NAMES: [&str; 5] = ["scratch", "global_scratch", "br", "into_t", "#"];
+
+#[test]
+fn temp_tables_produce_no_symbols() {
+    let f = extract(TEMP_FIXTURE);
+    let mut got: Vec<_> = f
+        .symbols
+        .iter()
+        .filter(|s| s.kind != "module")
+        .map(|s| (s.kind.as_str(), s.qualname.as_str()))
+        .collect();
+    got.sort();
+    assert_eq!(got, vec![("procedure", "dpb.do_work"), ("table", "dpb.x")]);
+}
+
+#[test]
+fn temp_tables_produce_no_edges() {
+    let f = extract(TEMP_FIXTURE);
+    for e in &f.edges {
+        for q in [&e.source_qualname, &e.target_qualname]
+            .into_iter()
+            .flatten()
+        {
+            let last = q.rsplit('.').next().unwrap_or(q);
+            assert!(
+                !TEMP_NAMES.contains(&last.trim_start_matches('#')) || last == "x",
+                "edge touches a temp table: {e:?}"
+            );
+        }
+    }
+}
