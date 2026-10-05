@@ -95,15 +95,7 @@ pub fn normalize_channel_name(raw: &str) -> Option<String> {
 
     // Strip known container prefix (Topics.X → X)
     let topic_part = strip_topic_container(trimmed);
-    let topic_part = AZURE_NAME_PREFIXES
-        .iter()
-        .find_map(|p| {
-            topic_part
-                .get(..p.len())
-                .filter(|head| head.eq_ignore_ascii_case(p))
-                .map(|_| &topic_part[p.len()..])
-        })
-        .unwrap_or(topic_part);
+    let topic_part = strip_azure_prefix(topic_part);
 
     // Remove hyphens/underscores and lowercase
     let normalized: String = topic_part
@@ -151,6 +143,18 @@ fn strip_topic_container(raw: &str) -> &str {
         }
     }
     raw
+}
+
+/// Strip a leading Azure Service Bus prefix (`sbt-`, `sbts-`, `sbq-`), ignoring case.
+fn strip_azure_prefix(name: &str) -> &str {
+    AZURE_NAME_PREFIXES
+        .iter()
+        .find(|p| {
+            name.as_bytes()
+                .get(..p.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(p.as_bytes()))
+        })
+        .map_or(name, |p| &name[p.len()..])
 }
 
 /// Check if a receiver expression looks like a message bus.
@@ -447,12 +451,33 @@ mod tests {
             ("sbq-x", "channel://x"),
             ("sbts-x", "channel://x"),
             ("sbt-dataproxy-commands", "channel://dataproxycommands"),
+            (
+                "sbt-orchestrator-triggers",
+                "channel://orchestratortriggers",
+            ),
+            ("sbq-dead-letter", "channel://deadletter"),
+            ("sbts-my-subscription", "channel://mysubscription"),
+            ("my-topic-name", "channel://mytopicname"),
+            ("MyTopic", "channel://mytopic"),
             ("Topics.XY", "channel://xy"),
             ("TOPIC_NAME", "channel://topicname"),
         ] {
             assert_eq!(normalize_channel_name(raw), Some(want.to_string()), "{raw}");
         }
+    }
+
+    #[test]
+    fn normalize_azure_prefix_is_case_insensitive() {
+        assert_eq!(
+            normalize_channel_name("SBT-Foo"),
+            Some("channel://foo".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_empty_inputs_yield_none() {
         assert_eq!(normalize_channel_name(""), None);
+        assert_eq!(normalize_channel_name("   "), None);
         assert_eq!(normalize_channel_name("sbt-"), None);
     }
 }

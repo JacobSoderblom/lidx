@@ -1020,40 +1020,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_channel_name_strips_prefix() {
-        assert_eq!(
-            normalize_channel_name("sbt-orchestrator-triggers"),
-            Some("channel://orchestratortriggers".to_string())
-        );
-        assert_eq!(
-            normalize_channel_name("sbq-dead-letter"),
-            Some("channel://deadletter".to_string())
-        );
-        assert_eq!(
-            normalize_channel_name("sbts-my-subscription"),
-            Some("channel://mysubscription".to_string())
-        );
-    }
-
-    #[test]
-    fn normalize_channel_name_no_prefix() {
-        assert_eq!(
-            normalize_channel_name("my-topic-name"),
-            Some("channel://mytopicname".to_string())
-        );
-        assert_eq!(
-            normalize_channel_name("MyTopic"),
-            Some("channel://mytopic".to_string())
-        );
-    }
-
-    #[test]
-    fn normalize_channel_name_empty() {
-        assert_eq!(normalize_channel_name(""), None);
-        assert_eq!(normalize_channel_name("   "), None);
-    }
-
-    #[test]
     fn resource_name_extraction() {
         let source = "resource topic 'Microsoft.ServiceBus/namespaces/topics@2022-10-01' = {\n  name: 'sbt-foo-bar'\n  properties: {\n    maxSizeInMegabytes: 1024\n  }\n}\n";
         let (decls, _, _) = parse_bicep(source);

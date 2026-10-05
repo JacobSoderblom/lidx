@@ -86,5 +86,11 @@ fn incremental_edit_matches_fresh_index() {
     );
     let fresh = channel_edges(&Indexer::new(root2, db2).unwrap());
     assert_eq!(incremental, fresh);
+    let targets: std::collections::BTreeSet<_> = incremental.iter().map(|e| e.2.as_str()).collect();
+    assert_eq!(
+        targets,
+        ["channel://dataproxycommands"].into_iter().collect(),
+        "{incremental:?}"
+    );
     assert!(!fresh.is_empty());
 }
