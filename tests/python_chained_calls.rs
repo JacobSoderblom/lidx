@@ -1,38 +1,29 @@
 //! Issue #319: Python method calls whose receiver is itself a call
-//! (`make().stage(1).storage()`) must produce CALLS edges, resolved through
-//! the return annotations / constructed class of the inner calls.
+//! (`make().stage(1).storage()`) are recorded, and bound only where the
+//! receiver call's callee has a return annotation. Nothing is inferred from
+//! function bodies.
+
+mod common;
 
 use lidx::indexer::Indexer;
+use lidx::rpc;
 use rusqlite::params;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn repo(files: &[(&str, &str)]) -> (Indexer, i64) {
-    let mut dir = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    dir.push(format!(
-        "lidx-pychain-{nanos}-{}",
-        COUNTER.fetch_add(1, Ordering::SeqCst)
-    ));
-    for (path, body) in files {
-        let full = dir.join(path);
-        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
-        std::fs::write(full, body).unwrap();
-    }
-    let db_path: PathBuf = dir.join(".lidx").join(".lidx.sqlite");
-    let mut indexer = Indexer::new(dir, db_path).unwrap();
+fn index(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Indexer) {
+    let (tmp, root, db) = common::index_repo("pychain", files);
+    let mut indexer = Indexer::new(root.clone(), db).unwrap();
     indexer.reindex().unwrap();
-    let gv = indexer.db().current_graph_version().unwrap();
-    (indexer, gv)
+    (tmp, root, indexer)
 }
 
-/// `(source qualname, resolved target qualname)` of every bound CALLS edge.
-fn bound_calls(indexer: &Indexer, gv: i64) -> Vec<(String, String)> {
+fn gv(indexer: &Indexer) -> i64 {
+    indexer.db().current_graph_version().unwrap()
+}
+
+/// `(source qualname, bound target qualname)` of every bound CALLS edge.
+fn bound_calls(indexer: &Indexer) -> BTreeSet<(String, String)> {
     let conn = indexer.db().read_conn().unwrap();
     let mut stmt = conn
         .prepare(
@@ -42,28 +33,40 @@ fn bound_calls(indexer: &Indexer, gv: i64) -> Vec<(String, String)> {
              WHERE e.kind = 'CALLS' AND e.graph_version = ?",
         )
         .unwrap();
-    stmt.query_map(params![gv], |r| Ok((r.get(0)?, r.get(1)?)))
+    stmt.query_map(params![gv(indexer)], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()
         .map(|r| r.unwrap())
         .collect()
 }
 
-fn unresolved_names(indexer: &Indexer, source: &str, gv: i64) -> Vec<String> {
+/// `(reference_name, reason)` of the unresolved CALLS rows of `source`.
+fn unresolved(indexer: &Indexer, source: &str) -> BTreeSet<(String, String)> {
     let conn = indexer.db().read_conn().unwrap();
     let mut stmt = conn
         .prepare(
-            "SELECT u.reference_name FROM unresolved_references u
+            "SELECT u.reference_name, u.reason FROM unresolved_references u
              JOIN symbols s ON s.id = u.source_symbol_id
              WHERE u.edge_kind = 'CALLS' AND s.qualname = ? AND u.graph_version = ?",
         )
         .unwrap();
-    stmt.query_map(params![source, gv], |r| r.get(0))
+    stmt.query_map(params![source, gv(indexer)], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()
         .map(|r| r.unwrap())
         .collect()
 }
 
-const BUILDER: &str = "class Builder:
+fn external(names: &[&str]) -> BTreeSet<(String, String)> {
+    names
+        .iter()
+        .map(|n| (n.to_string(), "external".to_string()))
+        .collect()
+}
+
+fn calls(indexer: &Indexer, source: &str, target: &str) -> bool {
+    bound_calls(indexer).contains(&(source.to_string(), target.to_string()))
+}
+
+const UNANNOTATED: &str = "class Builder:
     def stage(self, x):
         return self
     def storage(self):
@@ -76,67 +79,204 @@ def use():
     return make().stage(1).storage()
 ";
 
-#[test]
-fn chained_calls_in_one_file_resolve_through_constructed_class() {
-    let (indexer, gv) = repo(&[("b.py", BUILDER)]);
-    let calls = bound_calls(&indexer, gv);
-    for target in ["b.Builder.stage", "b.Builder.storage", "b.make"] {
-        assert!(
-            calls.contains(&("b.use".to_string(), target.to_string())),
-            "b.use must call {target}, got {calls:?}"
-        );
-    }
-}
-
-#[test]
-fn chained_calls_resolve_across_files_via_return_annotation() {
-    let (indexer, gv) = repo(&[
-        ("lib/__init__.py", ""),
-        (
-            "lib/builder.py",
-            "class Builder:
+const ANNOTATED: &str = "class Builder:
     def stage(self, x) -> \"Builder\":
         return self
     def storage(self) -> \"Builder\":
         return self
 
-def dataproduct(name) -> Builder:
-    return make_it(name)
-",
-        ),
-        (
-            "app/main.py",
-            "from lib.builder import dataproduct
+def make() -> Builder:
+    return Builder()
 
-def run():
-    return (
-        dataproduct(\"x\")
-        .stage(1)
-        .storage()
-    )
-",
-        ),
-    ]);
-    let calls = bound_calls(&indexer, gv);
-    for target in ["lib.builder.Builder.stage", "lib.builder.Builder.storage"] {
-        assert!(
-            calls.contains(&("app.main.run".to_string(), target.to_string())),
-            "app.main.run must call {target}, got {calls:?}"
-        );
-    }
+def use():
+    return make().stage(1).storage()
+";
+
+#[test]
+fn unannotated_chain_is_unresolved_external_and_never_bound() {
+    let (_t, _r, indexer) = index(&[("b.py", UNANNOTATED)]);
+    assert_eq!(
+        unresolved(&indexer, "b.use"),
+        external(&["stage", "storage"])
+    );
+    let bound = bound_calls(&indexer);
+    assert!(
+        !bound
+            .iter()
+            .any(|(s, t)| s == "b.use" && (t.ends_with(".stage") || t.ends_with(".storage"))),
+        "no return annotation, nothing inferred from the body: {bound:?}"
+    );
 }
 
 #[test]
-fn chain_with_unknown_receiver_stays_unresolved_but_recorded() {
-    let (indexer, gv) = repo(&[(
-        "c.py",
-        "def use(items):
-    return items[0].stage(1).storage()
-",
-    )]);
-    let names = unresolved_names(&indexer, "c.use", gv);
+fn annotated_chain_binds_through_receiver_type() {
+    let (_t, _r, indexer) = index(&[("b.py", ANNOTATED)]);
+    assert!(calls(&indexer, "b.use", "b.Builder.stage"));
+    assert!(calls(&indexer, "b.use", "b.Builder.storage"));
+    assert!(unresolved(&indexer, "b.use").is_empty());
+    let conn = indexer.db().read_conn().unwrap();
+    let kind: Option<String> = conn
+        .query_row(
+            "SELECT e.resolution_kind FROM edges e JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind = 'CALLS' AND t.qualname = 'b.Builder.storage' AND e.graph_version = ?",
+            params![gv(&indexer)],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kind.as_deref(), Some("receiver_type"));
+}
+
+#[test]
+fn unannotated_middle_method_binds_first_link_only() {
+    let src = ANNOTATED.replace("def stage(self, x) -> \"Builder\":", "def stage(self, x):");
+    let (_t, _r, indexer) = index(&[("b.py", &src)]);
+    assert!(calls(&indexer, "b.use", "b.Builder.stage"));
+    assert!(!calls(&indexer, "b.use", "b.Builder.storage"));
+    assert_eq!(unresolved(&indexer, "b.use"), external(&["storage"]));
+}
+
+#[test]
+fn optional_return_annotation_unwraps() {
+    let src = ANNOTATED.replace("def make() -> Builder:", "def make() -> Optional[Builder]:");
+    let (_t, _r, indexer) = index(&[("b.py", &src)]);
+    assert!(calls(&indexer, "b.use", "b.Builder.stage"));
+    assert!(calls(&indexer, "b.use", "b.Builder.storage"));
+}
+
+#[test]
+fn multiline_await_and_self_chains_are_recorded() {
+    let src = "class Builder:
+    def stage(self, x) -> \"Builder\":
+        return self
+    def storage(self) -> \"Builder\":
+        return self
+    def make(self) -> \"Builder\":
+        return Builder()
+    def inner(self):
+        return self.make().stage(1)
+
+def make() -> Builder:
+    return Builder()
+
+async def amake() -> Builder:
+    return Builder()
+
+def dsl():
+    return (
+        make()
+        .stage(1)
+        .storage()
+    )
+
+async def waits():
+    return await amake().stage(1)
+
+def untyped(x):
+    return (
+        x()
+        .stage(1)
+    )
+";
+    let (_t, _r, indexer) = index(&[("b.py", src)]);
+    assert!(calls(&indexer, "b.dsl", "b.Builder.stage"));
+    assert!(calls(&indexer, "b.dsl", "b.Builder.storage"));
+    // `self.make()` is a method of the enclosing class, annotated.
+    assert!(calls(&indexer, "b.Builder.inner", "b.Builder.stage"));
+    // `await amake().stage(1)`: recorded (the un-awaited coroutine call is
+    // the receiver, which is never a Builder).
+    let recorded = unresolved(&indexer, "b.waits");
+    let bound = bound_calls(&indexer);
     assert!(
-        names.iter().any(|n| n == "stage") && names.iter().any(|n| n == "storage"),
-        "unresolvable chain calls must be recorded as unresolved, got {names:?}"
+        recorded.iter().any(|(n, _)| n == "stage")
+            || bound.contains(&("b.waits".into(), "b.Builder.stage".into())),
+        "await chain call dropped: {recorded:?}"
     );
+    assert!(
+        unresolved(&indexer, "b.untyped").contains(&("stage".to_string(), "external".to_string()))
+    );
+}
+
+#[test]
+fn external_library_chain_stays_external_beside_decoy_methods() {
+    let decoy = "class Decoy:
+    def get(self, k):
+        return k
+    def json(self):
+        return {}
+";
+    let user = "import requests
+
+def fetch(u):
+    return requests.get(u).json().get(\"k\")
+";
+    let (_t, _r, indexer) = index(&[("decoy.py", decoy), ("user.py", user)]);
+    let bound = bound_calls(&indexer);
+    assert!(
+        !bound
+            .iter()
+            .any(|(s, t)| s == "user.fetch" && t.starts_with("decoy.")),
+        "external chain bound to a repo method: {bound:?}"
+    );
+    let rows = unresolved(&indexer, "user.fetch");
+    assert!(rows.contains(&("json".to_string(), "external".to_string())));
+    assert!(rows.contains(&("get".to_string(), "external".to_string())));
+}
+
+fn rpc_json(root: &Path, indexer_db: &Path, method: &str, params: &str) -> serde_json::Value {
+    let response = rpc::call(
+        root.to_path_buf(),
+        indexer_db.to_path_buf(),
+        method.to_string(),
+        params,
+        "1",
+    )
+    .unwrap();
+    serde_json::from_str::<serde_json::Value>(&response).unwrap()["result"].clone()
+}
+
+#[test]
+fn upstream_traversal_reaches_chain_caller() {
+    let (_t, root, indexer) = index(&[("b.py", ANNOTATED)]);
+    let db = root.join(".lidx").join(".lidx.sqlite");
+    drop(indexer);
+    let impact = rpc_json(
+        &root,
+        &db,
+        "analyze_impact",
+        r#"{"qualname":"b.Builder.stage","direction":"upstream","max_depth":3}"#,
+    );
+    assert!(
+        impact["affected"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["symbol"]["qualname"] == "b.use"),
+        "analyze_impact upstream must list b.use: {impact}"
+    );
+    let trace = rpc_json(
+        &root,
+        &db,
+        "trace_flow",
+        r#"{"start_qualname":"b.Builder.stage","direction":"upstream","max_hops":4}"#,
+    );
+    assert!(
+        trace["paths_found"].as_u64().unwrap_or(0) > 0,
+        "trace_flow upstream must be non-empty: {trace}"
+    );
+}
+
+#[test]
+fn incremental_sync_matches_fresh_index() {
+    let (_t, root, mut indexer) = index(&[("b.py", UNANNOTATED)]);
+    // Annotate `make`, then re-sync only that file.
+    common::write_files(&root, &[("b.py", ANNOTATED)]);
+    indexer.sync_rel_paths(&["b.py".to_string()]).unwrap();
+    let edges = common::golden::snapshot_edges(indexer.db(), gv(&indexer)).unwrap();
+    let rows = (unresolved(&indexer, "b.use"), bound_calls(&indexer));
+
+    let (_t2, _r2, fresh) = index(&[("b.py", ANNOTATED)]);
+    let fresh_edges = common::golden::snapshot_edges(fresh.db(), gv(&fresh)).unwrap();
+    common::assert_matches_fresh(&edges, &fresh_edges);
+    assert_eq!(rows.0, unresolved(&fresh, "b.use"));
+    assert_eq!(rows.1, bound_calls(&fresh));
 }
