@@ -865,13 +865,86 @@ fn gather_context_symbol_strategy_snippets_respect_small_budget() {
     let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
     indexer.reindex().unwrap();
 
+    // Budget = the seed item alone plus a few bytes: no related body (or stub) can fit,
+    // so several related items must be dropped and truncation is certain.
     let full = gather_symbol_seed(&temp, r#","include_snippets":true"#);
-    let full_bytes = full["total_bytes"].as_u64().unwrap();
-    let max = full_bytes - 40;
+    let seed_bytes: usize = full["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["source"]["source_type"].as_str() == Some("direct_seed"))
+        .map(|i| i["content"].as_str().unwrap().len())
+        .sum();
+    assert!(seed_bytes > 0, "{full}");
+    let max = (seed_bytes + 10) as u64;
     let small = gather_symbol_seed(
         &temp,
         &format!(r#","include_snippets":true,"max_bytes":{max}"#),
     );
+    assert!(
+        small["items"].as_array().unwrap().len() < full["items"].as_array().unwrap().len(),
+        "related items must have been dropped: {small}"
+    );
+    assert!(!all_content(&small).contains("CALLEE_BODY_LINE_C"));
     assert!(small["total_bytes"].as_u64().unwrap() <= max, "{small}");
     assert_eq!(small["truncated"].as_bool(), Some(true), "{small}");
+}
+
+#[test]
+fn gather_context_symbol_strategy_honors_include_snippets_same_file() {
+    let temp = TempRepo::new("py_mvp");
+    let body: String = (0..10)
+        .map(|i| format!("    SAMEFILE_B_LINE_{i} = {i}\n"))
+        .collect();
+    std::fs::write(
+        temp.repo_root.join("samefile.py"),
+        format!("def a():\n    return b()\n\n\ndef b():\n{body}    return 0\n"),
+    )
+    .unwrap();
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let run = |snip: bool| {
+        let params = format!(
+            r#"{{"seeds":[{{"type":"symbol","qualname":"samefile.a"}}],"include_snippets":{snip}}}"#
+        );
+        let r = rpc::call(
+            temp.repo_root.clone(),
+            temp.db_path.clone(),
+            "gather_context".to_string(),
+            &params,
+            "1",
+        )
+        .unwrap();
+        serde_json::from_str::<serde_json::Value>(&r).unwrap()["result"].clone()
+    };
+    let (with, without) = (run(true), run(false));
+    assert!(all_content(&with).contains("SAMEFILE_B_LINE_9"), "{with}");
+    assert!(
+        !all_content(&without).contains("SAMEFILE_B_LINE_9"),
+        "{without}"
+    );
+    assert!(with["total_bytes"].as_u64() > without["total_bytes"].as_u64());
+}
+
+#[test]
+fn gather_context_symbol_strategy_large_cross_file_body_not_dropped_by_subcap() {
+    let temp = TempRepo::new("py_mvp");
+    write_cross_file_body_fixture(&temp.repo_root);
+    // ~3 KB callee body: larger than the 1000-byte floor of the stub-mode cross-file cap.
+    let big: String = (0..60)
+        .map(|i| format!("    BIG_CALLEE_LINE_{i:03} = {i}  # padding padding\n"))
+        .collect();
+    std::fs::write(
+        temp.repo_root.join("calleemod.py"),
+        format!("def callee_fn():\n{big}    return 1\n"),
+    )
+    .unwrap();
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    let with = gather_symbol_seed(&temp, r#","include_snippets":true,"max_bytes":20000"#);
+    let without = gather_symbol_seed(&temp, r#","include_snippets":false,"max_bytes":20000"#);
+    assert!(all_content(&with).contains("BIG_CALLEE_LINE_059"), "{with}");
+    assert!(
+        with["total_bytes"].as_u64().unwrap() > without["total_bytes"].as_u64().unwrap() + 2000
+    );
 }
