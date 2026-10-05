@@ -647,12 +647,26 @@ fn walk_node_inner(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     if node.kind() == "member_access_expression" {
         handle_member_read(node, ctx, source, output);
     }
-    if is_local_function_node(node.kind()) {
-        return;
-    }
-    // A lambda/anonymous-method body is a nested *scope*, not a new symbol
-    // — fall through into the generic recursion below with the same `ctx`
-    // so calls inside it (e.g. `_connection.EnsureOpenAsync()` inside a
+    // A local function's own parameters/locals shadow the enclosing member's
+    // same-named bindings (the enclosing flat map collapses a doubly-bound
+    // name to `Other`), so overlay them before the shared recursion below.
+    // It is not a symbol, so no match arm below handles it.
+    let local_fn_ctx;
+    let ctx = if is_local_function_node(node.kind()) {
+        let (own_types, _assigns) = infer_local_types(node, source, ctx);
+        let mut merged = (*ctx.local_types).clone();
+        merged.extend(own_types);
+        local_fn_ctx = Context {
+            local_types: Rc::new(merged),
+            ..ctx.clone()
+        };
+        &local_fn_ctx
+    } else {
+        ctx
+    };
+    // A lambda/anonymous-method body is likewise a nested *scope*, not a new
+    // symbol — fall through into the generic recursion below with the same
+    // `ctx` so calls inside it (e.g. `_connection.EnsureOpenAsync()` inside a
     // Polly pipeline callback) attribute to the enclosing named symbol via
     // `ctx.current_scope`, instead of being silently dropped. None of the
     // match arms below fire for a lambda-body node kind, so no special case
@@ -4254,11 +4268,10 @@ fn is_simple_call_target(raw: &str) -> bool {
 }
 
 /// A C# local function (`void Helper() { ... }` declared inside a method
-/// body). Unlike a lambda, this is a genuinely separate named scope — it
-/// could reasonably become its own symbol one day — so `walk_node` and
-/// `collect_statement_bindings` both still treat it as a hard boundary and
-/// its calls remain unindexed. Narrower than fixing `is_lambda_node` below,
-/// and not what dpb's `_connection.EnsureOpenAsync` gap needs.
+/// body). Not a symbol: like a lambda, `walk_node` and
+/// `collect_statement_bindings` recurse through it with the enclosing
+/// member's context, so its calls attribute to the enclosing named symbol
+/// and its parameters are folded into the enclosing bindings.
 fn is_local_function_node(kind: &str) -> bool {
     kind == "local_function_statement"
 }
@@ -6347,13 +6360,10 @@ fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String
 }
 
 /// Recursively collect local-variable bindings from statements within a
-/// single method/constructor body, stopping at a nested local-function
-/// boundary (its own locals are a different scope entirely — see
-/// `Context::local_types`'s doc comment; reuses `is_local_function_node`,
-/// the same boundary `walk_node` itself stops at). A lambda/anonymous
+/// single method/constructor body. A local function or lambda/anonymous
 /// method is *not* a boundary here — see `is_lambda_node`'s doc comment —
 /// so a call inside one is walked with the *enclosing* method's
-/// `local_types`, and the lambda's own parameters are folded into that same
+/// `local_types`, and its own parameters are folded into that same
 /// map below (mirrors `python::collect_statement_bindings`'s `"lambda"`
 /// arm) so a reference to one of them isn't mistaken for an outer name and
 /// misattributed to whatever the enclosing scope happens to bind that name
@@ -6369,10 +6379,7 @@ fn collect_statement_bindings(
     raw: &mut RawTypes<'_>,
     bindings: &mut Vec<(String, LocalType)>,
 ) {
-    if is_local_function_node(node.kind()) {
-        return;
-    }
-    if is_lambda_node(node.kind())
+    if (is_lambda_node(node.kind()) || is_local_function_node(node.kind()))
         && let Some(params) = node.child_by_field_name("parameters")
     {
         collect_lambda_parameter_bindings(params, source, bindings);
