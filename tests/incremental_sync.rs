@@ -2448,3 +2448,102 @@ fn incremental_wrapper_method_change_updates_importer_http_call() {
     );
     assert_eq!(methods, ["POST"]);
 }
+
+/// Issue #337: `import('./x.js')` is an IMPORTS edge (hence IMPORTS_FILE),
+/// never a CALLS to `import`; an edit-then-sync matches a fresh reindex,
+/// including the unresolved-reference rows.
+#[test]
+fn ts_dynamic_import_emits_imports_file_and_matches_fresh() {
+    let index_ts = "import { helper } from './helper.js';\n\
+                    export async function run() {\n\
+                    \x20 const { buildApp } = await import('./app.js');\n\
+                    \x20 const { plugin } = await import('./plugin.js');\n\
+                    \x20 const ns = await import('./ns.js');\n\
+                    \x20 await import('@opentelemetry/api');\n\
+                    \x20 ns.go();\n\
+                    \x20 buildApp();\n\
+                    \x20 plugin();\n\
+                    \x20 return helper;\n\
+                    }\n";
+    let files = [
+        ("src/index.ts", index_ts),
+        ("src/helper.ts", "export const helper = 1;\n"),
+        ("src/app.ts", "export function buildApp() {}\n"),
+        ("src/plugin.ts", "export function plugin() {}\n"),
+        ("src/ns.ts", "export function go() {}\n"),
+        (
+            "src/sub/static.ts",
+            "import { run } from '../index.js';\nexport const s = run;\n",
+        ),
+        (
+            "src/sub/dynamic.ts",
+            "export const d = () => import('../index.js');\n",
+        ),
+    ];
+    let unresolved = |indexer: &Indexer| -> Vec<(String, Option<String>, String)> {
+        let gv = indexer.db().current_graph_version().unwrap();
+        let conn = indexer.db().read_conn().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT edge_kind, reference_name, reason FROM unresolved_references
+                 WHERE graph_version = ? ORDER BY 1, 2, 3",
+            )
+            .unwrap();
+        stmt.query_map([gv], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+
+    let (_tmp, root, mut indexer) = indexed_tree("ts-dynamic-import", &files);
+    let edited = format!("{index_ts}// touched\n");
+    common::write_files(&root, &[("src/index.ts", edited.as_str())]);
+    indexer
+        .sync_rel_paths(&["src/index.ts".to_string()])
+        .unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+
+    let imports_file: Vec<_> = snapshot
+        .iter()
+        .filter(|e| e.kind == "IMPORTS_FILE")
+        .filter_map(|e| e.target_qualname.as_deref())
+        .collect();
+    for want in ["src/app", "src/plugin", "src/helper", "src/ns"] {
+        assert!(imports_file.contains(&want), "{want} in {imports_file:?}");
+    }
+    // A dynamic import of a parent-relative specifier resolves exactly like
+    // the static one.
+    let importers_of_index = |src: &str| -> Vec<String> {
+        snapshot
+            .iter()
+            .filter(|e| e.kind == "IMPORTS_FILE" && e.source_qualname == src)
+            .filter_map(|e| e.target_qualname.clone())
+            .collect()
+    };
+    let static_target = importers_of_index("src/sub/static");
+    assert_eq!(static_target.len(), 1, "{snapshot:#?}");
+    assert_eq!(importers_of_index("src/sub/dynamic"), static_target);
+    assert!(
+        !snapshot.iter().any(|e| e
+            .target_qualname
+            .as_deref()
+            .is_some_and(|t| t.ends_with(".import"))),
+        "no edge to `import`: {snapshot:#?}"
+    );
+    assert!(
+        !unresolved(&indexer)
+            .iter()
+            .any(|(_, name, _)| name.as_deref().is_some_and(|n| n.ends_with("import"))),
+        "no unresolved `import` row"
+    );
+
+    let fresh_files: Vec<(&str, &str)> = std::iter::once(("src/index.ts", edited.as_str()))
+        .chain(files[1..].iter().copied())
+        .collect();
+    let (_t, _r, fresh) = indexed_tree("ts-dynamic-import-fresh", &fresh_files);
+    let fresh_gv = fresh.db().current_graph_version().unwrap();
+    let fresh_snapshot = golden::snapshot_edges(fresh.db(), fresh_gv).unwrap();
+    common::assert_matches_fresh(&snapshot, &fresh_snapshot);
+    assert_eq!(unresolved(&indexer), unresolved(&fresh));
+}
