@@ -236,11 +236,11 @@ fn check_rust(db_path: &Path, gv: i64) {
     assert_eq!(twins.len(), 2, "both cfg variants stored: {syms:#?}");
     let macos = twins
         .iter()
-        .find(|s| s.start_line == 6)
+        .find(|s| s.start_line == 5)
         .expect("macos variant");
-    assert_eq!((macos.start_line, macos.end_line), (6, 8));
+    assert_eq!((macos.start_line, macos.end_line), (5, 8));
     assert_eq!(
-        edges_from(db_path, gv, "src/lib.rs", "crate::fix_path_env", 6, "CALLS"),
+        edges_from(db_path, gv, "src/lib.rs", "crate::fix_path_env", 5, "CALLS"),
         vec!["crate::helper".to_string()],
         "the real body keeps its outgoing edge"
     );
@@ -250,7 +250,7 @@ fn check_rust(db_path: &Path, gv: i64) {
             gv,
             "src/lib.rs",
             "crate::fix_path_env",
-            11,
+            10,
             "CALLS"
         )
         .is_empty()
@@ -326,7 +326,7 @@ fn incremental_removal_of_a_twin_keeps_the_other() {
             version(&ix),
             "src/lib.rs",
             "crate::fix_path_env",
-            6,
+            5,
             "CALLS"
         ),
         vec!["crate::helper".to_string()]
@@ -391,7 +391,7 @@ fn database_indexed_with_old_ids_reindexes_cleanly() {
     {
         let conn = open(&db);
         conn.execute(
-            "DELETE FROM symbols WHERE qualname = 'crate::fix_path_env' AND start_line = 6
+            "DELETE FROM symbols WHERE qualname = 'crate::fix_path_env' AND start_line = 5
                AND graph_version = ?",
             [gv],
         )
@@ -549,8 +549,8 @@ fn metrics_belong_to_their_own_twin() {
             ("N.Box.Put".to_string(), 7, 1),
             ("crate::S::new".to_string(), 16, 4),
             ("crate::S::new".to_string(), 37, 4),
-            ("crate::fix_path_env".to_string(), 6, 3),
-            ("crate::fix_path_env".to_string(), 11, 1),
+            ("crate::fix_path_env".to_string(), 5, 4),
+            ("crate::fix_path_env".to_string(), 10, 2),
         ],
         "each twin/overload has its own metric row"
     );
