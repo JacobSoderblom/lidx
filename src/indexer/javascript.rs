@@ -2425,24 +2425,15 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return register_handled;
     }
-    let mut receiver_type = infer_receiver_type(target_node, source, ctx);
-    let mut target = resolve_call_target(&raw, ctx);
-    let mut import_candidates: Vec<String> = import_placeholder(&raw, ctx).into_iter().collect();
-    // `make().stage(1)`: the callee text holds a call, so it never resolves
-    // as dotted text. Type the receiver from declared return types instead.
-    if target.is_none()
-        && let Some((ty, method)) = call_result_method(target_node, ctx, source)
-    {
-        target = Some(match &ty {
-            Some(ty) => format!("{ty}.{method}"),
-            None => method,
-        });
-        import_candidates.clear();
-        receiver_type = match ty {
-            Some(ty) => ReceiverType::Known(ty),
-            None => ReceiverType::Unresolved,
+    let (target, receiver_type, import_candidates) =
+        match chained_call_target(target_node, ctx, source) {
+            Some((target, receiver_type)) => (Some(target), receiver_type, Vec::new()),
+            None => (
+                resolve_call_target(&raw, ctx),
+                infer_receiver_type(target_node, source, ctx),
+                import_placeholder(&raw, ctx).into_iter().collect(),
+            ),
         };
-    }
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
@@ -2465,28 +2456,44 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     register_handled
 }
 
-/// `X.m` where `X` is a call/`new` expression (parens, `!` and `await`
-/// peeled): the method name and `X`'s declared type, when known.
-fn call_result_method(
+/// Deepest call chain `expression_type` follows before giving up.
+const MAX_CHAIN_DEPTH: usize = 16;
+
+/// `X.m(..)` where `X` is a call/`new` expression (e.g. `make().stage(1)`;
+/// parentheses, `!`, and `as`/`satisfies` wrappers around it are peeled):
+/// the edge target and receiver type. With `X`'s type known from declared
+/// return types the target is `Type.m` and the receiver `Known(Type)`;
+/// otherwise just `m` with an `Unresolved` receiver, so the reference is
+/// still recorded (never guessed from the name alone).
+fn chained_call_target(
     callee: Node<'_>,
     ctx: &Context,
     source: &str,
-) -> Option<(Option<String>, String)> {
+) -> Option<(String, ReceiverType)> {
     if callee.kind() != "member_expression" && callee.kind() != "optional_member_expression" {
         return None;
     }
     let object = peel_expression(callee.child_by_field_name("object")?);
-    if object.kind() != "call_expression" && object.kind() != "new_expression" {
+    let inner = match object.kind() {
+        "as_expression" | "satisfies_expression" => peel_expression(object.named_child(0)?),
+        _ => object,
+    };
+    if inner.kind() != "call_expression" && inner.kind() != "new_expression" {
         return None;
     }
     let method = node_text(callee.child_by_field_name("property")?, source);
     if method.is_empty() || !is_simple_call_target(&method) {
         return None;
     }
-    Some((expression_type(object, ctx, source, 0), method))
+    Some(match expression_type(object, ctx, source, 0) {
+        Some(ty) => (format!("{ty}.{method}"), ReceiverType::Known(ty)),
+        None => (method, ReceiverType::Unresolved),
+    })
 }
 
-/// Strip parentheses and TS `!` / `as` wrappers.
+/// Strip parentheses and TS non-null (`!`) wrappers. (`await` is not
+/// peeled: its operand's type is usually a `Promise<T>`, and generics are
+/// not unwrapped.)
 fn peel_expression(mut node: Node<'_>) -> Node<'_> {
     while matches!(
         node.kind(),
@@ -2500,12 +2507,24 @@ fn peel_expression(mut node: Node<'_>) -> Node<'_> {
     node
 }
 
-/// Declared type of a call/`new` expression from this file's declarations.
+/// Declared type of a call/`new`/`as` expression from this file's
+/// declarations. `x as T` / `x satisfies T` is typed by `T` only when `T` is
+/// a plain type identifier; any other assertion is unknown.
 fn expression_type(node: Node<'_>, ctx: &Context, source: &str, depth: usize) -> Option<String> {
-    if depth > 16 {
+    if depth > MAX_CHAIN_DEPTH {
         return None;
     }
     let node = peel_expression(node);
+    if matches!(node.kind(), "as_expression" | "satisfies_expression") {
+        let asserted = node.named_child(1)?;
+        if asserted.kind() != "type_identifier" {
+            return None;
+        }
+        return match classify_type_name(&node_text(asserted, source)) {
+            LocalType::Known(ty) => Some(ty),
+            LocalType::Other => None,
+        };
+    }
     if node.kind() == "new_expression" {
         let ctor = node_text(node.child_by_field_name("constructor")?, source);
         return match classify_annotation(&ctor) {
@@ -2534,8 +2553,7 @@ fn expression_type(node: Node<'_>, ctx: &Context, source: &str, depth: usize) ->
                 }
                 _ => expression_type(object, ctx, source, depth + 1)?,
             };
-            let ret = ctx.return_types.get(&format!("{owner}.{method}"))?;
-            Some(if ret == "this" { owner } else { ret.clone() })
+            ctx.return_types.get(&format!("{owner}.{method}")).cloned()
         }
         _ => None,
     }
@@ -2543,12 +2561,16 @@ fn expression_type(node: Node<'_>, ctx: &Context, source: &str, depth: usize) ->
 
 /// Declared return types of functions (`name`) and class methods
 /// (`Class.method`) in the file. A name declared twice with differing types
-/// is dropped rather than guessed.
+/// is dropped rather than guessed. A `this` return type is not tracked
+/// (out of scope: it is treated as unknown).
 fn collect_return_types(root: Node<'_>, source: &str) -> HashMap<String, String> {
     fn walk(
         node: Node<'_>,
         source: &str,
         class: Option<&str>,
+        // `None` is a tombstone: the name has no usable return type, or is
+        // declared more than once with differing ones. It must stay in the
+        // map while walking so a later duplicate cannot re-add a type.
         out: &mut HashMap<String, Option<String>>,
     ) {
         let mut next_class = class;
@@ -2578,7 +2600,7 @@ fn collect_return_types(root: Node<'_>, source: &str) -> HashMap<String, String>
                     .map(|r| classify_annotation(&annotation_text(r, source)));
                 if let Some(key) = key {
                     let ty = match ret {
-                        Some(LocalType::Known(ty)) => Some(ty),
+                        Some(LocalType::Known(ty)) if ty != "this" => Some(ty),
                         _ => None,
                     };
                     match out.get(&key) {
@@ -7081,31 +7103,61 @@ init();
 export class Builder {
   stage(x: number): Builder { return this; }
   storage(): Builder { return this; }
+  self(): this { return this; }
 }
 export function make(): Builder { return new Builder(); }
+export function untyped() { return fetchData().then(f).catch(g); }
 export function use() { return make().stage(1).storage(); }
-export function cb() { return run(() => make().stage(2)); }
+export function cb(arr: number[]) { return arr.map(x => make().stage(x)); }
+export function asserted() { return (make() as Builder).stage(1); }
+export function selfy() { return make().self().stage(1); }
 "#;
         let mut extractor = super::TypescriptExtractor::new().unwrap();
         let file = extractor.extract(source, "b").unwrap();
-        let targets = |src: &str| -> Vec<String> {
+        let calls = |src: &str| -> Vec<(Option<String>, ReceiverType)> {
             file.edges
                 .iter()
                 .filter(|e| e.kind == "CALLS" && e.source_qualname.as_deref() == Some(src))
-                .map(|e| {
-                    e.target_qualname
-                        .clone()
-                        .or_else(|| e.detail.clone())
-                        .unwrap_or_default()
-                })
+                .map(|e| (e.target_qualname.clone(), e.receiver_type.clone()))
                 .collect()
         };
-        let use_t = targets("b.use");
-        assert!(use_t.iter().any(|t| t == "b.make"), "{use_t:?}");
-        assert!(use_t.iter().any(|t| t == "Builder.stage"), "{use_t:?}");
-        assert!(use_t.iter().any(|t| t == "Builder.storage"), "{use_t:?}");
-        let cb_t = targets("b.cb");
-        assert!(cb_t.iter().any(|t| t == "Builder.stage"), "{cb_t:?}");
+        let known = |q: &str, ty: &str| (Some(q.to_string()), ReceiverType::Known(ty.into()));
+        let unresolved = |q: &str| (Some(q.to_string()), ReceiverType::Unresolved);
+
+        let use_c = calls("b.use");
+        assert!(
+            use_c.contains(&known("Builder.stage", "Builder")),
+            "{use_c:?}"
+        );
+        assert!(
+            use_c.contains(&known("Builder.storage", "Builder")),
+            "{use_c:?}"
+        );
+        assert_eq!(use_c.len(), 3, "{use_c:?}");
+
+        let cb_c = calls("b.cb");
+        assert!(
+            cb_c.contains(&known("Builder.stage", "Builder")),
+            "{cb_c:?}"
+        );
+
+        let untyped_c = calls("b.untyped");
+        assert!(untyped_c.contains(&unresolved("then")), "{untyped_c:?}");
+        assert!(untyped_c.contains(&unresolved("catch")), "{untyped_c:?}");
+
+        let asserted_c = calls("b.asserted");
+        assert!(
+            asserted_c.contains(&known("Builder.stage", "Builder")),
+            "{asserted_c:?}"
+        );
+
+        // A `this` return type is out of scope: the next link is unresolved.
+        let self_c = calls("b.selfy");
+        assert!(
+            self_c.contains(&known("Builder.self", "Builder")),
+            "{self_c:?}"
+        );
+        assert!(self_c.contains(&unresolved("stage")), "{self_c:?}");
     }
 
     /// Issue #110: `new Error(...)` must never fuzzy-bind to an unrelated
