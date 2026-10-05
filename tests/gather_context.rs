@@ -778,3 +778,100 @@ fn gather_context_tight_budget_prefers_caller_over_module_stub() {
         .any(|i| i["symbol"]["kind"] == "module");
     assert!(!has_module, "{r}");
 }
+
+fn write_cross_file_body_fixture(repo_root: &Path) {
+    std::fs::write(
+        repo_root.join("seedmod.py"),
+        "from calleemod import callee_fn\n\n\ndef seed_fn():\n    return callee_fn()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo_root.join("calleemod.py"),
+        "def callee_fn():\n    first = 1\n    CALLEE_BODY_LINE_A = 2\n    CALLEE_BODY_LINE_B = 3\n    CALLEE_BODY_LINE_C = 4\n    CALLEE_BODY_LINE_D = 5\n    return first\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo_root.join("callermod.py"),
+        "from seedmod import seed_fn\n\n\ndef caller_fn():\n    CALLER_BODY_LINE_A = 1\n    CALLER_BODY_LINE_B = 2\n    CALLER_BODY_LINE_C = 3\n    CALLER_BODY_LINE_D = 4\n    return seed_fn()\n",
+    )
+    .unwrap();
+}
+
+fn gather_symbol_seed(temp: &TempRepo, extra: &str) -> serde_json::Value {
+    let params =
+        format!(r#"{{"seeds":[{{"type":"symbol","qualname":"seedmod.seed_fn"}}]{extra}}}"#);
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "gather_context".to_string(),
+        &params,
+        "1",
+    )
+    .unwrap();
+    serde_json::from_str::<serde_json::Value>(&response).unwrap()["result"].clone()
+}
+
+fn all_content(result: &serde_json::Value) -> String {
+    result["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["content"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn gather_context_symbol_strategy_honors_include_snippets_for_cross_file_related() {
+    let temp = TempRepo::new("py_mvp");
+    write_cross_file_body_fixture(&temp.repo_root);
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let with = gather_symbol_seed(&temp, r#","include_snippets":true"#);
+    let without = gather_symbol_seed(&temp, r#","include_snippets":false"#);
+    let with_text = all_content(&with);
+    let without_text = all_content(&without);
+
+    assert!(
+        with_text.contains("CALLEE_BODY_LINE_C"),
+        "callee body expected with include_snippets=true: {with_text}"
+    );
+    assert!(
+        with_text.contains("CALLER_BODY_LINE_C"),
+        "caller body expected with include_snippets=true: {with_text}"
+    );
+    assert!(
+        !without_text.contains("CALLEE_BODY_LINE_C"),
+        "{without_text}"
+    );
+    assert!(
+        !without_text.contains("CALLER_BODY_LINE_C"),
+        "{without_text}"
+    );
+    // Stubs still present
+    assert!(without_text.contains("calleemod.py"), "{without_text}");
+    assert!(without_text.contains("callermod.py"), "{without_text}");
+    assert!(
+        with["total_bytes"].as_u64().unwrap() > without["total_bytes"].as_u64().unwrap(),
+        "snippets output must be strictly larger"
+    );
+}
+
+#[test]
+fn gather_context_symbol_strategy_snippets_respect_small_budget() {
+    let temp = TempRepo::new("py_mvp");
+    write_cross_file_body_fixture(&temp.repo_root);
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    let full = gather_symbol_seed(&temp, r#","include_snippets":true"#);
+    let full_bytes = full["total_bytes"].as_u64().unwrap();
+    let max = full_bytes - 40;
+    let small = gather_symbol_seed(
+        &temp,
+        &format!(r#","include_snippets":true,"max_bytes":{max}"#),
+    );
+    assert!(small["total_bytes"].as_u64().unwrap() <= max, "{small}");
+    assert_eq!(small["truncated"].as_bool(), Some(true), "{small}");
+}

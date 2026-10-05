@@ -638,7 +638,7 @@ fn collect_content_symbol_strategy(
             &graph_related,
             match_locations,
             &labels,
-            true,
+            !config.include_snippets,
             false,
         )?;
 
@@ -680,22 +680,39 @@ fn collect_content_symbol_strategy(
                             && let Some(target_symbol) = db.get_symbol_by_id(tid)?
                             && !current_file_paths.contains(&target_symbol.file_path)
                         {
-                            let content = format_tier1(&target_symbol, Some(edge));
                             let source = ItemSource {
                                 source_type: SourceType::Subgraph,
                                 seed_index: None,
                                 relationship: Some(relationship.to_string()),
                                 distance: Some(1),
                             };
-                            if content.len() <= cross_file_budget - cross_file_bytes
-                                && c.try_add_formatted(
-                                    &target_symbol,
-                                    content.clone(),
-                                    source,
-                                    None,
-                                )
-                            {
-                                cross_file_bytes += content.len();
+                            if config.include_snippets {
+                                let size = (target_symbol.end_byte - target_symbol.start_byte)
+                                    .max(0) as usize;
+                                if size <= cross_file_budget - cross_file_bytes {
+                                    let before = c.total_bytes;
+                                    if c.try_add_symbol(
+                                        &target_symbol,
+                                        target_symbol.start_byte,
+                                        target_symbol.end_byte,
+                                        source,
+                                        None,
+                                    )? {
+                                        cross_file_bytes += c.total_bytes - before;
+                                    }
+                                }
+                            } else {
+                                let content = format_tier1(&target_symbol, Some(edge));
+                                if content.len() <= cross_file_budget - cross_file_bytes
+                                    && c.try_add_formatted(
+                                        &target_symbol,
+                                        content.clone(),
+                                        source,
+                                        None,
+                                    )
+                                {
+                                    cross_file_bytes += content.len();
+                                }
                             }
                         }
                     }
