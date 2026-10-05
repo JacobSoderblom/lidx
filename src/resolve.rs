@@ -466,10 +466,50 @@ fn cap_query_tokens(tokens: &mut Vec<String>) {
     tokens.drain(..excess);
 }
 
+/// Max last-segment edit distance for a same-parent sibling to be suggested.
+const SIBLING_MAX_DIST: usize = 2;
+
+/// Children of the query's parent qualname whose last segment is within
+/// `SIBLING_MAX_DIST` edits of the query's, nearest first. Independent of the
+/// token prefilter, so many unrelated symbols cannot crowd them out (#364).
+fn sibling_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
+    let Some((parent, last)) = query.rsplit_once('.') else {
+        return Vec::new();
+    };
+    if parent.is_empty() || last.is_empty() {
+        return Vec::new();
+    }
+    let last = last.to_lowercase();
+    let mut hits: Vec<(usize, Symbol)> = db
+        .child_symbols_of_qualname(parent, FUZZY_SCAN_CAP, graph_version)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|sym| {
+            let d = levenshtein(&last, &sym.name.to_lowercase());
+            (d <= SIBLING_MAX_DIST).then_some((d, sym))
+        })
+        .collect();
+    hits.sort_by_key(|(d, sym)| (*d, sym.id));
+    hits.into_iter().map(|(_, sym)| sym).collect()
+}
+
 /// Typo / retired-name suggestions: prefilter symbols by SQL LIKE on the
 /// query's tokens (bounded by `FUZZY_SCAN_CAP`), then rank in Rust by token
 /// overlap and Levenshtein distance on the last name segment.
 fn fuzzy_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
+    let mut siblings = sibling_candidates(db, query, graph_version);
+    if !siblings.is_empty() {
+        siblings.truncate(FUZZY_RESULTS);
+        let mut rest = fuzzy_token_candidates(db, query, graph_version);
+        rest.retain(|s| !siblings.iter().any(|x| x.id == s.id));
+        siblings.extend(rest);
+        siblings.truncate(FUZZY_RESULTS);
+        return siblings;
+    }
+    fuzzy_token_candidates(db, query, graph_version)
+}
+
+fn fuzzy_token_candidates(db: &Db, query: &str, graph_version: i64) -> Vec<Symbol> {
     let mut query_tokens = name_tokens(query);
     cap_query_tokens(&mut query_tokens);
     if query_tokens.is_empty() {

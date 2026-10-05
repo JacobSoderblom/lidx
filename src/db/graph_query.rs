@@ -707,6 +707,43 @@ impl Db {
         Ok(results)
     }
 
+    /// Direct children of `parent`: symbols whose qualname is `parent.<name>`
+    /// with no further `.` after the prefix. At most `cap` rows.
+    pub fn child_symbols_of_qualname(
+        &self,
+        parent: &str,
+        cap: usize,
+        graph_version: i64,
+    ) -> Result<Vec<Symbol>> {
+        let prefix = format!("{parent}.");
+        let prefix_len = prefix.chars().count() as i64;
+        let cap = cap as i64;
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
+                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
+                    s.graph_version, s.commit_sha, s.stable_id
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE substr(s.qualname, 1, ?1) = ?2
+               AND instr(substr(s.qualname, ?1 + 1), '.') = 0
+               AND s.kind NOT IN ('heading','section')
+               AND s.graph_version = ?3
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?3)
+             ORDER BY s.id
+             LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![prefix_len, prefix, graph_version, cap],
+            symbol_from_row,
+        )?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
     /// Bounded candidate scan for fuzzy "did you mean": symbols whose
     /// lowercased name contains any of `patterns` (plain alphanumeric tokens),
     /// those matching the most patterns first, at most `cap` rows.
