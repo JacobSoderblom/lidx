@@ -77,6 +77,10 @@ fn serialize_signature<S: serde::Serializer>(
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct Symbol {
     pub id: i64,
@@ -207,6 +211,10 @@ pub struct OutlineResult {
     pub language: String,
     pub total_lines: i64,
     pub entries: Vec<OutlineEntry>,
+    /// True when the file changed on disk since indexing, so `entries` line
+    /// spans may be out of date. Omitted when false.
+    #[serde(skip_serializing_if = "is_false")]
+    pub stale: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub next_hops: Vec<Value>,
 }
@@ -657,6 +665,9 @@ pub struct IndexStats {
     pub symbols: usize,
     pub edges: usize,
     pub duration_ms: u64,
+    /// Post-reindex graph-version prune failure; the reindex itself still succeeded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prune_error: Option<String>,
 }
 
 // gather_context types

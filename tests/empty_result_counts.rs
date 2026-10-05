@@ -184,6 +184,46 @@ fn top_complexity_zero_limit_is_rejected() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// Issue #360: an empty `search` query matches every line, so it must error
+/// under every accepted alias. Whitespace-only stays a valid query (it finds
+/// indentation).
+#[test]
+fn search_empty_query_is_rejected_for_every_alias() {
+    let (repo_root, db_path) = setup_repo("py_mvp");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+
+    for key in ["query", "pattern", "text", "q"] {
+        let err = rpc::handle_method(&mut indexer, "search", serde_json::json!({ key: "" }))
+            .expect_err("empty query must be an error")
+            .to_string();
+        assert!(
+            err.contains("query") && err.contains("empty"),
+            "{key}: {err}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn search_whitespace_only_query_returns_indented_line() {
+    let repo_root = temp_repo_dir("ws-query");
+    std::fs::write(repo_root.join("a.py"), "def f():\n    marker_line()\n").unwrap();
+    let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path).unwrap();
+    indexer.reindex().unwrap();
+
+    let result =
+        rpc::handle_method(&mut indexer, "search", serde_json::json!({"query": "   "})).unwrap();
+    assert!(
+        result.to_string().contains("marker_line"),
+        "whitespace query should hit the indented line: {result}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 // ---------------------------------------------------------------------------
 // repo_map
 // ---------------------------------------------------------------------------

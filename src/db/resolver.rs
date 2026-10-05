@@ -1401,6 +1401,14 @@ impl<'c> Resolver<'c> {
             )?,
             None => None,
         };
+        // T-SQL identifiers are case-insensitive: `EXEC DPB.Audit_Write` binds
+        // to `dpb.audit_write` declared elsewhere.
+        let found = match (found, r.target_qualname) {
+            (None, Some(qn)) if r.source_lang == "sql" => self
+                .sql_exact_ignore_case(qn)?
+                .map(|id| (id, ResolutionKind::Exact)),
+            (found, _) => found,
+        };
         match found {
             Some((id, kind)) => Ok(resolved(id, kind)),
             // Issue #239: the exact tier found 2+ in-repo candidates (same-arity
@@ -1477,6 +1485,23 @@ impl<'c> Resolver<'c> {
                 Ok(stub.unwrap_or(Resolution::Unresolved(UnresolvedReason::NoCandidates)))
             }
         }
+    }
+
+    /// The single SQL symbol whose qualname equals `qualname` ignoring ASCII
+    /// case; `None` when there is none or more than one.
+    fn sql_exact_ignore_case(&mut self, qualname: &str) -> Result<Option<i64>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.qualname = ?1 COLLATE NOCASE AND s.graph_version = ?2
+               AND f.language = 'sql' AND s.kind != 'module'
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?2) LIMIT 2",
+        )?;
+        let ids = stmt
+            .query_map(params![qualname, self.graph_version], |r| {
+                r.get::<_, i64>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(exactly_one(ids.iter()).copied())
     }
 
     /// The exact-qualname tier. `collapse_exact_candidates` decides when

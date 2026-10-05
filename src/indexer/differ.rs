@@ -138,6 +138,20 @@ pub struct ChangedFile {
     pub deleted_ranges: Vec<DiffHunk>,
     /// Removed lines have no new-side line number; see [`Deletion`].
     pub deletion_points: Vec<Deletion>,
+    /// What the diff does to the file as a whole.
+    pub kind: ChangeKind,
+}
+
+/// Whole-file effect of a diff on a [`ChangedFile`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChangeKind {
+    Modified,
+    /// The diff deletes the file (`path` is the deleted path).
+    Deleted,
+    /// The diff renames the file; `path` is the new path.
+    Renamed {
+        from: String,
+    },
 }
 
 /// Lines removed between new-side lines `after` and `after + 1`
@@ -158,7 +172,34 @@ impl ChangedFile {
             added_ranges: Vec::new(),
             deleted_ranges: Vec::new(),
             deletion_points: Vec::new(),
+            kind: ChangeKind::Modified,
         }
+    }
+
+    pub fn deleted(path: String) -> Self {
+        Self {
+            kind: ChangeKind::Deleted,
+            ..Self::new(path)
+        }
+    }
+
+    pub fn renamed(path: String, from: String) -> Self {
+        Self {
+            kind: ChangeKind::Renamed { from },
+            ..Self::new(path)
+        }
+    }
+
+    /// Old path of a rename, if this file is one.
+    pub fn renamed_from(&self) -> Option<&str> {
+        match &self.kind {
+            ChangeKind::Renamed { from } => Some(from),
+            _ => None,
+        }
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.kind == ChangeKind::Deleted
     }
 
     /// True when the diff recorded at least one added or removed line.
@@ -217,8 +258,10 @@ impl ChangedFile {
 /// Parse a unified diff string into per-file changed line ranges.
 ///
 /// Handles both `+++ b/path` (git format) and `+++ path` (plain unified diff).
-/// Files with `+++ /dev/null` (deleted files) are skipped.  Works for any
-/// context width, including `-U0`.
+/// Deleted files (`+++ /dev/null`) and renames are reported with
+/// [`ChangeKind::Deleted`] / [`ChangeKind::Renamed`], even without
+/// hunks.  Git mnemonic prefixes (`i/`, `w/`, ...), trailing tabs and quoted
+/// paths are normalised.  Works for any context width, including `-U0`.
 pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
     let mut files = Vec::new();
     let mut current_file: Option<ChangedFile> = None;
@@ -232,6 +275,9 @@ pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
     // lines of the current change block are still unpaired with a `+` line.
     let mut pure_run: Option<(i64, i64)> = None;
     let mut unpaired_removed = 0i64;
+    // Header state of the current `diff --git` block.
+    let mut hdr: Option<GitHdr> = None;
+    let mut old_path: Option<String> = None;
 
     fn flush(
         file: &mut Option<ChangedFile>,
@@ -321,17 +367,49 @@ pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
         }
         flush(&mut current_file, &mut run, &mut pure_run);
         unpaired_removed = 0;
-        if let Some(rest) = line.strip_prefix("+++ b/") {
-            if let Some(file) = current_file.take() {
-                files.push(file);
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            files.extend(current_file.take());
+            finish_hdr(hdr.take(), &mut files);
+            old_path = None;
+            hdr = Some(GitHdr {
+                path: split_git_header(rest),
+                ..GitHdr::default()
+            });
+        } else if line.starts_with("deleted file mode") {
+            if let Some(h) = hdr.as_mut() {
+                h.deleted = true;
             }
-            current_file = Some(ChangedFile::new(rest.to_string()));
+        } else if let Some(rest) = line.strip_prefix("rename from ") {
+            if let Some(h) = hdr.as_mut() {
+                h.rename_from = Some(clean_path(rest));
+            }
+        } else if let Some(rest) = line.strip_prefix("rename to ") {
+            if let Some(h) = hdr.as_mut() {
+                h.rename_to = Some(clean_path(rest));
+            }
+        } else if let Some(rest) = line.strip_prefix("--- ") {
+            let rest = clean_path(rest);
+            old_path = (rest != "/dev/null").then(|| strip_vcs_prefix(&rest, OLD_SIDE_PREFIXES));
         } else if let Some(rest) = line.strip_prefix("+++ ") {
-            if let Some(file) = current_file.take() {
-                files.push(file);
+            files.extend(current_file.take());
+            let rest = clean_path(rest);
+            let git_path = hdr
+                .as_ref()
+                .and_then(|h| h.rename_to.clone().or_else(|| h.path.clone()));
+            let rename_from = hdr.as_ref().and_then(|h| h.rename_from.clone());
+            if let Some(h) = hdr.as_mut() {
+                h.emitted = true;
             }
-            if !rest.starts_with("/dev/null") {
-                current_file = Some(ChangedFile::new(rest.to_string()));
+            if rest == "/dev/null" {
+                if let Some(path) = git_path.or_else(|| old_path.take()) {
+                    current_file = Some(ChangedFile::deleted(path));
+                }
+            } else {
+                let path = git_path.unwrap_or_else(|| strip_vcs_prefix(&rest, NEW_SIDE_PREFIXES));
+                current_file = Some(match rename_from {
+                    Some(from) => ChangedFile::renamed(path, from),
+                    None => ChangedFile::new(path),
+                });
             }
         } else if line.starts_with("@@ ") {
             // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
@@ -365,12 +443,127 @@ pub fn parse_diff_with_ranges(diff: &str) -> Vec<ChangedFile> {
         }
     }
     flush(&mut current_file, &mut run, &mut pure_run);
-
-    if let Some(file) = current_file {
-        files.push(file);
-    }
+    files.extend(current_file);
+    finish_hdr(hdr, &mut files);
 
     files
+}
+
+/// State of one `diff --git` block, for entries that have no `+++` line
+/// (pure renames, empty-file deletions).
+#[derive(Default)]
+struct GitHdr {
+    path: Option<String>,
+    deleted: bool,
+    rename_from: Option<String>,
+    rename_to: Option<String>,
+    emitted: bool,
+}
+
+fn finish_hdr(hdr: Option<GitHdr>, files: &mut Vec<ChangedFile>) {
+    let Some(h) = hdr.filter(|h| !h.emitted) else {
+        return;
+    };
+    if h.deleted {
+        if let Some(path) = h.path {
+            files.push(ChangedFile::deleted(path));
+        }
+    } else if let (Some(from), Some(to)) = (h.rename_from, h.rename_to) {
+        files.push(ChangedFile::renamed(to, from));
+    }
+}
+
+/// Header path text to a plain path: unquotes git's C-style `"..."` form (octal
+/// escapes for non-ASCII) and drops the trailing TAB git adds after paths with
+/// spaces.
+fn clean_path(raw: &str) -> String {
+    match raw.strip_prefix('"') {
+        Some(body) => unquote_c(body).0,
+        None => raw.split('\t').next().unwrap_or(raw).to_string(),
+    }
+}
+
+/// Decode the body of a C-style quoted string (after the opening quote).
+/// Returns the text and the byte length consumed, including the closing quote.
+fn unquote_c(body: &str) -> (String, usize) {
+    let b = body.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() && b[i] != b'"' {
+        if b[i] != b'\\' || i + 1 >= b.len() {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        match b[i] {
+            b'0'..=b'7' => {
+                let mut v = 0u32;
+                let mut n = 0;
+                while n < 3 && i < b.len() && (b'0'..=b'7').contains(&b[i]) {
+                    v = v * 8 + u32::from(b[i] - b'0');
+                    i += 1;
+                    n += 1;
+                }
+                out.push(v as u8);
+                continue;
+            }
+            b'n' => out.push(b'\n'),
+            b't' => out.push(b'\t'),
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    (
+        String::from_utf8_lossy(&out).into_owned(),
+        (i + 1).min(b.len()),
+    )
+}
+
+/// One-letter prefixes git puts on the `---` (old) side: `a` (default),
+/// `c` commit, `i` index, `w` work tree, `o` object, plus `b` for `diff`
+/// invocations that swap sides.
+const OLD_SIDE_PREFIXES: &str = "abwico";
+/// Same for the `+++` (new) side, where `a` is excluded so a real `a/`
+/// directory in a plain unified diff is kept.
+const NEW_SIDE_PREFIXES: &str = "bwico";
+
+/// Drop a one-letter VCS prefix (`b/`, `w/`, `i/`, ...) from a header path.
+fn strip_vcs_prefix(path: &str, letters: &str) -> String {
+    match path.as_bytes() {
+        [c, b'/', ..] if letters.as_bytes().contains(c) => path[2..].to_string(),
+        _ => path.to_string(),
+    }
+}
+
+/// Repo-relative path from the two names of a `diff --git` line, when they
+/// differ only by a one-letter prefix (or not at all, for `--no-prefix`).
+/// `None` for renames and for splits that stay ambiguous.
+fn split_git_header(rest: &str) -> Option<String> {
+    let (a, b) = if let Some(body) = rest.strip_prefix('"') {
+        let (first, used) = unquote_c(body);
+        let second = rest[1 + used..].strip_prefix(' ')?;
+        (first, clean_path(second))
+    } else if rest.ends_with('"') {
+        let at = rest.rfind(" \"")?;
+        (rest[..at].to_string(), clean_path(&rest[at + 1..]))
+    } else {
+        // Both names are the same length when only the prefix differs, so
+        // the separator is the middle byte (names may contain spaces).
+        let mid = rest.len() / 2;
+        if rest.len() % 2 == 1 && rest.as_bytes()[mid] == b' ' {
+            (rest[..mid].to_string(), rest[mid + 1..].to_string())
+        } else {
+            let (a, b) = rest.split_once(' ')?;
+            (a.to_string(), b.to_string())
+        }
+    };
+    if a == b {
+        return Some(a);
+    }
+    let (a_tail, b_tail) = (a.get(2..)?, b.get(2..)?);
+    (a.as_bytes()[1] == b'/' && b.as_bytes()[1] == b'/' && a_tail == b_tail)
+        .then(|| b_tail.to_string())
 }
 
 /// Parse a hunk range string of the form `start,count` or just `start`.
@@ -755,7 +948,7 @@ diff --git a/bar.py b/bar.py
     }
 
     #[test]
-    fn parse_diff_skips_dev_null() {
+    fn parse_diff_dev_null_is_a_deleted_file() {
         let diff = "\
 --- a/deleted.rs
 +++ /dev/null
@@ -763,11 +956,12 @@ diff --git a/bar.py b/bar.py
 -removed
 ";
         let files = parse_diff_with_ranges(diff);
-        assert_eq!(
-            files.len(),
-            0,
-            "deleted files (→ /dev/null) should be skipped"
-        );
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "deleted.rs");
+        assert!(files[0].is_deleted());
+        assert!(files[0].changed_ranges.is_empty());
+        assert!(files[0].added_ranges.is_empty());
+        assert_eq!(files[0].deletion_points.len(), 1);
     }
 
     #[test]
@@ -821,14 +1015,95 @@ diff --git a/src/also_keep.rs b/src/also_keep.rs
 +y
 ";
         let files = parse_diff_with_ranges(diff);
-        assert_eq!(files.len(), 2, "only the two non-deleted files");
+        assert_eq!(files.len(), 3);
+        assert!(files[1].is_deleted() && files[1].path == "src/gone.rs");
+        assert!(!files[0].is_deleted() && !files[2].is_deleted());
         assert_eq!(files[0].path, "src/keep.rs");
         assert_eq!(
             files[0].added_ranges.len(),
             1,
             "keep.rs should have exactly 1 hunk, not pick up gone.rs hunks"
         );
-        assert_eq!(files[1].path, "src/also_keep.rs");
+        assert_eq!(files[2].path, "src/also_keep.rs");
+    }
+
+    fn only_path(diff: &str) -> String {
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1, "{files:?}");
+        files[0].path.clone()
+    }
+
+    #[test]
+    fn parse_diff_strips_mnemonic_prefixes() {
+        for p in ["w", "i", "c", "o", "b"] {
+            let diff = format!("--- a/x.py\n+++ {p}/x.py\n@@ -1 +1 @@\n-a\n+b\n");
+            assert_eq!(only_path(&diff), "x.py", "prefix {p}");
+        }
+        let git = "diff --git i/dir/x.py w/dir/x.py\n--- i/dir/x.py\n+++ w/dir/x.py\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(only_path(git), "dir/x.py");
+    }
+
+    #[test]
+    fn parse_diff_no_prefix_keeps_real_prefix_like_dir() {
+        let git = "diff --git b/x.py b/x.py\n--- b/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(only_path(git), "b/x.py");
+    }
+
+    #[test]
+    fn parse_diff_trims_trailing_tab_for_paths_with_spaces() {
+        let diff = "diff --git a/my file.py b/my file.py\n--- a/my file.py\t\n+++ b/my file.py\t\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(only_path(diff), "my file.py");
+        let plain = "--- a/my file.py\t\n+++ b/my file.py\t\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(only_path(plain), "my file.py");
+    }
+
+    #[test]
+    fn parse_diff_unquotes_octal_escaped_paths() {
+        let diff = "diff --git \"a/\\303\\245.py\" \"b/\\303\\245.py\"\n--- \"a/\\303\\245.py\"\n+++ \"b/\\303\\245.py\"\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(only_path(diff), "\u{e5}.py");
+        let plain = "+++ \"b/\\303\\245.py\"\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(only_path(plain), "\u{e5}.py");
+    }
+
+    #[test]
+    fn parse_diff_git_deletion_with_mnemonic_prefix() {
+        let diff = "diff --git c/a.py i/a.py\ndeleted file mode 100644\n--- c/a.py\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-def f():\n-    return 1\n";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "a.py");
+        assert!(files[0].is_deleted());
+    }
+
+    #[test]
+    fn parse_diff_empty_file_deletion_has_no_hunk_lines() {
+        let diff = "diff --git a/e.py b/e.py\ndeleted file mode 100644\nindex e69de29..0000000\n";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "e.py");
+        assert!(files[0].is_deleted());
+    }
+
+    #[test]
+    fn parse_diff_pure_rename_records_old_and_new_path() {
+        let diff = "diff --git a/a.py b/c.py\nsimilarity index 100%\nrename from a.py\nrename to c.py\ndiff --git a/k.py b/k.py\n--- a/k.py\n+++ b/k.py\n@@ -1 +1 @@\n-a\n+b\n";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "c.py");
+        assert_eq!(files[0].renamed_from(), Some("a.py"));
+        assert!(!files[0].is_deleted());
+        assert_eq!(files[1].path, "k.py");
+        assert_eq!(files[1].kind, ChangeKind::Modified);
+    }
+
+    #[test]
+    fn parse_diff_rename_with_edits_uses_new_path() {
+        let diff = "diff --git a/a b.py b/c d.py\nsimilarity index 80%\nrename from a b.py\nrename to c d.py\n--- a/a b.py\t\n+++ b/c d.py\t\n@@ -1 +1 @@\n-a\n+b\n";
+        let files = parse_diff_with_ranges(diff);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "c d.py");
+        assert_eq!(files[0].renamed_from(), Some("a b.py"));
+        assert_eq!(files[0].added_ranges.len(), 0);
+        assert_eq!(files[0].changed_ranges.len(), 1);
     }
 
     #[test]
