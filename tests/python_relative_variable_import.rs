@@ -1,68 +1,174 @@
-//! Issue #333: `from .plan import NAME` where `NAME` is a module-level
-//! assignment (kind `variable`/`const`) stayed unresolved; the absolute form
-//! resolved.
+//! Issue #333: a Python relative import (`from .plan import NAME`) resolves
+//! by making the specifier absolute against the importing module's package,
+//! then an exact-qualname match -- whatever the target's kind (a module-level
+//! variable included).
 
 mod common;
 
+use common::golden;
 use lidx::indexer::Indexer;
 
 const PLAN: &str = "from typing import Literal\n\nEvolveAction = Literal[\"a\", \"b\"]\nLIMIT = 5\n\n\nclass Spec:\n    pass\n";
 
-fn indexed() -> (tempfile::TempDir, std::path::PathBuf, Indexer) {
-    let tmp = tempfile::Builder::new()
-        .prefix("lidx-py-relvar-")
-        .tempdir()
-        .unwrap();
-    common::write_files(
-        tmp.path(),
-        &[
-            ("pkg/__init__.py", ""),
-            (
-                "pkg/sub/__init__.py",
-                "from .plan import EvolveAction, LIMIT, Spec\n",
-            ),
-            ("pkg/sub/plan.py", PLAN),
-        ],
+/// Indexes `files`; returns the tree guard (the db lives under it) and the indexer.
+fn indexed(files: &[(&str, &str)]) -> (tempfile::TempDir, Indexer) {
+    let (tmp, root, db_path) = common::index_repo("lidx-py-relvar-", files);
+    (tmp, Indexer::new(root, db_path).unwrap())
+}
+
+/// `(source, resolved target)` of every IMPORTS edge that has one.
+fn imports(indexer: &Indexer) -> Vec<(String, String)> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    golden::snapshot_edges(indexer.db(), gv)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "IMPORTS")
+        .filter_map(|e| Some((e.source_qualname, e.target_qualname?)))
+        .collect()
+}
+
+fn assert_binds(indexer: &Indexer, source: &str, target: &str) {
+    let all = imports(indexer);
+    assert!(
+        all.iter().any(|(s, t)| s == source && t == target),
+        "{source} must import {target}: {all:?}"
     );
-    let db_path = tmp.path().join(".lidx").join(".lidx.sqlite");
-    let mut indexer = Indexer::new(tmp.path().to_path_buf(), db_path.clone()).unwrap();
-    indexer.reindex().unwrap();
-    (tmp, db_path, indexer)
+}
+
+fn unresolved_imports(indexer: &Indexer) -> Vec<String> {
+    let conn = indexer.db().read_conn().unwrap();
+    let gv: i64 = conn
+        .query_row("SELECT MAX(graph_version) FROM symbols", [], |r| r.get(0))
+        .unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT reference_name FROM unresolved_references
+             WHERE edge_kind = 'IMPORTS' AND graph_version = ?",
+        )
+        .unwrap();
+    stmt.query_map([gv], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
 }
 
 #[test]
 fn relative_import_of_module_variable_resolves() {
-    let (_tmp, _db_path, indexer) = indexed();
-    let gv = indexer.db().current_graph_version().unwrap();
-    let edges = common::golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_tmp, indexer) = indexed(&[
+        ("pkg/__init__.py", ""),
+        (
+            "pkg/sub/__init__.py",
+            "from .plan import EvolveAction, LIMIT, Spec\n",
+        ),
+        ("pkg/sub/plan.py", PLAN),
+    ]);
     for target in [
         "pkg.sub.plan.EvolveAction",
         "pkg.sub.plan.LIMIT",
         "pkg.sub.plan.Spec",
     ] {
-        assert!(
-            edges.iter().any(|e| e.kind == "IMPORTS"
-                && e.source_qualname == "pkg.sub"
-                && e.target_qualname.as_deref() == Some(target)),
-            "IMPORTS must resolve to {target}: {edges:?}"
-        );
+        assert_binds(&indexer, "pkg.sub", target);
     }
+    let names = unresolved_imports(&indexer);
+    assert!(
+        !names.iter().any(|n| n.starts_with(".plan.")),
+        "relative imports from .plan must leave no unresolved row: {names:?}"
+    );
 }
 
 #[test]
-fn relative_variable_import_leaves_no_unresolved_row() {
-    let (_tmp, db_path, _indexer) = indexed();
-    let conn = rusqlite::Connection::open(db_path).unwrap();
-    let mut stmt = conn
-        .prepare("SELECT reference_name FROM unresolved_references WHERE edge_kind = 'IMPORTS'")
-        .unwrap();
-    let names: Vec<String> = stmt
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
+fn same_named_variable_in_two_packages_binds_each_to_its_own() {
+    let (_tmp, indexer) = indexed(&[
+        ("pkg/__init__.py", ""),
+        ("pkg/a/__init__.py", "from .plan import EvolveAction\n"),
+        ("pkg/a/plan.py", PLAN),
+        ("pkg/b/__init__.py", "from .plan import EvolveAction\n"),
+        ("pkg/b/plan.py", PLAN),
+    ]);
+    assert_binds(&indexer, "pkg.a", "pkg.a.plan.EvolveAction");
+    assert_binds(&indexer, "pkg.b", "pkg.b.plan.EvolveAction");
+}
+
+#[test]
+fn from_dot_import_names_the_sibling_module_not_a_stray_variable() {
+    let (_tmp, indexer) = indexed(&[
+        ("pkg/__init__.py", ""),
+        ("pkg/sub/__init__.py", ""),
+        ("pkg/sub/main.py", "from . import x\n"),
+        ("pkg/sub/x.py", "def f():\n    pass\n"),
+        ("other.py", "x = 1\n"),
+    ]);
+    let all = imports(&indexer);
     assert!(
-        !names.iter().any(|n| n.starts_with(".plan.")),
-        "relative imports from .plan must resolve: {names:?}"
+        all.iter()
+            .any(|(s, t)| s == "pkg.sub.main" && t == "pkg.sub.x"),
+        "`from . import x` must bind the sibling module: {all:?}"
     );
+    assert!(
+        !all.iter().any(|(_, t)| t == "other.x"),
+        "must not bind the stray variable: {all:?}"
+    );
+}
+
+#[test]
+fn parent_package_relative_import_resolves() {
+    let (_tmp, indexer) = indexed(&[
+        ("pkg/__init__.py", ""),
+        ("pkg/shared.py", "V = 1\n"),
+        ("pkg/sub/__init__.py", ""),
+        ("pkg/sub/mod.py", "from ..shared import V\n"),
+    ]);
+    assert_binds(&indexer, "pkg.sub.mod", "pkg.shared.V");
+}
+
+#[test]
+fn multi_segment_relative_import_keeps_all_segments() {
+    let (_tmp, indexer) = indexed(&[
+        ("pkg/__init__.py", ""),
+        ("pkg/a/__init__.py", ""),
+        ("pkg/a/b.py", "V = 1\n"),
+        ("pkg/mod.py", "from .a.b import V\n"),
+    ]);
+    assert_binds(&indexer, "pkg.mod", "pkg.a.b.V");
+}
+
+#[test]
+fn incremental_sync_matches_fresh_index_for_relative_variable_imports() {
+    let init = "from .plan import EvolveAction\n";
+    let (_tmp, root, db_path) = common::index_repo(
+        "lidx-py-relvar-inc-",
+        &[("pkg/__init__.py", ""), ("pkg/sub/__init__.py", init)],
+    );
+    let mut indexer = Indexer::new(root.clone(), db_path).unwrap();
+
+    // Target file appears.
+    common::write_files(&root, &[("pkg/sub/plan.py", PLAN)]);
+    indexer
+        .sync_rel_paths(&["pkg/sub/plan.py".to_string()])
+        .unwrap();
+    assert_binds(&indexer, "pkg.sub", "pkg.sub.plan.EvolveAction");
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_t, fresh) = common::index_files(&[
+        ("pkg/__init__.py", ""),
+        ("pkg/sub/__init__.py", init),
+        ("pkg/sub/plan.py", PLAN),
+    ]);
+    common::assert_matches_fresh(&snap, &fresh);
+
+    // Target is renamed away: the import goes back to unresolved.
+    let renamed = PLAN.replace("EvolveAction", "Renamed");
+    common::write_files(&root, &[("pkg/sub/plan.py", &renamed)]);
+    indexer
+        .sync_rel_paths(&["pkg/sub/plan.py".to_string()])
+        .unwrap();
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_t, fresh) = common::index_files(&[
+        ("pkg/__init__.py", ""),
+        ("pkg/sub/__init__.py", init),
+        ("pkg/sub/plan.py", &renamed),
+    ]);
+    common::assert_matches_fresh(&snap, &fresh);
 }

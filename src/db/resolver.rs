@@ -677,8 +677,7 @@ const SAME_LANG_SQL: &str = "SELECT s.id, s.visibility, s.qualname, f.path, s.ki
      JOIN files f ON s.file_id = f.id
      WHERE s.name IN (:tail, '.' || :tail)
        AND (s.qualname = :name OR s.qualname LIKE :p1 OR s.qualname LIKE :p2)
-       AND (s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
-            OR (:allow_values = 1 AND s.kind IN ('variable', 'const', 'field')))
+       AND s.kind IN ('method', 'function', 'class', 'interface', 'struct', 'property', 'enum', 'trait', 'type', 'record', 'service')
        AND (:exclude_method = 0 OR s.kind != 'method')
        AND s.graph_version = :gv
        AND (f.deleted_version IS NULL OR f.deleted_version > :gv)
@@ -790,9 +789,6 @@ struct FallbackGuard {
     /// Refuse a cross-file candidate the language's `VisibilityRule`
     /// deems not visible.
     enforce_visibility: bool,
-    /// Also admit `variable`/`const`/`field` candidates — set for `IMPORTS`
-    /// edges, which can name a module-level value (issue #333).
-    allow_values: bool,
 }
 
 impl FallbackGuard {
@@ -801,7 +797,6 @@ impl FallbackGuard {
     const NONE: FallbackGuard = FallbackGuard {
         exclude_method: false,
         enforce_visibility: false,
-        allow_values: false,
     };
 }
 
@@ -1301,7 +1296,12 @@ impl<'c> Resolver<'c> {
                 }
             }
         } else if !is_locally_bound_bare_call(r) {
-            if let Some(qn) = r.target_qualname
+            // Issue #333: a Python relative import (`.plan.X`) is made
+            // absolute against the importing module's package first, so it
+            // binds by exact qualname whatever the target's kind (a
+            // module-level variable included).
+            let absolute = python_relative_import_target(r);
+            if let Some(qn) = absolute.as_deref().or(r.target_qualname)
                 && let Some(id) = self.exact(qn, symbol_map, r.source_file_path, types_only)?
             {
                 return Ok(resolved(id, ResolutionKind::Exact));
@@ -1739,8 +1739,7 @@ impl<'c> Resolver<'c> {
         let gv = self.graph_version;
         let named = named_params! {
             ":tail": tail, ":name": name, ":p1": patterns.0, ":p2": patterns.1,
-            ":exclude_method": i64::from(guard.exclude_method),
-            ":allow_values": i64::from(guard.allow_values), ":gv": gv, ":lang": source_lang,
+            ":exclude_method": i64::from(guard.exclude_method), ":gv": gv, ":lang": source_lang,
         };
         let mut rows = if name_prefilter_applies(tail) {
             self.same_lang.query(named)?
@@ -1885,7 +1884,6 @@ impl<'c> Resolver<'c> {
                 let guard = FallbackGuard {
                     exclude_method: edge_kind == "CALLS" && bare_call,
                     enforce_visibility: true,
-                    allow_values: edge_kind == "IMPORTS",
                 };
                 if let Some((seg, dot, colons)) = two_segment_qualname_patterns(target_qualname)
                     && let Some(id) = self.unique_by_pattern(
@@ -4350,6 +4348,17 @@ fn qualname_trailing_two_segments(qn: &str) -> Option<&str> {
 /// type inference: it won't help one-segment qualnames or two unrelated
 /// types sharing both segments. Resolving the receiver's actual type is the
 /// upgrade path.
+/// The absolute qualname of a Python relative `IMPORTS` target (`.plan.X`
+/// in `pkg.sub` -> `pkg.sub.plan.X`), or `None` for any other edge.
+fn python_relative_import_target(r: &Reference<'_>) -> Option<String> {
+    if r.source_lang != "python" || r.edge_kind != "IMPORTS" {
+        return None;
+    }
+    let target = r.target_qualname.filter(|t| t.starts_with('.'))?;
+    let base = crate::indexer::python::base_package_parts(r.source_file_path, r.source_qualname?);
+    crate::indexer::python::absolutize_module(target, &base)
+}
+
 fn two_segment_qualname_patterns(qn: &str) -> Option<(String, String, String)> {
     let two = qualname_trailing_two_segments(qn)?;
     Some((two.to_string(), format!("%.{two}"), format!("%::{two}")))
