@@ -30,6 +30,15 @@ pub fn build_subgraph(
     )
 }
 
+/// Deprioritises matching symbols (e.g. test code): they are kept as leaf
+/// nodes, never expanded, and only admitted after every non-deferred node
+/// within `depth` is collected, at most `max` of them, using whatever
+/// `max_nodes` cap is left.
+pub struct Deferral<'a> {
+    pub is_deferred: &'a dyn Fn(&Symbol) -> bool,
+    pub max: usize,
+}
+
 pub fn build_subgraph_filtered(
     db: &Db,
     start_ids: &[i64],
@@ -39,6 +48,31 @@ pub fn build_subgraph_filtered(
     graph_version: i64,
     filter: Option<&EdgeFilter>,
 ) -> Result<Subgraph> {
+    build_subgraph_deferring(
+        db,
+        start_ids,
+        depth,
+        max_nodes,
+        languages,
+        graph_version,
+        filter,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_subgraph_deferring(
+    db: &Db,
+    start_ids: &[i64],
+    depth: usize,
+    max_nodes: usize,
+    languages: Option<&[String]>,
+    graph_version: i64,
+    filter: Option<&EdgeFilter>,
+    deferral: Option<&Deferral>,
+) -> Result<Subgraph> {
+    let mut deferred_ids: HashSet<i64> = HashSet::new();
+    let mut deferred_order: Vec<i64> = Vec::new();
     let mut visited: HashSet<i64> = HashSet::new();
     let mut queue: VecDeque<(i64, usize)> = VecDeque::new();
     let mut sorted_start: Vec<i64> = start_ids.to_vec();
@@ -59,6 +93,8 @@ pub fn build_subgraph_filtered(
         &sorted_start,
         languages,
         graph_version,
+        None,
+        &mut deferred_ids,
     )?;
 
     if languages.is_some() {
@@ -103,6 +139,8 @@ pub fn build_subgraph_filtered(
             &lookup_ids,
             languages,
             graph_version,
+            deferral.map(|d| d.is_deferred),
+            &mut deferred_ids,
         )?;
 
         neighbors.sort_by_key(|a| edge_sort_key(a, &symbol_cache));
@@ -136,13 +174,26 @@ pub fn build_subgraph_filtered(
                 if !symbol_cache.contains_key(&nid) {
                     continue;
                 }
-                if visited.len() < max_nodes && visited.insert(nid) {
+                if deferred_ids.contains(&nid) {
+                    if !visited.contains(&nid) && !deferred_order.contains(&nid) {
+                        deferred_order.push(nid);
+                    }
+                } else if visited.len() < max_nodes && visited.insert(nid) {
                     queue.push_back((nid, dist + 1));
                 }
             }
         }
         if visited.len() >= max_nodes {
             break;
+        }
+    }
+
+    if let Some(d) = deferral {
+        for nid in deferred_order.into_iter().take(d.max) {
+            if visited.len() >= max_nodes {
+                break;
+            }
+            visited.insert(nid);
         }
     }
 
@@ -163,6 +214,8 @@ fn cache_symbols(
     ids: &[i64],
     languages: Option<&[String]>,
     graph_version: i64,
+    is_deferred: Option<&dyn Fn(&Symbol) -> bool>,
+    deferred: &mut HashSet<i64>,
 ) -> Result<()> {
     let mut missing: Vec<i64> = ids
         .iter()
@@ -176,6 +229,9 @@ fn cache_symbols(
     missing.dedup();
     let symbols = db.symbols_by_ids(&missing, languages, graph_version)?;
     for symbol in symbols {
+        if is_deferred.is_some_and(|f| f(&symbol)) {
+            deferred.insert(symbol.id);
+        }
         cache.insert(symbol.id, symbol.qualname);
     }
     for id in missing {
@@ -214,7 +270,7 @@ fn edge_rank(kind: &str) -> u8 {
     }
 }
 
-pub(crate) fn edge_allowed(edge: &Edge, filter: &EdgeFilter) -> bool {
+fn edge_allowed(edge: &Edge, filter: &EdgeFilter) -> bool {
     if filter.resolved_only && (edge.source_symbol_id.is_none() || edge.target_symbol_id.is_none())
     {
         return false;

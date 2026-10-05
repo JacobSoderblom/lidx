@@ -966,12 +966,24 @@ fn write_test_caller_flood_fixture(repo_root: &Path) {
     std::fs::write(repo_root.join("test_lib.py"), tests).unwrap();
 }
 
-fn gather_symbol_items(temp: &TempRepo, params: &str) -> Vec<serde_json::Value> {
+const TARGET_SEED: &str = r#"{"seeds":[{"type":"symbol","qualname":"lib.target"}]"#;
+
+fn indexed_flood_repo() -> (TempRepo, Indexer) {
+    let temp = TempRepo::new("py_mvp");
+    write_test_caller_flood_fixture(&temp.repo_root);
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    (temp, indexer)
+}
+
+/// Run gather_context on `lib.target` with extra JSON params (e.g. `"depth":1`).
+fn gather_target(temp: &TempRepo, extra: &str) -> Vec<serde_json::Value> {
+    let params = format!("{TARGET_SEED},{extra}}}");
     let response = rpc::call(
         temp.repo_root.clone(),
         temp.db_path.clone(),
         "gather_context".to_string(),
-        params,
+        &params,
         "1",
     )
     .unwrap();
@@ -979,62 +991,88 @@ fn gather_symbol_items(temp: &TempRepo, params: &str) -> Vec<serde_json::Value> 
     value["result"]["items"].as_array().unwrap().clone()
 }
 
-fn item_names(items: &[serde_json::Value]) -> Vec<String> {
+fn names(items: &[serde_json::Value]) -> Vec<String> {
     items
         .iter()
         .filter_map(|i| i["symbol"]["qualname"].as_str().map(String::from))
         .collect()
 }
 
+fn is_test_item(item: &serde_json::Value) -> bool {
+    lidx::indexer::test_detection::is_test_file(item["path"].as_str().unwrap())
+}
+
 #[test]
 fn gather_context_test_callers_do_not_displace_non_test_callers() {
-    let temp = TempRepo::new("py_mvp");
-    write_test_caller_flood_fixture(&temp.repo_root);
-    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    let (temp, _indexer) = indexed_flood_repo();
+    let found = names(&gather_target(&temp, r#""depth":2"#));
+    assert!(found.iter().any(|n| n == "app.svc"), "{found:?}");
+    assert!(found.iter().any(|n| n == "app.api"), "{found:?}");
+}
+
+#[test]
+fn gather_context_caps_test_callers() {
+    let (temp, _indexer) = indexed_flood_repo();
+    let items = gather_target(&temp, r#""depth":2"#);
+    let tests = items.iter().filter(|i| is_test_item(i)).count();
+    assert!(tests > 0 && tests <= 8, "default cap is 8, got {tests}");
+
+    let capped = gather_target(&temp, r#""depth":2,"max_test_nodes":2"#);
+    // The cap also counts the test file's module node (not emitted as an item).
+    let n = capped.iter().filter(|i| is_test_item(i)).count();
+    assert!((1..=2).contains(&n), "{n}");
+    let none = gather_target(&temp, r#""depth":2,"max_test_nodes":0"#);
+    assert_eq!(none.iter().filter(|i| is_test_item(i)).count(), 0);
+    assert!(names(&none).iter().any(|n| n == "app.api"));
+}
+
+#[test]
+fn gather_context_orders_test_items_last() {
+    let (temp, _indexer) = indexed_flood_repo();
+    let items = gather_target(&temp, r#""depth":2"#);
+    let first_test = items.iter().position(is_test_item).expect("a test caller");
+    assert!(items[first_test..].iter().all(is_test_item));
+}
+
+#[test]
+fn gather_context_depth_takes_effect_with_test_callers() {
+    let (temp, _indexer) = indexed_flood_repo();
+    let d1 = names(&gather_target(&temp, r#""depth":1"#));
+    let d2 = names(&gather_target(&temp, r#""depth":2"#));
+    assert!(d1.iter().any(|n| n == "app.svc"));
+    assert!(!d1.iter().any(|n| n == "app.api"), "{d1:?}");
+    assert_ne!(d1, d2);
+}
+
+#[test]
+fn gather_context_incremental_matches_fresh_index() {
+    let (temp, mut indexer) = indexed_flood_repo();
+    // Incremental change: add an unrelated file and edit a test file.
+    std::fs::write(temp.repo_root.join("other.py"), "def other():\n    pass\n").unwrap();
+    let mut t = std::fs::read_to_string(temp.repo_root.join("test_lib.py")).unwrap();
+    t.push_str("\n\ndef test_extra():\n    target()\n");
+    std::fs::write(temp.repo_root.join("test_lib.py"), t).unwrap();
     indexer.reindex().unwrap();
+    let incremental = gather_target(&temp, r#""depth":2"#);
 
-    let d2 = gather_symbol_items(
-        &temp,
-        r#"{"seeds":[{"type":"symbol","qualname":"lib.target"}],"depth":2}"#,
-    );
-    let names = item_names(&d2);
-    assert!(names.iter().any(|n| n == "app.svc"), "{names:?}");
-    assert!(names.iter().any(|n| n == "app.api"), "{names:?}");
+    let fresh_temp = TempRepo::new("py_mvp");
+    copy_dir(&temp.repo_root, &fresh_temp.repo_root);
+    let _ = std::fs::remove_dir_all(fresh_temp.repo_root.join(".lidx"));
+    let mut fresh_indexer =
+        Indexer::new(fresh_temp.repo_root.clone(), fresh_temp.db_path.clone()).unwrap();
+    fresh_indexer.reindex().unwrap();
+    let fresh = gather_target(&fresh_temp, r#""depth":2"#);
 
-    // Test items come after every non-test item.
-    let is_test = |i: &serde_json::Value| i["path"].as_str().unwrap().contains("test_");
-    let first_test = d2.iter().position(is_test).expect("some test caller");
-    assert!(d2[first_test..].iter().all(is_test), "tests must sort last");
-
-    let d1 = gather_symbol_items(
-        &temp,
-        r#"{"seeds":[{"type":"symbol","qualname":"lib.target"}],"depth":1}"#,
-    );
-    let n1 = item_names(&d1);
-    assert!(n1.iter().any(|n| n == "app.svc"));
-    assert!(!n1.iter().any(|n| n == "app.api"), "{n1:?}");
-    assert_ne!(item_names(&d1), names);
-
-    // Fresh vs incremental index agree.
-    let shape = |items: &[serde_json::Value]| -> Vec<(String, String)> {
+    let shape = |items: &[serde_json::Value]| -> Vec<String> {
         items
             .iter()
             .map(|i| {
-                (
-                    i["path"].as_str().unwrap().to_string(),
-                    format!(
-                        "{}|{}",
-                        i["symbol"]["qualname"], i["source"]["relationship"]
-                    ),
+                format!(
+                    "{}|{}|{}",
+                    i["path"], i["symbol"]["qualname"], i["source"]["relationship"]
                 )
             })
             .collect()
     };
-    let before = shape(&d2);
-    indexer.reindex().unwrap();
-    let again = gather_symbol_items(
-        &temp,
-        r#"{"seeds":[{"type":"symbol","qualname":"lib.target"}],"depth":2}"#,
-    );
-    assert_eq!(before, shape(&again));
+    assert_eq!(shape(&incremental), shape(&fresh));
 }
