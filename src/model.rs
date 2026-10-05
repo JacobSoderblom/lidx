@@ -1149,6 +1149,8 @@ pub struct TraceFlowResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end: Option<Symbol>,
     pub trace: Vec<TraceHop>,
+    /// See `traversal::TraceResult::paths_found` for the exact definition
+    /// (leaf hops without an end target, 0 or 1 with one).
     pub paths_found: usize,
     pub reached_target: bool,
     pub truncated: bool,
