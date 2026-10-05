@@ -1902,7 +1902,6 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         end: trace_result.end,
         trace: trace_result.hops,
         paths_found: trace_result.paths_found,
-        nodes_found: trace_result.nodes_found,
         reached_target: trace_result.reached_target,
         truncated,
         truncation_reason: trace_result.truncation_reason,

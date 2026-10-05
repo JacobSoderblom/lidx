@@ -410,7 +410,6 @@
         }
       }
     ],
-    "nodes_found": 0,
     "paths_found": 0,
     "reached_target": false,
     "start": {
