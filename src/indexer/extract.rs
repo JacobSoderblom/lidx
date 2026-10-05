@@ -133,6 +133,10 @@ pub enum DeferredBase {
     /// A receiver that is another call's return value (a chained call, or a
     /// `var` bound from a deferred `var`).
     Call(Box<DeferredReturn>),
+    /// Python: a call of a plain function or class (`make()`), spelled as
+    /// these absolute qualname candidates. `DeferredReturn::method` holds
+    /// the callee's bare name and is not consulted.
+    Function(Vec<String>),
 }
 
 /// "The parameter at `index` (or named `name`) of the `arg_count`-argument
@@ -165,6 +169,17 @@ impl DeferredReturn {
         }
     }
 
+    /// The return value of calling a plain function or class (`make()`).
+    pub fn on_function(candidates: Vec<String>, name: &str) -> Self {
+        Self {
+            base: DeferredBase::Function(candidates),
+            method: name.to_string(),
+            awaited: false,
+            static_only: false,
+            name_only: false,
+        }
+    }
+
     pub fn on_call(inner: DeferredReturn, method: &str, awaited: bool) -> Self {
         Self {
             base: DeferredBase::Call(Box::new(inner)),
@@ -178,7 +193,7 @@ impl DeferredReturn {
     /// How many calls this nests (1 for a call on a type).
     pub fn depth(&self) -> usize {
         match &self.base {
-            DeferredBase::Type(_) => 1,
+            DeferredBase::Type(_) | DeferredBase::Function(_) => 1,
             DeferredBase::Call(inner) => 1 + inner.depth(),
         }
     }
