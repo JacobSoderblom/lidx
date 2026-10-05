@@ -3310,8 +3310,25 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
     super::validate::require_non_empty_query(&params.query)?;
     super::validate::validate_pattern_length(&params.query, "search_rg")?;
     super::validate::require_at_least_one("limit", params.limit)?;
-    let limit = params.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
+    let requested_limit = params.limit.unwrap_or(100);
+    let limit = requested_limit.min(MAX_RESPONSE_LIMIT);
     let context_lines = normalize_rg_context(params.context_lines);
+    // Report silent clamps (#368) so the caller knows the request was reduced.
+    let mut clamped = serde_json::Map::new();
+    if requested_limit > limit {
+        clamped.insert(
+            "limit".into(),
+            json!({"requested": requested_limit, "applied": limit}),
+        );
+    }
+    if let Some(requested) = params.context_lines
+        && requested > context_lines
+    {
+        clamped.insert(
+            "context_lines".into(),
+            json!({"requested": requested, "applied": context_lines}),
+        );
+    }
     let include_text = params.include_text.unwrap_or(true);
     let include_symbol = params.include_symbol.unwrap_or(false);
     let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
@@ -3330,7 +3347,10 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
         scope: params.scope,
         languages: scan::normalize_language_filter(params.languages.as_deref())?,
     };
-    let mut results = search_rg(indexer.repo_root(), &params.query, limit, options)?;
+    // Fetch one extra hit so we can tell whether the limit cut the results.
+    let mut results = search_rg(indexer.repo_root(), &params.query, limit + 1, options)?;
+    let limit_cut = results.len() > limit;
+    results.truncate(limit);
     for hit in &mut results {
         if hit.engine.is_none() {
             hit.engine = Some("search_rg".to_string());
@@ -3396,11 +3416,15 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
             }));
         }
 
-        return Ok(json!({
+        let mut out = json!({
             "results": [],
             "query": query,
             "next_hops": next_hops,
-        }));
+        });
+        if !clamped.is_empty() {
+            out["_meta"] = json!({"clamped": clamped});
+        }
+        return Ok(out);
     }
 
     // Issue #97: point each hit toward an `outline` of its file -- one hop per
@@ -3430,7 +3454,16 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
 
     // An object even when non-empty, so the dispatcher can report truncation
     // beside the hits without changing the response shape (#221).
-    Ok(json!({"results": results}))
+    let mut out = json!({"results": results});
+    if limit_cut {
+        // More matches exist than were returned; the true count is unknown.
+        out["truncated"] = json!(true);
+        out["total_available_is_lower_bound"] = json!(true);
+    }
+    if !clamped.is_empty() {
+        out["_meta"] = json!({"clamped": clamped});
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
