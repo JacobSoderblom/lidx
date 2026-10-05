@@ -389,6 +389,14 @@ fn outline_next_hops(
     markdown: bool,
 ) -> Result<Vec<Value>> {
     if entries.is_empty() {
+        // For empty outlines on non-empty files, provide a search next hop
+        if total_lines > 0 {
+            return Ok(vec![json!({
+                "method": "search",
+                "params": {"query": "", "path": path},
+                "description": "search within this file to find text references",
+            })]);
+        }
         return Ok(Vec::new());
     }
     if !markdown {
@@ -470,12 +478,23 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
         next_hops.push(reindex_hop(path));
     }
 
+    // When entries are empty but the file is non-empty, add a note explaining why
+    let note = if entries.is_empty() && total_lines > 0 {
+        Some(format!(
+            "no symbols extracted for this file (language {}: only specific language features produce symbols); use search or read_symbol to explore the file",
+            language
+        ))
+    } else {
+        None
+    };
+
     let result = OutlineResult {
         path: path.to_string(),
         language,
         total_lines,
         entries,
         stale,
+        note,
         next_hops,
     };
     Ok(serde_json::to_value(result)?)

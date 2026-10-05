@@ -215,6 +215,10 @@ pub struct OutlineResult {
     /// spans may be out of date. Omitted when false.
     #[serde(skip_serializing_if = "is_false")]
     pub stale: bool,
+    /// Human-readable note explaining why entries are empty (e.g., for YAML
+    /// files with no extractable symbols). Omitted when entries are not empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub next_hops: Vec<Value>,
 }
