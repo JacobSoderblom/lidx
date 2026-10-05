@@ -3337,20 +3337,51 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
     let include_symbol = params.include_symbol.unwrap_or(false);
     let ctx = HandlerContext::from_version(indexer, params.graph_version)?;
     // resolve_rg_paths handles path/paths with its own normalization for ripgrep
-    let paths = resolve_rg_paths(indexer.repo_root(), params.path, params.paths)?;
+    let mut paths = resolve_rg_paths(indexer.repo_root(), params.path, params.paths)?;
     let mut globs = params.globs.unwrap_or_default();
-    let hidden = params.hidden.unwrap_or(true);
-    // Skip the scanner's ignored dirs up front (search_rg also filters hits, which
-    // covers explicit paths into them); user globs can't re-enable them.
-    if hidden {
+    // Hidden not requested: rg runs without --hidden, and the indexed dot-path files are
+    // added as explicit paths, so rg's own limit applies to exactly the indexed result set.
+    let defaulted = params.hidden.is_none();
+    let hidden = params.hidden.unwrap_or(false);
+    if defaulted {
+        let root = indexer.repo_root().clone();
+        let indexed_dot: Vec<PathBuf> = indexer
+            .db()
+            .list_files(ctx.graph_version)?
+            .into_iter()
+            .filter(|file| is_dot_path(&file.path))
+            .map(|file| root.join(&file.path))
+            .collect();
+        let mut resolved: Vec<PathBuf> = Vec::new();
+        for base in paths {
+            let base_is_dot = base
+                .strip_prefix(&root)
+                .map(|rel| {
+                    rel.components().any(|c| {
+                        matches!(c, std::path::Component::Normal(n) if n.to_string_lossy().starts_with('.'))
+                    })
+                })
+                .unwrap_or(false);
+            // An explicit path inside a dot-dir would search unindexed files too, so
+            // it is replaced by the indexed files under it.
+            if !base_is_dot {
+                resolved.push(base.clone());
+            }
+            resolved.extend(indexed_dot.iter().filter(|f| f.starts_with(&base)).cloned());
+        }
+        resolved.sort();
+        resolved.dedup();
+        paths = resolved;
+    } else if hidden {
+        // Skip the scanner's ignored dirs up front (search_rg also filters hits, which
+        // covers explicit paths into them); user globs can't re-enable them.
         globs.extend(
             scan::IGNORED_DIR_NAMES
                 .iter()
                 .map(|name| format!("!{name}/")),
         );
     }
-    // Hidden defaulted on (not requested): only surface dot-path hits for indexed files.
-    let restrict_hidden_to_index = params.hidden.is_none();
+    let no_paths = paths.is_empty();
     let options = RgSearchOptions {
         include_text,
         case_sensitive: params.case_sensitive,
@@ -3364,16 +3395,12 @@ pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<V
         languages: scan::normalize_language_filter(params.languages.as_deref())?,
     };
     // Fetch one extra hit so we can tell whether the limit cut the results.
-    let mut results = search_rg(indexer.repo_root(), &params.query, limit + 1, options)?;
-    if restrict_hidden_to_index && results.iter().any(|hit| is_dot_path(&hit.path)) {
-        let indexed: std::collections::HashSet<String> = indexer
-            .db()
-            .list_files(ctx.graph_version)?
-            .into_iter()
-            .map(|file| file.path)
-            .collect();
-        results.retain(|hit| !is_dot_path(&hit.path) || indexed.contains(&hit.path));
-    }
+    // An empty path list would make rg search the cwd, so skip the call.
+    let mut results = if no_paths {
+        Vec::new()
+    } else {
+        search_rg(indexer.repo_root(), &params.query, limit + 1, options)?
+    };
     let limit_cut = results.len() > limit;
     results.truncate(limit);
     for hit in &mut results {
