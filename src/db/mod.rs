@@ -980,12 +980,16 @@ impl Db {
             "DELETE FROM edges WHERE graph_version < ?",
             params![boundary],
         )?;
-        let symbols_deleted = tx.execute(
-            "DELETE FROM symbols WHERE graph_version < ?",
-            params![boundary],
-        )?;
+        // Before `symbols`: `source_symbol_id` is `ON DELETE SET NULL`, so
+        // deleting symbols first would collapse rows that differ only by
+        // source symbol onto one `COALESCE(source_symbol_id,-1)` key of
+        // `idx_unresolved_references_identity` and violate its UNIQUE.
         tx.execute(
             "DELETE FROM unresolved_references WHERE graph_version < ?",
+            params![boundary],
+        )?;
+        let symbols_deleted = tx.execute(
+            "DELETE FROM symbols WHERE graph_version < ?",
             params![boundary],
         )?;
 
