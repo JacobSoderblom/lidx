@@ -363,3 +363,175 @@ fn hunk_deleting_following_sibling_does_not_touch_preceding_function() {
     let v = verdicts(&[("m.py", BASE)], &[("m.py", &edited)], &[]);
     assert!(v.is_empty(), "{v:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Issues #338 / #341: diff header spellings, deletions and renames. The index
+// holds the clean (pre-change) tree; the diff is of the working-tree edit.
+// ---------------------------------------------------------------------------
+
+/// Commit `base`, index it, run `edit`, then feed `git <diff_args>` to
+/// `analyze_diff`.
+fn diff_result(
+    base: &[(&str, &str)],
+    edit: impl FnOnce(&std::path::Path),
+    diff_args: &[&str],
+) -> Value {
+    let tmp = tempfile::Builder::new()
+        .prefix("lidx-analyze-diff-headers-")
+        .tempdir()
+        .unwrap();
+    let root = tmp.path();
+    git(root, &["init", "-q"]);
+    common::write_files(root, base);
+    git(root, &["add", "-A"]);
+    git(
+        root,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ],
+    );
+    let repo_root = root.to_path_buf();
+    let db_path = repo_root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    drop(indexer);
+    edit(root);
+    let mut args = vec!["-c", "core.quotePath=true"];
+    args.extend_from_slice(diff_args);
+    let diff = git(root, &args);
+    assert!(!diff.is_empty(), "edit produced no diff");
+    let params = serde_json::json!({"diff": diff}).to_string();
+    call(repo_root, db_path, "analyze_diff", &params)
+}
+
+fn change_types(result: &Value) -> BTreeMap<String, String> {
+    result["changed_symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|cs| cs["symbol"]["kind"] == "function")
+        .map(|cs| {
+            (
+                cs["symbol"]["qualname"].as_str().unwrap().to_string(),
+                cs["change_type"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn diff_header_spellings_all_find_the_changed_symbol() {
+    let base = [
+        ("my file.py", "def a():\n    return 1\n"),
+        ("\u{e5}\u{e4}\u{f6}.py", "def b():\n    return 1\n"),
+        ("x.py", "def c():\n    return 1\n"),
+    ];
+    let edit = |root: &std::path::Path| {
+        for f in ["my file.py", "\u{e5}\u{e4}\u{f6}.py", "x.py"] {
+            let p = root.join(f);
+            let t = std::fs::read_to_string(&p).unwrap();
+            std::fs::write(&p, t.replace("return 1", "return 2")).unwrap();
+        }
+    };
+    let want = expect(&[
+        ("my file.a", "modified"),
+        ("\u{e5}\u{e4}\u{f6}.b", "modified"),
+        ("x.c", "modified"),
+    ]);
+    for args in [
+        &["diff", "--no-color"][..],
+        &["-c", "diff.mnemonicPrefix=true", "diff", "--no-color"],
+        &["diff", "--no-color", "--no-prefix"],
+    ] {
+        let result = diff_result(&base, edit, args);
+        assert_eq!(change_types(&result), want, "{args:?}: {result}");
+        assert!(
+            result["warnings"].as_array().is_none_or(|w| w.is_empty()),
+            "{args:?}: {result}"
+        );
+    }
+}
+
+const A_PY: &str = "def f():\n    return 1\n";
+const B_PY: &str = "from a import f\n\n\ndef g():\n    return f()\n";
+
+#[test]
+fn deleting_a_file_reports_deleted_symbols_and_upstream_callers() {
+    let result = diff_result(
+        &[("a.py", A_PY), ("b.py", B_PY)],
+        |root| {
+            git(root, &["rm", "-q", "a.py"]);
+        },
+        &["diff", "--cached", "--no-color"],
+    );
+    assert_eq!(
+        change_types(&result),
+        expect(&[("a.f", "deleted")]),
+        "{result}"
+    );
+    let callers: Vec<&str> = result["upstream"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["symbol"]["qualname"].as_str().unwrap())
+        .collect();
+    assert_eq!(callers, ["b.g"], "{result}");
+    assert_ne!(result["risk"]["level"], "low", "{result}");
+}
+
+#[test]
+fn pure_rename_reports_renamed_symbols_instead_of_erroring() {
+    let result = diff_result(
+        &[("a.py", A_PY), ("b.py", B_PY)],
+        |root| {
+            git(root, &["mv", "a.py", "c.py"]);
+        },
+        &["diff", "--cached", "--no-color", "-M"],
+    );
+    assert_eq!(
+        change_types(&result),
+        expect(&[("a.f", "renamed")]),
+        "{result}"
+    );
+    assert!(
+        result["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("a.py -> c.py")),
+        "{result}"
+    );
+    assert_eq!(
+        result["upstream"][0]["symbol"]["qualname"], "b.g",
+        "{result}"
+    );
+}
+
+#[test]
+fn mixed_modify_and_delete_reports_both() {
+    let result = diff_result(
+        &[("a.py", A_PY), ("b.py", B_PY)],
+        |root| {
+            git(root, &["rm", "-q", "a.py"]);
+            std::fs::write(
+                root.join("b.py"),
+                B_PY.replace("return f()", "return f() + 1"),
+            )
+            .unwrap();
+            git(root, &["add", "b.py"]);
+        },
+        &["diff", "--cached", "--no-color"],
+    );
+    assert_eq!(
+        change_types(&result),
+        expect(&[("a.f", "deleted"), ("b.g", "modified")]),
+        "{result}"
+    );
+}

@@ -1604,3 +1604,99 @@ fn read_symbol_with_multiple_selectors_is_rejected() {
 
     let _ = std::fs::remove_dir_all(&_repo_root);
 }
+
+const STALE_SVC: &str = "namespace Demo;\npublic class Svc { public void Run() { } }\n";
+
+fn outline_of(indexer: &mut Indexer, path: &str) -> serde_json::Value {
+    rpc::handle_method(indexer, "outline", serde_json::json!({"path": path})).unwrap()
+}
+
+#[test]
+fn outline_stale_file_flags_and_adds_reindex_hop() {
+    let (mut indexer, repo_root) = indexed_from_source("outline-stale", &[("Svc.cs", STALE_SVC)]);
+
+    let before = outline_of(&mut indexer, "Svc.cs");
+    assert_eq!(before.get("stale"), None, "{before:#}");
+    let before_hops = before["next_hops"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !before_hops.iter().any(|h| h["method"] == "reindex"),
+        "fresh file must not get a reindex hop: {before:#}"
+    );
+
+    // Unchanged file: a second call is identical, full response.
+    assert_eq!(outline_of(&mut indexer, "Svc.cs"), before);
+
+    // Prepend two lines on disk without reindexing.
+    std::fs::write(repo_root.join("Svc.cs"), format!("// a\n// b\n{STALE_SVC}")).unwrap();
+
+    let after = outline_of(&mut indexer, "Svc.cs");
+    assert_eq!(after["stale"], true, "{after:#}");
+    assert_eq!(after["entries"], before["entries"], "{after:#}");
+    assert_eq!(after["total_lines"], 4, "{after:#}");
+    let hops = after["next_hops"].as_array().expect("next_hops");
+    assert!(
+        hops.iter().any(|h| h["method"] == "reindex"),
+        "expected a reindex next hop on a stale outline: {hops:?}"
+    );
+    // Existing hops are kept alongside the reindex hop.
+    assert_eq!(hops.len(), before_hops.len() + 1, "{after:#}");
+    for hop in &before_hops {
+        assert!(hops.contains(hop), "lost hop {hop} in {after:#}");
+    }
+
+    indexer.reindex().unwrap();
+    let after_reindex = outline_of(&mut indexer, "Svc.cs");
+    assert_eq!(after_reindex.get("stale"), None, "{after_reindex:#}");
+    assert!(
+        !after_reindex["next_hops"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .any(|h| h["method"] == "reindex"),
+        "{after_reindex:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
+fn outline_markdown_file_is_unaffected_by_staleness_check() {
+    // Markdown is read from disk with no indexed file record, so it is never
+    // flagged stale and never gets a reindex hop.
+    let (mut indexer, repo_root) = indexed_from_source(
+        "outline-markdown-stale",
+        &[("test.md", "# Heading 1\n\n## Heading 2\n")],
+    );
+
+    let before = outline_of(&mut indexer, "test.md");
+    assert_eq!(before.get("stale"), None, "{before:#}");
+
+    // Edit that keeps the line count: the live content is re-read, nothing
+    // else about the response shape changes.
+    std::fs::write(repo_root.join("test.md"), "# Heading 1\n\n## Heading 3\n").unwrap();
+    let after = outline_of(&mut indexer, "test.md");
+    assert_eq!(after.get("stale"), None, "{after:#}");
+    assert_eq!(after["total_lines"], before["total_lines"], "{after:#}");
+    assert_eq!(after["next_hops"], before["next_hops"], "{after:#}");
+    let titles = |v: &serde_json::Value| -> Vec<String> {
+        v["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["qualname"].to_string())
+            .collect()
+    };
+    assert_eq!(titles(&after).len(), titles(&before).len(), "{after:#}");
+    assert!(
+        !after["next_hops"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .any(|h| h["method"] == "reindex"),
+        "{after:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
