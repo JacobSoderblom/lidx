@@ -1,4 +1,10 @@
+use crate::indexer::test_detection::is_test_file;
 use crate::model::{ContextItem, ItemSource, SourceType};
+
+/// Related test code (never seeds) sorts after related non-test code.
+fn is_related_test(item: &ContextItem) -> bool {
+    matches!(item.source.source_type, SourceType::Subgraph) && is_test_file(&item.path)
+}
 
 /// Sort items deterministically for consistent output
 pub(super) fn sort_items(items: &mut [ContextItem]) {
@@ -14,6 +20,8 @@ pub(super) fn sort_items(items: &mut [ContextItem]) {
 
         source_rank(&a.source)
             .cmp(&source_rank(&b.source))
+            // Related test code sorts after related non-test code (issue #359)
+            .then_with(|| is_related_test(a).cmp(&is_related_test(b)))
             // Secondary: seed index (if both are direct seeds)
             .then_with(|| a.source.seed_index.cmp(&b.source.seed_index))
             // Tertiary: path (alphabetical)

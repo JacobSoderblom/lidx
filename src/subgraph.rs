@@ -30,6 +30,15 @@ pub fn build_subgraph(
     )
 }
 
+/// Deprioritises matching symbols (e.g. test code): they are kept as leaf
+/// nodes, never expanded, and only admitted after every non-deferred node
+/// within `depth` is collected, at most `max` of them, using whatever
+/// `max_nodes` cap is left.
+pub struct Deferral<'a> {
+    pub is_deferred: &'a dyn Fn(&Symbol) -> bool,
+    pub max: usize,
+}
+
 pub fn build_subgraph_filtered(
     db: &Db,
     start_ids: &[i64],
@@ -39,6 +48,31 @@ pub fn build_subgraph_filtered(
     graph_version: i64,
     filter: Option<&EdgeFilter>,
 ) -> Result<Subgraph> {
+    build_subgraph_deferring(
+        db,
+        start_ids,
+        depth,
+        max_nodes,
+        languages,
+        graph_version,
+        filter,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_subgraph_deferring(
+    db: &Db,
+    start_ids: &[i64],
+    depth: usize,
+    max_nodes: usize,
+    languages: Option<&[String]>,
+    graph_version: i64,
+    filter: Option<&EdgeFilter>,
+    deferral: Option<&Deferral>,
+) -> Result<Subgraph> {
+    let mut deferred_ids: HashSet<i64> = HashSet::new();
+    let mut deferred_order: Vec<i64> = Vec::new();
     let mut visited: HashSet<i64> = HashSet::new();
     let mut queue: VecDeque<(i64, usize)> = VecDeque::new();
     let mut sorted_start: Vec<i64> = start_ids.to_vec();
@@ -59,6 +93,7 @@ pub fn build_subgraph_filtered(
         &sorted_start,
         languages,
         graph_version,
+        None,
     )?;
 
     if languages.is_some() {
@@ -103,9 +138,15 @@ pub fn build_subgraph_filtered(
             &lookup_ids,
             languages,
             graph_version,
+            deferral.map(|d| (d.is_deferred, &mut deferred_ids)),
         )?;
 
         neighbors.sort_by_key(|a| edge_sort_key(a, &symbol_cache));
+        if deferral.is_some() {
+            // Call-graph neighbours claim the node cap before structural
+            // (CONTAINS/IMPORTS) ones; the old rank still orders each group.
+            neighbors.sort_by_key(|e| e.kind != "CALLS");
+        }
 
         for edge in neighbors {
             let source_ok = edge
@@ -136,13 +177,26 @@ pub fn build_subgraph_filtered(
                 if !symbol_cache.contains_key(&nid) {
                     continue;
                 }
-                if visited.len() < max_nodes && visited.insert(nid) {
+                if deferred_ids.contains(&nid) {
+                    if !visited.contains(&nid) && !deferred_order.contains(&nid) {
+                        deferred_order.push(nid);
+                    }
+                } else if visited.len() < max_nodes && visited.insert(nid) {
                     queue.push_back((nid, dist + 1));
                 }
             }
         }
         if visited.len() >= max_nodes {
             break;
+        }
+    }
+
+    if let Some(d) = deferral {
+        for nid in deferred_order.into_iter().take(d.max) {
+            if visited.len() >= max_nodes {
+                break;
+            }
+            visited.insert(nid);
         }
     }
 
@@ -156,6 +210,9 @@ pub fn build_subgraph_filtered(
     Ok(Subgraph { nodes, edges })
 }
 
+/// Predicate plus the set that collects ids it matched.
+type DeferSink<'a> = (&'a dyn Fn(&Symbol) -> bool, &'a mut HashSet<i64>);
+
 fn cache_symbols(
     db: &Db,
     cache: &mut HashMap<i64, String>,
@@ -163,7 +220,12 @@ fn cache_symbols(
     ids: &[i64],
     languages: Option<&[String]>,
     graph_version: i64,
+    defer: Option<DeferSink>,
 ) -> Result<()> {
+    let (is_deferred, mut deferred) = match defer {
+        Some((f, set)) => (Some(f), Some(set)),
+        None => (None, None),
+    };
     let mut missing: Vec<i64> = ids
         .iter()
         .copied()
@@ -176,6 +238,11 @@ fn cache_symbols(
     missing.dedup();
     let symbols = db.symbols_by_ids(&missing, languages, graph_version)?;
     for symbol in symbols {
+        if let (Some(f), Some(set)) = (is_deferred, deferred.as_deref_mut())
+            && f(&symbol)
+        {
+            set.insert(symbol.id);
+        }
         cache.insert(symbol.id, symbol.qualname);
     }
     for id in missing {

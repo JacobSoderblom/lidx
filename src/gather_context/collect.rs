@@ -1,14 +1,15 @@
 use crate::db::Db;
-use crate::model::{ContextItem, ItemSource, MatchLocation, SourceType, Symbol};
+use crate::indexer::test_detection::is_test_file;
+use crate::model::{ContextItem, Edge, ItemSource, MatchLocation, SourceType, Symbol};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use super::GatherConfig;
 use super::format::{
     format_tier0, format_tier1, format_tier2, read_file_region, read_symbol_content,
 };
 use super::resolve::ResolvedSeed;
+use super::{GatherConfig, MAX_TEST_NODES};
 
 /// Tracks deduplication state
 pub(super) struct DeduplicationTracker {
@@ -509,10 +510,25 @@ fn collect_content_file_strategy(
             }
         }
 
+        // Non-test callers first; test callers capped (issue #359).
+        caller_symbols.sort_by_key(|s| is_test_file(&s.file_path));
+        let mut tests_added = c
+            .items
+            .iter()
+            .filter(|i| {
+                matches!(i.source.source_type, SourceType::Subgraph) && is_test_file(&i.path)
+            })
+            .count();
         for caller in caller_symbols {
             if c.over_budget() {
                 c.mark_truncated();
                 break;
+            }
+            if is_test_file(&caller.file_path) {
+                if tests_added >= MAX_TEST_NODES {
+                    continue;
+                }
+                tests_added += 1;
             }
             let source = ItemSource {
                 source_type: SourceType::Subgraph,
@@ -661,58 +677,74 @@ fn collect_content_symbol_strategy(
                 .map(|s| s.file_path.clone())
                 .collect();
 
+            // Gather candidates first so test code is deprioritised: non-test
+            // neighbours are added before any test neighbour, and test
+            // neighbours are capped at MAX_TEST_NODES (issue #359).
+            let mut candidates: Vec<(Symbol, &'static str, Edge)> = Vec::new();
             for seed_id in &seed_symbol_ids {
-                if c.total_bytes - cross_start >= cross_file_budget {
-                    break;
-                }
                 let edges = db.edges_for_symbol_with_dispatch(
                     *seed_id,
                     config.languages.as_deref(),
                     config.graph_version,
                 )?;
-                for edge in &edges {
-                    if c.total_bytes - cross_start >= cross_file_budget {
-                        break;
+                for edge in edges.into_iter().filter(|e| e.kind == "CALLS") {
+                    let (target_id, relationship) = if edge.source_symbol_id == Some(*seed_id) {
+                        (edge.target_symbol_id, "callee")
+                    } else if edge.target_symbol_id == Some(*seed_id) {
+                        (edge.source_symbol_id, "caller")
+                    } else {
+                        continue;
+                    };
+                    if let Some(tid) = target_id
+                        && let Some(target_symbol) = db.get_symbol_by_id(tid)?
+                        && !current_file_paths.contains(&target_symbol.file_path)
+                    {
+                        candidates.push((target_symbol, relationship, edge));
                     }
-                    if edge.kind == "CALLS" {
-                        let (target_id, relationship) = if edge.source_symbol_id == Some(*seed_id) {
-                            (edge.target_symbol_id, "callee")
-                        } else if edge.target_symbol_id == Some(*seed_id) {
-                            (edge.source_symbol_id, "caller")
-                        } else {
-                            (None, "")
-                        };
-                        if let Some(tid) = target_id
-                            && let Some(target_symbol) = db.get_symbol_by_id(tid)?
-                            && !current_file_paths.contains(&target_symbol.file_path)
-                        {
-                            let source = ItemSource {
-                                source_type: SourceType::Subgraph,
-                                seed_index: None,
-                                relationship: Some(relationship.to_string()),
-                                distance: Some(1),
-                            };
-                            // Account for added bytes identically in both modes: the
-                            // collector total delta, checked against the sub-budget.
-                            let left =
-                                cross_file_budget.saturating_sub(c.total_bytes - cross_start);
-                            if config.include_snippets {
-                                // Bodies are fit-checked by the collector against the
-                                // overall budget (sub-budget equals remaining budget).
-                                c.try_add_symbol(
-                                    &target_symbol,
-                                    target_symbol.start_byte,
-                                    target_symbol.end_byte,
-                                    source,
-                                    None,
-                                )?;
-                            } else {
-                                let content = format_tier1(&target_symbol, Some(edge));
-                                if content.len() <= left {
-                                    c.try_add_formatted(&target_symbol, content, source, None);
-                                }
-                            }
-                        }
+                }
+            }
+            candidates.sort_by_key(|(sym, _, _)| is_test_file(&sym.file_path));
+            let mut tests_in_context = c
+                .items
+                .iter()
+                .filter(|i| {
+                    matches!(i.source.source_type, SourceType::Subgraph) && is_test_file(&i.path)
+                })
+                .count();
+
+            for (target_symbol, relationship, edge) in candidates {
+                if c.total_bytes - cross_start >= cross_file_budget {
+                    break;
+                }
+                if is_test_file(&target_symbol.file_path) {
+                    if tests_in_context >= MAX_TEST_NODES {
+                        continue;
+                    }
+                    tests_in_context += 1;
+                }
+                let source = ItemSource {
+                    source_type: SourceType::Subgraph,
+                    seed_index: None,
+                    relationship: Some(relationship.to_string()),
+                    distance: Some(1),
+                };
+                // Account for added bytes identically in both modes: the
+                // collector total delta, checked against the sub-budget.
+                let left = cross_file_budget.saturating_sub(c.total_bytes - cross_start);
+                if config.include_snippets {
+                    // Bodies are fit-checked by the collector against the
+                    // overall budget (sub-budget equals remaining budget).
+                    c.try_add_symbol(
+                        &target_symbol,
+                        target_symbol.start_byte,
+                        target_symbol.end_byte,
+                        source,
+                        None,
+                    )?;
+                } else {
+                    let content = format_tier1(&target_symbol, Some(&edge));
+                    if content.len() <= left {
+                        c.try_add_formatted(&target_symbol, content, source, None);
                     }
                 }
             }

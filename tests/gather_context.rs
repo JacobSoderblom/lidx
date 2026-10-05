@@ -948,3 +948,123 @@ fn gather_context_symbol_strategy_large_cross_file_body_not_dropped_by_subcap() 
         with["total_bytes"].as_u64().unwrap() > without["total_bytes"].as_u64().unwrap() + 2000
     );
 }
+
+// Regression tests for issue #359: test callers must not consume the node cap
+// ahead of non-test callers, so `depth` takes effect.
+
+fn write_test_caller_flood_fixture(repo_root: &Path) {
+    std::fs::write(repo_root.join("lib.py"), "def target():\n    pass\n").unwrap();
+    std::fs::write(
+        repo_root.join("app.py"),
+        "from lib import target\n\n\ndef svc():\n    target()\n\n\ndef api():\n    svc()\n",
+    )
+    .unwrap();
+    let mut tests = String::from("from lib import target\n\n");
+    for n in 0..60 {
+        tests.push_str(&format!("\ndef test_{n}():\n    target()\n"));
+    }
+    std::fs::write(repo_root.join("test_lib.py"), tests).unwrap();
+}
+
+const TARGET_SEED: &str = r#"{"seeds":[{"type":"symbol","qualname":"lib.target"}]"#;
+
+fn indexed_flood_repo() -> (TempRepo, Indexer) {
+    let temp = TempRepo::new("py_mvp");
+    write_test_caller_flood_fixture(&temp.repo_root);
+    let mut indexer = Indexer::new(temp.repo_root.clone(), temp.db_path.clone()).unwrap();
+    indexer.reindex().unwrap();
+    (temp, indexer)
+}
+
+/// Run gather_context on `lib.target` with extra JSON params (e.g. `"depth":1`).
+fn gather_target(temp: &TempRepo, extra: &str) -> Vec<serde_json::Value> {
+    let params = format!("{TARGET_SEED},{extra}}}");
+    let response = rpc::call(
+        temp.repo_root.clone(),
+        temp.db_path.clone(),
+        "gather_context".to_string(),
+        &params,
+        "1",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+    value["result"]["items"].as_array().unwrap().clone()
+}
+
+fn names(items: &[serde_json::Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|i| i["symbol"]["qualname"].as_str().map(String::from))
+        .collect()
+}
+
+fn is_test_item(item: &serde_json::Value) -> bool {
+    lidx::indexer::test_detection::is_test_file(item["path"].as_str().unwrap())
+}
+
+#[test]
+fn gather_context_test_callers_do_not_displace_non_test_callers() {
+    let (temp, _indexer) = indexed_flood_repo();
+    let found = names(&gather_target(&temp, r#""depth":2"#));
+    assert!(found.iter().any(|n| n == "app.svc"), "{found:?}");
+    assert!(found.iter().any(|n| n == "app.api"), "{found:?}");
+}
+
+#[test]
+fn gather_context_caps_test_callers() {
+    let (temp, _indexer) = indexed_flood_repo();
+    let items = gather_target(&temp, r#""depth":2"#);
+    let tests = items.iter().filter(|i| is_test_item(i)).count();
+    assert!(tests > 0 && tests <= 8, "default cap is 8, got {tests}");
+}
+
+#[test]
+fn gather_context_orders_test_items_last() {
+    let (temp, _indexer) = indexed_flood_repo();
+    let items = gather_target(&temp, r#""depth":2"#);
+    let first_test = items.iter().position(is_test_item).expect("a test caller");
+    assert!(items[first_test..].iter().all(is_test_item));
+}
+
+#[test]
+fn gather_context_depth_takes_effect_with_test_callers() {
+    let (temp, _indexer) = indexed_flood_repo();
+    let d1 = names(&gather_target(&temp, r#""depth":1"#));
+    let d2 = names(&gather_target(&temp, r#""depth":2"#));
+    assert!(d1.iter().any(|n| n == "app.svc"));
+    assert!(!d1.iter().any(|n| n == "app.api"), "{d1:?}");
+    assert_ne!(d1, d2);
+}
+
+#[test]
+fn gather_context_incremental_matches_fresh_index() {
+    let (temp, mut indexer) = indexed_flood_repo();
+    // Incremental change: add an unrelated file and edit a test file.
+    std::fs::write(temp.repo_root.join("other.py"), "def other():\n    pass\n").unwrap();
+    let mut t = std::fs::read_to_string(temp.repo_root.join("test_lib.py")).unwrap();
+    t.push_str("\n\ndef test_extra():\n    target()\n");
+    std::fs::write(temp.repo_root.join("test_lib.py"), t).unwrap();
+    indexer.reindex().unwrap();
+    let incremental = gather_target(&temp, r#""depth":2"#);
+
+    let fresh_temp = TempRepo::new("py_mvp");
+    copy_dir(&temp.repo_root, &fresh_temp.repo_root);
+    let _ = std::fs::remove_dir_all(fresh_temp.repo_root.join(".lidx"));
+    let mut fresh_indexer =
+        Indexer::new(fresh_temp.repo_root.clone(), fresh_temp.db_path.clone()).unwrap();
+    fresh_indexer.reindex().unwrap();
+    let fresh = gather_target(&fresh_temp, r#""depth":2"#);
+
+    let shape = |items: &[serde_json::Value]| -> Vec<String> {
+        items
+            .iter()
+            .map(|i| {
+                format!(
+                    "{}|{}|{}",
+                    i["path"], i["symbol"]["qualname"], i["source"]["relationship"]
+                )
+            })
+            .collect()
+    };
+    assert_eq!(shape(&incremental), shape(&fresh));
+}

@@ -22,6 +22,9 @@ pub const STRATEGY_FILE: &str = "file";
 /// Valid `strategy` values; the request validator checks against this.
 pub const STRATEGIES: &[&str] = &[STRATEGY_SYMBOL, STRATEGY_FILE];
 
+/// Cap on test-code nodes admitted into related context (issue #359).
+pub(crate) const MAX_TEST_NODES: usize = 8;
+
 pub struct GatherConfig {
     pub max_bytes: usize,
     pub depth: usize,

@@ -1,8 +1,9 @@
 use crate::db::Db;
+use crate::indexer::test_detection::is_test_file;
 use crate::model::Symbol;
 use anyhow::Result;
 
-use super::GatherConfig;
+use super::{GatherConfig, MAX_TEST_NODES};
 
 /// Expand symbol seeds via subgraph to find related symbols
 pub(super) fn expand_via_subgraph(
@@ -10,7 +11,7 @@ pub(super) fn expand_via_subgraph(
     symbol_ids: &[i64],
     config: &GatherConfig,
 ) -> Result<Vec<Symbol>> {
-    use crate::subgraph::{EdgeFilter, build_subgraph_filtered};
+    use crate::subgraph::{Deferral, EdgeFilter, build_subgraph_deferring};
 
     if symbol_ids.is_empty() {
         return Ok(Vec::new());
@@ -50,7 +51,15 @@ pub(super) fn expand_via_subgraph(
         resolved_only: false,
     };
 
-    let subgraph = build_subgraph_filtered(
+    // Test code is deprioritised (issue #359): admitted only after all
+    // non-test nodes within `depth`, capped at MAX_TEST_NODES. Test-scope
+    // files stay leaf nodes (their own callers/callees are not expanded).
+    let defer_tests = |s: &Symbol| is_test_file(&s.file_path);
+    let deferral = Deferral {
+        is_deferred: &defer_tests,
+        max: MAX_TEST_NODES,
+    };
+    let subgraph = build_subgraph_deferring(
         db,
         symbol_ids,
         config.depth,
@@ -58,7 +67,11 @@ pub(super) fn expand_via_subgraph(
         config.languages.as_deref(),
         config.graph_version,
         Some(&filter),
+        Some(&deferral),
     )?;
 
-    Ok(subgraph.nodes)
+    // Stable partition: non-test nodes first, test nodes last.
+    let mut nodes = subgraph.nodes;
+    nodes.sort_by_key(|s| is_test_file(&s.file_path));
+    Ok(nodes)
 }
