@@ -344,7 +344,6 @@
       "start_line": 9
     },
     "tests": [],
-    "tests_note": "tests is the subset of callers that live in test-scope files; a test caller appears in both lists.",
     "tests_total": 0,
     "warnings": [
       "No test-scope files exist in this index, so the empty tests list doesn't mean this symbol is untested -- it means lidx found no files it classifies as tests (tests are detected by file path, so tests living inline in an otherwise-non-test file, e.g. Rust's #[cfg(test)] modules, won't count)."
