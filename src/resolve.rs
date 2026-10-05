@@ -525,6 +525,11 @@ fn recovery_search_term(trimmed: &str) -> String {
         .split_whitespace()
         .max_by_key(|t| t.chars().count())
         .unwrap_or(stripped);
+    // `search` rejects an empty query (#360), so an empty ref still needs a
+    // runnable term for its fallback hop.
+    if token.is_empty() {
+        return ".".to_string();
+    }
     token.chars().take(MAX_LEN_CHARS).collect()
 }
 

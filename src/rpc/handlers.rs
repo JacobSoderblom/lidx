@@ -2770,6 +2770,34 @@ fn analyze_impact_inner(
     }
 }
 
+fn is_removal(change_type: &str) -> bool {
+    matches!(change_type, "deleted" | "renamed")
+}
+
+/// Indexed symbols for a changed file. The index still holds the pre-change
+/// tree, so a rename's symbols live at the old path; fall back to the new path
+/// for a fresh index. Returns the symbols, the path that was looked up last
+/// (the old path only when it matched) and whether the rename matched.
+fn symbols_for_changed_file(
+    indexer: &Indexer,
+    cf: &ChangedFile,
+    graph_version: i64,
+) -> (Vec<Symbol>, String, bool) {
+    let lookup = |path: &str| {
+        indexer
+            .db()
+            .get_symbols_for_file(path, graph_version)
+            .unwrap_or_default()
+    };
+    if let Some(old) = cf.renamed_from() {
+        let symbols = lookup(old);
+        if !symbols.is_empty() {
+            return (symbols, old.to_string(), true);
+        }
+    }
+    (lookup(&cf.path), cf.path.clone(), false)
+}
+
 pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: AnalyzeDiffParams = super::parse_params("analyze_diff", params)?;
     super::validate::require_at_least_one("max_depth", params.max_depth)?;
@@ -2799,12 +2827,30 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
     // Step 2: Find symbols in changed files, filtered by hunk ranges
     let mut changed_symbols = Vec::new();
     for cf in &changed_files {
-        let symbols = indexer
-            .db()
-            .get_symbols_for_file(&cf.path, ctx.graph_version)
-            .unwrap_or_default();
+        let (symbols, lookup_path, renamed) =
+            symbols_for_changed_file(indexer, cf, ctx.graph_version);
         if symbols.is_empty() {
-            warnings.push(format!("Path not found in index: {}", cf.path));
+            warnings.push(format!("Path not found in index: {lookup_path}"));
+            continue;
+        }
+        if renamed {
+            warnings.push(format!(
+                "Renamed: {lookup_path} -> {}; callers of its symbols may dangle",
+                cf.path
+            ));
+        }
+        if cf.is_deleted() || renamed {
+            let change_type = if cf.is_deleted() {
+                "deleted"
+            } else {
+                "renamed"
+            };
+            changed_symbols.extend(symbols.into_iter().map(|sym| ChangedSymbol {
+                new_signature: sym.signature.clone(),
+                symbol: sym,
+                change_type: change_type.to_string(),
+                old_signature: None,
+            }));
             continue;
         }
         let has_ranges = cf.has_line_changes();
@@ -2880,15 +2926,17 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
     if changed_symbols.len() > 1 {
         let ranges: Vec<(i64, i64, i64)> = changed_symbols
             .iter()
+            .filter(|cs| !is_removal(&cs.change_type))
             .map(|cs| (cs.symbol.id, cs.symbol.start_line, cs.symbol.end_line))
             .collect();
         changed_symbols.retain(|cs| {
-            !ranges.iter().any(|(id, start, end)| {
-                *id != cs.symbol.id
-                    && *start >= cs.symbol.start_line
-                    && *end <= cs.symbol.end_line
-                    && (*start > cs.symbol.start_line || *end < cs.symbol.end_line)
-            })
+            is_removal(&cs.change_type)
+                || !ranges.iter().any(|(id, start, end)| {
+                    *id != cs.symbol.id
+                        && *start >= cs.symbol.start_line
+                        && *end <= cs.symbol.end_line
+                        && (*start > cs.symbol.start_line || *end < cs.symbol.end_line)
+                })
         });
     }
 
@@ -3052,6 +3100,34 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
                         cs.symbol.qualname
                     ));
                 }
+            }
+        }
+
+        // 1b. Deleted or renamed symbols with callers = HIGH risk: callers break
+        let (removed, removed_files): (HashSet<i64>, HashSet<&str>) = changed_symbols
+            .iter()
+            .filter(|cs| is_removal(&cs.change_type))
+            .map(|cs| (cs.symbol.id, cs.symbol.file_path.as_str()))
+            .unzip();
+        let broken = upstream
+            .iter()
+            .filter(|d| !removed.contains(&d.symbol.id))
+            .filter(|d| !removed_files.contains(d.symbol.file_path.as_str()))
+            .count();
+        if !removed.is_empty() {
+            factors.push(RiskFactor {
+                factor: "Deleted or renamed symbols".to_string(),
+                description: format!(
+                    "{} symbols deleted or renamed, {} callers outside those files",
+                    removed.len(),
+                    broken
+                ),
+                severity: if broken > 0 { "high" } else { "medium" }.to_string(),
+            });
+            if broken > 0 {
+                review_checklist.push(
+                    "Update callers of deleted or renamed symbols (see upstream)".to_string(),
+                );
             }
         }
 
@@ -3231,6 +3307,7 @@ pub(super) fn handle_analyze_diff(indexer: &mut Indexer, params: Value) -> Resul
 
 pub(super) fn handle_search_rg(indexer: &mut Indexer, params: Value) -> Result<Value> {
     let params: RgParams = super::parse_params("search", params)?;
+    super::validate::require_non_empty_query(&params.query)?;
     super::validate::validate_pattern_length(&params.query, "search_rg")?;
     super::validate::require_at_least_one("limit", params.limit)?;
     let limit = params.limit.unwrap_or(100).min(MAX_RESPONSE_LIMIT);
@@ -3423,7 +3500,7 @@ pub(super) fn handle_reindex(indexer: &mut Indexer, params: Value) -> Result<Val
         json_stats,
         params.summary.unwrap_or(false),
         params.fields.as_deref(),
-        &["scanned", "indexed", "skipped", "deleted"],
+        &["scanned", "indexed", "skipped", "deleted", "prune_error"],
     ))
 }
 
