@@ -707,6 +707,46 @@ impl Db {
         Ok(results)
     }
 
+    /// Direct children of the qualname `prefix` (which includes its trailing
+    /// delimiter, e.g. `pkg.Cls.`): symbols whose remaining qualname tail has
+    /// no `.`, `/` or `:` and a char length within `min_len..=max_len`.
+    pub fn child_symbols_of_qualname(
+        &self,
+        prefix: &str,
+        min_len: usize,
+        max_len: usize,
+        graph_version: i64,
+    ) -> Result<Vec<Symbol>> {
+        let prefix_len = prefix.chars().count() as i64;
+        let sql = format!(
+            "SELECT {SYMBOL_COLUMNS}
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE substr(s.qualname, 1, ?1) = ?2
+               AND length(substr(s.qualname, ?1 + 1)) BETWEEN ?4 AND ?5
+               AND instr(substr(s.qualname, ?1 + 1), '.') = 0
+               AND instr(substr(s.qualname, ?1 + 1), '/') = 0
+               AND instr(substr(s.qualname, ?1 + 1), ':') = 0
+               AND s.kind NOT IN ('heading','section')
+               AND s.graph_version = ?3
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?3)
+             ORDER BY s.id"
+        );
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params![
+                prefix_len,
+                prefix,
+                graph_version,
+                min_len as i64,
+                max_len as i64
+            ],
+            symbol_from_row,
+        )?;
+        collect_symbols(rows)
+    }
+
     /// Bounded candidate scan for fuzzy "did you mean": symbols whose
     /// lowercased name contains any of `patterns` (plain alphanumeric tokens),
     /// those matching the most patterns first, at most `cap` rows.
@@ -723,9 +763,7 @@ impl Db {
         let cond = vec!["LOWER(s.name) LIKE ?"; likes.len()].join(" OR ");
         let score = vec!["(LOWER(s.name) LIKE ?)"; likes.len()].join(" + ");
         let sql = format!(
-            "SELECT s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
-                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
-                    s.graph_version, s.commit_sha, s.stable_id
+            "SELECT {SYMBOL_COLUMNS}
              FROM symbols s
              JOIN files f ON s.file_id = f.id
              WHERE ({cond})
@@ -745,11 +783,7 @@ impl Db {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(&*params, symbol_from_row)?;
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
+        collect_symbols(rows)
     }
 
     /// Search symbols where name starts with the given prefix.
@@ -1572,4 +1606,17 @@ fn rpc_split(path: &str) -> (&str, &str) {
         Some(i) => (&path[..i], &path[i + 1..]),
         None => ("", path),
     }
+}
+
+/// Column list matching `symbol_from_row`, for queries aliasing `symbols s` and `files f`.
+const SYMBOL_COLUMNS: &str = "s.id, f.path, s.kind, s.name, s.qualname, s.start_line, s.start_col,
+                    s.end_line, s.end_col, s.start_byte, s.end_byte, s.signature, s.docstring,
+                    s.graph_version, s.commit_sha, s.stable_id";
+
+fn collect_symbols(rows: impl Iterator<Item = rusqlite::Result<Symbol>>) -> Result<Vec<Symbol>> {
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
 }
