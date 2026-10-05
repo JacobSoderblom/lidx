@@ -109,7 +109,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         }
         // T-SQL `#temp` / `##temp` tables are procedure-local scratch
         // objects, not schema tables (#340).
-        if node.kind() == "create_table" && is_tsql_temp_table(&node_text(node, source)) {
+        if node.kind() == "create_table" && is_tsql_temp_table(node, source) {
             return;
         }
         if let Some((qualname, name)) = extract_object_name(node, source) {
@@ -188,36 +188,20 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     }
 }
 
-/// True when a `CREATE TABLE` statement names a `#temp` / `##temp` table.
-fn is_tsql_temp_table(stmt: &str) -> bool {
-    let mut words = stmt.split_whitespace();
-    let is = |w: Option<&str>, e: &str| w.is_some_and(|w| w.eq_ignore_ascii_case(e));
-    if !is(words.next(), "create") {
-        return false;
-    }
-    let mut next = words.next();
-    // Optional modifiers between CREATE and TABLE.
-    while next.is_some_and(|w| {
-        [
-            "or",
-            "replace",
-            "temp",
-            "temporary",
-            "global",
-            "local",
-            "unlogged",
-        ]
-        .iter()
-        .any(|m| w.eq_ignore_ascii_case(m))
-    }) {
-        next = words.next();
-    }
-    if !is(next, "table") {
-        return false;
-    }
-    let name = words.next().unwrap_or("");
-    let name = name.trim_start_matches(['[', '"', '`']);
-    name.starts_with('#')
+/// T-SQL `#local` / `##global` temp tables and `@table` variables are
+/// procedure-local scratch objects, never schema objects. A leading quote or
+/// bracket is ignored.
+fn is_temp_name(name: &str) -> bool {
+    name.trim_start_matches(['[', '"', '`'])
+        .starts_with(['#', '@'])
+}
+
+/// The grammar parses the `#` of `CREATE TABLE #x` as an `ERROR` node just
+/// before the name's `object_reference`, so the sigil is read from there.
+fn is_tsql_temp_table(node: Node<'_>, source: &str) -> bool {
+    find_object_reference(node)
+        .and_then(|name| name.prev_sibling())
+        .is_some_and(|prev| prev.is_error() && is_temp_name(node_text(prev, source).trim()))
 }
 
 fn create_kind(kind: &str) -> Option<&'static str> {
@@ -1079,8 +1063,7 @@ fn block_end(
         if is_go(l) {
             return js + l.trim_end().len();
         }
-        if l.starts_with(['c', 'C'])
-            && create_at(lines, j).is_some_and(|(_, n)| !n.starts_with(['#', '@']))
+        if l.starts_with(['c', 'C']) && create_at(lines, j).is_some_and(|(_, n)| !is_temp_name(&n))
         {
             end = js;
             break;
@@ -1138,7 +1121,7 @@ fn scan_candidates(source: &str) -> Vec<Candidate> {
         let Some((kind, raw)) = create_at(&lines, i) else {
             continue;
         };
-        if raw.starts_with(['#', '@']) {
+        if is_temp_name(&raw) {
             continue;
         }
         let qualname = strip_quotes(&raw);
