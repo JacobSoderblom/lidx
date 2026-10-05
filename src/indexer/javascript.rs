@@ -3743,14 +3743,13 @@ fn loop_combos(used: &[usize], loops: &[ForOfBinding]) -> Vec<Vec<LoopRow>> {
 }
 
 /// Fill a template's pieces from `env` (loop-bound names) and same-file
-/// consts. An unresolved loop variable becomes a `${}` param segment; any
-/// other unresolved substitution means the path is not static: `None`.
+/// consts. Any unresolved substitution becomes a `${}` param segment.
 fn fill_template(
     pieces: &[TemplatePiece],
     env: &HashMap<&str, Option<&str>>,
     shadowed: &HashSet<String>,
     ctx: &Context,
-) -> Option<String> {
+) -> String {
     let mut path = String::new();
     for piece in pieces {
         match piece {
@@ -3759,26 +3758,23 @@ fn fill_template(
                 Some(Some(v)) => path.push_str(v),
                 Some(None) => path.push_str("${}"),
                 None => {
-                    if shadowed.contains(expr) || !is_identifier_path(expr) {
-                        return None;
-                    }
-                    let v = ctx
-                        .string_consts
-                        .resolve_arg(expr, &LocalBinding::NotLocal)?;
-                    path.push_str(&v);
+                    let value = (!shadowed.contains(expr) && is_identifier_path(expr))
+                        .then(|| ctx.string_consts.resolve_arg(expr, &LocalBinding::NotLocal))
+                        .flatten();
+                    path.push_str(value.as_deref().unwrap_or("${}"));
                 }
             },
         }
     }
-    Some(path)
+    path
 }
 
 /// Raw route paths a route-definition path argument statically denotes: a
 /// string literal, a same-file const, or a template literal whose `${...}`
 /// holes are filled from same-file consts and enclosing for-of loops over
-/// literal arrays (one path per iteration). A loop variable that cannot be
-/// resolved becomes a `${}` param segment; any other unresolvable hole yields
-/// no path.
+/// literal arrays (one path per iteration). Any hole that cannot be resolved
+/// becomes a `${}` param segment; a bare identifier that does not resolve to
+/// a value yields no path.
 fn route_path_variants(arg: Node<'_>, ctx: &Context, source: &str) -> Vec<String> {
     let text = node_text(arg, source);
     let plain = arg.kind() != "template_string";
@@ -3816,10 +3812,8 @@ fn route_path_variants(arg: Node<'_>, ctx: &Context, source: &str) -> Vec<String
             }
         }
         // A bare identifier that did not resolve to a value is not a path.
-        if let Some(path) = fill_template(&pieces, &env, &shadowed, ctx)
-            && !(plain && path.contains("${}"))
-            && !out.contains(&path)
-        {
+        let path = fill_template(&pieces, &env, &shadowed, ctx);
+        if (!plain || !path.contains("${}")) && !out.contains(&path) {
             out.push(path);
         }
     }

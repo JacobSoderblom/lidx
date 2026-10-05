@@ -112,17 +112,18 @@ fn chained_route_accepts_template_and_const() {
 function r(router: any) {
   router.route(P).get(h);
   router.route(`/api/other/${LATER}`).post(h);
+  router.route(`/api/free/${id}`).post(h);
   for (const p of ['a']) { router.route(`/api/loop/${p}`).post(h); }
 }
 const LATER = 'x';"#;
     assert_eq!(
         targets(src),
-        vec!["/api/items", "/api/loop/a", "/api/other/x"]
+        vec!["/api/free/{}", "/api/items", "/api/loop/a", "/api/other/x"]
     );
 }
 
 #[test]
-fn unresolvable_non_loop_hole_emits_nothing() {
+fn unresolvable_non_loop_hole_becomes_param_segment() {
     let src = r#"import { API_PREFIX } from './cfg';
 function r(app: any, id: string) {
   app.get(`/api/items/${id}`, h);
@@ -130,7 +131,7 @@ function r(app: any, id: string) {
   app.get(`/api/${UNKNOWN}/y`, h);
   app.get(imported, h);
 }"#;
-    assert!(targets(src).is_empty(), "{:?}", targets(src));
+    assert_eq!(targets(src), vec!["/api/items/{}", "/api/{}/y", "/{}/x"]);
 }
 
 #[test]
@@ -138,11 +139,11 @@ fn parameter_shadowing_the_loop_variable_is_not_substituted() {
     let src = r#"function r(app: any) {
   for (const p of ['a', 'b']) {
     register((p: string) => { app.get(`/s/${p}`, h); });
-    register(function (p) { app.get(`/t/${p}`, h); });
+    function inner(p) { app.get(`/t/${p}`, h); }
     app.get(`/u/${p}`, h);
   }
 }"#;
-    assert_eq!(targets(src), vec!["/u/a", "/u/b"]);
+    assert_eq!(targets(src), vec!["/s/{}", "/t/{}", "/u/a", "/u/b"]);
 }
 
 #[test]
