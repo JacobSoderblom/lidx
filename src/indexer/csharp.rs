@@ -1306,6 +1306,25 @@ fn normalize_type_args(text: &str) -> String {
 }
 
 fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    // C# 14 `extension(T) { ... }` parses as a constructor_declaration whose
+    // body holds the members as local functions. They are members of the
+    // enclosing static class, not a constructor.
+    if node
+        .child_by_field_name("name")
+        .is_some_and(|n| node_text(n, source) == "extension")
+    {
+        if let Some(body) = node.child_by_field_name("body") {
+            let mut cursor = body.walk();
+            for child in body.named_children(&mut cursor) {
+                if child.kind() == "local_function_statement" {
+                    handle_method(child, ctx, source, output);
+                } else {
+                    walk_node(child, ctx, source, output);
+                }
+            }
+        }
+        return;
+    }
     // A static constructor is a distinct symbol (`T..cctor`): `new T(..)`
     // never runs it, so it must not share the instance constructors' name.
     let name = if has_modifier(node, source, "static") {
@@ -6813,6 +6832,68 @@ mod tests {
     use crate::indexer::extract::LanguageExtractor;
     use crate::indexer::http;
     use crate::indexer::proto;
+
+    #[test]
+    fn extension_block_members_are_class_members_not_ctor() {
+        let source = r#"namespace Demo;
+
+internal static class Mapper
+{
+    extension(Kind)
+    {
+        public static Kind Create(string value) => ToKind(value);
+    }
+
+    private static Kind ToKind(string kind) => new Kind();
+}
+
+public sealed class Kind { }
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        assert!(
+            !file.symbols.iter().any(|s| s.qualname.ends_with(".ctor")),
+            "bogus ctor: {:?}",
+            file.symbols.iter().map(|s| &s.qualname).collect::<Vec<_>>()
+        );
+        let create = file
+            .symbols
+            .iter()
+            .find(|s| s.qualname == "Demo.Mapper.Create")
+            .expect("Create symbol");
+        assert_eq!(create.kind, "method");
+        assert_eq!((create.start_line, create.end_line), (7, 7));
+        assert!(file.edges.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname.as_deref() == Some("Demo.Mapper.Create")
+            && e.target_qualname.as_deref() == Some("Demo.Mapper.ToKind")));
+    }
+
+    #[test]
+    fn real_constructor_next_to_extension_block_stays_ctor() {
+        let source = r#"class Mapper
+{
+    public Mapper() { }
+    extension(Kind)
+    {
+        public static Kind Create(string value) => null;
+    }
+}
+"#;
+        let mut extractor = CSharpExtractor::new().unwrap();
+        let file = extractor.extract(source, "module").unwrap();
+        let ctors: Vec<_> = file
+            .symbols
+            .iter()
+            .filter(|s| s.qualname.ends_with(".ctor"))
+            .collect();
+        assert_eq!(ctors.len(), 1);
+        assert_eq!(ctors[0].qualname, "module.Mapper..ctor");
+        assert!(
+            file.symbols
+                .iter()
+                .any(|s| s.qualname == "module.Mapper.Create")
+        );
+    }
 
     #[test]
     fn extracts_map_route_and_httpclient_call() {
