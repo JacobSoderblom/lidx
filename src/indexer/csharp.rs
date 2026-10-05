@@ -108,6 +108,10 @@ struct Context {
     /// The enclosing class's first base type, generic arguments stripped: what `: base(..)` constructs, known
     /// even when the type is generic or lives in another file.
     base_class_name: Option<String>,
+    /// Named receiver of the enclosing C# 14 `extension(Kind k) { .. }`
+    /// block as (name, declared type text): a member's body sees it like a
+    /// parameter. `None` outside such a block.
+    extension_receiver: Option<(String, String)>,
     /// This file's `using` directives, collected once in `extract()` before
     /// the main walk — see `ImportContext` / `collect_import_context`. Set
     /// once and inherited unchanged through every `ctx.clone()` (unlike
@@ -455,6 +459,7 @@ impl crate::indexer::extract::LanguageExtractor for CSharpExtractor {
             class_attr_raw: Rc::new(HashMap::new()),
             base_type: LocalType::Other,
             base_class_name: None,
+            extension_receiver: None,
             imports: Rc::new({
                 let mut imports = collect_import_context(root, source);
                 imports.apply_globals(&self.project_globals);
@@ -1305,24 +1310,101 @@ fn normalize_type_args(text: &str) -> String {
     out
 }
 
-fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    // C# 14 `extension(T) { ... }` parses as a constructor_declaration whose
-    // body holds the members as local functions. They are members of the
-    // enclosing static class, not a constructor.
+/// C# 14 `extension(T x) { members }` parses as a constructor_declaration
+/// named `extension` whose body is mangled (properties become ERROR nodes,
+/// calls vanish into lambdas). Its members belong to the enclosing static
+/// class, so re-parse the file with the header swapped for a same-length
+/// `class _` (identical byte offsets/lines) and walk that nested class's
+/// members as the enclosing class's own. Returns false for a real
+/// constructor.
+fn handle_extension_block(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) -> bool {
     if node
         .child_by_field_name("name")
-        .is_some_and(|n| node_text(n, source) == "extension")
+        .is_none_or(|n| node_text(n, source) != "extension")
     {
-        if let Some(body) = node.child_by_field_name("body") {
-            let mut cursor = body.walk();
-            for child in body.named_children(&mut cursor) {
-                if child.kind() == "local_function_statement" {
-                    handle_method(child, ctx, source, output);
-                } else {
-                    walk_node(child, ctx, source, output);
+        return false;
+    }
+    let Some(body) = node.child_by_field_name("body") else {
+        return true;
+    };
+    let mut ctx = ctx.clone();
+    // The receiver (`extension(Kind k)`) reads like a parameter in members.
+    ctx.extension_receiver = node
+        .child_by_field_name("parameters")
+        .and_then(|params| {
+            let mut cursor = params.walk();
+            params
+                .named_children(&mut cursor)
+                .find(|p| p.kind() == "parameter")
+        })
+        .and_then(|p| {
+            let name = node_text(p.child_by_field_name("name")?, source);
+            let ty = node_text(p.child_by_field_name("type")?, source);
+            (!name.is_empty()).then_some((name, ty))
+        });
+    if let Some((name, ty)) = &ctx.extension_receiver {
+        let mut types = (*ctx.local_types).clone();
+        types.insert(name.clone(), classify_annotation(ty));
+        ctx.local_types = Rc::new(types);
+    }
+    let header = node.start_byte()..body.start_byte();
+    let mut patched = source.as_bytes().to_vec();
+    for (i, b) in patched[header.clone()].iter_mut().enumerate() {
+        *b = match (*b, i) {
+            (b'\n', _) => b'\n',
+            (_, i) if i < 7 => b"class _"[i],
+            _ => b' ',
+        };
+    }
+    let mut parser = Parser::new();
+    let tree = String::from_utf8(patched).ok().and_then(|patched| {
+        parser
+            .set_language(&tree_sitter_c_sharp::LANGUAGE.into())
+            .ok()?;
+        let tree = parser.parse(&patched, None)?;
+        Some((tree, patched))
+    });
+    if let Some((tree, patched)) = &tree
+        && header.len() >= 7
+        && let Some(class) = tree
+            .root_node()
+            .descendant_for_byte_range(body.start_byte(), body.start_byte())
+            .and_then(|n| {
+                let mut cur = Some(n);
+                while let Some(c) = cur {
+                    if c.kind() == "class_declaration" && c.start_byte() == node.start_byte() {
+                        return Some(c);
+                    }
+                    cur = c.parent();
                 }
-            }
+                None
+            })
+        && let Some(members) = class.child_by_field_name("body")
+    {
+        let mut cursor = members.walk();
+        for member in members.named_children(&mut cursor) {
+            walk_node(member, &ctx, patched, output);
         }
+        return true;
+    }
+    // Re-parse failed: fall back to the members the original tree kept
+    // (methods parse as local functions in the constructor body).
+    let mut cursor = body.walk();
+    for child in body.named_children(&mut cursor) {
+        if child.kind() == "local_function_statement" {
+            handle_method(child, &ctx, source, output);
+        }
+    }
+    true
+}
+
+fn handle_constructor(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    if handle_extension_block(node, ctx, source, output) {
         return;
     }
     // A static constructor is a distinct symbol (`T..cctor`): `new T(..)`
@@ -6266,6 +6348,10 @@ fn infer_local_types(
         locals: HashMap::new(),
         class: &ctx.class_attr_raw,
     };
+    if let Some((name, ty)) = &ctx.extension_receiver {
+        raw.record(name, Some(ty.clone()));
+        bindings.push((name.clone(), classify_annotation(ty)));
+    }
     if let Some(params) = function_node.child_by_field_name("parameters") {
         let mut cursor = params.walk();
         for param in params.named_children(&mut cursor) {
@@ -6866,6 +6952,140 @@ public sealed class Kind { }
         assert!(file.edges.iter().any(|e| e.kind == "CALLS"
             && e.source_qualname.as_deref() == Some("Demo.Mapper.Create")
             && e.target_qualname.as_deref() == Some("Demo.Mapper.ToKind")));
+    }
+
+    fn extract_cs(source: &str) -> ExtractedFile {
+        CSharpExtractor::new()
+            .unwrap()
+            .extract(source, "module")
+            .unwrap()
+    }
+
+    fn has_call(file: &ExtractedFile, from: &str, to: &str) -> bool {
+        file.edges.iter().any(|e| {
+            e.kind == "CALLS"
+                && e.source_qualname.as_deref() == Some(from)
+                && e.target_qualname.as_deref() == Some(to)
+        })
+    }
+
+    #[test]
+    fn extension_property_is_class_property_with_calls() {
+        let file = extract_cs(
+            r#"static class Ext
+{
+    extension(Kind k)
+    {
+        public bool IsEmpty => Probe();
+        public int Count { get { return Tally(); } }
+    }
+    static bool Probe() => true;
+    static int Tally() => 1;
+}
+"#,
+        );
+        let names: Vec<_> = file
+            .symbols
+            .iter()
+            .map(|s| (&s.kind, &s.qualname))
+            .collect();
+        for q in ["module.Ext.IsEmpty", "module.Ext.Count"] {
+            let sym = file
+                .symbols
+                .iter()
+                .find(|s| s.qualname == q)
+                .unwrap_or_else(|| panic!("{q} missing: {names:?}"));
+            assert_eq!(sym.kind, "property");
+        }
+        assert!(!file.symbols.iter().any(|s| s.qualname.contains("ctor")));
+        let empty = file.symbols.iter().find(|s| s.name == "IsEmpty").unwrap();
+        assert_eq!((empty.start_line, empty.end_line), (5, 5));
+        assert!(has_call(&file, "module.Ext.IsEmpty", "module.Ext.Probe"));
+        assert!(has_call(&file, "module.Ext.Count", "module.Ext.Tally"));
+    }
+
+    #[test]
+    fn generic_extension_block_keeps_members_without_bogus_symbols() {
+        let file = extract_cs(
+            r#"static class Ext
+{
+    extension<T>(IEnumerable<T> src)
+    {
+        public static int Count2() => Helper();
+    }
+    static int Helper() => 0;
+}
+"#,
+        );
+        let names: Vec<_> = file.symbols.iter().map(|s| s.qualname.as_str()).collect();
+        assert!(names.contains(&"module.Ext.Count2"), "{names:?}");
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.contains("ctor") || n.contains("extension")),
+            "{names:?}"
+        );
+        assert!(has_call(&file, "module.Ext.Count2", "module.Ext.Helper"));
+    }
+
+    #[test]
+    fn two_extension_blocks_in_one_class() {
+        let file = extract_cs(
+            r#"static class Ext
+{
+    extension(A a)
+    {
+        public void F() => Shared();
+    }
+    extension(B b)
+    {
+        public bool P => Shared2();
+        public void G() => Shared();
+    }
+    static void Shared() { }
+    static bool Shared2() => true;
+}
+"#,
+        );
+        let names: Vec<_> = file.symbols.iter().map(|s| s.qualname.as_str()).collect();
+        for q in ["module.Ext.F", "module.Ext.P", "module.Ext.G"] {
+            assert!(names.contains(&q), "{q}: {names:?}");
+        }
+        assert!(!names.iter().any(|n| n.contains("ctor")));
+        assert!(has_call(&file, "module.Ext.F", "module.Ext.Shared"));
+        assert!(has_call(&file, "module.Ext.G", "module.Ext.Shared"));
+        assert!(has_call(&file, "module.Ext.P", "module.Ext.Shared2"));
+    }
+
+    #[test]
+    fn extension_receiver_is_typed_local_in_members() {
+        let file = extract_cs(
+            r#"static class Ext
+{
+    extension(Kind k)
+    {
+        public bool IsX() => k.Check();
+        public bool IsY => k.Check();
+    }
+}
+sealed class Kind
+{
+    public bool Check() => true;
+}
+"#,
+        );
+        for member in ["module.Ext.IsX", "module.Ext.IsY"] {
+            let edge = file
+                .edges
+                .iter()
+                .find(|e| e.kind == "CALLS" && e.source_qualname.as_deref() == Some(member))
+                .expect("call edge");
+            assert!(
+                matches!(&edge.receiver_type, ReceiverType::Known(t) if t == "Kind"),
+                "{member}: {:?}",
+                edge.receiver_type
+            );
+        }
     }
 
     #[test]
