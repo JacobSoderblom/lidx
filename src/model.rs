@@ -992,6 +992,11 @@ pub struct ExplainRef {
 pub struct BudgetInfo {
     pub budget_bytes: usize,
     pub used_bytes: usize,
+    /// Whether the byte budget cut the result. For `trace_flow` this is byte
+    /// truncation only (#354): a trace cut by the `max_hops` ceiling or the
+    /// config re-entry cap has top-level `truncated: true` but this stays
+    /// false. Other producers (`explain_symbol`, `analyze_diff`) report their
+    /// own budget truncation.
     pub truncated: bool,
     /// The `max_bytes` the caller actually requested, when it differs from
     /// `budget_bytes` because the request was silently clamped to a hard cap.
@@ -1154,11 +1159,14 @@ pub struct TraceFlowResult {
     pub paths_found: usize,
     pub reached_target: bool,
     pub truncated: bool,
-    /// The `max_hops` ceiling cut the trace (`truncated` is also true); raise
-    /// `max_hops` rather than paging with `trace_offset`.
+    /// The `max_hops` ceiling cut the trace; raise `max_hops` rather than
+    /// paging with `trace_offset`. Omitted from the JSON when false. Stays
+    /// true on a `no_more_results` page of a depth-limited trace, where
+    /// top-level `truncated` is false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub depth_limited: bool,
     /// `trace_offset` was at or past the end of the trace: nothing left.
+    /// Omitted from the JSON when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_more_results: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
