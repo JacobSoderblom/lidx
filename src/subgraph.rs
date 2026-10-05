@@ -142,6 +142,11 @@ pub fn build_subgraph_deferring(
         )?;
 
         neighbors.sort_by_key(|a| edge_sort_key(a, &symbol_cache));
+        if deferral.is_some() {
+            // Call-graph neighbours claim the node cap before structural
+            // (CONTAINS/IMPORTS) ones; the old rank still orders each group.
+            neighbors.sort_by_key(|e| e.kind != "CALLS");
+        }
 
         for edge in neighbors {
             let source_ok = edge
