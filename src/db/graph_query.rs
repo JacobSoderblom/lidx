@@ -1163,20 +1163,12 @@ impl Db {
     }
 
     /// A C# `*ServiceBase` impl emits one RPC_IMPL candidate per bare `using`
-    /// as the proto package guess (#327). Per (file, source, service, rpc)
-    /// group: when a candidate's path is an indexed RPC_ROUTE, the candidates
-    /// that are not are deleted and remembered in the survivor's
-    /// `detail.pruned` (`[{target, package}]`); when no candidate is backed
-    /// any more (the `.proto` went away) the remembered ones are restored.
-    /// Recomputed from current rows, so incremental sync equals a fresh index.
-    /// Returns the number of rows deleted or restored.
+    /// as the proto package guess (#327), each row carrying the full list in
+    /// `detail.candidates`. Per (file, source, service, rpc) group the rows
+    /// are synced to `plan_csharp_rpc_impl_group`'s desired targets, computed
+    /// from the current routes alone, so incremental sync equals a fresh
+    /// index. Returns the number of rows inserted or deleted.
     fn prune_csharp_rpc_impl_candidates(&self, graph_version: i64) -> Result<usize> {
-        struct Row {
-            id: i64,
-            target: String,
-            detail: serde_json::Value,
-            backed: bool,
-        }
         let routes: HashSet<String> = {
             let conn = self.read_conn()?;
             let mut stmt = conn.prepare(
@@ -1187,7 +1179,7 @@ impl Db {
             stmt.query_map([graph_version], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
-        let mut groups: HashMap<(i64, Option<i64>, String, String), Vec<Row>> = HashMap::new();
+        let mut groups: HashMap<ImplGroupKey, Vec<ImplRow>> = HashMap::new();
         {
             let conn = self.read_conn()?;
             let mut stmt = conn.prepare(
@@ -1216,104 +1208,35 @@ impl Db {
                 if detail["framework"] != "grpc-csharp" {
                     continue;
                 }
-                let key = (
+                let key = ImplGroupKey {
                     file_id,
                     source,
-                    detail["service"].as_str().unwrap_or_default().to_string(),
-                    detail["rpc"].as_str().unwrap_or_default().to_string(),
-                );
-                let backed = routes.contains(&target);
-                groups.entry(key).or_default().push(Row {
-                    id,
-                    target,
-                    detail,
-                    backed,
-                });
-            }
-        }
-        let mut deletes: Vec<i64> = Vec::new();
-        let mut detail_updates: Vec<(i64, String)> = Vec::new();
-        // (template edge id, target, detail) rows to re-insert.
-        let mut restores: Vec<(i64, String, String)> = Vec::new();
-        for rows in groups.values() {
-            if rows.iter().any(|r| r.backed) {
-                let dropped: Vec<&Row> = rows.iter().filter(|r| !r.backed).collect();
-                let Some(survivor) = rows.iter().find(|r| r.backed) else {
-                    continue;
+                    service: detail["service"].as_str().unwrap_or_default().to_string(),
+                    rpc: detail["rpc"].as_str().unwrap_or_default().to_string(),
                 };
-                if dropped.is_empty() {
-                    continue;
-                }
-                let mut detail = survivor.detail.clone();
-                let mut pruned = detail["pruned"].as_array().cloned().unwrap_or_default();
-                for r in &dropped {
-                    pruned.push(serde_json::json!({
-                        "target": r.target,
-                        "package": r.detail["package"],
-                    }));
-                    deletes.push(r.id);
-                }
-                detail["pruned"] = pruned.into();
-                detail_updates.push((survivor.id, detail.to_string()));
-            } else {
-                for r in rows {
-                    let Some(pruned) = r.detail["pruned"].as_array() else {
-                        continue;
-                    };
-                    let mut detail = r.detail.clone();
-                    if let Some(map) = detail.as_object_mut() {
-                        map.remove("pruned");
-                    }
-                    detail_updates.push((r.id, detail.to_string()));
-                    for p in pruned {
-                        let (Some(target), mut d) = (p["target"].as_str(), detail.clone()) else {
-                            continue;
-                        };
-                        d["package"] = p["package"].clone();
-                        restores.push((r.id, target.to_string(), d.to_string()));
-                    }
-                }
+                groups
+                    .entry(key)
+                    .or_default()
+                    .push(ImplRow { id, target, detail });
             }
         }
-        let changed = deletes.len() + restores.len();
-        if changed == 0 && detail_updates.is_empty() {
-            return Ok(0);
-        }
+        let mut changed = 0;
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        let columns: Vec<String> = {
-            let mut stmt = tx.prepare("PRAGMA table_info(edges)")?;
-            stmt.query_map([], |r| r.get::<_, String>(1))?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-                .into_iter()
-                .filter(|c| c != "id")
-                .collect()
-        };
-        let cols = columns.join(", ");
-        let sel = columns
-            .iter()
-            .map(|c| match c.as_str() {
-                "target_qualname" => "?2".to_string(),
-                "detail" => "?3".to_string(),
-                "target_symbol_id" => "NULL".to_string(),
-                other => other.to_string(),
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        for (template, target, detail) in &restores {
-            tx.execute(
-                &format!("INSERT INTO edges ({cols}) SELECT {sel} FROM edges WHERE id = ?1"),
-                rusqlite::params![template, target, detail],
-            )?;
-        }
-        for (id, detail) in &detail_updates {
-            tx.execute(
-                "UPDATE edges SET detail = ?1 WHERE id = ?2",
-                rusqlite::params![detail, id],
-            )?;
-        }
-        for id in &deletes {
-            tx.execute("DELETE FROM edges WHERE id = ?1", [id])?;
+        for rows in groups.values() {
+            let plan = plan_csharp_rpc_impl_group(rows, &routes);
+            for insert in &plan.insert {
+                clone_edge_with(
+                    &tx,
+                    plan.template_id,
+                    &insert.target,
+                    &insert.detail.to_string(),
+                )?;
+            }
+            for id in &plan.delete {
+                tx.execute("DELETE FROM edges WHERE id = ?1", [id])?;
+            }
+            changed += plan.insert.len() + plan.delete.len();
         }
         tx.commit()?;
         Ok(changed)
@@ -1729,5 +1652,196 @@ fn rpc_split(path: &str) -> (&str, &str) {
     match svc_path.rfind('.') {
         Some(i) => (&path[..i], &path[i + 1..]),
         None => ("", path),
+    }
+}
+
+/// Key of one C# gRPC impl method: all its candidate RPC_IMPL rows share it.
+#[derive(Hash, PartialEq, Eq)]
+struct ImplGroupKey {
+    file_id: i64,
+    source: Option<i64>,
+    service: String,
+    rpc: String,
+}
+
+/// One existing C# RPC_IMPL row of a group.
+struct ImplRow {
+    id: i64,
+    target: String,
+    detail: serde_json::Value,
+}
+
+/// A row `plan_csharp_rpc_impl_group` wants added.
+#[derive(Debug, PartialEq)]
+struct ImplInsert {
+    target: String,
+    detail: serde_json::Value,
+}
+
+/// What to do to one group: insert rows cloned from `template_id`, delete
+/// the listed rows.
+#[derive(Debug, Default, PartialEq)]
+struct ImplPlan {
+    template_id: i64,
+    insert: Vec<ImplInsert>,
+    delete: Vec<i64>,
+}
+
+/// Desired rows of one group: the candidates (`detail.candidates`, a list of
+/// `{package, target}`) whose target is an indexed route, or every candidate
+/// when none is. Pure function of the group and the routes.
+fn plan_csharp_rpc_impl_group(rows: &[ImplRow], routes: &HashSet<String>) -> ImplPlan {
+    let Some(template) = rows.first() else {
+        return ImplPlan::default();
+    };
+    let mut plan = ImplPlan {
+        template_id: template.id,
+        ..Default::default()
+    };
+    let candidates: Vec<(&str, &serde_json::Value)> = template.detail["candidates"]
+        .as_array()
+        .map(|c| {
+            c.iter()
+                .filter_map(|c| Some((c["target"].as_str()?, &c["package"])))
+                .collect()
+        })
+        .unwrap_or_default();
+    if candidates.is_empty() {
+        return plan;
+    }
+    let backed: Vec<_> = candidates
+        .iter()
+        .copied()
+        .filter(|(t, _)| routes.contains(*t))
+        .collect();
+    let desired = if backed.is_empty() {
+        candidates
+    } else {
+        backed
+    };
+    let mut have = HashSet::new();
+    for row in rows {
+        if !desired.iter().any(|(t, _)| *t == row.target) || !have.insert(row.target.as_str()) {
+            plan.delete.push(row.id);
+        }
+    }
+    for (target, package) in desired {
+        if !have.contains(target) {
+            let mut detail = template.detail.clone();
+            detail["package"] = package.clone();
+            plan.insert.push(ImplInsert {
+                target: target.to_string(),
+                detail,
+            });
+        }
+    }
+    plan
+}
+
+/// Insert a copy of edge `template_id` with `target_qualname` and `detail`
+/// replaced and no resolved target symbol.
+fn clone_edge_with(
+    tx: &rusqlite::Transaction<'_>,
+    template_id: i64,
+    target: &str,
+    detail: &str,
+) -> Result<()> {
+    let columns: Vec<String> = tx
+        .prepare("PRAGMA table_info(edges)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|c| c != "id")
+        .collect();
+    let select = columns
+        .iter()
+        .map(|c| match c.as_str() {
+            "target_qualname" => "?2",
+            "detail" => "?3",
+            "target_symbol_id" => "NULL",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    tx.execute(
+        &format!(
+            "INSERT INTO edges ({}) SELECT {select} FROM edges WHERE id = ?1",
+            columns.join(", ")
+        ),
+        rusqlite::params![template_id, target, detail],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod csharp_rpc_impl_plan_tests {
+    use super::*;
+    use serde_json::json;
+
+    const A: &str = "/a.v1.svc/do";
+    const B: &str = "/b.v1.svc/do";
+    const C: &str = "/c.v1.svc/do";
+
+    fn row(id: i64, target: &str) -> ImplRow {
+        let candidates: Vec<_> = [A, B, C]
+            .iter()
+            .map(|t| json!({"package": &t[1..4], "target": t}))
+            .collect();
+        ImplRow {
+            id,
+            target: target.to_string(),
+            detail: json!({"framework": "grpc-csharp", "candidates": candidates}),
+        }
+    }
+
+    fn routes(r: &[&str]) -> HashSet<String> {
+        r.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn inserted(plan: &ImplPlan) -> Vec<&str> {
+        plan.insert.iter().map(|i| i.target.as_str()).collect()
+    }
+
+    #[test]
+    fn no_route_keeps_every_candidate() {
+        let rows = [row(1, A), row(2, B), row(3, C)];
+        assert_eq!(
+            plan_csharp_rpc_impl_group(&rows, &routes(&[])),
+            ImplPlan {
+                template_id: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn route_drops_the_unbacked_candidates() {
+        let rows = [row(1, A), row(2, B), row(3, C)];
+        let plan = plan_csharp_rpc_impl_group(&rows, &routes(&[B]));
+        assert_eq!(plan.delete, vec![1, 3]);
+        assert!(plan.insert.is_empty());
+    }
+
+    #[test]
+    fn route_change_reexpands_and_reprunes_from_the_survivor() {
+        // Only B survives; the proto package now matches A instead.
+        let plan = plan_csharp_rpc_impl_group(&[row(2, B)], &routes(&[A]));
+        assert_eq!(inserted(&plan), vec![A]);
+        assert_eq!(plan.delete, vec![2]);
+        assert_eq!(plan.insert[0].detail["package"], "a.v");
+    }
+
+    #[test]
+    fn second_route_backs_a_second_candidate() {
+        let plan = plan_csharp_rpc_impl_group(&[row(1, A)], &routes(&[A, C]));
+        assert_eq!(inserted(&plan), vec![C]);
+        assert!(plan.delete.is_empty());
+    }
+
+    #[test]
+    fn route_removal_restores_all_candidates() {
+        let plan = plan_csharp_rpc_impl_group(&[row(1, A)], &routes(&[]));
+        assert_eq!(inserted(&plan), vec![B, C]);
+        assert!(plan.delete.is_empty());
     }
 }

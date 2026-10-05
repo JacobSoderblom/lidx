@@ -3268,36 +3268,47 @@ fn grpc_impl_edge(node: Node<'_>, ctx: &Context, source: &str, rpc_name: &str) -
             .collect()
     };
     let mut seen_targets = std::collections::HashSet::new();
-    let mut edges = Vec::new();
+    let mut resolved = Vec::new();
     for package in packages {
         let Some((raw_path, normalized)) = proto::normalize_rpc_path(package, service, rpc_name)
         else {
             continue;
         };
-        if !seen_targets.insert(normalized.clone()) {
-            continue;
+        if seen_targets.insert(normalized.clone()) {
+            resolved.push((package, raw_path, normalized));
         }
-        let detail = json!({
-            "framework": "grpc-csharp",
-            "role": "server",
-            "service": service,
-            "rpc": rpc_name,
-            "package": package,
-            "raw": raw_path,
-        })
-        .to_string();
-        edges.push(EdgeInput {
-            kind: proto::RPC_IMPL_KIND.to_string(),
-            source_qualname: Some(source_qualname.clone()),
-            target_qualname: Some(normalized),
-            detail: Some(detail),
-            evidence_snippet: snippet.clone(),
-            evidence_start_line: Some(start_line),
-            evidence_end_line: Some(end_line),
-            ..Default::default()
-        });
     }
-    edges
+    // Every row lists all candidates so `Db::reconcile_rpc_edges` can prune
+    // to the ones an indexed route backs, and re-expand when routes change.
+    let candidates: Vec<_> = resolved
+        .iter()
+        .map(|(package, _, target)| json!({"package": package, "target": target}))
+        .collect();
+    resolved
+        .into_iter()
+        .map(|(package, raw_path, normalized)| {
+            let detail = json!({
+                "framework": "grpc-csharp",
+                "role": "server",
+                "service": service,
+                "rpc": rpc_name,
+                "package": package,
+                "raw": raw_path,
+                "candidates": candidates,
+            })
+            .to_string();
+            EdgeInput {
+                kind: proto::RPC_IMPL_KIND.to_string(),
+                source_qualname: Some(source_qualname.clone()),
+                target_qualname: Some(normalized),
+                detail: Some(detail),
+                evidence_snippet: snippet.clone(),
+                evidence_start_line: Some(start_line),
+                evidence_end_line: Some(end_line),
+                ..Default::default()
+            }
+        })
+        .collect()
 }
 
 /// Sentinel `EdgeInput::kind` for a not-yet-resolved gRPC client call —
@@ -6984,9 +6995,9 @@ namespace Dpb.DataMgr.Datasource.Grpc {
         // namespace brought in scope by a bare `using`, not an alias).
         // Every bare `using` in the file becomes a candidate; a wrong one
         // just never matches a real RPC_ROUTE downstream, so this is safe
-        // even when ambiguous. The extractor keeps the full fan-out; once a
-        // route backs one candidate, `Db::reconcile_rpc_edges` drops the
-        // rest (#327, tests/csharp_rpc_impl_prune.rs).
+        // even when ambiguous. The extractor keeps the full fan-out and lists
+        // it in `detail.candidates`; `Db::reconcile_rpc_edges` prunes it to
+        // the routed candidates (#327).
         let source = r#"
 using DataProduct.Team.V1;
 using Inventory.V1;
@@ -7010,6 +7021,22 @@ namespace Dpb.DataMgr.Catalog.Grpc {
             .collect::<Vec<_>>();
         // Three bare usings -> three distinct candidate targets.
         assert_eq!(impls.len(), 3);
+        for edge in &impls {
+            let detail: serde_json::Value =
+                serde_json::from_str(edge.detail.as_deref().unwrap()).unwrap();
+            let listed: Vec<&str> = detail["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["target"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                listed.len(),
+                3,
+                "every row lists all candidates: {listed:?}"
+            );
+            assert!(listed.contains(&"/inventory.v1.inventoryservice/getinventory"));
+        }
         assert!(impls.iter().any(|edge| edge.target_qualname.as_deref()
             == Some("/inventory.v1.inventoryservice/getinventory")));
         assert!(

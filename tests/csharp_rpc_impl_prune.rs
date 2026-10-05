@@ -50,14 +50,63 @@ fn candidates_kept_without_proto() {
     assert!(targets.contains(&"/sync.v1.syncservice/sync".to_string()));
 }
 
+/// Incremental sync of `edits` over `base` must equal a fresh index of the
+/// resulting tree.
+fn assert_incremental_matches_fresh(base: &[(&str, &str)], edits: &[(&str, Option<&str>)]) {
+    let (_t, root, mut indexer) = index(base);
+    let mut tree: Vec<(&str, &str)> = base.to_vec();
+    let mut changed = Vec::new();
+    for (path, content) in edits {
+        tree.retain(|(p, _)| p != path);
+        match content {
+            Some(c) => {
+                common::write_files(&root, &[(path, c)]);
+                tree.push((path, c));
+            }
+            None => std::fs::remove_file(root.join(path)).unwrap(),
+        }
+        changed.push(path.to_string());
+    }
+    indexer.sync_rel_paths(&changed).unwrap();
+    let (_t2, _r2, fresh) = index(&tree);
+    assert_eq!(impl_targets(&indexer), impl_targets(&fresh));
+}
+
+const IMPL_TWO: &str = "using Grpc.Core;\nusing Sync.V1;\nusing Other.V1;\n\
+namespace Dpb.DataMgr.DataProduct.Grpc;\n\
+internal sealed class SyncServiceImpl : SyncService.SyncServiceBase {\n\
+  public override Task<SyncResponse> Sync(SyncRequest request, ServerCallContext context) => null;\n}\n";
+
+fn proto_pkg(pkg: &str) -> String {
+    PROTO.replace("package sync.v1", &format!("package {pkg}"))
+}
+
 #[test]
-fn incremental_sync_matches_fresh_index_when_proto_added_or_removed() {
-    let (_t, root, mut indexer) = index(&[("SyncServiceImpl.cs", IMPL)]);
-    let before = impl_targets(&indexer);
-    common::write_files(&root, &[("sync.proto", PROTO)]);
-    indexer.sync_rel_paths(&["sync.proto".to_string()]).unwrap();
-    assert_eq!(impl_targets(&indexer), vec!["/sync.v1.syncservice/sync"]);
-    std::fs::remove_file(root.join("sync.proto")).unwrap();
-    indexer.sync_rel_paths(&["sync.proto".to_string()]).unwrap();
-    assert_eq!(impl_targets(&indexer), before);
+fn proto_added_then_removed_matches_fresh() {
+    assert_incremental_matches_fresh(
+        &[("SyncServiceImpl.cs", IMPL)],
+        &[("sync.proto", Some(PROTO))],
+    );
+    assert_incremental_matches_fresh(
+        &[("sync.proto", PROTO), ("SyncServiceImpl.cs", IMPL)],
+        &[("sync.proto", None)],
+    );
+}
+
+#[test]
+fn proto_package_switching_to_another_candidate_matches_fresh() {
+    let other = proto_pkg("other.v1");
+    assert_incremental_matches_fresh(
+        &[("sync.proto", PROTO), ("SyncServiceImpl.cs", IMPL_TWO)],
+        &[("sync.proto", Some(&other))],
+    );
+}
+
+#[test]
+fn second_proto_backing_a_second_candidate_matches_fresh() {
+    let other = proto_pkg("other.v1");
+    assert_incremental_matches_fresh(
+        &[("sync.proto", PROTO), ("SyncServiceImpl.cs", IMPL_TWO)],
+        &[("other.proto", Some(&other))],
+    );
 }
