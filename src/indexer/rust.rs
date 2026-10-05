@@ -69,6 +69,16 @@ fn normalize_import_target(raw: &str, module: &str) -> Option<String> {
     None
 }
 
+/// Where an item's first outer attribute begins (issue #348).
+#[derive(Clone, Copy)]
+struct AttrStart {
+    /// Id of the item node the attribute belongs to.
+    item_id: usize,
+    line: i64,
+    col: i64,
+    byte: i64,
+}
+
 #[derive(Clone)]
 struct Context {
     /// Same-file string constants (see `string_consts`), used to resolve
@@ -124,9 +134,26 @@ struct Context {
     /// One parser per file, reused to re-parse every known-macro argument
     /// list (`handle_macro_invocation`).
     macro_parser: Rc<RefCell<Parser>>,
+    /// `(item node id, start line, start col, start byte)` of the first
+    /// outer attribute preceding that item (issue #348), set by
+    /// `walk_declaration_list`. Keyed by node id so it can never leak onto
+    /// a nested item that inherits this context.
+    attr_start: Option<AttrStart>,
 }
 
 impl Context {
+    /// `span(node)`, but starting at the item's first outer attribute when
+    /// `walk_declaration_list` recorded one for exactly this node.
+    fn item_span(&self, node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
+        let (mut sl, mut sc, el, ec, mut sb, eb) = span(node);
+        if let Some(a) = self.attr_start
+            && a.item_id == node.id()
+        {
+            (sl, sc, sb) = (a.line, a.col, a.byte);
+        }
+        (sl, sc, el, ec, sb, eb)
+    }
+
     /// Declaration identity for a symbol defined in this context, `None`
     /// for the ordinary case (no `cfg`, not in a distinguishing impl).
     fn identity(&self) -> Option<DeclIdentity> {
@@ -261,6 +288,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             cfg_chain: Vec::new(),
             impl_identity: None,
             macro_parser: Rc::new(RefCell::new(macro_parser)),
+            attr_start: None,
         };
         walk_node(root, &ctx, source, &mut output);
         collect_uses(root, &ctx, source, &mut output, &mut HashSet::new());
@@ -451,9 +479,22 @@ fn walk_declaration_list(node: Node<'_>, ctx: &Context, source: &str, output: &m
             pending_attrs.push(child);
             continue;
         }
+        // A comment between the attributes and their item does not detach them.
+        if matches!(child.kind(), "line_comment" | "block_comment") {
+            continue;
+        }
         // `cfg` attributes on any item make its symbols (and everything
         // inside it) distinct from a same-named twin under another `cfg`.
-        let item_ctx = ctx.with_cfg(&pending_attrs, source);
+        let mut item_ctx = ctx.with_cfg(&pending_attrs, source);
+        item_ctx.attr_start = pending_attrs.first().map(|attr| {
+            let (line, col, _, _, byte, _) = span(*attr);
+            AttrStart {
+                item_id: child.id(),
+                line,
+                col,
+                byte,
+            }
+        });
         // Declarations sharing a qualname each keep their own edges,
         // including those emitted before the symbol itself (route
         // attributes) since the whole item is inside the pinned slice.
@@ -479,7 +520,7 @@ fn handle_named_item(
         return;
     };
     let qualname = format!("{}::{}", ctx.module, name);
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = ctx.item_span(node);
     output.symbols.push(SymbolInput {
         kind: kind.to_string(),
         name: name.clone(),
@@ -513,7 +554,7 @@ fn handle_trait(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         return;
     };
     let qualname = format!("{}::{}", ctx.module, name);
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = ctx.item_span(node);
     output.symbols.push(SymbolInput {
         kind: "trait".to_string(),
         name: name.clone(),
@@ -554,7 +595,8 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     };
     let module_name = format!("{}::{}", ctx.module, name);
     let Some(body) = body_node(node) else {
-        let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+        let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) =
+            ctx.item_span(node);
         let snippet =
             util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
         output.edges.push(EdgeInput {
@@ -569,7 +611,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
         });
         return;
     };
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = ctx.item_span(node);
     output.symbols.push(SymbolInput {
         kind: "module".to_string(),
         name: name.clone(),
@@ -709,7 +751,7 @@ fn handle_function(
             "function",
         ),
     };
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = ctx.item_span(node);
     let signature = extract_signature(node, source, attributes);
     // A trait default method or trait-impl method has no `pub` to check —
     // it's exactly as visible as the trait itself (see
@@ -820,7 +862,7 @@ fn handle_function_signature(
         return;
     };
     let qualname = format!("{container}::{name}");
-    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
+    let (start_line, start_col, end_line, end_col, start_byte, end_byte) = ctx.item_span(node);
     let signature = extract_signature(node, source, &[]);
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),

@@ -380,7 +380,9 @@ fn qualname_resolves_only_in(
 /// indexed, non-wrapper entry whose qualname resolves exactly to a symbol in
 /// the outlined file. Otherwise (Markdown, whose entries are headings and not
 /// symbols; or a file holding only namespace/module wrappers) the hop reads a
-/// line range of that same file through `gather_context`'s file seed.
+/// line range of that same file through `gather_context`'s file seed. An empty
+/// `entries` yields no hops here: `handle_outline` covers the
+/// non-empty-file-without-symbols case itself via `no_symbols_note`/`file_seed_hop`.
 fn outline_next_hops(
     db: &crate::db::Db,
     path: &str,
@@ -389,6 +391,7 @@ fn outline_next_hops(
     markdown: bool,
 ) -> Result<Vec<Value>> {
     if entries.is_empty() {
+        // Empty outlines on non-empty files are handled by `handle_outline`.
         return Ok(Vec::new());
     }
     if !markdown {
@@ -419,6 +422,27 @@ fn outline_next_hops(
         }]},
         "description": "read a line range of this file (its entries have no symbol to read)",
     })])
+}
+
+/// Why an indexed file has no outline entries, naming the language (#363).
+fn no_symbols_note(language: &str, path: &str) -> String {
+    let reason = match language {
+        "yaml" => {
+            "only Kubernetes manifests produce symbols; workflow jobs and steps are not symbols"
+                .to_string()
+        }
+        "typescript" | "javascript" if is_js_ts_test_path(path) => {
+            "describe/it/test blocks are not symbols".to_string()
+        }
+        _ => "this file defines nothing the extractor emits as a symbol".to_string(),
+    };
+    format!(
+        "no symbols extracted for this file (language {language}: {reason}); use gather_context (next_hops) to read it, or search with this path"
+    )
+}
+
+fn is_js_ts_test_path(path: &str) -> bool {
+    [".test.", ".spec."].iter().any(|m| path.contains(m))
 }
 
 /// `outline` (#95): a compact, no-bodies skeleton of an indexed file's symbols
@@ -458,17 +482,35 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
         markdown_outline(&full_path, path, kinds_filter.as_ref(), max_depth)?
     };
 
-    let mut next_hops = outline_next_hops(
-        indexer.db(),
-        path,
-        &entries,
-        total_lines,
-        is_markdown_path(path),
-    )?;
+    // Indexed, non-empty file that yielded no symbols (#363).
+    let no_symbols = entries.is_empty() && total_lines > 0;
+
+    let mut next_hops = if no_symbols {
+        vec![json!({
+            "method": "gather_context",
+            "params": {"seeds": [{
+                "type": "file",
+                "path": path,
+                "start_line": 1,
+                "end_line": total_lines,
+            }]},
+            "description": "read the whole file (it has no symbols to outline)",
+        })]
+    } else {
+        outline_next_hops(
+            indexer.db(),
+            path,
+            &entries,
+            total_lines,
+            is_markdown_path(path),
+        )?
+    };
 
     if stale {
         next_hops.push(reindex_hop(path));
     }
+
+    let note = no_symbols.then(|| no_symbols_note(&language, path));
 
     let result = OutlineResult {
         path: path.to_string(),
@@ -476,6 +518,7 @@ pub(super) fn handle_outline(indexer: &mut Indexer, params: Value) -> Result<Val
         total_lines,
         entries,
         stale,
+        note,
         next_hops,
     };
     Ok(serde_json::to_value(result)?)
