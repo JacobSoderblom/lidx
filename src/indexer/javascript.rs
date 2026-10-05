@@ -2901,12 +2901,8 @@ fn http_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInpu
     if is_http_client_call(node, ctx, source) {
         return edges;
     }
-    if let Some(edge) = express_direct_route_edge(node, ctx, source) {
-        edges.push(edge);
-    }
-    if let Some(edge) = express_route_chain_edge(node, ctx, source) {
-        edges.push(edge);
-    }
+    edges.extend(express_direct_route_edges(node, ctx, source));
+    edges.extend(express_route_chain_edges(node, ctx, source));
     edges.extend(fastify_route_edges(node, ctx, source));
     edges
 }
@@ -3474,90 +3470,307 @@ fn extract_string_literal(node: Node<'_>, source: &str) -> Option<String> {
     unquote_string_literal(&raw)
 }
 
-fn express_direct_route_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let target_node = call_target_node(node)?;
-    let (receiver, method_name) = member_receiver_and_method(target_node, source)?;
-    if !HTTP_METHOD_NAMES.contains(&method_name.as_str()) {
-        return None;
-    }
-    if !is_router_receiver(&receiver, ctx) {
-        return None;
+fn express_direct_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
+    let mut edges = Vec::new();
+    let Some(target_node) = call_target_node(node) else {
+        return edges;
+    };
+    let Some((receiver, method_name)) = member_receiver_and_method(target_node, source) else {
+        return edges;
+    };
+    if !HTTP_METHOD_NAMES.contains(&method_name.as_str()) || !is_router_receiver(&receiver, ctx) {
+        return edges;
     }
     let args = call_arguments(node);
-    let raw_path = args
-        .first()
-        .and_then(|arg| extract_string_literal(*arg, source))?;
-    let prefix = ctx.route_prefix.as_deref().unwrap_or("/");
-    let full_path = http::join_paths(prefix, &raw_path);
-    // normalize_path rejects "/" (no alpha chars) — but for known route definitions
-    // we accept any path starting with "/"
-    let normalized = http::normalize_path(&full_path).or_else(|| {
-        if full_path.starts_with('/') {
-            Some(full_path.clone())
-        } else {
-            None
-        }
-    })?;
-    let method = http::normalize_method(&method_name)?;
+    let Some(first) = args.first() else {
+        return edges;
+    };
+    let Some(method) = http::normalize_method(&method_name) else {
+        return edges;
+    };
     let handler = handler_from_args(&args[1..], ctx, source);
     let framework = if receiver == "fastify" {
         "fastify"
     } else {
         "express"
     };
-    let detail = http::build_route_detail(&method, &normalized, &full_path, framework);
-    Some(EdgeInput {
-        kind: http::HTTP_ROUTE_KIND.to_string(),
-        source_qualname: Some(handler),
-        target_qualname: Some(normalized),
-        detail: Some(detail),
-        evidence_snippet: None,
-        evidence_start_line: Some(span(node).0),
-        evidence_end_line: Some(span(node).2),
-        ..Default::default()
-    })
+    let prefix = ctx.route_prefix.as_deref().unwrap_or("/");
+    for raw_path in route_path_variants(*first, ctx, source) {
+        let full_path = http::join_paths(prefix, &raw_path);
+        // normalize_path rejects "/" (no alpha chars) — but for known route definitions
+        // we accept any path starting with "/"
+        let Some(normalized) = http::normalize_path(&full_path).or_else(|| {
+            if full_path.starts_with('/') {
+                Some(full_path.clone())
+            } else {
+                None
+            }
+        }) else {
+            continue;
+        };
+        let detail = http::build_route_detail(&method, &normalized, &full_path, framework);
+        edges.push(EdgeInput {
+            kind: http::HTTP_ROUTE_KIND.to_string(),
+            source_qualname: Some(handler.clone()),
+            target_qualname: Some(normalized),
+            detail: Some(detail),
+            evidence_snippet: None,
+            evidence_start_line: Some(span(node).0),
+            evidence_end_line: Some(span(node).2),
+            ..Default::default()
+        });
+    }
+    edges
 }
 
-fn express_route_chain_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let target_node = call_target_node(node)?;
-    let (object_node, method_name) = member_object_and_method(target_node, source)?;
-    if !HTTP_METHOD_NAMES.contains(&method_name.as_str()) {
-        return None;
-    }
-    if object_node.kind() != "call_expression" {
-        return None;
+fn express_route_chain_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
+    let mut edges = Vec::new();
+    let Some(target_node) = call_target_node(node) else {
+        return edges;
+    };
+    let Some((object_node, method_name)) = member_object_and_method(target_node, source) else {
+        return edges;
+    };
+    if !HTTP_METHOD_NAMES.contains(&method_name.as_str()) || object_node.kind() != "call_expression"
+    {
+        return edges;
     }
     let route_call = object_node;
-    let route_target = call_target_node(route_call)?;
-    let (_route_receiver, route_method) = member_receiver_and_method(route_target, source)?;
+    let Some(route_target) = call_target_node(route_call) else {
+        return edges;
+    };
+    let Some((_route_receiver, route_method)) = member_receiver_and_method(route_target, source)
+    else {
+        return edges;
+    };
     if route_method != "route" {
-        return None;
+        return edges;
     }
     let route_args = call_arguments(route_call);
-    let raw_path = route_args
-        .first()
-        .and_then(|arg| extract_string_literal(*arg, source))?;
-    let normalized = http::normalize_path(&raw_path).or_else(|| {
-        if raw_path.starts_with('/') {
-            Some(raw_path.clone())
-        } else {
-            None
-        }
-    })?;
-    let method = http::normalize_method(&method_name)?;
+    let Some(first) = route_args.first() else {
+        return edges;
+    };
+    let Some(method) = http::normalize_method(&method_name) else {
+        return edges;
+    };
     let args = call_arguments(node);
     let handler = handler_from_args(&args, ctx, source);
-    let detail = http::build_route_detail(&method, &normalized, &raw_path, "express");
-    Some(EdgeInput {
-        kind: http::HTTP_ROUTE_KIND.to_string(),
-        source_qualname: Some(handler),
-        target_qualname: Some(normalized),
-        detail: Some(detail),
-        evidence_snippet: None,
-        evidence_start_line: Some(span(node).0),
-        evidence_end_line: Some(span(node).2),
-        ..Default::default()
-    })
+    for raw_path in route_path_variants(*first, ctx, source) {
+        let Some(normalized) = http::normalize_path(&raw_path).or_else(|| {
+            if raw_path.starts_with('/') {
+                Some(raw_path.clone())
+            } else {
+                None
+            }
+        }) else {
+            continue;
+        };
+        let detail = http::build_route_detail(&method, &normalized, &raw_path, "express");
+        edges.push(EdgeInput {
+            kind: http::HTTP_ROUTE_KIND.to_string(),
+            source_qualname: Some(handler.clone()),
+            target_qualname: Some(normalized),
+            detail: Some(detail),
+            evidence_snippet: None,
+            evidence_start_line: Some(span(node).0),
+            evidence_end_line: Some(span(node).2),
+            ..Default::default()
+        });
+    }
+    edges
+}
+
+/// One name bound by an enclosing `for (const <pattern> of <source>)`.
+struct ForOfBinding {
+    names: Vec<String>,
+    /// Literal-array iterations (one value per name; `None` = not a static
+    /// string). `None` when the source is not a literal array.
+    rows: Option<Vec<Vec<Option<String>>>>,
+}
+
+fn unwrap_array_expression(node: Node<'_>) -> Option<Node<'_>> {
+    match node.kind() {
+        "array" => Some(node),
+        "as_expression" | "satisfies_expression" | "parenthesized_expression" => {
+            let mut cursor = node.walk();
+            let inner = node.named_children(&mut cursor).next()?;
+            unwrap_array_expression(inner)
+        }
+        _ => None,
+    }
+}
+
+fn for_of_binding(stmt: Node<'_>, ctx: &Context, source: &str) -> Option<ForOfBinding> {
+    let left = stmt.child_by_field_name("left")?;
+    let is_of = stmt
+        .child_by_field_name("operator")
+        .is_some_and(|op| node_text(op, source) == "of");
+    let value_of = |n: Node<'_>| {
+        ctx.string_consts
+            .resolve_arg(&node_text(n, source), &LocalBinding::NotLocal)
+    };
+    let (names, single): (Vec<String>, bool) = match left.kind() {
+        "identifier" => (vec![node_text(left, source)], true),
+        "array_pattern" => {
+            let mut cursor = left.walk();
+            let names = left
+                .named_children(&mut cursor)
+                .map(|c| {
+                    if c.kind() == "identifier" {
+                        node_text(c, source)
+                    } else {
+                        String::new()
+                    }
+                })
+                .collect();
+            (names, false)
+        }
+        _ => return None,
+    };
+    let array = if is_of {
+        stmt.child_by_field_name("right")
+            .and_then(unwrap_array_expression)
+    } else {
+        None
+    };
+    let rows = array.map(|array| {
+        let mut cursor = array.walk();
+        array
+            .named_children(&mut cursor)
+            .map(|element| {
+                if single {
+                    return vec![value_of(element)];
+                }
+                match unwrap_array_expression(element) {
+                    Some(inner) => {
+                        let mut c = inner.walk();
+                        let mut items: Vec<Option<String>> =
+                            inner.named_children(&mut c).map(value_of).collect();
+                        items.resize(names.len(), None);
+                        items
+                    }
+                    None => vec![None; names.len()],
+                }
+            })
+            .collect()
+    });
+    Some(ForOfBinding { names, rows })
+}
+
+/// For-of bindings whose body contains `node`, outermost first.
+fn enclosing_for_of_bindings(node: Node<'_>, ctx: &Context, source: &str) -> Vec<ForOfBinding> {
+    let mut out = Vec::new();
+    let mut child = node;
+    while let Some(parent) = child.parent() {
+        if parent.kind() == "for_in_statement"
+            && parent
+                .child_by_field_name("body")
+                .is_some_and(|body| body.id() == child.id())
+            && let Some(binding) = for_of_binding(parent, ctx, source)
+        {
+            out.push(binding);
+        }
+        child = parent;
+    }
+    out.reverse();
+    out
+}
+
+const MAX_ROUTE_LOOP_COMBOS: usize = 64;
+
+/// Raw route paths a route-definition path argument statically denotes: a
+/// string literal, a same-file const, or a template literal whose `${...}`
+/// holes are filled from same-file consts and enclosing for-of loops over
+/// literal arrays (one path per iteration). An unresolvable hole becomes a
+/// `${}` param segment; a loop over a non-literal source never yields a name.
+fn route_path_variants(arg: Node<'_>, ctx: &Context, source: &str) -> Vec<String> {
+    let text = node_text(arg, source);
+    let (pieces, plain) = match arg.kind() {
+        "template_string" => match template_pieces(&text) {
+            Some(pieces) => (pieces, false),
+            None => return Vec::new(),
+        },
+        "identifier" | "member_expression" => (
+            vec![TemplatePiece::Substitution(text.trim().to_string())],
+            true,
+        ),
+        _ => return extract_string_literal(arg, source).into_iter().collect(),
+    };
+    let loops = enclosing_for_of_bindings(arg, ctx, source);
+    // Loops (innermost binder per name) the path actually references.
+    let mut used: Vec<usize> = Vec::new();
+    for piece in &pieces {
+        if let TemplatePiece::Substitution(expr) = piece
+            && let Some(idx) = loops
+                .iter()
+                .rposition(|l| l.names.iter().any(|n| n == expr))
+            && !used.contains(&idx)
+        {
+            used.push(idx);
+        }
+    }
+    used.sort_unstable();
+    let unknown_row = |l: &ForOfBinding| vec![None; l.names.len()];
+    let mut combos: Vec<Vec<Vec<Option<String>>>> = vec![Vec::new()];
+    for &idx in &used {
+        let rows = match &loops[idx].rows {
+            Some(rows) if !rows.is_empty() => rows.clone(),
+            _ => vec![unknown_row(&loops[idx])],
+        };
+        let mut next = Vec::new();
+        for combo in &combos {
+            for row in &rows {
+                let mut extended = combo.clone();
+                extended.push(row.clone());
+                next.push(extended);
+            }
+        }
+        combos = next;
+        if combos.len() > MAX_ROUTE_LOOP_COMBOS {
+            combos = vec![used.iter().map(|&i| unknown_row(&loops[i])).collect()];
+            break;
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    for combo in combos {
+        let mut env: HashMap<&str, Option<&str>> = HashMap::new();
+        for (&idx, row) in used.iter().zip(&combo) {
+            for (name, value) in loops[idx].names.iter().zip(row) {
+                env.insert(name.as_str(), value.as_deref());
+            }
+        }
+        let mut path = String::new();
+        let mut resolved_all = true;
+        for piece in &pieces {
+            match piece {
+                TemplatePiece::Text(t) => path.push_str(t),
+                TemplatePiece::Substitution(expr) => {
+                    let value = match env.get(expr.as_str()) {
+                        Some(bound) => bound.map(str::to_string),
+                        None => ctx
+                            .string_consts
+                            .resolve_arg(expr, &LocalBinding::NotLocal)
+                            .filter(|_| crate::indexer::string_consts::is_identifier_path(expr)),
+                    };
+                    match value {
+                        Some(v) => path.push_str(&v),
+                        None => {
+                            resolved_all = false;
+                            path.push_str("${}");
+                        }
+                    }
+                }
+            }
+        }
+        // A bare identifier argument that did not resolve is not a path.
+        if plain && !resolved_all {
+            continue;
+        }
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
 }
 
 fn fastify_route_edges(node: Node<'_>, ctx: &Context, source: &str) -> Vec<EdgeInput> {
@@ -4881,7 +5094,7 @@ fn is_base_url_expr(expr: &str) -> bool {
     .any(|k| name.contains(k))
 }
 
-fn template_url_path(text: &str) -> Option<String> {
+fn template_pieces(text: &str) -> Option<Vec<TemplatePiece>> {
     use TemplatePiece::{Substitution, Text};
     let inner = text.trim().strip_prefix('`')?.strip_suffix('`')?;
     let mut pieces: Vec<TemplatePiece> = Vec::new();
@@ -4910,6 +5123,12 @@ fn template_url_path(text: &str) -> Option<String> {
         pieces.push(Substitution(rest[start + 2..end? - 1].trim().to_string()));
         rest = &rest[end?..];
     }
+    Some(pieces)
+}
+
+fn template_url_path(text: &str) -> Option<String> {
+    use TemplatePiece::{Substitution, Text};
+    let pieces = template_pieces(text)?;
     let mut iter = pieces.into_iter().peekable();
     let mut out = String::new();
     // Drop a leading base URL substitution, or `https://${host}`.
