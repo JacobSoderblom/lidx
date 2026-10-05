@@ -513,3 +513,31 @@ fn exec_inside_function_and_trigger_bodies() {
         "{edges:?}"
     );
 }
+
+/// Issue #340: `#temp` / `##temp` tables are procedure-local scratch objects,
+/// never schema `table` symbols.
+#[test]
+fn temp_tables_are_not_table_symbols() {
+    let source = "CREATE OR ALTER PROCEDURE dpb.do_work\nAS\nBEGIN\n    SET NOCOUNT ON;\n    CREATE TABLE #scratch (id INT NOT NULL);\n    CREATE TABLE ##global_scratch (id INT NOT NULL);\n    INSERT INTO #scratch VALUES (1);\nEND;\nGO\nCREATE TABLE dpb.x (id INT NOT NULL);\nGO\n";
+    let f = extract(source);
+    let got: Vec<_> = f
+        .symbols
+        .iter()
+        .filter(|s| s.kind != "module")
+        .map(|s| (s.kind.as_str(), s.qualname.as_str()))
+        .collect();
+    assert!(got.contains(&("procedure", "dpb.do_work")), "{got:?}");
+    assert!(got.contains(&("table", "dpb.x")), "{got:?}");
+    assert!(
+        !got.iter().any(|(k, q)| *k == "table" && *q != "dpb.x"),
+        "{got:?}"
+    );
+    assert!(
+        !f.edges.iter().any(|e| e
+            .target_qualname
+            .as_deref()
+            .is_some_and(|t| t.contains("scratch") && e.kind == "CONTAINS")),
+        "{:?}",
+        f.edges
+    );
+}

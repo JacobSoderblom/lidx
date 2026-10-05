@@ -107,6 +107,11 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         if node.kind() == "create_type" && !is_real_create_type(&node_text(node, source)) {
             return;
         }
+        // T-SQL `#temp` / `##temp` tables are procedure-local scratch
+        // objects, not schema tables (#340).
+        if node.kind() == "create_table" && is_tsql_temp_table(&node_text(node, source)) {
+            return;
+        }
         if let Some((qualname, name)) = extract_object_name(node, source) {
             let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(node);
             let qualname_owned = qualname.clone();
@@ -181,6 +186,38 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     for child in node.named_children(&mut cursor) {
         walk_node(child, ctx, source, output);
     }
+}
+
+/// True when a `CREATE TABLE` statement names a `#temp` / `##temp` table.
+fn is_tsql_temp_table(stmt: &str) -> bool {
+    let mut words = stmt.split_whitespace();
+    let is = |w: Option<&str>, e: &str| w.is_some_and(|w| w.eq_ignore_ascii_case(e));
+    if !is(words.next(), "create") {
+        return false;
+    }
+    let mut next = words.next();
+    // Optional modifiers between CREATE and TABLE.
+    while next.is_some_and(|w| {
+        [
+            "or",
+            "replace",
+            "temp",
+            "temporary",
+            "global",
+            "local",
+            "unlogged",
+        ]
+        .iter()
+        .any(|m| w.eq_ignore_ascii_case(m))
+    }) {
+        next = words.next();
+    }
+    if !is(next, "table") {
+        return false;
+    }
+    let name = words.next().unwrap_or("");
+    let name = name.trim_start_matches(['[', '"', '`']);
+    name.starts_with('#')
 }
 
 fn create_kind(kind: &str) -> Option<&'static str> {
