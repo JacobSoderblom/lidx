@@ -2005,7 +2005,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let implicit_this = node.kind() == "invocation_expression"
         && !ctx.type_stack.is_empty()
         && target_node.is_some_and(|target| match target.kind() {
-            "identifier" => true,
+            "identifier" | "generic_name" => true,
             // `this.Foo()` names the same receiver explicitly.
             "member_access_expression" => {
                 target
@@ -2013,7 +2013,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
                     .is_some_and(|e| e.kind() == "this")
                     && target
                         .child_by_field_name("name")
-                        .is_some_and(|n| n.kind() == "identifier")
+                        .is_some_and(|n| matches!(n.kind(), "identifier" | "generic_name"))
             }
             _ => false,
         });

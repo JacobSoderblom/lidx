@@ -354,3 +354,77 @@ namespace App { public class Base { protected int Q() { return 1; } }
         );
     }
 }
+
+// Issue #370: a bare generic call `Q<int>(..)` keeps the implicit receiver.
+const GENERIC_BASE_B: &str = "namespace Bases { public abstract class BaseB {
+    protected int Q<T>(string s) { return 2; } } }";
+const GENERIC_BASE_A: &str = "namespace Other { public abstract class BaseA {
+    protected int Q<T>(string s) { return 1; } } }";
+
+#[test]
+fn bare_generic_call_resolves_inherited_member() {
+    let repo = "namespace App { public class Repo : Bases.BaseB {
+    public int Get() { return Q<int>(\"a\"); } } }";
+    both_orders(
+        GENERIC_BASE_B,
+        &[("B_other.cs", GENERIC_BASE_A), ("C_repo.cs", repo)],
+        |f| {
+            assert_eq!(f.targets("App.Repo.Get"), vec!["Bases.BaseB.Q"]);
+            assert!(f.unresolved_reasons("App.Repo.Get").is_empty());
+        },
+    );
+}
+
+#[test]
+fn this_generic_call_resolves_inherited_member() {
+    let repo = "namespace App { public class Repo : Bases.BaseB {
+    public int Get() { return this.Q<int>(\"a\"); } } }";
+    both_orders(
+        GENERIC_BASE_B,
+        &[("B_other.cs", GENERIC_BASE_A), ("C_repo.cs", repo)],
+        |f| {
+            assert_eq!(f.targets("App.Repo.Get"), vec!["Bases.BaseB.Q"]);
+            assert!(f.unresolved_reasons("App.Repo.Get").is_empty());
+        },
+    );
+}
+
+#[test]
+fn bare_generic_call_to_unrelated_classes_is_not_bound() {
+    // Neither class is in Repo's base chain: the call stays ambiguous.
+    let repo = "namespace App { public class Repo {
+    public int Get() { return Q<int>(\"a\"); } } }";
+    both_orders(
+        GENERIC_BASE_A,
+        &[("B_b.cs", GENERIC_BASE_B), ("C_repo.cs", repo)],
+        |f| {
+            assert!(f.targets("App.Repo.Get").is_empty());
+            assert_eq!(f.unresolved_reasons("App.Repo.Get"), vec!["ambiguous"]);
+        },
+    );
+}
+
+#[test]
+fn bare_generic_call_incremental_reindex_matches_fresh_index() {
+    let repo = "namespace App { public class Repo : Bases.BaseB {
+    public int Get() { return Q<int>(\"a\"); } } }";
+    let mut f = index(&[
+        ("A_base.cs", GENERIC_BASE_B),
+        ("B_other.cs", GENERIC_BASE_A),
+        ("C_repo.cs", repo),
+    ]);
+    let fresh = f.targets("App.Repo.Get");
+    assert_eq!(fresh, vec!["Bases.BaseB.Q"]);
+    let path = f.dir.join("C_repo.cs");
+    std::fs::write(&path, repo.replace("Get()", "GetX()")).unwrap();
+    f.indexer
+        .sync_rel_paths(&["C_repo.cs".to_string()])
+        .unwrap();
+    std::fs::write(&path, repo).unwrap();
+    f.indexer
+        .sync_rel_paths(&["C_repo.cs".to_string()])
+        .unwrap();
+    f.gv = f.indexer.db().current_graph_version().unwrap();
+    assert_eq!(f.targets("App.Repo.Get"), fresh);
+    assert!(f.unresolved_reasons("App.Repo.Get").is_empty());
+}
