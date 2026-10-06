@@ -3027,6 +3027,151 @@ fn finish_value_references(output: &mut ExtractedFile) {
     output.edges.retain(|_| keep.next().unwrap_or(true));
 }
 
+/// State of one `collect_type_references` walk.
+struct Scan<'a> {
+    ctx: &'a Context,
+    source: &'a str,
+    spans: Vec<(i64, i64, &'a str)>,
+    symbols: HashSet<&'a str>,
+    seen: HashSet<(String, String)>,
+    edges: Vec<EdgeInput>,
+}
+/// A type parameter named `name` is declared by an ancestor of `node`.
+fn declares_type_parameter(node: Node<'_>, name: &str, source: &str) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if let Some(params) = n.child_by_field_name("type_parameters") {
+            let mut cursor = params.walk();
+            if params.named_children(&mut cursor).any(|p| {
+                p.child_by_field_name("name")
+                    .is_some_and(|n| node_text(n, source) == name)
+            }) {
+                return true;
+            }
+        }
+        cur = n.parent();
+    }
+    false
+}
+/// Leftmost identifier of `typeof a.b.c`.
+fn query_root(node: Node<'_>) -> Option<Node<'_>> {
+    match node.kind() {
+        "identifier" => Some(node),
+        "member_expression" | "nested_identifier" | "subscript_expression" => node
+            .child_by_field_name("object")
+            .or_else(|| node.named_child(0))
+            .and_then(query_root),
+        _ => None,
+    }
+}
+impl Scan<'_> {
+    fn emit(&mut self, node: Node<'_>, dotted: &str) {
+        let name = dotted.split('.').next().unwrap_or(dotted);
+        if declares_type_parameter(node, name, self.source) {
+            return;
+        }
+        let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+        let owner = self
+            .spans
+            .iter()
+            .filter(|(lo, hi, _)| *lo <= start_byte && end_byte <= *hi)
+            .min_by_key(|(lo, hi, _)| hi - lo)
+            .map_or(self.ctx.module.as_str(), |(_, _, q)| *q)
+            .to_string();
+        let candidates: Vec<String> = import_placeholder(dotted, self.ctx).into_iter().collect();
+        let target = if !candidates.is_empty() {
+            None
+        } else if !dotted.contains('.')
+            && (self.ctx.declared_types.contains(name) || self.ctx.declared_names.contains(name))
+            && !self.ctx.import_bindings.contains_key(name)
+        {
+            let q = build_qualname(&self.ctx.module, &[], name);
+            if !self.symbols.contains(q.as_str()) {
+                return;
+            }
+            Some(q)
+        } else {
+            return;
+        };
+        if target.as_deref() == Some(owner.as_str()) {
+            return;
+        }
+        let key = target.clone().unwrap_or_else(|| candidates.join(","));
+        if !self.seen.insert((owner.clone(), key)) {
+            return;
+        }
+        self.edges.push(EdgeInput {
+            kind: "USES".to_string(),
+            source_qualname: Some(owner),
+            detail: target.is_none().then(|| dotted.to_string()),
+            target_qualname: target,
+            evidence_snippet: util::edge_evidence_snippet(
+                self.source,
+                start_byte,
+                end_byte,
+                start_line,
+                end_line,
+            ),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            import_candidates: candidates,
+            ..Default::default()
+        });
+    }
+    fn walk(&mut self, node: Node<'_>) {
+        let parent = node.parent();
+        let parent_kind = parent.map_or("", |p| p.kind());
+        match node.kind() {
+            "type_identifier" => {
+                let is_name = parent.is_some_and(|p| {
+                    p.child_by_field_name("name")
+                        .is_some_and(|n| n.id() == node.id())
+                });
+                let declares = parent_kind == "infer_type"
+                    || parent_kind == "nested_type_identifier"
+                    || (is_name
+                        && matches!(
+                            parent_kind,
+                            "type_alias_declaration"
+                                | "interface_declaration"
+                                | "class_declaration"
+                                | "abstract_class_declaration"
+                                | "type_parameter"
+                                | "mapped_type_clause"
+                        ));
+                if !declares {
+                    let name = node_text(node, self.source);
+                    self.emit(node, &name);
+                }
+            }
+            "nested_type_identifier" => {
+                if let Some(module) = node.child_by_field_name("module")
+                    && module.kind() == "identifier"
+                    && let Some(name) = node.child_by_field_name("name")
+                {
+                    let dotted = format!(
+                        "{}.{}",
+                        node_text(module, self.source),
+                        node_text(name, self.source)
+                    );
+                    self.emit(node, &dotted);
+                }
+            }
+            "type_query" => {
+                if let Some(root) = node.named_child(0).and_then(query_root) {
+                    let name = node_text(root, self.source);
+                    self.emit(root, &name);
+                }
+            }
+            _ => {}
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            self.walk(child);
+        }
+    }
+}
+
 /// `USES` edges for TS type references: annotations, generic arguments,
 /// `implements`/interface `extends`, `as`/`satisfies`, alias bodies and
 /// `typeof X` / `keyof typeof X` (a use of `X`). The source is the innermost
@@ -3040,151 +3185,6 @@ fn collect_type_references(
     source: &str,
     output: &mut ExtractedFile,
 ) {
-    struct Scan<'a> {
-        ctx: &'a Context,
-        source: &'a str,
-        spans: Vec<(i64, i64, &'a str)>,
-        symbols: HashSet<&'a str>,
-        seen: HashSet<(String, String)>,
-        edges: Vec<EdgeInput>,
-    }
-    fn declares_type_parameter(node: Node<'_>, name: &str, source: &str) -> bool {
-        let mut cur = node.parent();
-        while let Some(n) = cur {
-            if let Some(params) = n.child_by_field_name("type_parameters") {
-                let mut cursor = params.walk();
-                if params.named_children(&mut cursor).any(|p| {
-                    p.child_by_field_name("name")
-                        .is_some_and(|n| node_text(n, source) == name)
-                }) {
-                    return true;
-                }
-            }
-            cur = n.parent();
-        }
-        false
-    }
-    /// Leftmost identifier of `typeof a.b.c`.
-    fn query_root(node: Node<'_>) -> Option<Node<'_>> {
-        match node.kind() {
-            "identifier" => Some(node),
-            "member_expression" | "nested_identifier" | "subscript_expression" => node
-                .child_by_field_name("object")
-                .or_else(|| node.named_child(0))
-                .and_then(query_root),
-            _ => None,
-        }
-    }
-    impl Scan<'_> {
-        fn emit(&mut self, node: Node<'_>, dotted: &str) {
-            let name = dotted.split('.').next().unwrap_or(dotted);
-            if declares_type_parameter(node, name, self.source) {
-                return;
-            }
-            let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
-            let owner = self
-                .spans
-                .iter()
-                .filter(|(lo, hi, _)| *lo <= start_byte && end_byte <= *hi)
-                .min_by_key(|(lo, hi, _)| hi - lo)
-                .map_or(self.ctx.module.as_str(), |(_, _, q)| *q)
-                .to_string();
-            let candidates: Vec<String> =
-                import_placeholder(dotted, self.ctx).into_iter().collect();
-            let target = if !candidates.is_empty() {
-                None
-            } else if !dotted.contains('.')
-                && (self.ctx.declared_types.contains(name)
-                    || self.ctx.declared_names.contains(name))
-                && !self.ctx.import_bindings.contains_key(name)
-            {
-                let q = build_qualname(&self.ctx.module, &[], name);
-                if !self.symbols.contains(q.as_str()) {
-                    return;
-                }
-                Some(q)
-            } else {
-                return;
-            };
-            if target.as_deref() == Some(owner.as_str()) {
-                return;
-            }
-            let key = target.clone().unwrap_or_else(|| candidates.join(","));
-            if !self.seen.insert((owner.clone(), key)) {
-                return;
-            }
-            self.edges.push(EdgeInput {
-                kind: "USES".to_string(),
-                source_qualname: Some(owner),
-                detail: target.is_none().then(|| dotted.to_string()),
-                target_qualname: target,
-                evidence_snippet: util::edge_evidence_snippet(
-                    self.source,
-                    start_byte,
-                    end_byte,
-                    start_line,
-                    end_line,
-                ),
-                evidence_start_line: Some(start_line),
-                evidence_end_line: Some(end_line),
-                import_candidates: candidates,
-                ..Default::default()
-            });
-        }
-        fn walk(&mut self, node: Node<'_>) {
-            let parent = node.parent();
-            let parent_kind = parent.map_or("", |p| p.kind());
-            match node.kind() {
-                "type_identifier" => {
-                    let is_name = parent.is_some_and(|p| {
-                        p.child_by_field_name("name")
-                            .is_some_and(|n| n.id() == node.id())
-                    });
-                    let declares = parent_kind == "infer_type"
-                        || parent_kind == "nested_type_identifier"
-                        || (is_name
-                            && matches!(
-                                parent_kind,
-                                "type_alias_declaration"
-                                    | "interface_declaration"
-                                    | "class_declaration"
-                                    | "abstract_class_declaration"
-                                    | "type_parameter"
-                                    | "mapped_type_clause"
-                            ));
-                    if !declares {
-                        let name = node_text(node, self.source);
-                        self.emit(node, &name);
-                    }
-                }
-                "nested_type_identifier" => {
-                    if let Some(module) = node.child_by_field_name("module")
-                        && module.kind() == "identifier"
-                        && let Some(name) = node.child_by_field_name("name")
-                    {
-                        let dotted = format!(
-                            "{}.{}",
-                            node_text(module, self.source),
-                            node_text(name, self.source)
-                        );
-                        self.emit(node, &dotted);
-                    }
-                }
-                "type_query" => {
-                    if let Some(root) = node.named_child(0).and_then(query_root) {
-                        let name = node_text(root, self.source);
-                        self.emit(root, &name);
-                    }
-                }
-                _ => {}
-            }
-            let mut cursor = node.walk();
-            for child in node.named_children(&mut cursor) {
-                self.walk(child);
-            }
-        }
-    }
-
     let mut scan = Scan {
         ctx,
         source,
