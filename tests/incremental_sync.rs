@@ -2802,3 +2802,52 @@ fn incremental_ts_object_literal_namespace_member_matches_fresh() {
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+#[test]
+fn incremental_ts_new_binds_constructor_matches_fresh() {
+    let app_ts =
+        "import { Context } from './context';\nexport function run() {\n  new Context('r');\n}\n";
+    let ctx_before = "export class Context {\n  render() {}\n}\n";
+    let ctx_after = "export class Context {\n  constructor(r: string) {}\n  render() {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-new-ctor",
+        &[("app.ts", app_ts), ("context.ts", ctx_before)],
+    );
+    common::write_files(&repo_root, &[("context.ts", ctx_after)]);
+    indexer.sync_rel_paths(&["context.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "app.run"
+            && e.target_qualname.as_deref() == Some("context.Context.constructor")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("context.ts", ctx_after)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_new_after_constructor_removed_matches_fresh() {
+    let app_ts =
+        "import { Context } from './context';\nexport function run() {\n  new Context('r');\n}\n";
+    let ctx_before = "export class Context {\n  constructor(r: string) {}\n  render() {}\n}\n";
+    let ctx_after = "export class Context {\n  render() {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-new-ctor-removed",
+        &[("app.ts", app_ts), ("context.ts", ctx_before)],
+    );
+    common::write_files(&repo_root, &[("context.ts", ctx_after)]);
+    indexer.sync_rel_paths(&["context.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("context.ts", ctx_after)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

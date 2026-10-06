@@ -1162,7 +1162,8 @@ impl<'c> Resolver<'c> {
         // its constructors -- bind that when exactly one matches by arity.
         if let (Some(shape), Resolution::Resolved { target_id, kind }) = (r.call_shape, resolution)
             && shape.is_new
-            && let Some(ctor) = self.constructor_for(target_id, shape, r.source_file_path)?
+            && let Some(ctor) =
+                self.constructor_for(target_id, shape, r.source_file_path, r.source_lang)?
         {
             return Ok(Resolution::Resolved {
                 target_id: ctor,
@@ -1227,6 +1228,7 @@ impl<'c> Resolver<'c> {
         class_id: i64,
         shape: CallShape,
         caller_file: &str,
+        source_lang: &str,
     ) -> Result<Option<i64>> {
         let (qualname, kind, signature): (String, String, Option<String>) = self
             .conn
@@ -1234,6 +1236,23 @@ impl<'c> Resolver<'c> {
             .query_row(params![class_id], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?;
+        // A JS/TS class has one `<qualname>.constructor` symbol (overloads
+        // collapse); an ancestor's constructor is never bound, and a count
+        // mismatch means nothing there (any number of arguments is legal).
+        if resolution_language_family(source_lang) == "javascript" {
+            if kind != "class" {
+                return Ok(None);
+            }
+            let gv = self.graph_version;
+            let ctor_qualname = format!("{qualname}.constructor");
+            let candidates =
+                query_exact_candidates(&mut self.exact, &ctor_qualname, gv, caller_file)?;
+            let methods: Vec<ExactCandidate> = candidates
+                .into_iter()
+                .filter(|c| c.kind == "method")
+                .collect();
+            return Ok(collapse_exact_candidates(&methods));
+        }
         // A type's own signature is its primary-constructor parameter list
         // (`record R(int A)`), which `..ctor` symbols don't cover.
         // (Interfaces are `partial`-capable but have no constructors, so

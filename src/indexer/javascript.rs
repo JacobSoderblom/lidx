@@ -1,7 +1,7 @@
 use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
+use crate::indexer::extract::{CallShape, EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::string_consts::{LocalBinding, StringConsts};
@@ -2640,6 +2640,13 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         // (`this.foo()`, `obj.foo()`, ...) — see `EdgeInput::bare_call`'s
         // doc.
         bare_call: target_node.kind() == "identifier",
+        call_shape: (node.kind() == "new_expression").then(|| CallShape {
+            arg_count: node
+                .child_by_field_name("arguments")
+                .map_or(0, |args| args.named_child_count() as u32),
+            is_new: true,
+            implicit_this: false,
+        }),
         ..Default::default()
     });
     register_handled
@@ -7541,6 +7548,29 @@ init();
 
     /// Issue #320: a call whose receiver is itself a call expression
     /// (`make().stage(1).storage()`) must still record a CALLS edge per link.
+    #[test]
+    fn new_expression_records_its_argument_count_and_calls_do_not() {
+        let source = "export function f() {\n  new Foo(1, 2);\n  new Bar;\n  go(1);\n}\n";
+        let mut extractor = super::TypescriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "m").unwrap();
+        let shape = |name: &str| {
+            file.edges
+                .iter()
+                .find(|e| {
+                    e.kind == "CALLS"
+                        && e.target_qualname
+                            .as_deref()
+                            .is_some_and(|t| t.ends_with(&format!(".{name}")))
+                })
+                .unwrap()
+                .call_shape
+                .map(|s| (s.is_new, s.arg_count))
+        };
+        assert_eq!(shape("Foo"), Some((true, 2)));
+        assert_eq!(shape("Bar"), Some((true, 0)));
+        assert_eq!(shape("go"), None);
+    }
+
     #[test]
     fn chained_call_on_call_receiver_records_each_link() {
         let source = r#"

@@ -972,7 +972,19 @@ impl Indexer {
 
         // Issue #77: qualnames this sync is about to add, captured before
         // `update_file_symbols` consumes `diff` — see `sync_abs_paths`.
-        let added_qualnames: Vec<String> = diff.added.iter().map(|s| s.qualname.clone()).collect();
+        let mut added_qualnames: Vec<String> =
+            diff.added.iter().map(|s| s.qualname.clone()).collect();
+        // A `new T()` edge is bound to class `T` until `T` gains a constructor
+        // (`T.constructor`, C# `T..ctor`), which moves it: re-check the owner.
+        let owners: Vec<String> = added_qualnames
+            .iter()
+            .filter_map(|q| {
+                q.strip_suffix(".constructor")
+                    .or_else(|| q.strip_suffix("..ctor"))
+            })
+            .map(str::to_string)
+            .collect();
+        added_qualnames.extend(owners);
         // Issue #79: likewise captured before `diff` moves, for
         // `retry_unresolved_references`'s deletion-driven ambiguity retry.
         let any_deleted = !diff.deleted.is_empty();
