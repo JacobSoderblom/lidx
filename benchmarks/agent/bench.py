@@ -31,7 +31,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(HERE))      # the lidx checkout hold
 DEFAULT_WORKDIR = os.path.join(HERE, ".work")
 PROFILES = ("baseline", "lidx")
 BASE_TOOLS = ["Read", "Grep", "Glob"]
-LIDX_TOOL = "mcp__lidx__lidx"
+LIDX_PREFIX = "mcp__lidx__"
+LIDX_ALLOW = "mcp__lidx"  # permission rule covering every tool of the lidx server
 TrialResult = collections.namedtuple("TrialResult", "status task profile n")
 # metric -> (value format, change is relative %)
 METRIC_SPECS = {"judge": ("%.1f", False), "input_tokens": ("%.0f", True),
@@ -195,7 +196,7 @@ def parse_stream(lines):
             result = ev
     return {"init": init, "result": result, "tool_counts": counts,
             "tool_calls": sum(counts.values()),
-            "lidx_calls": sum(n for k, n in counts.items() if k.startswith("mcp__lidx__"))}
+            "lidx_calls": sum(n for k, n in counts.items() if k.startswith(LIDX_PREFIX))}
 
 
 def trial_metrics(parsed):
@@ -219,7 +220,7 @@ def trial_metrics(parsed):
 
 
 def expected_tools(profile):
-    return sorted(BASE_TOOLS + ([LIDX_TOOL] if profile == "lidx" else []))
+    return sorted(BASE_TOOLS)
 
 
 def check_init(profile, init):
@@ -227,7 +228,13 @@ def check_init(profile, init):
     if init is None:
         return "no system/init event in stream"
     want = expected_tools(profile)
-    got = sorted(init.get("tools") or [])
+    tools = init.get("tools") or []
+    got = sorted(t for t in tools if not t.startswith(LIDX_PREFIX))
+    lidx_tools = [t for t in tools if t.startswith(LIDX_PREFIX)]
+    if profile == "lidx" and not lidx_tools:
+        return "lidx profile exposes no %s* tools: %s" % (LIDX_PREFIX, tools)
+    if profile == "baseline" and lidx_tools:
+        return "baseline exposes lidx tools: %s" % lidx_tools
     if got != want:
         return "tool set %s != expected %s" % (got, want)
     servers = init.get("mcp_servers") or []
@@ -269,7 +276,7 @@ def default_scratch(out):
 
 
 def claude_cmd(args, profile, mcp_json, prompt):
-    allowed = BASE_TOOLS + ([LIDX_TOOL] if profile == "lidx" else [])
+    allowed = BASE_TOOLS + ([LIDX_ALLOW] if profile == "lidx" else [])
     cmd = ["claude", "-p", prompt, "--model", args.model] + effort_args(args.model, args.effort)
     cmd += ["--output-format", "stream-json", "--verbose",
             "--setting-sources", "", "--strict-mcp-config", "--mcp-config", mcp_json,

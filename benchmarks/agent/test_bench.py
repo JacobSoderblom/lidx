@@ -63,8 +63,12 @@ class Parse(unittest.TestCase):
         self.assertIn("tool set", bench.check_init("baseline", dict(base, tools=["Read", "Grep", "Glob", "Bash"])))
         self.assertIn("tool set", bench.check_init("baseline", dict(base, tools=["Read", "Grep"])))
         lidx = {"mcp_servers": [{"name": "lidx", "status": "connected"}], "tools": base["tools"]}
-        self.assertIn("tool set", bench.check_init("lidx", lidx))        # lidx tool missing
+        self.assertIn("no mcp__lidx__", bench.check_init("lidx", lidx))  # lidx tools missing
         self.assertIsNone(bench.check_init("lidx", dict(lidx, tools=base["tools"] + ["mcp__lidx__lidx"])))
+        many = base["tools"] + ["mcp__lidx__lidx", "mcp__lidx__lidx_find_callers"]
+        self.assertIsNone(bench.check_init("lidx", dict(lidx, tools=many)))
+        self.assertIn("tool set", bench.check_init("lidx", dict(lidx, tools=many + ["Bash"])))
+        self.assertIn("baseline exposes lidx", bench.check_init("baseline", dict(base, tools=many)))
 
     def test_judge_scores_strict(self):
         ok = {d: 10 for d in bench.DIMS}
