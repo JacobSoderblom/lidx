@@ -1222,3 +1222,75 @@ function run() {
     let calls = rpc_calls_for(source);
     assert!(calls.is_empty(), "no RPC_CALL expected, got {calls:?}");
 }
+
+fn ts_calls(source: &str) -> Vec<lidx::indexer::extract::EdgeInput> {
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    extracted
+        .edges
+        .into_iter()
+        .filter(|e| e.kind == "CALLS")
+        .collect()
+}
+
+#[test]
+fn calls_inside_returned_function_expression_attribute_to_enclosing_symbol() {
+    let source = r#"
+export const basicAuth = (options: Options): Handler => {
+  if (!options.realm) { throw new Error('x') }
+  return async function basicAuth(ctx, next) {
+    const requestUser = auth(ctx.req.raw)
+    throw new HTTPException(status, { res })
+  }
+}
+createProxy(function proxyCallback(opts) {
+  const url = mergePath(baseUrl, opts.path)
+})
+"#;
+    let calls = ts_calls(source);
+    let from = |name: &str, scope: &str| {
+        calls.iter().any(|e| {
+            e.source_qualname.as_deref() == Some(scope)
+                && e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains(name))
+        })
+    };
+    assert!(from("auth(ctx", "src/app.basicAuth"), "{calls:#?}");
+    assert!(from("HTTPException", "src/app.basicAuth"), "{calls:#?}");
+    assert!(from("mergePath(", "src/app"), "{calls:#?}");
+}
+
+#[test]
+fn this_call_inside_function_expression_does_not_bind_to_class() {
+    let source = r#"
+class Foo {
+  m() {}
+  run() {
+    items.forEach(function (x) {
+      this.m();
+      this.a.b();
+      const f = () => this.m();
+    });
+    this.m();
+    function inner() { this.m(); }
+  }
+}
+"#;
+    let calls = ts_calls(source);
+    let bound = calls
+        .iter()
+        .filter(|e| e.target_qualname.as_deref() == Some("src/app.Foo.m"))
+        .count();
+    assert_eq!(bound, 1, "only the direct this.m() binds: {calls:#?}");
+    let inner: Vec<_> = calls
+        .iter()
+        .filter(|e| e.detail.as_deref().is_some_and(|d| d.starts_with("this.")))
+        .collect();
+    assert_eq!(inner.len(), 4, "{calls:#?}");
+    for e in inner {
+        assert!(e.target_qualname.is_none(), "{e:#?}");
+        assert_eq!(e.receiver_type, ReceiverType::Unresolved, "{e:#?}");
+        assert_eq!(e.source_qualname.as_deref(), Some("src/app.Foo.run"));
+    }
+}

@@ -78,6 +78,10 @@ struct Context {
     ns_depth: usize,
     fn_depth: usize,
     current_scope: String,
+    /// `this` is dynamically bound here (inside a `function` expression or
+    /// nested `function` declaration), so a `this.x()` call must never
+    /// resolve against the enclosing class — see `rebind_this_scope`.
+    this_rebound: bool,
     route_prefix: Option<String>,
     router_aliases: Vec<String>,
     /// Same-file `const api = axios.create({ baseURL })` instances: name to
@@ -1313,6 +1317,7 @@ fn extract_with_parser(
         )),
         module: module_name.to_string(),
         class_stack: Vec::new(),
+        this_rebound: false,
         ns_depth: 0,
         fn_depth: 0,
         current_scope: module_name.to_string(),
@@ -2021,6 +2026,13 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         output.edges.push(edge);
     }
     if is_dynamic_this_function_node(node.kind()) {
+        // Not a symbol: its calls belong to the enclosing one, with their
+        // own locals and a rebound `this`.
+        let next_ctx = rebind_this_scope(node, ctx, source);
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk_node(child, &next_ctx, source, output);
+        }
         return;
     }
     // An arrow function body is a nested *scope*, not a new symbol — fall
@@ -2043,10 +2055,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 // Not a symbol, but its calls belong to the enclosing one,
                 // resolved against its own locals plus the enclosing ones.
                 if let Some(body) = node.child_by_field_name("body") {
-                    let mut next_ctx = ctx.clone();
-                    next_ctx.class_stack.truncate(ctx.ns_depth);
-                    enter_scope(&mut next_ctx);
-                    next_ctx.local_types = Rc::new(infer_local_types(node, source));
+                    let next_ctx = rebind_this_scope(node, ctx, source);
                     walk_node(body, &next_ctx, source, output);
                 }
                 return;
@@ -2140,6 +2149,7 @@ fn handle_class_named(
 
     let mut next_ctx = ctx.clone();
     next_ctx.class_stack.push(name);
+    next_ctx.this_rebound = false;
     next_ctx.current_scope = qualname.clone();
     if let Some(prefix) = controller_prefix_from_class(node, source) {
         next_ctx.route_prefix = Some(prefix);
@@ -2434,6 +2444,19 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
                 import_placeholder(&raw, ctx).into_iter().collect(),
             ),
         };
+    // `this` is rebound here: keep the call as an unresolved reference
+    // instead of binding it to the enclosing class.
+    let (target, receiver_type, import_candidates) = if ctx.this_rebound
+        && matches!(
+            target_node.kind(),
+            "member_expression" | "optional_member_expression"
+        )
+        && member_chain_root(target_node).0.kind() == "this"
+    {
+        (None, ReceiverType::Unresolved, Vec::new())
+    } else {
+        (target, receiver_type, import_candidates)
+    };
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
@@ -2542,6 +2565,7 @@ fn expression_type(node: Node<'_>, ctx: &Context, source: &str, depth: usize) ->
             let object = peel_expression(callee.child_by_field_name("object")?);
             let method = node_text(callee.child_by_field_name("property")?, source);
             let owner = match object.kind() {
+                "this" if ctx.this_rebound => return None,
                 "this" => ctx.class_stack.last().cloned()?,
                 "identifier" => {
                     let name = node_text(object, source);
@@ -5004,14 +5028,13 @@ fn is_simple_call_target(raw: &str) -> bool {
 /// `function() {...}` / `function*() {...}`, named or anonymous, most often
 /// seen as a callback. Unlike an arrow function, one of these dynamically
 /// rebinds `this` (and `arguments`) to whatever the caller supplies at call
-/// time, instead of inheriting the enclosing lexical `this`. Walking its
-/// body with the *enclosing* scope's unchanged `Context` — same
-/// `current_scope`, same `this`-relative resolution in `infer_receiver_type`
-/// — would misattribute a `this.method()` call inside it to the wrong
-/// class method, which is worse than not indexing the call at all. So
-/// `walk_node` and `is_local_scope_boundary` both still treat this as a
-/// hard boundary; see `is_lambda_node` below for the one kind that's safe
-/// to fall through instead. (`"function"` is the bare `function` keyword
+/// time, instead of inheriting the enclosing lexical `this`.
+/// `walk_node` walks its body with calls attributed to the enclosing
+/// symbol, but through `rebind_this_scope`: its own locals, and a
+/// `this.x()` inside it is left unresolved instead of being bound to the
+/// enclosing class (a wrong edge). `is_local_scope_boundary` still treats
+/// it as a separate local-type scope; see `is_lambda_node` below for the
+/// kind that shares the enclosing `this` and locals. (`"function"` is the bare `function` keyword
 /// token itself — unnamed, so `named_children()` never yields it and this
 /// arm is unreachable in practice — kept only for parity with the
 /// pre-existing list this replaces.)
@@ -5022,12 +5045,30 @@ fn is_dynamic_this_function_node(kind: &str) -> bool {
     )
 }
 
+/// Context for walking the body of a function that is not a symbol and
+/// rebinds `this` — a nested `function` expression/generator or `function`
+/// declaration: calls keep the enclosing `current_scope`, the function gets
+/// its own locals (plus the enclosing ones as outer locals), `class_stack`
+/// is cut back to the namespaces (bare names are not class members), and
+/// `this_rebound` makes a `this.x()` call unresolved rather than a member of
+/// the enclosing class.
+fn rebind_this_scope(node: Node<'_>, ctx: &Context, source: &str) -> Context {
+    let mut next_ctx = ctx.clone();
+    next_ctx.class_stack.truncate(ctx.ns_depth);
+    next_ctx.fn_depth += 1;
+    next_ctx.this_rebound = true;
+    enter_scope(&mut next_ctx);
+    next_ctx.local_types = Rc::new(infer_local_types(node, source));
+    next_ctx
+}
+
 /// A JS/TS arrow function (`x => ...`, `(x, y) => ...`, `async (x) => ...`).
 /// Always lexically captures the enclosing `this`/`arguments` — never
 /// rebinds them like a plain `function` expression does (see
-/// `is_dynamic_this_function_node`) — so it's safe for `walk_node` and
-/// `collect_statement_bindings` to recurse straight through one with the
-/// *same* `Context`/bindings map: it's a nested scope, not a new symbol.
+/// `is_dynamic_this_function_node`) — so `walk_node` and
+/// `collect_statement_bindings` recurse straight through one with the
+/// *same* `Context`/bindings map (`this` keeps resolving against the
+/// enclosing class): it's a nested scope, not a new symbol.
 /// Calls inside it (e.g. `.map(x => this.transform(x))`, `useEffect(() =>
 /// fetchData(), [])`) attribute to the enclosing named symbol via
 /// `ctx.current_scope`, and the arrow's own parameters are folded into the
@@ -5067,6 +5108,7 @@ fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<C
     if !is_lambda_node(kind) {
         enter_scope(&mut next_ctx);
         next_ctx.local_types = Rc::new(infer_local_types(node, source));
+        next_ctx.this_rebound = true;
     }
     Some(next_ctx)
 }
@@ -5205,6 +5247,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     if let Some(body) = node.child_by_field_name("body") {
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
+        next_ctx.this_rebound = false;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
         enter_scope(&mut next_ctx);
         next_ctx.local_types = Rc::new(infer_local_types(node, source));
@@ -6057,11 +6100,11 @@ fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
 /// Infer types for names bound within a single function body: parameters
 /// and `const`/`let`/`var` declarations. Scope is strictly this function —
 /// never a caller, a callee, or another method of the same class (see
-/// `Context::local_types`'s doc comment). No CALLS edges are ever extracted
-/// from inside a nested plain `function`/`function*` expression (see
-/// `is_dynamic_this_function_node`, which stops `walk_node` there
-/// entirely), so this deliberately doesn't recurse into one either. An
-/// arrow function is different — see `is_lambda_node` — so
+/// `Context::local_types`'s doc comment). A nested plain `function`/
+/// `function*` expression is a scope of its own (see
+/// `is_dynamic_this_function_node`): `walk_node` gives it a fresh
+/// `infer_local_types` via `rebind_this_scope`, so this doesn't recurse
+/// into one. An arrow function is different — see `is_lambda_node` — so
 /// `collect_statement_bindings` (which this calls into) does recurse into
 /// one of those, folding its parameters into this same map.
 fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {

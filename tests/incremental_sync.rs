@@ -2547,3 +2547,26 @@ fn ts_dynamic_import_emits_imports_file_and_matches_fresh() {
     common::assert_matches_fresh(&snapshot, &fresh_snapshot);
     assert_eq!(unresolved(&indexer), unresolved(&fresh));
 }
+
+#[test]
+fn incremental_ts_function_expression_calls_match_fresh() {
+    let app_ts = "import { helper } from './lib';\nexport class Foo {\n  m() {}\n  run() {\n    list.forEach(function (x) {\n      this.m();\n      helper(x);\n    });\n  }\n}\n";
+    let lib_ts = "export function helper(x: number) {}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree("ts-fn-expr", &[("app.ts", app_ts)]);
+    common::write_files(&repo_root, &[("lib.ts", lib_ts)]);
+    indexer.sync_rel_paths(&["lib.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        !snapshot
+            .iter()
+            .any(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("app.Foo.m")),
+        "this.m() inside a function expression must not bind to Foo.m: {snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("lib.ts", lib_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
