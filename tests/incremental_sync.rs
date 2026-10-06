@@ -2593,3 +2593,28 @@ fn incremental_ts_class_field_arrow_calls_match_fresh() {
     let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("lib.ts", lib_ts)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+#[test]
+fn incremental_ts_callback_local_const_calls_match_fresh() {
+    let app_test_ts = "import { fail } from './lib';\ndescribe('x', () => {\n  it('y', () => {\n    const handler = wrap(() => { fail(); });\n  });\n});\n";
+    let lib_ts = "export function fail() {}\n";
+
+    let (_tmp, repo_root, mut indexer) =
+        indexed_tree("ts-cb-const", &[("app.test.ts", app_test_ts)]);
+    common::write_files(&repo_root, &[("lib.ts", lib_ts)]);
+    indexer.sync_rel_paths(&["lib.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "app.test"
+            && e.target_qualname.as_deref() == Some("lib.fail")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("app.test.ts", app_test_ts), ("lib.ts", lib_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

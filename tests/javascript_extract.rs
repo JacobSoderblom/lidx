@@ -1347,3 +1347,50 @@ class Hono {
         Some("src/app.Hono.legacy")
     );
 }
+
+#[test]
+fn call_sources_are_emitted_symbols_or_the_module() {
+    let source = r#"
+import { HTTPException } from './http-exception'
+describe('x', () => {
+  it('y', async () => {
+    const handler = handleMiddleware(() => { throw new HTTPException(401) })
+    const exception500: Fn = (c) => new HTTPException(500)
+  })
+})
+export const mw: Fn = (c) => new HTTPException(400)
+const typed: Fn = wrap((c) => new HTTPException(401))
+class A {
+  f = (x) => helper(x)
+  run() { const g = () => helper(2); g() }
+}
+export default function () { inner() }
+const o = { m() { objCall() } }
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/app").unwrap();
+    let symbols: std::collections::HashSet<&str> = extracted
+        .symbols
+        .iter()
+        .map(|s| s.qualname.as_str())
+        .collect();
+    for e in extracted.edges.iter().filter(|e| e.kind == "CALLS") {
+        let src = e.source_qualname.as_deref().unwrap();
+        assert!(
+            src == "src/app" || symbols.contains(src),
+            "CALLS source {src} has no symbol: {e:#?}"
+        );
+    }
+    // Calls in the test callbacks attribute to the module, not a phantom const.
+    let ex = extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.evidence_snippet
+                .as_deref()
+                .is_some_and(|s| s.contains("new HTTPException(401)"))
+                && e.source_qualname.as_deref() == Some("src/app")
+        })
+        .expect("callback call attributed to the module");
+    assert_eq!(ex.kind, "CALLS");
+}

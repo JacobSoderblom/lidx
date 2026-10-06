@@ -1997,14 +1997,24 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             && name_node.kind() == "identifier"
             && let Some(value) = node.child_by_field_name("value")
         {
-            let mut next_ctx = ctx.clone();
-            next_ctx.fn_owner = Some(build_qualname(
-                &ctx.module,
-                &ctx.class_stack,
-                &node_text(name_node, source),
-            ));
-            walk_node(value, &next_ctx, source, output);
-            return;
+            // `current_scope` also equals the container inside a module-level
+            // callback, where the const is local and got no symbol: only own
+            // the initializer when `handle_variable_declaration` emitted one
+            // for this very declarator.
+            let owner =
+                build_qualname(&ctx.module, &ctx.class_stack, &node_text(name_node, source));
+            let start = node.start_byte() as i64;
+            if output
+                .symbols
+                .iter()
+                .rev()
+                .any(|s| s.qualname == owner && s.start_byte == start)
+            {
+                let mut next_ctx = ctx.clone();
+                next_ctx.fn_owner = Some(owner);
+                walk_node(value, &next_ctx, source, output);
+                return;
+            }
         }
     }
     if let Some(next_ctx) = owned_function_scope(node, ctx, source) {
