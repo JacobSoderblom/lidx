@@ -1331,9 +1331,11 @@ const EXPR_ARG_MACROS: &[&str] = &[
 ];
 
 /// tree-sitter leaves macro arguments as an opaque `token_tree`; for the
-/// known std macros, re-parse just that byte range as an expression (the
+/// macro invocations, re-parse just that byte range as an expression (the
 /// included range keeps byte/line offsets identical to the real file) and
-/// extract calls from it. Other macros are skipped.
+/// extract calls from it. Any other macro gets the same treatment when its
+/// token tree is a comma-separated expression list (`is_expression_list`),
+/// and is skipped otherwise.
 ///
 /// `bound` holds the names closures and patterns of enclosing macro
 /// arguments bind, which the function body's own pattern scan never sees.
@@ -1349,9 +1351,7 @@ fn handle_macro_invocation(
     };
     let path = node_text(name_node, source);
     let name = path.rsplit("::").next().unwrap_or(&path);
-    if !EXPR_ARG_MACROS.contains(&name) {
-        return;
-    }
+    let known = EXPR_ARG_MACROS.contains(&name);
     let mut cursor = node.walk();
     let Some(tokens) = node
         .named_children(&mut cursor)
@@ -1376,6 +1376,12 @@ fn handle_macro_invocation(
         return;
     };
     let mut root = tree.root_node();
+    // Any other macro's arguments are only calls when the whole token tree
+    // is one comma-separated expression list (`m!(a(), b)`, `m![a()]`): a
+    // block, `key: value` pairs, `$fragment`s or items do not parse as one.
+    if !known && !is_expression_list(root) {
+        return;
+    }
     let mut bound = bound.clone();
     collect_pattern_names(root, source, &mut bound);
     if name == "matches" {
@@ -1384,7 +1390,31 @@ fn handle_macro_invocation(
             None => return,
         }
     }
-    walk_macro_exprs(root, ctx, source, output, &bound);
+    walk_macro_exprs(root, ctx, source, output, &bound, known);
+}
+
+/// Whether a re-parsed macro token tree is a single error-free tuple /
+/// parenthesised / array expression. (The root itself carries an `ERROR` or
+/// a `MISSING ";"`: a bare expression has no statement terminator.)
+fn is_expression_list(root: Node<'_>) -> bool {
+    if root.named_child_count() != 1 {
+        return false;
+    }
+    let Some(statement) = root.named_child(0) else {
+        return false;
+    };
+    if !matches!(statement.kind(), "ERROR" | "expression_statement")
+        || statement.named_child_count() != 1
+    {
+        return false;
+    }
+    statement.named_child(0).is_some_and(|e| {
+        !e.has_error()
+            && matches!(
+                e.kind(),
+                "tuple_expression" | "parenthesized_expression" | "array_expression"
+            )
+    })
 }
 
 /// `matches!(scrutinee, pattern)` re-parses as a tuple expression; only its
@@ -1397,19 +1427,25 @@ fn matches_scrutinee(root: Node<'_>) -> Option<Node<'_>> {
         .and_then(|tuple| tuple.named_child(0))
 }
 
+/// `known`: the macro is a std one whose arguments are all expressions. Any
+/// other macro may use its own arguments as names (`syntax!(name, ..)`), so
+/// only a path written inside a real call's argument list counts as a
+/// function reference there.
 fn walk_macro_exprs(
     node: Node<'_>,
     ctx: &Context,
     source: &str,
     output: &mut ExtractedFile,
     bound: &HashSet<String>,
+    known: bool,
 ) {
     match node.kind() {
         "call_expression" => handle_call(node, ctx, source, output),
         // A function path passed as a value: same skip rules as outside a
         // macro, plus the names bound inside the macro's own arguments.
         "identifier" | "scoped_identifier"
-            if !(node.kind() == "identifier" && bound.contains(&node_text(node, source))) =>
+            if !(node.kind() == "identifier" && bound.contains(&node_text(node, source)))
+                && (known || node.parent().is_some_and(|p| p.kind() == "arguments")) =>
         {
             handle_fn_ref(node, ctx, source, output)
         }
@@ -1421,7 +1457,7 @@ fn walk_macro_exprs(
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        walk_macro_exprs(child, ctx, source, output, bound);
+        walk_macro_exprs(child, ctx, source, output, bound, known);
     }
 }
 

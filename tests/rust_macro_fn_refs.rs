@@ -100,10 +100,12 @@ fn locals_params_and_constructors_in_macro_arguments_are_not_calls() {
 }
 
 #[test]
-fn unknown_macros_and_matches_patterns_still_skip_fn_refs() {
+fn custom_macro_call_arguments_record_fn_refs_but_matches_patterns_do_not() {
     let targets = call_targets();
+    // `custom!(xs.iter().map(in_custom).count())`: a path inside a real
+    // call's argument list is a function reference whatever the macro.
     assert!(
-        !targets.iter().any(|t| t == "crate::in_custom"),
+        targets.iter().any(|t| t == "crate::in_custom"),
         "{targets:?}"
     );
     assert!(

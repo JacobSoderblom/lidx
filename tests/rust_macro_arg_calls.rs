@@ -111,12 +111,97 @@ fn macro_names_yield_no_edges() {
 }
 
 #[test]
-fn unknown_macro_arguments_are_skipped() {
+fn custom_macro_arguments_yield_calls() {
     let edges = call_edges();
     assert!(
-        !edges.iter().any(|(t, _)| t == "crate::in_custom"),
-        "unknown macro args must be skipped: {edges:?}"
+        edges.iter().any(|(t, _)| t == "crate::in_custom"),
+        "a custom macro's expression arguments hold real calls: {edges:?}"
     );
+}
+
+const CUSTOM_RS: &str = r#"
+pub fn cls() -> u8 { 1 }
+pub fn rclass(_v: &[(char, char)]) -> u8 { 2 }
+pub fn inner_call() -> u8 { 3 }
+pub fn in_braces() -> u8 { 4 }
+pub fn in_def_body() -> u8 { 5 }
+pub fn in_json_like() -> u8 { 6 }
+pub fn in_fragment() -> u8 { 7 }
+pub fn in_bracket_form() -> u8 { 9 }
+pub fn decoy_ident() -> u8 { 8 }
+macro_rules! syntax {
+    ($name:ident, $pat:expr, $tokens:expr) => {
+        pub fn $name() -> u8 { in_def_body() + $tokens }
+    };
+}
+macro_rules! wrap { ($($t:tt)*) => { $($t)* }; }
+mod tests {
+    use super::*;
+    syntax!(decoy_ident, "[a-]", vec![rclass(&[('a', 'a')])]);
+    pub fn run() {
+        wrap!(cls(), wrap!(inner_call()));
+        wrap!{ in_braces() };
+        wrap![in_bracket_form()];
+        wrap!(name: in_json_like());
+        wrap!($in_fragment());
+    }
+}
+"#;
+
+fn custom_edges() -> Vec<(String, String)> {
+    let files = [FILES[0], ("src/lib.rs", CUSTOM_RS)];
+    let (_tmp, root, db_path) = common::index_repo("lidx-macro-custom-", &files);
+    let indexer = Indexer::new(root, db_path).unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.qualname, COALESCE(t.qualname, e.target_qualname, '')
+             FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.graph_version = ? AND e.kind = 'CALLS'",
+        )
+        .unwrap();
+    stmt.query_map(rusqlite::params![gv], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+#[test]
+fn calls_in_custom_and_nested_macro_invocations_are_extracted() {
+    let edges = custom_edges();
+    let has = |from: &str, to: &str| edges.iter().any(|(s, t)| s == from && t == to);
+    // A module-level invocation: the caller is the module.
+    assert!(has("crate::tests", "crate::rclass"), "{edges:?}");
+    // Nested macros and every delimiter form that parses as expressions.
+    for to in ["crate::cls", "crate::inner_call", "crate::in_bracket_form"] {
+        assert!(has("crate::tests::run", to), "{to}: {edges:?}");
+    }
+}
+
+#[test]
+fn custom_macro_non_expression_arguments_yield_nothing() {
+    let edges = custom_edges();
+    let targets: Vec<&str> = edges.iter().map(|(_, t)| t.as_str()).collect();
+    // `{ in_braces() };` re-parses as a block, `name: f()` and `$f()` do not
+    // parse as expressions: skipped, never guessed.
+    for bad in [
+        "crate::in_braces",
+        "crate::in_json_like",
+        "crate::in_fragment",
+    ] {
+        assert!(!targets.contains(&bad), "{bad}: {edges:?}");
+    }
+    // The macro definition's own body is not a call site.
+    assert!(
+        !edges
+            .iter()
+            .any(|(s, t)| t == "crate::in_def_body" && s.starts_with("crate::syntax")),
+        "{edges:?}"
+    );
+    // A macro argument that merely names a macro-generated item is no call.
+    assert!(!targets.contains(&"crate::decoy_ident"), "{edges:?}");
 }
 
 #[test]

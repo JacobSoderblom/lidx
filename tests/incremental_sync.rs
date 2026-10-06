@@ -3402,3 +3402,38 @@ fn rust_unknown_receiver_method_added_later_matches_fresh() {
     let (_f, fresh) = common::index_files(&edited);
     common::assert_matches_fresh(&snap, &fresh);
 }
+
+/// A call inside a custom macro's arguments binds once its callee exists
+/// and unbinds when it is removed, matching a fresh index each time.
+#[test]
+fn rust_custom_macro_arg_call_target_added_then_removed_matches_fresh() {
+    let lib_rs = "mod a;\nmod b;\n";
+    let a_rs = "use crate::b::helper;\nmacro_rules! wrap { ($($t:tt)*) => { $($t)* }; }\n\
+pub fn run() {\n    wrap!(helper(), 1);\n}\n";
+    let before = "pub fn other() {}\n";
+    let after = "pub fn other() {}\npub fn helper() -> u8 { 1 }\n";
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "rust-custom-macro-call",
+        &[
+            ("src/lib.rs", lib_rs),
+            ("src/a.rs", a_rs),
+            ("src/b.rs", before),
+        ],
+    );
+    for (b, bound) in [(after, true), (before, false)] {
+        common::write_files(&repo_root, &[("src/b.rs", b)]);
+        indexer.sync_rel_paths(&["src/b.rs".to_string()]).unwrap();
+        common::assert_no_dangling_edge_targets(indexer.db());
+        let gv = indexer.db().current_graph_version().unwrap();
+        let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+        assert_eq!(
+            snapshot.iter().any(|e| e.source_qualname == "crate::a::run"
+                && e.target_qualname.as_deref() == Some("crate::b::helper")),
+            bound,
+            "{snapshot:#?}"
+        );
+        let (_f, fresh) =
+            common::index_files(&[("src/lib.rs", lib_rs), ("src/a.rs", a_rs), ("src/b.rs", b)]);
+        common::assert_matches_fresh(&snapshot, &fresh);
+    }
+}
