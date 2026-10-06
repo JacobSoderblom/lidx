@@ -46,6 +46,7 @@ fn edge(kind: &str, source: &str, target: &str) -> EdgeInput {
         call_shape: None,
         source_start_byte: None,
         target_start_byte: None,
+        py_site: None,
     }
 }
 

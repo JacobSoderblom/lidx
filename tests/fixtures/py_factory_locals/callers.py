@@ -1,5 +1,21 @@
-from typing import Optional
+from typing import Awaitable, Optional
 import models
+import pkg_a.twin
+from models import (
+    AsyncFoo,
+    Coordinator,
+    CoroFoo,
+    DupFoo,
+    ListFoo,
+    MixedA,
+    MixedB,
+    OptFoo,
+    PipeFoo,
+    ShadowFoo,
+    StrFoo,
+    UnannFoo,
+    UnawaitedFoo,
+)
 
 
 def _make_coordinator(*, client=None) -> Coordinator:

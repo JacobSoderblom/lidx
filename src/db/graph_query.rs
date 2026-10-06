@@ -282,7 +282,7 @@ fn id_list(ids: &[i64]) -> String {
 /// impl's qualname carries an identity segment, so no fixed offset works).
 /// An explicit impl pairs only with the interface its identity names; an
 /// implicit one with every other one; through a base *class* only an
-/// `override` pairs. Callers append their own `WHERE`/`JOIN`s.
+/// `override` pairs (every same-named subclass method in Python). Callers append their own `WHERE`/`JOIN`s.
 /// `graph_version` is inlined (an `i64`, so injection-safe) so callers can
 /// mix it into queries with their own positional parameters.
 pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> String {
@@ -388,7 +388,10 @@ pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> St
          WHERE cm.kind IN ('method', 'property', 'event') AND cm.graph_version = {gv}
            AND CASE WHEN {cm_explicit}
                     THEN i.kind = 'interface' AND {cm_names_i}
-                    ELSE (a.ov = 0 OR (' ' || COALESCE(cm.visibility, '') || ' ') LIKE '% override %')
+                    -- Python has no `override` keyword: a subclass method of the same
+                    -- name overrides, and a call through the base type reaches it.
+                    ELSE (a.ov = 0 OR fc.language = 'python'
+                          OR (' ' || COALESCE(cm.visibility, '') || ' ') LIKE '% override %')
                          -- an implicit impl is not paired with an interface whose closures all have explicit twins
                          AND NOT ({twin_excludes})
                END"

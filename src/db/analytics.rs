@@ -558,6 +558,20 @@ impl Db {
                              AND {call_reaches}
                          )
                      )
+                     -- A Python class with a method a base-typed call reaches is live.
+                     AND NOT (s.kind = 'class' AND f.language = 'python' AND EXISTS (
+                       SELECT 1 {dispatch_from}
+                         AND cm.id IN (SELECT ce.target_symbol_id FROM edges ce
+                                        WHERE ce.source_symbol_id = s.id AND ce.kind = 'CONTAINS'
+                                          AND ce.graph_version = {gv}
+                                          AND ce.target_symbol_id IS NOT NULL)
+                         AND EXISTS (
+                           SELECT 1 FROM edges ce
+                           WHERE ce.target_symbol_id = im.id AND ce.kind = 'CALLS'
+                             AND ce.graph_version = {gv}
+                             AND {call_reaches}
+                         )
+                     ))
                      AND NOT (s.kind IN ('method', 'function') AND (
                        EXISTS (
                          SELECT 1 FROM edges e

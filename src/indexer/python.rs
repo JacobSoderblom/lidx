@@ -1,13 +1,11 @@
-use crate::db::resolver::{DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile};
+use crate::db::resolver::{ImportMissPolicy, LanguageProfile};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{
-    DeferredBase, DeferredMarker, DeferredReturn, EdgeInput, ExtractedFile, MAX_DEFERRED_DEPTH,
-    ReceiverType, SymbolInput,
-};
+use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::py_layout::PyLayout;
+use crate::indexer::python_lower::{Scope, lower_call_site};
 use crate::indexer::string_consts::{LocalBinding, StringConsts, scan_enclosing_function};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
@@ -33,12 +31,16 @@ use tree_sitter::{Node, Parser};
 /// resolver-only heuristic, not data this extractor supplies.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     import_miss: ImportMissPolicy::PythonRepoHeuristic,
-    deferred_receiver: Some(resolve_deferred),
     ..LanguageProfile::DEFAULT
 };
 
 #[derive(Clone)]
-struct Context {
+struct Context<'t> {
+    /// The names the enclosing function (or module / class body) binds,
+    /// for lowering call sites; see `python_lower::Scope`.
+    py_scope: Rc<Scope<'t>>,
+    /// Base package of this file, absolutizing relative imports.
+    py_base: Rc<Vec<String>>,
     /// Same-file string constants (see `string_consts`), used to resolve
     /// channel topics given as identifiers.
     string_consts: Rc<StringConsts>,
@@ -47,20 +49,6 @@ struct Context {
     fn_depth: usize,
     current_scope: String,
     grpc_service: Option<String>,
-    /// Types of locally-bound names (parameters + simple assignment
-    /// targets) within the *current* function body only — see
-    /// `infer_local_types`. Reset fresh on every function/method entry;
-    /// never merged across functions.
-    local_types: Rc<HashMap<String, LocalType>>,
-    /// Class-level (PEP 526) annotated attributes of the *directly*
-    /// enclosing class, read once when entering the class body — see
-    /// `collect_class_level_annotations`. Used only to resolve a single-hop
-    /// `self.attr.method()` receiver.
-    class_attr_types: Rc<HashMap<String, LocalType>>,
-    /// Return annotations of this file's top-level functions, so a local
-    /// assigned from `factory()` can take the annotated type — see
-    /// `collect_factory_returns`. Same-file callees only.
-    factories: Rc<FactoryReturns>,
     /// This file's import bindings — bound name -> fully-qualified
     /// target(s) it stands for, from `from x import Y [as Z]` / `import
     /// x.y as z` — collected once in `extract()` before the main walk (see
@@ -75,37 +63,15 @@ struct Context {
     declared: Rc<RefCell<HashMap<String, bool>>>,
 }
 
-/// Return annotation of a top-level function, and whether it is `async def`.
-struct FactoryReturn {
-    ret: String,
-    is_async: bool,
-}
-
-/// Top-level function name -> its return annotation.
-type FactoryReturns = HashMap<String, FactoryReturn>;
-
-/// Locally-inferred type of a name bound within a single function body.
-/// Deliberately coarse: everything that isn't a confident, non-builtin type
-/// collapses to `Other` (see `infer_local_types` / `classify_annotation`
-/// for exactly which shapes qualify).
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum LocalType {
-    /// Inferred (or annotated) to be this non-builtin type name.
-    Known(String),
-    /// Builtin type, reassigned, unannotated parameter, comprehension
-    /// result, function return value, loop/with/except target, or anything
-    /// else not explicitly recognized. A name landing here (rather than
-    /// simply absent from the map) still gates resolution: it means "we
-    /// looked, and it's not a usable type" as opposed to "we never looked".
-    Other,
-}
-
 pub struct PythonExtractor {
     parser: Parser,
     /// Package-root detection (issue #202), set via `with_repo_root`. `None`
     /// (the `new()` default for standalone extractors) keeps the path-only
     /// naming: every path component counts.
     layout: Option<PyLayout>,
+    /// Repo-relative path of the file the next `extract` call reads (set by
+    /// `set_current_path`); tells a package `__init__.py` from a module.
+    current_path: Option<String>,
 }
 
 impl PythonExtractor {
@@ -116,6 +82,7 @@ impl PythonExtractor {
         Ok(Self {
             parser,
             layout: None,
+            current_path: None,
         })
     }
 
@@ -133,6 +100,10 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             Some(layout) => module_name_from_rel_path(&layout.strip_root(rel_path)),
             None => module_name_from_rel_path(rel_path),
         }
+    }
+
+    fn set_current_path(&mut self, rel_path: &str) {
+        self.current_path = Some(rel_path.to_string());
     }
 
     fn begin_run(&mut self) {
@@ -165,8 +136,13 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             ".",
             module_docstring,
         ));
-        let factories = Rc::new(collect_factory_returns(root, source));
+        let py_base = Rc::new(base_package_parts(
+            self.current_path.as_deref().unwrap_or(""),
+            module_name,
+        ));
         let ctx = Context {
+            py_scope: Rc::new(Scope::for_module(root, source, &py_base)),
+            py_base,
             string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
                 crate::indexer::string_consts::ConstLang::Python,
                 root,
@@ -177,14 +153,17 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             fn_depth: 0,
             current_scope: module_name.to_string(),
             grpc_service: None,
-            local_types: Rc::new(infer_module_level_types(root, source, &factories)),
-            factories,
-            class_attr_types: Rc::new(HashMap::new()),
             imports: Rc::new(collect_import_bindings(root, source)),
             declared: Rc::new(RefCell::new(HashMap::new())),
         };
         walk_node(root, &ctx, source, &mut output);
         emit_module_export_edges(root, module_name, source, &mut output);
+        output.py_decls = Some(crate::indexer::python_types::build_file_decls(
+            root,
+            source,
+            module_name,
+            self.current_path.as_deref(),
+        ));
         Ok(output)
     }
 
@@ -394,7 +373,7 @@ fn extract_docstring_fallback(source: &str) -> Option<String> {
 /// exists recovers the decorator(s) in the indexed span. The end position
 /// is unaffected either way -- a `decorated_definition`'s last child is
 /// always the definition node, so their end positions are identical.
-fn definition_span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
+pub(crate) fn definition_span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
     let span_node = node
         .parent()
         .filter(|p| p.kind() == "decorated_definition")
@@ -402,7 +381,7 @@ fn definition_span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
     span(span_node)
 }
 
-fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn walk_node<'t>(node: Node<'t>, ctx: &Context<'t>, source: &str, output: &mut ExtractedFile) {
     if node.kind() == "decorated_definition" {
         handle_decorated_definition(node, ctx, source, output);
         return;
@@ -418,6 +397,21 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     match node.kind() {
         "class_definition" => {
             if ctx.fn_depth > 0 {
+                // Not indexed, but its bases and body are still walked
+                // (attributed to the enclosing symbol) so no call is lost.
+                if let Some(superclasses) = node.child_by_field_name("superclasses") {
+                    walk_node(superclasses, ctx, source, output);
+                }
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut next_ctx = ctx.clone();
+                    next_ctx.py_scope = Rc::new(Scope::for_class_body(
+                        body,
+                        source,
+                        None,
+                        Some(&ctx.py_scope),
+                    ));
+                    walk_block(body, &next_ctx, source, output);
+                }
                 return;
             }
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -456,6 +450,9 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 let mut grpc_service = None;
                 let mut is_settings_class = false;
                 if let Some(superclasses) = node.child_by_field_name("superclasses") {
+                    // Calls in the base list (`metaclass=Meta()`) run in the
+                    // enclosing scope.
+                    walk_node(superclasses, ctx, source, output);
                     let mut cursor = superclasses.walk();
                     for child in superclasses.named_children(&mut cursor) {
                         let base = node_text(child, source);
@@ -482,8 +479,8 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 next_ctx.current_scope = qualname.clone();
                 next_ctx.grpc_service = grpc_service;
                 if let Some(body) = node.child_by_field_name("body") {
-                    next_ctx.class_attr_types =
-                        Rc::new(collect_class_level_annotations(body, source));
+                    next_ctx.py_scope =
+                        Rc::new(Scope::for_class_body(body, source, Some(&qualname), None));
                     if is_settings_class {
                         emit_settings_field_config_reads(body, &qualname, source, output);
                     }
@@ -493,11 +490,17 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             return;
         }
         "function_definition" | "async_function_definition" => {
+            walk_signature_calls(node, ctx, source, output);
             if ctx.fn_depth > 0 {
                 // Not indexed, but its body is still walked (attributed to
                 // the enclosing symbol) so deeper decorated defs are seen.
                 if let Some(body) = node.child_by_field_name("body") {
-                    walk_block(body, ctx, source, output);
+                    let mut next_ctx = ctx.clone();
+                    next_ctx.py_scope = Rc::new(
+                        Scope::for_function(node, source, None, false, false, &ctx.py_base)
+                            .nested_in(&ctx.py_scope),
+                    );
+                    walk_block(body, &next_ctx, source, output);
                 }
                 return;
             }
@@ -548,7 +551,17 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 let mut next_ctx = ctx.clone();
                 next_ctx.fn_depth += 1;
                 next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
-                next_ctx.local_types = Rc::new(infer_local_types(node, source, &ctx.factories));
+                let class_qual = (!ctx.class_stack.is_empty())
+                    .then(|| container_qualname(&ctx.module, &ctx.class_stack));
+                let (has_self, is_cls) = self_mode(node, source, &name);
+                next_ctx.py_scope = Rc::new(Scope::for_function(
+                    node,
+                    source,
+                    class_qual.as_deref(),
+                    has_self,
+                    is_cls,
+                    &ctx.py_base,
+                ));
                 if let Some(body) = node.child_by_field_name("body") {
                     walk_block(body, &next_ctx, source, output);
                 }
@@ -633,7 +646,7 @@ fn emit_assignment_symbols(
     source: &str,
     output: &mut ExtractedFile,
 ) {
-    let mut names: Vec<(String, LocalType)> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
     let mut current = Some(assignment);
     while let Some(node) = current {
         if node.kind() != "assignment" {
@@ -649,7 +662,7 @@ fn emit_assignment_symbols(
     }
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = span(stmt);
     let parent = container_qualname(&ctx.module, &ctx.class_stack);
-    for (name, _) in names {
+    for name in names {
         if ctx.class_stack.is_empty() && ctx.imports.contains_key(&name) {
             continue;
         }
@@ -692,14 +705,14 @@ fn is_const_name(name: &str) -> bool {
     name.chars().any(|c| c.is_alphabetic()) && !name.chars().any(|c| c.is_lowercase())
 }
 
-fn walk_block(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn walk_block<'t>(node: Node<'t>, ctx: &Context<'t>, source: &str, output: &mut ExtractedFile) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         walk_node(child, ctx, source, output);
     }
 }
 
-fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn handle_call<'t>(node: Node<'t>, ctx: &Context<'t>, source: &str, output: &mut ExtractedFile) {
     for edge in http_route_edges(node, ctx, source) {
         output.edges.push(edge);
     }
@@ -715,6 +728,15 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = config_read_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
+    emit_call_edge(node, ctx, source, output);
+}
+
+/// The `CALLS` edge of one `call` node, carrying its lowered call site.
+/// Every call node reaches here exactly once (see
+/// `tests/python_call_site_coverage.rs`).
+fn emit_call_edge<'t>(node: Node<'t>, ctx: &Context<'t>, source: &str, output: &mut ExtractedFile) {
+    let scope = Scope::for_call(&ctx.py_scope, node, source);
+    let py_site = Some(Box::new(lower_call_site(node, source, &scope)));
     let Some(function_node) = node.child_by_field_name("function") else {
         return;
     };
@@ -722,718 +744,54 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return;
     }
-    if let Some((name, receiver_type)) = chained_call_receiver(function_node, source, ctx) {
-        let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
-        output.edges.push(EdgeInput {
-            kind: "CALLS".to_string(),
-            source_qualname: Some(ctx.current_scope.clone()),
-            // The callee's name is all the text there is (`make().stage`
-            // has no printable receiver); the receiver type binds it.
-            target_qualname: Some(name),
-            detail: Some(raw),
-            evidence_snippet: util::edge_evidence_snippet(
-                source, start_byte, end_byte, start_line, end_line,
-            ),
-            evidence_start_line: Some(start_line),
-            evidence_end_line: Some(end_line),
-            receiver_type,
-            ..Default::default()
-        });
-        return;
-    }
-    let receiver_type = infer_receiver_type(function_node, source, ctx);
-    // Import-aware qualification only makes sense when the receiver isn't
-    // already gated by receiver-type inference — see
-    // `import_qualified_candidates`'s doc.
-    // `raw` is collapsed here too (same as `resolve_call_target` does
-    // internally) so a multi-line chain feeds this tier the same shape the
-    // single-line form would.
-    let import_candidates = if receiver_type == ReceiverType::NotTracked {
-        import_qualified_candidates(&collapse_call_target_whitespace(&raw), ctx)
-    } else {
-        Vec::new()
-    };
+    // The text names the edge (and its unresolved row); the declared-type
+    // evaluator decides what it binds, from the lowered site alone.
     let target = resolve_call_target(&raw, ctx);
-    let detail = if target.is_some() { None } else { Some(raw) };
+    let detail = if target.is_some() {
+        None
+    } else {
+        Some(collapse_call_target_whitespace(&raw))
+    };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+    // What the call's root name stands for when imported: only consulted when
+    // the evaluator proves the callee is outside the repo, to name its
+    // external stub.
+    let import_candidates =
+        import_qualified_candidates(&collapse_call_target_whitespace(&raw), ctx);
     output.edges.push(EdgeInput {
         kind: "CALLS".to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
         target_qualname: target,
+        import_candidates,
         detail,
         evidence_snippet: snippet,
         evidence_start_line: Some(start_line),
         evidence_end_line: Some(end_line),
-        receiver_type,
-        import_candidates,
         // A bare identifier callee (`foo()`) vs. an attribute access
         // (`obj.foo()`, `self.foo()`, ...) — see `EdgeInput::bare_call`'s
         // doc.
         bare_call: function_node.kind() == "identifier",
+        py_site,
         ..Default::default()
     });
 }
 
-/// Infer the receiver type of a method call (`function_node` is the call's
-/// `function` field — the callee expression, e.g. `store.append` in
-/// `store.append(x)`). Only gates resolution; never used to change
-/// `target_qualname` itself (see `resolve_call_target`, which stays
-/// text-based and keeps the receiver's literal text for evidence).
-///
-/// Rules, in order:
-/// - Bare `helper()` where `helper` is bound in the current scope
-///   (`local_types`: a parameter, an assignment, or a nested `def`) →
-///   `Unresolved` (the call targets that local, not an indexed symbol).
-/// - Not an attribute access at all (`helper()`) → `NotTracked` (bare call,
-///   nothing to gate).
-/// - `X.method()` where `X` is a bare identifier:
-///   - `X` is a name this function bound (parameter or local assignment) →
-///     `Known(ty)` if we pinned a non-builtin type, else `Unresolved`.
-///   - `X` is not a name this function bound (presumably a class/module
-///     reference, e.g. `ClassName.static_method()`) → `NotTracked`, so the
-///     pre-existing pipeline still runs unchanged.
-/// - `self.attr.method()` / `cls.attr.method()` (exactly one hop off
-///   `self`/`cls`) → resolved via a class-level annotation on `attr`, if
-///   any; otherwise `Unresolved`.
-/// - Anything else with two or more hops (`self.a.b.method()`,
-///   `store.a.method()`, `ClassName.attr.method()`), or a chain rooted in
-///   something other than a bare identifier (a call result, a subscript,
-///   ...) → always `Unresolved`. The true receiver here is the *last* hop
-///   (`a.b`, `attr`, `ClassName.attr`), not the root identifier, and we
-///   have no attribute-type inference beyond the single-hop self/cls case
-///   above — so even a capitalized, class-looking root (`ClassName.attr`)
-///   does not get the bare-identifier "presumably a class/module
-///   reference" pass; only a *direct* `ClassName.static_method()` (hops ==
-///   0, see above) gets that.
-fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
-    if function_node.kind() == "identifier"
-        && ctx
-            .local_types
-            .contains_key(&node_text(function_node, source))
-    {
-        // Bare `name()` where `name` is bound in this scope: Python calls
-        // that local, which is never an indexed symbol. `Unresolved` stops
-        // it binding by name-uniqueness to an unrelated same-named symbol.
-        return ReceiverType::Unresolved;
-    }
-    if function_node.kind() != "attribute" {
-        return ReceiverType::NotTracked;
-    }
-    let Some(object) = function_node.child_by_field_name("object") else {
-        return ReceiverType::NotTracked;
-    };
-    let (root, hops) = attribute_chain_root(object);
-    if root.kind() != "identifier" {
-        // Chain rooted in a call result, subscript, etc. — not inferable.
-        return ReceiverType::Unresolved;
-    }
-    let root_name = node_text(root, source);
-    let is_self = root_name == "self" || root_name == "cls";
-
-    if hops == 0 {
-        if is_self {
-            // `self.method()` / `cls.method()` — already resolved exactly
-            // by `resolve_call_target`'s container-qualname path; nothing
-            // extra to gate.
-            return ReceiverType::NotTracked;
-        }
-        return match ctx.local_types.get(&root_name) {
-            Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
-            Some(LocalType::Other) => ReceiverType::Unresolved,
-            None => ReceiverType::NotTracked,
-        };
-    }
-
-    if hops == 1 && is_self {
-        // ponytail: single-hop `self.attr.method()` only, resolved from a
-        // class-level annotation on `attr`. Deeper chains, or attributes of
-        // non-self objects, would need real attribute-type inference
-        // (tracking `self.x: Type = ...` assignments across methods) —
-        // that's cross-function analysis, out of scope here.
-        let attr_name = object
-            .child_by_field_name("attribute")
-            .map(|n| node_text(n, source));
-        return match attr_name.and_then(|name| ctx.class_attr_types.get(&name).cloned()) {
-            Some(LocalType::Known(ty)) => ReceiverType::Known(ty),
-            _ => ReceiverType::Unresolved,
-        };
-    }
-
-    // Two or more hops off any root, or a single hop off something other
-    // than self/cls: the receiver is the last hop (`a.b`, `ClassName.attr`),
-    // which we never have type information for. Unlike the hops == 0 case,
-    // there's no "presumably a class/module reference" carve-out here --
-    // `ClassName.attr.method()` binding by bare name is exactly the
-    // chained-attribute leak this gate exists to close (an untyped
-    // class-level list/dict attribute colliding with an unrelated
-    // same-named method elsewhere in the index).
-    ReceiverType::Unresolved
-}
-
-/// What is known of the value a call expression returns, while building a
-/// chained call's receiver (`make().stage(1).storage()`).
-enum Chain {
-    /// The value's type is known now.
-    Known(String),
-    /// The value is the return of a call whose declaration lives elsewhere.
-    Deferred(DeferredReturn),
-    /// Nothing usable (builtin, local of unknown type, subscript, ...).
-    Unknown,
-}
-
-impl Chain {
-    /// The receiver type of a call made on this value.
-    fn receiver(self, name_only: bool) -> ReceiverType {
-        match self {
-            Chain::Known(ty) => ReceiverType::Known(ty),
-            Chain::Deferred(call) => ReceiverType::Deferred(DeferredReturn { name_only, ..call }),
-            Chain::Unknown => ReceiverType::Unresolved,
-        }
-    }
-
-    /// The value of calling method `name` on this value.
-    fn call_method(self, name: &str) -> Chain {
-        match self {
-            Chain::Known(ty) => Chain::Deferred(DeferredReturn::on_type(&ty, name, false, false)),
-            Chain::Deferred(inner) if inner.depth() < MAX_DEFERRED_DEPTH => {
-                Chain::Deferred(DeferredReturn::on_call(inner, name, false))
-            }
-            _ => Chain::Unknown,
-        }
-    }
-}
-
-/// `(method name, receiver type)` of a call whose callee is an attribute of
-/// another call's result (`make().stage(1)`, whose receiver `make()` has no
-/// printable name); `None` for any other callee shape.
-fn chained_call_receiver(
-    function_node: Node<'_>,
+/// Emit the `CALLS` edge of every call node under `node` (and `node`
+/// itself), nothing else: decorators evaluate in the enclosing scope but
+/// their route / channel edges come from `handle_decorated_definition`.
+fn walk_call_edges<'t>(
+    node: Node<'t>,
+    ctx: &Context<'t>,
     source: &str,
-    ctx: &Context,
-) -> Option<(String, ReceiverType)> {
-    if function_node.kind() != "attribute" {
-        return None;
-    }
-    let object = unwrap_parens(function_node.child_by_field_name("object")?);
-    let name = node_text(function_node.child_by_field_name("attribute")?, source);
-    if object.kind() == "call" {
-        return Some((name, call_value(object, source, ctx).receiver(true)));
-    }
-    // Any other receiver the callee's text can't spell (`items[0].stage`,
-    // `(a or b).stage`) is recorded as an unresolved call by name.
-    let text = collapse_call_target_whitespace(&node_text(function_node, source));
-    (!is_simple_call_target(&text)).then_some((name, ReceiverType::Unresolved))
-}
-
-fn unwrap_parens(mut node: Node<'_>) -> Node<'_> {
-    while node.kind() == "parenthesized_expression" {
-        match node.named_child(0) {
-            Some(inner) => node = inner,
-            None => break,
-        }
-    }
-    node
-}
-
-/// The value the call expression `call` returns.
-fn call_value(call: Node<'_>, source: &str, ctx: &Context) -> Chain {
-    let Some(func) = call.child_by_field_name("function") else {
-        return Chain::Unknown;
-    };
-    match func.kind() {
-        "identifier" => {
-            let name = node_text(func, source);
-            if ctx.local_types.contains_key(&name) {
-                return Chain::Unknown;
-            }
-            if let Some(f) = ctx.factories.get(&name) {
-                return match factory_return_type(&f.ret, f.is_async, false) {
-                    LocalType::Known(ty) => Chain::Known(ty),
-                    LocalType::Other => Chain::Unknown,
-                };
-            }
-            let mut candidates = vec![format!("{}.{name}", ctx.module)];
-            candidates.extend(ctx.imports.get(&name).cloned().unwrap_or_default());
-            Chain::Deferred(DeferredReturn::on_function(candidates, &name))
-        }
-        "attribute" => {
-            let (Some(object), Some(attr)) = (
-                func.child_by_field_name("object"),
-                func.child_by_field_name("attribute"),
-            ) else {
-                return Chain::Unknown;
-            };
-            let attr = node_text(attr, source);
-            let object = unwrap_parens(object);
-            if object.kind() == "call" {
-                return call_value(object, source, ctx).call_method(&attr);
-            }
-            let (root, hops) = attribute_chain_root(object);
-            if root.kind() != "identifier" {
-                return Chain::Unknown;
-            }
-            let root_name = node_text(root, source);
-            if root_name == "self" || root_name == "cls" {
-                return match (hops, ctx.class_stack.last()) {
-                    (0, Some(class)) => Chain::Known(class.clone()).call_method(&attr),
-                    _ => Chain::Unknown,
-                };
-            }
-            if hops == 0 {
-                match ctx.local_types.get(&root_name) {
-                    Some(LocalType::Known(ty)) => {
-                        return Chain::Known(ty.clone()).call_method(&attr);
-                    }
-                    Some(LocalType::Other) => return Chain::Unknown,
-                    None => {}
-                }
-            }
-            // A class or module reference (`Builder.create()`,
-            // `pkg.make()`): the callee's dotted name, local or imported.
-            let text = node_text(object, source);
-            let rest = &text[root_name.len()..];
-            let mut candidates = vec![format!("{}.{text}.{attr}", ctx.module)];
-            for target in ctx.imports.get(&root_name).into_iter().flatten() {
-                candidates.push(format!("{target}{rest}.{attr}"));
-            }
-            Chain::Deferred(DeferredReturn::on_function(candidates, &attr))
-        }
-        _ => Chain::Unknown,
-    }
-}
-
-/// `LanguageProfile::deferred_receiver` for Python: the class a chained
-/// call's receiver is, read from return annotations (or, for a class, the
-/// class itself). `""` when it cannot be told: never a guess.
-fn resolve_deferred(
-    marker: &DeferredMarker,
-    index: &dyn DeclarationIndex,
-) -> Result<Option<Option<String>>> {
-    match marker {
-        DeferredMarker::Return(call) => Ok(Some(Some(
-            deferred_class(call, index, 0)?.unwrap_or_default(),
-        ))),
-        _ => Ok(None),
-    }
-}
-
-fn deferred_class(
-    call: &DeferredReturn,
-    index: &dyn DeclarationIndex,
-    depth: usize,
-) -> Result<Option<String>> {
-    let returns = match &call.base {
-        DeferredBase::Function(candidates) => function_returns(candidates, index)?,
-        DeferredBase::Type(ty) => member_returns(ty, &call.method, index)?,
-        DeferredBase::Call(_) if depth >= MAX_DEFERRED_DEPTH => return Ok(None),
-        DeferredBase::Call(inner) => match deferred_class(inner, index, depth + 1)? {
-            Some(ty) => member_returns(&ty, &call.method, index)?,
-            None => return Ok(None),
-        },
-    };
-    let mut agreed: Option<String> = None;
-    for ret in returns {
-        let Some(ret) = ret else { return Ok(None) };
-        match &agreed {
-            Some(prev) if *prev != ret => return Ok(None),
-            _ => agreed = Some(ret),
-        }
-    }
-    match agreed {
-        Some(ty) if index.is_repo_type(&ty)? => Ok(Some(ty)),
-        _ => Ok(None),
-    }
-}
-
-/// The annotated return class of each declaration a call of one of
-/// `candidates` may reach (`None`: unannotated); a candidate that is a class
-/// (`Cls()`) constructs that class.
-fn function_returns(
-    candidates: &[String],
-    index: &dyn DeclarationIndex,
-) -> Result<Vec<Option<String>>> {
-    let mut returns = Vec::new();
-    for qualname in candidates {
-        let callables = index.declarations(DeclarationQuery::Callable(qualname))?;
-        for decl in &callables {
-            returns.push(signature_return_class(decl.signature.as_deref()));
-        }
-        if callables.is_empty() {
-            let name = qualname.rsplit('.').next().unwrap_or(qualname);
-            let is_class = index
-                .declarations(DeclarationQuery::Type(name))?
-                .iter()
-                .any(|d| d.qualname == *qualname);
-            if is_class {
-                returns.push(Some(name.to_string()));
-            }
-        }
-    }
-    Ok(returns)
-}
-
-/// The annotated return class of each `ty.method` (own, else inherited).
-fn member_returns(
-    ty: &str,
-    method: &str,
-    index: &dyn DeclarationIndex,
-) -> Result<Vec<Option<String>>> {
-    Ok(index
-        .inherited_members(ty, method)?
-        .iter()
-        .map(|decl| signature_return_class(decl.signature.as_deref()))
-        .collect())
-}
-
-/// The class a `(params) -> Ret` signature is annotated to return.
-fn signature_return_class(signature: Option<&str>) -> Option<String> {
-    let (_, ret) = signature?.rsplit_once(" -> ")?;
-    match factory_return_type(ret, false, false) {
-        LocalType::Known(ty) => Some(ty),
-        LocalType::Other => None,
-    }
-}
-
-/// Walk a (possibly nested) `attribute` chain down to its root node,
-/// returning the root plus how many `.segment` hops separate it from
-/// `node` (0 = `node` itself is the root — not an attribute chain, or a
-/// one-token base).
-fn attribute_chain_root(node: Node<'_>) -> (Node<'_>, usize) {
-    let mut current = node;
-    let mut hops = 0;
-    while current.kind() == "attribute" {
-        match current.child_by_field_name("object") {
-            Some(obj) => {
-                current = obj;
-                hops += 1;
-            }
-            None => break,
-        }
-    }
-    (current, hops)
-}
-
-const BUILTIN_ANNOTATIONS: &[&str] = &[
-    "str",
-    "int",
-    "float",
-    "bool",
-    "bytes",
-    "bytearray",
-    "complex",
-    "list",
-    "dict",
-    "set",
-    "tuple",
-    "frozenset",
-    "None",
-    "NoneType",
-    "Any",
-    "object",
-    "type",
-    "List",
-    "Dict",
-    "Set",
-    "Tuple",
-    "FrozenSet",
-    "Optional",
-    "Union",
-    "Sequence",
-    "Iterable",
-    "Iterator",
-    "Mapping",
-    "MutableMapping",
-    "Callable",
-    "ClassVar",
-    "Type",
-];
-
-/// Classify a type-annotation expression's text into a `LocalType`.
-///
-/// ponytail: generic/subscripted annotations (`List[Event]`,
-/// `Optional[Foo]`, `Dict[str, int]`, ...) are never unwrapped to their
-/// inner type — `Optional[Foo]` and `Dict[str, int]` collapse to `Other`
-/// just like `list` would, since picking "the" real type out of an
-/// arbitrary generic (especially `Union`) isn't a bounded rule. Upgrade
-/// path: special-case `Optional[X]`/`Union[X, None]` to unwrap to `X`.
-fn classify_annotation(ann: &str) -> LocalType {
-    let ann = ann.trim();
-    if ann.contains('[') {
-        return LocalType::Other;
-    }
-    let bare = ann.rsplit('.').next().unwrap_or(ann).trim();
-    if bare.is_empty() || BUILTIN_ANNOTATIONS.contains(&bare) {
-        return LocalType::Other;
-    }
-    LocalType::Known(bare.to_string())
-}
-
-/// Extract a type annotation's text from its wrapping `type` node, handling
-/// string-literal forward references (`a: "InMemoryEventStore"`) by
-/// unquoting them.
-fn annotation_text(type_node: Node<'_>, source: &str) -> String {
-    if let Some(inner) = type_node.named_child(0)
-        && matches!(inner.kind(), "string" | "string_literal")
-    {
-        let raw = node_text(inner, source);
-        return unquote_string_literal(&raw).unwrap_or(raw);
-    }
-    node_text(type_node, source)
-}
-
-/// Infer types for names bound within a single function body: parameters
-/// and simple (`identifier = ...`) assignment targets. Scope is strictly
-/// this function — never a caller, a callee, or another method of the same
-/// class (see module-level doc on `Context::local_types`).
-///
-/// A name reassigned anywhere in the body (including a parameter later
-/// reassigned) collapses to `LocalType::Other`, matching the "reassignment
-/// → unknown" rule literally, not just "unknown when the types disagree".
-fn infer_local_types(
-    function_node: Node<'_>,
-    source: &str,
-    factories: &FactoryReturns,
-) -> HashMap<String, LocalType> {
-    let bindings = function_bindings(function_node, source, factories);
-    match without_shadowed(factories, &bindings) {
-        Some(unshadowed) => {
-            bindings_to_local_types(function_bindings(function_node, source, &unshadowed))
-        }
-        None => bindings_to_local_types(bindings),
-    }
-}
-
-/// `factories` minus any name this scope also binds locally (a parameter,
-/// assignment or nested def shadows the module-level function, so its
-/// annotation says nothing about the local). `None` when nothing is shadowed.
-fn without_shadowed(
-    factories: &FactoryReturns,
-    bindings: &[(String, LocalType)],
-) -> Option<FactoryReturns> {
-    if !bindings.iter().any(|(n, _)| factories.contains_key(n)) {
-        return None;
-    }
-    Some(
-        factories
-            .iter()
-            .filter(|(n, _)| !bindings.iter().any(|(b, _)| b == *n))
-            .map(|(n, f)| {
-                (
-                    n.clone(),
-                    FactoryReturn {
-                        ret: f.ret.clone(),
-                        is_async: f.is_async,
-                    },
-                )
-            })
-            .collect(),
-    )
-}
-
-fn function_bindings(
-    function_node: Node<'_>,
-    source: &str,
-    factories: &FactoryReturns,
-) -> Vec<(String, LocalType)> {
-    let mut bindings: Vec<(String, LocalType)> = Vec::new();
-
-    if let Some(params) = function_node.child_by_field_name("parameters") {
-        let mut cursor = params.walk();
-        for param in params.named_children(&mut cursor) {
-            match param.kind() {
-                "identifier" => {
-                    let name = node_text(param, source);
-                    if name != "self" && name != "cls" {
-                        bindings.push((name, LocalType::Other));
-                    }
-                }
-                "typed_parameter" => {
-                    if let Some(name_node) = param.named_child(0) {
-                        let name = node_text(name_node, source);
-                        let ty = param
-                            .child_by_field_name("type")
-                            .map(|t| classify_annotation(&annotation_text(t, source)))
-                            .unwrap_or(LocalType::Other);
-                        bindings.push((name, ty));
-                    }
-                }
-                "default_parameter" => {
-                    if let Some(name_node) = param.child_by_field_name("name") {
-                        bindings.push((node_text(name_node, source), LocalType::Other));
-                    }
-                }
-                "typed_default_parameter" => {
-                    if let Some(name_node) = param.child_by_field_name("name") {
-                        let name = node_text(name_node, source);
-                        let ty = param
-                            .child_by_field_name("type")
-                            .map(|t| classify_annotation(&annotation_text(t, source)))
-                            .unwrap_or(LocalType::Other);
-                        bindings.push((name, ty));
-                    }
-                }
-                "list_splat_pattern" | "dictionary_splat_pattern" => {
-                    if let Some(name_node) = param.named_child(0) {
-                        bindings.push((node_text(name_node, source), LocalType::Other));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    if let Some(body) = function_node.child_by_field_name("body") {
-        collect_statement_bindings(body, source, factories, &mut bindings);
-        collect_nested_def_names(body, source, &mut bindings);
-    }
-
-    bindings
-}
-
-/// Names bound by `def` statements nested in a function body (without
-/// descending into those defs or into nested classes). Nested defs are
-/// never indexed (`walk_node` skips them at `fn_depth > 0`), so tracking the
-/// name as a local is what stops a bare call to one binding to an unrelated
-/// same-named symbol. Kept out of `collect_statement_bindings` because that
-/// also serves module scope, where top-level defs *are* indexed.
-fn collect_nested_def_names(node: Node<'_>, source: &str, bindings: &mut Vec<(String, LocalType)>) {
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            "function_definition" | "async_function_definition" => {
-                if let Some(name) = child.child_by_field_name("name") {
-                    bindings.push((node_text(name, source), LocalType::Other));
-                }
-            }
-            "class_definition" | "lambda" => {}
-            _ => collect_nested_def_names(child, source, bindings),
-        }
-    }
-}
-
-/// Infer types for names bound directly at module top level (not inside any
-/// function/class) — e.g. `__path__ = pkgutil.extend_path(...)` followed by
-/// `__path__.append(...)`, both at module scope. This is its own single
-/// scope, exactly like a function body is; it does not extend into nested
-/// function or class bodies (each of those gets its own fresh scope — see
-/// `infer_local_types`), and a name bound only at module level is not
-/// looked up again once a function scope replaces `local_types` on entry.
-fn infer_module_level_types(
-    root: Node<'_>,
-    source: &str,
-    factories: &FactoryReturns,
-) -> HashMap<String, LocalType> {
-    let mut bindings: Vec<(String, LocalType)> = Vec::new();
-    collect_statement_bindings(root, source, factories, &mut bindings);
-    if let Some(unshadowed) = without_shadowed(factories, &bindings) {
-        bindings.clear();
-        collect_statement_bindings(root, source, &unshadowed, &mut bindings);
-    }
-    bindings_to_local_types(bindings)
-}
-
-/// Fold a scope's raw (name, inferred-type) bindings into a lookup map, with
-/// a name bound more than once anywhere in the scope collapsing to `Other`
-/// (see `infer_local_types`'s doc comment on "reassignment → unknown").
-fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String, LocalType> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for (name, _) in &bindings {
-        *counts.entry(name.clone()).or_default() += 1;
-    }
-
-    let mut result = HashMap::new();
-    for (name, ty) in bindings {
-        let reassigned = counts.get(&name).copied().unwrap_or(0) > 1;
-        result.insert(name, if reassigned { LocalType::Other } else { ty });
-    }
-    result
-}
-
-/// Recursively collect local-variable bindings from statements within a
-/// single function body, stopping at nested function/class boundaries
-/// (their own locals are a different scope entirely — see
-/// `Context::local_types`'s doc comment). A `lambda` is *not* a boundary
-/// here: unlike `def`, a lambda never gets its own `Context`/`local_types`
-/// in `walk_node` (there's no case for it), so a call inside a lambda body
-/// is walked with the *enclosing* function's `local_types`. If the
-/// lambda's own parameters (e.g. `acc` in `lambda n, acc=funcs:
-/// acc.append(n)`) weren't folded into that same map, a reference to one
-/// inside the lambda body would look like an untracked name and fall
-/// through to the "presumably a class/module reference" bare-name
-/// fallback — exactly the leak this closes. Lambda parameters can't carry
-/// annotations, so they're always bound `Other`.
-fn collect_statement_bindings(
-    node: Node<'_>,
-    source: &str,
-    factories: &FactoryReturns,
-    bindings: &mut Vec<(String, LocalType)>,
+    output: &mut ExtractedFile,
 ) {
-    match node.kind() {
-        "function_definition" | "async_function_definition" | "class_definition" => {
-            return;
-        }
-        "lambda" => {
-            if let Some(params) = node.child_by_field_name("parameters") {
-                collect_lambda_parameter_bindings(params, source, bindings);
-            }
-            // No `return`: still recurse into children below (the default
-            // expression of a parameter, and the lambda's body, may
-            // contain a nested lambda whose own parameters also need
-            // folding in).
-        }
-        "assignment" => {
-            if let Some(left) = node.child_by_field_name("left") {
-                if left.kind() == "identifier" {
-                    let name = node_text(left, source);
-                    let ty = if let Some(type_node) = node.child_by_field_name("type") {
-                        classify_annotation(&annotation_text(type_node, source))
-                    } else if let Some(right) = node.child_by_field_name("right") {
-                        classify_assignment_value(right, source, factories)
-                    } else {
-                        LocalType::Other
-                    };
-                    bindings.push((name, ty));
-                } else {
-                    // Tuple/list unpacking (`a, b = f()`, `(a, b) = f()`,
-                    // `[a, b] = f()`, `a, *rest = f()`) — every name
-                    // introduced this way is `Other`: we don't attempt to
-                    // attribute individual element types from the RHS.
-                    // Still must be *tracked* (not left absent from the
-                    // map), or a call through one of these names would
-                    // wrongly fall through to the legacy pipeline as if it
-                    // were never a local at all (see issue #45 follow-up:
-                    // `base_var, body = _base_capture(params)` then
-                    // `body.append(...)` previously slipped past this gate
-                    // for exactly this reason).
-                    collect_pattern_identifiers(left, source, bindings);
-                }
-            }
-        }
-        "for_statement" => {
-            if let Some(left) = node.child_by_field_name("left") {
-                if left.kind() == "identifier" {
-                    bindings.push((node_text(left, source), LocalType::Other));
-                } else {
-                    collect_pattern_identifiers(left, source, bindings);
-                }
-            }
-        }
-        "with_item" | "except_clause" => {
-            if let Some(value) = node.child_by_field_name("value")
-                && value.kind() == "as_pattern"
-                && let Some(alias) = value.child_by_field_name("alias")
-                && let Some(target) = alias.named_child(0)
-                && target.kind() == "identifier"
-            {
-                bindings.push((node_text(target, source), LocalType::Other));
-            }
-        }
-        _ => {}
+    if node.kind() == "call" {
+        emit_call_edge(node, ctx, source, output);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_statement_bindings(child, source, factories, bindings);
+        walk_call_edges(child, ctx, source, output);
     }
 }
 
@@ -1441,262 +799,18 @@ fn collect_statement_bindings(
 /// (`pattern_list` for `a, b = ...`, `tuple_pattern` for `(a, b) = ...`,
 /// `list_pattern` for `[a, b] = ...`, and `list_splat_pattern` for the
 /// `*rest` part of any of those), recursing into nested patterns
-/// (`a, (b, c) = ...`). Each is pushed as `LocalType::Other` — see the
-/// `assignment` case in `collect_statement_bindings` for why they must be
-/// tracked at all, not just given a specific type.
-fn collect_pattern_identifiers(
-    node: Node<'_>,
-    source: &str,
-    bindings: &mut Vec<(String, LocalType)>,
-) {
+/// (`a, (b, c) = ...`).
+fn collect_pattern_identifiers(node: Node<'_>, source: &str, names: &mut Vec<String>) {
     match node.kind() {
-        "identifier" => bindings.push((node_text(node, source), LocalType::Other)),
+        "identifier" => names.push(node_text(node, source)),
         "pattern_list" | "tuple_pattern" | "list_pattern" | "list_splat_pattern" => {
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
-                collect_pattern_identifiers(child, source, bindings);
+                collect_pattern_identifiers(child, source, names);
             }
         }
         _ => {}
     }
-}
-
-/// Collect a `lambda`'s own parameter names as `Other` bindings (lambda
-/// parameters can't carry type annotations, so there's no `Known` case —
-/// see `collect_statement_bindings`'s `"lambda"` arm for why these are
-/// folded into the *enclosing* scope's bindings rather than a scope of
-/// their own).
-fn collect_lambda_parameter_bindings(
-    params: Node<'_>,
-    source: &str,
-    bindings: &mut Vec<(String, LocalType)>,
-) {
-    let mut cursor = params.walk();
-    for param in params.named_children(&mut cursor) {
-        match param.kind() {
-            "identifier" => {
-                let name = node_text(param, source);
-                if name != "self" && name != "cls" {
-                    bindings.push((name, LocalType::Other));
-                }
-            }
-            "default_parameter" => {
-                if let Some(name_node) = param.child_by_field_name("name") {
-                    bindings.push((node_text(name_node, source), LocalType::Other));
-                }
-            }
-            "list_splat_pattern" | "dictionary_splat_pattern" => {
-                if let Some(name_node) = param.named_child(0) {
-                    bindings.push((node_text(name_node, source), LocalType::Other));
-                }
-            }
-            "tuple_pattern" => collect_pattern_identifiers(param, source, bindings),
-            _ => {}
-        }
-    }
-}
-
-/// Classify a simple assignment's RHS shape into a `LocalType`.
-///
-/// ponytail: the only "Known" case is a bare, capitalized callable
-/// (`store = InMemoryEventStore()`) — a constructor-call heuristic, not
-/// real type inference. A lowercase callable (`z = helper()`) is treated as
-/// unknown, since its actual return type would need cross-function
-/// analysis to determine. Everything else (attribute access, subscripts,
-/// comprehensions, binary/boolean/conditional expressions, awaits, ...)
-/// is `Other`.
-fn classify_assignment_value(
-    right: Node<'_>,
-    source: &str,
-    factories: &FactoryReturns,
-) -> LocalType {
-    match right.kind() {
-        "list"
-        | "dictionary"
-        | "set"
-        | "tuple"
-        | "string"
-        | "concatenated_string"
-        | "integer"
-        | "float"
-        | "true"
-        | "false"
-        | "none"
-        | "list_comprehension"
-        | "dictionary_comprehension"
-        | "set_comprehension"
-        | "generator_expression" => LocalType::Other,
-        "call" => classify_call_value(right, source, factories, false),
-        "await" => match right.named_child(0) {
-            Some(call) if call.kind() == "call" => {
-                classify_call_value(call, source, factories, true)
-            }
-            _ => LocalType::Other,
-        },
-        _ => LocalType::Other,
-    }
-}
-
-/// `Known` for a constructor-style call (`Foo()`) or a call to a same-file
-/// function whose return annotation names a type (see
-/// `factory_return_type`); `Other` otherwise.
-fn classify_call_value(
-    call: Node<'_>,
-    source: &str,
-    factories: &FactoryReturns,
-    awaited: bool,
-) -> LocalType {
-    let Some(func) = call.child_by_field_name("function") else {
-        return LocalType::Other;
-    };
-    if func.kind() != "identifier" {
-        return LocalType::Other;
-    }
-    let name = node_text(func, source);
-    if name.chars().next().is_some_and(|c| c.is_uppercase()) {
-        return if awaited {
-            LocalType::Other
-        } else {
-            LocalType::Known(name)
-        };
-    }
-    match factories.get(&name) {
-        Some(f) => factory_return_type(&f.ret, f.is_async, awaited),
-        None => LocalType::Other,
-    }
-}
-
-/// Type of a call to a function annotated `-> ann`. `Optional[X]` / `X | None`
-/// unwrap to `X`; `Awaitable[X]` / `Coroutine[_, _, X]` (and the implicit
-/// coroutine of an `async def`) unwrap only when the call is awaited.
-/// Containers (`list[Foo]`) and anything else subscripted stay `Other`.
-fn factory_return_type(ann: &str, is_async: bool, awaited: bool) -> LocalType {
-    if is_async && !awaited {
-        return LocalType::Other; // un-awaited async call is a coroutine
-    }
-    let mut ann = ann.trim();
-    let mut awaitable_seen = false;
-    loop {
-        ann = ann.trim().trim_matches(['"', '\'']).trim();
-        if let Some(inner) = last_type_arg(ann, &["Optional"]) {
-            ann = inner;
-        } else if let Some(inner) = last_type_arg(ann, &["Awaitable", "Coroutine"]) {
-            awaitable_seen = true;
-            ann = inner;
-        } else if ann.contains('|') {
-            let mut parts = ann.split('|').map(str::trim).filter(|p| *p != "None");
-            match (parts.next(), parts.next()) {
-                (Some(only), None) => ann = only,
-                _ => return LocalType::Other,
-            }
-        } else {
-            break;
-        }
-    }
-    if awaitable_seen && !awaited {
-        return LocalType::Other;
-    }
-    classify_annotation(ann)
-}
-
-/// For `Name[...]` (optionally dotted, e.g. `typing.Optional[X]`) where the
-/// last segment of `Name` is in `names`, the last top-level type argument.
-fn last_type_arg<'a>(ann: &'a str, names: &[&str]) -> Option<&'a str> {
-    let open = ann.find('[')?;
-    let head = ann[..open].rsplit('.').next()?.trim();
-    if !names.contains(&head) || !ann.ends_with(']') {
-        return None;
-    }
-    let inner = &ann[open + 1..ann.len() - 1];
-    let mut depth = 0;
-    let mut last = 0;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '[' => depth += 1,
-            ']' => depth -= 1,
-            ',' if depth == 0 => last = i + 1,
-            _ => {}
-        }
-    }
-    Some(inner[last..].trim())
-}
-
-/// Return annotations of module-top-level `def`s (decorated or not). A name
-/// defined more than once is dropped — which definition wins is unknowable.
-fn collect_factory_returns(root: Node<'_>, source: &str) -> FactoryReturns {
-    let mut found: FactoryReturns = HashMap::new();
-    let mut seen: Vec<String> = Vec::new();
-    let mut cursor = root.walk();
-    for stmt in root.named_children(&mut cursor) {
-        let def = if stmt.kind() == "decorated_definition" {
-            stmt.child_by_field_name("definition")
-        } else {
-            Some(stmt)
-        };
-        let Some(def) = def.filter(|d| d.kind() == "function_definition") else {
-            continue;
-        };
-        let Some(name) = def.child_by_field_name("name") else {
-            continue;
-        };
-        let name = node_text(name, source);
-        if seen.contains(&name) {
-            found.remove(&name);
-            continue;
-        }
-        seen.push(name.clone());
-        let Some(ret) = def.child_by_field_name("return_type") else {
-            continue;
-        };
-        let is_async =
-            (0..def.child_count()).any(|i| def.child(i).is_some_and(|c| c.kind() == "async"));
-        found.insert(
-            name,
-            FactoryReturn {
-                ret: annotation_text(ret, source),
-                is_async,
-            },
-        );
-    }
-    found
-}
-
-/// Class-level (PEP 526) annotated attributes declared directly in a class
-/// body (`name: Type` / `name: Type = value`) — not inside any method.
-/// Used only to resolve a single-hop `self.attr.method()` receiver; see
-/// `infer_receiver_type`.
-fn collect_class_level_annotations(
-    class_body: Node<'_>,
-    source: &str,
-) -> HashMap<String, LocalType> {
-    let mut result = HashMap::new();
-    let mut cursor = class_body.walk();
-    for stmt in class_body.named_children(&mut cursor) {
-        let assignment = if stmt.kind() == "expression_statement" {
-            stmt.named_child(0)
-        } else {
-            Some(stmt)
-        };
-        let Some(assignment) = assignment else {
-            continue;
-        };
-        if assignment.kind() != "assignment" {
-            continue;
-        }
-        let Some(left) = assignment.child_by_field_name("left") else {
-            continue;
-        };
-        if left.kind() != "identifier" {
-            continue;
-        }
-        let Some(type_node) = assignment.child_by_field_name("type") else {
-            continue;
-        };
-        let name = node_text(left, source);
-        let ty = classify_annotation(&annotation_text(type_node, source));
-        result.insert(name, ty);
-    }
-    result
 }
 
 /// Detect os.getenv("KEY"), os.environ.get("KEY") → CONFIG_READ
@@ -1841,9 +955,9 @@ fn config_read_subscript_edge(node: Node<'_>, ctx: &Context, source: &str) -> Op
     })
 }
 
-fn handle_decorated_definition(
-    node: Node<'_>,
-    ctx: &Context,
+fn handle_decorated_definition<'t>(
+    node: Node<'t>,
+    ctx: &Context<'t>,
     source: &str,
     output: &mut ExtractedFile,
 ) {
@@ -1868,8 +982,56 @@ fn handle_decorated_definition(
                 channel_edges_from_decorators(&decorators, &handler, source, &ctx.string_consts);
             output.edges.extend(edges);
         }
+        // Decorators evaluate in the enclosing scope, before the def.
+        for decorator in &decorators {
+            walk_call_edges(*decorator, ctx, source, output);
+        }
         walk_node(definition, ctx, source, output);
     }
+}
+
+/// Default values, parameter annotations and the return annotation of a
+/// `def` run in the scope the `def` sits in, not in its body.
+fn walk_signature_calls<'t>(
+    func: Node<'t>,
+    ctx: &Context<'t>,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    for field in ["parameters", "return_type"] {
+        if let Some(child) = func.child_by_field_name(field) {
+            walk_node(child, ctx, source, output);
+        }
+    }
+}
+
+/// Whether a method's first parameter is `self` / `cls`, and which.
+/// `@staticmethod` has none; `@classmethod` and the implicit class methods
+/// (`__new__`, `__init_subclass__`, `__class_getitem__`) take `cls`.
+fn self_mode(func: Node<'_>, source: &str, name: &str) -> (bool, bool) {
+    let mut is_static = false;
+    let mut is_cls = matches!(name, "__new__" | "__init_subclass__" | "__class_getitem__");
+    if let Some(parent) = func.parent().filter(|p| p.kind() == "decorated_definition") {
+        let mut cursor = parent.walk();
+        for dec in parent
+            .named_children(&mut cursor)
+            .filter(|c| c.kind() == "decorator")
+        {
+            let text = dec
+                .named_child(0)
+                .map(|e| node_text(e, source))
+                .unwrap_or_default();
+            match text.rsplit('.').next().unwrap_or("") {
+                "staticmethod" => is_static = true,
+                "classmethod" => is_cls = true,
+                _ => {}
+            }
+        }
+    }
+    if is_static && name != "__new__" {
+        return (false, false);
+    }
+    (true, is_cls)
 }
 
 fn handler_qualname(node: Node<'_>, ctx: &Context, source: &str) -> Option<String> {
@@ -2773,14 +1935,14 @@ fn unquote_string_literal(raw: &str) -> Option<String> {
     None
 }
 
-/// Compute fully-qualified candidate qualnames for a bare `Name.method()`
-/// call whose receiver isn't a tracked local (i.e. `infer_receiver_type`
-/// returned `NotTracked` for this call), using the file's import bindings
+/// Compute fully-qualified candidate qualnames for a `Name.method()` call
+/// (or a bare `name()` call), using the file's import bindings
 /// (`collect_import_bindings` / `Context::imports`). A bare `name()` call
 /// whose name was imported (`from urllib.parse import quote; quote(...)`)
-/// gets the import target itself, so the DB layer can bind it, or, for an
-/// import from outside the repo, refuse to let it fall through to a
-/// same-named repo symbol (see the guard in `db::insert_edges`).
+/// gets the import target itself. They never bind anything: the declared-type
+/// evaluator decides that. The resolver reads them only when it proves the
+/// callee is outside the repo, to name the external stub
+/// (`Resolver::resolve_python`).
 ///
 /// Unlike C#'s `using NS;` (a namespace-level import that leaves *which*
 /// type in it ambiguous until checked against the DB), Python's `from x
@@ -2853,7 +2015,7 @@ fn collect_import_bindings_rec(
 /// fully-qualified IMPORTS-edge target text (e.g. `base="pkg.mod"`,
 /// `item="Widget"` -> `"pkg.mod.Widget"`; a relative base like `"."` or
 /// `".."` concatenates directly rather than inserting an extra `.`).
-fn join_from_import_target(base: &str, item: &str) -> String {
+pub(crate) fn join_from_import_target(base: &str, item: &str) -> String {
     if base.is_empty() {
         item.to_string()
     } else if base == "." || base.ends_with('.') {
@@ -2867,7 +2029,7 @@ fn join_from_import_target(base: &str, item: &str) -> String {
 /// either a bare `dotted_name` or an `aliased_import` (`dotted_name as
 /// identifier`) — this extracts the pre-alias name node and, if present,
 /// the alias text.
-fn import_name_and_alias<'a>(
+pub(crate) fn import_name_and_alias<'a>(
     name_node: Node<'a>,
     source: &str,
 ) -> Option<(Node<'a>, Option<String>)> {
@@ -2884,120 +2046,98 @@ fn import_name_and_alias<'a>(
     }
 }
 
-/// Parse a `from x import Y [as Z], A [as B]` or `import x.y [as z], a.b`
-/// statement node into `(bound_name, fully_qualified_target)` pairs — the
-/// name this statement introduces into the file's scope, and what it
-/// stands for. Walks the tree-sitter `name` field children directly rather
-/// than splitting the statement's raw text, so parenthesized, multi-line,
-/// trailing-comma, and wildcard forms are all handled correctly by
-/// construction — the parens/newlines/trailing comma are punctuation the
-/// grammar already stripped out of the field, not text this function has
-/// to account for.
-fn parse_import_bindings(node: Node<'_>, source: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    match node.kind() {
-        "import_statement" => {
-            let mut cursor = node.walk();
-            for name_node in node.children_by_field_name("name", &mut cursor) {
-                let Some((item_node, alias)) = import_name_and_alias(name_node, source) else {
-                    continue;
-                };
-                let module = node_text(item_node, source);
-                if module.is_empty() {
-                    continue;
-                }
-                let bound = alias
-                    .filter(|a| !a.is_empty())
-                    .unwrap_or_else(|| module.split('.').next().unwrap_or(&module).to_string());
-                if bound.is_empty() {
-                    continue;
-                }
-                out.push((bound, module));
+/// The names one import statement mentions, before any consumer decides what
+/// they bind or point at. The single statement walk behind
+/// `parse_import_bindings`, `parse_imports` and `python_types::lower_import`.
+/// Walks the tree-sitter `name` field children directly rather than splitting
+/// the statement's raw text, so parenthesized, multi-line, trailing-comma and
+/// wildcard forms are handled by construction.
+pub(crate) enum RawImport {
+    /// `import a.b [as c], d`: `(dotted module, alias)` pairs.
+    Import(Vec<(String, Option<String>)>),
+    /// `from base import x [as y], z` (or `*`): `(item, alias)` pairs.
+    From {
+        base: String,
+        star: bool,
+        items: Vec<(String, Option<String>)>,
+    },
+}
+
+/// Extract the raw names of an `import_statement` / `import_from_statement`.
+/// Empty names and empty aliases are dropped; `None` for any other node or a
+/// `from` statement with no module.
+pub(crate) fn raw_import(node: Node<'_>, source: &str) -> Option<RawImport> {
+    let collect = |node: Node<'_>| {
+        let mut items = Vec::new();
+        let mut cursor = node.walk();
+        for name_node in node.children_by_field_name("name", &mut cursor) {
+            let Some((item_node, alias)) = import_name_and_alias(name_node, source) else {
+                continue;
+            };
+            let item = node_text(item_node, source);
+            if !item.is_empty() {
+                items.push((item, alias.filter(|a| !a.is_empty())));
             }
         }
+        items
+    };
+    match node.kind() {
+        "import_statement" => Some(RawImport::Import(collect(node))),
         "import_from_statement" => {
-            let Some(module_node) = node.child_by_field_name("module_name") else {
-                return out;
-            };
-            let base = node_text(module_node, source);
-            // Wildcard imports (`from x import *`) bind no discoverable
-            // names, so there's nothing to add as a candidate.
-            let mut wildcard_cursor = node.walk();
-            if node
-                .children(&mut wildcard_cursor)
-                .any(|c| c.kind() == "wildcard_import")
-            {
-                return out;
-            }
+            let base = node_text(node.child_by_field_name("module_name")?, source);
             let mut cursor = node.walk();
-            for name_node in node.children_by_field_name("name", &mut cursor) {
-                let Some((item_node, alias)) = import_name_and_alias(name_node, source) else {
-                    continue;
-                };
-                let item = node_text(item_node, source);
-                if item.is_empty() {
-                    continue;
-                }
+            let star = node
+                .children(&mut cursor)
+                .any(|c| c.kind() == "wildcard_import");
+            let items = if star { Vec::new() } else { collect(node) };
+            Some(RawImport::From { base, star, items })
+        }
+        _ => None,
+    }
+}
+
+/// Parse a `from x import Y [as Z], A [as B]` or `import x.y [as z], a.b`
+/// statement node into `(bound_name, fully_qualified_target)` pairs: the
+/// name this statement introduces into the file's scope, and what it
+/// stands for. Wildcard imports bind no discoverable names.
+pub(crate) fn parse_import_bindings(node: Node<'_>, source: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    match raw_import(node, source) {
+        Some(RawImport::Import(items)) => {
+            for (module, alias) in items {
                 let bound = alias
-                    .filter(|a| !a.is_empty())
-                    .unwrap_or_else(|| item.clone());
-                if bound.is_empty() {
-                    continue;
+                    .unwrap_or_else(|| module.split('.').next().unwrap_or(&module).to_string());
+                if !bound.is_empty() {
+                    out.push((bound, module));
                 }
+            }
+        }
+        Some(RawImport::From { base, items, .. }) => {
+            for (item, alias) in items {
+                let bound = alias.unwrap_or_else(|| item.clone());
                 out.push((bound, join_from_import_target(&base, &item)));
             }
         }
-        _ => {}
+        None => {}
     }
     out
 }
 
-/// Parse an `import_statement`'s or `import_from_statement`'s node into
-/// the raw IMPORTS-edge target texts (alias discarded — this only needs
-/// what the import statement stands for, not the name bound into scope).
-/// Same tree-walking approach as `parse_import_bindings`; see its doc.
+/// Parse an import statement into the raw IMPORTS-edge target texts (alias
+/// discarded; a wildcard yields `base.*`). Shares `raw_import` with
+/// `parse_import_bindings`.
 fn parse_imports(node: Node<'_>, source: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    match node.kind() {
-        "import_statement" => {
-            let mut cursor = node.walk();
-            for name_node in node.children_by_field_name("name", &mut cursor) {
-                let Some((item_node, _alias)) = import_name_and_alias(name_node, source) else {
-                    continue;
-                };
-                let module = node_text(item_node, source);
-                if !module.is_empty() {
-                    out.push(module);
-                }
-            }
-        }
-        "import_from_statement" => {
-            let Some(module_node) = node.child_by_field_name("module_name") else {
-                return out;
-            };
-            let base = node_text(module_node, source);
-            let mut wildcard_cursor = node.walk();
-            if node
-                .children(&mut wildcard_cursor)
-                .any(|c| c.kind() == "wildcard_import")
-            {
-                out.push(format!("{base}.*"));
-                return out;
-            }
-            let mut cursor = node.walk();
-            for name_node in node.children_by_field_name("name", &mut cursor) {
-                let Some((item_node, _alias)) = import_name_and_alias(name_node, source) else {
-                    continue;
-                };
-                let item = node_text(item_node, source);
-                if !item.is_empty() {
-                    out.push(join_from_import_target(&base, &item));
-                }
-            }
-        }
-        _ => {}
+    match raw_import(node, source) {
+        Some(RawImport::Import(items)) => items.into_iter().map(|(m, _)| m).collect(),
+        Some(RawImport::From {
+            base, star: true, ..
+        }) => vec![format!("{base}.*")],
+        Some(RawImport::From { base, items, .. }) => items
+            .into_iter()
+            .map(|(item, _)| join_from_import_target(&base, &item))
+            .collect(),
+        None => Vec::new(),
     }
-    out
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3022,7 +2162,7 @@ fn import_kind_and_base(snippet: Option<&str>) -> (ImportKind, Option<String>) {
     (ImportKind::Import, None)
 }
 
-fn base_package_parts(file_rel_path: &str, file_module: &str) -> Vec<String> {
+pub(crate) fn base_package_parts(file_rel_path: &str, file_module: &str) -> Vec<String> {
     let is_init = Path::new(file_rel_path)
         .file_name()
         .and_then(|s| s.to_str())
@@ -3039,7 +2179,7 @@ fn base_package_parts(file_rel_path: &str, file_module: &str) -> Vec<String> {
     parts[..keep].iter().map(|part| part.to_string()).collect()
 }
 
-fn absolutize_module(candidate: &str, base_package: &[String]) -> Option<String> {
+pub(crate) fn absolutize_module(candidate: &str, base_package: &[String]) -> Option<String> {
     let trimmed = candidate.trim();
     if trimmed.is_empty() {
         return None;
@@ -3117,96 +2257,9 @@ fn package_prefixes_have_init(base: &Path, parts: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::PythonExtractor;
-    use crate::db::resolver::{Declaration, DeclarationIndex, DeclarationQuery, ScopeImports};
-    use crate::indexer::extract::{DeferredMarker, DeferredReturn};
-    use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor, ReceiverType};
+    use crate::indexer::extract::{EdgeInput, ExtractedFile, LanguageExtractor};
     use crate::indexer::http;
     use crate::indexer::proto;
-
-    /// A declaration index over `(qualname, kind, signature)` rows.
-    struct Stub(Vec<(&'static str, &'static str, &'static str)>);
-
-    impl DeclarationIndex for Stub {
-        fn declarations(&self, query: DeclarationQuery<'_>) -> anyhow::Result<Vec<Declaration>> {
-            let keep = |q: &str, kind: &str| match &query {
-                DeclarationQuery::Callable(c) => q == *c && matches!(kind, "function" | "method"),
-                DeclarationQuery::Type(n) => kind == "class" && q.rsplit('.').next() == Some(n),
-                DeclarationQuery::Member { ty, method } => {
-                    kind == "method" && q.ends_with(&format!("{ty}.{method}"))
-                }
-                _ => false,
-            };
-            Ok(self
-                .0
-                .iter()
-                .filter(|(q, k, _)| keep(q, k))
-                .map(|(q, _, sig)| Declaration {
-                    qualname: q.to_string(),
-                    signature: Some(sig.to_string()),
-                    visibility: None,
-                    file_id: 1,
-                })
-                .collect())
-        }
-        fn is_repo_type(&self, name: &str) -> anyhow::Result<bool> {
-            Ok(!self.declarations(DeclarationQuery::Type(name))?.is_empty())
-        }
-        fn inherited_members(&self, ty: &str, method: &str) -> anyhow::Result<Vec<Declaration>> {
-            self.declarations(DeclarationQuery::Member { ty, method })
-        }
-        fn imports_in_scope(&self, _: &Declaration) -> anyhow::Result<ScopeImports> {
-            unreachable!()
-        }
-    }
-
-    fn receiver_of(index: &Stub, marker: DeferredReturn) -> Option<String> {
-        super::resolve_deferred(&DeferredMarker::Return(marker), index)
-            .unwrap()
-            .unwrap()
-            .filter(|ty| !ty.is_empty())
-    }
-
-    /// `make().stage(1).storage()`: the receiver of `storage` is
-    /// `make().stage(1)`; each link's annotated return types the next.
-    #[test]
-    fn deferred_chain_follows_return_annotations() {
-        let chain = || {
-            DeferredReturn::on_call(
-                DeferredReturn::on_function(vec!["b.make".into()], "make"),
-                "stage",
-                false,
-            )
-        };
-        let annotated = Stub(vec![
-            ("b.Builder", "class", ""),
-            ("b.make", "function", "() -> Builder"),
-            ("b.Builder.stage", "method", "(self, x) -> \"Builder\""),
-        ]);
-        assert_eq!(receiver_of(&annotated, chain()), Some("Builder".into()));
-
-        // Unannotated `make`: nothing is guessed from the body.
-        let unannotated = Stub(vec![
-            ("b.Builder", "class", ""),
-            ("b.make", "function", "()"),
-            ("b.Builder.stage", "method", "(self, x) -> \"Builder\""),
-        ]);
-        assert_eq!(receiver_of(&unannotated, chain()), None);
-
-        // Unannotated middle method breaks the chain after its own link.
-        let middle = Stub(vec![
-            ("b.Builder", "class", ""),
-            ("b.make", "function", "() -> Builder"),
-            ("b.Builder.stage", "method", "(self, x)"),
-        ]);
-        assert_eq!(receiver_of(&middle, chain()), None);
-        assert_eq!(
-            receiver_of(
-                &middle,
-                DeferredReturn::on_function(vec!["b.make".into()], "make")
-            ),
-            Some("Builder".into())
-        );
-    }
 
     #[test]
     fn extracts_fastapi_route_and_requests_call() {
@@ -3332,20 +2385,27 @@ def main(channel):
     }
 
     #[test]
-    fn bare_call_to_imported_name_carries_import_target_as_candidate() {
-        // dpb `_helpers/identifiers.py`: without a candidate, `quote(...)`
+    fn bare_call_to_imported_name_is_a_free_name_bound_by_the_import() {
+        // dpb `_helpers/identifiers.py`: without the import, `quote(...)`
         // fell through to the bare-name tier and bound
-        // `MssqlCodeWriter.quote`.
+        // `MssqlCodeWriter.quote`. Now the site names `quote` freely and the
+        // file's declared imports say what it stands for.
         let source =
             "from urllib.parse import quote\n\ndef file_component(name):\n    return quote(name)\n";
         let mut extractor = PythonExtractor::new().unwrap();
         let file = extractor.extract(source, "module").unwrap();
         let calls = calls_at_line(&file, 4);
         assert_eq!(calls.len(), 1, "{calls:?}");
-        assert_eq!(calls[0].receiver_type, ReceiverType::NotTracked);
         assert_eq!(
-            calls[0].import_candidates,
-            vec!["urllib.parse.quote".to_string()]
+            calls[0].py_site.as_ref().unwrap().callee,
+            crate::indexer::python_expr::PyExpr::Name("quote".into())
+        );
+        let imports = &file.py_decls.as_ref().unwrap().imports;
+        assert!(
+            imports
+                .iter()
+                .any(|i| i.bound == "quote" && i.target == "urllib.parse.quote"),
+            "{imports:?}"
         );
     }
 
@@ -3370,12 +2430,19 @@ def helper():
         let file = extractor.extract(source, "module").unwrap();
         let nested = calls_at_line(&file, 6);
         assert_eq!(nested.len(), 1, "{nested:?}");
-        assert_eq!(nested[0].receiver_type, ReceiverType::Unresolved);
-        assert!(nested[0].import_candidates.is_empty());
-        // A call to a real top-level function is untouched.
+        // The nested def's name is a local: never a free name, so it can
+        // never bind by the name `quote`.
+        assert!(matches!(
+            nested[0].py_site.as_ref().unwrap().callee,
+            crate::indexer::python_expr::PyExpr::Unknown(_)
+        ));
+        // A call to a real top-level function is a free name.
         let top = calls_at_line(&file, 9);
         assert_eq!(top.len(), 1, "{top:?}");
-        assert_eq!(top[0].receiver_type, ReceiverType::NotTracked);
+        assert_eq!(
+            top[0].py_site.as_ref().unwrap().callee,
+            crate::indexer::python_expr::PyExpr::Name("helper".into())
+        );
     }
 
     #[test]

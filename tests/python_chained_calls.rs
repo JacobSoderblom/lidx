@@ -97,7 +97,9 @@ fn unannotated_chain_is_unresolved_external_and_never_bound() {
     let (_t, _r, indexer) = index(&[("b.py", UNANNOTATED)]);
     assert_eq!(
         unresolved(&indexer, "b.use"),
-        external(&["stage", "storage"])
+        // Rows are named by the callee's source text now (the bare-method-name
+        // placeholder died with the receiver-type inference).
+        external(&["make().stage", "make().stage(1).storage"])
     );
     let bound = bound_calls(&indexer);
     assert!(
@@ -128,11 +130,19 @@ fn annotated_chain_binds_through_receiver_type() {
 
 #[test]
 fn unannotated_middle_method_binds_first_link_only() {
-    let src = ANNOTATED.replace("def stage(self, x) -> \"Builder\":", "def stage(self, x):");
+    // The unannotated middle method must not return `self` (an unannotated
+    // `return self` is typed as `Self` now), so its result is unknown.
+    let src = ANNOTATED.replace(
+        "def stage(self, x) -> \"Builder\":\n        return self",
+        "def stage(self, x):\n        return Builder()",
+    );
     let (_t, _r, indexer) = index(&[("b.py", &src)]);
     assert!(calls(&indexer, "b.use", "b.Builder.stage"));
     assert!(!calls(&indexer, "b.use", "b.Builder.storage"));
-    assert_eq!(unresolved(&indexer, "b.use"), external(&["storage"]));
+    assert_eq!(
+        unresolved(&indexer, "b.use"),
+        external(&["make().stage(1).storage"])
+    );
 }
 
 #[test]
@@ -187,12 +197,14 @@ def untyped(x):
     let recorded = unresolved(&indexer, "b.waits");
     let bound = bound_calls(&indexer);
     assert!(
-        recorded.iter().any(|(n, _)| n == "stage")
+        recorded.iter().any(|(n, _)| n.ends_with(".stage"))
             || bound.contains(&("b.waits".into(), "b.Builder.stage".into())),
         "await chain call dropped: {recorded:?}"
     );
     assert!(
-        unresolved(&indexer, "b.untyped").contains(&("stage".to_string(), "external".to_string()))
+        unresolved(&indexer, "b.untyped")
+            .iter()
+            .any(|(n, r)| n.ends_with(".stage") && r == "external")
     );
 }
 
@@ -218,8 +230,14 @@ def fetch(u):
         "external chain bound to a repo method: {bound:?}"
     );
     let rows = unresolved(&indexer, "user.fetch");
-    assert!(rows.contains(&("json".to_string(), "external".to_string())));
-    assert!(rows.contains(&("get".to_string(), "external".to_string())));
+    assert!(
+        rows.iter()
+            .any(|(n, r)| n.ends_with(".json") && r == "external")
+    );
+    assert!(
+        rows.iter()
+            .any(|(n, r)| n.ends_with(".get") && r == "external")
+    );
 }
 
 fn rpc_json(root: &Path, indexer_db: &Path, method: &str, params: &str) -> serde_json::Value {

@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 
-pub const SCHEMA_VERSION: i64 = 27;
+pub const SCHEMA_VERSION: i64 = 28;
 
 /// The identity columns of an `unresolved_references` row beyond
 /// `(graph_version, file_id)`, NULL-normalised so the unique index treats
@@ -644,6 +644,23 @@ pub fn migrate(conn: &Connection) -> Result<()> {
                 ON unresolved_references(graph_version, file_id, {UNRESOLVED_IDENTITY_EXPRS})
                 WHERE edge_id IS NULL;"
         ))?;
+    }
+
+    if existing < 28 {
+        // Declared Python types, one payload per file and graph version (see
+        // `indexer::python_types`). A separate table rather than `symbols`
+        // columns: an annotation change leaves the symbol row (and stable
+        // id) untouched, so a column there would go stale.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS py_decls (
+                file_id       INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                graph_version INTEGER NOT NULL,
+                hash          TEXT    NOT NULL,
+                payload       TEXT    NOT NULL,
+                PRIMARY KEY (graph_version, file_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_py_decls_file ON py_decls(file_id);",
+        )?;
     }
 
     if existing < SCHEMA_VERSION {
@@ -2044,6 +2061,55 @@ mod tests {
         conn.execute(&format!("{dup} ON CONFLICT DO NOTHING"), [])
             .unwrap();
         assert_eq!(count(1), 2);
+    }
+
+    #[test]
+    fn migration_28_adds_py_decls_to_a_27_database() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO files (id, path, hash, language, size, modified)
+             VALUES (1, 'a.py', 'h', 'python', 1, 1)",
+            [],
+        )
+        .unwrap();
+        // Rewind to a 27 database: no py_decls table.
+        conn.execute_batch(
+            "DROP TABLE py_decls;
+             UPDATE meta SET value = '27' WHERE key = 'schema_version';",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+        assert!(index_exists(&conn, "idx_py_decls_file"));
+        conn.execute(
+            "INSERT INTO py_decls (file_id, graph_version, hash, payload) VALUES (1, 1, 'x', '{}')",
+            [],
+        )
+        .unwrap();
+        // The primary key is (graph_version, file_id); the FK cascades.
+        assert!(
+            conn.execute(
+                "INSERT INTO py_decls (file_id, graph_version, hash, payload) VALUES (1, 1, 'y', '{}')",
+                [],
+            )
+            .is_err()
+        );
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute("DELETE FROM files WHERE id = 1", []).unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM py_decls", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]

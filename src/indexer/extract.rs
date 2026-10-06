@@ -258,12 +258,16 @@ pub enum DeferredMarker {
     Rust(RustDeferred),
     /// C#: a target-typed `new(..)` passed as a call argument.
     Argument(DeferredArgument),
+    /// Python: a lowered call site, judged by the declared-type evaluator
+    /// (`python_eval`) against every file's declarations.
+    Python(crate::indexer::python_expr::PyCallSite),
 }
 
 /// `deferred_kind` column values, one per [`DeferredMarker`] variant.
 pub const DEFERRED_KIND_RETURN: &str = "return";
 pub const DEFERRED_KIND_RUST: &str = "rust";
 pub const DEFERRED_KIND_ARGUMENT: &str = "argument";
+pub const DEFERRED_KIND_PYTHON: &str = "py";
 
 impl DeferredMarker {
     /// `(deferred_kind, deferred)` column values.
@@ -274,6 +278,7 @@ impl DeferredMarker {
             Self::Return(m) => (DEFERRED_KIND_RETURN, json(serde_json::to_string(m))),
             Self::Rust(m) => (DEFERRED_KIND_RUST, json(serde_json::to_string(m))),
             Self::Argument(m) => (DEFERRED_KIND_ARGUMENT, json(serde_json::to_string(m))),
+            Self::Python(m) => (DEFERRED_KIND_PYTHON, json(serde_json::to_string(m))),
         }
     }
 
@@ -284,6 +289,7 @@ impl DeferredMarker {
             DEFERRED_KIND_RETURN => serde_json::from_str(payload).ok().map(Self::Return),
             DEFERRED_KIND_RUST => serde_json::from_str(payload).ok().map(Self::Rust),
             DEFERRED_KIND_ARGUMENT => serde_json::from_str(payload).ok().map(Self::Argument),
+            DEFERRED_KIND_PYTHON => serde_json::from_str(payload).ok().map(Self::Python),
             _ => None,
         }
     }
@@ -505,6 +511,10 @@ pub struct EdgeInput {
     /// Argument count / object-creation marker; see `CallShape`. Only the
     /// C# extractor sets it. `None` = no arity signal (resolve as before).
     pub call_shape: Option<CallShape>,
+    /// Python only: the lowered call site of the `call` node this `CALLS`
+    /// edge came from (locals inlined, see `python_lower`). Extraction
+    /// output only for now: no resolution or stored column reads it yet.
+    pub py_site: Option<Box<crate::indexer::python_expr::PyCallSite>>,
 }
 
 #[derive(Debug, Default)]
@@ -536,6 +546,9 @@ pub struct ExtractedFile {
     /// per overload. Recorded into `symbols.visibility` as `override`;
     /// dispatch only pairs a base-class member with an override.
     pub override_symbols: Vec<(String, i64)>,
+    /// Python only: the file's declared types (see `python_types`),
+    /// persisted in `py_decls`.
+    pub py_decls: Option<crate::indexer::python_types::PyFileDecls>,
 }
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use anyhow::Result;
@@ -557,6 +570,10 @@ pub trait LanguageExtractor {
     /// Project-wide directives (C# `global using`) the next `extract` call
     /// applies on top of the file's own; default: none.
     fn set_project_globals(&mut self, _globals: &[String]) {}
+    /// The repo-relative path of the file the next `extract` call reads;
+    /// default: ignored. Python needs it to tell a package `__init__.py`
+    /// from a module.
+    fn set_current_path(&mut self, _rel_path: &str) {}
     /// Called once at the start of every reindex or sync batch: drop any
     /// cross-file state accumulated by earlier runs (C# extension methods),
     /// so a long-lived indexer sees only this run's declarations, as a fresh

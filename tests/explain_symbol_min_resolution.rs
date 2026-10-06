@@ -319,10 +319,10 @@ fn analyze_impact_min_confidence_is_untouched() {
 }
 
 /// `min_resolution` also filters the `tests` section: reuses issue #81's
-/// `worker.py` incremental-add trick and its `test_layer_honors_resolution_kind_filter`
+/// TypeScript owner and its `test_layer_honors_resolution_kind_filter`
 /// test-file shape (`tests/resolution_kind_filter.rs`) to produce a CALLS
-/// edge from a test function into `worker.process` resolved by the
-/// guarded name-fallback tier. Which of `bare_name`/`two_segment` applies
+/// edge from a test function into `heuristicOwner.helperOne` resolved by the
+/// guarded name-fallback tier (Python has no such tier any more). Which of `bare_name`/`two_segment` applies
 /// is read off the graph rather than assumed (not this ticket's concern);
 /// `inherited` ranks strictly above both, so it reliably excludes the
 /// edge regardless of which one it is.
@@ -332,19 +332,21 @@ fn min_resolution_filters_tests_section_at_heuristic_tier() {
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer.reindex().unwrap();
     std::fs::write(
-        repo_root.join("worker.py"),
-        "def process() -> str:\n    return \"worker\"\n",
-    )
-    .unwrap();
-    indexer.sync_rel_paths(&["worker.py".to_string()]).unwrap();
-    std::fs::create_dir_all(repo_root.join("tests")).unwrap();
-    std::fs::write(
-        repo_root.join("tests").join("test_zzz.py"),
-        "from worker import *\n\ndef test_alpha():\n    process()\n",
+        repo_root.join("heuristicOwner.ts"),
+        "function helperOne(): string {\n  return \"one\";\n}\nmodule.exports = { helperOne };\n",
     )
     .unwrap();
     indexer
-        .sync_rel_paths(&["tests/test_zzz.py".to_string()])
+        .sync_rel_paths(&["heuristicOwner.ts".to_string()])
+        .unwrap();
+    std::fs::create_dir_all(repo_root.join("tests")).unwrap();
+    std::fs::write(
+        repo_root.join("tests").join("test_zzz.ts"),
+        "const { helperOne } = require(\"../heuristicOwner\");\n\nexport function testAlpha(): string {\n  return helperOne();\n}\n",
+    )
+    .unwrap();
+    indexer
+        .sync_rel_paths(&["tests/test_zzz.ts".to_string()])
         .unwrap();
 
     let heuristic_kind = {
@@ -352,9 +354,9 @@ fn min_resolution_filters_tests_section_at_heuristic_tier() {
         let snapshot = common::golden::snapshot_edges(indexer.db(), graph_version).unwrap();
         snapshot
             .iter()
-            .find(|e| e.source_qualname == "tests.test_zzz.test_alpha" && e.kind == "CALLS")
+            .find(|e| e.source_qualname == "tests/test_zzz.testAlpha" && e.kind == "CALLS")
             .and_then(|e| e.resolution_kind.clone())
-            .expect("expected tests.test_zzz.test_alpha's CALLS edge to resolve with a tier")
+            .expect("expected tests/test_zzz.testAlpha's CALLS edge to resolve with a tier")
     };
     drop(indexer);
 
@@ -362,10 +364,10 @@ fn min_resolution_filters_tests_section_at_heuristic_tier() {
         &repo_root,
         &db_path,
         "explain_symbol",
-        r#"{"qualname":"worker.process","sections":["tests"]}"#,
+        r#"{"qualname":"heuristicOwner.helperOne","sections":["tests"]}"#,
     );
     assert!(
-        ref_qualnames(&unfiltered["tests"]).contains(&"tests.test_zzz.test_alpha".to_string()),
+        ref_qualnames(&unfiltered["tests"]).contains(&"tests/test_zzz.testAlpha".to_string()),
         "precondition: the unfiltered tests section must find test_alpha, got {unfiltered}"
     );
 
@@ -373,10 +375,10 @@ fn min_resolution_filters_tests_section_at_heuristic_tier() {
         &repo_root,
         &db_path,
         "explain_symbol",
-        r#"{"qualname":"worker.process","sections":["tests"],"min_resolution":"inherited"}"#,
+        r#"{"qualname":"heuristicOwner.helperOne","sections":["tests"],"min_resolution":"inherited"}"#,
     );
     assert!(
-        !ref_qualnames(&strict["tests"]).contains(&"tests.test_zzz.test_alpha".to_string()),
+        !ref_qualnames(&strict["tests"]).contains(&"tests/test_zzz.testAlpha".to_string()),
         "a heuristically-resolved test call must be excluded once the floor outranks it: {strict}"
     );
     assert_eq!(strict["tests_total"], Value::from(0));
@@ -386,11 +388,11 @@ fn min_resolution_filters_tests_section_at_heuristic_tier() {
         &db_path,
         "explain_symbol",
         &format!(
-            r#"{{"qualname":"worker.process","sections":["tests"],"min_resolution":"{heuristic_kind}"}}"#
+            r#"{{"qualname":"heuristicOwner.helperOne","sections":["tests"],"min_resolution":"{heuristic_kind}"}}"#
         ),
     );
     assert!(
-        ref_qualnames(&lenient["tests"]).contains(&"tests.test_zzz.test_alpha".to_string()),
+        ref_qualnames(&lenient["tests"]).contains(&"tests/test_zzz.testAlpha".to_string()),
         "min_resolution set exactly to the edge's own tier must keep it: {lenient}"
     );
 }

@@ -89,6 +89,17 @@ src/
 
 ---
 
+## Python call resolution
+
+Python `CALLS` are judged by a declared-type evaluator, not by names.
+
+- `indexer/python_types.rs`: per-file declarations (`PyFileDecls`), persisted in `py_decls`.
+- `indexer/python_lower.rs` / `python_expr.rs`: every call node becomes a self-contained `PyCallSite` (locals inlined); stored as `deferred_kind = 'py'` on the edge or its `unresolved_references` row.
+- `indexer/python_eval.rs`: `PyTypeTable` + `PyEval::resolve_site` -> `Outcome`.
+- `db/resolver.rs` `resolve_python` maps the outcome (no name fallback). `Db::py_type_table` caches the table by graph version + `py_decls` stamp.
+- Any changed Python declaration re-judges every other Python call (`Db::rejudge_python_calls`, gated by `Indexer` on `put_py_decls`/deletions), so incremental == fresh. 'py' rows are excluded from the generic retries.
+- Unknown receivers are `external` rows; only a provably external callee with an import binds an `ext:` stub.
+
 ## Finding Things
 
 - **RPC method implementation**: search for `"method_name" =>` in `src/rpc.rs`

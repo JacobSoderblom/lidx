@@ -48,38 +48,40 @@ fn indexed_tree(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Indexer)
     (tmp, repo_root, indexer)
 }
 
-/// The golden scenario from issue #78's acceptance criteria: a bare call
-/// to a name nothing defines yet is recorded in the unresolved-reference
-/// store; adding a file that defines that name and syncing resolves the
-/// call and removes the store row -- even with 1200 never-resolving calls
-/// sorted ahead of it (`a.py` < `z.py`), which starve
+/// The golden scenario from issue #78's acceptance criteria: a call to a
+/// name whose module nothing defines yet; adding a file that defines it and
+/// syncing resolves the call -- even with 1200 never-resolving calls sorted
+/// ahead of it (`a.py` < `z.py`), which starve
 /// `resolve_null_target_edges`'s LIMIT-1000 rescan before it ever reaches
-/// `z.py`'s edge.
+/// `z.py`'s edge. (A Python name binds only through the module's own
+/// definitions and imports, so the caller imports it; before `helper.py`
+/// exists the import points outside the repo.)
 #[test]
 fn adding_a_file_resolves_a_previously_unresolved_bare_call() {
     let noise = many_undefined_calls_source(1200);
-    let caller_py = "def caller():\n    helper()\n";
+    let caller_py = "from helper import helper\n\n\ndef caller():\n    helper()\n";
 
     let (_tmp, repo_root, mut indexer) = indexed_tree(&[("a.py", &noise), ("z.py", caller_py)]);
 
-    let graph_version = indexer.db().current_graph_version().unwrap();
-    let before = indexer
-        .db()
-        .unresolved_reference_summary(graph_version)
-        .unwrap();
-    let no_candidates_count = |rows: &[lidx::model::UnresolvedReferenceSummary]| -> i64 {
-        rows.iter()
-            .find(|row| row.language == "python" && row.reason == "no_candidates")
-            .map(|row| row.count)
-            .unwrap_or(0)
+    // CALLS rows only: the unresolved `from helper import helper` import is
+    // a store row of its own.
+    let no_candidates_count = |indexer: &Indexer| -> i64 {
+        indexer
+            .db()
+            .read_conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM unresolved_references
+                 WHERE edge_kind = 'CALLS' AND reason = 'no_candidates' AND graph_version = ?",
+                [indexer.db().current_graph_version().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap()
     };
-    let before_count = no_candidates_count(&before);
-    // 1200 noise calls plus `caller`'s own call to `helper` -- all recorded
-    // with the same reason, before `helper.py` exists to satisfy any of them.
-    assert_eq!(
-        before_count, 1201,
-        "expected every noise call plus caller's own unresolved call recorded: {before:?}"
-    );
+    let before_count = no_candidates_count(&indexer);
+    // The 1200 noise calls are recorded; `caller`'s own call is not among
+    // them (its import is known-external until `helper.py` exists).
+    assert_eq!(before_count, 1200, "expected every noise call recorded");
 
     common::write_files(
         &repo_root,
@@ -102,15 +104,10 @@ fn adding_a_file_resolves_a_previously_unresolved_bare_call() {
          1200 never-resolving calls: {edge:?}"
     );
 
-    let after = indexer
-        .db()
-        .unresolved_reference_summary(graph_version)
-        .unwrap();
     assert_eq!(
-        no_candidates_count(&after),
-        before_count - 1,
-        "resolving caller's call must remove exactly its own row from the store, leaving \
-         the 1200 never-resolving noise calls behind: {after:?}"
+        no_candidates_count(&indexer),
+        before_count,
+        "resolving caller's call must leave the 1200 never-resolving noise calls behind"
     );
 
     let (_fresh_tmp, fresh) = common::index_files(&[

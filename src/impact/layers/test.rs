@@ -263,6 +263,7 @@ mod tests {
             call_shape: None,
             source_start_byte: None,
             target_start_byte: None,
+            py_site: None,
         };
         db.insert_edges(tst, &[edge], &map, 1, None).unwrap();
 
@@ -336,6 +337,7 @@ mod tests {
             call_shape: None,
             source_start_byte: None,
             target_start_byte: None,
+            py_site: None,
         };
         db.insert_edges(
             tst,
