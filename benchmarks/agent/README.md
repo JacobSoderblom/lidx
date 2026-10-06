@@ -129,3 +129,24 @@ strictly and invalid output is retried up to 3 times. Judge cost is tracked sepa
 The SWE-QA task subset, references and judge rubric come from
 [zvec-ai/zvec-grep](https://github.com/zvec-ai/zvec-grep) (Apache-2.0), which
 selected them from peng-weihan/SWE-QA-Bench. See `NOTICE`.
+
+## Results
+
+`results/` keeps the report of each full run.
+
+**2026-10-06, Opus 5.5 high, 30 tasks × 3 trials, lidx 0.7.0** ([report](results/2026-10-06-opus55-high.md)):
+
+| | baseline | lidx | change |
+|---|---|---|---|
+| Judge (5–100) | 81.2 | 81.7 | +0.5 |
+| Input tokens | 2.49M | 4.23M | +70% |
+| Tool calls | 257 | 242 | −6% |
+| Wall time | 1160 s | 1142 s | −2% |
+| Agent cost | $18.91 | $20.29 | +7% |
+
+The agent called lidx in only 16 of 90 lidx trials: 32 of 725 tool calls, all
+`outline`, `read_symbol`, `search` and `trace_flow`. Almost all of the extra
+input tokens come from lidx's tool definition and server instructions, about
+9.2k tokens added to the prompt prefix and re-read on every turn (first-turn
+prefix 14.8k vs 5.5k). They are cache reads, so the cost difference stays
+small. The judge difference is within trial noise.
