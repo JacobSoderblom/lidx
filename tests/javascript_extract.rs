@@ -1573,6 +1573,50 @@ class Router {
 }
 
 #[test]
+fn nested_generic_container_annotations_never_yield_a_wrong_element_type() {
+    let extracted = extract_ts(
+        r#"
+class Router {
+  #nested: Record<string, Map<string, Trie>>
+  #keyed: Record<Foo<A, B>, Leaf>
+  #valued: Record<string, Box<Trie>>
+  #arrs: Array<Array<Trie>>
+  #grid: Trie[][]
+  #maybe: Trie[] | undefined
+  #mapped: { [K in Keys]: Trie }
+  #two: { [k: string]: Trie; other: string }
+  go(m: string) {
+    this.#nested[m].one(1)
+    this.#keyed[m].two(2)
+    this.#valued[m].three(3)
+    this.#arrs[0].four(4)
+    this.#grid[0].five(5)
+    this.#maybe![0].six(6)
+    this.#mapped[m].seven(7)
+    this.#two[m].eight(8)
+  }
+}
+"#,
+    );
+    for (needle, expected) in [
+        ("one(1)", ReceiverType::Unresolved),
+        ("two(2)", ReceiverType::Known("Leaf".into())),
+        ("three(3)", ReceiverType::Unresolved),
+        ("four(4)", ReceiverType::Unresolved),
+        ("five(5)", ReceiverType::Unresolved),
+        ("six(6)", ReceiverType::Known("Trie".into())),
+        ("seven(7)", ReceiverType::Unresolved),
+        ("eight(8)", ReceiverType::Unresolved),
+    ] {
+        assert_eq!(
+            call_edge(&extracted, needle).receiver_type,
+            expected,
+            "{needle}"
+        );
+    }
+}
+
+#[test]
 fn non_null_subscript_on_typed_local_resolves_the_element_type() {
     let extracted = extract_ts(
         r#"

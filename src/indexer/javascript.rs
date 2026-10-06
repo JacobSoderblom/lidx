@@ -3184,6 +3184,7 @@ fn collect_type_references(
             }
         }
     }
+
     let mut scan = Scan {
         ctx,
         source,
@@ -3311,10 +3312,7 @@ fn pin_receiver_type(receiver: ReceiverType, ctx: &Context) -> ReceiverType {
     let ReceiverType::Known(ty) = &receiver else {
         return receiver;
     };
-    if !ty
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
-    {
+    if !is_type_name_text(ty, false) {
         return receiver;
     }
     if ctx.declared_types.contains(ty) {
@@ -5937,6 +5935,13 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
     Some(raw.to_string())
 }
 
+/// `text` is spelled like a plain type name: identifier characters, plus
+/// `.` for a qualified one (`ns.Type`) when `dotted`.
+fn is_type_name_text(text: &str, dotted: bool) -> bool {
+    text.chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '$' || (dotted && c == '.'))
+}
+
 fn is_simple_call_target(raw: &str) -> bool {
     raw.chars()
         .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == '$' || ch == '#')
@@ -7076,55 +7081,98 @@ fn classify_annotation(text: &str) -> LocalType {
 /// `classify_annotation` for a declared name (parameter, local, field): a
 /// container annotation whose element type is a plain non-builtin type name
 /// becomes `Elements`, everything else classifies as usual.
-fn classify_declared_type(text: &str) -> LocalType {
-    match container_element_type(text) {
+fn classify_declared_type(type_annotation: Node<'_>, source: &str) -> LocalType {
+    match container_element_type(type_annotation, source) {
         Some(ty) => LocalType::Elements(ty),
-        None => classify_annotation(text),
+        None => classify_annotation(&annotation_text(type_annotation, source)),
     }
 }
 
 /// The element type of `Record<K, T>`, `Array<T>`, `ReadonlyArray<T>`,
-/// `T[]` or `{ [k: string]: T }` when `T` is a plain non-builtin type name;
-/// a `| undefined`/`| null` member is ignored.
-fn container_element_type(text: &str) -> Option<String> {
-    let parts: Vec<&str> = text
-        .split('|')
-        .map(str::trim)
-        .filter(|p| !matches!(*p, "undefined" | "null" | ""))
-        .collect();
-    let [text] = parts[..] else {
-        return None;
+/// `T[]` or `{ [k: string]: T }` when `T` is a plain non-builtin type name
+/// (`type_identifier` or `A.B`); a `| undefined`/`| null` member is ignored.
+/// Read off the type nodes, so a nested generic (`Record<string, Map<K, V>>`)
+/// has no element type, while `Record<Foo<A, B>, T>` still has `T`.
+fn container_element_type(type_annotation: Node<'_>, source: &str) -> Option<String> {
+    let ty = non_nullable_type(type_annotation.named_child(0)?, source)?;
+    let element = match ty.kind() {
+        "array_type" => ty.named_child(0)?,
+        "generic_type" => {
+            let name = node_text(ty.child_by_field_name("name")?, source);
+            let args = ty.child_by_field_name("type_arguments")?;
+            let mut cursor = args.walk();
+            let args: Vec<Node<'_>> = args
+                .named_children(&mut cursor)
+                .filter(|n| n.kind() != "comment")
+                .collect();
+            match (name.as_str(), args.as_slice()) {
+                ("Array" | "ReadonlyArray", [element]) => *element,
+                ("Record", [_, element]) => *element,
+                _ => return None,
+            }
+        }
+        "object_type" => {
+            let mut cursor = ty.walk();
+            let members: Vec<Node<'_>> = ty
+                .named_children(&mut cursor)
+                .filter(|n| n.kind() != "comment")
+                .collect();
+            let [sig] = members.as_slice() else {
+                return None;
+            };
+            // `[k: string]: T`, not a mapped type (`[K in Keys]: T`).
+            if sig.kind() != "index_signature"
+                || sig.child_by_field_name("name").is_none()
+                || sig.child_by_field_name("index_type").is_none()
+            {
+                return None;
+            }
+            let value = sig.child_by_field_name("type")?;
+            if value.kind() != "type_annotation" {
+                return None;
+            }
+            value.named_child(0)?
+        }
+        _ => return None,
     };
-    let element = if let Some(inner) = text.strip_suffix("[]") {
-        inner
-    } else if let Some(args) = text
-        .strip_prefix("Record<")
-        .and_then(|t| t.strip_suffix('>'))
-    {
-        args.split_once(',')?.1
-    } else if let Some(arg) = text
-        .strip_prefix("Array<")
-        .or_else(|| text.strip_prefix("ReadonlyArray<"))
-        .and_then(|t| t.strip_suffix('>'))
-    {
-        arg
-    } else if let Some(body) = text.strip_prefix('{').and_then(|t| t.strip_suffix('}')) {
-        let (key, value) = body.trim().strip_prefix('[')?.split_once("]:")?;
-        key.contains(':').then_some(())?;
-        value.trim().trim_end_matches([';', ',']).trim_end()
-    } else {
-        return None;
-    };
-    let element = element.trim();
-    if element.is_empty()
-        || !element
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '$' | '.'))
-    {
+    if !matches!(element.kind(), "type_identifier" | "nested_type_identifier") {
         return None;
     }
-    match classify_annotation(element) {
+    let text = node_text(element, source);
+    if !is_type_name_text(&text, true) {
+        return None;
+    }
+    match classify_annotation(&text) {
         LocalType::Known(ty) => Some(ty),
+        _ => None,
+    }
+}
+
+/// `ty` without parentheses, and without its `undefined`/`null` members
+/// when a union; `None` when more than one member remains.
+fn non_nullable_type<'t>(ty: Node<'t>, source: &str) -> Option<Node<'t>> {
+    fn collect<'t>(ty: Node<'t>, source: &str, out: &mut Vec<Node<'t>>) {
+        match ty.kind() {
+            "union_type" => {
+                let mut cursor = ty.walk();
+                for member in ty.named_children(&mut cursor) {
+                    collect(member, source, out);
+                }
+            }
+            "parenthesized_type" => {
+                if let Some(inner) = ty.named_child(0) {
+                    collect(inner, source, out);
+                }
+            }
+            "comment" => {}
+            _ if matches!(node_text(ty, source).as_str(), "undefined" | "null") => {}
+            _ => out.push(ty),
+        }
+    }
+    let mut members = Vec::new();
+    collect(ty, source, &mut members);
+    match members.as_slice() {
+        [only] => Some(*only),
         _ => None,
     }
 }
@@ -7225,7 +7273,7 @@ fn collect_param_bindings(param: Node<'_>, source: &str, bindings: &mut Vec<(Str
                 let name = node_text(pattern, source);
                 let ty = param
                     .child_by_field_name("type")
-                    .map(|t| classify_declared_type(&annotation_text(t, source)))
+                    .map(|t| classify_declared_type(t, source))
                     .unwrap_or(LocalType::Other);
                 bindings.push((name, ty));
             } else {
@@ -7377,7 +7425,7 @@ fn collect_variable_declarator_binding(
     }
     let name = node_text(name_node, source);
     let ty = if let Some(type_node) = node.child_by_field_name("type") {
-        classify_declared_type(&annotation_text(type_node, source))
+        classify_declared_type(type_node, source)
     } else if let Some(value_node) = node.child_by_field_name("value") {
         classify_value_expr(value_node, source)
     } else {
@@ -7410,10 +7458,7 @@ fn collect_class_level_attr_types(
                 if name.is_empty() {
                     continue;
                 }
-                result.insert(
-                    name,
-                    classify_declared_type(&annotation_text(type_node, source)),
-                );
+                result.insert(name, classify_declared_type(type_node, source));
             }
             "method_definition" => {
                 let is_ctor = member
@@ -7452,7 +7497,7 @@ fn collect_class_level_attr_types(
                     let name = node_text(pattern, source);
                     let ty = param
                         .child_by_field_name("type")
-                        .map(|t| classify_declared_type(&annotation_text(t, source)))
+                        .map(|t| classify_declared_type(t, source))
                         .unwrap_or(LocalType::Other);
                     result.insert(name, ty);
                 }
