@@ -2672,3 +2672,30 @@ fn incremental_ts_sibling_callback_same_name_locals_match_fresh() {
         common::index_files(&[("e.test.ts", spec_ts), ("http-exception.ts", lib_ts)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+#[test]
+fn incremental_ts_instanceof_narrowing_matches_fresh() {
+    let handler_ts = "import { HTTPException } from './http-exception';\nexport const handle = (context: { error: unknown }) => {\n  if (context.error instanceof HTTPException) {\n    return context.error.getResponse();\n  }\n};\n";
+    let lib_ts = "export class HTTPException {\n  getResponse() {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) =
+        indexed_tree("ts-instanceof", &[("handler.ts", handler_ts)]);
+    common::write_files(&repo_root, &[("http-exception.ts", lib_ts)]);
+    indexer
+        .sync_rel_paths(&["http-exception.ts".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "handler.handle"
+            && e.target_qualname.as_deref() == Some("http-exception.HTTPException.getResponse")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("handler.ts", handler_ts), ("http-exception.ts", lib_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

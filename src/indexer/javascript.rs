@@ -6013,6 +6013,9 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     let Some(object) = function_node.child_by_field_name("object") else {
         return ReceiverType::NotTracked;
     };
+    if let Some(ty) = instanceof_narrowed_type(function_node, object, source) {
+        return ReceiverType::Known(ty);
+    }
     let (root, hops) = member_chain_root(object);
 
     if root.kind() == "super" {
@@ -6055,6 +6058,62 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         ReceiverType::Unresolved
     } else {
         ReceiverType::NotTracked
+    }
+}
+
+/// The type `C` when `receiver` (the callee's object) is the left side of an
+/// `X instanceof C` that is the condition, or a `&&` conjunct of it, of an
+/// enclosing `if` whose consequence contains the call. The nearest such `if`
+/// wins; `else` branches, negations, `||` and function boundaries are not
+/// narrowed (no guess).
+fn instanceof_narrowed_type(callee: Node<'_>, receiver: Node<'_>, source: &str) -> Option<String> {
+    let receiver_text = narrowing_text(receiver, source);
+    let mut child = callee;
+    while let Some(parent) = child.parent() {
+        if is_local_scope_boundary(parent.kind())
+            || is_lambda_node(parent.kind())
+            || parent.kind() == "program"
+        {
+            return None;
+        }
+        if parent.kind() == "if_statement"
+            && parent.child_by_field_name("consequence") == Some(child)
+            && let Some(condition) = parent.child_by_field_name("condition")
+            && let Some(ty) = instanceof_in_condition(condition, &receiver_text, source)
+        {
+            return Some(ty);
+        }
+        child = parent;
+    }
+    None
+}
+
+fn narrowing_text(node: Node<'_>, source: &str) -> String {
+    node_text(peel_expression(node), source)
+        .split_whitespace()
+        .collect()
+}
+
+fn instanceof_in_condition(cond: Node<'_>, receiver_text: &str, source: &str) -> Option<String> {
+    let cond = peel_expression(cond);
+    if cond.kind() != "binary_expression" {
+        return None;
+    }
+    let operator = cond.child_by_field_name("operator")?;
+    let (left, right) = (
+        cond.child_by_field_name("left")?,
+        cond.child_by_field_name("right")?,
+    );
+    match operator.kind() {
+        "&&" => instanceof_in_condition(left, receiver_text, source)
+            .or_else(|| instanceof_in_condition(right, receiver_text, source)),
+        "instanceof" if narrowing_text(left, source) == receiver_text => {
+            match classify_annotation(&node_text(right, source)) {
+                LocalType::Known(ty) => Some(ty),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 

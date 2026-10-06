@@ -1444,3 +1444,85 @@ it('b', () => { const x = make(); x.go() })
         }
     }
 }
+
+fn call_edge<'a>(
+    extracted: &'a lidx::indexer::extract::ExtractedFile,
+    needle: &str,
+) -> &'a lidx::indexer::extract::EdgeInput {
+    extracted
+        .edges
+        .iter()
+        .find(|e| {
+            e.kind == "CALLS"
+                && e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains(needle))
+        })
+        .unwrap_or_else(|| panic!("no CALLS edge for {needle}"))
+}
+
+fn extract_ts(source: &str) -> lidx::indexer::extract::ExtractedFile {
+    TypescriptExtractor::new()
+        .unwrap()
+        .extract(source, "src/app")
+        .unwrap()
+}
+
+#[test]
+fn instanceof_narrows_the_receiver_inside_the_if_consequence() {
+    let extracted = extract_ts(
+        r#"
+export const handle = (context: Ctx, err: unknown, other: Thing) => {
+  if (context.error instanceof HTTPException) {
+    return context.error.getResponse()
+  }
+  if (err instanceof Problem && other.ok) {
+    err.report(1)
+  }
+  if (err instanceof Outer) {
+    if (err instanceof Inner) { err.nested(2) }
+  }
+}
+"#,
+    );
+    assert_eq!(
+        call_edge(&extracted, "context.error.getResponse()").receiver_type,
+        ReceiverType::Known("HTTPException".into())
+    );
+    assert_eq!(
+        call_edge(&extracted, "err.report(1)").receiver_type,
+        ReceiverType::Known("Problem".into())
+    );
+    assert_eq!(
+        call_edge(&extracted, "err.nested(2)").receiver_type,
+        ReceiverType::Known("Inner".into())
+    );
+}
+
+#[test]
+fn instanceof_does_not_narrow_outside_or_across_boundaries() {
+    let extracted = extract_ts(
+        r#"
+export const handle = (err: unknown) => {
+  if (err instanceof Problem) { ok() } else { err.inElse(1) }
+  if (!(err instanceof Problem)) { err.negated(2) }
+  if (err instanceof Problem || err.x) { err.disjunct(3) }
+  if (err instanceof Problem) { items.forEach(() => err.inClosure(4)) }
+  err.after(5)
+}
+"#,
+    );
+    for needle in [
+        "inElse(1)",
+        "negated(2)",
+        "disjunct(3)",
+        "inClosure(4)",
+        "after(5)",
+    ] {
+        assert_ne!(
+            call_edge(&extracted, needle).receiver_type,
+            ReceiverType::Known("Problem".into()),
+            "{needle}"
+        );
+    }
+}
