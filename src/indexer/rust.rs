@@ -1031,7 +1031,7 @@ fn handle_function(
     // it's exactly as visible as the trait itself (see
     // `Context::in_trait_scope`, issue #75 follow-up, finding B).
     if !ctx.in_trait_scope {
-        if !has_pub_visibility(node) {
+        if !has_pub_visibility(node, source) {
             output.private_qualnames.push(qualname.clone());
         } else if let Some(scope) = restricted_scope(node, source, &ctx.module) {
             output.private_qualnames.push(qualname.clone());
@@ -4840,13 +4840,15 @@ fn qualify_type_name(module: &str, type_name: &str) -> String {
 /// `visibility_modifier` child regardless of which `pub(...)` form is
 /// used. Absence means module-private: only callers in the same file can
 /// see it (see `db::resolver::VisibilityRule::Recorded`, issue #75).
-/// `pub(crate)`/`pub(super)`/etc. are all treated as public here — lidx
-/// doesn't model crate boundaries, so the distinction between them doesn't
-/// change which calls should be allowed to bind.
-fn has_pub_visibility(node: Node<'_>) -> bool {
+/// `pub(self)` is private by definition. `pub(super)`/`pub(in path)` count
+/// as public here and are narrowed by `restricted_scope`; `pub(crate)` is
+/// public because crate boundaries are not modeled.
+fn has_pub_visibility(node: Node<'_>, source: &str) -> bool {
     let mut cursor = node.walk();
-    node.children(&mut cursor)
-        .any(|c| c.kind() == "visibility_modifier")
+    node.children(&mut cursor).any(|c| {
+        c.kind() == "visibility_modifier"
+            && node_text(c, source).split_whitespace().collect::<String>() != "pub(self)"
+    })
 }
 
 /// The module a `pub(super)` / `pub(in path)` function is restricted to
@@ -5430,6 +5432,14 @@ fn f() {
         assert_eq!(edges[0].target_qualname.as_deref(), Some("crate::T::req"));
         assert!(!file.edges.iter().any(|e| e.kind == "IMPLEMENTS"
             && e.source_qualname.as_deref() == Some("crate::Foo::inherent")));
+    }
+
+    #[test]
+    fn pub_self_is_private_but_pub_crate_is_not() {
+        let src = "pub(self) fn a() {}\npub( self ) fn b() {}\npub(crate) fn c() {}\nfn d() {}\n";
+        let file = RustExtractor::new().unwrap().extract(src, "crate").unwrap();
+        let private: Vec<&str> = file.private_qualnames.iter().map(String::as_str).collect();
+        assert_eq!(private, ["crate::a", "crate::b", "crate::d"]);
     }
 
     #[test]
