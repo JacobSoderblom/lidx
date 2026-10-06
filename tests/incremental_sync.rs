@@ -2851,3 +2851,29 @@ fn incremental_ts_new_after_constructor_removed_matches_fresh() {
     let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("context.ts", ctx_after)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+#[test]
+fn incremental_ts_value_reference_follows_renamed_export_matches_fresh() {
+    let app_ts = "import { pick } from './util';\nexport function run(o: { f?: () => void }) {\n  return o.f ?? pick;\n}\n";
+    let util_before = "export const pick = () => 1;\n";
+    let util_after = "export const other = () => 1;\nexport const pick = () => 2;\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-value-ref",
+        &[("app.ts", app_ts), ("util.ts", util_before)],
+    );
+    common::write_files(&repo_root, &[("util.ts", util_after)]);
+    indexer.sync_rel_paths(&["util.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "app.run"
+            && e.target_qualname.as_deref() == Some("util.pick")),
+        "{snapshot:#?}"
+    );
+    let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("util.ts", util_after)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

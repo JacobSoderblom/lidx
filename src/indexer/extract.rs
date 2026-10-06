@@ -399,7 +399,7 @@ impl TypeScope {
 /// same-qualname overloads (C# issue #123) and, for `new T(...)`, between
 /// the class and its constructor (issue #124). Persisted in the
 /// `call_shape` column as `"<n>"` (a call with `n` arguments) or
-/// `"new:<n>"` (an object creation).
+/// `"new:<n>"` (an object creation), or `"ref"` (a value reference).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CallShape {
     pub arg_count: u32,
@@ -411,12 +411,18 @@ pub struct CallShape {
     /// `is_new` (an object creation has no receiver concept), so the
     /// encoding has one prefix at most; `encode` gives `is_new` precedence.
     pub implicit_this: bool,
+    /// TS/JS: not a call at all but a function or const used as a value
+    /// (`cb ?? fallback`, `register(handler)`). Persisted as `"ref"`. The
+    /// resolver binds such a reference only to something callable.
+    pub is_ref: bool,
 }
 
 impl CallShape {
     /// The `call_shape` column text: `"<n>"` or `"new:<n>"`.
     pub fn encode(self) -> String {
-        if self.is_new {
+        if self.is_ref {
+            "ref".to_string()
+        } else if self.is_new {
             format!("new:{}", self.arg_count)
         } else if self.implicit_this {
             format!("this:{}", self.arg_count)
@@ -427,6 +433,14 @@ impl CallShape {
 
     /// Inverse of `encode`; `None` for text that isn't a valid shape.
     pub fn decode(raw: &str) -> Option<Self> {
+        if raw == "ref" {
+            return Some(Self {
+                arg_count: 0,
+                is_new: false,
+                implicit_this: false,
+                is_ref: true,
+            });
+        }
         let (is_new, implicit_this, count) =
             match (raw.strip_prefix("new:"), raw.strip_prefix("this:")) {
                 (Some(rest), _) => (true, false, rest),
@@ -437,6 +451,7 @@ impl CallShape {
             arg_count: count.parse().ok()?,
             is_new,
             implicit_this,
+            is_ref: false,
         })
     }
 }

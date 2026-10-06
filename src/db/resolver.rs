@@ -1142,7 +1142,7 @@ impl<'c> Resolver<'c> {
             None => r,
         };
         self.arity = match r.call_shape {
-            Some(shape) if !shape.is_new => Some(Arity {
+            Some(shape) if !shape.is_new && !shape.is_ref => Some(Arity {
                 args: shape.arg_count as usize,
                 value_receiver: r.receiver_type.is_some(),
             }),
@@ -1182,6 +1182,24 @@ impl<'c> Resolver<'c> {
                 })
                 .optional()?;
             if kind.as_deref() == Some("interface") {
+                return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+            }
+        }
+        // A value reference (`cb ?? fallback`) names something callable or a
+        // value; `toBeInstanceOf(Foo)` passes a class around, it uses none.
+        if let (Some(shape), Resolution::Resolved { target_id, .. }) = (r.call_shape, resolution)
+            && shape.is_ref
+        {
+            let kind: Option<String> = self
+                .conn
+                .query_row("SELECT kind FROM symbols WHERE id = ?", [target_id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if !matches!(
+                kind.as_deref(),
+                Some("function" | "const" | "variable" | "method")
+            ) {
                 return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
             }
         }
@@ -5121,6 +5139,7 @@ mod tests {
             arg_count: 2,
             is_new: false,
             implicit_this: false,
+            is_ref: false,
         });
         let resolution = resolver.resolve(&r, &symbol_map).unwrap();
         assert!(

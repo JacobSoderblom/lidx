@@ -370,6 +370,14 @@ pub fn resolve_import_file_edges(
             EXPORT_CACHE.with(|c| chase_member(repo_root, dst, member, &mut c.borrow_mut()));
         Some(format!("{}.{member}", module_name_from_rel_path(&path)))
     };
+    // A value reference through an import that names no repo file (a
+    // package, `react`) is no edge at all, unlike a call.
+    edges.retain(|e| {
+        !(is_value_ref(e)
+            && e.import_candidates
+                .iter()
+                .any(|c| c.contains(IMPORT_PLACEHOLDER_SEP) && rewrite(c).is_none()))
+    });
     for edge in edges.iter_mut() {
         for candidate in edge.import_candidates.iter_mut() {
             let Some((spec, member)) = candidate.split_once(IMPORT_PLACEHOLDER_SEP) else {
@@ -1476,6 +1484,7 @@ fn extract_with_parser(
     bind_next_routes_to_handlers(&mut output, module_name);
     dedup_namespace_symbols(&mut output);
     mark_unexported_private(root, source, module_name, &mut output);
+    finish_value_references(&mut output);
     output.export_surface = Some(surface_hash(root, source, &http_wrappers));
     Ok(output)
 }
@@ -2083,6 +2092,11 @@ fn grpc_service_from_client_initializer(
 }
 
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    if matches!(node.kind(), "identifier" | "shorthand_property_identifier")
+        && let Some(edge) = value_reference_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
+    }
     if (node.kind() == "jsx_element" || node.kind() == "jsx_self_closing_element")
         && let Some(edge) = jsx_route_edge(node, ctx, source)
     {
@@ -2569,6 +2583,243 @@ fn handle_parameter_properties(
 /// prefix folded into its context) — see that function's doc comment and
 /// this function's call site in `walk_node` for why the caller must then
 /// skip its own generic recursion into this node's children.
+/// Whether `node` (an identifier) is read as a value rather than named:
+/// an argument, assignment/declarator/default right-hand side, return value,
+/// array element, object property value, class field value, arrow body or
+/// JSX expression — possibly through parentheses, `as`/`!`, a ternary
+/// branch or a `??`/`||`/`&&` operand. Callees, declaration names, keys,
+/// member properties and specifiers match none of these.
+fn in_value_position(node: Node<'_>) -> bool {
+    if node.kind() == "shorthand_property_identifier" {
+        return node.parent().is_some_and(|p| p.kind() == "object");
+    }
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        let is_field = |field: &str| {
+            parent
+                .child_by_field_name(field)
+                .is_some_and(|c| c.id() == cur.id())
+        };
+        match parent.kind() {
+            "parenthesized_expression"
+            | "non_null_expression"
+            | "as_expression"
+            | "satisfies_expression"
+            | "type_assertion" => {}
+            "ternary_expression" if !is_field("condition") => {}
+            "binary_expression"
+                if parent
+                    .child_by_field_name("operator")
+                    .is_some_and(|op| matches!(op.kind(), "??" | "||" | "&&")) => {}
+            "arguments" | "array" | "jsx_expression" | "return_statement" => return true,
+            "assignment_expression" | "augmented_assignment_expression" | "assignment_pattern" => {
+                return is_field("right");
+            }
+            "variable_declarator" | "pair" | "public_field_definition" | "field_definition" => {
+                return is_field("value");
+            }
+            "arrow_function" => return is_field("body"),
+            _ => return false,
+        }
+        cur = parent;
+    }
+    false
+}
+
+/// A function or parameter-bearing node of `name`'s enclosing scopes binds
+/// it (a parameter, `let`/`const`/`var`, catch parameter, nested function or
+/// class). Deliberately over-approximate: a missed edge beats a wrong one.
+fn enclosing_function_binds(node: Node<'_>, name: &str, source: &str) -> bool {
+    fn body_binds(node: Node<'_>, name: &str, source: &str) -> bool {
+        let mut names = Vec::new();
+        match node.kind() {
+            "variable_declarator" => {
+                if let Some(n) = node.child_by_field_name("name") {
+                    collect_binding_names(n, source, &mut names);
+                }
+            }
+            "catch_clause" => {
+                if let Some(n) = node.child_by_field_name("parameter") {
+                    collect_binding_names(n, source, &mut names);
+                }
+            }
+            "function_declaration" | "generator_function_declaration" | "class_declaration" => {
+                if let Some(n) = node.child_by_field_name("name") {
+                    names.push(node_text(n, source));
+                }
+            }
+            _ => {}
+        }
+        if names.iter().any(|n| n == name) {
+            return true;
+        }
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .any(|c| body_binds(c, name, source))
+    }
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if matches!(
+            n.kind(),
+            "arrow_function"
+                | "function_expression"
+                | "function"
+                | "function_declaration"
+                | "generator_function"
+                | "generator_function_expression"
+                | "generator_function_declaration"
+                | "method_definition"
+        ) {
+            let mut params = Vec::new();
+            collect_lambda_parameter_bindings(n, source, &mut params);
+            if params.iter().any(|(p, _)| p == name) || body_binds(n, name, source) {
+                return true;
+            }
+        }
+        cur = n.parent();
+    }
+    false
+}
+
+/// `CALLS` edge for an identifier used as a value (`options.getPath ?? getPath`,
+/// `register(handler)`): an import, or a declaration of this file, that no
+/// local shadows. Resolved like a bare call to the name; see
+/// `finish_value_references` for what is dropped afterwards.
+fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    if !in_value_position(node) {
+        return None;
+    }
+    // `module.exports = { helper }` and `export const Api = { helper }`
+    // declare an export surface, they use nothing.
+    let mut up = node.parent();
+    while let Some(n) = up {
+        if n.kind() == "variable_declarator"
+            && n.parent()
+                .and_then(|d| d.parent())
+                .is_some_and(|e| e.kind() == "export_statement")
+            && n.child_by_field_name("value")
+                .is_some_and(|v| v.kind() == "object")
+        {
+            return None;
+        }
+        if n.kind() == "assignment_expression"
+            && n.child_by_field_name("left").is_some_and(|l| {
+                let text = node_text(l, source);
+                text == "module.exports" || text.starts_with("exports.")
+            })
+        {
+            return None;
+        }
+        up = n.parent();
+    }
+    let name = node_text(node, source);
+    let shadowed = if ctx.fn_depth == 0
+        && ctx.local_types.contains_key(&name)
+        && ctx.declared_names.contains(&name)
+    {
+        // Module-level inference folds module consts and arrow locals
+        // into one map: ask the enclosing functions instead.
+        enclosing_function_binds(node, &name, source)
+    } else {
+        is_local_non_import_binding(ctx, &name)
+    };
+    if shadowed {
+        return None;
+    }
+    let import_candidates: Vec<String> = import_placeholder(&name, ctx).into_iter().collect();
+    // An import resolves through its candidate alone: a container-qualified
+    // guess would bind a same-named member of the enclosing class.
+    let target = if !import_candidates.is_empty() {
+        None
+    } else if ctx.declared_names.contains(&name) && !ctx.import_bindings.contains_key(&name) {
+        Some(build_qualname(
+            &ctx.module,
+            &ctx.class_stack[..ctx.ns_depth],
+            &name,
+        ))
+    } else {
+        return None;
+    };
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+    Some(EdgeInput {
+        kind: "CALLS".to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        detail: target.is_none().then(|| name.clone()),
+        target_qualname: target,
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        import_candidates,
+        bare_call: true,
+        call_shape: Some(CallShape {
+            arg_count: 0,
+            is_new: false,
+            implicit_this: false,
+            is_ref: true,
+        }),
+        ..Default::default()
+    })
+}
+
+fn is_value_ref(edge: &EdgeInput) -> bool {
+    edge.call_shape.is_some_and(|s| s.is_ref)
+}
+
+/// Keeps a value reference only when its target can exist: an import (an
+/// unresolvable specifier is dropped later by `resolve_import_file_edges`)
+/// or a symbol of this file, and not already recorded for the same source,
+/// line and target — by a call or an earlier reference.
+fn finish_value_references(output: &mut ExtractedFile) {
+    if !output.edges.iter().any(is_value_ref) {
+        return;
+    }
+    // Same-file targets must be callable or a value: not a class, type, ...
+    let symbols: HashSet<&str> = output
+        .symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind.as_str(),
+                "function" | "const" | "variable" | "method"
+            )
+        })
+        .map(|s| s.qualname.as_str())
+        .collect();
+    type Site<'a> = (Option<&'a str>, Option<i64>, Option<&'a str>, &'a [String]);
+    fn site(e: &EdgeInput) -> Site<'_> {
+        (
+            e.source_qualname.as_deref(),
+            e.evidence_start_line,
+            e.target_qualname.as_deref(),
+            e.import_candidates.as_slice(),
+        )
+    }
+    let mut seen: HashSet<Site<'_>> = output
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CALLS" && !is_value_ref(e))
+        .map(site)
+        .collect();
+    let keep: Vec<bool> = output
+        .edges
+        .iter()
+        .map(|e| {
+            if !is_value_ref(e) {
+                return true;
+            }
+            let known = !e.import_candidates.is_empty()
+                || e.target_qualname
+                    .as_deref()
+                    .is_some_and(|t| symbols.contains(t));
+            known && seen.insert(site(e))
+        })
+        .collect();
+    let mut keep = keep.into_iter();
+    output.edges.retain(|_| keep.next().unwrap_or(true));
+}
+
 fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) -> bool {
     let register_handled = fastify_register_walk(node, ctx, source, output);
     for edge in http_route_edges(node, ctx, source) {
@@ -2646,6 +2897,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
                 .map_or(0, |args| args.named_child_count() as u32),
             is_new: true,
             implicit_this: false,
+            is_ref: false,
         }),
         ..Default::default()
     });
