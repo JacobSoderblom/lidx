@@ -536,6 +536,9 @@ pub struct ExtractedFile {
     /// per overload. Recorded into `symbols.visibility` as `override`;
     /// dispatch only pairs a base-class member with an override.
     pub override_symbols: Vec<(String, i64)>,
+    /// Python only: the file's declared types (see `python_types`),
+    /// persisted in `py_decls`.
+    pub py_decls: Option<crate::indexer::python_types::PyFileDecls>,
 }
 use crate::metrics::{FileMetricsInput, SymbolMetricsInput};
 use anyhow::Result;
@@ -557,6 +560,10 @@ pub trait LanguageExtractor {
     /// Project-wide directives (C# `global using`) the next `extract` call
     /// applies on top of the file's own; default: none.
     fn set_project_globals(&mut self, _globals: &[String]) {}
+    /// The repo-relative path of the file the next `extract` call reads;
+    /// default: ignored. Python needs it to tell a package `__init__.py`
+    /// from a module.
+    fn set_current_path(&mut self, _rel_path: &str) {}
     /// Called once at the start of every reindex or sync batch: drop any
     /// cross-file state accumulated by earlier runs (C# extension methods),
     /// so a long-lived indexer sees only this run's declarations, as a fresh

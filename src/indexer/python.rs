@@ -106,6 +106,9 @@ pub struct PythonExtractor {
     /// (the `new()` default for standalone extractors) keeps the path-only
     /// naming: every path component counts.
     layout: Option<PyLayout>,
+    /// Repo-relative path of the file the next `extract` call reads (set by
+    /// `set_current_path`); tells a package `__init__.py` from a module.
+    current_path: Option<String>,
 }
 
 impl PythonExtractor {
@@ -116,6 +119,7 @@ impl PythonExtractor {
         Ok(Self {
             parser,
             layout: None,
+            current_path: None,
         })
     }
 
@@ -133,6 +137,10 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             Some(layout) => module_name_from_rel_path(&layout.strip_root(rel_path)),
             None => module_name_from_rel_path(rel_path),
         }
+    }
+
+    fn set_current_path(&mut self, rel_path: &str) {
+        self.current_path = Some(rel_path.to_string());
     }
 
     fn begin_run(&mut self) {
@@ -185,6 +193,12 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
         };
         walk_node(root, &ctx, source, &mut output);
         emit_module_export_edges(root, module_name, source, &mut output);
+        output.py_decls = Some(crate::indexer::python_types::build_file_decls(
+            root,
+            source,
+            module_name,
+            self.current_path.as_deref(),
+        ));
         Ok(output)
     }
 
@@ -394,7 +408,7 @@ fn extract_docstring_fallback(source: &str) -> Option<String> {
 /// exists recovers the decorator(s) in the indexed span. The end position
 /// is unaffected either way -- a `decorated_definition`'s last child is
 /// always the definition node, so their end positions are identical.
-fn definition_span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
+pub(crate) fn definition_span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) {
     let span_node = node
         .parent()
         .filter(|p| p.kind() == "decorated_definition")
@@ -2853,7 +2867,7 @@ fn collect_import_bindings_rec(
 /// fully-qualified IMPORTS-edge target text (e.g. `base="pkg.mod"`,
 /// `item="Widget"` -> `"pkg.mod.Widget"`; a relative base like `"."` or
 /// `".."` concatenates directly rather than inserting an extra `.`).
-fn join_from_import_target(base: &str, item: &str) -> String {
+pub(crate) fn join_from_import_target(base: &str, item: &str) -> String {
     if base.is_empty() {
         item.to_string()
     } else if base == "." || base.ends_with('.') {
@@ -2867,7 +2881,7 @@ fn join_from_import_target(base: &str, item: &str) -> String {
 /// either a bare `dotted_name` or an `aliased_import` (`dotted_name as
 /// identifier`) — this extracts the pre-alias name node and, if present,
 /// the alias text.
-fn import_name_and_alias<'a>(
+pub(crate) fn import_name_and_alias<'a>(
     name_node: Node<'a>,
     source: &str,
 ) -> Option<(Node<'a>, Option<String>)> {
@@ -2893,7 +2907,7 @@ fn import_name_and_alias<'a>(
 /// construction — the parens/newlines/trailing comma are punctuation the
 /// grammar already stripped out of the field, not text this function has
 /// to account for.
-fn parse_import_bindings(node: Node<'_>, source: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_import_bindings(node: Node<'_>, source: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     match node.kind() {
         "import_statement" => {
@@ -3022,7 +3036,7 @@ fn import_kind_and_base(snippet: Option<&str>) -> (ImportKind, Option<String>) {
     (ImportKind::Import, None)
 }
 
-fn base_package_parts(file_rel_path: &str, file_module: &str) -> Vec<String> {
+pub(crate) fn base_package_parts(file_rel_path: &str, file_module: &str) -> Vec<String> {
     let is_init = Path::new(file_rel_path)
         .file_name()
         .and_then(|s| s.to_str())
@@ -3039,7 +3053,7 @@ fn base_package_parts(file_rel_path: &str, file_module: &str) -> Vec<String> {
     parts[..keep].iter().map(|part| part.to_string()).collect()
 }
 
-fn absolutize_module(candidate: &str, base_package: &[String]) -> Option<String> {
+pub(crate) fn absolutize_module(candidate: &str, base_package: &[String]) -> Option<String> {
     let trimmed = candidate.trim();
     if trimmed.is_empty() {
         return None;

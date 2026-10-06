@@ -439,7 +439,88 @@ impl Db {
             "DELETE FROM file_metrics WHERE file_id = ?",
             params![file_id],
         )?;
+        self.delete_py_decls(file_id, graph_version)?;
         Ok(())
+    }
+
+    /// Store `decls` as `file_id`'s Python declarations at `graph_version`.
+    /// Returns whether they differ from the file's previous payload: the row
+    /// at this version (an incremental sync rewrites it) or else the latest
+    /// older version's (a reindex). A file with no earlier row counts as
+    /// changed.
+    pub fn put_py_decls(
+        &self,
+        file_id: i64,
+        graph_version: i64,
+        decls: &crate::indexer::python_types::PyFileDecls,
+    ) -> Result<bool> {
+        let payload = decls.to_payload();
+        let hash = crate::indexer::python_types::payload_hash(&payload);
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let previous: Option<String> = tx
+            .query_row(
+                "SELECT hash FROM py_decls WHERE file_id = ? AND graph_version <= ?
+                 ORDER BY graph_version DESC LIMIT 1",
+                params![file_id, graph_version],
+                |row| row.get(0),
+            )
+            .optional()?;
+        tx.execute(
+            "INSERT INTO py_decls (file_id, graph_version, hash, payload) VALUES (?, ?, ?, ?)
+             ON CONFLICT(graph_version, file_id)
+             DO UPDATE SET hash = excluded.hash, payload = excluded.payload",
+            params![file_id, graph_version, hash, payload],
+        )?;
+        tx.commit()?;
+        Ok(previous.as_deref() != Some(hash.as_str()))
+    }
+
+    /// Remove a file's Python declarations at `graph_version`. Returns
+    /// whether a row existed.
+    pub fn delete_py_decls(&self, file_id: i64, graph_version: i64) -> Result<bool> {
+        let deleted = self.conn().execute(
+            "DELETE FROM py_decls WHERE file_id = ? AND graph_version = ?",
+            params![file_id, graph_version],
+        )?;
+        Ok(deleted > 0)
+    }
+
+    /// The declarations of every live Python file at `graph_version`, sorted
+    /// by path. A payload that no longer parses is skipped with a warning.
+    pub fn py_decls(
+        &self,
+        conn: &Connection,
+        graph_version: i64,
+    ) -> Result<Vec<crate::indexer::python_types::PyLoadedFile>> {
+        use crate::indexer::python_types::{PyFileDecls, PyLoadedFile};
+        let mut stmt = conn.prepare(
+            "SELECT c.file_id, f.path, c.payload
+             FROM py_decls c JOIN files f ON f.id = c.file_id
+             WHERE c.graph_version = ?1
+               AND (f.deleted_version IS NULL OR f.deleted_version > ?1)
+             ORDER BY f.path",
+        )?;
+        let rows = stmt.query_map(params![graph_version], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut files = Vec::new();
+        for row in rows {
+            let (file_id, path, payload) = row?;
+            match PyFileDecls::from_payload(&payload) {
+                Ok(decls) => files.push(PyLoadedFile {
+                    file_id,
+                    path,
+                    decls,
+                }),
+                Err(err) => eprintln!("lidx: unreadable py_decls payload for {path}: {err}"),
+            }
+        }
+        Ok(files)
     }
 
     /// Carry forward symbols, edges, and symbol_metrics for files whose content
@@ -496,6 +577,17 @@ impl Db {
         }
         let symbols = conn.execute(
             &sql,
+            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+        )?;
+        // Python declarations ride along, before any edge is resolved.
+        let decls_sql = format!(
+            "INSERT INTO py_decls (file_id, graph_version, hash, payload)
+             SELECT file_id, ?, hash, payload FROM py_decls
+             WHERE graph_version = ? AND file_id IN ({placeholders})
+             ON CONFLICT DO NOTHING"
+        );
+        conn.execute(
+            &decls_sql,
             rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
         )?;
         Ok(SymbolsCarried { symbols, ..carried })
@@ -986,6 +1078,10 @@ impl Db {
         // `idx_unresolved_references_identity` and violate its UNIQUE.
         tx.execute(
             "DELETE FROM unresolved_references WHERE graph_version < ?",
+            params![boundary],
+        )?;
+        tx.execute(
+            "DELETE FROM py_decls WHERE graph_version < ?",
             params![boundary],
         )?;
         let symbols_deleted = tx.execute(
@@ -2236,6 +2332,7 @@ impl Db {
         for id in &ids {
             tx.execute("DELETE FROM edges WHERE graph_version = ?", params![id])?;
             tx.execute("DELETE FROM symbols WHERE graph_version = ?", params![id])?;
+            tx.execute("DELETE FROM py_decls WHERE graph_version = ?", params![id])?;
             tx.execute(
                 "DELETE FROM unresolved_references WHERE graph_version = ?",
                 params![id],

@@ -43,7 +43,7 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 14;
+pub const EXTRACTOR_VERSION: i64 = 15;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -63,6 +63,9 @@ pub mod postgres;
 pub mod proto;
 mod py_layout;
 pub mod python;
+pub mod python_expr;
+pub mod python_lower;
+pub mod python_types;
 pub mod rust;
 pub mod scan;
 pub mod sql_extractor;
@@ -723,6 +726,9 @@ impl Indexer {
                 &extracted.static_member_qualnames,
                 &extracted.override_symbols,
             )?;
+            if let Some(decls) = &extracted.py_decls {
+                self.db.put_py_decls(*file_id, self.graph_version, decls)?;
+            }
         }
 
         // Issue #79: whether this reindex removed any symbol -- a whole
@@ -996,6 +1002,9 @@ impl Indexer {
             &extracted.static_member_qualnames,
             &extracted.override_symbols,
         )?;
+        if let Some(decls) = &extracted.py_decls {
+            self.db.put_py_decls(file_id, self.graph_version, decls)?;
+        }
 
         Ok(Some(ScannedFileSymbols {
             extracted,
@@ -1212,6 +1221,7 @@ impl Indexer {
             .extractors
             .get_mut(file.language.as_str())
             .ok_or_else(|| anyhow!("skip {}: unknown language {}", file.rel_path, file.language))?;
+        extractor.set_current_path(&file.rel_path);
         let mut extracted = extractor
             .extract(source, &module_name)
             .map_err(|err| anyhow!("extract error {} ({module_name}): {err}", file.rel_path))?;
