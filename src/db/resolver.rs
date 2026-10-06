@@ -409,6 +409,8 @@ pub enum DeclarationQuery<'a> {
     Method(&'a str),
     /// A type declaration (struct, enum, class, ...) with this name.
     Type(&'a str),
+    /// A trait declaration with this name.
+    Trait(&'a str),
     /// Methods named `method` on a type named `ty` (`ty.method`, or
     /// `<namespace>.ty.method`; dot-separated qualnames).
     Member { ty: &'a str, method: &'a str },
@@ -866,6 +868,12 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
             ),
             DeclarationQuery::Type(name) => (
                 "s.kind IN ('struct', 'enum', 'class', 'interface', 'record') AND s.name = ?1",
+                name.to_string(),
+                String::new(),
+                String::new(),
+            ),
+            DeclarationQuery::Trait(name) => (
+                "s.kind = 'trait' AND s.name = ?1",
                 name.to_string(),
                 String::new(),
                 String::new(),

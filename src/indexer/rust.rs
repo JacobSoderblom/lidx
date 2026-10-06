@@ -108,6 +108,18 @@ struct Context {
     /// Names the current function must not get an import candidate for
     /// (`collect_shadowed_names`); empty outside a function body.
     shadowed_names: Rc<HashSet<String>>,
+    /// Trait bounds of the generic parameters in scope, keyed by parameter
+    /// name (`S`) or bounded associated type (`S::Error`): one path per
+    /// bound. A parameter with no bound maps to an empty list.
+    generic_bounds: Rc<HashMap<String, Vec<String>>>,
+    /// The current function's parameters typed as a bare generic parameter
+    /// (`x: T`, `x: &mut T`): parameter name -> `T`. Names re-bound inside
+    /// the body are left out.
+    generic_params: Rc<HashMap<String, String>>,
+    /// Every name the current function's parameters and body patterns bind
+    /// (`let`, `for`, `match`, closures): a bare identifier among them is a
+    /// local, never a function reference.
+    local_names: Rc<HashSet<String>>,
     /// Set on entry to a trait declaration's own body (default methods)
     /// or a `impl Trait for Type` block's body (trait method
     /// implementations) — either way, the method's real visibility is the
@@ -332,6 +344,9 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             local_traits: Rc::new(collect_local_traits(root, source, module_name)),
             declared_mods: Rc::new(collect_declared_mods(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
+            generic_bounds: Rc::new(HashMap::new()),
+            generic_params: Rc::new(HashMap::new()),
+            local_names: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
             adts: Rc::new(collect_adts(root, source)),
             returns: Rc::new(collect_returns(root, source)),
@@ -737,7 +752,7 @@ fn handle_trait(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         end_col,
         start_byte,
         end_byte,
-        signature: None,
+        signature: trait_signature(node, source, &name),
         docstring: None,
         identity: ctx.identity(),
     });
@@ -818,6 +833,9 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     // A module is its own namespace, not a function body: no shadowed
     // names carry in, even for a `mod` declared inside a function.
     next_ctx.shadowed_names = Rc::new(HashSet::new());
+    next_ctx.generic_bounds = Rc::new(HashMap::new());
+    next_ctx.generic_params = Rc::new(HashMap::new());
+    next_ctx.local_names = Rc::new(HashSet::new());
     next_ctx.local_types = Rc::new(HashMap::new());
     walk_node(body, &next_ctx, source, output);
 }
@@ -980,6 +998,19 @@ fn handle_function(
         let mut shadowed = HashSet::new();
         collect_shadowed_names(node, source, &mut shadowed);
         next_ctx.shadowed_names = Rc::new(shadowed);
+        let generic_bounds = collect_generic_bounds(node, source);
+        let mut rebound = HashSet::new();
+        collect_pattern_names(body, source, &mut rebound);
+        let (typed_params, param_names) = collect_fn_params(node, source);
+        next_ctx.generic_params = Rc::new(
+            typed_params
+                .into_iter()
+                .filter(|(name, ty)| generic_bounds.contains_key(ty) && !rebound.contains(name))
+                .collect(),
+        );
+        rebound.extend(param_names);
+        next_ctx.local_names = Rc::new(rebound);
+        next_ctx.generic_bounds = Rc::new(generic_bounds);
 
         // In a trait declaration `Self` is not the trait.
         let self_ty = ctx
@@ -1301,9 +1332,47 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return;
     }
+    push_call_edge(function_node, node, ctx, source, output);
+}
+
+/// Records the call (or function reference) whose callee text is
+/// `function_node`, with `evidence` as the span it is attributed to.
+fn push_call_edge(
+    function_node: Node<'_>,
+    evidence: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let raw = node_text(function_node, source);
+    if raw.is_empty() {
+        return;
+    }
     // Collapsed once here so a multi-line chain feeds both tiers below the
     // same shape the single-line form would.
     let collapsed = collapse_call_target_whitespace(&raw);
+    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(evidence);
+    let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
+    // `T::m()` / `S::Error::m()` / `x.m()` with `x: T` name the bound
+    // trait's method, never an impl of it (see `generic_rooted_call`).
+    if let Some(call) = generic_rooted_call(function_node, ctx, source) {
+        let (target, receiver_type, detail) = match call {
+            GenericCall::Bound { method, receiver } => (Some(method), receiver, None),
+            GenericCall::Unbound => (None, ReceiverType::NotTracked, Some(raw)),
+        };
+        output.edges.push(EdgeInput {
+            kind: "CALLS".to_string(),
+            source_qualname: Some(ctx.current_scope.clone()),
+            target_qualname: target,
+            detail,
+            evidence_snippet: snippet,
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            receiver_type,
+            ..Default::default()
+        });
+        return;
+    }
     let import_candidates = import_qualified_candidates(&collapsed, ctx);
     // When full resolution fails for a dotted call (e.g. `db.insert(...)`),
     // emit the bare method name as target_qualname rather than dropping the
@@ -1316,8 +1385,6 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             .filter(|name| !name.is_empty())
     });
     let detail = if target.is_some() { None } else { Some(raw) };
-    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
-    let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     output.edges.push(EdgeInput {
         kind: "CALLS".to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
@@ -2155,6 +2222,9 @@ fn resolve_deferred(
     let DeferredMarker::Rust(deferred) = marker else {
         return Ok(None);
     };
+    if let DeferredSource::AssocBound { owner, assoc } = &deferred.source {
+        return Ok(Some(Some(assoc_bound_type(owner, assoc, index)?)));
+    }
     let declarations = match &deferred.source {
         DeferredSource::Call { candidates } => {
             let mut all = Vec::new();
@@ -2170,6 +2240,7 @@ fn resolve_deferred(
             "{receiver_type}::{method}"
         )))?,
         DeferredSource::Field { owner, .. } => index.declarations(DeclarationQuery::Type(owner))?,
+        DeferredSource::AssocBound { .. } => Vec::new(),
     };
     if declarations.is_empty() {
         return Ok(Some(deferred.fallback.clone()));
@@ -2193,6 +2264,50 @@ fn resolve_deferred(
     }))
 }
 
+/// The trait bounding `owner`'s associated type `assoc` (`S::Error::m` with
+/// `S: Sink`), as the receiver type for `m`. `""` -- known not to bind --
+/// when the trait is not a repo trait, declares no such bound, or its
+/// declarations disagree.
+fn assoc_bound_type(
+    owner: &str,
+    assoc: &str,
+    index: &dyn DeclarationIndex,
+) -> anyhow::Result<String> {
+    let segs: Vec<&str> = owner.split("::").collect();
+    let rooted = matches!(segs[0], "crate" | "self" | "super");
+    let tail: Vec<&str> = segs
+        .iter()
+        .copied()
+        .skip_while(|s| matches!(*s, "crate" | "self" | "super"))
+        .skip(usize::from(!rooted && segs.len() > 1))
+        .collect();
+    let Some(name) = tail.last() else {
+        return Ok(String::new());
+    };
+    let suffix = format!("::{}", tail.join("::"));
+    let mut found: Option<String> = None;
+    for declaration in index.declarations(DeclarationQuery::Trait(name))? {
+        if tail.len() > 1 && !declaration.qualname.ends_with(&suffix) {
+            continue;
+        }
+        let Some(ty) = declaration
+            .signature
+            .as_deref()
+            .and_then(|sig| assoc_bound_from_signature(sig, assoc))
+        else {
+            return Ok(String::new());
+        };
+        match &found {
+            Some(prev) if *prev != ty => return Ok(String::new()),
+            _ => found = Some(ty),
+        }
+    }
+    match found {
+        Some(ty) if !index.declarations(DeclarationQuery::Trait(&ty))?.is_empty() => Ok(ty),
+        _ => Ok(String::new()),
+    }
+}
+
 /// The receiver type `deferred` reaches through one declaration's indexed
 /// signature: a callable's return type or a struct/enum's field type, then
 /// the marker's steps.
@@ -2203,6 +2318,7 @@ fn declared_receiver_type(
 ) -> Option<String> {
     let name = qualname.rsplit("::").next()?;
     let mut ty = match &deferred.source {
+        DeferredSource::AssocBound { .. } => return None,
         DeferredSource::Field { field, .. } => {
             // `struct Name<G> { .. }` / `enum Name<G> { .. }` (`adt_signature`).
             let src = if signature.ends_with('}') {
@@ -2410,6 +2526,286 @@ fn collect_adts(root: Node<'_>, source: &str) -> Adts {
     let mut out = Adts::new();
     walk(root, source, &empty, &mut out);
     out
+}
+
+/// Bounds that say nothing about which trait a method belongs to: dropped
+/// when another bound remains.
+const IGNORABLE_BOUNDS: &[&str] = &[
+    "Sized",
+    "Send",
+    "Sync",
+    "Unpin",
+    "Copy",
+    "Clone",
+    "Debug",
+    "Display",
+    "Default",
+    "PartialEq",
+    "Eq",
+    "Hash",
+    "PartialOrd",
+    "Ord",
+];
+
+/// The trait paths a `trait_bounds` node lists, without generic arguments;
+/// lifetimes, `?Sized` and `Fn(..)` bounds are not traits a call can name.
+fn bound_paths(bounds: Node<'_>, source: &str) -> Vec<String> {
+    let mut cursor = bounds.walk();
+    bounds
+        .named_children(&mut cursor)
+        .filter_map(|b| match b.kind() {
+            "type_identifier" | "scoped_type_identifier" => Some(node_text(b, source)),
+            "generic_type" => b.child_by_field_name("type").map(|t| node_text(t, source)),
+            _ => None,
+        })
+        .map(|p| strip_whitespace(&p))
+        .collect()
+}
+
+/// The one trait among `bounds` a method call can be attributed to, `None`
+/// when there are several candidates (or none).
+fn usable_bound(bounds: &[String]) -> Option<&String> {
+    let last = |b: &String| b.rsplit("::").next().unwrap_or(b).to_string();
+    let selective: Vec<&String> = bounds
+        .iter()
+        .filter(|b| !IGNORABLE_BOUNDS.contains(&last(b).as_str()))
+        .collect();
+    match selective.as_slice() {
+        [one] => Some(one),
+        [] if bounds.len() == 1 => bounds.first(),
+        _ => None,
+    }
+}
+
+/// Trait bounds of every generic parameter in scope at `node` -- the
+/// parameter lists and `where` clauses of `node` and its enclosing items --
+/// keyed by `T`, or `T::Assoc` for a bounded associated type.
+fn collect_generic_bounds(node: Node<'_>, source: &str) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    let mut current = Some(node);
+    while let Some(n) = current {
+        if let Some(params) = n.child_by_field_name("type_parameters") {
+            let mut cursor = params.walk();
+            for p in params.named_children(&mut cursor) {
+                let (id, bounds) = match p.kind() {
+                    "type_identifier" => (Some(p), None),
+                    "constrained_type_parameter" => (
+                        p.child_by_field_name("left"),
+                        p.child_by_field_name("bounds"),
+                    ),
+                    "type_parameter" | "optional_type_parameter" => (
+                        p.child_by_field_name("name"),
+                        p.child_by_field_name("bounds"),
+                    ),
+                    _ => (None, None),
+                };
+                if let Some(id) = id {
+                    out.entry(node_text(id, source))
+                        .or_default()
+                        .extend(bounds.map(|b| bound_paths(b, source)).unwrap_or_default());
+                }
+            }
+        }
+        let mut cursor = n.walk();
+        for clause in n.named_children(&mut cursor) {
+            if clause.kind() != "where_clause" {
+                continue;
+            }
+            let mut inner = clause.walk();
+            for pred in clause.named_children(&mut inner) {
+                let (Some(left), Some(bounds)) = (
+                    pred.child_by_field_name("left"),
+                    pred.child_by_field_name("bounds"),
+                ) else {
+                    continue;
+                };
+                if matches!(left.kind(), "type_identifier" | "scoped_type_identifier") {
+                    out.entry(strip_whitespace(&node_text(left, source)))
+                        .or_default()
+                        .extend(bound_paths(bounds, source));
+                }
+            }
+        }
+        current = n.parent();
+    }
+    out
+}
+
+/// A function's parameters: those typed by a bare name (`x: T`, `x: &mut T`)
+/// as parameter name -> type name, and every name the parameters bind.
+fn collect_fn_params(func: Node<'_>, source: &str) -> (HashMap<String, String>, HashSet<String>) {
+    let mut typed = HashMap::new();
+    let mut names = HashSet::new();
+    let Some(params) = func.child_by_field_name("parameters") else {
+        return (typed, names);
+    };
+    let mut cursor = params.walk();
+    for p in params.named_children(&mut cursor) {
+        if p.kind() != "parameter" {
+            continue;
+        }
+        let Some(pattern) = p.child_by_field_name("pattern") else {
+            continue;
+        };
+        add_pattern_names(pattern, source, &mut names);
+        let Some(mut ty) = p.child_by_field_name("type") else {
+            continue;
+        };
+        while ty.kind() == "reference_type" {
+            let Some(inner) = ty.child_by_field_name("type") else {
+                break;
+            };
+            ty = inner;
+        }
+        if pattern.kind() == "identifier" && ty.kind() == "type_identifier" {
+            typed.insert(node_text(pattern, source), node_text(ty, source));
+        }
+    }
+    (typed, names)
+}
+
+/// Names bound by patterns in `node` (`let`, `if let`, `for`, `match` arms,
+/// closure parameters), not descending into nested `fn` items.
+fn collect_pattern_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    let pattern = match node.kind() {
+        "let_declaration" | "let_condition" | "for_expression" | "match_arm" => {
+            node.child_by_field_name("pattern")
+        }
+        "closure_parameters" => Some(node),
+        _ => None,
+    };
+    if let Some(pattern) = pattern {
+        add_pattern_names(pattern, source, out);
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() != "function_item" {
+            collect_pattern_names(child, source, out);
+        }
+    }
+}
+
+fn add_pattern_names(pattern: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    if matches!(pattern.kind(), "identifier" | "shorthand_field_identifier") {
+        out.insert(node_text(pattern, source));
+    }
+    let mut cursor = pattern.walk();
+    for child in pattern.named_children(&mut cursor) {
+        add_pattern_names(child, source, out);
+    }
+}
+
+/// How a call through a generic parameter resolves.
+enum GenericCall {
+    /// The bound trait's method `method`, via `receiver`.
+    Bound {
+        method: String,
+        receiver: ReceiverType,
+    },
+    /// Rooted at a generic parameter whose trait cannot be determined:
+    /// stays unresolved rather than guessing by name.
+    Unbound,
+}
+
+/// `T::m`, `T::Assoc::m` and `x.m()` with `x: T` (and `T: Trait` in scope)
+/// name the trait's method declaration, never an impl of it. `None` when the
+/// callee is not rooted at a generic parameter.
+fn generic_rooted_call(function: Node<'_>, ctx: &Context, source: &str) -> Option<GenericCall> {
+    if ctx.generic_bounds.is_empty() {
+        return None;
+    }
+    let function = if function.kind() == "generic_function" {
+        function.child_by_field_name("function")?
+    } else {
+        function
+    };
+    let bound = |method: &str, bounds: &[String]| match usable_bound(bounds) {
+        Some(b) => GenericCall::Bound {
+            method: method.to_string(),
+            receiver: ReceiverType::Known(b.rsplit("::").next().unwrap_or(b).to_string()),
+        },
+        None => GenericCall::Unbound,
+    };
+    match function.kind() {
+        "field_expression" => {
+            let value = function.child_by_field_name("value")?;
+            if value.kind() != "identifier" {
+                return None;
+            }
+            let generic = ctx.generic_params.get(&node_text(value, source))?;
+            let method = node_text(function.child_by_field_name("field")?, source);
+            Some(bound(&method, ctx.generic_bounds.get(generic)?))
+        }
+        "scoped_identifier" => {
+            let text = collapse_call_target_whitespace(&node_text(function, source));
+            let segs: Vec<&str> = text.split("::").collect();
+            let bounds = ctx.generic_bounds.get(segs[0])?;
+            Some(match segs.as_slice() {
+                [_, method] => bound(method, bounds),
+                [root, assoc, method] => {
+                    if let Some(assoc_bounds) = ctx.generic_bounds.get(&format!("{root}::{assoc}"))
+                    {
+                        bound(method, assoc_bounds)
+                    } else if let Some(owner) = usable_bound(bounds) {
+                        GenericCall::Bound {
+                            method: (*method).to_string(),
+                            receiver: ReceiverType::RustDeferred(RustDeferred {
+                                source: DeferredSource::AssocBound {
+                                    owner: owner.clone(),
+                                    assoc: (*assoc).to_string(),
+                                },
+                                steps: Vec::new(),
+                                fallback: None,
+                            }),
+                        }
+                    } else {
+                        GenericCall::Unbound
+                    }
+                }
+                _ => GenericCall::Unbound,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// `trait Name { type A: Bound; .. }`: the trait's associated types that
+/// carry a bound, kept in the symbol's signature so a call through
+/// `T::A::method` in another file can find the bound (`resolve_deferred`).
+fn trait_signature(node: Node<'_>, source: &str, name: &str) -> Option<String> {
+    let body = body_node(node)?;
+    let mut cursor = body.walk();
+    let assoc: Vec<String> = body
+        .named_children(&mut cursor)
+        .filter(|item| item.kind() == "associated_type")
+        .filter_map(|item| {
+            let assoc = node_text(item.child_by_field_name("name")?, source);
+            let bounds = strip_whitespace(&node_text(item.child_by_field_name("bounds")?, source));
+            Some(format!("type {assoc}{bounds};"))
+        })
+        .collect();
+    (!assoc.is_empty()).then(|| format!("trait {name} {{ {} }}", assoc.join(" ")))
+}
+
+/// The bound trait of the associated type `assoc` in a trait's signature
+/// (`trait_signature`), by name.
+fn assoc_bound_from_signature(signature: &str, assoc: &str) -> Option<String> {
+    let tree = parse_declaration(signature)?;
+    let root = tree.root_node();
+    let item = root.named_child(0)?;
+    let body = item.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    let bounds = body
+        .named_children(&mut cursor)
+        .filter(|i| i.kind() == "associated_type")
+        .find(|i| {
+            i.child_by_field_name("name")
+                .is_some_and(|n| node_text(n, signature) == assoc)
+        })?
+        .child_by_field_name("bounds")?;
+    let paths = bound_paths(bounds, signature);
+    let picked = usable_bound(&paths)?;
+    Some(picked.rsplit("::").next().unwrap_or(picked).to_string())
 }
 
 /// Generic parameter names of `node` and its enclosing impl/trait items.

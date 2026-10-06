@@ -212,6 +212,10 @@ pub enum DeferredSource {
     /// Type of a field of the struct/enum `owner`: `field` is `name`, `0`, or
     /// `Variant::name` / `Variant::0` for an enum variant.
     Field { owner: String, field: String },
+    /// The trait a generic's associated type is bounded by: `S::Error::m`
+    /// with `S: Sink` and `type Error: SinkError;` in `Sink`'s declaration.
+    /// `owner` is the bound trait's path as written at the call site.
+    AssocBound { owner: String, assoc: String },
 }
 
 /// One projection applied to a declared type to reach the receiver's type.

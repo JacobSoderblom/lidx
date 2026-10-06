@@ -2834,3 +2834,76 @@ fn rust_cargo_toml_removing_bin_path_matches_fresh() {
         false,
     );
 }
+
+const ASSOC_CORE: &str = "use crate::sink::{Sink, SinkError};\n\
+pub struct Core<S>(S);\n\
+impl<S: Sink> Core<S> {\n    pub fn go(&self, e: u8) -> S::Error {\n        S::Error::error_message(e)\n    }\n}\n";
+const ASSOC_SINK: &str = "pub trait SinkError {\n    fn error_message(m: u8) -> Self;\n}\n\
+pub trait Other {\n    fn error_message(m: u8) -> Self;\n}\n\
+pub trait Sink {\n    type Error: SinkError;\n}\n";
+const ASSOC_SINK_REBOUND: &str = "pub trait SinkError {\n    fn error_message(m: u8) -> Self;\n}\n\
+pub trait Other {\n    fn error_message(m: u8) -> Self;\n}\n\
+pub trait Sink {\n    type Error: Other;\n}\n";
+const ASSOC_LIB: &str = "pub mod core;\npub mod sink;\n";
+const ASSOC_TOML: &str = "[package]\nname = \"app\"\n";
+
+fn assoc_files(sink: &'static str) -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", ASSOC_LIB),
+        ("src/core.rs", ASSOC_CORE),
+        ("src/sink.rs", sink),
+    ]
+}
+
+fn assert_assoc_call_matches_fresh(indexer: &Indexer, sink: &'static str, target: Option<&str>) {
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let call: Vec<_> = snapshot
+        .iter()
+        .filter(|e| {
+            e.kind == "CALLS"
+                && e.source_qualname == "crate::core::Core::go"
+                && e.target_qualname.is_some()
+        })
+        .map(|e| e.target_qualname.as_deref())
+        .collect();
+    assert_eq!(call, vec![target], "{snapshot:#?}");
+    let (_fresh_tmp, fresh) = common::index_files(&assoc_files(sink));
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// The trait declaring the associated type's bound arrives after the call.
+#[test]
+fn rust_assoc_type_bound_trait_added_later_matches_fresh() {
+    let early: Vec<_> = assoc_files(ASSOC_SINK)
+        .into_iter()
+        .filter(|(p, _)| *p != "src/sink.rs")
+        .collect();
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-assoc-add", &early);
+    common::write_files(&repo_root, &[("src/sink.rs", ASSOC_SINK)]);
+    indexer
+        .sync_rel_paths(&["src/sink.rs".to_string()])
+        .unwrap();
+    assert_assoc_call_matches_fresh(
+        &indexer,
+        ASSOC_SINK,
+        Some("crate::sink::SinkError::error_message"),
+    );
+}
+
+/// Editing the associated type's bound retargets the call.
+#[test]
+fn rust_assoc_type_bound_edited_matches_fresh() {
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-assoc-edit", &assoc_files(ASSOC_SINK));
+    common::write_files(&repo_root, &[("src/sink.rs", ASSOC_SINK_REBOUND)]);
+    indexer
+        .sync_rel_paths(&["src/sink.rs".to_string()])
+        .unwrap();
+    assert_assoc_call_matches_fresh(
+        &indexer,
+        ASSOC_SINK_REBOUND,
+        Some("crate::sink::Other::error_message"),
+    );
+}
