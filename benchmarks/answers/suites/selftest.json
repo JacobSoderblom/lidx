@@ -1,0 +1,306 @@
+{
+ "name": "selftest",
+ "repo": {
+  "path": "../fixtures/selftest"
+ },
+ "questions": [
+  {
+   "id": "st-cs-callers-add",
+   "lang": "csharp",
+   "kind": "callers",
+   "target": {
+    "file": "cs/Calculator.cs",
+    "line": 5
+   },
+   "expect": [
+    {
+     "file": "cs/Calculator.cs",
+     "line": 12
+    },
+    {
+     "file": "cs/Program.cs",
+     "line": 8
+    },
+    {
+     "file": "cs/Program.cs",
+     "line": 15
+    }
+   ],
+   "tags": [
+    "instance-call",
+    "same-class-call"
+   ],
+   "note": "read all .cs files by hand: Add( appears in Calculator.cs:12, Program.cs:8, Program.cs:15"
+  },
+  {
+   "id": "st-cs-callers-multiply",
+   "lang": "csharp",
+   "kind": "callers",
+   "target": {
+    "file": "cs/Calculator.cs",
+    "line": 10
+   },
+   "expect": [
+    {
+     "file": "cs/Program.cs",
+     "line": 9
+    }
+   ],
+   "tags": [
+    "instance-call"
+   ]
+  },
+  {
+   "id": "st-cs-impact-add",
+   "lang": "csharp",
+   "kind": "impact_direct",
+   "target": {
+    "file": "cs/Calculator.cs",
+    "line": 5
+   },
+   "expect": [
+    {
+     "file": "cs/Calculator.cs",
+     "line": 10
+    },
+    {
+     "file": "cs/Program.cs",
+     "line": 5
+    },
+    {
+     "file": "cs/Program.cs",
+     "line": 12
+    }
+   ],
+   "note": "enclosing methods Multiply, Run, Again"
+  },
+  {
+   "id": "st-py-callers-helper",
+   "lang": "python",
+   "kind": "callers",
+   "target": {
+    "file": "py/util.py",
+    "line": 1
+   },
+   "expect": [
+    {
+     "file": "py/util.py",
+     "line": 10
+    },
+    {
+     "file": "py/main.py",
+     "line": 5
+    }
+   ],
+   "tags": [
+    "import"
+   ],
+   "note": "main.py imports helper from util"
+  },
+  {
+   "id": "st-ts-callers-greet",
+   "lang": "typescript",
+   "kind": "callers",
+   "target": {
+    "file": "ts/greet.ts",
+    "line": 1
+   },
+   "expect": [
+    {
+     "file": "ts/app.ts",
+     "line": 4
+    }
+   ],
+   "tags": [
+    "import"
+   ]
+  },
+  {
+   "id": "st-ts-callers-decorate",
+   "lang": "typescript",
+   "kind": "callers",
+   "target": {
+    "file": "ts/greet.ts",
+    "line": 5
+   },
+   "expect": [
+    {
+     "file": "ts/greet.ts",
+     "line": 2
+    }
+   ]
+  },
+  {
+   "id": "st-cs-dead",
+   "lang": "csharp",
+   "kind": "dead",
+   "scope": {
+    "path": "cs",
+    "lang": "csharp"
+   },
+   "live": [
+    {
+     "file": "cs/Calculator.cs",
+     "line": 5
+    },
+    {
+     "file": "cs/Calculator.cs",
+     "line": 10
+    }
+   ],
+   "dead": [
+    {
+     "file": "cs/Calculator.cs",
+     "line": 15
+    }
+   ],
+   "note": "Run/Again are entry-point-like and omitted"
+  },
+  {
+   "id": "st-py-dead",
+   "lang": "python",
+   "kind": "dead",
+   "scope": {
+    "path": "py",
+    "lang": "python"
+   },
+   "live": [
+    {
+     "file": "py/util.py",
+     "line": 1
+    },
+    {
+     "file": "py/util.py",
+     "line": 9
+    }
+   ],
+   "dead": [
+    {
+     "file": "py/util.py",
+     "line": 5
+    }
+   ],
+   "note": "start() in main.py omitted (entry point)"
+  },
+  {
+   "id": "st-ts-dead",
+   "lang": "typescript",
+   "kind": "dead",
+   "scope": {
+    "path": "ts",
+    "lang": "typescript"
+   },
+   "live": [
+    {
+     "file": "ts/greet.ts",
+     "line": 1
+    },
+    {
+     "file": "ts/greet.ts",
+     "line": 5
+    }
+   ],
+   "dead": [
+    {
+     "file": "ts/greet.ts",
+     "line": 9
+    }
+   ],
+   "note": "main() in app.ts omitted (entry point)"
+  },
+  {
+   "id": "st-py-trace-start",
+   "lang": "python",
+   "kind": "trace_reaches",
+   "start": {
+    "file": "py/main.py",
+    "line": 4
+   },
+   "max_hops": 2,
+   "must_reach": [
+    {
+     "file": "py/util.py",
+     "line": 1
+    },
+    {
+     "file": "py/util.py",
+     "line": 9
+    }
+   ],
+   "must_not_reach": [
+    {
+     "file": "py/util.py",
+     "line": 5
+    }
+   ]
+  },
+  {
+   "id": "st-cs-trace-run",
+   "lang": "csharp",
+   "kind": "trace_reaches",
+   "start": {
+    "file": "cs/Program.cs",
+    "line": 5
+   },
+   "max_hops": 2,
+   "must_reach": [
+    {
+     "file": "cs/Calculator.cs",
+     "line": 5
+    },
+    {
+     "file": "cs/Calculator.cs",
+     "line": 10
+    }
+   ],
+   "must_not_reach": [
+    {
+     "file": "cs/Calculator.cs",
+     "line": 15
+    }
+   ]
+  },
+  {
+   "id": "st-ts-trace-main",
+   "lang": "typescript",
+   "kind": "trace_reaches",
+   "start": {
+    "file": "ts/app.ts",
+    "line": 3
+   },
+   "max_hops": 2,
+   "must_reach": [
+    {
+     "file": "ts/greet.ts",
+     "line": 1
+    },
+    {
+     "file": "ts/greet.ts",
+     "line": 5
+    }
+   ],
+   "must_not_reach": [
+    {
+     "file": "ts/greet.ts",
+     "line": 9
+    }
+   ]
+  },
+  {
+   "id": "st-cs-callers-notindexed",
+   "lang": "csharp",
+   "kind": "callers",
+   "target": {
+    "file": "cs/Calculator.cs",
+    "line": 2
+   },
+   "expect": [
+    {
+     "file": "cs/Program.cs",
+     "line": 8
+    }
+   ],
+   "note": "line 2 is a bare brace, not a declaration: exercises target_not_indexed"
+  }
+ ]
+}
