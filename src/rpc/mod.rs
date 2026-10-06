@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 pub(crate) use compact::compact_symbol_value;
+#[cfg(test)]
 pub(crate) use schema::method_param_schema;
 
 #[derive(Deserialize)]

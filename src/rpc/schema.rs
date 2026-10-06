@@ -8,6 +8,8 @@ pub(super) fn schema_value<T: schemars::JsonSchema>() -> Value {
 }
 
 /// Return a simplified JSON Schema for the params struct of the given method.
+/// No longer advertised over MCP (the tool description carries the guide); kept for tests.
+#[cfg(test)]
 pub fn method_param_schema(method: &str) -> Value {
     use super::{
         AnalyzeDiffParams, AnalyzeImpactParams, ContextParams, DeadSymbolsParams,

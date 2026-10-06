@@ -182,30 +182,6 @@ fn handle_single_message(message: Value, state: &mut State) -> Option<Value> {
     }
 }
 
-/// Methods called out by name in the "START HERE" and "Read code with ..."
-/// instructions lines. Everything else in METHOD_LIST surfaces in the
-/// "Other methods" line -- outline/read_symbol are listed here too so they
-/// aren't named a second time by `other_methods_list()`.
-const FEATURED_METHODS: &[&str] = &[
-    "explain_symbol",
-    "analyze_diff",
-    "trace_flow",
-    "orient",
-    "search",
-    "gather_context",
-    "outline",
-    "read_symbol",
-];
-
-fn other_methods_list() -> String {
-    rpc::METHOD_LIST
-        .iter()
-        .filter(|&&m| !FEATURED_METHODS.contains(&m))
-        .copied()
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn initialize_result(message: &Value) -> Value {
     let protocol = message
         .get("params")
@@ -219,76 +195,57 @@ fn initialize_result(message: &Value) -> Value {
             "name": "lidx",
             "version": env!("CARGO_PKG_VERSION"),
         },
-        "instructions": format!(
-            "Use the {TOOL_NAME} tool to query a code index. \
-    Start with method: onboard or orient for an overview.\n\
-    \n\
-    START HERE: explain_symbol for deep symbol understanding (one call replaces 5+). \
-    analyze_diff for change impact. trace_flow for call chains. \
-    orient for architecture overview. search for regex. \
-    gather_context for LLM-ready context.\n\
-    \n\
-    Read code with outline (file skeleton) and read_symbol (exact source) instead of whole-file reads.\n\
-    \n\
-    Other methods: {other_methods}.\n\
-    \n\
-    Edge kinds: CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, INHERITS, RPC_IMPL, RPC_CALL, RPC_ROUTE, \
-    HTTP_ROUTE, HTTP_CALL, CHANNEL_PUBLISH, CHANNEL_SUBSCRIBE, CONFIG_SOURCE, CONFIG_READ, CONFIG_BIND, \
-    USES, XREF, MODULE_FILE, IMPORTS_FILE. Scope values (`search` param `scope`): code, docs, tests, examples, all. \
-    Params a method does not accept are ignored, not fatal: the result then carries `_meta.ignored_params` and a trailing text block naming them.",
-            other_methods = other_methods_list()
-        ),
+        "instructions": INSTRUCTIONS,
     })
 }
 
-fn tool_spec() -> Value {
-    // Build oneOf array: one schema variant per method (all 13 get full schemas)
-    let one_of: Vec<Value> = rpc::METHOD_LIST
-        .iter()
-        .map(|&method| {
-            let mut schema = rpc::method_param_schema(method);
-            if let Some(obj) = schema.as_object_mut() {
-                obj.insert("title".to_string(), json!(method));
-            }
-            schema
-        })
-        .collect();
+/// Server instructions: deliberately tiny; the tool description carries the guide.
+const INSTRUCTIONS: &str = "lidx is a code index (symbol graph, call/impact analysis). \
+For questions about code structure, who calls what, or reading one symbol, use the lidx tool \
+(see its description) before Grep/Read. First call in an unfamiliar repo: method orient.";
 
+/// Tool description: when to use lidx (as jobs), then a compact reference for the core methods.
+/// Param names here must match the param structs in `rpc/mod.rs`.
+const TOOL_DESCRIPTION: &str = r#"Code index with a resolved symbol graph. Prefer it over Grep/Read for code-structure questions: one call returns callers, callees, source and tests. Call with {method, params}.
+
+Jobs:
+- Who calls X / where is X used / what breaks if I change X: explain_symbol (callers, callees, tests, source in one call) or analyze_impact with direction "upstream" (transitive consumers).
+- How does X work / what does X call / trace a flow: trace_flow (follows calls, plus RPC/HTTP/message-bus/config links via kinds), or explain_symbol.
+- Read one function/class, not the whole file: read_symbol. File skeleton: outline.
+- Find where something is defined, or text/regex search: search.
+- Architecture overview: orient (first call in a new repo).
+- What does a diff or set of changed files affect: analyze_diff.
+
+Symbols: pass query (plain name like "tool_spec", fuzzy) or an exact qualname.
+
+Methods (* = required, one-of groups in brackets):
+- explain_symbol {[query|qualname|id], sections:[source|callers|callees|tests|implements], max_refs} e.g. {"query":"tool_spec"}
+- analyze_impact {[query|qualname|qualnames]*, direction:upstream|downstream|both, max_depth, limit} e.g. {"query":"tool_spec","direction":"upstream"}
+- trace_flow {[query|start_qualname|start_id]*, end_qualname, direction, max_hops, kinds:[CALLS,RPC_IMPL,HTTP_CALL,CHANNEL_PUBLISH,CONFIG_READ,..]} e.g. {"query":"handle_tool_call","max_hops":3}
+- read_symbol {[query|qualname|qualnames]*, skeleton, context_lines} e.g. {"qualname":"crate::mcp::tool_spec"}
+- outline {path*, kinds, max_depth} e.g. {"path":"src/mcp.rs"}
+- search {query*, limit, scope:code|docs|tests|examples|all, path, paths, languages, fixed_string, case_sensitive} e.g. {"query":"fn tool_spec","scope":"code","limit":10}
+- orient {view:overview|map|modules|all, focus_query} e.g. {"view":"overview"}
+- analyze_diff {diff | paths}, e.g. {"paths":["src/mcp.rs"]}
+- gather_context {seeds*:[{"type":"symbol","qualname":..}|{"type":"file","path":..}|{"type":"search","query":..}], max_bytes}
+- Also: context {path}, onboard, repo_map, top_complexity, dead_symbols, reindex.
+Unknown params are ignored and reported in _meta.ignored_params."#;
+
+fn tool_spec() -> Value {
     json!({
         "name": TOOL_NAME,
-        "description": "Query the lidx code index using a method + params payload.",
+        "description": TOOL_DESCRIPTION,
         "inputSchema": {
             "type": "object",
             "properties": {
                 "method": {
                     "type": "string",
                     "enum": rpc::METHOD_LIST,
-                    "description": "lidx RPC method name."
+                    "description": "lidx method name."
                 },
                 "params": {
-                    "oneOf": one_of,
-                    "description": "Method parameters (object). See the oneOf schemas above for per-method parameter docs."
-                },
-                "repo": {
-                    "type": "string",
-                    "description": "Optional repo root override for this call."
-                },
-                "db": {
-                    "type": "string",
-                    "description": "Optional db path override for this call."
-                },
-                "set_default": {
-                    "type": "boolean",
-                    "description": "If true, update default repo/db for subsequent calls."
-                },
-                "text_mode": {
-                    "type": "string",
-                    "enum": ["pretty", "compact", "none"],
-                    "description": "Controls textual output size in tool responses."
-                },
-                "include_structured": {
-                    "type": "boolean",
-                    "description": "If true, also include structuredContent in tool responses. Omitted by default -- the text content already carries the full response."
+                    "type": "object",
+                    "description": "Method parameters; see tool description."
                 }
             },
             "required": ["method"]
@@ -535,55 +492,121 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn featured_methods_are_dispatchable() {
-        for method in FEATURED_METHODS {
-            assert!(
-                rpc::METHOD_LIST.contains(method),
-                "FEATURED_METHODS contains '{method}' which is not in METHOD_LIST; \
-                 the START HERE instructions line has drifted from dispatch"
-            );
-        }
+    /// Everything the agent sees up front about the tool.
+    fn agent_visible_text() -> String {
+        let init = initialize_result(&json!({}));
+        let spec = tool_spec();
+        format!(
+            "{}\n{}\n{}",
+            init["instructions"].as_str().unwrap(),
+            spec["description"].as_str().unwrap(),
+            spec["inputSchema"]
+        )
     }
 
     #[test]
-    fn instructions_do_not_mention_outline_or_read_symbol_twice() {
-        // outline/read_symbol are already called out by name in the
-        // "Read code with outline ... and read_symbol ..." line; if they're
-        // also missing from FEATURED_METHODS they get listed a second time
-        // in the "Other methods: ..." line.
-        let init = initialize_result(&json!({}));
-        let instructions = init["instructions"].as_str().unwrap();
-        for method in ["outline", "read_symbol"] {
-            let count = instructions.matches(method).count();
-            assert_eq!(
-                count, 1,
-                "'{method}' should be mentioned exactly once in the instructions, got {count}: {instructions}"
-            );
-        }
-    }
-
-    #[test]
-    fn instructions_mention_every_method_and_no_phantom_help() {
-        let init = initialize_result(&json!({}));
-        let instructions = init["instructions"].as_str().unwrap();
+    fn agent_visible_text_mentions_every_method_and_no_phantom_help() {
+        let text = agent_visible_text();
         for method in rpc::METHOD_LIST {
             assert!(
-                instructions.contains(method),
-                "instructions do not mention dispatchable method '{method}'"
+                text.contains(method),
+                "tool description/instructions do not mention dispatchable method '{method}'"
             );
         }
         assert!(
-            !instructions.contains("help"),
-            "instructions mention a 'help' method, which is not dispatchable"
+            !text.to_lowercase().contains("help"),
+            "tool description/instructions mention a 'help' method, which is not dispatchable"
         );
+    }
+
+    #[test]
+    fn tool_description_param_names_exist_in_schemas() {
+        // Spot-check the guide against the real param structs: every core
+        // method's documented params must be properties of its schema.
+        let guide: &[(&str, &[&str])] = &[
+            (
+                "explain_symbol",
+                &["query", "qualname", "id", "sections", "max_refs"],
+            ),
+            (
+                "analyze_impact",
+                &[
+                    "query",
+                    "qualname",
+                    "qualnames",
+                    "direction",
+                    "max_depth",
+                    "limit",
+                ],
+            ),
+            (
+                "trace_flow",
+                &[
+                    "query",
+                    "start_qualname",
+                    "start_id",
+                    "end_qualname",
+                    "direction",
+                    "max_hops",
+                    "kinds",
+                ],
+            ),
+            (
+                "read_symbol",
+                &[
+                    "query",
+                    "qualname",
+                    "qualnames",
+                    "skeleton",
+                    "context_lines",
+                ],
+            ),
+            ("outline", &["path", "kinds", "max_depth"]),
+            (
+                "search",
+                &[
+                    "query",
+                    "limit",
+                    "scope",
+                    "path",
+                    "paths",
+                    "languages",
+                    "fixed_string",
+                    "case_sensitive",
+                ],
+            ),
+            ("orient", &["view", "focus_query"]),
+            ("analyze_diff", &["diff", "paths"]),
+            ("gather_context", &["seeds", "max_bytes"]),
+            ("context", &["path"]),
+        ];
+        for (method, params) in guide {
+            let schema = rpc::method_param_schema(method);
+            for p in *params {
+                assert!(
+                    schema["properties"].get(*p).is_some(),
+                    "guide documents {method}.{p}, which is not in its schema"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tool_spec_stays_within_token_budget() {
+        // The tool entry and instructions are sent on every agent turn.
         let spec = tool_spec();
-        let params_desc = spec["inputSchema"]["properties"]["params"]["description"]
-            .as_str()
-            .unwrap();
+        let init = initialize_result(&json!({}));
+        let total = serde_json::to_string(&spec).unwrap().len()
+            + init["instructions"].as_str().unwrap().len();
         assert!(
-            !params_desc.contains("help"),
-            "tool spec params description mentions a 'help' method, which is not dispatchable"
+            total <= 6000,
+            "tools/list entry + instructions are {total} chars, budget 6000"
+        );
+        assert!(
+            spec["inputSchema"]["properties"]["params"]
+                .get("oneOf")
+                .is_none(),
+            "params must stay a plain object; per-method docs live in the description"
         );
     }
 
@@ -767,15 +790,19 @@ mod tests {
         let (mut state, _repo) = mcp_state("toolslist");
         let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
         let resp = handle_message(msg, &mut state).unwrap();
-        let variants = resp["result"]["tools"][0]["inputSchema"]["properties"]["params"]["oneOf"]
-            .as_array()
-            .unwrap();
-        let search = variants.iter().find(|v| v["title"] == "search").unwrap();
-        let scope = &search["properties"]["scope"];
-        assert!(scope.is_object(), "search schema lacks scope: {search}");
-        let text = scope.to_string();
+        let desc = resp["result"]["tools"][0]["description"].as_str().unwrap();
+        let line = desc
+            .split("scope:")
+            .nth(1)
+            .expect("description lists search scope values");
+        let list = line.split([',', ' ']).next().unwrap();
+        let schema = rpc::method_param_schema("search").to_string();
         for v in ["code", "docs", "tests", "examples", "all"] {
-            assert!(text.contains(v), "scope schema missing {v}: {text}");
+            assert!(
+                list.contains(v),
+                "description should list scope {v}: {list}"
+            );
+            assert!(schema.contains(v), "search schema should accept {v}");
         }
     }
 
@@ -866,22 +893,6 @@ mod tests {
         let text = res["content"][0]["text"].as_str().unwrap();
         for v in ["code", "docs", "tests", "examples", "all"] {
             assert!(text.contains(v), "error should list '{v}': {text}");
-        }
-    }
-
-    #[test]
-    fn instructions_scope_values_are_all_accepted_by_search() {
-        let init = initialize_result(&json!({}));
-        let instructions = init["instructions"].as_str().unwrap();
-        let line = instructions
-            .split("Scope values")
-            .nth(1)
-            .expect("instructions mention scope values");
-        let list = line.split('.').next().unwrap();
-        let schema = rpc::method_param_schema("search").to_string();
-        for v in ["code", "docs", "tests", "examples", "all"] {
-            assert!(list.contains(v), "instructions should list {v}: {list}");
-            assert!(schema.contains(v), "search schema should accept {v}");
         }
     }
 
