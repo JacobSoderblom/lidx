@@ -133,3 +133,35 @@ fn sibling_bin_roots_are_each_their_own_crate_root() {
     );
     assert_eq!(sources.len(), 2, "{sources:?}");
 }
+
+#[test]
+fn inline_table_lib_path_root_is_crate_root() {
+    let toml = "lib = { name = \"xx\", path = \"rust/entry.rs\" }\n[package]\nname = \"x\"\n";
+    let (_tmp, snap) = common::index_files(&[
+        ("Cargo.toml", toml),
+        (
+            "rust/entry.rs",
+            "mod util;\npub fn top() {\n    util::inner();\n}\n",
+        ),
+        ("rust/util.rs", "pub fn inner() {}\n"),
+    ]);
+    assert!(snap.iter().any(|e| e.kind == "CALLS"
+        && e.source_qualname == "crate::top"
+        && e.target_qualname.as_deref() == Some("crate::util::inner")));
+}
+
+#[test]
+fn inline_array_bin_roots_are_each_their_own_crate_root() {
+    let toml = "bin = [{ name = \"a\", path = \"src/bin/a.rs\" }, { name = \"b\", path = \"src/bin/b.rs\" }]\n[package]\nname = \"x\"\n";
+    let (_tmp, snap) = common::index_files(&[
+        ("Cargo.toml", toml),
+        ("src/bin/a.rs", "fn main() {\n    ha();\n}\nfn ha() {}\n"),
+        ("src/bin/b.rs", "fn main() {\n    hb();\n}\nfn hb() {}\n"),
+    ]);
+    let sources: Vec<_> = snap
+        .iter()
+        .filter(|e| e.kind == "CALLS")
+        .map(|e| e.source_qualname.clone())
+        .collect();
+    assert_eq!(sources, ["crate::main", "crate::main"], "{sources:?}");
+}

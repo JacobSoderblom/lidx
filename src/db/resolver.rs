@@ -595,6 +595,10 @@ fn is_descendant_rust_module(
 /// module containing the `impl`). Types, traits and enums are `UpperCamel`
 /// and modules `snake_case` by Rust convention, which is all the qualname
 /// carries.
+// ponytail: ceiling -- an UpperCamel segment is taken to be a type and a
+// lowercase one a module; a `mod Foo` or a lowercase type (`type t = ..`)
+// is misjudged. Upgrade: record each symbol's container kind (or a module
+// flag) at extraction and climb by that instead of by spelling.
 fn rust_enclosing_module(qn: &str) -> Option<&str> {
     let mut module = qualname_container(qn)?;
     while let Some((head, last)) = module.rsplit_once("::") {

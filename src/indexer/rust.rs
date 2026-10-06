@@ -411,6 +411,24 @@ fn module_name_from_parts(rel_path: &str, strip_src: bool) -> String {
     }
 }
 
+/// Every `key = "value"` string pair in an inline table or an array of them.
+fn inline_strings(text: &str, key: &str) -> Vec<String> {
+    text.match_indices(key)
+        .filter(|(i, _)| {
+            !text[..*i].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '-' || c == '"')
+        })
+        .filter_map(|(i, _)| {
+            let rest = text[i + key.len()..].trim_start().strip_prefix('=')?;
+            let rest = rest.trim_start().strip_prefix('"')?;
+            Some(rest[..rest.find('"')?].to_string())
+        })
+        .collect()
+}
+
+fn inline_string(text: &str, key: &str) -> Option<String> {
+    inline_strings(text, key).into_iter().next()
+}
+
 /// The target roots a `Cargo.toml` declares with an explicit `path`
 /// (`[lib]`, `[[bin]]`, `[[test]]`, `[[bench]]`, `[[example]]`), as written
 /// (relative to the manifest's directory). Targets without a `path` keep the
@@ -428,8 +446,12 @@ struct Manifest {
 }
 
 impl Manifest {
-    /// Line-oriented read of the few keys needed; not a TOML parser (no
-    /// multi-line strings or inline tables), which these keys never use.
+    /// Line-oriented read of the few keys needed; not a TOML parser.
+    // ponytail: ceiling -- misses multi-line strings and arrays (a `bin = [`
+    // spread over lines), dotted keys (`lib.path = ".."`), a `#` inside a
+    // string value (everything after it is cut), and `{ path = .. }` inline
+    // tables other than the top-level `lib`/`bin`/`test`/`bench`/`example`
+    // one-line forms handled below. Upgrade: the `toml` crate.
     fn parse(text: &str) -> Self {
         let mut manifest = Manifest::default();
         let mut section = String::new();
@@ -446,7 +468,8 @@ impl Manifest {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
-            let value = value.trim().trim_matches('"');
+            let raw = value.trim();
+            let value = raw.trim_matches('"');
             match (section.as_str(), key.trim()) {
                 ("package", "name") => manifest.package_name = Some(value.to_string()),
                 ("lib", "name") => manifest.lib_name = Some(value.to_string()),
@@ -456,6 +479,18 @@ impl Manifest {
                 }
                 ("bin" | "test" | "bench" | "example", "path") => {
                     manifest.roots.push(value.to_string());
+                }
+                // Top-level inline forms: `lib = { name = "x", path = "y" }`,
+                // `bin = [{ path = "a" }, { path = "b" }]`.
+                ("", "lib") => {
+                    manifest.lib_name = inline_string(raw, "name");
+                    if let Some(path) = inline_string(raw, "path") {
+                        manifest.lib_path = Some(path.clone());
+                        manifest.roots.push(path);
+                    }
+                }
+                ("", "bin" | "test" | "bench" | "example") => {
+                    manifest.roots.extend(inline_strings(raw, "path"));
                 }
                 _ => {}
             }
@@ -1510,6 +1545,11 @@ fn handle_fn_ref(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     let Some(last) = text.rsplit("::").next() else {
         return;
     };
+    // ponytail: ceiling -- spelling decides: an `UpperCamel`/`SCREAMING` last
+    // segment is never a function (a `#[allow(non_snake_case)]` fn is
+    // missed), and a lowercase `static`/`const` that passes is dropped later
+    // by the resolver (`UnresolvedReason::NotCallable`), not here. Upgrade:
+    // look the name up in the file's own symbol kinds before emitting.
     if !last.starts_with(|c: char| c.is_lowercase()) {
         return;
     }
@@ -1643,10 +1683,19 @@ enum Ty {
 }
 
 /// Longest method chain kept on a `Pending` type.
+// ponytail: ceiling -- a deferred chain longer than 4 steps stays untracked
+// (an unresolved call, never a guess), so `a.b().c().d().e().f()` through
+// another file's declarations is lost. Upgrade: raise it once the resolver
+// memoizes per-declaration return types, or bound by cost instead of count.
 const MAX_DEFERRED_STEPS: usize = 4;
 
 /// Std methods whose result is never a repo type, so `project` does not
 /// defer a chain through them.
+// ponytail: ceiling -- a hand-kept name list: a repo type that declares its
+// own `map`/`join`/`len` loses chained receiver typing through that method,
+// and a std method missing here is deferred (then dropped by the step cap).
+// Upgrade: ask the index whether any repo declaration has that method name
+// and skip the deferral only when none does.
 const STD_UNTYPED_METHODS: &[&str] = &[
     "to_string",
     "len",
@@ -2547,6 +2596,10 @@ fn declared_return_ty(qualname: &str, signature: &str) -> Option<Ty> {
     if func.kind() != "function_item" {
         return None;
     }
+    // ponytail: ceiling -- an UpperCamel segment before the name is taken to
+    // be the owning type (same spelling heuristic as the resolver's
+    // `rust_enclosing_module`); a `mod Foo` is misread as a `Self` type.
+    // Upgrade: carry the owner's kind in the declaration query.
     let owner = qualname
         .rsplit("::")
         .nth(1)
