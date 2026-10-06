@@ -3105,3 +3105,49 @@ fn rust_clone_keeps_deferred_type_after_return_edit_matches_fresh() {
     let (_f, fresh) = common::index_files(&edited);
     common::assert_matches_fresh(&snap, &fresh);
 }
+
+const MACRO_REF_MAIN: &str = "mod conv;\nuse conv::convert;\n\
+pub fn run(xs: Vec<u8>) {\n    assert_eq!(xs.iter().map(convert).count(), 1);\n}\n";
+
+/// A function passed as a value inside a macro's arguments binds once its
+/// definition exists, and unbinds when it is removed.
+#[test]
+fn rust_macro_arg_fn_ref_target_added_then_removed_matches_fresh() {
+    let base: Vec<(&str, &str)> = vec![("Cargo.toml", ASSOC_TOML), ("src/lib.rs", MACRO_REF_MAIN)];
+    let conv = "pub fn convert(e: &u8) -> String {\n    e.to_string()\n}\n";
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-macro-fnref", &base);
+    common::write_files(&repo_root, &[("src/conv.rs", conv)]);
+    indexer
+        .sync_rel_paths(&["src/conv.rs".to_string()])
+        .unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        snap.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "crate::run"
+            && e.target_qualname.as_deref() == Some("crate::conv::convert")),
+        "{snap:#?}"
+    );
+    let full: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", MACRO_REF_MAIN),
+        ("src/conv.rs", conv),
+    ];
+    let (_f, fresh) = common::index_files(&full);
+    common::assert_matches_fresh(&snap, &fresh);
+
+    let other = "pub fn other(e: &u8) -> String {\n    e.to_string()\n}\n";
+    common::write_files(&repo_root, &[("src/conv.rs", other)]);
+    indexer
+        .sync_rel_paths(&["src/conv.rs".to_string()])
+        .unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let renamed: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", MACRO_REF_MAIN),
+        ("src/conv.rs", other),
+    ];
+    let (_f2, fresh) = common::index_files(&renamed);
+    common::assert_matches_fresh(&snap, &fresh);
+}

@@ -585,7 +585,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     }
     match node.kind() {
         "macro_invocation" => {
-            handle_macro_invocation(node, ctx, source, output);
+            handle_macro_invocation(node, ctx, source, output, &HashSet::new());
             return;
         }
         "mod_item" => {
@@ -1240,11 +1240,15 @@ const EXPR_ARG_MACROS: &[&str] = &[
 /// known std macros, re-parse just that byte range as an expression (the
 /// included range keeps byte/line offsets identical to the real file) and
 /// extract calls from it. Other macros are skipped.
+///
+/// `bound` holds the names closures and patterns of enclosing macro
+/// arguments bind, which the function body's own pattern scan never sees.
 fn handle_macro_invocation(
     node: Node<'_>,
     ctx: &Context,
     source: &str,
     output: &mut ExtractedFile,
+    bound: &HashSet<String>,
 ) {
     let Some(name_node) = node.child_by_field_name("macro") else {
         return;
@@ -1278,13 +1282,15 @@ fn handle_macro_invocation(
         return;
     };
     let mut root = tree.root_node();
+    let mut bound = bound.clone();
+    collect_pattern_names(root, source, &mut bound);
     if name == "matches" {
         match matches_scrutinee(root) {
             Some(scrutinee) => root = scrutinee,
             None => return,
         }
     }
-    walk_macro_exprs(root, ctx, source, output);
+    walk_macro_exprs(root, ctx, source, output, &bound);
 }
 
 /// `matches!(scrutinee, pattern)` re-parses as a tuple expression; only its
@@ -1297,18 +1303,31 @@ fn matches_scrutinee(root: Node<'_>) -> Option<Node<'_>> {
         .and_then(|tuple| tuple.named_child(0))
 }
 
-fn walk_macro_exprs(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn walk_macro_exprs(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+    bound: &HashSet<String>,
+) {
     match node.kind() {
         "call_expression" => handle_call(node, ctx, source, output),
+        // A function path passed as a value: same skip rules as outside a
+        // macro, plus the names bound inside the macro's own arguments.
+        "identifier" | "scoped_identifier"
+            if !(node.kind() == "identifier" && bound.contains(&node_text(node, source))) =>
+        {
+            handle_fn_ref(node, ctx, source, output)
+        }
         "macro_invocation" => {
-            handle_macro_invocation(node, ctx, source, output);
+            handle_macro_invocation(node, ctx, source, output, bound);
             return;
         }
         _ => {}
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        walk_macro_exprs(child, ctx, source, output);
+        walk_macro_exprs(child, ctx, source, output, bound);
     }
 }
 
