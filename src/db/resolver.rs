@@ -62,11 +62,13 @@ use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
     CallShape, DEFERRED_KIND_ARGUMENT, DEFERRED_KIND_RETURN, DeferredMarker, TypeScope,
 };
+use crate::indexer::python_eval::{How as PyHow, Outcome, PyEval, PyMroCache, PyTypeTable};
+use crate::indexer::python_expr::PyCallSite;
 use crate::model::{has_parameter_list, is_partial_signature};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, named_params, params};
-use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock};
 
 /// An edge's target as the extractor saw it: what the resolver binds.
 pub(crate) struct Reference<'a> {
@@ -1049,6 +1051,13 @@ pub(crate) struct Resolver<'c> {
     external_file_id: Option<i64>,
     /// Memo of `names_repo_entity`, keyed by (language family, name).
     repo_entity_memo: HashMap<(String, String), bool>,
+    /// The repo's declared-type table, for evaluating Python call sites
+    /// (`Db::resolver`); `None` on a bare `Resolver::new`.
+    py_types: Option<Arc<PyTypeTable>>,
+    /// Class hierarchies the evaluator computed so far in this pass.
+    py_mro: PyMroCache,
+    /// Memo of the symbol a bound Python qualname stands for.
+    py_symbols: HashMap<String, Option<i64>>,
 }
 
 impl<'c> Resolver<'c> {
@@ -1074,6 +1083,109 @@ impl<'c> Resolver<'c> {
             call_scope: TypeScope::default(),
             external_file_id: None,
             repo_entity_memo: HashMap::new(),
+            py_types: None,
+            py_mro: PyMroCache::default(),
+            py_symbols: HashMap::new(),
+        })
+    }
+
+    /// Attach the declared-type table Python call sites are evaluated against.
+    pub(crate) fn with_py_types(mut self, table: Arc<PyTypeTable>) -> Self {
+        self.py_types = Some(table);
+        self
+    }
+
+    /// The symbol id a Python call bound to `qualname` lands on: the symbol
+    /// of the definition the declared-type table says runs (its file, then
+    /// its line; else the last definition). `None` when the table or the
+    /// symbols do not know it.
+    fn python_symbol(&mut self, table: &PyTypeTable, qualname: &str) -> Result<Option<i64>> {
+        if let Some(found) = self.py_symbols.get(qualname) {
+            return Ok(*found);
+        }
+        let found = match table.target_decl(qualname) {
+            None => None,
+            Some(decl) => {
+                let mut stmt = self.conn.prepare_cached(
+                    "SELECT id, start_line FROM symbols
+                     WHERE graph_version = ?1 AND qualname = ?2
+                       AND kind IN ('class', 'function', 'method')
+                       AND (?3 IS NULL OR file_id = ?3)
+                     ORDER BY start_line, id",
+                )?;
+                let rows = stmt
+                    .query_map(params![self.graph_version, qualname, decl.file_id], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows.iter()
+                    .find(|(_, line)| *line == decl.line)
+                    .or_else(|| rows.last())
+                    .map(|(id, _)| *id)
+            }
+        };
+        self.py_symbols.insert(qualname.to_string(), found);
+        Ok(found)
+    }
+
+    /// Judge a lowered Python call site with the declared-type evaluator and
+    /// map the outcome onto a [`Resolution`]. There is no name-based
+    /// fallback: whatever the evaluator cannot prove stays unresolved.
+    ///
+    /// - `Bound` binds the definition's symbol, kind from how it was found.
+    /// - `Ambiguous` / `NoCandidates` keep their own reasons.
+    /// - `External`: provably outside the repo. Binds the external stub when
+    ///   an import names it (issue #80), else `UnresolvedReason::External`.
+    /// - `Unsupported` (an unknown receiver: an unannotated parameter, a
+    ///   rebound local, a lambda...) is also `External`, the existing reason
+    ///   for "the receiver's type could not be inferred" (see its doc). It is
+    ///   not `NoCandidates`, which means a resolver looked and found nothing.
+    fn resolve_python(&mut self, site: &PyCallSite, r: &Reference<'_>) -> Result<Resolution> {
+        let Some(table) = self.py_types.clone() else {
+            return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+        };
+        let Some(module) = table.module_of_path(r.source_file_path) else {
+            return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+        };
+        let mut eval = PyEval::with_cache(&table, std::mem::take(&mut self.py_mro));
+        let outcome = eval.resolve_site(site, module);
+        self.py_mro = eval.into_cache();
+        Ok(match outcome {
+            Outcome::Bound { target, how } => match self.python_symbol(&table, &target)? {
+                Some(id) => resolved(
+                    id,
+                    match how {
+                        PyHow::Exact => ResolutionKind::Exact,
+                        PyHow::Import => ResolutionKind::Import,
+                        PyHow::ReceiverType => ResolutionKind::ReceiverType,
+                        PyHow::Inherited => ResolutionKind::Inherited,
+                    },
+                ),
+                None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
+            },
+            Outcome::Ambiguous(_) => Resolution::Unresolved(UnresolvedReason::Ambiguous),
+            Outcome::NoCandidates => Resolution::Unresolved(UnresolvedReason::NoCandidates),
+            // Proven outside the repo: no repo symbol may bind. Only the
+            // external-stub path is left, fed by the import candidates the
+            // extractor derived (issue #80); with none, or no name for a
+            // stub, the call stays unresolved as external.
+            Outcome::External => {
+                let nameable = r.target_qualname.is_some_and(|t| t.contains('.'));
+                if r.import_candidates.is_empty() || !nameable {
+                    Resolution::Unresolved(UnresolvedReason::External)
+                } else {
+                    self.stub_resolution(
+                        r.source_lang,
+                        r.target_qualname,
+                        r.import_candidates,
+                        r.bare_call,
+                        false,
+                    )?
+                    .filter(|resolution| resolution.target_id().is_some())
+                    .unwrap_or(Resolution::Unresolved(UnresolvedReason::External))
+                }
+            }
+            Outcome::Unsupported(_) => Resolution::Unresolved(UnresolvedReason::External),
         })
     }
 
@@ -1085,6 +1197,10 @@ impl<'c> Resolver<'c> {
         r: &Reference<'_>,
         symbol_map: &HashMap<String, i64>,
     ) -> Result<Resolution> {
+        // A lowered Python call site: the declared-type evaluator decides.
+        if let Some(DeferredMarker::Python(site)) = r.deferred {
+            return self.resolve_python(site, r);
+        }
         // A deferred argument (`new(..)` passed to a call) becomes the type of
         // the callee's parameter, then resolves as `new T(..)` would.
         if let Some(marker @ DeferredMarker::Argument(_)) = r.deferred {
@@ -3199,7 +3315,7 @@ impl Db {
         };
 
         {
-            let mut resolver = Resolver::new(&tx, graph_version)?;
+            let mut resolver = self.resolver(&tx, graph_version)?;
             let mut update_edge = tx.prepare(&UPDATE_EDGE_TARGET_SQL)?;
             let mut delete_edge = tx.prepare("DELETE FROM edges WHERE id = ?")?;
             let mut insert_unresolved = tx.prepare(UNRESOLVED_REFERENCE_INSERT_SQL)?;
@@ -3350,6 +3466,20 @@ impl Db {
         graph_version: i64,
         symbols_deleted_this_batch: bool,
     ) -> Result<usize> {
+        self.retry_store_rows(graph_version, symbols_deleted_this_batch, None)
+    }
+
+    /// `retry_unresolved_references`' body. Python call sites
+    /// (`deferred_kind = 'py'`) are never retried by name or watermark:
+    /// `py_only = Some(skip)` selects exactly them (every one outside the
+    /// `skip` files, no watermark gate or advance), which is how
+    /// `rejudge_python_calls` re-judges the store.
+    fn retry_store_rows(
+        &self,
+        graph_version: i64,
+        symbols_deleted_this_batch: bool,
+        py_only: Option<&HashSet<i64>>,
+    ) -> Result<usize> {
         let watermark = self
             .get_meta_i64("unresolved_reference_watermark")?
             .unwrap_or(0);
@@ -3373,11 +3503,12 @@ impl Db {
         let has_deferred_rows: bool = self.read_conn()?.query_row(
             "SELECT EXISTS(SELECT 1 FROM unresolved_references
                  WHERE graph_version = ? AND edge_kind = 'CALLS'
-                   AND deferred_kind IS NOT NULL)",
+                   AND deferred_kind IS NOT NULL AND deferred_kind != 'py')",
             params![graph_version],
             |row| row.get(0),
         )?;
-        if !symbols_deleted_this_batch
+        if py_only.is_none()
+            && !symbols_deleted_this_batch
             && !inheritance_changed
             && !has_deferred_rows
             && max_symbol_id <= watermark
@@ -3423,6 +3554,8 @@ impl Db {
                  WHERE ur.graph_version = ?1
                    AND s.graph_version = ?1
                    AND s.id > ?2
+                   AND (ur.deferred_kind IS NULL OR ur.deferred_kind != 'py')
+                   AND ?5 = 0
 
                  UNION
 
@@ -3437,16 +3570,33 @@ impl Db {
                  JOIN files f ON f.id = ur.file_id
                  LEFT JOIN symbols src ON src.id = ur.source_symbol_id
                  WHERE ur.graph_version = ?1
+                   AND (ur.deferred_kind IS NULL OR ur.deferred_kind != 'py')
                    AND ((?4 AND ur.receiver_type IS NOT NULL AND ur.receiver_type != '')
                         OR ur.deferred_kind IS NOT NULL
-                        OR (?3 AND ur.reason IN ('ambiguous', 'private')))",
+                        OR (?3 AND ur.reason IN ('ambiguous', 'private')))
+                   AND ?5 = 0
+
+                 UNION
+
+                 SELECT DISTINCT ur.id, ur.edge_id, ur.source_symbol_id, ur.file_id,
+                        ur.edge_kind, ur.reference_name, ur.import_candidates,
+                        ur.receiver_type, ur.bare_call, ur.detail, ur.evidence_snippet,
+                        ur.evidence_start_line, ur.evidence_end_line, ur.confidence,
+                        ur.commit_sha, ur.trace_id, ur.span_id, ur.event_ts,
+                        COALESCE(f.language, 'unknown'), f.path, src.qualname, ur.call_shape,
+                        ur.receiver_scope, ur.deferred_kind, ur.deferred
+                 FROM unresolved_references ur
+                 JOIN files f ON f.id = ur.file_id
+                 LEFT JOIN symbols src ON src.id = ur.source_symbol_id
+                 WHERE ur.graph_version = ?1 AND ur.deferred_kind = 'py' AND ?5 = 1",
             )?;
             let rows = stmt.query_map(
                 params![
                     graph_version,
                     watermark,
                     symbols_deleted_this_batch,
-                    inheritance_changed
+                    inheritance_changed,
+                    py_only.is_some()
                 ],
                 |row| {
                     Ok(StoreRetryRow {
@@ -3485,7 +3635,7 @@ impl Db {
         };
 
         {
-            let mut resolver = Resolver::new(&tx, graph_version)?;
+            let mut resolver = self.resolver(&tx, graph_version)?;
             let mut update_edge = tx.prepare(&UPDATE_EDGE_TARGET_SQL)?;
             // Issue #79: a pending, non-Bridge-Edge-kind row (`edge_id`
             // `None`) has no edge to update -- a successful retry inserts a
@@ -3508,6 +3658,9 @@ impl Db {
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &candidates {
+                if py_only.is_some_and(|skip| skip.contains(&row.file_id)) {
+                    continue;
+                }
                 let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
                 // Still unresolved: relabel it with the reason this pass
                 // classified, the one a fresh parse would record now.
@@ -3564,6 +3717,10 @@ impl Db {
             }
         }
 
+        if py_only.is_some() {
+            tx.commit()?;
+            return Ok(total_resolved);
+        }
         // Advance both watermarks inside the same transaction, not via
         // `Db::set_meta_i64` after `commit` -- that would call `self.conn()`
         // again while `conn` (acquired above) is still holding the write
@@ -3611,6 +3768,7 @@ impl Db {
             graph_version,
             "JOIN symbols stub ON stub.id = e.target_symbol_id",
             "AND stub.graph_version = ?1 AND stub.kind = 'external'",
+            None,
         )
     }
 
@@ -3626,8 +3784,43 @@ impl Db {
             graph_version,
             "",
             "AND e.target_symbol_id IS NOT NULL AND e.kind = 'CALLS'
-             AND e.deferred_kind IS NOT NULL",
+             AND e.deferred_kind IS NOT NULL AND e.deferred_kind != 'py'",
+            None,
         )
+    }
+
+    /// Re-judge every Python call site (`deferred_kind = 'py'`) against the
+    /// current declared-type table: a bound edge is retargeted, re-kinded or
+    /// unbound (the caller's follow-up reconcile moves it into the store)
+    /// when the evaluator now says otherwise, and a stored unresolved row
+    /// that resolves becomes an edge. Run only when some Python declaration
+    /// changed (`Indexer::py_decls_changed`): a call's outcome depends on its
+    /// own payload and on declarations alone. Sites in `skip_files` were
+    /// just judged against the final table and are left as they are.
+    /// Returns how many rows changed.
+    pub fn rejudge_python_calls(
+        &self,
+        graph_version: i64,
+        skip_files: &HashSet<i64>,
+    ) -> Result<usize> {
+        self.py_rejudge_runs
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let started = std::time::Instant::now();
+        let mut changed = self.rejudge_bound_edges(
+            graph_version,
+            "",
+            "AND e.target_symbol_id IS NOT NULL AND e.kind = 'CALLS'
+             AND e.deferred_kind = 'py'",
+            Some(skip_files),
+        )?;
+        changed += self.retry_store_rows(graph_version, false, Some(skip_files))?;
+        if std::env::var_os("LIDX_PY_TIMING").is_some() {
+            eprintln!(
+                "lidx: re-judged Python calls in {:?} ({changed} changed)",
+                started.elapsed()
+            );
+        }
+        Ok(changed)
     }
 
     /// Rebuild the `RPC_CALL` edges of calls through a deferred receiver
@@ -3648,7 +3841,7 @@ impl Db {
         )?;
         let sites = load_deferred_call_sites(&tx, graph_version)?;
         let derived = {
-            let mut resolver = Resolver::new(&tx, graph_version)?;
+            let mut resolver = self.resolver(&tx, graph_version)?;
             derive_rpc_calls(&mut resolver, &sites)?
         };
         let written = insert_derived_rpc_calls(&tx, graph_version, &derived)?;
@@ -3660,11 +3853,15 @@ impl Db {
     /// by `extra_join`/`extra_where` (both spliced into the query), updating
     /// one that now resolves elsewhere and unbinding one that no longer
     /// resolves. Returns how many changed.
+    ///
+    /// With `skip_files` (Python re-judging) an edge of one of those files is
+    /// left alone, and an edge whose resolution kind changed counts too.
     fn rejudge_bound_edges(
         &self,
         graph_version: i64,
         extra_join: &str,
         extra_where: &str,
+        skip_files: Option<&HashSet<i64>>,
     ) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -3672,7 +3869,9 @@ impl Db {
 
         struct StubEdgeRow {
             edge_id: i64,
+            file_id: i64,
             target_symbol_id: i64,
+            resolution_kind: Option<String>,
             ctx: ReferenceContext,
         }
 
@@ -3681,7 +3880,8 @@ impl Db {
                 "SELECT e.id, e.target_symbol_id, e.kind, e.target_qualname,
                         e.receiver_type, e.import_candidates, e.bare_call,
                         COALESCE(f.language, 'unknown'), f.path, src.qualname, e.call_shape,
-                        e.receiver_scope, e.deferred_kind, e.deferred, e.source_symbol_id
+                        e.receiver_scope, e.deferred_kind, e.deferred, e.source_symbol_id,
+                        e.file_id, e.resolution_kind
                  FROM edges e
                  {extra_join}
                  JOIN files f ON f.id = e.file_id
@@ -3691,6 +3891,8 @@ impl Db {
             let out = stmt.query_map(params![graph_version], |row| {
                 Ok(StubEdgeRow {
                     edge_id: row.get(0)?,
+                    file_id: row.get(15)?,
+                    resolution_kind: row.get(16)?,
                     target_symbol_id: row.get(1)?,
                     ctx: ReferenceContext {
                         edge_id: Some(row.get(0)?),
@@ -3714,14 +3916,19 @@ impl Db {
         };
 
         {
-            let mut resolver = Resolver::new(&tx, graph_version)?;
+            let mut resolver = self.resolver(&tx, graph_version)?;
             let mut update_edge = tx.prepare(&UPDATE_EDGE_TARGET_SQL)?;
             let empty_symbol_map: HashMap<String, i64> = HashMap::new();
 
             for row in &rows {
+                if skip_files.is_some_and(|skip| skip.contains(&row.file_id)) {
+                    continue;
+                }
                 match row.ctx.resolve(&mut resolver, &empty_symbol_map)? {
                     Resolution::Resolved { target_id, kind }
-                        if target_id != row.target_symbol_id =>
+                        if target_id != row.target_symbol_id
+                            || (skip_files.is_some()
+                                && row.resolution_kind.as_deref() != Some(kind.as_str())) =>
                     {
                         update_edge.execute(params![
                             target_id,
@@ -3862,9 +4069,32 @@ impl Db {
         symbols_deleted_this_batch: bool,
         context: &str,
     ) -> Result<(usize, usize)> {
+        self.repair_unresolved_after(graph_version, symbols_deleted_this_batch, None, context)
+    }
+
+    /// `repair_unresolved`, also re-judging every Python call site when
+    /// `py_rejudge` is `Some(files)`: some Python file's declarations changed
+    /// (`Indexer::py_decls_changed`), and `files` were just resolved against
+    /// the final declarations so need no second look.
+    pub fn repair_unresolved_after(
+        &self,
+        graph_version: i64,
+        symbols_deleted_this_batch: bool,
+        py_rejudge: Option<&HashSet<i64>>,
+        context: &str,
+    ) -> Result<(usize, usize)> {
         let reconciled = self.reconcile_unresolved_reference_store(graph_version)?;
         if reconciled > 0 {
             eprintln!("lidx: reconciled {reconciled} unresolved reference(s) after {context}");
+        }
+        // Python calls hang on other files' declarations, not on names: the
+        // evaluator re-judges them all, but only when a declaration changed.
+        if let Some(skip) = py_rejudge {
+            let rejudged = self.rejudge_python_calls(graph_version, skip)?;
+            if rejudged > 0 {
+                eprintln!("lidx: re-judged {rejudged} Python call(s) after {context}");
+                self.reconcile_unresolved_reference_store(graph_version)?;
+            }
         }
         // Before the store retry: an edge unbound here is moved into the
         // store by a reconcile and retried with the rest.

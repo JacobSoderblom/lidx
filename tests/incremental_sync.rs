@@ -964,7 +964,9 @@ fn incremental_ambiguous_module_candidate_does_not_fall_back_to_package() {
 fn incremental_symbol_rename_resolves_bare_call_ambiguity_without_file_deletion() {
     let a_py = "def helper():\n    pass\n";
     let b_py = "def helper():\n    pass\n";
-    let caller_py = "def use():\n    helper()\n";
+    // Python binds a free name through the module's own definitions and its
+    // imports: two star imports defining the same name are the ambiguity.
+    let caller_py = "from a import *\nfrom b import *\n\n\ndef use():\n    helper()\n";
     let (_tmp, repo_root, mut indexer) = indexed_tree(
         "rename-unblocks-ambiguity",
         &[("a.py", a_py), ("b.py", b_py), ("caller.py", caller_py)],
@@ -2219,15 +2221,19 @@ fn reindex_touching_alias_importer_matches_fresh_and_keeps_alias_edge() {
 const DP: &str = "def _dataproduct():\n    return 1\n";
 
 fn ambiguity_files() -> Vec<(&'static str, String)> {
+    // `__all__` exports the underscore name to star importers.
+    let dp = format!("{DP}\n__all__ = [\"_dataproduct\"]\n");
     vec![
         (
             "tests/test_a.py",
-            format!("{DP}\n\nclass TestA:\n    def test_one(self):\n        _dataproduct()\n"),
+            format!("{dp}\n\nclass TestA:\n    def test_one(self):\n        _dataproduct()\n"),
         ),
-        ("tests/test_b.py", DP.to_string()),
+        ("tests/test_b.py", dp.clone()),
         (
             "tests/test_c.py",
-            "class TestC:\n    def test_three(self):\n        _dataproduct()\n".to_string(),
+            // Both star imports define `_dataproduct` (`__all__` lists it),
+            // so the name is ambiguous: no repo-wide guess picks one.
+            "from tests.test_a import *\nfrom tests.test_b import *\n\n\nclass TestC:\n    def test_three(self):\n        _dataproduct()\n".to_string(),
         ),
     ]
 }

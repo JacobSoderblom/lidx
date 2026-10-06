@@ -132,6 +132,38 @@ pub struct Db {
     db_path: PathBuf,
     write_conn: Arc<Mutex<Connection>>,
     read_pool: Pool<SqliteConnectionManager>,
+    /// Declared-type table of the last `(graph version, py_decls stamp)`
+    /// asked for; see `Db::py_type_table`.
+    py_types: PyTypeCache,
+    /// How many times `rejudge_python_calls` ran (tests assert a body-only
+    /// edit does not trigger the global re-judge).
+    py_rejudge_runs: Arc<std::sync::atomic::AtomicU64>,
+}
+
+type PyTypeCache = Arc<Mutex<Option<(i64, i64, Arc<crate::indexer::python_eval::PyTypeTable>)>>>;
+
+/// `meta` key bumped by every write to `py_decls`, so a cached declared-type
+/// table built before the write is never reused.
+const PY_DECLS_STAMP_KEY: &str = "py_decls_stamp";
+
+fn bump_py_decls_stamp(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, '1')
+         ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
+        params![PY_DECLS_STAMP_KEY],
+    )?;
+    Ok(())
+}
+
+fn read_py_decls_stamp(conn: &Connection) -> Result<i64> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?",
+            params![PY_DECLS_STAMP_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(value.and_then(|v| v.parse().ok()).unwrap_or(0))
 }
 
 /// Number of most-recent graph versions whose `symbols`/`edges` rows survive
@@ -261,6 +293,8 @@ impl Db {
             db_path: db_path.to_path_buf(),
             write_conn,
             read_pool,
+            py_types: Arc::new(Mutex::new(None)),
+            py_rejudge_runs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
@@ -472,6 +506,7 @@ impl Db {
              DO UPDATE SET hash = excluded.hash, payload = excluded.payload",
             params![file_id, graph_version, hash, payload],
         )?;
+        bump_py_decls_stamp(&tx)?;
         tx.commit()?;
         Ok(previous.as_deref() != Some(hash.as_str()))
     }
@@ -479,10 +514,14 @@ impl Db {
     /// Remove a file's Python declarations at `graph_version`. Returns
     /// whether a row existed.
     pub fn delete_py_decls(&self, file_id: i64, graph_version: i64) -> Result<bool> {
-        let deleted = self.conn().execute(
+        let conn = self.conn();
+        let deleted = conn.execute(
             "DELETE FROM py_decls WHERE file_id = ? AND graph_version = ?",
             params![file_id, graph_version],
         )?;
+        if deleted > 0 {
+            bump_py_decls_stamp(&conn)?;
+        }
         Ok(deleted > 0)
     }
 
@@ -521,6 +560,55 @@ impl Db {
             }
         }
         Ok(files)
+    }
+
+    /// The declared-type table of every live Python file at `graph_version`.
+    /// Cached; the key is `(graph_version, py_decls stamp)`, so any write to
+    /// `py_decls` (put, delete, carry-forward) invalidates it.
+    pub fn py_type_table(
+        &self,
+        conn: &Connection,
+        graph_version: i64,
+    ) -> Result<Arc<crate::indexer::python_eval::PyTypeTable>> {
+        let stamp = read_py_decls_stamp(conn)?;
+        if let Some((gv, st, table)) = self.py_types.lock().unwrap().as_ref()
+            && *gv == graph_version
+            && *st == stamp
+        {
+            return Ok(Arc::clone(table));
+        }
+        let started = std::time::Instant::now();
+        let files = self.py_decls(conn, graph_version)?;
+        let table = Arc::new(crate::indexer::python_eval::PyTypeTable::from_loaded(
+            &files,
+        ));
+        if std::env::var_os("LIDX_PY_TIMING").is_some() {
+            eprintln!(
+                "lidx: loaded the Python type table in {:?} ({} files)",
+                started.elapsed(),
+                files.len()
+            );
+        }
+        *self.py_types.lock().unwrap() = Some((graph_version, stamp, Arc::clone(&table)));
+        Ok(table)
+    }
+
+    /// How many times the global Python re-judge ran on this `Db`.
+    pub fn py_rejudge_runs(&self) -> u64 {
+        self.py_rejudge_runs
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A resolver over `graph_version` that can also evaluate Python call
+    /// sites (it carries the declared-type table). Every resolver of a
+    /// transaction goes through here.
+    pub(crate) fn resolver<'c>(
+        &self,
+        conn: &'c Connection,
+        graph_version: i64,
+    ) -> Result<resolver::Resolver<'c>> {
+        let table = self.py_type_table(conn, graph_version)?;
+        Ok(resolver::Resolver::new(conn, graph_version)?.with_py_types(table))
     }
 
     /// Carry forward symbols, edges, and symbol_metrics for files whose content
@@ -586,10 +674,13 @@ impl Db {
              WHERE graph_version = ? AND file_id IN ({placeholders})
              ON CONFLICT DO NOTHING"
         );
-        conn.execute(
+        let decls = conn.execute(
             &decls_sql,
             rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
         )?;
+        if decls > 0 {
+            bump_py_decls_stamp(&conn)?;
+        }
         Ok(SymbolsCarried { symbols, ..carried })
     }
 
@@ -1658,7 +1749,7 @@ impl Db {
             // rescanning every NULL-target edge.
             let mut unresolved_insert_stmt =
                 tx.prepare(resolver::UNRESOLVED_REFERENCE_INSERT_SQL)?;
-            let mut resolver = resolver::Resolver::new(&tx, graph_version)?;
+            let mut resolver = self.resolver(&tx, graph_version)?;
             // Look up the source file's language and path — same-language
             // preference and the guarded name-fallback's visibility check
             // (`resolver::Reference::source_file_path`) respectively.
@@ -1700,12 +1791,37 @@ impl Db {
                         edge.target_qualname
                     );
                 }
-                let receiver = edge.receiver_type.to_columns();
+                // A lowered Python call site replaces the receiver columns:
+                // the evaluator re-derives everything from the site.
+                let (receiver, marker, scope) = match (&edge.py_site, edge.kind.as_str()) {
+                    (Some(site), "CALLS") => {
+                        let marker = DeferredMarker::Python((**site).clone());
+                        let (kind, payload) = marker.encode();
+                        (
+                            crate::indexer::extract::ReceiverColumns {
+                                deferred_kind: Some(kind),
+                                deferred: Some(payload),
+                                ..Default::default()
+                            },
+                            Some(marker),
+                            None,
+                        )
+                    }
+                    _ => (
+                        edge.receiver_type.to_columns(),
+                        edge.receiver_type.deferred_marker(),
+                        match &edge.receiver_type {
+                            ReceiverType::Scoped { scope, .. } => Some(scope),
+                            _ => None,
+                        },
+                    ),
+                };
                 let extracted_receiver_type = receiver.receiver_type.as_deref();
-                let marker = edge.receiver_type.deferred_marker();
-                let scope = match &edge.receiver_type {
-                    ReceiverType::Scoped { scope, .. } => Some(scope),
-                    _ => None,
+                // The text an unresolved row is named by: the extracted
+                // target, else the call's source text (never empty).
+                let target_text: Option<&str> = match (&marker, edge.target_qualname.as_deref()) {
+                    (Some(DeferredMarker::Python(_)), None | Some("")) => edge.detail.as_deref(),
+                    (_, t) => t,
                 };
                 let call_shape = edge.call_shape.map(|shape| shape.encode());
                 let pinned_target = match (&edge.target_qualname, edge.target_start_byte) {
@@ -1719,7 +1835,7 @@ impl Db {
                 };
                 let resolution = resolver.resolve(
                     &resolver::Reference {
-                        target_qualname: edge.target_qualname.as_deref(),
+                        target_qualname: target_text,
                         edge_kind: &edge.kind,
                         receiver_type: extracted_receiver_type,
                         receiver_scope: scope,
@@ -1757,10 +1873,10 @@ impl Db {
                     Some(id) => resolver::bound_target_qualname(
                         &tx,
                         matches!(marker, Some(DeferredMarker::Argument(_))),
-                        edge.target_qualname.as_deref(),
+                        target_text,
                         id,
                     )?,
-                    None => edge.target_qualname.clone(),
+                    None => target_text.map(str::to_string),
                 };
                 let edge_id = if resolution.target_id().is_some() || is_bridge {
                     insert_stmt.execute(params![
@@ -1797,7 +1913,7 @@ impl Db {
                 if let Some(reason) = resolution.unresolved_reason()
                     && let Some((reference_name, name_tail)) =
                         resolver::store_reference_name_and_tail(
-                            edge.target_qualname.as_deref(),
+                            target_text,
                             &edge.import_candidates,
                         )
                 {

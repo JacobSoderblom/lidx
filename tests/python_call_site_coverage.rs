@@ -15,6 +15,8 @@
 //! Keys are `(start line, end line, argument count)`, compared as multisets
 //! (two identical calls on one line must both appear).
 
+mod common;
+
 use lidx::indexer::extract::LanguageExtractor;
 use lidx::indexer::python::PythonExtractor;
 use std::collections::BTreeMap;
@@ -210,4 +212,99 @@ fn route_and_http_calls_keep_their_calls_edge_alongside() {
     assert_eq!(calls_on(line_of("os.getenv(")), 1);
     // The route decorator's own call is a call; its route edge is separate.
     assert_eq!(calls_on(line_of("@app.get")), 1);
+}
+
+// ---- after a real index: one stored outcome per call node -------------------
+
+/// `(start line, end line)` of every call node of `src`, as a set: the
+/// unresolved store keeps one row per identity (issue #251), so two
+/// identical-looking unresolved calls on one line (`ident(ident(1))`) are one
+/// row by design, while bound edges stay one per call.
+fn call_node_lines(src: &str) -> std::collections::BTreeSet<(i64, i64)> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_python::LANGUAGE.into())
+        .unwrap();
+    let tree = parser.parse(src, None).unwrap();
+    let mut keys = std::collections::BTreeSet::new();
+    fn go(node: Node<'_>, out: &mut std::collections::BTreeSet<(i64, i64)>) {
+        if node.kind() == "call" {
+            out.insert((
+                node.start_position().row as i64 + 1,
+                node.end_position().row as i64 + 1,
+            ));
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            go(child, out);
+        }
+    }
+    go(tree.root_node(), &mut keys);
+    keys
+}
+
+/// After a real reindex, every Python call node is stored as a
+/// `CALLS` edge or a `CALLS` unresolved row, each carrying its `py` site.
+/// HTTP / route / config edges are other kinds and do not count.
+#[test]
+fn after_a_real_index_every_python_call_has_exactly_one_stored_outcome() {
+    let lib: &[(&str, &str)] = &[
+        ("demo/__init__.py", ""),
+        ("demo/shapes.py", SHAPES),
+        (
+            "demo/other.py",
+            "from demo.shapes import make, Handler\n\n\ndef go(h: Handler):\n    make(1)\n    h.m(2).chain()\n    unknown()\n    print(len([]))\n",
+        ),
+    ];
+    let (_tmp, root, db_path) = common::index_repo("lidx-py-coverage-", lib);
+    let indexer = lidx::indexer::Indexer::new(root, db_path).unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+
+    for (path, src) in lib {
+        let want = call_node_lines(src);
+        let mut got = std::collections::BTreeSet::new();
+        let mut tally = |sql: &str| {
+            let mut stmt = conn.prepare(sql).unwrap();
+            let rows = stmt
+                .query_map(rusqlite::params![gv, path], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                })
+                .unwrap();
+            for row in rows {
+                got.insert(row.unwrap());
+            }
+        };
+        tally(
+            "SELECT e.evidence_start_line, e.evidence_end_line FROM edges e
+             JOIN files f ON f.id = e.file_id
+             WHERE e.graph_version = ?1 AND f.path = ?2 AND e.kind = 'CALLS'
+               AND e.deferred_kind = 'py'",
+        );
+        tally(
+            "SELECT u.evidence_start_line, u.evidence_end_line FROM unresolved_references u
+             JOIN files f ON f.id = u.file_id
+             WHERE u.graph_version = ?1 AND f.path = ?2 AND u.edge_kind = 'CALLS'
+               AND u.deferred_kind = 'py'",
+        );
+        assert_eq!(
+            want, got,
+            "{path}: call nodes (left) vs stored outcomes (right)"
+        );
+
+        // And no CALLS row of this file escapes the evaluator.
+        let legacy: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM edges e JOIN files f ON f.id = e.file_id
+                          WHERE e.graph_version = ?1 AND f.path = ?2 AND e.kind = 'CALLS'
+                            AND e.deferred_kind IS NOT 'py')
+                      + (SELECT COUNT(*) FROM unresolved_references u JOIN files f ON f.id = u.file_id
+                          WHERE u.graph_version = ?1 AND f.path = ?2 AND u.edge_kind = 'CALLS'
+                            AND u.deferred_kind IS NOT 'py')",
+                rusqlite::params![gv, path],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy, 0, "{path}: CALLS rows without a Python call site");
+    }
 }

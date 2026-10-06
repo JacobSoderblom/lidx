@@ -114,6 +114,8 @@ struct ScannedFileSymbols {
     symbols: Vec<crate::model::Symbol>,
     added: Vec<String>,
     any_deleted: bool,
+    /// `Db::put_py_decls` reported a payload change for this file.
+    py_decls_changed: bool,
 }
 
 impl Indexer {
@@ -297,6 +299,10 @@ impl Indexer {
         // unique again, which `Db::retry_unresolved_references`'s
         // insertion-only watermark would otherwise never notice.
         let mut any_symbols_deleted = false;
+        // Whether any Python file's declarations changed (a payload differs,
+        // or a Python file was added or removed): the gate for re-judging
+        // every Python call, see `Db::rejudge_python_calls`.
+        let mut py_decls_changed = false;
         javascript::clear_export_cache();
         // Hash-unchanged JS/TS files whose chased imports or alias config
         // changed must be re-extracted too. Computed before any deletion so
@@ -340,7 +346,7 @@ impl Indexer {
                 Err(_) => continue,
             };
             if !path.exists() {
-                self.delete_file(&rel_path)?;
+                py_decls_changed |= self.delete_file(&rel_path)?;
                 stats.deleted += 1;
                 any_symbols_deleted = true;
                 touched = true;
@@ -348,7 +354,7 @@ impl Indexer {
             }
             let Some(scanned) = scan::scan_path(&self.repo_root, path)? else {
                 if !path.exists() {
-                    self.delete_file(&rel_path)?;
+                    py_decls_changed |= self.delete_file(&rel_path)?;
                     stats.deleted += 1;
                     any_symbols_deleted = true;
                     touched = true;
@@ -370,9 +376,11 @@ impl Indexer {
                     symbols,
                     added,
                     any_deleted,
+                    py_decls_changed: file_decls_changed,
                 })) => {
                     added_qualnames.extend(added);
                     any_symbols_deleted |= any_deleted;
+                    py_decls_changed |= file_decls_changed;
                     indexed_files.push(scanned.clone());
                     pending.push((scanned, extracted, file_id, symbols));
                 }
@@ -431,9 +439,14 @@ impl Indexer {
             // stored rows a newly inserted symbol (or, per `any_symbols_deleted`
             // below, a deletion that turned a stored `Ambiguous` row unique
             // again) might satisfy. See `Db::repair_unresolved`.
-            self.db.repair_unresolved(
+            // The batch's own files were resolved against the final
+            // declarations above; every other Python call is re-judged when
+            // a declaration changed.
+            let judged: HashSet<i64> = pending.iter().map(|(_, _, id, _)| *id).collect();
+            self.db.repair_unresolved_after(
                 self.graph_version,
                 any_symbols_deleted,
+                py_decls_changed.then_some(&judged),
                 "incremental sync",
             )?;
             self.db.reconcile_rpc_edges(self.graph_version)?;
@@ -719,6 +732,7 @@ impl Indexer {
         // `visibility` has to be settled repo-wide first, or a file
         // processed early would see a later file's private symbols as
         // still-NULL (unrestricted) and bind to them (issue #75 follow-up).
+        let mut py_decls_changed = false;
         for (_file, extracted, _diff, file_id) in &file_data {
             self.db.set_private_symbols(
                 *file_id,
@@ -728,9 +742,10 @@ impl Indexer {
                 &extracted.override_symbols,
             )?;
             if let Some(decls) = &extracted.py_decls {
-                self.db.put_py_decls(*file_id, self.graph_version, decls)?;
+                py_decls_changed |= self.db.put_py_decls(*file_id, self.graph_version, decls)?;
             }
         }
+        let fresh_file_ids: HashSet<i64> = file_data.iter().map(|(_, _, _, id)| *id).collect();
 
         // Issue #79: whether this reindex removed any symbol -- a whole
         // file (`stats.deleted`, set below by the not-`seen` loop) or just
@@ -790,10 +805,11 @@ impl Indexer {
             );
         }
 
-        for path in existing_map.keys() {
+        for (path, record) in &existing_map {
             if !seen.contains(path) {
                 self.db.mark_file_deleted(path, self.graph_version)?;
                 stats.deleted += 1;
+                py_decls_changed |= record.language == "python";
             }
         }
 
@@ -866,9 +882,14 @@ impl Indexer {
             // files) is now final, so fold it in alongside
             // `any_symbols_deleted` (definitions a re-parsed file's diff
             // dropped in place) -- see `Db::repair_unresolved`.
-            self.db.repair_unresolved(
+            // Re-extracted files were resolved against the final declarations;
+            // carried-forward ones are re-judged when a declaration changed.
+            let py_rejudge =
+                (py_decls_changed && !carry_forward_ids.is_empty()).then_some(&fresh_file_ids);
+            self.db.repair_unresolved_after(
                 self.graph_version,
                 any_symbols_deleted || stats.deleted > 0,
+                py_rejudge,
                 "reindex",
             )?;
             self.db.reconcile_rpc_edges(self.graph_version)?;
@@ -1003,9 +1024,10 @@ impl Indexer {
             &extracted.static_member_qualnames,
             &extracted.override_symbols,
         )?;
-        if let Some(decls) = &extracted.py_decls {
-            self.db.put_py_decls(file_id, self.graph_version, decls)?;
-        }
+        let py_decls_changed = match &extracted.py_decls {
+            Some(decls) => self.db.put_py_decls(file_id, self.graph_version, decls)?,
+            None => false,
+        };
 
         Ok(Some(ScannedFileSymbols {
             extracted,
@@ -1013,20 +1035,24 @@ impl Indexer {
             symbols,
             any_deleted,
             added: added_qualnames,
+            py_decls_changed,
         }))
     }
 
     /// Delete `rel_path`'s stored file (symbols, edges, metrics, and its
     /// `deleted_version` mark) if it's currently indexed. A no-op when the
     /// path isn't indexed at all.
-    fn delete_file(&mut self, rel_path: &str) -> Result<()> {
+    /// Returns whether the file had Python declarations (other files' calls
+    /// may bind differently without them).
+    fn delete_file(&mut self, rel_path: &str) -> Result<bool> {
         let Some(existing) = self.db.get_file_by_path(rel_path)? else {
-            return Ok(());
+            return Ok(false);
         };
+        let had_decls = self.db.delete_py_decls(existing.id, self.graph_version)?;
         self.db
             .delete_symbols_edges_for_file(existing.id, self.graph_version)?;
         self.db.mark_file_deleted(rel_path, self.graph_version)?;
-        Ok(())
+        Ok(had_decls)
     }
 
     /// Phase 2 of syncing one file: resolve its edges and write its

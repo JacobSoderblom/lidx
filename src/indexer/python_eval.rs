@@ -150,6 +150,24 @@ pub struct PyTypeTable {
     namespaces: BTreeSet<String>,
     classes: HashMap<String, (usize, usize)>,
     funcs: HashMap<String, Vec<FuncRef>>,
+    /// `files.id` of each file (parallel to `files`); empty when the table
+    /// was built from bare decls.
+    file_ids: Vec<i64>,
+    paths: HashMap<String, usize>,
+}
+
+/// The declaration a call's bound qualname stands for: which file and line
+/// the symbol to bind is at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TargetDecl {
+    /// `files.id` of the declaring file (`None` for a table built from bare
+    /// decls).
+    pub file_id: Option<i64>,
+    /// `start_line` of the definition a call runs: the last non-`@overload`
+    /// definition, else the last one.
+    pub line: i64,
+    /// A class rather than a function or method.
+    pub is_class: bool,
 }
 
 impl PyTypeTable {
@@ -186,7 +204,50 @@ impl PyTypeTable {
     }
 
     pub fn from_loaded(files: &[PyLoadedFile]) -> Self {
-        Self::build(files.iter().map(|f| f.decls.clone()).collect())
+        let mut t = Self::build(files.iter().map(|f| f.decls.clone()).collect());
+        t.file_ids = files.iter().map(|f| f.file_id).collect();
+        t.paths = files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.path.clone(), i))
+            .collect();
+        t
+    }
+
+    /// The module name of the file at `path` (a loaded table only).
+    pub fn module_of_path(&self, path: &str) -> Option<&str> {
+        let i = *self.paths.get(path)?;
+        Some(self.files[i].module.as_str())
+    }
+
+    /// Which definition binding `qualname` means. `None` when it names no
+    /// declaration, or names both a class and a function (a conditional
+    /// `class g` / `def g`: which one runs is unknowable).
+    pub fn target_decl(&self, qualname: &str) -> Option<TargetDecl> {
+        let file_id = |fi: usize| self.file_ids.get(fi).copied();
+        let class = self.classes.get(qualname);
+        let funcs = self.funcs.get(qualname);
+        match (class, funcs) {
+            (Some(_), Some(f)) if !f.is_empty() => None,
+            (Some(&(fi, ci)), _) => Some(TargetDecl {
+                file_id: file_id(fi),
+                line: self.files[fi].classes[ci].start_line,
+                is_class: true,
+            }),
+            (None, Some(f)) => {
+                let last = f
+                    .iter()
+                    .rev()
+                    .find(|(fi, ui)| !self.files[*fi].functions[*ui].is_overload)
+                    .or_else(|| f.last())?;
+                Some(TargetDecl {
+                    file_id: file_id(last.0),
+                    line: self.files[last.0].functions[last.1].start_line,
+                    is_class: false,
+                })
+            }
+            (None, None) => None,
+        }
     }
 
     pub fn is_module(&self, name: &str) -> bool {
@@ -364,6 +425,12 @@ struct Recv {
     class: String,
 }
 
+/// The linearized hierarchies one evaluator computed, kept across
+/// evaluators over the same table so a resolve pass pays for each class
+/// once (`PyEval::with_cache` / `PyEval::into_cache`).
+#[derive(Default)]
+pub struct PyMroCache(HashMap<String, Rc<Mro>>);
+
 pub struct PyEval<'a> {
     t: &'a PyTypeTable,
     guard: Vec<Guard>,
@@ -405,13 +472,23 @@ fn is_typevar_call(e: &PyExpr) -> bool {
 
 impl<'a> PyEval<'a> {
     pub fn new(t: &'a PyTypeTable) -> Self {
+        Self::with_cache(t, PyMroCache::default())
+    }
+
+    /// An evaluator that starts from `cache` (built over the same `t`).
+    pub fn with_cache(t: &'a PyTypeTable, cache: PyMroCache) -> Self {
         PyEval {
             t,
             guard: Vec::new(),
             depth: 0,
             member_depth: 0,
-            mro_cache: HashMap::new(),
+            mro_cache: cache.0,
         }
+    }
+
+    /// The hierarchies computed so far.
+    pub fn into_cache(self) -> PyMroCache {
+        PyMroCache(self.mro_cache)
     }
 
     // -- expressions --------------------------------------------------------
