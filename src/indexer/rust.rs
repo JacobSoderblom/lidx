@@ -101,6 +101,10 @@ struct Context {
     /// root or the current `mod` body), so `impl Local for T` resolves to
     /// the same-module declaration. Recomputed per scope like `imports`.
     local_traits: Rc<HashSet<String>>,
+    /// Qualnames of the `mod`s declared directly in this scope (`mod x;` or
+    /// `mod x { .. }`), so a path `x::f()` written here names `{module}::x::f`.
+    /// Recomputed per scope like `imports`.
+    declared_mods: Rc<HashSet<String>>,
     /// Names the current function must not get an import candidate for
     /// (`collect_shadowed_names`); empty outside a function body.
     shadowed_names: Rc<HashSet<String>>,
@@ -205,6 +209,8 @@ pub struct RustExtractor {
     /// Memoizes `find_crate_root`'s Cargo.toml walk per directory queried,
     /// since `module_name_from_rel_path` runs once per file.
     crate_root_cache: RefCell<HashMap<PathBuf, Option<PathBuf>>>,
+    /// Parsed `Cargo.toml` target roots per crate directory (see `Manifest`).
+    manifest_cache: RefCell<HashMap<PathBuf, Rc<Manifest>>>,
 }
 
 impl RustExtractor {
@@ -216,6 +222,7 @@ impl RustExtractor {
             parser,
             repo_root: None,
             crate_root_cache: RefCell::new(HashMap::new()),
+            manifest_cache: RefCell::new(HashMap::new()),
         })
     }
 
@@ -230,6 +237,21 @@ impl RustExtractor {
         self.repo_root = Some(repo_root);
         self
     }
+
+    /// The parsed `Cargo.toml` of `crate_dir` (relative to `repo_root`),
+    /// memoized. An unreadable manifest yields one with no explicit roots.
+    fn manifest(&self, repo_root: &Path, crate_dir: &Path) -> Rc<Manifest> {
+        if let Some(hit) = self.manifest_cache.borrow().get(crate_dir) {
+            return hit.clone();
+        }
+        let text = std::fs::read_to_string(repo_root.join(crate_dir).join("Cargo.toml"))
+            .unwrap_or_default();
+        let manifest = Rc::new(Manifest::parse(&text));
+        self.manifest_cache
+            .borrow_mut()
+            .insert(crate_dir.to_path_buf(), manifest.clone());
+        manifest
+    }
 }
 
 impl crate::indexer::extract::LanguageExtractor for RustExtractor {
@@ -241,6 +263,12 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             .parent()
             .unwrap_or_else(|| Path::new(""));
         let crate_root = find_crate_root(repo_root, dir, &self.crate_root_cache);
+        if let Some(crate_dir) = crate_root.as_deref() {
+            let manifest = self.manifest(repo_root, crate_dir);
+            if let Some(module) = manifest.explicit_root_module(crate_dir, rel_path) {
+                return module;
+            }
+        }
         module_name_from_rel_path(&strip_crate_root(rel_path, crate_root.as_deref()))
     }
 
@@ -279,6 +307,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             grpc_clients: HashMap::new(),
             imports: Rc::new(collect_use_bindings(root, source, module_name)),
             local_traits: Rc::new(collect_local_traits(root, source, module_name)),
+            declared_mods: Rc::new(collect_declared_mods(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
             adts: Rc::new(collect_adts(root, source)),
@@ -307,6 +336,13 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
 }
 
 pub fn module_name_from_rel_path(rel_path: &str) -> String {
+    module_name_from_parts(rel_path, true)
+}
+
+/// `module_name_from_rel_path`, with the leading-`src` strip optional: a
+/// manifest-declared root (`[[bin]] path = ..`) names its own directory as
+/// the module tree's base, so a `src` directory below it is a real module.
+fn module_name_from_parts(rel_path: &str, strip_src: bool) -> String {
     let path = Path::new(rel_path);
     let mut parts: Vec<String> = path
         .components()
@@ -315,7 +351,7 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
     if parts.is_empty() {
         return "crate".to_string();
     }
-    if parts.first().map(|part| part == "src").unwrap_or(false) {
+    if strip_src && parts.first().map(|part| part == "src").unwrap_or(false) {
         parts.remove(0);
     }
     let file = parts.pop().unwrap_or_default();
@@ -333,6 +369,89 @@ pub fn module_name_from_rel_path(rel_path: &str) -> String {
         "crate".to_string()
     } else {
         format!("crate::{}", parts.join("::"))
+    }
+}
+
+/// The target roots a `Cargo.toml` declares with an explicit `path`
+/// (`[lib]`, `[[bin]]`, `[[test]]`, `[[bench]]`, `[[example]]`), as written
+/// (relative to the manifest's directory). Targets without a `path` keep the
+/// conventional layout (`src/lib.rs`, `src/main.rs`, ...), which
+/// `module_name_from_rel_path` already handles.
+#[derive(Default)]
+struct Manifest {
+    /// `[package] name`.
+    package_name: Option<String>,
+    /// `[lib] name` / `[lib] path`.
+    lib_name: Option<String>,
+    lib_path: Option<String>,
+    /// Every explicit target `path`, lib included.
+    roots: Vec<String>,
+}
+
+impl Manifest {
+    /// Line-oriented read of the few keys needed; not a TOML parser (no
+    /// multi-line strings or inline tables), which these keys never use.
+    fn parse(text: &str) -> Self {
+        let mut manifest = Manifest::default();
+        let mut section = String::new();
+        for line in text.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if let Some(header) = line.strip_prefix('[') {
+                section = header
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .trim()
+                    .to_string();
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let value = value.trim().trim_matches('"');
+            match (section.as_str(), key.trim()) {
+                ("package", "name") => manifest.package_name = Some(value.to_string()),
+                ("lib", "name") => manifest.lib_name = Some(value.to_string()),
+                ("lib", "path") => {
+                    manifest.lib_path = Some(value.to_string());
+                    manifest.roots.push(value.to_string());
+                }
+                ("bin" | "test" | "bench" | "example", "path") => {
+                    manifest.roots.push(value.to_string());
+                }
+                _ => {}
+            }
+        }
+        manifest
+    }
+
+    /// The module qualname of `rel_path` when it sits under an explicit
+    /// target root (the root file itself is `crate`, a sibling or
+    /// descendant is relative to the root's directory). The deepest
+    /// enclosing root wins. `None` when no explicit root covers the file.
+    fn explicit_root_module(&self, crate_dir: &Path, rel_path: &str) -> Option<String> {
+        let file = Path::new(rel_path);
+        let mut best: Option<(usize, PathBuf, PathBuf)> = None;
+        for root in &self.roots {
+            let root_file = crate_dir.join(root.trim_start_matches("./"));
+            let root_dir = root_file.parent().unwrap_or_else(|| Path::new(""));
+            if !file.starts_with(root_dir) {
+                continue;
+            }
+            let depth = root_dir.components().count();
+            if best.as_ref().is_none_or(|(d, _, _)| depth > *d) {
+                best = Some((depth, root_dir.to_path_buf(), root_file));
+            }
+        }
+        let (_, root_dir, root_file) = best?;
+        if file == root_file {
+            return Some("crate".to_string());
+        }
+        let rest = file.strip_prefix(&root_dir).ok()?;
+        let rest: Vec<_> = rest
+            .components()
+            .filter_map(|comp| comp.as_os_str().to_str())
+            .collect();
+        Some(module_name_from_parts(&rest.join("/"), false))
     }
 }
 
@@ -642,6 +761,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     // parent's `use` bindings (see `Context::imports`).
     next_ctx.imports = Rc::new(collect_use_bindings(body, source, &next_ctx.module));
     next_ctx.local_traits = Rc::new(collect_local_traits(body, source, &next_ctx.module));
+    next_ctx.declared_mods = Rc::new(collect_declared_mods(body, source, &next_ctx.module));
     // A module is its own namespace, not a function body: no shadowed
     // names carry in, even for a `mod` declared inside a function.
     next_ctx.shadowed_names = Rc::new(HashSet::new());
@@ -970,13 +1090,17 @@ fn impl_identity(node: Node<'_>, source: &str) -> Option<ImplIdentity> {
 
 fn handle_use(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
     let text = node_text(node, source);
-    for (_, raw_target) in parse_use_bindings(&text) {
+    for (bound, raw_target) in parse_use_bindings(&text) {
+        // A renaming `use a::b as c` records the name it introduces, so the
+        // resolver can follow a path through this module's re-export `c`.
+        let detail = (bound != "*" && raw_target.rsplit("::").next() != Some(bound.as_str()))
+            .then(|| format!("as {bound}"));
         let target = normalized_import_target(raw_target, &ctx.module);
         output.edges.push(EdgeInput {
             kind: "IMPORTS".to_string(),
             source_qualname: Some(ctx.module.clone()),
             target_qualname: Some(target),
-            detail: None,
+            detail,
             evidence_snippet: None,
             ..Default::default()
         });
@@ -3373,7 +3497,12 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
     {
         return Some(target);
     }
-    if raw.contains("::") {
+    if let Some((first, rest)) = raw.split_once("::") {
+        // `x::f` where this scope declares `mod x` names `{module}::x::f`.
+        let declared = format!("{}::{first}", ctx.module);
+        if !rest.is_empty() && ctx.declared_mods.contains(&declared) {
+            return Some(format!("{declared}::{rest}"));
+        }
         return Some(raw.to_string());
     }
     if raw.contains('.') {
@@ -3482,6 +3611,20 @@ const PRELUDE_TRAITS: &[(&str, &str)] = &[
 
 /// Trait names declared directly in `scope` (a file root or `mod` body),
 /// as `module::Name` qualnames.
+/// Qualnames of the `mod` items declared directly in `scope`.
+fn collect_declared_mods(scope: Node<'_>, source: &str, module: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut cursor = scope.walk();
+    for child in scope.named_children(&mut cursor) {
+        if child.kind() == "mod_item"
+            && let Some(name) = extract_name(child, source)
+        {
+            out.insert(format!("{module}::{name}"));
+        }
+    }
+    out
+}
+
 fn collect_local_traits(scope: Node<'_>, source: &str, module: &str) -> HashSet<String> {
     let mut cursor = scope.walk();
     scope

@@ -2614,3 +2614,87 @@ fn rust_bare_call_in_impl_binds_added_free_fn_matches_fresh() {
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+const CRATE_ROOT_TOML: &str =
+    "[package]\nname = \"app\"\n\n[[bin]]\nname = \"app\"\npath = \"crates/core/main.rs\"\n";
+const CRATE_ROOT_MAIN: &str =
+    "mod flags;\nmod index;\nfn search() {}\nfn main() {\n    flags::short();\n    search();\n}\n";
+const CRATE_ROOT_ENABLED: &str = "pub fn read() {\n    crate::search();\n}\n";
+const CRATE_ROOT_FLAGS: &str =
+    "pub mod doc;\npub(crate) use crate::flags::doc::version::{generate_short as short};\n";
+const CRATE_ROOT_FLAGS_RETARGETED: &str =
+    "pub mod doc;\npub(crate) use crate::flags::doc::version::{generate_long as short};\n";
+const CRATE_ROOT_DOC: &str = "pub mod version;\n";
+const CRATE_ROOT_VERSION: &str = "pub fn generate_short() {}\npub fn generate_long() {}\n";
+
+fn crate_root_files(flags: &'static str) -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Cargo.toml", CRATE_ROOT_TOML),
+        ("crates/core/main.rs", CRATE_ROOT_MAIN),
+        ("crates/core/index/mod.rs", "mod enabled;\n"),
+        ("crates/core/index/enabled.rs", CRATE_ROOT_ENABLED),
+        ("crates/core/flags/mod.rs", flags),
+        ("crates/core/flags/doc/mod.rs", CRATE_ROOT_DOC),
+        ("crates/core/flags/doc/version.rs", CRATE_ROOT_VERSION),
+    ]
+}
+
+fn assert_crate_root_matches_fresh(
+    indexer: &Indexer,
+    files: &[(&'static str, &'static str)],
+    short_target: &str,
+) {
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    for (source, target) in [
+        ("crate::main", short_target),
+        ("crate::main", "crate::search"),
+        ("crate::index::enabled::read", "crate::search"),
+    ] {
+        assert!(
+            snapshot.iter().any(|e| e.kind == "CALLS"
+                && e.source_qualname == source
+                && e.target_qualname.as_deref() == Some(target)),
+            "{source} -> {target} missing: {snapshot:#?}"
+        );
+    }
+    let (_fresh_tmp, fresh) = common::index_files(files);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// A call through an aliased `pub use` re-export in a manifest-declared bin
+/// root resolves once the re-exporting module and its target arrive.
+#[test]
+fn rust_bin_path_root_alias_reexport_added_later_matches_fresh() {
+    let files = crate_root_files(CRATE_ROOT_FLAGS);
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-bin-root-add", &files[..4]);
+    let late: Vec<(&str, &str)> = files[4..].to_vec();
+    common::write_files(&repo_root, &late);
+    let rels: Vec<String> = late.iter().map(|(p, _)| p.to_string()).collect();
+    indexer.sync_rel_paths(&rels).unwrap();
+    assert_crate_root_matches_fresh(
+        &indexer,
+        &files,
+        "crate::flags::doc::version::generate_short",
+    );
+}
+
+/// Re-pointing the alias in the re-exporting module re-targets the caller.
+#[test]
+fn rust_bin_path_root_alias_reexport_edited_matches_fresh() {
+    let files = crate_root_files(CRATE_ROOT_FLAGS);
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-bin-root-edit", &files);
+    common::write_files(
+        &repo_root,
+        &[("crates/core/flags/mod.rs", CRATE_ROOT_FLAGS_RETARGETED)],
+    );
+    indexer
+        .sync_rel_paths(&["crates/core/flags/mod.rs".to_string()])
+        .unwrap();
+    assert_crate_root_matches_fresh(
+        &indexer,
+        &crate_root_files(CRATE_ROOT_FLAGS_RETARGETED),
+        "crate::flags::doc::version::generate_long",
+    );
+}

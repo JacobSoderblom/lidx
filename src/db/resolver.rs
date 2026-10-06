@@ -134,6 +134,10 @@ fn is_locally_bound_bare_call(r: &Reference<'_>) -> bool {
 pub(crate) enum ResolutionKind {
     Exact,
     Import,
+    /// A Rust path followed through a module's `use` re-export
+    /// (`pub use a::b as c`) or across crates, rather than found by its own
+    /// qualname (see `Resolver::rust_follow_path`).
+    Reexport,
     ReceiverType,
     Inherited,
     TwoSegment,
@@ -166,6 +170,7 @@ impl ResolutionKind {
         match self {
             Self::Exact => "exact",
             Self::Import => "import",
+            Self::Reexport => "reexport",
             Self::ReceiverType => "receiver_type",
             Self::Inherited => "inherited",
             Self::TwoSegment => "two_segment",
@@ -191,9 +196,10 @@ pub(crate) const HEURISTIC_RESOLUTION_KINDS: [&str; 2] = [
 /// validates against (`rpc/handlers.rs`'s `validate_resolution_kinds`), so
 /// an unknown or wrong-case kind (`"BARE_NAME"`, `"bogus"`) is rejected
 /// with a clear error instead of silently matching nothing.
-pub(crate) const ALL_RESOLUTION_KINDS: [&str; 7] = [
+pub(crate) const ALL_RESOLUTION_KINDS: [&str; 8] = [
     ResolutionKind::Exact.as_str(),
     ResolutionKind::Import.as_str(),
+    ResolutionKind::Reexport.as_str(),
     ResolutionKind::ReceiverType.as_str(),
     ResolutionKind::Inherited.as_str(),
     ResolutionKind::TwoSegment.as_str(),
@@ -1067,6 +1073,15 @@ pub(crate) struct Resolver<'c> {
     external_file_id: Option<i64>,
     /// Memo of `names_repo_entity`, keyed by (language family, name).
     repo_entity_memo: HashMap<(String, String), bool>,
+    /// Rust crate roots, loaded on first use (see `rust_roots`).
+    rust_roots: Option<Vec<RustRoot>>,
+}
+
+/// One Rust crate root: a file whose module is `crate`.
+struct RustRoot {
+    /// The directory the module tree is rooted at (repo-relative, no
+    /// trailing slash; empty for a root at the repo root).
+    dir: String,
 }
 
 impl<'c> Resolver<'c> {
@@ -1092,6 +1107,7 @@ impl<'c> Resolver<'c> {
             call_scope: TypeScope::default(),
             external_file_id: None,
             repo_entity_memo: HashMap::new(),
+            rust_roots: None,
         })
     }
 
@@ -1334,6 +1350,16 @@ impl<'c> Resolver<'c> {
                 )?
             {
                 return Ok(resolved(id, ResolutionKind::Import));
+            }
+            // A Rust path through a module's `pub use .. as alias`
+            // re-export, or one the global lookup found ambiguous across
+            // crates: walk it inside its own crate.
+            if r.source_lang == "rust"
+                && matches!(r.edge_kind, "CALLS" | "USES" | "IMPORTS")
+                && let Some(qn) = r.target_qualname
+                && let Some(id) = self.rust_follow_path(qn, r.source_file_path)?
+            {
+                return Ok(resolved(id, ResolutionKind::Reexport));
             }
         }
         // `new T()` / `: base()` whose `using`s name two repo types `T` is
@@ -1582,6 +1608,141 @@ impl<'c> Resolver<'c> {
             self.saw_repo_ambiguous = true;
         }
         Ok(resolved)
+    }
+
+    /// Every Rust crate root (a file whose module is `crate`), loaded once.
+    fn rust_roots(&mut self) -> Result<&[RustRoot]> {
+        if self.rust_roots.is_none() {
+            let mut stmt = self.conn.prepare(
+                "SELECT f.path FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.graph_version = ?1 AND s.kind = 'module' AND s.qualname = 'crate'
+                   AND f.language = 'rust'",
+            )?;
+            let roots = stmt
+                .query_map(params![self.graph_version], |row| {
+                    let path: String = row.get(0)?;
+                    Ok(RustRoot {
+                        dir: path.rsplit_once('/').map_or("", |(dir, _)| dir).to_string(),
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            self.rust_roots = Some(roots);
+        }
+        Ok(self.rust_roots.as_deref().unwrap_or_default())
+    }
+
+    /// The root directory of the crate `file_path` belongs to: the deepest
+    /// crate-root directory containing it.
+    fn rust_crate_dir(&mut self, file_path: &str) -> Result<Option<String>> {
+        Ok(self
+            .rust_roots()?
+            .iter()
+            .filter(|root| {
+                root.dir.is_empty()
+                    || file_path
+                        .strip_prefix(root.dir.as_str())
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+            .max_by_key(|root| root.dir.len())
+            .map(|root| root.dir.clone()))
+    }
+
+    /// Resolve a Rust path rooted at `crate::` by walking the caller's own
+    /// crate: an exact qualname among that crate's files, else the
+    /// re-export (`pub use target as name`) a module on the path binds.
+    /// `None` when the path leaves the crate, or anything is ambiguous.
+    fn rust_follow_path(&mut self, path: &str, caller_file: &str) -> Result<Option<i64>> {
+        let segments: Vec<&str> = path.split("::").collect();
+        if segments.len() < 2 || segments[0] != "crate" {
+            return Ok(None);
+        }
+        let Some(dir) = self.rust_crate_dir(caller_file)? else {
+            return Ok(None);
+        };
+        self.rust_walk(&dir, &segments[1..], 0)
+    }
+
+    /// `rem` is the path below the root of the crate rooted at `dir`.
+    fn rust_walk(&mut self, dir: &str, rem: &[&str], depth: usize) -> Result<Option<i64>> {
+        if rem.is_empty() || depth > 8 {
+            return Ok(None);
+        }
+        let qualname = format!("crate::{}", rem.join("::"));
+        let gv = self.graph_version;
+        let hits = query_exact_candidates(&mut self.exact, &qualname, gv, "")?;
+        let mut in_crate = Vec::new();
+        for hit in hits {
+            if self.rust_crate_dir(&hit.path)?.as_deref() == Some(dir) {
+                in_crate.push(hit);
+            }
+        }
+        if let Some(id) = collapse_exact_candidates(&in_crate) {
+            return Ok(Some(id));
+        }
+        if in_crate.len() > 1 {
+            return Ok(None);
+        }
+        for k in 1..=rem.len() {
+            let module = if k == 1 {
+                "crate".to_string()
+            } else {
+                format!("crate::{}", rem[..k - 1].join("::"))
+            };
+            let Some(target) = self.rust_reexport_target(dir, &module, rem[k - 1])? else {
+                continue;
+            };
+            let mut next: Vec<&str> = target.split("::").collect();
+            next.extend_from_slice(&rem[k..]);
+            if next.first() == Some(&"crate") {
+                return self.rust_walk(dir, &next[1..], depth + 1);
+            }
+            return Ok(None);
+        }
+        Ok(None)
+    }
+
+    /// The single path module `module` (in the crate rooted at `dir`)
+    /// binds `name` to through a `use` declaration, `None` when it binds
+    /// none or two different ones.
+    fn rust_reexport_target(
+        &mut self,
+        dir: &str,
+        module: &str,
+        name: &str,
+    ) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT DISTINCT e.target_qualname, f.path
+             FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             JOIN files f ON f.id = e.file_id
+             WHERE e.graph_version = ?1 AND e.kind = 'IMPORTS' AND s.qualname = ?2
+               AND e.target_qualname IS NOT NULL
+               AND (e.detail = ?3
+                    OR (e.detail IS NULL AND (e.target_qualname = ?4
+                        OR substr(e.target_qualname, -length(?5)) = ?5)))",
+        )?;
+        let rows = stmt
+            .query_map(
+                params![
+                    self.graph_version,
+                    module,
+                    format!("as {name}"),
+                    name,
+                    format!("::{name}")
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut targets = Vec::new();
+        for (target, path) in rows {
+            if self.rust_crate_dir(&path)?.as_deref() == Some(dir) && !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+        Ok(match targets.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        })
     }
 
     /// Ambiguity guard for every name-based lookup: bind only when exactly
@@ -3392,6 +3553,19 @@ impl Db {
             |row| row.get(0),
         )?;
         let inheritance_changed = max_inheritance_edge_id > inheritance_watermark;
+        // A Rust `use` edge written since the last pass can make a stored
+        // `crate::a::alias` path resolvable (`Resolver::rust_follow_path`)
+        // without any symbol named like the reference being new.
+        let rust_import_watermark = self
+            .get_meta_i64("unresolved_reference_rust_import_watermark")?
+            .unwrap_or(0);
+        let max_rust_import_edge_id: i64 = self.read_conn()?.query_row(
+            "SELECT COALESCE(MAX(e.id), 0) FROM edges e JOIN files f ON f.id = e.file_id
+             WHERE e.graph_version = ? AND e.kind = 'IMPORTS' AND f.language = 'rust'",
+            params![graph_version],
+            |row| row.get(0),
+        )?;
+        let rust_imports_changed = max_rust_import_edge_id > rust_import_watermark;
         // A stored deferred-receiver row hangs on its callee's signature,
         // not on any symbol sharing its name, so it is always retried.
         let has_deferred_rows: bool = self.read_conn()?.query_row(
@@ -3403,6 +3577,7 @@ impl Db {
         )?;
         if !symbols_deleted_this_batch
             && !inheritance_changed
+            && !rust_imports_changed
             && !has_deferred_rows
             && max_symbol_id <= watermark
         {
@@ -3463,14 +3638,18 @@ impl Db {
                  WHERE ur.graph_version = ?1
                    AND ((?4 AND ur.receiver_type IS NOT NULL AND ur.receiver_type != '')
                         OR ur.deferred_kind IS NOT NULL
-                        OR (?3 AND ur.reason IN ('ambiguous', 'private')))",
+                        OR (?3 AND ur.reason IN ('ambiguous', 'private'))
+                        OR (?5 AND f.language = 'rust'
+                            AND ur.edge_kind IN ('CALLS', 'USES', 'IMPORTS')
+                            AND ur.reference_name LIKE '%::%'))",
             )?;
             let rows = stmt.query_map(
                 params![
                     graph_version,
                     watermark,
                     symbols_deleted_this_batch,
-                    inheritance_changed
+                    inheritance_changed,
+                    rust_imports_changed
                 ],
                 |row| {
                     Ok(StoreRetryRow {
@@ -3602,6 +3781,11 @@ impl Db {
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![max_inheritance_edge_id.to_string()],
         )?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('unresolved_reference_rust_import_watermark', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![max_rust_import_edge_id.to_string()],
+        )?;
         tx.commit()?;
         Ok(total_resolved)
     }
@@ -3651,6 +3835,19 @@ impl Db {
             "",
             "AND e.target_symbol_id IS NOT NULL AND e.kind = 'CALLS'
              AND e.deferred_kind IS NOT NULL",
+        )
+    }
+
+    /// Re-judge every edge bound through a Rust re-export
+    /// (`ResolutionKind::Reexport`). Its target hangs on a `use` declaration
+    /// in a module the edge's own file never touches, so editing or deleting
+    /// that declaration must retarget or unbind the edge, or incremental sync
+    /// would diverge from a fresh reindex (issue #77).
+    pub fn retry_rust_reexport_edges(&self, graph_version: i64) -> Result<usize> {
+        self.rejudge_bound_edges(
+            graph_version,
+            "",
+            "AND e.target_symbol_id IS NOT NULL AND e.resolution_kind = 'reexport'",
         )
     }
 
@@ -3896,6 +4093,13 @@ impl Db {
         if deferred_rejudged > 0 {
             eprintln!(
                 "lidx: re-judged {deferred_rejudged} deferred-receiver edge(s) after {context}"
+            );
+            self.reconcile_unresolved_reference_store(graph_version)?;
+        }
+        let reexports_rejudged = self.retry_rust_reexport_edges(graph_version)?;
+        if reexports_rejudged > 0 {
+            eprintln!(
+                "lidx: re-judged {reexports_rejudged} Rust re-export edge(s) after {context}"
             );
             self.reconcile_unresolved_reference_store(graph_version)?;
         }
