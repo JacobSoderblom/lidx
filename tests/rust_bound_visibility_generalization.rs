@@ -117,7 +117,7 @@ fn assoc_bound_trait_from_another_workspace_crate_binds_to_trait_decl() {
 const VIS_LIB: &str = "pub mod a;\npub mod z;\n";
 const VIS_A: &str = "pub mod b;\nuse crate::a::b;\n\
 pub fn from_parent() {\n    b::sup();\n    b::inside();\n}\n\
-pub fn method_from_parent() {\n    let _f = |x| {\n        x.sup_m();\n        x.inside_m();\n    };\n}\n";
+pub fn method_from_parent(x: &b::S) {\n    x.sup_m();\n    x.inside_m();\n}\n";
 const VIS_B: &str = "pub(super) fn sup() {}\n\
 pub(in crate::a) fn inside() {}\n\
 fn helper() {}\n\

@@ -60,7 +60,8 @@
 use super::Db;
 use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
-    CallShape, DEFERRED_KIND_ARGUMENT, DEFERRED_KIND_RETURN, DeferredMarker, TypeScope,
+    CallShape, DEFERRED_KIND_ARGUMENT, DEFERRED_KIND_RETURN, DeferredMarker, DeferredSource,
+    TypeScope,
 };
 use crate::model::{has_parameter_list, is_partial_signature};
 use anyhow::Result;
@@ -411,6 +412,8 @@ pub struct Declaration {
 pub enum DeclarationQuery<'a> {
     /// A function or method with exactly this qualname.
     Callable(&'a str),
+    /// A `const`/`static` item with exactly this qualname.
+    Value(&'a str),
     /// A method whose qualname ends `::<qualified>` (`Type::method`).
     Method(&'a str),
     /// A type declaration (struct, enum, class, ...) with this name.
@@ -883,6 +886,12 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
                 String::new(),
                 String::new(),
             ),
+            DeclarationQuery::Value(qualname) => (
+                "s.kind IN ('const', 'static') AND s.qualname = ?1",
+                qualname.to_string(),
+                String::new(),
+                String::new(),
+            ),
             DeclarationQuery::Method(qualified) => (
                 "s.kind = 'method' AND (s.qualname = ?1 OR substr(s.qualname, -length(?1) - 2) = '::' || ?1)",
                 qualified.to_string(),
@@ -1187,8 +1196,10 @@ impl<'c> Resolver<'c> {
         // receiver untracked rather than `""`, so no name-tier edge is lost.
         let hooked: Option<String>;
         let name_only = matches!(r.deferred, Some(DeferredMarker::Return(call)) if call.name_only);
-        let r = match r
-            .deferred
+        let followed = self.follow_rust_deferred_callees(r)?;
+        let r = match followed
+            .as_ref()
+            .or(r.deferred)
             .filter(|marker| !matches!(marker, DeferredMarker::Argument(_)))
             .and_then(|marker| {
                 let hook = profile_for(r.source_lang).deferred_receiver?;
@@ -2224,6 +2235,17 @@ impl<'c> Resolver<'c> {
                 {
                     return Ok(None);
                 }
+                // `x.m()` where nothing pinned `x`'s type: the name `m` says
+                // nothing about which type's method runs (`n.as_str()` on a
+                // `String` is not `Category::as_str`), and `map`/`push`/
+                // `clone` collide with std. Prefer unresolved to a guess.
+                if source_lang == "rust"
+                    && edge_kind == "CALLS"
+                    && !bare_call
+                    && !target_qualname.contains("::")
+                {
+                    return Ok(None);
+                }
                 let (name, dot, colons) = fuzzy_qualname_patterns(target_qualname);
                 Ok(self
                     .unique_by_pattern(
@@ -2237,6 +2259,66 @@ impl<'c> Resolver<'c> {
                     .map(|id| (id, ResolutionKind::BareName)))
             }
         }
+    }
+
+    /// A Rust deferred receiver whose callee is written through a facade
+    /// crate or a `pub use` re-export (`grep::searcher::SearcherBuilder::new`)
+    /// with each candidate replaced by the declaration it follows to, so the
+    /// declaration lookup (exact qualnames) can read its return type.
+    /// `None` when the marker needs no rewriting.
+    fn follow_rust_deferred_callees(
+        &mut self,
+        r: &Reference<'_>,
+    ) -> Result<Option<DeferredMarker>> {
+        let Some(DeferredMarker::Rust(deferred)) = r.deferred else {
+            return Ok(None);
+        };
+        let (DeferredSource::Call { candidates } | DeferredSource::Static { candidates }) =
+            &deferred.source
+        else {
+            return Ok(None);
+        };
+        let mut rewritten = Vec::with_capacity(candidates.len());
+        let mut changed = false;
+        for candidate in candidates {
+            let direct = {
+                let gv = self.graph_version;
+                !query_exact_candidates(&mut self.exact, candidate, gv, r.source_file_path)?
+                    .is_empty()
+            };
+            let followed = if direct {
+                None
+            } else {
+                match self.rust_follow_path(candidate, r.source_file_path)? {
+                    Some(id) => self
+                        .conn
+                        .prepare_cached("SELECT qualname FROM symbols WHERE id = ?")?
+                        .query_row(params![id], |row| row.get::<_, String>(0))
+                        .optional()?,
+                    None => None,
+                }
+            };
+            match followed {
+                Some(qualname) if qualname != *candidate => {
+                    changed = true;
+                    rewritten.push(qualname);
+                }
+                _ => rewritten.push(candidate.clone()),
+            }
+        }
+        if !changed {
+            return Ok(None);
+        }
+        let mut deferred = deferred.clone();
+        deferred.source = match deferred.source {
+            DeferredSource::Static { .. } => DeferredSource::Static {
+                candidates: rewritten,
+            },
+            _ => DeferredSource::Call {
+                candidates: rewritten,
+            },
+        };
+        Ok(Some(DeferredMarker::Rust(deferred)))
     }
 
     /// An unqualified receiver type looked up like C# does (see

@@ -792,10 +792,18 @@ fn handle_named_item(
         end_col,
         start_byte,
         end_byte,
-        signature: if matches!(kind, "struct" | "enum") {
-            adt_signature(node, source)
-        } else {
-            None
+        signature: match kind {
+            "struct" | "enum" => adt_signature(node, source),
+            // `const NAME: Type`: kept so another file's `NAME.iter()` can
+            // read the declared type (`DeferredSource::Static`).
+            "const" | "static" => node.child_by_field_name("type").map(|ty| {
+                let flat = node_text(ty, source)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{kind} {name}: {flat}")
+            }),
+            _ => None,
         },
         docstring: None,
         identity: ctx.identity(),
@@ -1081,7 +1089,11 @@ fn handle_function(
         let generic_bounds = collect_generic_bounds(node, source);
         let mut rebound = HashSet::new();
         collect_pattern_names(body, source, &mut rebound);
-        let (typed_params, param_names) = collect_fn_params(node, source);
+        let (mut typed_params, param_names) = collect_fn_params(node, source);
+        // `impl<M: Tr> Tr for &M`: `(*self)` is the bound `M`.
+        if let Some(generic) = ref_impl_generic(node, source) {
+            typed_params.insert("*self".to_string(), generic);
+        }
         next_ctx.generic_params = Rc::new(
             typed_params
                 .into_iter()
@@ -1106,7 +1118,12 @@ fn handle_function(
             adts: &ctx.adts,
             ctx: Some(&next_ctx),
         };
-        collect_local_types(node, &env, &mut local_types);
+        collect_local_types(node, &env, &mut local_types, &HashMap::new());
+        let refined = refine_map_locals(node, &env, &local_types);
+        if !refined.is_empty() {
+            local_types = HashMap::new();
+            collect_local_types(node, &env, &mut local_types, &refined);
+        }
         next_ctx.local_types = Rc::new(local_types);
 
         walk_node(body, &next_ctx, source, output);
@@ -1595,7 +1612,7 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     }
     if matches!(
         value.kind(),
-        "call_expression" | "try_expression" | "parenthesized_expression"
+        "call_expression" | "try_expression" | "parenthesized_expression" | "struct_expression"
     ) {
         // `Type::new().m()`, `f()?.m()`, `a.m().n()`: the value's inferred
         // type (constructor, declared return type, `Self`/`&mut Self` chain).
@@ -1673,6 +1690,8 @@ enum Ty {
     Tuple(Vec<Ty>),
     /// `Vec<T>`, `VecDeque<T>`, `[T]`, `[T; N]`.
     Seq(Box<Ty>),
+    /// `HashMap<K, V>` / `BTreeMap<K, V>`.
+    Map(Box<Ty>, Box<Ty>),
     /// An iterator whose item type is known.
     Iter(Box<Ty>),
     /// Output of an `async fn`, awaited via `.await`.
@@ -1683,11 +1702,11 @@ enum Ty {
 }
 
 /// Longest method chain kept on a `Pending` type.
-// ponytail: ceiling -- a deferred chain longer than 4 steps stays untracked
-// (an unresolved call, never a guess), so `a.b().c().d().e().f()` through
+// ponytail: ceiling -- a deferred chain longer than 6 steps stays untracked
+// (an unresolved call, never a guess), so `a.b().c().d().e().f().g().h()` through
 // another file's declarations is lost. Upgrade: raise it once the resolver
 // memoizes per-declaration return types, or bound by cost instead of count.
-const MAX_DEFERRED_STEPS: usize = 4;
+const MAX_DEFERRED_STEPS: usize = 6;
 
 /// Std methods whose result is never a repo type, so `project` does not
 /// defer a chain through them.
@@ -1718,6 +1737,10 @@ fn project(ty: Ty, step: Step) -> Ty {
     if let Ty::Pending(mut p) = ty {
         // A declared method's return type is read from its declaration; the
         // chain stays short so a long iterator pipeline is not deferred.
+        // `Clone::clone` returns the receiver's own type.
+        if matches!(&step, Step::Method(m) if m == "clone") {
+            return Ty::Pending(p);
+        }
         if p.steps.len() >= MAX_DEFERRED_STEPS
             || matches!(&step, Step::Method(m) if m.is_empty() || STD_UNTYPED_METHODS.contains(&m.as_str()))
         {
@@ -1737,6 +1760,7 @@ fn project(ty: Ty, step: Step) -> Ty {
         | (Ty::Result(_, t), Step::ResultErr)
         | (Ty::Seq(t) | Ty::Iter(t), Step::Elem)
         | (Ty::Future(t), Step::Await) => *t,
+        (Ty::Map(k, v), Step::Elem) => Ty::Tuple(vec![*k, *v]),
         (Ty::Tuple(ts), Step::Tuple(i)) => ts.into_iter().nth(i).unwrap_or(Ty::Unknown),
         (ty, Step::Method(m)) => method_ty(ty, &m),
         _ => Ty::Unknown,
@@ -1865,6 +1889,11 @@ impl TypeEnv<'_> {
             "array_type" => node
                 .child_by_field_name("element")
                 .map_or(Ty::Unknown, |t| Ty::Seq(Box::new(self.ty(t)))),
+            // `dyn Trait`: method calls on it dispatch to the trait's declaration.
+            "dynamic_type" => node
+                .child_by_field_name("trait")
+                .and_then(|t| self.type_name(t))
+                .map_or(Ty::Unknown, Ty::Named),
             "abstract_type" => node
                 .child_by_field_name("trait")
                 .and_then(|t| self.iterator_item(t))
@@ -1896,6 +1925,9 @@ impl TypeEnv<'_> {
                     (Some("Result"), 1) => Ty::Result(Box::new(arg(0)), Box::new(Ty::Unknown)),
                     (Some("Result"), 2) => Ty::Result(Box::new(arg(0)), Box::new(arg(1))),
                     (Some("Vec" | "VecDeque"), 1) => Ty::Seq(Box::new(arg(0))),
+                    (Some("HashMap" | "BTreeMap"), 2) => {
+                        Ty::Map(Box::new(arg(0)), Box::new(arg(1)))
+                    }
                     (Some("IntoIter" | "Iter" | "IterMut" | "Drain"), 1) => {
                         Ty::Iter(Box::new(arg(0)))
                     }
@@ -1942,12 +1974,40 @@ impl TypeEnv<'_> {
             "unary_expression" if node_text(value, source).starts_with('*') => {
                 self.expr_ty_opt(value.named_child(0)?, locals)
             }
+            // `{ stmts; tail }`: the tail expression's type (the locals it
+            // reads are bound over the whole fn body, scoped by position).
+            "block" => {
+                let mut cursor = value.walk();
+                let tail = value.named_children(&mut cursor).last()?;
+                if tail.kind().ends_with("_statement")
+                    || tail.kind().ends_with("_declaration")
+                    || tail.kind().ends_with("_item")
+                    || tail.kind().ends_with("comment")
+                {
+                    return None;
+                }
+                self.expr_ty_opt(tail, locals)
+            }
             "self" => self.usable("Self".to_string()).map(Ty::Named),
-            "identifier" => Some(lookup_local(
-                locals,
-                &node_text(value, source),
-                value.start_byte(),
-            )),
+            "identifier" => {
+                let name = node_text(value, source);
+                let ty = lookup_local(locals, &name, value.start_byte());
+                // A SCREAMING_CASE name no local binds is a `const`/`static`:
+                // its declared type, read from its declaration.
+                if ty == Ty::Unknown
+                    && !is_bound_at(locals, &name, value.start_byte())
+                    && let Some(ctx) = self.ctx
+                    && name.chars().any(char::is_uppercase)
+                    && !name.chars().any(char::is_lowercase)
+                {
+                    let candidates = match ctx.imports.get(&name) {
+                        Some(imported) => imported.clone(),
+                        None => vec![format!("{}::{name}", ctx.module)],
+                    };
+                    return Some(self.pending(DeferredSource::Static { candidates }, None));
+                }
+                Some(ty)
+            }
             "try_expression" => {
                 let inner = self.expr_ty_opt(value.named_child(0)?, locals)?;
                 Some(match inner {
@@ -1976,17 +2036,48 @@ impl TypeEnv<'_> {
                 ))
             }
             "struct_expression" => {
-                let name = self.type_name(value.child_by_field_name("name")?)?;
+                let name_node = value.child_by_field_name("name")?;
+                // `Enum::Variant { .. }` is an `Enum` (a module segment is
+                // lowercase); a bare `Type { .. }` is a `Type`.
+                let owner = (name_node.kind() == "scoped_type_identifier")
+                    .then(|| name_node.child_by_field_name("path"))
+                    .flatten()
+                    .map(|p| node_text(p, source))
+                    .and_then(|p| p.rsplit("::").next().map(str::to_string))
+                    .filter(|o| o.starts_with(char::is_uppercase));
+                let name = match owner {
+                    Some(owner) => self.usable(owner)?,
+                    None => self.type_name(name_node)?,
+                };
                 Some(Ty::Named(name))
             }
             "call_expression" => {
                 let function = value.child_by_field_name("function")?;
                 match function.kind() {
                     "field_expression" => {
-                        let recv =
-                            self.expr_ty_opt(function.child_by_field_name("value")?, locals)?;
                         let method = node_text(function.child_by_field_name("field")?, source);
-                        Some(self.method_call_ty(recv, &method))
+                        // `x.unwrap_or(d)` / `x.unwrap_or_else(|| d)` is the type
+                        // of `d`, whatever `x` is.
+                        if matches!(method.as_str(), "unwrap_or" | "unwrap_or_else")
+                            && let Some(arg) = call_arguments(value).first().copied()
+                        {
+                            let default = match arg.kind() {
+                                "closure_expression" => arg.child_by_field_name("body"),
+                                _ => Some(arg),
+                            };
+                            if let Some(ty) = default.map(|d| self.expr_ty(d, locals))
+                                && ty != Ty::Unknown
+                            {
+                                return Some(ty);
+                            }
+                        }
+                        let recv = self.expr_ty_opt(function.child_by_field_name("value")?, locals);
+                        // `ToString` is blanket-implemented: a `String` whatever
+                        // the (even unknown) receiver.
+                        if method == "to_string" && !matches!(recv, Some(Ty::Named(_))) {
+                            return Some(Ty::Named("String".to_string()));
+                        }
+                        Some(self.method_call_ty(recv?, &method))
                     }
                     "identifier" | "scoped_identifier" => {
                         self.path_call_ty(value, function, locals)
@@ -2099,6 +2190,10 @@ impl TypeEnv<'_> {
         let Some(ctx) = self.ctx else {
             return heuristic.map(Ty::Named);
         };
+        // A variant constructor is its enum, wherever the enum is declared.
+        if Self::is_variant_path(function, source) {
+            return heuristic.map(Ty::Named);
+        }
         let segs: Vec<&str> = raw.split("::").collect();
         // `shadowed_names` only guards a bare callee; a path's first segment
         // is a type or module, never a local.
@@ -2159,13 +2254,34 @@ impl TypeEnv<'_> {
         Some(self.pending(DeferredSource::Call { candidates: cands }, heuristic))
     }
 
-    /// `T::new(..)`/`T::default()`/`T::with_*`/`T::from*` -> `T`.
+    /// `Type::Variant`: two capitalised segments name an enum and its tuple
+    /// variant (a module segment is lowercase, an associated fn snake_case).
+    fn is_variant_path(function: Node<'_>, source: &str) -> bool {
+        let (Some(name), Some(path)) = (
+            function.child_by_field_name("name"),
+            function.child_by_field_name("path"),
+        ) else {
+            return false;
+        };
+        let name = node_text(name, source);
+        let owner = node_text(path, source);
+        name.starts_with(char::is_uppercase)
+            && name.chars().any(char::is_lowercase)
+            && owner
+                .rsplit("::")
+                .next()
+                .is_some_and(|o| o.starts_with(char::is_uppercase))
+    }
+
+    /// `T::new(..)`/`T::default()`/`T::with_*`/`T::from*`/`T::Variant(..)` -> `T`.
     fn ctor_type(&self, function: Node<'_>) -> Option<String> {
         if function.kind() != "scoped_identifier" {
             return None;
         }
         let ctor = node_text(function.child_by_field_name("name")?, self.source);
-        if !(ctor == "new"
+        let variant = Self::is_variant_path(function, self.source);
+        if !(variant
+            || ctor == "new"
             || ctor == "default"
             || ctor.starts_with("with_")
             || ctor.starts_with("from"))
@@ -2346,6 +2462,19 @@ fn method_ty(recv: Ty, method: &str) -> Ty {
         (t @ Ty::Iter(_), "into_iter" | "by_ref") => t,
         (Ty::Iter(t), "next" | "next_back" | "last") => Ty::Option(t),
         (Ty::Seq(t), "pop" | "pop_front" | "pop_back" | "first" | "last") => Ty::Option(t),
+        (Ty::Iter(t), "copied" | "cloned" | "rev" | "skip" | "take" | "filter" | "peekable") => {
+            Ty::Iter(t)
+        }
+        (Ty::Map(k, v), "iter" | "iter_mut" | "into_iter" | "drain") => {
+            Ty::Iter(Box::new(Ty::Tuple(vec![*k, *v])))
+        }
+        (Ty::Map(k, _), "keys" | "into_keys") => Ty::Iter(k),
+        (Ty::Map(_, v), "values" | "values_mut" | "into_values") => Ty::Iter(v),
+        (Ty::Map(_, v), "get" | "get_mut" | "remove") => Ty::Option(v),
+        (t @ Ty::Map(..), "clone") => t,
+        // `ToString` is blanket-implemented: whatever the receiver, the
+        // result is a `String` (an inherent `to_string` is consulted first).
+        (_, "to_string") => Ty::Named("String".to_string()),
         _ => Ty::Unknown,
     }
 }
@@ -2460,6 +2589,13 @@ fn resolve_deferred(
             }
             all
         }
+        DeferredSource::Static { candidates } => {
+            let mut all = Vec::new();
+            for candidate in candidates {
+                all.extend(index.declarations(DeclarationQuery::Value(candidate))?);
+            }
+            all
+        }
         DeferredSource::Method {
             receiver_type,
             method,
@@ -2487,7 +2623,12 @@ fn resolve_deferred(
         }
     }
     Ok(Some(match found {
-        Some(ty) if index.is_repo_type(&ty)? => Some(ty),
+        Some(ty)
+            if index.is_repo_type(&ty)?
+                || !index.declarations(DeclarationQuery::Trait(&ty))?.is_empty() =>
+        {
+            Some(ty)
+        }
         _ => None,
     }))
 }
@@ -2572,6 +2713,7 @@ fn declared_receiver_type(
         DeferredSource::Call { .. } | DeferredSource::Method { .. } => {
             declared_return_ty(qualname, signature)?
         }
+        DeferredSource::Static { .. } => declared_static_ty(signature)?,
     };
     for step in &deferred.steps {
         ty = match (ty, step) {
@@ -2584,6 +2726,25 @@ fn declared_receiver_type(
         Ty::Named(n) => Some(n),
         _ => None,
     }
+}
+
+/// A `const`/`static`'s declared type from its indexed signature
+/// (`const NAME: Type`).
+fn declared_static_ty(signature: &str) -> Option<Ty> {
+    let src = format!("{signature} = 0;");
+    let tree = parse_declaration(&src)?;
+    let item = tree.root_node().named_child(0)?;
+    if !matches!(item.kind(), "const_item" | "static_item") {
+        return None;
+    }
+    let env = TypeEnv {
+        source: &src,
+        self_ty: None,
+        generics: HashSet::new(),
+        adts: &Adts::new(),
+        ctx: None,
+    };
+    Some(env.ty(item.child_by_field_name("type")?))
 }
 
 /// A callable's declared return type (`async` wrapped in a future) from its
@@ -2972,6 +3133,31 @@ enum GenericCall {
     Unbound,
 }
 
+/// `*self` / `(*self)`.
+fn is_deref_self(node: Node<'_>) -> bool {
+    match node.kind() {
+        "parenthesized_expression" => node.named_child(0).is_some_and(is_deref_self),
+        "unary_expression" => {
+            node.child(0).is_some_and(|op| op.kind() == "*")
+                && node.named_child(0).is_some_and(|v| v.kind() == "self")
+        }
+        _ => false,
+    }
+}
+
+/// The generic parameter `M` of the `impl<M: Tr> .. for &M` / `&mut M`
+/// block enclosing method `func`: `*self` there is an `M`.
+fn ref_impl_generic(func: Node<'_>, source: &str) -> Option<String> {
+    let list = func.parent()?;
+    let impl_node = list.parent().filter(|p| p.kind() == "impl_item")?;
+    let ty = impl_node.child_by_field_name("type")?;
+    if ty.kind() != "reference_type" {
+        return None;
+    }
+    let inner = ty.child_by_field_name("type")?;
+    (inner.kind() == "type_identifier").then(|| node_text(inner, source))
+}
+
 /// `T::m`, `T::Assoc::m` and `x.m()` with `x: T` (and `T: Trait` in scope)
 /// name the trait's method declaration, never an impl of it. `None` when the
 /// callee is not rooted at a generic parameter.
@@ -2994,10 +3180,14 @@ fn generic_rooted_call(function: Node<'_>, ctx: &Context, source: &str) -> Optio
     match function.kind() {
         "field_expression" => {
             let value = function.child_by_field_name("value")?;
-            if value.kind() != "identifier" {
+            let key = if is_deref_self(value) {
+                "*self".to_string()
+            } else if value.kind() == "identifier" {
+                node_text(value, source)
+            } else {
                 return None;
-            }
-            let generic = ctx.generic_params.get(&node_text(value, source))?;
+            };
+            let generic = ctx.generic_params.get(&key)?;
             let method = node_text(function.child_by_field_name("field")?, source);
             Some(bound(&method, ctx.generic_bounds.get(generic)?))
         }
@@ -3126,7 +3316,12 @@ fn let_scope_end(cond: Node<'_>) -> Option<usize> {
 /// `T { .. }`, or a known-typed scrutinee), `if let`/`while let`/`match`/
 /// `for` pattern bindings (typed when the scrutinee type is known, else
 /// poisoned) and closure params. Nested `fn` items are collected on their own.
-fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
+fn collect_local_types(
+    node: Node<'_>,
+    env: &TypeEnv<'_>,
+    out: &mut Locals,
+    overrides: &HashMap<usize, Ty>,
+) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
@@ -3167,7 +3362,15 @@ fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
                     if ty == Ty::Unknown
                         && let Some(v) = child.child_by_field_name("value")
                     {
+                        // A block-valued initialiser reads locals its own
+                        // statements bind: bind those first.
+                        if v.kind() == "block" {
+                            collect_local_types(v, env, out, overrides);
+                        }
                         ty = env.expr_ty(v, out);
+                    }
+                    if let Some(refined) = overrides.get(&child.end_byte()) {
+                        ty = refined.clone();
                     }
                     env.bind(pat, &ty, (child.end_byte(), block.end_byte()), out);
                 }
@@ -3226,8 +3429,116 @@ fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
             }
             _ => {}
         }
-        collect_local_types(child, env, out);
+        collect_local_types(child, env, out, overrides);
     }
+}
+
+/// `let mut m = BTreeMap::new();` with no annotation: the key type is the
+/// first `m.entry(k)` / `m.insert(k, ..)` argument's type. A second pass,
+/// since the argument may read a local (a `for` variable) bound after the
+/// `let`.
+fn refine_map_locals(node: Node<'_>, env: &TypeEnv<'_>, out: &Locals) -> HashMap<usize, Ty> {
+    let mut refined = HashMap::new();
+    refine_map_locals_into(node, env, out, &mut refined);
+    refined
+}
+
+fn refine_map_locals_into(
+    node: Node<'_>,
+    env: &TypeEnv<'_>,
+    out: &Locals,
+    refined: &mut HashMap<usize, Ty>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "function_item" {
+            continue;
+        }
+        if child.kind() == "let_declaration"
+            && child.child_by_field_name("type").is_none()
+            && let (Some(pat), Some(value), Some(block)) = (
+                child.child_by_field_name("pattern"),
+                child.child_by_field_name("value"),
+                child.parent(),
+            )
+            && is_empty_map_ctor(value, env.source)
+        {
+            let name_node = if pat.kind() == "mut_pattern" {
+                pat.named_children(&mut pat.walk())
+                    .find(|c| c.kind() == "identifier")
+            } else {
+                Some(pat).filter(|p| p.kind() == "identifier")
+            };
+            if let Some(name_node) = name_node
+                && let Some(arg) = first_map_key_arg(
+                    block,
+                    &node_text(name_node, env.source),
+                    child.end_byte(),
+                    env.source,
+                )
+            {
+                let key = env.expr_ty(arg, out);
+                if key != Ty::Unknown {
+                    refined.insert(
+                        child.end_byte(),
+                        Ty::Map(Box::new(key), Box::new(Ty::Unknown)),
+                    );
+                }
+            }
+        }
+        refine_map_locals_into(child, env, out, refined);
+    }
+}
+
+/// `HashMap::new()` / `BTreeMap::default()` / `HashMap::with_capacity(n)`.
+fn is_empty_map_ctor(value: Node<'_>, source: &str) -> bool {
+    if value.kind() != "call_expression" {
+        return false;
+    }
+    let Some(function) = value.child_by_field_name("function") else {
+        return false;
+    };
+    let text = collapse_call_target_whitespace(&node_text(function, source));
+    let mut segs = text.rsplit("::");
+    let (Some(ctor), Some(ty)) = (segs.next(), segs.next()) else {
+        return false;
+    };
+    matches!(ty, "HashMap" | "BTreeMap") && matches!(ctor, "new" | "default" | "with_capacity")
+}
+
+/// The first argument of the first `name.entry(..)` / `name.insert(..)` in
+/// `scope` after byte `after`.
+fn first_map_key_arg<'t>(
+    scope: Node<'t>,
+    name: &str,
+    after: usize,
+    source: &str,
+) -> Option<Node<'t>> {
+    if scope.kind() == "call_expression"
+        && scope.start_byte() >= after
+        && let Some(function) = scope.child_by_field_name("function")
+        && function.kind() == "field_expression"
+        && let (Some(recv), Some(method)) = (
+            function.child_by_field_name("value"),
+            function.child_by_field_name("field"),
+        )
+        && recv.kind() == "identifier"
+        && node_text(recv, source) == name
+        && matches!(node_text(method, source).as_str(), "entry" | "insert")
+        && let Some(arg) = call_arguments(scope).first().copied()
+    {
+        return Some(arg);
+    }
+    let mut cursor = scope.walk();
+    for child in scope.children(&mut cursor) {
+        if child.kind() == "function_item" || child.end_byte() < after {
+            continue;
+        }
+        if let Some(found) = first_map_key_arg(child, name, after, source) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn collect_identifiers(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
@@ -4947,6 +5258,13 @@ fn tc() {}
             steps,
             fallback: None,
         }
+    }
+
+    #[test]
+    fn to_string_receiver_is_a_string_whatever_the_value() {
+        let src =
+            "fn f() { let n = usize::MAX.to_string(); n.go(); let m = ext().to_string(); m.go(); }";
+        assert_eq!(go_receivers(src), ["String", "String"]);
     }
 
     #[test]

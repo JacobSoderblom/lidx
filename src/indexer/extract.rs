@@ -204,6 +204,8 @@ impl DeferredReturn {
 pub enum DeferredSource {
     /// Return type of a callee, one of these absolute qualnames.
     Call { candidates: Vec<String> },
+    /// Declared type of a `const`/`static`, one of these absolute qualnames.
+    Static { candidates: Vec<String> },
     /// Return type of the method `method` of the type `receiver_type`.
     Method {
         receiver_type: String,

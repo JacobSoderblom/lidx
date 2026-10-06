@@ -5384,11 +5384,10 @@ mod tests {
             .unwrap();
 
         // Edge with bare-name target — no symbol_map entry for "process"
-        let edges = vec![make_test_edge(
-            "CALLS",
-            "crate::caller::call_helper",
-            "process",
-        )];
+        let edges = vec![crate::indexer::extract::EdgeInput {
+            bare_call: true,
+            ..make_test_edge("CALLS", "crate::caller::call_helper", "process")
+        }];
         let symbol_map: HashMap<String, i64> = caller_inserted
             .iter()
             .map(|s| (s.qualname.clone(), s.id))
@@ -5436,7 +5435,10 @@ mod tests {
 
         // CALLS is not a bridge kind, so only the same-language pass applies;
         // the '::' pattern must find the Rust symbol within that pass
-        let edges = vec![make_test_edge("CALLS", "crate::caller::run", "process")];
+        let edges = vec![crate::indexer::extract::EdgeInput {
+            bare_call: true,
+            ..make_test_edge("CALLS", "crate::caller::run", "process")
+        }];
         let symbol_map: HashMap<String, i64> = rs_inserted
             .iter()
             .map(|s| (s.qualname.clone(), s.id))

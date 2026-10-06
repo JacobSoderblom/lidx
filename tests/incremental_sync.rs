@@ -3257,15 +3257,15 @@ fn rust_fn_ref_to_added_static_matches_fresh() {
     common::assert_matches_fresh(&snapshot, &fresh);
 }
 
-/// Widening a `pub(super)` method to `pub` lets an out-of-scope untyped
-/// call bind it; narrowing it back unbinds, both matching a fresh index.
+/// Widening a `pub(super)` fn to `pub` lets an out-of-scope bare call
+/// bind it; narrowing it back unbinds, both matching a fresh index.
 #[test]
 fn rust_pub_super_widened_then_narrowed_matches_fresh() {
     let lib_rs = "pub mod a;\npub mod z;\n";
     let a_rs = "pub mod b;\n";
-    let narrow = "pub struct S;\nimpl S {\n    pub(super) fn secret(&self) {}\n}\n";
-    let wide = "pub struct S;\nimpl S {\n    pub fn secret(&self) {}\n}\n";
-    let z_rs = "pub fn go() {\n    let _f = |x| x.secret();\n}\n";
+    let narrow = "pub(super) fn secret() {}\n";
+    let wide = "pub fn secret() {}\n";
+    let z_rs = "pub fn go() {\n    secret();\n}\n";
     let files = |b: &'static str| {
         vec![
             ("src/lib.rs", lib_rs),
@@ -3283,11 +3283,122 @@ fn rust_pub_super_widened_then_narrowed_matches_fresh() {
         let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
         assert_eq!(
             snapshot.iter().any(|e| e.source_qualname == "crate::z::go"
-                && e.target_qualname.as_deref() == Some("crate::a::b::S::secret")),
+                && e.target_qualname.as_deref() == Some("crate::a::b::secret")),
             bound,
             "{snapshot:#?}"
         );
         let (_fresh_tmp, fresh) = common::index_files(&files(b));
         common::assert_matches_fresh(&snapshot, &fresh);
     }
+}
+
+const STATIC_TYPES_W: &str = "pub struct W;\nimpl W {\n    pub fn go(&self) {}\n}\n\
+pub struct V;\nimpl V {\n    pub fn go(&self) {}\n}\n\
+pub const ITEMS: &[W] = &[];\n";
+const STATIC_TYPES_V: &str = "pub struct W;\nimpl W {\n    pub fn go(&self) {}\n}\n\
+pub struct V;\nimpl V {\n    pub fn go(&self) {}\n}\n\
+pub const ITEMS: &[V] = &[];\n";
+const STATIC_USER: &str = "use crate::types::ITEMS;\n\
+pub fn run() {\n    for it in ITEMS.iter().copied() {\n        it.go();\n    }\n}\n";
+
+/// A receiver typed by another file's `const` follows an edit of its
+/// declared type.
+#[test]
+fn rust_static_declared_type_edit_matches_fresh() {
+    let base: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", "mod types;\nmod user;\n"),
+        ("src/types.rs", STATIC_TYPES_W),
+        ("src/user.rs", STATIC_USER),
+    ];
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-static", &base);
+    common::write_files(&repo_root, &[("src/types.rs", STATIC_TYPES_V)]);
+    indexer
+        .sync_rel_paths(&["src/types.rs".to_string()])
+        .unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        snap.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "crate::user::run"
+            && e.target_qualname.as_deref() == Some("crate::types::V::go")),
+        "{snap:#?}"
+    );
+    let mut edited = base.clone();
+    edited[2] = ("src/types.rs", STATIC_TYPES_V);
+    let (_f, fresh) = common::index_files(&edited);
+    common::assert_matches_fresh(&snap, &fresh);
+}
+
+const FACADE_LIB_A: &str = "pub use crate::a::B;\n";
+const FACADE_LIB_B: &str = "pub use crate::c::B;\n";
+const FACADE_AB: &str =
+    "pub struct B;\nimpl B {\n    pub fn new() -> B { B }\n    pub fn go(&self) {}\n}\n";
+const FACADE_USER: &str = "use crate::B;\npub fn run() {\n    let b = B::new();\n    b.go();\n}\n";
+
+/// A builder reached through a `pub use` re-export follows the re-export
+/// when it is retargeted at another module's type.
+#[test]
+fn rust_deferred_callee_through_reexport_retarget_matches_fresh() {
+    let lib = |re: &str| format!("mod a;\nmod c;\nmod user;\n{re}");
+    let (la, lb) = (lib(FACADE_LIB_A), lib(FACADE_LIB_B));
+    let base: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", la.as_str()),
+        ("src/a.rs", FACADE_AB),
+        ("src/c.rs", FACADE_AB),
+        ("src/user.rs", FACADE_USER),
+    ];
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-reexport-retarget", &base);
+    common::write_files(&repo_root, &[("src/lib.rs", lb.as_str())]);
+    indexer.sync_rel_paths(&["src/lib.rs".to_string()]).unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let mut edited = base.clone();
+    edited[1] = ("src/lib.rs", lb.as_str());
+    let (_f, fresh) = common::index_files(&edited);
+    common::assert_matches_fresh(&snap, &fresh);
+}
+
+const NOGUESS_USER: &str = "pub fn run(x: ext::T) -> usize {\n    x.as_str().len()\n}\n";
+const NOGUESS_TYPE: &str =
+    "pub struct S;\nimpl S {\n    pub fn as_str(&self) -> &str { \"s\" }\n}\n";
+
+/// A method call on an unknown receiver stays unresolved when a same-named
+/// method is added later, exactly as on a fresh index.
+#[test]
+fn rust_unknown_receiver_method_added_later_matches_fresh() {
+    let base: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", "mod user;\n"),
+        ("src/user.rs", NOGUESS_USER),
+    ];
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-noguess", &base);
+    common::write_files(
+        &repo_root,
+        &[
+            ("src/lib.rs", "mod user;\nmod s;\n"),
+            ("src/s.rs", NOGUESS_TYPE),
+        ],
+    );
+    indexer
+        .sync_rel_paths(&["src/lib.rs".to_string(), "src/s.rs".to_string()])
+        .unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        !snap
+            .iter()
+            .any(|e| e.kind == "CALLS"
+                && e.target_qualname.as_deref() == Some("crate::s::S::as_str")),
+        "{snap:#?}"
+    );
+    let edited: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", "mod user;\nmod s;\n"),
+        ("src/user.rs", NOGUESS_USER),
+        ("src/s.rs", NOGUESS_TYPE),
+    ];
+    let (_f, fresh) = common::index_files(&edited);
+    common::assert_matches_fresh(&snap, &fresh);
 }
