@@ -3181,3 +3181,41 @@ fn rust_block_local_fn_binds_bare_call_after_edit_matches_fresh() {
     let (_fresh_tmp, fresh) = common::index_files(&[("src/lib.rs", lib_rs), ("src/m.rs", after)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+/// A Rust receiver type declared in the caller's file keeps binding to its
+/// own member when another crate later declares a same-named type.
+#[test]
+fn rust_same_file_receiver_type_survives_added_twin_matches_fresh() {
+    const TOML: &str = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n";
+    let fixture = "struct Fixture;\nimpl Fixture {\n    fn targets(&self) -> usize {\n        0\n    }\n}\nfn index() -> Fixture {\n    Fixture\n}\n";
+    let a_rs = format!("{fixture}fn check() -> usize {{\n    index().targets()\n}}\n");
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "rust-same-file-receiver",
+        &[
+            ("Cargo.toml", TOML),
+            ("src/lib.rs", ""),
+            ("tests/a.rs", a_rs.as_str()),
+        ],
+    );
+
+    common::write_files(&repo_root, &[("tests/b.rs", fixture)]);
+    indexer.sync_rel_paths(&["tests/b.rs".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot
+            .iter()
+            .any(|e| e.source_qualname == "crate::tests::a::check"
+                && e.target_qualname.as_deref() == Some("crate::tests::a::Fixture::targets")),
+        "{snapshot:#?}"
+    );
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("Cargo.toml", TOML),
+        ("src/lib.rs", ""),
+        ("tests/a.rs", a_rs.as_str()),
+        ("tests/b.rs", fixture),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

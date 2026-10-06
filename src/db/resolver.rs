@@ -2085,6 +2085,17 @@ impl<'c> Resolver<'c> {
                         return Ok(Some((id, ResolutionKind::Inherited)));
                     }
                 }
+                // A bare Rust receiver type declared in the caller's own
+                // file is that type: a same-named type in another crate is
+                // not in scope unless imported (an import pins the path
+                // above).
+                if source_lang == "rust"
+                    && rust_path.is_none()
+                    && let Some(id) =
+                        self.rust_enclosing_module_member(known_type, method, caller)?
+                {
+                    return Ok(Some((id, ResolutionKind::ReceiverType)));
+                }
                 let known_type = rust_path
                     .and_then(|p| p.rsplit("::").next())
                     .unwrap_or(known_type);
@@ -2227,6 +2238,42 @@ impl<'c> Resolver<'c> {
             }
         }
         Ok(found)
+    }
+
+    /// `ty::member` for a Rust type `ty` declared in the caller's own file:
+    /// the caller's qualname minus its trailing segments (the module, or an
+    /// inline `mod` it sits in), nearest first, keeping only a symbol in the
+    /// caller's file. A same-named type in another crate (another
+    /// integration-test file, another workspace member) is never a
+    /// candidate; a type in another file is reached through the `use` path
+    /// the extractor pins instead.
+    fn rust_enclosing_module_member(
+        &mut self,
+        ty: &str,
+        member: &str,
+        caller: CallerContext<'_>,
+    ) -> Result<Option<i64>> {
+        let Some(mut scope) = caller.qualname else {
+            return Ok(None);
+        };
+        let gv = self.graph_version;
+        while let Some((parent, _)) = scope.rsplit_once("::") {
+            scope = parent;
+            let hits = query_exact_candidates(
+                &mut self.exact,
+                &format!("{scope}::{ty}::{member}"),
+                gv,
+                caller.file_path,
+            )?;
+            let own: Vec<ExactCandidate> = hits
+                .into_iter()
+                .filter(|c| c.path == caller.file_path)
+                .collect();
+            if let Some(id) = collapse_exact_candidates(&own) {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
     }
 
     /// `{type_path}.{member}` written as a (possibly partially) qualified
