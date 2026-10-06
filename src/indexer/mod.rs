@@ -63,6 +63,7 @@ pub mod postgres;
 pub mod proto;
 mod py_layout;
 pub mod python;
+pub mod python_eval;
 pub mod python_expr;
 pub mod python_lower;
 pub mod python_types;
