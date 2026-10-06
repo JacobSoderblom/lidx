@@ -307,7 +307,7 @@ def run_trial(args, task, profile, n, cache):
     except Exception as e:  # noqa: BLE001 - recorded in trial.json, never aborts the run
         doc["error"] = "%s: %s" % (type(e).__name__, e)
     finally:
-        for p in (repo_dir, db):
+        for p in [repo_dir] + glob.glob(db + "*"):     # clone + sqlite/-wal/-shm/lock sidecars
             if os.path.isdir(p):
                 shutil.rmtree(p, ignore_errors=True)
             elif os.path.isfile(p):
