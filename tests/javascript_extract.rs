@@ -1591,3 +1591,60 @@ function f(m: Record<string, Trie>, key: string) {
         );
     }
 }
+
+// tree-sitter-typescript #335: anonymous generic call signatures separated
+// only by a line break end the interface early and push the rest of the
+// file into ERROR recovery.
+
+fn sym_lines<'a>(
+    e: &'a lidx::indexer::extract::ExtractedFile,
+    q: &str,
+) -> &'a lidx::indexer::extract::SymbolInput {
+    e.symbols
+        .iter()
+        .find(|s| s.qualname == q)
+        .unwrap_or_else(|| panic!("missing symbol {q}"))
+}
+
+#[test]
+fn generic_call_signatures_split_by_newline_keep_the_interface_whole() {
+    let extracted = extract_ts(
+        "export interface I {\n  <A>(h: A): [A]\n  <A, B>(h: A, i: B): [A, B]\n}\nexport const after = () => 1\n",
+    );
+    let i = sym_lines(&extracted, "src/app.I");
+    assert_eq!((i.start_line, i.end_line), (1, 4));
+    assert_eq!(sym_lines(&extracted, "src/app.after").start_line, 5);
+}
+
+#[test]
+fn hono_style_signatures_with_blank_and_comment_lines_keep_later_symbols() {
+    let src = "export interface Handlers {\n  // handler x1\n  <\n    E extends Env = any,\n    P extends string = any\n  >(\n    handler1: H<E, P>\n  ): [H<E, P>]\n\n  // handler x2\n  <\n    E extends Env = any,\n    P extends string = any\n  >(\n    handler1: H<E, P>,\n    handler2: H<E, P>\n  ): [H<E, P>, H<E, P>]\n}\n\nexport class Factory {\n  make() {\n    return 1\n  }\n}\n\nexport const createFactory = () => new Factory()\n";
+    let e = extract_ts(src);
+    let i = sym_lines(&e, "src/app.Handlers");
+    assert_eq!((i.start_line, i.end_line), (1, 18));
+    assert_eq!(sym_lines(&e, "src/app.Factory").start_line, 20);
+    assert_eq!(sym_lines(&e, "src/app.Factory.make").start_line, 21);
+    assert_eq!(sym_lines(&e, "src/app.createFactory").start_line, 26);
+}
+
+#[test]
+fn files_without_the_parser_bug_are_unchanged() {
+    let src = "export interface I {\n  <A>(h: A): [A];\n  <A, B>(h: A, i: B): [A, B];\n}\nexport const after = () => 1\n";
+    let e = extract_ts(src);
+    assert_eq!(sym_lines(&e, "src/app.I").end_line, 4);
+    assert_eq!(sym_lines(&e, "src/app.after").start_line, 5);
+}
+
+#[test]
+fn stored_signatures_never_contain_the_injected_separator() {
+    let src = "export interface I {\n  <A>(h: A): [A]\n  <A, B>(h: A, i: B): [A, B]\n}\nexport const after = () => 1\n";
+    let e = extract_ts(src);
+    for s in &e.symbols {
+        for text in [s.signature.as_deref(), s.docstring.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            assert!(!text.contains(";<"), "{} leaked: {text}", s.qualname);
+        }
+    }
+}

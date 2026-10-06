@@ -208,7 +208,7 @@ impl crate::indexer::extract::LanguageExtractor for JavascriptExtractor {
     }
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
-        extract_with_parser(&mut self.parser, source, module_name)
+        extract_with_parser(&mut self.parser, source, module_name, false)
     }
 
     fn resolve_imports(
@@ -237,7 +237,7 @@ impl crate::indexer::extract::LanguageExtractor for TypescriptExtractor {
     }
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
-        extract_with_parser(&mut self.parser, source, module_name)
+        extract_with_parser(&mut self.parser, source, module_name, true)
     }
 
     fn resolve_imports(
@@ -266,7 +266,7 @@ impl crate::indexer::extract::LanguageExtractor for TsxExtractor {
     }
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
-        extract_with_parser(&mut self.parser, source, module_name)
+        extract_with_parser(&mut self.parser, source, module_name, false)
     }
 
     fn resolve_imports(
@@ -1478,10 +1478,80 @@ fn strip_trailing_commas(input: &str) -> String {
     out
 }
 
+fn count_error_nodes(node: Node<'_>) -> usize {
+    let mut n = usize::from(node.is_error() || node.is_missing());
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.has_error() || child.is_missing() {
+            n += count_error_nodes(child);
+        }
+    }
+    n
+}
+
+/// Source copy with `;` written over the whitespace byte before a line-leading
+/// `<` that continues a type/signature from the previous code line. Byte- and
+/// line-length preserving, so every span in the patched tree is valid for the
+/// original text.
+fn patch_generic_signature_separators(source: &str) -> Option<String> {
+    let mut bytes = source.as_bytes().to_vec();
+    let mut changed = false;
+    let mut prev_end: Option<u8> = None;
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with("//") {
+            let lead = line.len() - line.trim_start().len();
+            if trimmed.starts_with('<')
+                && lead > 0
+                && matches!(line.as_bytes()[lead - 1], b' ' | b'\t')
+                && prev_end.is_some_and(|b| {
+                    matches!(b, b']' | b')' | b'>' | b'}' | b'_' | b'$')
+                        || b.is_ascii_alphanumeric()
+                })
+            {
+                bytes[offset + lead - 1] = b';';
+                changed = true;
+            }
+            prev_end = trimmed.bytes().last();
+        }
+        offset += line.len();
+    }
+    if changed {
+        String::from_utf8(bytes).ok()
+    } else {
+        None
+    }
+}
+
+/// tree-sitter-typescript 0.23.2 (issue #335) loses everything after an
+/// anonymous generic call signature that is separated from the previous one
+/// only by a line break. Re-parse with `;` injected and keep that tree only
+/// if it has strictly fewer error nodes.
+// ponytail: .ts/.mts/.cts only; in .tsx a line-leading `<` is usually JSX.
+fn reparse_with_signature_separators(
+    parser: &mut Parser,
+    source: &str,
+    original: tree_sitter::Tree,
+) -> tree_sitter::Tree {
+    let Some(patched) = patch_generic_signature_separators(source) else {
+        return original;
+    };
+    match parser.parse(&patched, None) {
+        Some(tree)
+            if count_error_nodes(tree.root_node()) < count_error_nodes(original.root_node()) =>
+        {
+            tree
+        }
+        _ => original,
+    }
+}
+
 fn extract_with_parser(
     parser: &mut Parser,
     source: &str,
     module_name: &str,
+    patch_ts_signatures: bool,
 ) -> Result<ExtractedFile> {
     let mut output = ExtractedFile::default();
     let tree = match parser.parse(source, None) {
@@ -1492,6 +1562,11 @@ fn extract_with_parser(
                 .push(module_symbol_fallback(module_name, source, "/", None));
             return Ok(output);
         }
+    };
+    let tree = if patch_ts_signatures && tree.root_node().has_error() {
+        reparse_with_signature_separators(parser, source, tree)
+    } else {
+        tree
     };
     let root = tree.root_node();
 
