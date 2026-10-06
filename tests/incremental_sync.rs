@@ -2999,3 +2999,71 @@ fn rust_local_from_fn_return_type_edit_matches_fresh() {
     let (_f, fresh) = common::index_files(&edited);
     common::assert_matches_fresh(&snap, &fresh);
 }
+
+const CHAIN_LIB: &str = "mod b;\n";
+const CHAIN_B: &str = "pub struct W;\nimpl W {\n    pub fn new() -> Self { W }\n    pub fn step(&mut self) -> &mut Self { self }\n    pub fn done(&self) {}\n}\n\
+pub struct V;\nimpl V {\n    pub fn done(&self) {}\n}\n\
+pub fn run() {\n    W::new().step().done();\n}\n";
+const CHAIN_B_EDITED: &str = "pub struct W;\nimpl W {\n    pub fn new() -> Self { W }\n    pub fn step(&mut self) -> V { V }\n    pub fn done(&self) {}\n}\n\
+pub struct V;\nimpl V {\n    pub fn done(&self) {}\n}\n\
+pub fn run() {\n    W::new().step().done();\n}\n";
+
+/// A `Self`-returning method chain re-types when the method's declared
+/// return type is edited.
+#[test]
+fn rust_method_chain_return_type_edit_matches_fresh() {
+    let base: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", CHAIN_LIB),
+        ("src/b.rs", CHAIN_B),
+    ];
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-chain", &base);
+    common::write_files(&repo_root, &[("src/b.rs", CHAIN_B_EDITED)]);
+    indexer.sync_rel_paths(&["src/b.rs".to_string()]).unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        snap.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "crate::b::run"
+            && e.target_qualname.as_deref() == Some("crate::b::V::done")),
+        "{snap:#?}"
+    );
+    let mut edited = base.clone();
+    edited[2] = ("src/b.rs", CHAIN_B_EDITED);
+    let (_f, fresh) = common::index_files(&edited);
+    common::assert_matches_fresh(&snap, &fresh);
+}
+
+const IMP_A: &str = "pub struct T;\nimpl T {\n    pub fn go(&self) {}\n}\n";
+const IMP_USER_A: &str = "use crate::a::T;\nfn make() -> T {\n    T\n}\npub fn run() {\n    let t = make();\n    t.go();\n}\n";
+const IMP_USER_B: &str = "use crate::b::T;\nfn make() -> T {\n    T\n}\npub fn run() {\n    let t = make();\n    t.go();\n}\n";
+
+/// A receiver type pinned by the caller's `use` follows the import when it
+/// is edited to name the same-named type in another module.
+#[test]
+fn rust_imported_receiver_type_import_edit_matches_fresh() {
+    let base: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", "mod a;\nmod b;\nmod user;\n"),
+        ("src/a.rs", IMP_A),
+        ("src/b.rs", IMP_A),
+        ("src/user.rs", IMP_USER_A),
+    ];
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-imp-recv", &base);
+    common::write_files(&repo_root, &[("src/user.rs", IMP_USER_B)]);
+    indexer
+        .sync_rel_paths(&["src/user.rs".to_string()])
+        .unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        snap.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "crate::user::run"
+            && e.target_qualname.as_deref() == Some("crate::b::T::go")),
+        "{snap:#?}"
+    );
+    let mut edited = base.clone();
+    edited[4] = ("src/user.rs", IMP_USER_B);
+    let (_f, fresh) = common::index_files(&edited);
+    common::assert_matches_fresh(&snap, &fresh);
+}

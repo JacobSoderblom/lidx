@@ -6,7 +6,7 @@
 mod common;
 
 const TOML: &str = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n";
-const LIB: &str = "pub mod m;\npub mod b;\npub mod s;\npub mod uses;\n";
+const LIB: &str = "pub mod m;\npub mod dup;\npub mod b;\npub mod s;\npub mod uses;\n";
 const M: &str = "\
 pub trait Matcher {\n\
     fn find(&self) -> u8;\n\
@@ -18,6 +18,9 @@ pub struct RegexMatcher;\n\
 impl Matcher for RegexMatcher {\n\
     fn find(&self) -> u8 { 1 }\n\
 }\n\
+impl RegexMatcher {\n\
+    pub fn only(&self) -> u8 { 5 }\n\
+}\n\
 pub struct Other;\n\
 impl Matcher for Other {\n\
     fn find(&self) -> u8 { 2 }\n\
@@ -26,6 +29,15 @@ impl Matcher for Other {\n\
 pub struct Third;\n\
 impl Third {\n\
     pub fn find_iter(&self, x: u8) -> u8 { x }\n\
+}\n";
+const DUP: &str = "\
+use crate::m::Matcher;\n\
+pub struct RegexMatcher;\n\
+impl Matcher for RegexMatcher {\n\
+    fn find(&self) -> u8 { 3 }\n\
+}\n\
+impl RegexMatcher {\n\
+    pub fn only(&self) -> u8 { 4 }\n\
 }\n";
 const B: &str = "\
 pub struct Walk;\n\
@@ -83,12 +95,17 @@ pub fn ref_clone(w: &Worker) {\n\
 const USES: &str = "\
 use crate::m::{Matcher, RegexMatcher, Third};\n\
 use crate::s::Args;\n\
+use crate::b::WalkBuilder;\n\
 fn matcher(_p: &str) -> RegexMatcher { RegexMatcher }\n\
 fn mk() -> Result<RegexMatcher, u8> { Ok(RegexMatcher) }\n\
 fn opt() -> Option<Third> { None }\n\
 pub fn p3a() {\n\
     let matcher = matcher(\"x\");\n\
     matcher.find_iter(1);\n\
+}\n\
+pub fn p3a_same_name_types() {\n\
+    let m = matcher(\"x\");\n\
+    m.only();\n\
 }\n\
 pub fn p3a_try() -> Result<u8, u8> {\n\
     let m = mk()?;\n\
@@ -121,6 +138,12 @@ pub fn p3c_closure(args: &Args) {\n\
     };\n\
     f();\n\
 }\n\
+pub fn chain_across_files() {\n\
+    WalkBuilder::new()\n\
+        .add_custom(\"a\")\n\
+        .add_custom(\"b\")\n\
+        .build();\n\
+}\n\
 pub fn p3c_unknown(x: u8) {\n\
     let mut s = external(x).clone();\n\
     s.search();\n\
@@ -131,6 +154,7 @@ fn files() -> Vec<(&'static str, &'static str)> {
         ("Cargo.toml", TOML),
         ("src/lib.rs", LIB),
         ("src/m.rs", M),
+        ("src/dup.rs", DUP),
         ("src/b.rs", B),
         ("src/s.rs", S),
         ("src/uses.rs", USES),
@@ -219,6 +243,62 @@ fn later_shadow_does_not_hide_earlier_fn_call() {
 }
 
 #[test]
+fn chain_from_constructor_binds_each_link() {
+    let c = "crate::b::WalkBuilder::add_custom";
+    assert_eq!(
+        count("crate::b::chain", c),
+        1,
+        "{:?}",
+        targets("crate::b::chain")
+    );
+    assert_eq!(
+        count("crate::b::chain", "crate::b::WalkBuilder::build"),
+        1,
+        "{:?}",
+        targets("crate::b::chain")
+    );
+    assert_eq!(
+        count("crate::b::chain", "crate::b::OtherBuilder::add_custom"),
+        0
+    );
+}
+
+#[test]
+fn chained_same_method_twice_yields_two_distinct_edges() {
+    let (_tmp, _root, db_path) = common::index_repo("lidx-chain-", &files());
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.evidence_start_line, e.evidence_end_line FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             JOIN symbols t ON t.id = e.target_symbol_id
+             WHERE e.kind = 'CALLS' AND s.qualname = 'crate::b::chain_twice'
+               AND t.qualname = 'crate::b::WalkBuilder::add_custom'
+             ORDER BY e.evidence_end_line",
+        )
+        .unwrap();
+    let spans: Vec<(i64, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    // The outer call spans the whole chain, the inner call stops one line
+    // earlier: two edges with different spans.
+    assert_eq!(spans.len(), 2, "{spans:?}");
+    assert_ne!(spans[0], spans[1], "{spans:?}");
+}
+
+#[test]
+fn chain_from_free_fn_call_binds() {
+    assert_eq!(
+        count("crate::b::via_fn", "crate::b::WalkBuilder::add_custom"),
+        1,
+        "{:?}",
+        targets("crate::b::via_fn")
+    );
+}
+
+#[test]
 fn chain_from_unknown_stays_unresolved() {
     for t in targets("crate::b::chain_unknown").into_iter().flatten() {
         assert!(!t.ends_with("::add_custom"), "{t}");
@@ -230,4 +310,42 @@ fn clone_of_unknown_stays_unresolved() {
     for t in targets("crate::uses::p3c_unknown").into_iter().flatten() {
         assert!(!t.ends_with("::search"), "{t}");
     }
+}
+
+#[test]
+fn chain_across_files_binds_each_link_through_declared_returns() {
+    let src = "crate::uses::chain_across_files";
+    assert_eq!(
+        count(src, "crate::b::WalkBuilder::add_custom"),
+        1,
+        "{:?}",
+        targets(src)
+    );
+    assert_eq!(
+        count(src, "crate::b::WalkBuilder::build"),
+        1,
+        "{:?}",
+        targets(src)
+    );
+    assert_eq!(count(src, "crate::b::OtherBuilder::add_custom"), 0);
+    assert_eq!(count(src, "crate::b::OtherBuilder::build"), 0);
+}
+
+#[test]
+fn imported_type_is_told_apart_from_same_named_types() {
+    let src = "crate::uses::p3a_same_name_types";
+    assert_eq!(
+        count(src, "crate::m::RegexMatcher::only"),
+        1,
+        "{:?}",
+        targets(src)
+    );
+    assert_eq!(
+        count(src, "crate::dup::RegexMatcher::only"),
+        0,
+        "{:?}",
+        targets(src)
+    );
+    // A trait default reached through the imported one of two same-named types.
+    assert_eq!(count("crate::uses::p3a", TRAIT_FI), 1);
 }

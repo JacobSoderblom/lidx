@@ -2058,6 +2058,36 @@ impl<'c> Resolver<'c> {
                 let scope = self.call_scope.clone();
                 let known_type = known_type.split('<').next().unwrap_or(known_type);
                 let method = qualname_trailing_name(target_qualname);
+                // A Rust receiver type the caller's `use` pinned to one path
+                // (`crate::util::RegexMatcher`): that exact type's member,
+                // else its trait default / impl-trait ancestors, before the
+                // bare name -- which says nothing when four types share it.
+                let rust_path =
+                    (source_lang == "rust" && known_type.contains("::")).then_some(known_type);
+                if let Some(path) = rust_path {
+                    let hits = query_exact_candidates(
+                        &mut self.exact,
+                        &format!("{path}::{method}"),
+                        self.graph_version,
+                        caller.file_path,
+                    )?;
+                    if let Some(id) = collapse_exact_candidates(&hits) {
+                        return Ok(Some((id, ResolutionKind::ReceiverType)));
+                    }
+                    let bare = path.rsplit("::").next().unwrap_or(path);
+                    if let Some(id) = self.resolve_via_inheritance(
+                        (path, bare),
+                        method,
+                        source_lang,
+                        edge_kind,
+                        caller,
+                    )? {
+                        return Ok(Some((id, ResolutionKind::Inherited)));
+                    }
+                }
+                let known_type = rust_path
+                    .and_then(|p| p.rsplit("::").next())
+                    .unwrap_or(known_type);
                 if let Some(id) =
                     self.scoped_member(&scope, known_type, method, caller.file_path)?
                 {
@@ -2289,16 +2319,21 @@ impl<'c> Resolver<'c> {
         // symbol per part, each carrying only its own base list: every part
         // of the exactly-named type is a root. Otherwise the bare type name.
         let gv = self.graph_version;
+        let rust = source_lang == "rust";
         let parts: Vec<i64> = if full_type.contains('.') || full_type.contains("::") {
             query_exact_candidates(&mut self.exact, full_type, gv, caller.file_path)?
                 .into_iter()
-                .filter(|c| matches!(c.kind.as_str(), "class" | "struct" | "record" | "interface"))
+                .filter(|c| {
+                    matches!(c.kind.as_str(), "class" | "struct" | "record" | "interface")
+                        || (rust && matches!(c.kind.as_str(), "enum" | "trait"))
+                })
                 .map(|c| c.id)
                 .collect()
         } else {
             Vec::new()
         };
-        let mut frontier = if parts.len() > 1 {
+        // An exact Rust path names its one type; a bare name may be shared.
+        let mut frontier = if parts.len() > 1 || (rust && parts.len() == 1) {
             parts
         } else {
             let Some(root_id) =

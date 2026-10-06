@@ -1487,7 +1487,35 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
             ctx: Some(ctx),
         };
         return match env.expr_ty(value, &ctx.local_types) {
-            Ty::Named(ty) => ReceiverType::Known(ty),
+            Ty::Named(ty) => ReceiverType::Known(qualify_imported_type(ty, ctx)),
+            Ty::Pending(p) => ReceiverType::RustDeferred(p),
+            _ => ReceiverType::NotTracked,
+        };
+    }
+    if matches!(
+        value.kind(),
+        "call_expression" | "try_expression" | "parenthesized_expression"
+    ) {
+        // `Type::new().m()`, `f()?.m()`, `a.m().n()`: the value's inferred
+        // type (constructor, declared return type, `Self`/`&mut Self` chain).
+        let env = TypeEnv {
+            source,
+            self_ty: ctx
+                .container_stack
+                .last()
+                .filter(|_| !(ctx.in_trait_scope && ctx.in_trait_impl.is_none()))
+                .map(|c| c.rsplit("::").next().unwrap_or(c)),
+            generics: ctx
+                .generic_bounds
+                .keys()
+                .filter(|k| !k.contains("::"))
+                .cloned()
+                .collect(),
+            adts: &ctx.adts,
+            ctx: Some(ctx),
+        };
+        return match env.expr_ty(value, &ctx.local_types) {
+            Ty::Named(ty) => ReceiverType::Known(qualify_imported_type(ty, ctx)),
             Ty::Pending(p) => ReceiverType::RustDeferred(p),
             _ => ReceiverType::NotTracked,
         };
@@ -1500,9 +1528,19 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         &node_text(value, source),
         value.start_byte(),
     ) {
-        Ty::Named(ty) => ReceiverType::Known(ty),
+        Ty::Named(ty) => ReceiverType::Known(qualify_imported_type(ty, ctx)),
         Ty::Pending(p) => ReceiverType::RustDeferred(p),
         _ => ReceiverType::NotTracked,
+    }
+}
+
+/// A receiver type this file imports through exactly one `crate::` path
+/// (`use crate::util::RegexMatcher;`) carries that path, so the resolver can
+/// tell it from same-named types in other crates. Anything else stays bare.
+fn qualify_imported_type(ty: String, ctx: &Context) -> String {
+    match ctx.imports.get(&ty).map(Vec::as_slice) {
+        Some([path]) if path.starts_with("crate::") && !ty.contains("::") => path.clone(),
+        _ => ty,
     }
 }
 
@@ -1533,36 +1571,36 @@ enum Ty {
     Pending(RustDeferred),
 }
 
-/// Method names `project` follows on a `Pending` type.
-const TRACKED_METHODS: &[&str] = &[
-    "unwrap",
-    "expect",
-    "ok",
-    "err",
-    "as_ref",
-    "as_mut",
-    "clone",
-    "take",
-    "cloned",
-    "copied",
-    "iter",
-    "into_iter",
-    "iter_mut",
-    "drain",
-    "by_ref",
-    "next",
-    "next_back",
-    "last",
-    "pop",
-    "pop_front",
-    "pop_back",
-    "first",
+/// Longest method chain kept on a `Pending` type.
+const MAX_DEFERRED_STEPS: usize = 4;
+
+/// Std methods whose result is never a repo type, so `project` does not
+/// defer a chain through them.
+const STD_UNTYPED_METHODS: &[&str] = &[
+    "to_string",
+    "len",
+    "is_empty",
+    "collect",
+    "map",
+    "filter",
+    "and_then",
+    "map_err",
+    "ok_or",
+    "ok_or_else",
+    "unwrap_or",
+    "unwrap_or_else",
+    "unwrap_or_default",
+    "join",
 ];
 
 /// Apply one projection step; `Unknown` when the shape doesn't fit.
 fn project(ty: Ty, step: Step) -> Ty {
     if let Ty::Pending(mut p) = ty {
-        if matches!(&step, Step::Method(m) if !TRACKED_METHODS.contains(&m.as_str())) {
+        // A declared method's return type is read from its declaration; the
+        // chain stays short so a long iterator pipeline is not deferred.
+        if p.steps.len() >= MAX_DEFERRED_STEPS
+            || matches!(&step, Step::Method(m) if m.is_empty() || STD_UNTYPED_METHODS.contains(&m.as_str()))
+        {
             return Ty::Unknown;
         }
         let keeps_fallback = matches!(&step, Step::Await)
@@ -2319,7 +2357,8 @@ fn resolve_deferred(
         let Some(signature) = &declaration.signature else {
             return Ok(Some(deferred.fallback.clone()));
         };
-        let Some(ty) = declared_receiver_type(deferred, &declaration.qualname, signature) else {
+        let Some(ty) = declared_receiver_type(deferred, &declaration.qualname, signature, index)
+        else {
             return Ok(Some(None));
         };
         match &found {
@@ -2384,6 +2423,7 @@ fn declared_receiver_type(
     deferred: &RustDeferred,
     qualname: &str,
     signature: &str,
+    index: &dyn DeclarationIndex,
 ) -> Option<String> {
     let name = qualname.rsplit("::").next()?;
     let mut ty = match &deferred.source {
@@ -2410,40 +2450,72 @@ fn declared_receiver_type(
                 .clone()
         }
         DeferredSource::Call { .. } | DeferredSource::Method { .. } => {
-            let (is_async, signature) = split_callable_signature(signature);
-            let src = format!("fn __f{signature} {{}}");
-            let tree = parse_declaration(&src)?;
-            let func = tree.root_node().named_child(0)?;
-            if func.kind() != "function_item" {
-                return None;
-            }
-            let owner = qualname
-                .rsplit("::")
-                .nth(1)
-                .filter(|o| o.starts_with(char::is_uppercase));
-            let env = TypeEnv {
-                source: &src,
-                self_ty: owner,
-                // The signature keeps the fn's and its impl's `<..>`.
-                generics: collect_generic_names(func, &src),
-                adts: &Adts::new(),
-                ctx: None,
-            };
-            let ret = env.ty(func.child_by_field_name("return_type")?);
-            if is_async {
-                Ty::Future(Box::new(ret))
-            } else {
-                ret
-            }
+            declared_return_ty(qualname, signature)?
         }
     };
     for step in &deferred.steps {
-        ty = project(ty, step.clone());
+        ty = match (ty, step) {
+            // A method on a type that declares it: its declared return type.
+            (Ty::Named(owner), Step::Method(m)) => method_step(&owner, m, index)?,
+            (ty, step) => project(ty, step.clone()),
+        };
     }
     match ty {
         Ty::Named(n) => Some(n),
         _ => None,
     }
+}
+
+/// A callable's declared return type (`async` wrapped in a future) from its
+/// indexed signature; `None` when it declares none.
+fn declared_return_ty(qualname: &str, signature: &str) -> Option<Ty> {
+    let (is_async, signature) = split_callable_signature(signature);
+    let src = format!("fn __f{signature} {{}}");
+    let tree = parse_declaration(&src)?;
+    let func = tree.root_node().named_child(0)?;
+    if func.kind() != "function_item" {
+        return None;
+    }
+    let owner = qualname
+        .rsplit("::")
+        .nth(1)
+        .filter(|o| o.starts_with(char::is_uppercase));
+    let env = TypeEnv {
+        source: &src,
+        self_ty: owner,
+        // The signature keeps the fn's and its impl's `<..>`.
+        generics: collect_generic_names(func, &src),
+        adts: &Adts::new(),
+        ctx: None,
+    };
+    let ret = env.ty(func.child_by_field_name("return_type")?);
+    Some(if is_async {
+        Ty::Future(Box::new(ret))
+    } else {
+        ret
+    })
+}
+
+/// `owner.method(..)` for a step of a deferred chain: the return type every
+/// declaration of `owner::method` agrees on; `owner` itself for
+/// `unwrap`/`expect`/`clone` when it declares no such method. `None` --
+/// the receiver stays untracked -- when the declarations disagree.
+fn method_step(owner: &str, method: &str, index: &dyn DeclarationIndex) -> Option<Ty> {
+    let declarations = index
+        .declarations(DeclarationQuery::Method(&format!("{owner}::{method}")))
+        .ok()?;
+    if declarations.is_empty() {
+        return Some(method_ty(Ty::Named(owner.to_string()), method));
+    }
+    let mut found: Option<Ty> = None;
+    for declaration in &declarations {
+        let ty = declared_return_ty(&declaration.qualname, declaration.signature.as_deref()?)?;
+        match &found {
+            Some(prev) if *prev != ty => return None,
+            _ => found = Some(ty),
+        }
+    }
+    found
 }
 
 /// `(is_async, rest)` of a callable's indexed signature, past any leading
@@ -4664,6 +4736,37 @@ fn tc() {}
             .collect()
     }
 
+    /// An index with no declarations: the steps under test need none.
+    struct NoDeclarations;
+
+    impl crate::db::resolver::DeclarationIndex for NoDeclarations {
+        fn declarations(
+            &self,
+            _: crate::db::resolver::DeclarationQuery<'_>,
+        ) -> anyhow::Result<Vec<crate::db::resolver::Declaration>> {
+            Ok(Vec::new())
+        }
+        fn is_repo_type(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        fn inherited_members(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<Vec<crate::db::resolver::Declaration>> {
+            Ok(Vec::new())
+        }
+        fn imports_in_scope(
+            &self,
+            _: &crate::db::resolver::Declaration,
+        ) -> anyhow::Result<crate::db::resolver::ScopeImports> {
+            Ok(crate::db::resolver::ScopeImports {
+                namespaces: Vec::new(),
+                aliases: Default::default(),
+            })
+        }
+    }
+
     fn call(steps: Vec<Step>) -> RustDeferred {
         RustDeferred {
             source: DeferredSource::Call {
@@ -4686,11 +4789,16 @@ fn tc() {}
             .unwrap();
         assert!(sig.starts_with("#[test]\nasync "), "{sig}");
         assert_eq!(
-            super::declared_receiver_type(&call(vec![]), "crate::a::t", &sig),
+            super::declared_receiver_type(&call(vec![]), "crate::a::t", &sig, &NoDeclarations),
             None
         );
         assert_eq!(
-            super::declared_receiver_type(&call(vec![Step::Await]), "crate::a::t", &sig),
+            super::declared_receiver_type(
+                &call(vec![Step::Await]),
+                "crate::a::t",
+                &sig,
+                &NoDeclarations
+            ),
             Some("Engine".to_string())
         );
     }
@@ -4711,7 +4819,7 @@ pub fn concrete() -> Item { todo!() }";
                 .unwrap()
         };
         let receiver = |name: &str, qualname: &str| {
-            super::declared_receiver_type(&call(vec![]), qualname, &sig(name))
+            super::declared_receiver_type(&call(vec![]), qualname, &sig(name), &NoDeclarations)
         };
         assert_eq!(receiver("get", "crate::W::get"), None);
         assert_eq!(receiver("make", "crate::make"), None);
