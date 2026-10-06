@@ -43,7 +43,7 @@ fn unchanged_record<'a>(
 /// Bump whenever extractor output changes (anything under `src/indexer/`), so
 /// existing indexes re-extract unchanged files instead of hash-skipping them.
 /// Enforced by `tests/extractor_version.rs`.
-pub const EXTRACTOR_VERSION: i64 = 18;
+pub const EXTRACTOR_VERSION: i64 = 19;
 const EXTRACTOR_VERSION_KEY: &str = "extractor_version";
 
 pub mod batch;
@@ -320,6 +320,13 @@ impl Indexer {
         let changed_rels = self.changed_batch_paths(&batch_rels)?;
         let stale_cs = self.stale_csharp_files(&changed_rels, graph_version, live_csharp)?;
         stale_files.extend(stale_cs);
+        if batch_rels
+            .iter()
+            .any(|p| p == "Cargo.toml" || p.ends_with("/Cargo.toml"))
+        {
+            let stale_rs = self.stale_rust_files(graph_version)?;
+            stale_files.extend(stale_rs.into_iter().filter(|p| !batch_rels.contains(p)));
+        }
         if batch_rels.iter().any(|p| py_layout::is_layout_marker(p)) {
             let stale_py = self.stale_python_files(graph_version)?;
             stale_files.extend(stale_py.into_iter().filter(|p| !batch_rels.contains(p)));
@@ -568,6 +575,8 @@ impl Indexer {
 
         // ... and Python files whose package root a layout marker moved.
         stale_files.extend(self.stale_python_files(previous_graph_version)?);
+        // ... and Rust files whose crate root a Cargo.toml edit moved.
+        stale_files.extend(self.stale_rust_files(previous_graph_version)?);
         // ... and C# files whose project's `global using`s changed.
         let scanned_csharp: Vec<String> = scanned
             .iter()
@@ -1112,6 +1121,37 @@ impl Indexer {
             if self.repo_root.join(&path).is_file()
                 && extractor.module_name_from_rel_path(&path) != stored
             {
+                stale.insert(path);
+            }
+        }
+        Ok(stale)
+    }
+
+    /// Rust files whose module name or crate-root signature under the
+    /// current Cargo manifests differs from what `graph_version` stores
+    /// (a `Cargo.toml` was added, removed or edited since extraction), so a
+    /// hash skip would keep a stale qualname. Only files still on disk.
+    fn stale_rust_files(&mut self, graph_version: i64) -> Result<HashSet<String>> {
+        let Some(extractor) = self.extractors.get_mut("rust") else {
+            return Ok(HashSet::new());
+        };
+        extractor.begin_run();
+        let mut stored: std::collections::HashMap<String, Vec<(String, Option<String>)>> =
+            std::collections::HashMap::new();
+        for (path, qualname, signature) in self.db.rust_module_symbols(graph_version)? {
+            stored.entry(path).or_default().push((qualname, signature));
+        }
+        let mut stale = HashSet::new();
+        for (path, modules) in stored {
+            if !self.repo_root.join(&path).is_file() {
+                continue;
+            }
+            let module = extractor.module_name_from_rel_path(&path);
+            let Some((_, signature)) = modules.iter().find(|(q, _)| *q == module) else {
+                stale.insert(path);
+                continue;
+            };
+            if module == "crate" && *signature != extractor.root_module_signature(&path) {
                 stale.insert(path);
             }
         }

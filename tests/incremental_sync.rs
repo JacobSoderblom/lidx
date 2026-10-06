@@ -2779,3 +2779,58 @@ fn rust_extern_crate_facade_edited_away_matches_fresh() {
     edited[4] = ("crates/grep/src/lib.rs", "pub extern crate other as cli;\n");
     assert_facade_call_matches_fresh(&indexer, &edited, Some("ext:grep::cli::parse_size"));
 }
+
+const BIN_PATH_TOML: &str =
+    "[package]\nname = \"app\"\n\n[[bin]]\nname = \"app\"\npath = \"crates/core/main.rs\"\n";
+const NO_BIN_PATH_TOML: &str = "[package]\nname = \"app\"\n";
+const MANIFEST_MAIN: &str = "mod util;\nfn main() {\n    util::f();\n}\n";
+const MANIFEST_UTIL: &str = "pub fn f() {}\n";
+
+fn manifest_edit_matches_fresh(label: &str, before: &str, after: &str, rooted_after: bool) {
+    let files = |toml: &'static str| {
+        vec![
+            ("Cargo.toml", toml),
+            ("crates/core/main.rs", MANIFEST_MAIN),
+            ("crates/core/util.rs", MANIFEST_UTIL),
+        ]
+    };
+    let before: &'static str = Box::leak(before.to_string().into_boxed_str());
+    let after: &'static str = Box::leak(after.to_string().into_boxed_str());
+    let (_tmp, repo_root, mut indexer) = indexed_tree(label, &files(before));
+    common::write_files(&repo_root, &[("Cargo.toml", after)]);
+    indexer.sync_rel_paths(&["Cargo.toml".to_string()]).unwrap();
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let (source, target) = if rooted_after {
+        ("crate::main", "crate::util::f")
+    } else {
+        ("crate::crates::core::main", "crate::crates::core::util::f")
+    };
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == source
+            && e.target_qualname.as_deref() == Some(target)),
+        "{snapshot:#?}"
+    );
+    let (_fresh_tmp, fresh) = common::index_files(&files(after));
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// Adding a `[[bin]] path` to an existing Cargo.toml re-roots the files
+/// under it without any `.rs` file changing.
+#[test]
+fn rust_cargo_toml_adding_bin_path_matches_fresh() {
+    manifest_edit_matches_fresh("rust-manifest-add", NO_BIN_PATH_TOML, BIN_PATH_TOML, true);
+}
+
+/// Removing it moves them back.
+#[test]
+fn rust_cargo_toml_removing_bin_path_matches_fresh() {
+    manifest_edit_matches_fresh(
+        "rust-manifest-remove",
+        BIN_PATH_TOML,
+        NO_BIN_PATH_TOML,
+        false,
+    );
+}

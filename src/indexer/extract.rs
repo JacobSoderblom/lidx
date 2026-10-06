@@ -562,6 +562,11 @@ pub trait LanguageExtractor {
     /// so a long-lived indexer sees only this run's declarations, as a fresh
     /// process would. Default: none.
     fn begin_run(&mut self) {}
+    /// The signature the extractor gives the root module of the file at
+    /// `rel_path` (Rust: `crate <lib name>` for a library root); default none.
+    fn root_module_signature(&self, _rel_path: &str) -> Option<String> {
+        None
+    }
     /// Re-register extension methods a previous run stored, for the files
     /// this run does not re-extract (called right after `begin_run`), so the
     /// registry never depends on which files happen to be extracted now.

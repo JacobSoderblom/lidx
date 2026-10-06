@@ -112,3 +112,24 @@ fn lib_path_root_is_crate_root() {
         && e.source_qualname == "crate::top"
         && e.target_qualname.as_deref() == Some("crate::util::inner")));
 }
+
+#[test]
+fn sibling_bin_roots_are_each_their_own_crate_root() {
+    let toml = "[package]\nname = \"x\"\n[[bin]]\nname = \"a\"\npath = \"src/bin/a.rs\"\n\
+[[bin]]\nname = \"b\"\npath = \"src/bin/b.rs\"\n";
+    let (_tmp, snap) = common::index_files(&[
+        ("Cargo.toml", toml),
+        ("src/bin/a.rs", "fn main() {\n    ha();\n}\nfn ha() {}\n"),
+        ("src/bin/b.rs", "fn main() {\n    hb();\n}\nfn hb() {}\n"),
+    ]);
+    let sources: Vec<_> = snap
+        .iter()
+        .filter(|e| e.kind == "CALLS")
+        .map(|e| (e.source_qualname.clone(), e.target_qualname.clone()))
+        .collect();
+    assert!(
+        sources.iter().all(|(s, _)| s == "crate::main"),
+        "{sources:?}"
+    );
+    assert_eq!(sources.len(), 2, "{sources:?}");
+}

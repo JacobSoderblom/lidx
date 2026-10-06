@@ -261,6 +261,20 @@ impl RustExtractor {
 }
 
 impl crate::indexer::extract::LanguageExtractor for RustExtractor {
+    /// Cargo manifests are re-read per run: an edit to one changes crate roots.
+    fn begin_run(&mut self) {
+        self.crate_root_cache.borrow_mut().clear();
+        self.manifest_cache.borrow_mut().clear();
+    }
+
+    fn root_module_signature(&self, rel_path: &str) -> Option<String> {
+        self.module_name_from_rel_path(rel_path);
+        self.pending_crate_name
+            .borrow_mut()
+            .take()
+            .map(|name| format!("crate {name}"))
+    }
+
     fn module_name_from_rel_path(&self, rel_path: &str) -> String {
         let Some(repo_root) = self.repo_root.as_deref() else {
             return module_name_from_rel_path(rel_path);
@@ -454,6 +468,15 @@ impl Manifest {
     /// enclosing root wins. `None` when no explicit root covers the file.
     fn explicit_root_module(&self, crate_dir: &Path, rel_path: &str) -> Option<String> {
         let file = Path::new(rel_path);
+        // A file that is itself a target root is its own crate root, never a
+        // module of a sibling root in the same directory.
+        if self
+            .roots
+            .iter()
+            .any(|root| file == crate_dir.join(root.trim_start_matches("./")))
+        {
+            return Some("crate".to_string());
+        }
         let mut best: Option<(usize, PathBuf, PathBuf)> = None;
         for root in &self.roots {
             let root_file = crate_dir.join(root.trim_start_matches("./"));

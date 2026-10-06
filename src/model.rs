@@ -327,7 +327,7 @@ pub struct Edge {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
     /// The tier that bound `target_symbol_id` (`exact`, `import`,
-    /// `receiver_type`, `inherited`, `two_segment`, `bare_name`, or
+    /// `reexport`, `receiver_type`, `inherited`, `two_segment`, `bare_name`, or
     /// `external` -- see `db::resolver::ResolutionKind::as_str`), or
     /// absent when the target was never bound at all: a still-pending
     /// String-Targeted Edge Kind (a Bridge Edge kind's cross-process join

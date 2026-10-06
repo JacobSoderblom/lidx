@@ -1974,6 +1974,23 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// `(path, qualname, signature)` of every module symbol in a Rust file.
+    pub fn rust_module_symbols(
+        &self,
+        graph_version: i64,
+    ) -> Result<Vec<(String, String, Option<String>)>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT f.path, s.qualname, s.signature FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE f.language = 'rust' AND s.kind = 'module' AND s.graph_version = ?",
+        )?;
+        let rows = stmt.query_map(params![graph_version], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn get_symbols_for_file(&self, file_path: &str, graph_version: i64) -> Result<Vec<Symbol>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
