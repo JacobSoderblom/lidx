@@ -249,6 +249,11 @@ pub(crate) enum UnresolvedReason {
     /// is a `Resolved` outcome (issue #80's import-known-external case),
     /// not an `Unresolved` reason.
     External,
+    /// A Rust `CALLS` reference resolved to a symbol that is no callable (a
+    /// `static`, `const` or field): a lowercase binding passed as a value
+    /// (`take(counter)`), not a call. Never stored -- no edge and no
+    /// `unresolved_references` row, since retrying would only find it again.
+    NotCallable,
 }
 
 impl UnresolvedReason {
@@ -259,6 +264,7 @@ impl UnresolvedReason {
             Self::Ambiguous => "ambiguous",
             Self::Private => "private",
             Self::External => "external",
+            Self::NotCallable => "not_callable",
         }
     }
 }
@@ -1233,6 +1239,25 @@ impl<'c> Resolver<'c> {
                 .optional()?;
             if kind.as_deref() == Some("interface") {
                 return Ok(Resolution::Unresolved(UnresolvedReason::NoCandidates));
+            }
+        }
+        // A Rust function reference (`take(counter)`) binds only a callable:
+        // a `static`/`const`/field of that name is a value, not a call.
+        if let Resolution::Resolved { target_id, .. } = resolution
+            && r.edge_kind == "CALLS"
+            && r.source_lang == "rust"
+        {
+            let kind: Option<String> = self
+                .conn
+                .query_row("SELECT kind FROM symbols WHERE id = ?", [target_id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if matches!(
+                kind.as_deref(),
+                Some("const" | "static" | "field" | "variable" | "property")
+            ) {
+                return Ok(Resolution::Unresolved(UnresolvedReason::NotCallable));
             }
         }
         Ok(resolution)
@@ -3844,6 +3869,12 @@ impl Db {
                 let resolution = row.ctx.resolve(&mut resolver, &empty_symbol_map)?;
                 // Still unresolved: relabel it with the reason this pass
                 // classified, the one a fresh parse would record now.
+                // A reference that now binds only a non-callable is no call:
+                // a fresh index stores nothing for it.
+                if resolution.unresolved_reason() == Some(UnresolvedReason::NotCallable) {
+                    delete_store.execute(params![row.store_id])?;
+                    continue;
+                }
                 if let Some(reason) = resolution.unresolved_reason() {
                     relabel_store.execute(params![reason.as_str(), row.store_id])?;
                 }

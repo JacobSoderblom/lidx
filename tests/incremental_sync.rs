@@ -3219,3 +3219,37 @@ fn rust_same_file_receiver_type_survives_added_twin_matches_fresh() {
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+/// A lowercase name passed as a value that a later sync declares as a
+/// `static` stays edge-free, like a fresh index.
+#[test]
+fn rust_fn_ref_to_added_static_matches_fresh() {
+    let lib_rs = "mod a;\nmod b;\n";
+    let a_rs = "use crate::b::counter;\nfn take<T>(_t: T) {}\npub fn run() {\n    take(counter);\n}\n";
+    let before = "pub fn other() {}\n";
+    let after = "pub fn other() {}\npub static counter: u32 = 0;\n";
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "rust-fn-ref-added-static",
+        &[("src/lib.rs", lib_rs), ("src/a.rs", a_rs), ("src/b.rs", before)],
+    );
+
+    common::write_files(&repo_root, &[("src/b.rs", after)]);
+    indexer.sync_rel_paths(&["src/b.rs".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        !snapshot
+            .iter()
+            .any(|e| e.source_qualname == "crate::a::run"
+                && e.target_qualname.as_deref() == Some("crate::b::counter")),
+        "{snapshot:#?}"
+    );
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("src/lib.rs", lib_rs),
+        ("src/a.rs", a_rs),
+        ("src/b.rs", after),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

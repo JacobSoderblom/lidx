@@ -1645,6 +1645,10 @@ impl Db {
                     },
                     None => resolution,
                 };
+                if resolution.unresolved_reason() == Some(resolver::UnresolvedReason::NotCallable)
+                {
+                    continue;
+                }
 
                 // Issue #79: `is_bridge_edge_kind`'s kind is always written,
                 // resolved or not -- see its doc for why that's not one
