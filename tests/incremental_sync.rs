@@ -2645,3 +2645,30 @@ fn incremental_ts_bare_dot_import_matches_fresh() {
         common::index_files(&[("cookie/a.test.ts", test_ts), ("cookie/index.ts", index_ts)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+#[test]
+fn incremental_ts_sibling_callback_same_name_locals_match_fresh() {
+    let spec_ts = "import { HTTPException } from './http-exception';\ndescribe('x', () => {\n  it('a', () => { const e = new HTTPException(); e.getResponse(); });\n  it('b', () => { const e = new HTTPException(); e.getResponse(); });\n});\n";
+    let lib_ts = "export class HTTPException {\n  getResponse() {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) =
+        indexed_tree("ts-sibling-locals", &[("e.test.ts", spec_ts)]);
+    common::write_files(&repo_root, &[("http-exception.ts", lib_ts)]);
+    indexer
+        .sync_rel_paths(&["http-exception.ts".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "e.test"
+            && e.target_qualname.as_deref() == Some("http-exception.HTTPException.getResponse")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("e.test.ts", spec_ts), ("http-exception.ts", lib_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

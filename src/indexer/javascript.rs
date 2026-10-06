@@ -6156,18 +6156,23 @@ fn infer_module_level_types(root: Node<'_>, source: &str) -> HashMap<String, Loc
     bindings_to_local_types(bindings)
 }
 
-/// Fold a scope's raw (name, inferred-type) bindings into a lookup map,
-/// with a name bound more than once anywhere in the scope collapsing to
-/// `Other` — mirrors `python::bindings_to_local_types`.
+/// Fold a scope's raw (name, inferred-type) bindings into a lookup map. A
+/// name bound more than once collapses to `Other` unless every binding is
+/// the same `Known` type (sibling callbacks each declaring
+/// `const x = new Foo()`); any `Other` or a differing type still forces
+/// `Other`. Mirrors `python::bindings_to_local_types` otherwise.
 fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String, LocalType> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for (name, _) in &bindings {
-        *counts.entry(name.clone()).or_default() += 1;
-    }
-    let mut result = HashMap::new();
+    let mut result: HashMap<String, LocalType> = HashMap::new();
     for (name, ty) in bindings {
-        let reassigned = counts.get(&name).copied().unwrap_or(0) > 1;
-        result.insert(name, if reassigned { LocalType::Other } else { ty });
+        match result.get(&name) {
+            Some(prev) if *prev == ty => {}
+            Some(_) => {
+                result.insert(name, LocalType::Other);
+            }
+            None => {
+                result.insert(name, ty);
+            }
+        }
     }
     result
 }

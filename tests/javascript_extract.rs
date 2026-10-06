@@ -1394,3 +1394,53 @@ const o = { m() { objCall() } }
         .expect("callback call attributed to the module");
     assert_eq!(ex.kind, "CALLS");
 }
+
+#[test]
+fn same_name_locals_in_sibling_callbacks_keep_an_agreed_type() {
+    let source = r#"
+describe('HTTPException', () => {
+  it('a', async () => { const exception = new HTTPException(401, { message: 'x' }); const res = exception.getResponse() })
+  it('b', async () => { const exception = new HTTPException(500, { message: 'y' }); const res = exception.getResponse() })
+})
+"#;
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(source, "src/e.test").unwrap();
+    let calls: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| {
+            e.kind == "CALLS" && e.target_qualname.as_deref() == Some("exception.getResponse")
+        })
+        .collect();
+    assert_eq!(calls.len(), 2);
+    for c in calls {
+        assert_eq!(c.receiver_type, ReceiverType::Known("HTTPException".into()));
+    }
+}
+
+#[test]
+fn same_name_locals_that_disagree_or_include_a_param_stay_unresolved() {
+    let disagree = r#"
+it('a', () => { const x = new A(); x.go() })
+it('b', () => { const x = new B(); x.go() })
+"#;
+    let param = r#"
+it('a', () => { const x = new A(); x.go() })
+it('b', (x) => { x.go() })
+"#;
+    let untyped = r#"
+it('a', () => { const x = new A(); x.go() })
+it('b', () => { const x = make(); x.go() })
+"#;
+    for src in [disagree, param, untyped] {
+        let mut extractor = TypescriptExtractor::new().unwrap();
+        let extracted = extractor.extract(src, "src/e.test").unwrap();
+        for e in extracted
+            .edges
+            .iter()
+            .filter(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("x.go"))
+        {
+            assert_eq!(e.receiver_type, ReceiverType::Unresolved, "{src}");
+        }
+    }
+}
