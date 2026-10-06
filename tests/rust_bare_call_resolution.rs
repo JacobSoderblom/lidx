@@ -80,3 +80,39 @@ fn qualified_and_self_calls_still_resolve_to_methods() {
         vec![Some("crate::search::Worker::search_path_assoc".to_string())]
     );
 }
+
+const NESTED_FN_RS: &str = "pub struct Exports;\n\
+impl Exports {\n\
+    fn sorted(&self) -> usize {\n        0\n    }\n\
+    pub fn render(&self) -> usize {\n\
+        fn sorted(n: usize) -> usize {\n            n\n        }\n\
+        sorted(1)\n            + sorted(2)\n    }\n\
+    pub fn other(&self) -> usize {\n        sorted(3)\n    }\n}\n";
+
+#[test]
+fn bare_call_binds_to_fn_item_declared_in_the_enclosing_body() {
+    let files = [("src/lib.rs", "mod m;\n"), ("src/m.rs", NESTED_FN_RS)];
+    let t = targets(&files, "crate::m::Exports::render");
+    assert_eq!(t, vec![Some("crate::m::Exports::sorted".to_string())]);
+}
+
+#[test]
+fn bare_call_outside_the_block_does_not_see_the_nested_fn() {
+    let files = [("src/lib.rs", "mod m;\n"), ("src/m.rs", NESTED_FN_RS)];
+    assert_eq!(targets(&files, "crate::m::Exports::other"), vec![None]);
+}
+
+#[test]
+fn bare_call_in_nested_block_sees_fn_item_of_outer_block() {
+    let files = [
+        ("src/lib.rs", "mod m;\n"),
+        (
+            "src/m.rs",
+            "pub struct S;\nimpl S {\n    fn go(&self) {\n        fn helper() {}\n        if true {\n            helper();\n        }\n    }\n}\n",
+        ),
+    ];
+    assert_eq!(
+        targets(&files, "crate::m::S::go"),
+        vec![Some("crate::m::S::helper".to_string())]
+    );
+}

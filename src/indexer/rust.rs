@@ -108,6 +108,11 @@ struct Context {
     /// Names the current function must not get an import candidate for
     /// (`collect_shadowed_names`); empty outside a function body.
     shadowed_names: Rc<HashSet<String>>,
+    /// `fn` items declared in the blocks enclosing the current node: name ->
+    /// the qualname the extractor gave the item. Such an item is visible to
+    /// a bare call in that block (and nested blocks), so the call names it
+    /// rather than a module-level fn.
+    block_fns: Rc<HashMap<String, String>>,
     /// Trait bounds of the generic parameters in scope, keyed by parameter
     /// name (`S`) or bounded associated type (`S::Error`): one path per
     /// bound. A parameter with no bound maps to an empty list.
@@ -344,6 +349,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             local_traits: Rc::new(collect_local_traits(root, source, module_name)),
             declared_mods: Rc::new(collect_declared_mods(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
+            block_fns: Rc::new(HashMap::new()),
             generic_bounds: Rc::new(HashMap::new()),
             generic_params: Rc::new(HashMap::new()),
             local_names: Rc::new(HashSet::new()),
@@ -652,6 +658,20 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             handle_impl(node, ctx, source, output);
             return;
         }
+        "block" => {
+            let local = block_local_fns(node, ctx, source);
+            if !local.is_empty() {
+                let mut block_ctx = ctx.clone();
+                let mut fns = (*ctx.block_fns).clone();
+                fns.extend(local);
+                block_ctx.block_fns = Rc::new(fns);
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    walk_node(child, &block_ctx, source, output);
+                }
+                return;
+            }
+        }
         _ => {}
     }
 
@@ -659,6 +679,27 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     for child in node.named_children(&mut cursor) {
         walk_node(child, ctx, source, output);
     }
+}
+
+/// The `fn` items declared directly in `block`: name -> the qualname
+/// `handle_function` gives them.
+fn block_local_fns(block: Node<'_>, ctx: &Context, source: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut cursor = block.walk();
+    for child in block.named_children(&mut cursor) {
+        if child.kind() != "function_item" {
+            continue;
+        }
+        let Some(name) = extract_name(child, source) else {
+            continue;
+        };
+        let qualname = match ctx.container_stack.last() {
+            Some(container) => format!("{container}::{name}"),
+            None => format!("{}::{name}", ctx.module),
+        };
+        out.push((name, qualname));
+    }
+    out
 }
 
 fn walk_declaration_list(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -836,6 +877,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     // A module is its own namespace, not a function body: no shadowed
     // names carry in, even for a `mod` declared inside a function.
     next_ctx.shadowed_names = Rc::new(HashSet::new());
+    next_ctx.block_fns = Rc::new(HashMap::new());
     next_ctx.generic_bounds = Rc::new(HashMap::new());
     next_ctx.generic_params = Rc::new(HashMap::new());
     next_ctx.local_names = Rc::new(HashSet::new());
@@ -4190,6 +4232,14 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
     }
     if raw.contains('.') {
         return None;
+    }
+    // A `fn` item declared in an enclosing block is in scope there. It is
+    // stored under the enclosing container (it is not a real method), so
+    // its qualname is passed through instead of the module-qualified guess.
+    if let Some(local) = ctx.block_fns.get(raw)
+        && !ctx.local_names.contains(raw)
+    {
+        return Some(local.clone());
     }
     // A bare `foo(..)` never names a method or associated fn of the enclosing
     // `impl`/`trait` (those need `self.`/`Self::`/`Type::`), only a free fn

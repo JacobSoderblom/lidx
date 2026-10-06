@@ -3151,3 +3151,33 @@ fn rust_macro_arg_fn_ref_target_added_then_removed_matches_fresh() {
     let (_f2, fresh) = common::index_files(&renamed);
     common::assert_matches_fresh(&snap, &fresh);
 }
+
+/// A fn item declared in a method body binds the body's bare calls; adding
+/// it by a later sync matches a fresh index.
+#[test]
+fn rust_block_local_fn_binds_bare_call_after_edit_matches_fresh() {
+    let lib_rs = "mod m;\n";
+    let before =
+        "pub struct S;\nimpl S {\n    pub fn go(&self) -> usize {\n        helper(1)\n    }\n}\n";
+    let after = "pub struct S;\nimpl S {\n    pub fn go(&self) -> usize {\n        fn helper(n: usize) -> usize {\n            n\n        }\n        helper(1)\n    }\n}\n";
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "rust-block-local-fn",
+        &[("src/lib.rs", lib_rs), ("src/m.rs", before)],
+    );
+
+    common::write_files(&repo_root, &[("src/m.rs", after)]);
+    indexer.sync_rel_paths(&["src/m.rs".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot
+            .iter()
+            .any(|e| e.source_qualname == "crate::m::S::go"
+                && e.target_qualname.as_deref() == Some("crate::m::S::helper")),
+        "{snapshot:#?}"
+    );
+    let (_fresh_tmp, fresh) = common::index_files(&[("src/lib.rs", lib_rs), ("src/m.rs", after)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
