@@ -14,3 +14,4 @@ worktrees/
 benchmarks/agent/.work/
 benchmarks/agent/tasks/private/
 benchmarks/agent/references/private/
+__pycache__/
