@@ -555,11 +555,29 @@ fn is_descendant_rust_module(candidate_qualname: &str, source_qualname: Option<&
     let Some(source_qualname) = source_qualname else {
         return false;
     };
-    let Some(owner_module) = qualname_container(candidate_qualname) else {
+    let Some(owner_module) = rust_enclosing_module(candidate_qualname) else {
         return false;
     };
-    let caller_module = qualname_container(source_qualname).unwrap_or(source_qualname);
+    let caller_module = rust_enclosing_module(source_qualname).unwrap_or(source_qualname);
     caller_module == owner_module || caller_module.starts_with(&format!("{owner_module}::"))
+}
+
+/// The module a Rust item lives in: its qualname minus the trailing name,
+/// minus any enclosing type segments (`crate::Error::with_depth` is declared
+/// in module `crate`, not in `crate::Error` — an `impl`'s items belong to the
+/// module containing the `impl`). Types, traits and enums are `UpperCamel`
+/// and modules `snake_case` by Rust convention, which is all the qualname
+/// carries.
+fn rust_enclosing_module(qn: &str) -> Option<&str> {
+    let mut module = qualname_container(qn)?;
+    while let Some((head, last)) = module.rsplit_once("::") {
+        if last.chars().next().is_some_and(char::is_uppercase) {
+            module = head;
+        } else {
+            break;
+        }
+    }
+    Some(module)
 }
 
 /// The directory portion of a `/`-separated path or qualname, up to but
@@ -4611,6 +4629,35 @@ mod tests {
             "a.rs",
             "a/child.rs",
             None
+        ));
+    }
+
+    #[test]
+    fn visibility_rule_rust_module_uses_module_containing_the_impl() {
+        let rule = VisibilityRule::RustModule;
+        // A private method's owner is the module holding the `impl`
+        // (`crate`), not the type segment (`crate::Error`).
+        assert!(rule.is_visible(
+            Some("private"),
+            "crate::Error::with_depth",
+            "lib.rs",
+            "walk.rs",
+            Some("crate::walk::Walk::run")
+        ));
+        assert!(rule.is_visible(
+            Some("private"),
+            "crate::Error::with_depth",
+            "lib.rs",
+            "walk.rs",
+            Some("crate::walk::free")
+        ));
+        // Sibling modules never see each other's private methods.
+        assert!(!rule.is_visible(
+            Some("private"),
+            "crate::a::T::secret",
+            "a.rs",
+            "b.rs",
+            Some("crate::b::U::run")
         ));
     }
 

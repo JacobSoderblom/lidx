@@ -2547,3 +2547,34 @@ fn ts_dynamic_import_emits_imports_file_and_matches_fresh() {
     common::assert_matches_fresh(&snapshot, &fresh_snapshot);
     assert_eq!(unresolved(&indexer), unresolved(&fresh));
 }
+
+/// Rust module privacy: a private method declared at the crate root becomes
+/// visible to a child module's caller when the child file is added later;
+/// the incrementally repaired graph must equal a fresh index.
+#[test]
+fn rust_private_method_called_from_added_child_module_matches_fresh() {
+    let lib_rs = "mod walk;\npub enum Error {\n    Io(String),\n}\n\
+impl Error {\n    fn with_depth(self, depth: usize) -> Error {\n        self\n    }\n}\n";
+    let walk_rs = "use crate::Error;\npub fn free(err: String) -> Error {\n    Error::Io(err).with_depth(4)\n}\n";
+    let (_tmp, repo_root, mut indexer) =
+        indexed_tree("rust-private-child", &[("src/lib.rs", lib_rs)]);
+
+    common::write_files(&repo_root, &[("src/walk.rs", walk_rs)]);
+    indexer
+        .sync_rel_paths(&["src/walk.rs".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot
+            .iter()
+            .any(|e| e.source_qualname == "crate::walk::free"
+                && e.target_qualname.as_deref() == Some("crate::Error::with_depth")),
+        "{snapshot:#?}"
+    );
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("src/lib.rs", lib_rs), ("src/walk.rs", walk_rs)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
