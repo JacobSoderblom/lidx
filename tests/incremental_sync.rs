@@ -2578,3 +2578,39 @@ impl Error {\n    fn with_depth(self, depth: usize) -> Error {\n        self\n  
         common::index_files(&[("src/lib.rs", lib_rs), ("src/walk.rs", walk_rs)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+/// Rust bare call inside an `impl` whose method shares the free fn's name:
+/// the call binds to the imported free fn, also when that fn's file is added
+/// by a later sync.
+#[test]
+fn rust_bare_call_in_impl_binds_added_free_fn_matches_fresh() {
+    let lib_rs = "mod util;\nmod standard;\n";
+    let standard_rs = "use crate::util::trim_prefix;\npub struct Impl;\nimpl Impl {\n    fn trim_prefix(&self, a: usize) -> usize {\n        a\n    }\n    pub fn run(&self) -> usize {\n        trim_prefix(1)\n    }\n}\n";
+    let util_rs = "pub fn trim_prefix(a: usize) -> usize {\n    a\n}\n";
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "rust-bare-call-impl",
+        &[("src/lib.rs", lib_rs), ("src/standard.rs", standard_rs)],
+    );
+
+    common::write_files(&repo_root, &[("src/util.rs", util_rs)]);
+    indexer
+        .sync_rel_paths(&["src/util.rs".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot
+            .iter()
+            .any(|e| e.source_qualname == "crate::standard::Impl::run"
+                && e.target_qualname.as_deref() == Some("crate::util::trim_prefix")),
+        "{snapshot:#?}"
+    );
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("src/lib.rs", lib_rs),
+        ("src/standard.rs", standard_rs),
+        ("src/util.rs", util_rs),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

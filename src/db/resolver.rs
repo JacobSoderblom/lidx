@@ -1894,8 +1894,14 @@ impl<'c> Resolver<'c> {
                 // kinds (RPC_CALL, HTTP_CALL, CHANNEL_*, XREF, ...) have
                 // their own detection and don't set `bare_call`, so this
                 // never restricts them (see `EdgeInput::bare_call`).
+                //
+                // A Rust `use` path likewise never names a method or
+                // associated fn, so an `IMPORTS` edge refuses them too
+                // (else `use crate::util::f` binds to an unrelated `T::f`
+                // until `util` is indexed).
                 let guard = FallbackGuard {
-                    exclude_method: edge_kind == "CALLS" && bare_call,
+                    exclude_method: (edge_kind == "CALLS" && bare_call)
+                        || (edge_kind == "IMPORTS" && source_lang == "rust"),
                     enforce_visibility: true,
                 };
                 if let Some((seg, dot, colons)) = two_segment_qualname_patterns(target_qualname)

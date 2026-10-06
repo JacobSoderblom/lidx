@@ -3379,12 +3379,11 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
     if raw.contains('.') {
         return None;
     }
-    let base = ctx
-        .container_stack
-        .last()
-        .cloned()
-        .unwrap_or_else(|| ctx.module.clone());
-    Some(format!("{base}::{raw}"))
+    // A bare `foo(..)` never names a method or associated fn of the enclosing
+    // `impl`/`trait` (those need `self.`/`Self::`/`Type::`), only a free fn
+    // in the lexical module -- so qualify against the module, never the
+    // container.
+    Some(format!("{}::{raw}", ctx.module))
 }
 
 fn is_simple_call_target(raw: &str) -> bool {
