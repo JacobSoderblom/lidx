@@ -2699,3 +2699,27 @@ fn incremental_ts_instanceof_narrowing_matches_fresh() {
         common::index_files(&[("handler.ts", handler_ts), ("http-exception.ts", lib_ts)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+#[test]
+fn incremental_ts_non_null_subscript_receiver_matches_fresh() {
+    let router_ts = "import { Trie } from './trie';\nexport class Router {\n  #tries?: Record<string, Trie>\n  add(m: string) {\n    this.#tries![m].insert('a');\n  }\n}\n";
+    let trie_ts = "export class Trie {\n  insert(p: string) {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree("ts-subscript", &[("router.ts", router_ts)]);
+    common::write_files(&repo_root, &[("trie.ts", trie_ts)]);
+    indexer.sync_rel_paths(&["trie.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "router.Router.add"
+            && e.target_qualname.as_deref() == Some("trie.Trie.insert")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("router.ts", router_ts), ("trie.ts", trie_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

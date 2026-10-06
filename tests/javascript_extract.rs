@@ -1526,3 +1526,68 @@ export const handle = (err: unknown) => {
         );
     }
 }
+
+#[test]
+fn non_null_subscript_on_typed_container_field_resolves_the_element_type() {
+    let extracted = extract_ts(
+        r#"
+class Router {
+  #tries?: Record<string, Trie>
+  #list: Leaf[]
+  #arr: Array<Node2>
+  #idx: { [k: string]: Entry }
+  #loose: Record<string, string>
+  insertPath(method: string, path: string) {
+    this.#tries![method].insert(path, true)
+    this.#list[0].leaf(1)
+    this.#arr![0].node(2)
+    this.#idx[method].entry(3)
+    this.#loose[method].toUpperCase()
+    this.#untyped![method].insert(path, false)
+  }
+}
+"#,
+    );
+    for (needle, ty) in [
+        ("insert(path, true)", "Trie"),
+        ("leaf(1)", "Leaf"),
+        ("node(2)", "Node2"),
+        ("entry(3)", "Entry"),
+    ] {
+        let e = call_edge(&extracted, needle);
+        assert_eq!(e.receiver_type, ReceiverType::Known(ty.into()), "{needle}");
+        assert!(
+            e.target_qualname
+                .as_deref()
+                .is_some_and(|t| t.starts_with(&format!("{ty}.")))
+        );
+    }
+    for needle in ["toUpperCase()", "insert(path, false)"] {
+        let e = call_edge(&extracted, needle);
+        assert_eq!(e.receiver_type, ReceiverType::Unresolved, "{needle}");
+        assert!(
+            e.target_qualname.is_some(),
+            "{needle} keeps an unresolved reference name"
+        );
+    }
+}
+
+#[test]
+fn non_null_subscript_on_typed_local_resolves_the_element_type() {
+    let extracted = extract_ts(
+        r#"
+function f(m: Record<string, Trie>, key: string) {
+  const local: Trie[] = make()
+  m[key].insert(1)
+  local[0]!.insert(2)
+}
+"#,
+    );
+    for needle in ["insert(1)", "insert(2)"] {
+        assert_eq!(
+            call_edge(&extracted, needle).receiver_type,
+            ReceiverType::Known("Trie".into()),
+            "{needle}"
+        );
+    }
+}

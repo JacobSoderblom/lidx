@@ -159,6 +159,11 @@ enum LocalType {
     /// Inferred (via type annotation or `new T()` construction) to be this
     /// non-builtin type name.
     Known(String),
+    /// Annotated as a container of this non-builtin element type
+    /// (`Record<string, T>`, `{ [k: string]: T }`, `T[]`, `Array<T>`). Only
+    /// a subscript read of the name (`x[i].m()`) uses it; anywhere else it
+    /// behaves like `Other`.
+    Elements(String),
     /// Builtin type, untyped parameter, destructured binding, loop/catch
     /// target, or anything else not explicitly recognized. A name landing
     /// here (rather than simply absent from the map) still gates
@@ -2464,11 +2469,18 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let (target, receiver_type, import_candidates) =
         match chained_call_target(target_node, ctx, source) {
             Some((target, receiver_type)) => (Some(target), receiver_type, Vec::new()),
-            None => (
-                resolve_call_target(&raw, ctx),
-                infer_receiver_type(target_node, source, ctx),
-                import_placeholder(&raw, ctx).into_iter().collect(),
-            ),
+            None => {
+                let target = resolve_call_target(&raw, ctx);
+                let receiver_type = infer_receiver_type(target_node, source, ctx);
+                let import_candidates: Vec<String> =
+                    import_placeholder(&raw, ctx).into_iter().collect();
+                match target {
+                    None if import_candidates.is_empty() => {
+                        unnamed_receiver_target(target_node, receiver_type, source)
+                    }
+                    target => (target, receiver_type, import_candidates),
+                }
+            }
         };
     // `this` is rebound here: keep the call as an unresolved reference
     // instead of binding it to the enclosing class.
@@ -2503,6 +2515,34 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         ..Default::default()
     });
     register_handled
+}
+
+/// A member call whose text is not a simple dotted path (`a![k].m()`,
+/// `list[0].m()`, `(await x).m()`): the edge target and receiver type, so
+/// the call is recorded rather than dropped. A known receiver type gives
+/// `Type.m`; otherwise just `m` with an `Unresolved` receiver (never bound
+/// from the name alone). No target when the callee has no property name.
+fn unnamed_receiver_target(
+    callee: Node<'_>,
+    receiver_type: ReceiverType,
+    source: &str,
+) -> (Option<String>, ReceiverType, Vec<String>) {
+    let method = match callee.kind() {
+        "member_expression" | "optional_member_expression" => callee
+            .child_by_field_name("property")
+            .map(|p| node_text(p, source))
+            .filter(|m| !m.is_empty() && is_simple_call_target(m)),
+        _ => None,
+    };
+    match (method, receiver_type) {
+        (Some(method), ReceiverType::Known(ty)) => (
+            Some(format!("{ty}.{method}")),
+            ReceiverType::Known(ty),
+            Vec::new(),
+        ),
+        (Some(method), _) => (Some(method), ReceiverType::Unresolved, Vec::new()),
+        (None, receiver_type) => (None, receiver_type, Vec::new()),
+    }
 }
 
 /// Deepest call chain `expression_type` follows before giving up.
@@ -2571,14 +2611,14 @@ fn expression_type(node: Node<'_>, ctx: &Context, source: &str, depth: usize) ->
         }
         return match classify_type_name(&node_text(asserted, source)) {
             LocalType::Known(ty) => Some(ty),
-            LocalType::Other => None,
+            _ => None,
         };
     }
     if node.kind() == "new_expression" {
         let ctor = node_text(node.child_by_field_name("constructor")?, source);
         return match classify_annotation(&ctor) {
             LocalType::Known(ty) => Some(ty),
-            LocalType::Other => None,
+            _ => None,
         };
     }
     if node.kind() != "call_expression" {
@@ -2597,7 +2637,7 @@ fn expression_type(node: Node<'_>, ctx: &Context, source: &str, depth: usize) ->
                     let name = node_text(object, source);
                     match ctx.local_types.get(&name) {
                         Some(LocalType::Known(ty)) => ty.clone(),
-                        Some(LocalType::Other) => return None,
+                        Some(_) => return None,
                         None => name,
                     }
                 }
@@ -6016,6 +6056,13 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     if let Some(ty) = instanceof_narrowed_type(function_node, object, source) {
         return ReceiverType::Known(ty);
     }
+    let object = peel_expression(object);
+    if object.kind() == "subscript_expression" {
+        return match subscript_element_type(object, source, ctx) {
+            Some(ty) => ReceiverType::Known(ty),
+            None => ReceiverType::Unresolved,
+        };
+    }
     let (root, hops) = member_chain_root(object);
 
     if root.kind() == "super" {
@@ -6050,7 +6097,7 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     if hops == 0 {
         return match ctx.local_types.get(&root_name) {
             Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
-            Some(LocalType::Other) => ReceiverType::Unresolved,
+            Some(_) => ReceiverType::Unresolved,
             None => ReceiverType::NotTracked,
         };
     }
@@ -6058,6 +6105,29 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         ReceiverType::Unresolved
     } else {
         ReceiverType::NotTracked
+    }
+}
+
+/// The element type of `container[index]` when `container` is `this.field`
+/// or a local/parameter annotated as a container of a plain type name (see
+/// `container_element_type`).
+fn subscript_element_type(subscript: Node<'_>, source: &str, ctx: &Context) -> Option<String> {
+    let container = peel_expression(subscript.child_by_field_name("object")?);
+    let declared = match container.kind() {
+        "identifier" => ctx.local_types.get(&node_text(container, source)),
+        "member_expression" => {
+            let owner = peel_expression(container.child_by_field_name("object")?);
+            if owner.kind() != "this" || ctx.this_rebound {
+                return None;
+            }
+            let name = node_text(container.child_by_field_name("property")?, source);
+            ctx.class_attr_types.get(&name)
+        }
+        _ => None,
+    };
+    match declared {
+        Some(LocalType::Elements(ty)) => Some(ty.clone()),
+        _ => None,
     }
 }
 
@@ -6149,6 +6219,62 @@ fn classify_annotation(text: &str) -> LocalType {
     }
     let bare = text.rsplit('.').next().unwrap_or(text).trim();
     classify_type_name(bare)
+}
+
+/// `classify_annotation` for a declared name (parameter, local, field): a
+/// container annotation whose element type is a plain non-builtin type name
+/// becomes `Elements`, everything else classifies as usual.
+fn classify_declared_type(text: &str) -> LocalType {
+    match container_element_type(text) {
+        Some(ty) => LocalType::Elements(ty),
+        None => classify_annotation(text),
+    }
+}
+
+/// The element type of `Record<K, T>`, `Array<T>`, `ReadonlyArray<T>`,
+/// `T[]` or `{ [k: string]: T }` when `T` is a plain non-builtin type name;
+/// a `| undefined`/`| null` member is ignored.
+fn container_element_type(text: &str) -> Option<String> {
+    let parts: Vec<&str> = text
+        .split('|')
+        .map(str::trim)
+        .filter(|p| !matches!(*p, "undefined" | "null" | ""))
+        .collect();
+    let [text] = parts[..] else {
+        return None;
+    };
+    let element = if let Some(inner) = text.strip_suffix("[]") {
+        inner
+    } else if let Some(args) = text
+        .strip_prefix("Record<")
+        .and_then(|t| t.strip_suffix('>'))
+    {
+        args.split_once(',')?.1
+    } else if let Some(arg) = text
+        .strip_prefix("Array<")
+        .or_else(|| text.strip_prefix("ReadonlyArray<"))
+        .and_then(|t| t.strip_suffix('>'))
+    {
+        arg
+    } else if let Some(body) = text.strip_prefix('{').and_then(|t| t.strip_suffix('}')) {
+        let (key, value) = body.trim().strip_prefix('[')?.split_once("]:")?;
+        key.contains(':').then_some(())?;
+        value.trim().trim_end_matches([';', ',']).trim_end()
+    } else {
+        return None;
+    };
+    let element = element.trim();
+    if element.is_empty()
+        || !element
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '$' | '.'))
+    {
+        return None;
+    }
+    match classify_annotation(element) {
+        LocalType::Known(ty) => Some(ty),
+        _ => None,
+    }
 }
 
 fn classify_type_name(name: &str) -> LocalType {
@@ -6247,7 +6373,7 @@ fn collect_param_bindings(param: Node<'_>, source: &str, bindings: &mut Vec<(Str
                 let name = node_text(pattern, source);
                 let ty = param
                     .child_by_field_name("type")
-                    .map(|t| classify_annotation(&annotation_text(t, source)))
+                    .map(|t| classify_declared_type(&annotation_text(t, source)))
                     .unwrap_or(LocalType::Other);
                 bindings.push((name, ty));
             } else {
@@ -6399,7 +6525,7 @@ fn collect_variable_declarator_binding(
     }
     let name = node_text(name_node, source);
     let ty = if let Some(type_node) = node.child_by_field_name("type") {
-        classify_annotation(&annotation_text(type_node, source))
+        classify_declared_type(&annotation_text(type_node, source))
     } else if let Some(value_node) = node.child_by_field_name("value") {
         classify_value_expr(value_node, source)
     } else {
@@ -6434,7 +6560,7 @@ fn collect_class_level_attr_types(
                 }
                 result.insert(
                     name,
-                    classify_annotation(&annotation_text(type_node, source)),
+                    classify_declared_type(&annotation_text(type_node, source)),
                 );
             }
             "method_definition" => {
@@ -6474,7 +6600,7 @@ fn collect_class_level_attr_types(
                     let name = node_text(pattern, source);
                     let ty = param
                         .child_by_field_name("type")
-                        .map(|t| classify_annotation(&annotation_text(t, source)))
+                        .map(|t| classify_declared_type(&annotation_text(t, source)))
                         .unwrap_or(LocalType::Other);
                     result.insert(name, ty);
                 }
@@ -7537,6 +7663,37 @@ export function Button() {
             callee(&conn, "src/helper/dev/sub/x.test.t", "showRoutes").as_deref(),
             Some("src/helper/dev.showRoutes")
         );
+    }
+
+    #[test]
+    fn non_null_subscript_call_is_never_silently_dropped() {
+        let (_dir, conn) = index_repo(&[
+            (
+                "src/trie.ts",
+                "export class Trie {\n  insert(p: string, b: boolean) {}\n}\n",
+            ),
+            (
+                "src/router.ts",
+                "export class Router {\n  #tries?: Record<string, Trie>\n  #other?: Record<string, string>\n  add(m: string) {\n    this.#tries![m].insert('a', true)\n    this.#other![m].trim()\n  }\n}\n",
+            ),
+        ]);
+        let row = |line: i64| -> (String, Option<String>) {
+            conn.query_row(
+                "SELECT reference_name, receiver_type FROM unresolved_references
+                 WHERE evidence_start_line = ?1 AND edge_kind = 'CALLS'
+                 UNION ALL
+                 SELECT e.target_qualname, e.receiver_type FROM edges e
+                 WHERE e.evidence_start_line = ?1 AND e.kind = 'CALLS'",
+                [line],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or_else(|_| panic!("line {line} has neither an edge nor an unresolved row"))
+        };
+        let (name, receiver) = row(5);
+        assert!(name.ends_with("insert"), "{name}");
+        assert_eq!(receiver.as_deref(), Some("Trie"));
+        let (name, _) = row(6);
+        assert!(name.ends_with("trim"), "{name}");
     }
 
     #[test]
