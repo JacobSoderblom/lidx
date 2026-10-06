@@ -2618,3 +2618,30 @@ fn incremental_ts_callback_local_const_calls_match_fresh() {
         common::index_files(&[("app.test.ts", app_test_ts), ("lib.ts", lib_ts)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+#[test]
+fn incremental_ts_bare_dot_import_matches_fresh() {
+    let test_ts = "import { del } from '.';\nexport function t() { return del('a'); }\n";
+    let index_ts = "export function del(n: string) { return n; }\n";
+
+    let (_tmp, repo_root, mut indexer) =
+        indexed_tree("ts-bare-dot", &[("cookie/a.test.ts", test_ts)]);
+    common::write_files(&repo_root, &[("cookie/index.ts", index_ts)]);
+    indexer
+        .sync_rel_paths(&["cookie/index.ts".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "cookie/a.test.t"
+            && e.target_qualname.as_deref() == Some("cookie.del")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("cookie/a.test.ts", test_ts), ("cookie/index.ts", index_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

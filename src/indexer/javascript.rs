@@ -757,7 +757,7 @@ fn chase_member(
 }
 
 /// Splits off any `?query`/`#hash` suffix and classifies whether `target`
-/// is a relative specifier (`./`, `../`, or a repo-absolute `/`) — `None`
+/// is a relative specifier (`./`, `../`, bare `.`/`..`, or a repo-absolute `/`) — `None`
 /// for an empty specifier. Shared by `resolve_import_path`'s disk-backed
 /// resolution and `resolve_import_file_edges`'s disk-independent fallback
 /// for a relative specifier that doesn't currently resolve to a file
@@ -768,8 +768,11 @@ fn classify_import_target(target: &str) -> Option<(&str, bool)> {
     if target.is_empty() {
         return None;
     }
-    let is_relative =
-        target.starts_with("./") || target.starts_with("../") || target.starts_with('/');
+    // Bare `.` / `..` name the directory's index file.
+    let is_relative = matches!(target, "." | "..")
+        || target.starts_with("./")
+        || target.starts_with("../")
+        || target.starts_with('/');
     Some((target, is_relative))
 }
 
@@ -7439,6 +7442,36 @@ export function Button() {
         assert_eq!(
             callee(&conn, "components/button.Button", "get").as_deref(),
             Some("lib/api.get")
+        );
+    }
+
+    #[test]
+    fn bare_dot_import_binds_to_the_directory_index() {
+        let (_dir, conn) = index_repo(&[
+            (
+                "src/helper/cookie/index.ts",
+                "export function deleteCookie(n: string) { return n; }\n",
+            ),
+            (
+                "src/helper/cookie/index.test.ts",
+                "import { deleteCookie } from '.';\nexport function t() { return deleteCookie('a'); }\n",
+            ),
+            (
+                "src/helper/dev/index.ts",
+                "export function showRoutes() { return 1; }\n",
+            ),
+            (
+                "src/helper/dev/sub/x.test.ts",
+                "import { showRoutes } from '..';\nexport function t() { return showRoutes(); }\n",
+            ),
+        ]);
+        assert_eq!(
+            callee(&conn, "src/helper/cookie/index.test.t", "deleteCookie").as_deref(),
+            Some("src/helper/cookie.deleteCookie")
+        );
+        assert_eq!(
+            callee(&conn, "src/helper/dev/sub/x.test.t", "showRoutes").as_deref(),
+            Some("src/helper/dev.showRoutes")
         );
     }
 
