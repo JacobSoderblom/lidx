@@ -656,74 +656,12 @@ impl<'a> Builder<'a> {
     }
 
     fn import(&mut self, node: Node<'_>) {
-        match node.kind() {
-            "import_statement" => {
-                let mut cursor = node.walk();
-                for name_node in node.children_by_field_name("name", &mut cursor) {
-                    let Some((item, alias)) = import_name_and_alias(name_node, self.source) else {
-                        continue;
-                    };
-                    let module = node_text(item, self.source);
-                    if module.is_empty() {
-                        continue;
-                    }
-                    let import = match alias.filter(|a| !a.is_empty()) {
-                        Some(bound) => PyImport {
-                            bound,
-                            target: module,
-                            member: false,
-                        },
-                        None => {
-                            let first = module.split('.').next().unwrap_or(&module).to_string();
-                            PyImport {
-                                bound: first.clone(),
-                                target: first,
-                                member: false,
-                            }
-                        }
-                    };
-                    self.note_binding(&import.bound.clone());
-                    self.decls.imports.push(import);
-                }
-            }
-            "import_from_statement" => {
-                let Some(module_node) = node.child_by_field_name("module_name") else {
-                    return;
-                };
-                let base = node_text(module_node, self.source);
-                let Some(abs_base) = absolutize_module(&base, &self.base_package) else {
-                    return;
-                };
-                let mut wc = node.walk();
-                if node
-                    .children(&mut wc)
-                    .any(|c| c.kind() == "wildcard_import")
-                {
-                    self.decls.star_imports.push(abs_base);
-                    return;
-                }
-                let mut cursor = node.walk();
-                for name_node in node.children_by_field_name("name", &mut cursor) {
-                    let Some((item, alias)) = import_name_and_alias(name_node, self.source) else {
-                        continue;
-                    };
-                    let item = node_text(item, self.source);
-                    if item.is_empty() {
-                        continue;
-                    }
-                    let bound = alias
-                        .filter(|a| !a.is_empty())
-                        .unwrap_or_else(|| item.clone());
-                    self.note_binding(&bound);
-                    self.decls.imports.push(PyImport {
-                        bound,
-                        target: join_from_import_target(&abs_base, &item),
-                        member: true,
-                    });
-                }
-            }
-            _ => {}
+        let lowered = lower_import(node, self.source, &self.base_package);
+        for import in lowered.imports {
+            self.note_binding(&import.bound);
+            self.decls.imports.push(import);
         }
+        self.decls.star_imports.extend(lowered.star);
     }
 
     /// A module-level or class-body statement.
@@ -947,7 +885,14 @@ impl<'a> Builder<'a> {
         };
         let is_cls = kind == PyFuncKind::ClassMethod;
         let class_qual = self.decls.classes[owner].qualname.clone();
-        let scope = Scope::for_function(func, self.source, Some(&class_qual), true, is_cls);
+        let scope = Scope::for_function(
+            func,
+            self.source,
+            Some(&class_qual),
+            true,
+            is_cls,
+            &self.base_package,
+        );
         let Some(body) = func.child_by_field_name("body") else {
             return;
         };
@@ -1019,6 +964,88 @@ fn collect_self_assignments(
     for child in node.named_children(&mut cursor) {
         collect_self_assignments(child, source, self_name, scope, out);
     }
+}
+
+/// What one `import` / `from .. import` statement binds.
+pub(crate) struct LoweredImport {
+    pub imports: Vec<PyImport>,
+    /// The absolute module of a `from m import *`.
+    pub star: Option<String>,
+}
+
+/// Lower an import statement to its bindings, absolutizing relative
+/// imports against `base_package`.
+pub(crate) fn lower_import(node: Node<'_>, source: &str, base_package: &[String]) -> LoweredImport {
+    let mut out = LoweredImport {
+        imports: Vec::new(),
+        star: None,
+    };
+    match node.kind() {
+        "import_statement" => {
+            let mut cursor = node.walk();
+            for name_node in node.children_by_field_name("name", &mut cursor) {
+                let Some((item, alias)) = import_name_and_alias(name_node, source) else {
+                    continue;
+                };
+                let module = node_text(item, source);
+                if module.is_empty() {
+                    continue;
+                }
+                out.imports.push(match alias.filter(|a| !a.is_empty()) {
+                    Some(bound) => PyImport {
+                        bound,
+                        target: module,
+                        member: false,
+                    },
+                    None => {
+                        let first = module.split('.').next().unwrap_or(&module).to_string();
+                        PyImport {
+                            bound: first.clone(),
+                            target: first,
+                            member: false,
+                        }
+                    }
+                });
+            }
+        }
+        "import_from_statement" => {
+            let Some(module_node) = node.child_by_field_name("module_name") else {
+                return out;
+            };
+            let base = node_text(module_node, source);
+            let Some(abs_base) = absolutize_module(&base, base_package) else {
+                return out;
+            };
+            let mut wc = node.walk();
+            if node
+                .children(&mut wc)
+                .any(|c| c.kind() == "wildcard_import")
+            {
+                out.star = Some(abs_base);
+                return out;
+            }
+            let mut cursor = node.walk();
+            for name_node in node.children_by_field_name("name", &mut cursor) {
+                let Some((item, alias)) = import_name_and_alias(name_node, source) else {
+                    continue;
+                };
+                let item = node_text(item, source);
+                if item.is_empty() {
+                    continue;
+                }
+                let bound = alias
+                    .filter(|a| !a.is_empty())
+                    .unwrap_or_else(|| item.clone());
+                out.imports.push(PyImport {
+                    bound,
+                    target: join_from_import_target(&abs_base, &item),
+                    member: true,
+                });
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 fn qualify(module: &str, class_stack: &[String], name: &str) -> String {

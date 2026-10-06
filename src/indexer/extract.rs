@@ -505,6 +505,10 @@ pub struct EdgeInput {
     /// Argument count / object-creation marker; see `CallShape`. Only the
     /// C# extractor sets it. `None` = no arity signal (resolve as before).
     pub call_shape: Option<CallShape>,
+    /// Python only: the lowered call site of the `call` node this `CALLS`
+    /// edge came from (locals inlined, see `python_lower`). Extraction
+    /// output only for now: no resolution or stored column reads it yet.
+    pub py_site: Option<Box<crate::indexer::python_expr::PyCallSite>>,
 }
 
 #[derive(Debug, Default)]

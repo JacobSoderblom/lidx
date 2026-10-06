@@ -2810,6 +2810,7 @@ mod tests {
             call_shape: None,
             source_start_byte: None,
             target_start_byte: None,
+            py_site: None,
         }
     }
 
@@ -4378,6 +4379,7 @@ mod tests {
             call_shape: None,
             source_start_byte: None,
             target_start_byte: None,
+            py_site: None,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4781,6 +4783,7 @@ mod tests {
             call_shape: None,
             source_start_byte: None,
             target_start_byte: None,
+            py_site: None,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -4832,6 +4835,7 @@ mod tests {
                 call_shape: None,
                 source_start_byte: None,
                 target_start_byte: None,
+                py_site: None,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CHANNEL_SUBSCRIBE".to_string(),
@@ -4851,6 +4855,7 @@ mod tests {
                 call_shape: None,
                 source_start_byte: None,
                 target_start_byte: None,
+                py_site: None,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted
@@ -5161,6 +5166,7 @@ mod tests {
             call_shape: None,
             source_start_byte: None,
             target_start_byte: None,
+            py_site: None,
         }];
         let symbol_map: HashMap<String, i64> = inserted
             .iter()
@@ -5223,6 +5229,7 @@ mod tests {
                 call_shape: None,
                 source_start_byte: None,
                 target_start_byte: None,
+                py_site: None,
             },
             crate::indexer::extract::EdgeInput {
                 kind: "CONFIG_BIND".to_string(),
@@ -5242,6 +5249,7 @@ mod tests {
                 call_shape: None,
                 source_start_byte: None,
                 target_start_byte: None,
+                py_site: None,
             },
         ];
         let symbol_map: HashMap<String, i64> = inserted

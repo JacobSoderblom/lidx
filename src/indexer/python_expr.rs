@@ -26,6 +26,13 @@ pub enum PyExpr {
     /// scope, its imports, star imports, then builtins.
     #[serde(rename = "n")]
     Name(String),
+    /// A name bound by a function-local import (`def f(): import a.b as x`),
+    /// carrying the absolute dotted target it stands for (`a.b`; for
+    /// `from p import q` the target is `p.q`, which may name a module or a
+    /// member: evaluation decides). It shadows module scope, so it is not a
+    /// free [`PyExpr::Name`].
+    #[serde(rename = "i")]
+    Imported(String),
     /// An annotated parameter or annotated local.
     #[serde(rename = "d")]
     Declared(PyTypeRef),
@@ -80,4 +87,14 @@ pub enum Why {
     Untracked,
     Nonlocal,
     Global,
+}
+
+/// One call node, lowered: the callee expression with locals inlined, and
+/// the number of arguments (keyword arguments and splats count one each).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PyCallSite {
+    #[serde(rename = "f")]
+    pub callee: PyExpr,
+    #[serde(rename = "n")]
+    pub arg_count: u32,
 }

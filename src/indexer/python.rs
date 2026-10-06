@@ -8,6 +8,7 @@ use crate::indexer::extract::{
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::py_layout::PyLayout;
+use crate::indexer::python_lower::{Scope, lower_call_site};
 use crate::indexer::string_consts::{LocalBinding, StringConsts, scan_enclosing_function};
 use crate::indexer::tree_helpers::{
     collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
@@ -38,7 +39,12 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
 };
 
 #[derive(Clone)]
-struct Context {
+struct Context<'t> {
+    /// The names the enclosing function (or module / class body) binds,
+    /// for lowering call sites; see `python_lower::Scope`.
+    py_scope: Rc<Scope<'t>>,
+    /// Base package of this file, absolutizing relative imports.
+    py_base: Rc<Vec<String>>,
     /// Same-file string constants (see `string_consts`), used to resolve
     /// channel topics given as identifiers.
     string_consts: Rc<StringConsts>,
@@ -174,7 +180,13 @@ impl crate::indexer::extract::LanguageExtractor for PythonExtractor {
             module_docstring,
         ));
         let factories = Rc::new(collect_factory_returns(root, source));
+        let py_base = Rc::new(base_package_parts(
+            self.current_path.as_deref().unwrap_or(""),
+            module_name,
+        ));
         let ctx = Context {
+            py_scope: Rc::new(Scope::for_module(root, source, &py_base)),
+            py_base,
             string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
                 crate::indexer::string_consts::ConstLang::Python,
                 root,
@@ -416,7 +428,7 @@ pub(crate) fn definition_span(node: Node<'_>) -> (i64, i64, i64, i64, i64, i64) 
     span(span_node)
 }
 
-fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn walk_node<'t>(node: Node<'t>, ctx: &Context<'t>, source: &str, output: &mut ExtractedFile) {
     if node.kind() == "decorated_definition" {
         handle_decorated_definition(node, ctx, source, output);
         return;
@@ -432,6 +444,21 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     match node.kind() {
         "class_definition" => {
             if ctx.fn_depth > 0 {
+                // Not indexed, but its bases and body are still walked
+                // (attributed to the enclosing symbol) so no call is lost.
+                if let Some(superclasses) = node.child_by_field_name("superclasses") {
+                    walk_node(superclasses, ctx, source, output);
+                }
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut next_ctx = ctx.clone();
+                    next_ctx.py_scope = Rc::new(Scope::for_class_body(
+                        body,
+                        source,
+                        None,
+                        Some(&ctx.py_scope),
+                    ));
+                    walk_block(body, &next_ctx, source, output);
+                }
                 return;
             }
             if let Some(name_node) = node.child_by_field_name("name") {
@@ -470,6 +497,9 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 let mut grpc_service = None;
                 let mut is_settings_class = false;
                 if let Some(superclasses) = node.child_by_field_name("superclasses") {
+                    // Calls in the base list (`metaclass=Meta()`) run in the
+                    // enclosing scope.
+                    walk_node(superclasses, ctx, source, output);
                     let mut cursor = superclasses.walk();
                     for child in superclasses.named_children(&mut cursor) {
                         let base = node_text(child, source);
@@ -496,6 +526,8 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 next_ctx.current_scope = qualname.clone();
                 next_ctx.grpc_service = grpc_service;
                 if let Some(body) = node.child_by_field_name("body") {
+                    next_ctx.py_scope =
+                        Rc::new(Scope::for_class_body(body, source, Some(&qualname), None));
                     next_ctx.class_attr_types =
                         Rc::new(collect_class_level_annotations(body, source));
                     if is_settings_class {
@@ -507,11 +539,17 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             return;
         }
         "function_definition" | "async_function_definition" => {
+            walk_signature_calls(node, ctx, source, output);
             if ctx.fn_depth > 0 {
                 // Not indexed, but its body is still walked (attributed to
                 // the enclosing symbol) so deeper decorated defs are seen.
                 if let Some(body) = node.child_by_field_name("body") {
-                    walk_block(body, ctx, source, output);
+                    let mut next_ctx = ctx.clone();
+                    next_ctx.py_scope = Rc::new(
+                        Scope::for_function(node, source, None, false, false, &ctx.py_base)
+                            .nested_in(&ctx.py_scope),
+                    );
+                    walk_block(body, &next_ctx, source, output);
                 }
                 return;
             }
@@ -563,6 +601,17 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 next_ctx.fn_depth += 1;
                 next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
                 next_ctx.local_types = Rc::new(infer_local_types(node, source, &ctx.factories));
+                let class_qual = (!ctx.class_stack.is_empty())
+                    .then(|| container_qualname(&ctx.module, &ctx.class_stack));
+                let (has_self, is_cls) = self_mode(node, source, &name);
+                next_ctx.py_scope = Rc::new(Scope::for_function(
+                    node,
+                    source,
+                    class_qual.as_deref(),
+                    has_self,
+                    is_cls,
+                    &ctx.py_base,
+                ));
                 if let Some(body) = node.child_by_field_name("body") {
                     walk_block(body, &next_ctx, source, output);
                 }
@@ -706,14 +755,14 @@ fn is_const_name(name: &str) -> bool {
     name.chars().any(|c| c.is_alphabetic()) && !name.chars().any(|c| c.is_lowercase())
 }
 
-fn walk_block(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn walk_block<'t>(node: Node<'t>, ctx: &Context<'t>, source: &str, output: &mut ExtractedFile) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         walk_node(child, ctx, source, output);
     }
 }
 
-fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+fn handle_call<'t>(node: Node<'t>, ctx: &Context<'t>, source: &str, output: &mut ExtractedFile) {
     for edge in http_route_edges(node, ctx, source) {
         output.edges.push(edge);
     }
@@ -729,6 +778,15 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if let Some(edge) = config_read_call_edge(node, ctx, source) {
         output.edges.push(edge);
     }
+    emit_call_edge(node, ctx, source, output);
+}
+
+/// The `CALLS` edge of one `call` node, carrying its lowered call site.
+/// Every call node reaches here exactly once (see
+/// `tests/python_call_site_coverage.rs`).
+fn emit_call_edge<'t>(node: Node<'t>, ctx: &Context<'t>, source: &str, output: &mut ExtractedFile) {
+    let scope = Scope::for_call(&ctx.py_scope, node, source);
+    let py_site = Some(Box::new(lower_call_site(node, source, &scope)));
     let Some(function_node) = node.child_by_field_name("function") else {
         return;
     };
@@ -751,6 +809,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             evidence_start_line: Some(start_line),
             evidence_end_line: Some(end_line),
             receiver_type,
+            py_site,
             ..Default::default()
         });
         return;
@@ -785,8 +844,27 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         // (`obj.foo()`, `self.foo()`, ...) — see `EdgeInput::bare_call`'s
         // doc.
         bare_call: function_node.kind() == "identifier",
+        py_site,
         ..Default::default()
     });
+}
+
+/// Emit the `CALLS` edge of every call node under `node` (and `node`
+/// itself), nothing else: decorators evaluate in the enclosing scope but
+/// their route / channel edges come from `handle_decorated_definition`.
+fn walk_call_edges<'t>(
+    node: Node<'t>,
+    ctx: &Context<'t>,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    if node.kind() == "call" {
+        emit_call_edge(node, ctx, source, output);
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_call_edges(child, ctx, source, output);
+    }
 }
 
 /// Infer the receiver type of a method call (`function_node` is the call's
@@ -1855,9 +1933,9 @@ fn config_read_subscript_edge(node: Node<'_>, ctx: &Context, source: &str) -> Op
     })
 }
 
-fn handle_decorated_definition(
-    node: Node<'_>,
-    ctx: &Context,
+fn handle_decorated_definition<'t>(
+    node: Node<'t>,
+    ctx: &Context<'t>,
     source: &str,
     output: &mut ExtractedFile,
 ) {
@@ -1882,8 +1960,56 @@ fn handle_decorated_definition(
                 channel_edges_from_decorators(&decorators, &handler, source, &ctx.string_consts);
             output.edges.extend(edges);
         }
+        // Decorators evaluate in the enclosing scope, before the def.
+        for decorator in &decorators {
+            walk_call_edges(*decorator, ctx, source, output);
+        }
         walk_node(definition, ctx, source, output);
     }
+}
+
+/// Default values, parameter annotations and the return annotation of a
+/// `def` run in the scope the `def` sits in, not in its body.
+fn walk_signature_calls<'t>(
+    func: Node<'t>,
+    ctx: &Context<'t>,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    for field in ["parameters", "return_type"] {
+        if let Some(child) = func.child_by_field_name(field) {
+            walk_node(child, ctx, source, output);
+        }
+    }
+}
+
+/// Whether a method's first parameter is `self` / `cls`, and which.
+/// `@staticmethod` has none; `@classmethod` and the implicit class methods
+/// (`__new__`, `__init_subclass__`, `__class_getitem__`) take `cls`.
+fn self_mode(func: Node<'_>, source: &str, name: &str) -> (bool, bool) {
+    let mut is_static = false;
+    let mut is_cls = matches!(name, "__new__" | "__init_subclass__" | "__class_getitem__");
+    if let Some(parent) = func.parent().filter(|p| p.kind() == "decorated_definition") {
+        let mut cursor = parent.walk();
+        for dec in parent
+            .named_children(&mut cursor)
+            .filter(|c| c.kind() == "decorator")
+        {
+            let text = dec
+                .named_child(0)
+                .map(|e| node_text(e, source))
+                .unwrap_or_default();
+            match text.rsplit('.').next().unwrap_or("") {
+                "staticmethod" => is_static = true,
+                "classmethod" => is_cls = true,
+                _ => {}
+            }
+        }
+    }
+    if is_static && name != "__new__" {
+        return (false, false);
+    }
+    (true, is_cls)
 }
 
 fn handler_qualname(node: Node<'_>, ctx: &Context, source: &str) -> Option<String> {

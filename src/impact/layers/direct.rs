@@ -880,6 +880,7 @@ mod tests {
             call_shape: None,
             source_start_byte: None,
             target_start_byte: None,
+            py_site: None,
         }
     }
 
