@@ -166,7 +166,7 @@ fn handle_single_message(message: Value, state: &mut State) -> Option<Value> {
         "ping" => id.map(|id| jsonrpc_result(id, json!({}))),
         "tools/list" => {
             let id = id?;
-            Some(jsonrpc_result(id, json!({ "tools": [tool_spec()] })))
+            Some(jsonrpc_result(id, json!({ "tools": tool_specs() })))
         }
         "tools/call" => {
             let id = id?;
@@ -199,37 +199,178 @@ fn initialize_result(message: &Value) -> Value {
     })
 }
 
-/// Server instructions: deliberately tiny; the tool description carries the guide.
-const INSTRUCTIONS: &str = "lidx is a code index (symbol graph, call/impact analysis). \
-For questions about code structure, who calls what, or reading one symbol, use the lidx tool \
-(see its description) before Grep/Read. First call in an unfamiliar repo: method orient.";
+/// Server instructions: deliberately tiny; each tool description says when to use it.
+const INSTRUCTIONS: &str = "lidx is a code index (symbol graph). For who-calls/what-breaks, \
+reading one function, file outlines and symbol search, use the lidx_* tools before Grep/Read; \
+the lidx tool covers the rest (orient, analyze_impact, analyze_diff, gather_context).";
 
-/// Tool description: when to use lidx (as jobs), then a compact reference for the core methods.
-/// Param names here must match the param structs in `rpc/mod.rs`.
-const TOOL_DESCRIPTION: &str = r#"Code index with a resolved symbol graph. Prefer it over Grep/Read for code-structure questions: one call returns callers, callees, source and tests. Call with {method, params}.
+/// Methods only reachable through the generic `lidx` tool.
+const GENERIC_METHODS: &[&str] = &[
+    "orient",
+    "analyze_impact",
+    "analyze_diff",
+    "gather_context",
+    "context",
+    "onboard",
+    "reindex",
+    "top_complexity",
+    "repo_map",
+    "dead_symbols",
+];
 
-Jobs:
-- Who calls X / where is X used / what breaks if I change X: explain_symbol (callers, callees, tests, source in one call) or analyze_impact with direction "upstream" (transitive consumers).
-- How does X work / what does X call / trace a flow: trace_flow (follows calls, plus RPC/HTTP/message-bus/config links via kinds), or explain_symbol.
-- Read one function/class, not the whole file: read_symbol. File skeleton: outline.
-- Find where something is defined, or text/regex search: search.
-- Architecture overview: orient (first call in a new repo).
-- What does a diff or set of changed files affect: analyze_diff.
+/// Arguments handled by the MCP layer itself, never forwarded as method params.
+const RESERVED_ARGS: &[&str] = &[
+    "repo",
+    "db",
+    "text_mode",
+    "include_structured",
+    "set_default",
+];
 
-Symbols: pass query (plain name like "tool_spec", fuzzy) or an exact qualname.
-
-Methods (* = required, one-of groups in brackets):
-- explain_symbol {[query|qualname|id], sections:[source|callers|callees|tests|implements], max_refs} e.g. {"query":"tool_spec"}
-- analyze_impact {[query|qualname|qualnames]*, direction:upstream|downstream|both, max_depth, limit} e.g. {"query":"tool_spec","direction":"upstream"}
-- trace_flow {[query|start_qualname|start_id]*, end_qualname, direction, max_hops, kinds:[CALLS,RPC_IMPL,HTTP_CALL,CHANNEL_PUBLISH,CONFIG_READ,..]} e.g. {"query":"handle_tool_call","max_hops":3}
-- read_symbol {[query|qualname|qualnames]*, skeleton, context_lines} e.g. {"qualname":"crate::mcp::tool_spec"}
-- outline {path*, kinds, max_depth} e.g. {"path":"src/mcp.rs"}
-- search {query*, limit, scope:code|docs|tests|examples|all, path, paths, languages, fixed_string, case_sensitive} e.g. {"query":"fn tool_spec","scope":"code","limit":10}
-- orient {view:overview|map|modules|all, focus_query} e.g. {"view":"overview"}
-- analyze_diff {diff | paths}, e.g. {"paths":["src/mcp.rs"]}
-- gather_context {seeds*:[{"type":"symbol","qualname":..}|{"type":"file","path":..}|{"type":"search","query":..}], max_bytes}
+/// Generic tool description. Param names must match the param structs in `rpc/mod.rs`.
+const TOOL_DESCRIPTION: &str = r#"Code index, everything the lidx_* tools do not cover. Call with {method, params}.
+- orient {view:overview|map|modules|all, focus_query}: architecture overview; first call in a new repo.
+- analyze_impact {query|qualname|qualnames, direction:upstream|downstream|both, max_depth, limit}: transitive blast radius of changing a symbol.
+- analyze_diff {diff | paths}: what a diff or changed files affect.
+- gather_context {seeds:[{"type":"symbol","qualname":..}|{"type":"file","path":..}|{"type":"search","query":..}], max_bytes}: LLM-ready context bundle.
 - Also: context {path}, onboard, repo_map, top_complexity, dead_symbols, reindex.
 Unknown params are ignored and reported in _meta.ignored_params."#;
+
+/// A job-named tool: a typed top-level schema routed to one RPC method.
+struct JobTool {
+    name: &'static str,
+    method: &'static str,
+    description: &'static str,
+    properties: fn() -> Value,
+    required: &'static [&'static str],
+    /// Params always sent (override the caller).
+    fixed: fn() -> Value,
+    /// Params sent when the caller omits them.
+    defaults: fn() -> Value,
+}
+
+const JOB_TOOLS: &[JobTool] = &[
+    JobTool {
+        name: "lidx_find_callers",
+        method: "explain_symbol",
+        description: "List every caller of a function/method/class from the resolved call graph, with caller file, the call-site line (evidence_line) and the call text. Use instead of Grep for \"who calls X\", \"where is X used\", \"what breaks if I change X\": no hits from comments, strings or same-named symbols. Output is capped by max_refs (default 50); callers_total gives the true count.",
+        properties: || {
+            json!({
+                "query": {"type": "string", "description": "Symbol name (fuzzy) or exact qualname."},
+                "max_refs": {"type": "integer", "description": "Max callers returned (default 50)."}
+            })
+        },
+        required: &["query"],
+        fixed: || json!({"sections": ["callers"]}),
+        defaults: || json!({"max_refs": 50}),
+    },
+    JobTool {
+        name: "lidx_explain_symbol",
+        method: "explain_symbol",
+        description: "Understand one symbol in a single call: its source, callers, callees, tests and implementations. Use instead of several Grep/Read calls when asked what X does, who uses it, or what tests cover it.",
+        properties: || {
+            json!({
+                "query": {"type": "string", "description": "Symbol name (fuzzy) or exact qualname."},
+                "sections": {"type": "array", "items": {"type": "string", "enum": ["source", "callers", "callees", "tests", "implements"]}, "description": "Default: all."},
+                "max_refs": {"type": "integer", "description": "Max refs per section (default 10)."}
+            })
+        },
+        required: &["query"],
+        fixed: || json!({}),
+        defaults: || json!({}),
+    },
+    JobTool {
+        name: "lidx_trace_flow",
+        method: "trace_flow",
+        description: "Trace the call chain from a symbol, downstream (what it calls) or upstream (what calls it), across files and across RPC, HTTP, message-bus and config links. Use instead of manually following calls with Grep/Read.",
+        properties: || {
+            json!({
+                "query": {"type": "string", "description": "Start symbol: name (fuzzy) or exact qualname."},
+                "direction": {"type": "string", "enum": ["downstream", "upstream"], "description": "Default downstream."},
+                "max_hops": {"type": "integer", "description": "Default 5, max 10."},
+                "kinds": {"type": "array", "items": {"type": "string"}, "description": "Edge kinds, e.g. CALLS, RPC_IMPL, HTTP_CALL, CHANNEL_PUBLISH, CONFIG_READ. Default CALLS, RPC_IMPL."},
+                "end_qualname": {"type": "string", "description": "Only paths ending at this symbol."}
+            })
+        },
+        required: &["query"],
+        fixed: || json!({}),
+        defaults: || json!({}),
+    },
+    JobTool {
+        name: "lidx_read_symbol",
+        method: "read_symbol",
+        description: "Read the exact source of one or several functions/classes without reading the whole file. Use instead of Read on a big file when you know the symbol name. Give query or qualnames.",
+        properties: || {
+            json!({
+                "query": {"type": "string", "description": "Symbol name (fuzzy) or exact qualname."},
+                "qualnames": {"type": "array", "items": {"type": "string"}, "description": "Read several symbols in one call."},
+                "skeleton": {"type": "boolean", "description": "For a class/module: member signatures only."},
+                "context_lines": {"type": "integer", "description": "Extra surrounding lines."}
+            })
+        },
+        required: &[],
+        fixed: || json!({}),
+        defaults: || json!({}),
+    },
+    JobTool {
+        name: "lidx_outline",
+        method: "outline",
+        description: "Skeleton of one file: its classes, functions and methods with line ranges. Use instead of Read to see what a file contains before reading a part of it.",
+        properties: || {
+            json!({
+                "path": {"type": "string", "description": "Repo-relative file path."},
+                "kinds": {"type": "array", "items": {"type": "string"}, "description": "e.g. function, class."},
+                "max_depth": {"type": "integer", "description": "0 = top level only."}
+            })
+        },
+        required: &["path"],
+        fixed: || json!({}),
+        defaults: || json!({}),
+    },
+    JobTool {
+        name: "lidx_search",
+        method: "search",
+        description: "Find where something is defined or mentioned: regex or literal text search that also names the enclosing symbol and filters by code/tests/docs. Use for discovery; for who-calls questions use lidx_find_callers.",
+        properties: || {
+            json!({
+                "query": {"type": "string", "description": "Regex, or literal with fixed_string."},
+                "limit": {"type": "integer"},
+                "scope": {"type": "string", "enum": ["code", "docs", "tests", "examples", "all"]},
+                "path": {"type": "string", "description": "Restrict to a path prefix."},
+                "paths": {"type": "array", "items": {"type": "string"}},
+                "languages": {"type": "array", "items": {"type": "string"}},
+                "fixed_string": {"type": "boolean"},
+                "case_sensitive": {"type": "boolean"}
+            })
+        },
+        required: &["query"],
+        fixed: || json!({}),
+        defaults: || json!({}),
+    },
+];
+
+fn job_tool(name: &str) -> Option<&'static JobTool> {
+    JOB_TOOLS.iter().find(|t| t.name == name)
+}
+
+fn tool_specs() -> Vec<Value> {
+    let mut tools: Vec<Value> = JOB_TOOLS
+        .iter()
+        .map(|t| {
+            json!({
+                "name": t.name,
+                "description": t.description,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": (t.properties)(),
+                    "required": t.required,
+                }
+            })
+        })
+        .collect();
+    tools.push(tool_spec());
+    tools
+}
 
 fn tool_spec() -> Value {
     json!({
@@ -240,8 +381,7 @@ fn tool_spec() -> Value {
             "properties": {
                 "method": {
                     "type": "string",
-                    "enum": rpc::METHOD_LIST,
-                    "description": "lidx method name."
+                    "enum": GENERIC_METHODS,
                 },
                 "params": {
                     "type": "object",
@@ -253,6 +393,43 @@ fn tool_spec() -> Value {
     })
 }
 
+/// Resolve a tools/call into (method, method params), or a JSON-RPC error message.
+fn route_tool_call(tool_name: &str, arguments: &Value) -> Result<(String, Value), &'static str> {
+    if let Some(tool) = job_tool(tool_name) {
+        let mut params = serde_json::Map::new();
+        if let Some(obj) = arguments.as_object() {
+            for (k, v) in obj {
+                if !RESERVED_ARGS.contains(&k.as_str()) {
+                    params.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        if let Some(defaults) = (tool.defaults)().as_object() {
+            for (k, v) in defaults {
+                params.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        if let Some(fixed) = (tool.fixed)().as_object() {
+            for (k, v) in fixed {
+                params.insert(k.clone(), v.clone());
+            }
+        }
+        return Ok((tool.method.to_string(), Value::Object(params)));
+    }
+    if tool_name != TOOL_NAME {
+        return Err("unknown tool");
+    }
+    let method = arguments
+        .get("method")
+        .and_then(|value| value.as_str())
+        .ok_or("missing method")?;
+    let call_params = arguments
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    Ok((method.to_string(), call_params))
+}
+
 fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
     let params = match message.get("params") {
         Some(value) => value,
@@ -262,26 +439,14 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
         .get("name")
         .and_then(|value| value.as_str())
         .unwrap_or("");
-    if tool_name != TOOL_NAME {
-        return jsonrpc_error(id, -32602, "unknown tool");
-    }
-
     let arguments = params
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let method = arguments
-        .get("method")
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string());
-    let method = match method {
-        Some(value) => value,
-        None => return jsonrpc_error(id, -32602, "missing method"),
+    let (method, call_params) = match route_tool_call(tool_name, &arguments) {
+        Ok(value) => value,
+        Err(msg) => return jsonrpc_error(id, -32602, msg),
     };
-    let call_params = arguments
-        .get("params")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
     let text_mode = text_mode_from_args(&arguments);
     let include_structured = include_structured_from_args(&arguments);
     let (repo_root, db_path) = match repo_and_db(&arguments, &state.defaults) {
@@ -495,12 +660,10 @@ mod tests {
     /// Everything the agent sees up front about the tool.
     fn agent_visible_text() -> String {
         let init = initialize_result(&json!({}));
-        let spec = tool_spec();
         format!(
-            "{}\n{}\n{}",
+            "{}\n{}",
             init["instructions"].as_str().unwrap(),
-            spec["description"].as_str().unwrap(),
-            spec["inputSchema"]
+            serde_json::to_string(&tool_specs()).unwrap()
         )
     }
 
@@ -593,21 +756,65 @@ mod tests {
 
     #[test]
     fn tool_spec_stays_within_token_budget() {
-        // The tool entry and instructions are sent on every agent turn.
-        let spec = tool_spec();
+        // All tool entries and the instructions are sent on every agent turn.
+        let specs = tool_specs();
         let init = initialize_result(&json!({}));
-        let total = serde_json::to_string(&spec).unwrap().len()
+        let total = serde_json::to_string(&specs).unwrap().len()
             + init["instructions"].as_str().unwrap().len();
         assert!(
             total <= 6000,
-            "tools/list entry + instructions are {total} chars, budget 6000"
+            "tools/list + instructions are {total} chars, budget 6000"
         );
         assert!(
-            spec["inputSchema"]["properties"]["params"]
+            tool_spec()["inputSchema"]["properties"]["params"]
                 .get("oneOf")
                 .is_none(),
             "params must stay a plain object; per-method docs live in the description"
         );
+    }
+
+    #[test]
+    fn every_method_is_reachable_through_some_tool() {
+        let mut reachable: Vec<&str> = JOB_TOOLS.iter().map(|t| t.method).collect();
+        reachable.extend(GENERIC_METHODS);
+        for method in rpc::METHOD_LIST {
+            assert!(reachable.contains(method), "no tool reaches '{method}'");
+        }
+        for m in GENERIC_METHODS {
+            assert!(rpc::METHOD_LIST.contains(m), "'{m}' is not dispatchable");
+        }
+    }
+
+    #[test]
+    fn job_tool_schema_params_exist_in_method_schema() {
+        for tool in JOB_TOOLS {
+            let schema = rpc::method_param_schema(tool.method);
+            let props = (tool.properties)();
+            for name in props.as_object().unwrap().keys() {
+                assert!(
+                    schema["properties"].get(name).is_some(),
+                    "{} exposes '{name}', which {} does not accept",
+                    tool.name,
+                    tool.method
+                );
+            }
+            for req in tool.required {
+                assert!(
+                    props.get(*req).is_some(),
+                    "{} requires unknown '{req}'",
+                    tool.name
+                );
+            }
+            for extra in [(tool.fixed)(), (tool.defaults)()] {
+                for name in extra.as_object().unwrap().keys() {
+                    assert!(
+                        schema["properties"].get(name).is_some(),
+                        "{}: '{name}'",
+                        tool.name
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -790,17 +997,14 @@ mod tests {
         let (mut state, _repo) = mcp_state("toolslist");
         let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
         let resp = handle_message(msg, &mut state).unwrap();
-        let desc = resp["result"]["tools"][0]["description"].as_str().unwrap();
-        let line = desc
-            .split("scope:")
-            .nth(1)
-            .expect("description lists search scope values");
-        let list = line.split([',', ' ']).next().unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let search = tools.iter().find(|t| t["name"] == "lidx_search").unwrap();
+        let list = search["inputSchema"]["properties"]["scope"]["enum"].to_string();
         let schema = rpc::method_param_schema("search").to_string();
         for v in ["code", "docs", "tests", "examples", "all"] {
             assert!(
                 list.contains(v),
-                "description should list scope {v}: {list}"
+                "lidx_search should list scope {v}: {list}"
             );
             assert!(schema.contains(v), "search schema should accept {v}");
         }
@@ -993,5 +1197,97 @@ mod tests {
             serde_json::to_string(&resp).unwrap(),
             r#"{"id":1,"jsonrpc":"2.0","result":{}}"#
         );
+    }
+
+    fn job_call(state: &mut State, tool: &str, args: Value) -> Value {
+        let msg = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": tool, "arguments": args}
+        });
+        handle_message(msg, state).unwrap()["result"].clone()
+    }
+
+    fn assert_clean(result: &Value, tool: &str) -> Value {
+        assert_eq!(result["isError"], false, "{tool}: {result}");
+        assert!(
+            result.get("_meta").is_none(),
+            "{tool} ignored params: {result}"
+        );
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn each_job_tool_round_trips() {
+        let (mut state, repo) = mcp_state("jobtools");
+        std::fs::write(
+            repo.join("caller.py"),
+            "from app import needle\n\n\ndef user():\n    needle()\n",
+        )
+        .unwrap();
+        let reindex = call_tool(&mut state, "reindex", json!({}));
+        assert_eq!(reindex["isError"], false);
+
+        let callers = assert_clean(
+            &job_call(&mut state, "lidx_find_callers", json!({"query": "needle"})),
+            "find_callers",
+        );
+        assert!(callers.get("callees").is_none(), "callers-only: {callers}");
+        let first = &callers["callers"][0];
+        assert_eq!(first["symbol"]["file_path"], "caller.py");
+        assert_eq!(first["evidence_line"], 5);
+
+        let explained = assert_clean(
+            &job_call(
+                &mut state,
+                "lidx_explain_symbol",
+                json!({"query": "needle"}),
+            ),
+            "explain_symbol",
+        );
+        assert!(explained["callers"].is_array());
+
+        assert_clean(
+            &job_call(
+                &mut state,
+                "lidx_trace_flow",
+                json!({"query": "user", "max_hops": 2}),
+            ),
+            "trace_flow",
+        );
+        let read = assert_clean(
+            &job_call(&mut state, "lidx_read_symbol", json!({"query": "needle"})),
+            "read_symbol",
+        );
+        assert!(read["source"].as_str().unwrap().contains("def needle"));
+        let outline = assert_clean(
+            &job_call(&mut state, "lidx_outline", json!({"path": "app.py"})),
+            "outline",
+        );
+        assert!(outline["entries"].is_array());
+        let search = assert_clean(
+            &job_call(
+                &mut state,
+                "lidx_search",
+                json!({"query": "needle", "scope": "code"}),
+            ),
+            "search",
+        );
+        assert!(search["results"].is_array());
+
+        // Job tools report stray params like the generic tool does.
+        let stray = job_call(
+            &mut state,
+            "lidx_outline",
+            json!({"path": "app.py", "bogus": 1}),
+        );
+        assert_eq!(stray["_meta"]["ignored_params"], json!(["bogus"]));
+    }
+
+    #[test]
+    fn job_tool_matches_generic_tool_response() {
+        let (mut state, _repo) = mcp_state("jobparity");
+        let generic = call_tool(&mut state, "outline", json!({"path": "app.py"}));
+        let job = job_call(&mut state, "lidx_outline", json!({"path": "app.py"}));
+        assert_eq!(generic["content"], job["content"]);
     }
 }

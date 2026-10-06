@@ -255,6 +255,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                     via_interface: false,
                     file_level: false,
                     evidence: edge.evidence_snippet,
+                    evidence_line: edge.evidence_start_line,
                     edge_kind: edge.kind,
                     protocol_context: None,
                     resolution_kind: edge.resolution_kind,
@@ -523,6 +524,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                         caller_refs.push(ExplainRef {
                             symbol: caller_sym,
                             evidence,
+                            evidence_line: edge.evidence_start_line,
                             edge_kind: "CALLS".to_string(),
                             protocol_context: None,
                             resolution_kind: edge.resolution_kind.clone(),
@@ -639,6 +641,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                                 callee_refs.push(ExplainRef {
                                     symbol: callee_sym,
                                     evidence,
+                                    evidence_line: edge.evidence_start_line,
                                     edge_kind: "CALLS".to_string(),
                                     protocol_context: None,
                                     resolution_kind: edge.resolution_kind.clone(),
@@ -688,6 +691,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                             callee_refs.push(ExplainRef {
                                 symbol: callee_sym,
                                 evidence,
+                                evidence_line: edge.evidence_start_line,
                                 edge_kind: "CALLS".to_string(),
                                 protocol_context: None,
                                 resolution_kind: edge.resolution_kind.clone(),
@@ -775,6 +779,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 test_refs.push(ExplainRef {
                     symbol: test_sym,
                     evidence: edge.evidence_snippet.clone(),
+                    evidence_line: edge.evidence_start_line,
                     edge_kind: "CALLS".to_string(),
                     protocol_context: None,
                     resolution_kind: edge.resolution_kind.clone(),
@@ -1175,6 +1180,7 @@ fn cross_boundary_refs(
                 via_interface: false,
                 file_level: false,
                 evidence: hop.snippet,
+                evidence_line: None,
                 edge_kind,
                 protocol_context: hop.protocol_context,
                 resolution_kind: hop.resolution_kind,
@@ -1196,6 +1202,7 @@ fn cross_boundary_refs(
                         via_interface: false,
                         file_level: false,
                         evidence: edge.evidence_snippet,
+                        evidence_line: edge.evidence_start_line,
                         edge_kind: edge.kind,
                         protocol_context: None,
                         resolution_kind: edge.resolution_kind,
