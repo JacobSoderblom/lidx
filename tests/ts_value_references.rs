@@ -126,3 +126,21 @@ fn classes_and_exported_object_surfaces_are_not_references() {
     let t = call_targets(SURFACES, "src/use.Api");
     assert!(t.is_empty(), "{t:?}");
 }
+
+#[test]
+fn functions_inside_an_exported_object_still_use_what_they_call() {
+    let files: &[(&str, &str)] = &[
+        (
+            "src/h.ts",
+            "export const helper = () => 1;\nexport const settings = { port: 1 };\n",
+        ),
+        (
+            "src/api.ts",
+            "import { helper, settings } from './h';\nexport const Api = { run: () => take(helper), port: settings.port };\ndeclare function take(f: unknown): void;\n",
+        ),
+    ];
+    let t = call_targets(files, "src/api.Api");
+    assert!(t.contains(&"src/h.helper".to_string()), "{t:?}");
+    // `settings.port` reads the object: a use, not a call.
+    assert!(!t.contains(&"src/h.settings".to_string()), "{t:?}");
+}

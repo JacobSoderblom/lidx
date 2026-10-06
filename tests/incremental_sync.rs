@@ -2877,3 +2877,30 @@ fn incremental_ts_value_reference_follows_renamed_export_matches_fresh() {
     let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("util.ts", util_after)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+#[test]
+fn incremental_ts_type_use_follows_declaration_matches_fresh() {
+    let app_ts =
+        "import type { Opts } from './types';\nexport function run(o: Opts) {\n  return o;\n}\n";
+    let types_before = "export type Other = number;\n";
+    let types_after = "export type Other = number;\nexport type Opts = { a: number };\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-type-use",
+        &[("app.ts", app_ts), ("types.ts", types_before)],
+    );
+    common::write_files(&repo_root, &[("types.ts", types_after)]);
+    indexer.sync_rel_paths(&["types.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "USES"
+            && e.source_qualname == "app.run"
+            && e.target_qualname.as_deref() == Some("types.Opts")),
+        "{snapshot:#?}"
+    );
+    let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("types.ts", types_after)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
