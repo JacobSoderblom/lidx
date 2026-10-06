@@ -1645,8 +1645,7 @@ impl Db {
                     },
                     None => resolution,
                 };
-                if resolution.unresolved_reason() == Some(resolver::UnresolvedReason::NotCallable)
-                {
+                if resolution.unresolved_reason() == Some(resolver::UnresolvedReason::NotCallable) {
                     continue;
                 }
 
@@ -1768,6 +1767,56 @@ impl Db {
         file_id: i64,
         graph_version: i64,
         private_qualnames: &[String],
+        visibility_scopes: &[(String, String)],
+        static_member_qualnames: &[String],
+        override_symbols: &[(String, i64)],
+    ) -> Result<()> {
+        let visibility_signature = |db: &Self| -> Result<String> {
+            Ok(db.conn().query_row(
+                "SELECT COALESCE(group_concat(qualname || ':' || COALESCE(visibility, ''), '|'), '')
+                 FROM (SELECT qualname, visibility FROM symbols
+                       WHERE file_id = ? AND graph_version = ? ORDER BY id)",
+                params![file_id, graph_version],
+                |row| row.get(0),
+            )?)
+        };
+        let before = visibility_signature(self)?;
+        self.write_symbol_visibility(
+            file_id,
+            graph_version,
+            private_qualnames,
+            visibility_scopes,
+            static_member_qualnames,
+            override_symbols,
+        )?;
+        // A changed visibility can let a stored `private` reference resolve
+        // (`Db::retry_unresolved_references`).
+        if before != visibility_signature(self)? {
+            self.conn().execute(
+                "INSERT INTO meta (key, value) VALUES ('rust_import_epoch', '1')
+                 ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+                [],
+            )?;
+            // A narrowed visibility can make a bound cross-file Rust call
+            // illegal: unbind them so the reconcile pass re-judges each one.
+            self.conn().execute(
+                "UPDATE edges SET target_symbol_id = NULL, resolution_kind = NULL
+                 WHERE graph_version = ?1 AND kind = 'CALLS' AND file_id != ?2
+                   AND target_symbol_id IN
+                       (SELECT id FROM symbols WHERE file_id = ?2 AND graph_version = ?1)
+                   AND EXISTS (SELECT 1 FROM files WHERE id = ?2 AND language = 'rust')",
+                params![graph_version, file_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn write_symbol_visibility(
+        &mut self,
+        file_id: i64,
+        graph_version: i64,
+        private_qualnames: &[String],
+        visibility_scopes: &[(String, String)],
         static_member_qualnames: &[String],
         override_symbols: &[(String, i64)],
     ) -> Result<()> {
@@ -1817,6 +1866,15 @@ impl Db {
             &sql,
             rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
         )?;
+        // A `pub(super)` / `pub(in path)` item is private to a wider module.
+        for (qualname, scope) in visibility_scopes {
+            self.conn().execute(
+                "UPDATE symbols SET visibility = visibility || ' scope:' || ?
+                 WHERE file_id = ? AND graph_version = ? AND qualname = ?
+                   AND visibility IS NOT NULL",
+                params![scope, file_id, graph_version, qualname],
+            )?;
+        }
         Ok(())
     }
 

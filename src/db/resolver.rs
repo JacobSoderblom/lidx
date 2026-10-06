@@ -533,7 +533,11 @@ impl VisibilityRule {
             VisibilityRule::Recorded => !is_private(candidate_visibility),
             VisibilityRule::RustModule => {
                 !is_private(candidate_visibility)
-                    || is_descendant_rust_module(candidate_qualname, source_qualname)
+                    || is_descendant_rust_module(
+                        candidate_qualname,
+                        source_qualname,
+                        candidate_visibility,
+                    )
             }
             VisibilityRule::GoCapitalization => {
                 let exported = qualname_trailing_name(candidate_qualname)
@@ -565,11 +569,20 @@ fn qualname_container(qn: &str) -> Option<&str> {
 /// owning module, or nested inside it (`crate::a` owns a private item
 /// that `crate::a::child`, `crate::a::child::grandchild`, ... can all
 /// still see) — see issue #75 follow-up, finding D.
-fn is_descendant_rust_module(candidate_qualname: &str, source_qualname: Option<&str>) -> bool {
+///
+/// A `pub(super)` / `pub(in path)` candidate records its wider module as a
+/// `scope:<module>` modifier in `candidate_visibility`; that module owns it.
+fn is_descendant_rust_module(
+    candidate_qualname: &str,
+    source_qualname: Option<&str>,
+    candidate_visibility: Option<&str>,
+) -> bool {
     let Some(source_qualname) = source_qualname else {
         return false;
     };
-    let Some(owner_module) = rust_enclosing_module(candidate_qualname) else {
+    let scope = candidate_visibility
+        .and_then(|v| v.split_whitespace().find_map(|m| m.strip_prefix("scope:")));
+    let Some(owner_module) = scope.or_else(|| rust_enclosing_module(candidate_qualname)) else {
         return false;
     };
     let caller_module = rust_enclosing_module(source_qualname).unwrap_or(source_qualname);
@@ -3712,8 +3725,9 @@ impl Db {
             |row| row.get(0),
         )?;
         let inheritance_changed = max_inheritance_edge_id > inheritance_watermark;
-        // A Rust `use` edge written since the last pass (`rust_import_epoch`,
-        // bumped by `Db::insert_edges`) can make a stored `crate::a::alias`
+        // A Rust `use` edge written since the last pass, or a Rust item whose
+        // visibility changed (`rust_import_epoch`, bumped by `Db::insert_edges`
+        // and `Db::set_private_symbols`) can make a stored `crate::a::alias`
         // path resolvable (`Resolver::rust_follow_path`) without any symbol
         // named like the reference being new.
         let rust_import_epoch = self.get_meta_i64("rust_import_epoch")?.unwrap_or(0);
@@ -3796,7 +3810,8 @@ impl Db {
                         OR (?3 AND ur.reason IN ('ambiguous', 'private'))
                         OR (?5 AND f.language = 'rust'
                             AND ur.edge_kind IN ('CALLS', 'USES', 'IMPORTS')
-                            AND ur.reference_name LIKE '%::%'))",
+                            AND ur.reference_name LIKE '%::%')
+                        OR (?5 AND f.language = 'rust' AND ur.reason = 'private'))",
             )?;
             let rows = stmt.query_map(
                 params![

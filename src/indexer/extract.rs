@@ -526,6 +526,11 @@ pub struct ExtractedFile {
     /// sites). Empty for languages with no recorded visibility rule
     /// (Python) or a derived one that needs no storage (Go: capitalization).
     pub private_qualnames: Vec<String>,
+    /// `(qualname, module)` for a Rust function whose `pub(super)` /
+    /// `pub(in path)` restricts it to `module` and its descendants: it is
+    /// also in `private_qualnames`, and the scope is recorded next to
+    /// `private` as `scope:<module>`.
+    pub visibility_scopes: Vec<(String, String)>,
     /// Qualnames of methods and fields this extractor recorded as `static`
     /// (C#: every same-qualname method overload is; a field only when
     /// `const` or a non-private `static`, issue #238). Recorded into `symbols.visibility` next

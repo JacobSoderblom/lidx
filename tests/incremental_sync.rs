@@ -3225,12 +3225,17 @@ fn rust_same_file_receiver_type_survives_added_twin_matches_fresh() {
 #[test]
 fn rust_fn_ref_to_added_static_matches_fresh() {
     let lib_rs = "mod a;\nmod b;\n";
-    let a_rs = "use crate::b::counter;\nfn take<T>(_t: T) {}\npub fn run() {\n    take(counter);\n}\n";
+    let a_rs =
+        "use crate::b::counter;\nfn take<T>(_t: T) {}\npub fn run() {\n    take(counter);\n}\n";
     let before = "pub fn other() {}\n";
     let after = "pub fn other() {}\npub static counter: u32 = 0;\n";
     let (_tmp, repo_root, mut indexer) = indexed_tree(
         "rust-fn-ref-added-static",
-        &[("src/lib.rs", lib_rs), ("src/a.rs", a_rs), ("src/b.rs", before)],
+        &[
+            ("src/lib.rs", lib_rs),
+            ("src/a.rs", a_rs),
+            ("src/b.rs", before),
+        ],
     );
 
     common::write_files(&repo_root, &[("src/b.rs", after)]);
@@ -3240,10 +3245,8 @@ fn rust_fn_ref_to_added_static_matches_fresh() {
     let graph_version = indexer.db().current_graph_version().unwrap();
     let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
     assert!(
-        !snapshot
-            .iter()
-            .any(|e| e.source_qualname == "crate::a::run"
-                && e.target_qualname.as_deref() == Some("crate::b::counter")),
+        !snapshot.iter().any(|e| e.source_qualname == "crate::a::run"
+            && e.target_qualname.as_deref() == Some("crate::b::counter")),
         "{snapshot:#?}"
     );
     let (_fresh_tmp, fresh) = common::index_files(&[
@@ -3252,4 +3255,39 @@ fn rust_fn_ref_to_added_static_matches_fresh() {
         ("src/b.rs", after),
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// Widening a `pub(super)` method to `pub` lets an out-of-scope untyped
+/// call bind it; narrowing it back unbinds, both matching a fresh index.
+#[test]
+fn rust_pub_super_widened_then_narrowed_matches_fresh() {
+    let lib_rs = "pub mod a;\npub mod z;\n";
+    let a_rs = "pub mod b;\n";
+    let narrow = "pub struct S;\nimpl S {\n    pub(super) fn secret(&self) {}\n}\n";
+    let wide = "pub struct S;\nimpl S {\n    pub fn secret(&self) {}\n}\n";
+    let z_rs = "pub fn go() {\n    let _f = |x| x.secret();\n}\n";
+    let files = |b: &'static str| {
+        vec![
+            ("src/lib.rs", lib_rs),
+            ("src/a.rs", a_rs),
+            ("src/a/b.rs", b),
+            ("src/z.rs", z_rs),
+        ]
+    };
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-pub-super", &files(narrow));
+    for (b, bound) in [(wide, true), (narrow, false)] {
+        common::write_files(&repo_root, &[("src/a/b.rs", b)]);
+        indexer.sync_rel_paths(&["src/a/b.rs".to_string()]).unwrap();
+        common::assert_no_dangling_edge_targets(indexer.db());
+        let graph_version = indexer.db().current_graph_version().unwrap();
+        let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+        assert_eq!(
+            snapshot.iter().any(|e| e.source_qualname == "crate::z::go"
+                && e.target_qualname.as_deref() == Some("crate::a::b::S::secret")),
+            bound,
+            "{snapshot:#?}"
+        );
+        let (_fresh_tmp, fresh) = common::index_files(&files(b));
+        common::assert_matches_fresh(&snapshot, &fresh);
+    }
 }

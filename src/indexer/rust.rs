@@ -791,7 +791,7 @@ fn handle_trait(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         end_col,
         start_byte,
         end_byte,
-        signature: trait_signature(node, source, &name),
+        signature: trait_signature(node, source, &name, ctx),
         docstring: None,
         identity: ctx.identity(),
     });
@@ -987,8 +987,13 @@ fn handle_function(
     // A trait default method or trait-impl method has no `pub` to check —
     // it's exactly as visible as the trait itself (see
     // `Context::in_trait_scope`, issue #75 follow-up, finding B).
-    if !ctx.in_trait_scope && !has_pub_visibility(node) {
-        output.private_qualnames.push(qualname.clone());
+    if !ctx.in_trait_scope {
+        if !has_pub_visibility(node) {
+            output.private_qualnames.push(qualname.clone());
+        } else if let Some(scope) = restricted_scope(node, source, &ctx.module) {
+            output.private_qualnames.push(qualname.clone());
+            output.visibility_scopes.push((qualname.clone(), scope));
+        }
     }
     output.symbols.push(SymbolInput {
         kind: kind.to_string(),
@@ -1597,6 +1602,16 @@ fn qualify_imported_type(ty: String, ctx: &Context) -> String {
     match ctx.imports.get(&ty).map(Vec::as_slice) {
         Some([path]) if path.starts_with("crate::") && !ty.contains("::") => path.clone(),
         _ => ty,
+    }
+}
+
+/// `name` as the path this file imports it from when that import renames it
+/// (`use crate::shapes::Canvas as Surface;`), so the resolver looks the
+/// trait up by its declared name; any other name is returned unchanged.
+fn unalias_import(name: &str, ctx: &Context) -> String {
+    match ctx.imports.get(name).map(Vec::as_slice) {
+        Some([path]) if path.rsplit("::").next().is_some_and(|last| last != name) => path.clone(),
+        _ => name.to_string(),
     }
 }
 
@@ -2919,7 +2934,7 @@ fn generic_rooted_call(function: Node<'_>, ctx: &Context, source: &str) -> Optio
     let bound = |method: &str, bounds: &[String]| match usable_bound(bounds) {
         Some(b) => GenericCall::Bound {
             method: method.to_string(),
-            receiver: ReceiverType::Known(b.rsplit("::").next().unwrap_or(b).to_string()),
+            receiver: ReceiverType::Known(unalias_import(b.rsplit("::").next().unwrap_or(b), ctx)),
         },
         None => GenericCall::Unbound,
     };
@@ -2948,7 +2963,7 @@ fn generic_rooted_call(function: Node<'_>, ctx: &Context, source: &str) -> Optio
                             method: (*method).to_string(),
                             receiver: ReceiverType::RustDeferred(RustDeferred {
                                 source: DeferredSource::AssocBound {
-                                    owner: owner.clone(),
+                                    owner: unalias_import(owner, ctx),
                                     assoc: (*assoc).to_string(),
                                 },
                                 steps: Vec::new(),
@@ -2969,7 +2984,7 @@ fn generic_rooted_call(function: Node<'_>, ctx: &Context, source: &str) -> Optio
 /// `trait Name { type A: Bound; .. }`: the trait's associated types that
 /// carry a bound, kept in the symbol's signature so a call through
 /// `T::A::method` in another file can find the bound (`resolve_deferred`).
-fn trait_signature(node: Node<'_>, source: &str, name: &str) -> Option<String> {
+fn trait_signature(node: Node<'_>, source: &str, name: &str, ctx: &Context) -> Option<String> {
     let body = body_node(node)?;
     let mut cursor = body.walk();
     let assoc: Vec<String> = body
@@ -2977,7 +2992,15 @@ fn trait_signature(node: Node<'_>, source: &str, name: &str) -> Option<String> {
         .filter(|item| item.kind() == "associated_type")
         .filter_map(|item| {
             let assoc = node_text(item.child_by_field_name("name")?, source);
-            let bounds = strip_whitespace(&node_text(item.child_by_field_name("bounds")?, source));
+            let bounds_node = item.child_by_field_name("bounds")?;
+            let mut bounds = strip_whitespace(&node_text(bounds_node, source));
+            // A bound this file imports under another name is written by its
+            // declared path: the alias means nothing in other files.
+            let paths = bound_paths(bounds_node, source);
+            if paths.iter().any(|p| unalias_import(p, ctx) != *p) {
+                let real: Vec<String> = paths.iter().map(|p| unalias_import(p, ctx)).collect();
+                bounds = format!(":{}", real.join("+"));
+            }
             Some(format!("type {assoc}{bounds};"))
         })
         .collect();
@@ -4424,6 +4447,38 @@ fn has_pub_visibility(node: Node<'_>) -> bool {
     let mut cursor = node.walk();
     node.children(&mut cursor)
         .any(|c| c.kind() == "visibility_modifier")
+}
+
+/// The module a `pub(super)` / `pub(in path)` function is restricted to
+/// (`module` is the module declaring it); `None` for plain `pub`,
+/// `pub(crate)` (crate boundaries are not modeled) or a path that cannot be
+/// resolved (`super` past the crate root).
+fn restricted_scope(node: Node<'_>, source: &str, module: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    let modifier = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "visibility_modifier")?;
+    let text = node_text(modifier, source);
+    let path = text.strip_prefix("pub")?.trim_start().strip_prefix('(')?;
+    let path = path.strip_suffix(')')?.trim();
+    let path = match path.strip_prefix("in") {
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim(),
+        _ => path,
+    };
+    if path == "crate" {
+        return None;
+    }
+    let mut scope = module.to_string();
+    for (i, seg) in path.split("::").enumerate() {
+        match seg {
+            "crate" if i == 0 => scope = "crate".to_string(),
+            "self" => {}
+            "super" => scope = scope.rsplit_once("::")?.0.to_string(),
+            name if i > 0 && !name.is_empty() => scope = format!("{scope}::{name}"),
+            _ => return None,
+        }
+    }
+    (scope != module).then_some(scope)
 }
 
 /// Attribute short names (the identifier after the last `::`, e.g. `test`
