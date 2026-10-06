@@ -2723,3 +2723,43 @@ fn incremental_ts_non_null_subscript_receiver_matches_fresh() {
         common::index_files(&[("router.ts", router_ts), ("trie.ts", trie_ts)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+#[test]
+fn incremental_ts_pinned_receiver_type_matches_fresh() {
+    let trie_ts = "import { Node } from './node';\nexport class Trie {\n  #root: Node = new Node();\n  add(p: string) {\n    this.#root.insert(p);\n    this.#root.base(p);\n  }\n}\n";
+    let node_ts = "import { Base } from './base';\nexport class Node extends Base {\n  insert(p: string) {}\n}\n";
+    let base_ts = "export class Base {\n  base(p: string) {}\n}\n";
+    let decoy_ts = "export class Node {\n  insert(p: string) {}\n  base(p: string) {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-pinned",
+        &[("reg/trie.ts", trie_ts), ("other/node.ts", decoy_ts)],
+    );
+    common::write_files(
+        &repo_root,
+        &[("reg/node.ts", node_ts), ("reg/base.ts", base_ts)],
+    );
+    indexer
+        .sync_rel_paths(&["reg/node.ts".to_string(), "reg/base.ts".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    for target in ["reg/node.Node.insert", "reg/base.Base.base"] {
+        assert!(
+            snapshot.iter().any(|e| e.kind == "CALLS"
+                && e.source_qualname == "reg/trie.Trie.add"
+                && e.target_qualname.as_deref() == Some(target)),
+            "{target}: {snapshot:#?}"
+        );
+    }
+
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("reg/trie.ts", trie_ts),
+        ("other/node.ts", decoy_ts),
+        ("reg/node.ts", node_ts),
+        ("reg/base.ts", base_ts),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

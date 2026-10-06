@@ -62,6 +62,7 @@ use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
     CallShape, DEFERRED_KIND_ARGUMENT, DEFERRED_KIND_RETURN, DeferredMarker, TypeScope,
 };
+use crate::indexer::javascript::PINNED_TYPE_MARK;
 use crate::model::{has_parameter_list, is_partial_signature};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, named_params, params};
@@ -1821,12 +1822,24 @@ impl<'c> Resolver<'c> {
             Some("") => Ok(None),
 
             Some(known_type) => {
+                let method = qualname_trailing_name(target_qualname);
+                // A type the extractor pinned to one declaration binds only
+                // through that class and its ancestors: another class of the
+                // same name is never a candidate. A pin naming no indexed
+                // type falls back to the bare name.
+                let mut known_type = known_type;
+                if let Some(pinned) = known_type.strip_prefix(PINNED_TYPE_MARK) {
+                    match self.resolve_pinned_member(pinned, method, caller.file_path)? {
+                        PinnedMember::Found(id, kind) => return Ok(Some((id, kind))),
+                        PinnedMember::Missing => return Ok(None),
+                        PinnedMember::NoType => known_type = qualname_trailing_name(pinned),
+                    }
+                }
                 // C# interface receivers keep the qualifier and closed type
                 // arguments they were declared with (`N1.IA<int>`); the
                 // arguments only discriminate dispatch, never resolution.
                 let scope = self.call_scope.clone();
                 let known_type = known_type.split('<').next().unwrap_or(known_type);
-                let method = qualname_trailing_name(target_qualname);
                 if let Some(id) =
                     self.scoped_member(&scope, known_type, method, caller.file_path)?
                 {
@@ -1917,6 +1930,92 @@ impl<'c> Resolver<'c> {
                     .map(|id| (id, ResolutionKind::BareName)))
             }
         }
+    }
+
+    /// `method` of the type declared as `type_qualname` (a receiver type
+    /// pinned by the extractor, see `PINNED_TYPE_MARK`): its own member, else
+    /// the nearest ancestor's along already-bound EXTENDS/IMPLEMENTS/INHERITS
+    /// edges, level by level. Two distinct members at one level is ambiguous.
+    fn resolve_pinned_member(
+        &mut self,
+        type_qualname: &str,
+        method: &str,
+        caller_file: &str,
+    ) -> Result<PinnedMember> {
+        let gv = self.graph_version;
+        let mut frontier: Vec<(i64, String)> =
+            query_exact_candidates(&mut self.exact, type_qualname, gv, caller_file)?
+                .into_iter()
+                .filter(|c| matches!(c.kind.as_str(), "class" | "interface" | "enum" | "type"))
+                .map(|c| (c.id, type_qualname.to_string()))
+                .collect();
+        if frontier.is_empty() {
+            return Ok(PinnedMember::NoType);
+        }
+        let mut seen: std::collections::HashSet<i64> = frontier.iter().map(|(id, _)| *id).collect();
+        for depth in 0..=MAX_INHERITANCE_DEPTH {
+            let mut found: Vec<i64> = Vec::new();
+            let mut qualnames: Vec<&String> = frontier.iter().map(|(_, qn)| qn).collect();
+            qualnames.dedup();
+            for qualname in qualnames {
+                let member = format!("{qualname}.{method}");
+                let hits = query_exact_candidates(&mut self.exact, &member, gv, caller_file)?;
+                if hits.is_empty() {
+                    continue;
+                }
+                match collapse_exact_candidates(&hits) {
+                    Some(id) if !found.contains(&id) => found.push(id),
+                    Some(_) => {}
+                    None => {
+                        self.saw_ambiguous = true;
+                        return Ok(PinnedMember::Missing);
+                    }
+                }
+            }
+            match found.as_slice() {
+                [] => {}
+                [id] => {
+                    let kind = if depth == 0 {
+                        ResolutionKind::ReceiverType
+                    } else {
+                        ResolutionKind::Inherited
+                    };
+                    return Ok(PinnedMember::Found(*id, kind));
+                }
+                _ => {
+                    self.saw_ambiguous = true;
+                    return Ok(PinnedMember::Missing);
+                }
+            }
+            let mut next = Vec::new();
+            for (id, _) in &frontier {
+                let rows: Vec<Option<i64>> = self
+                    .hierarchy
+                    .query_map(params![id, gv], |row| row.get::<_, Option<i64>>(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                for ancestor in rows.into_iter().flatten() {
+                    if !seen.insert(ancestor) {
+                        continue;
+                    }
+                    let qualname: Option<String> = self
+                        .conn
+                        .query_row(
+                            "SELECT qualname FROM symbols WHERE id = ?",
+                            [ancestor],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    if let Some(qualname) = qualname {
+                        next.push((ancestor, qualname));
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        Ok(PinnedMember::Missing)
     }
 
     /// An unqualified receiver type looked up like C# does (see
@@ -2883,6 +2982,15 @@ fn canonical_multi_file<'a>(
     candidates
         .min_by(|a, b| (&a.path, a.id).cmp(&(&b.path, b.id)))
         .map(|c| c.id)
+}
+
+/// The outcome of `Resolver::resolve_pinned_member`.
+enum PinnedMember {
+    Found(i64, ResolutionKind),
+    /// The pinned type is indexed but neither it nor an ancestor declares the member.
+    Missing,
+    /// No indexed type has the pinned qualname.
+    NoType,
 }
 
 /// One `EXACT_SQL` row.

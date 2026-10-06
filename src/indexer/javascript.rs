@@ -124,6 +124,9 @@ struct Context {
     /// Names this file declares (any function/class/enum/namespace, plus
     /// module-level variables) — see `collect_declared_names`.
     declared_names: Rc<HashSet<String>>,
+    /// Types (class/interface/enum/type alias) declared at this file's top
+    /// level, for pinning a receiver type to this file's own declaration.
+    declared_types: Rc<HashSet<String>>,
     /// Declared return types of this file's functions (`name`) and class
     /// methods (`Class.method`) — see `collect_return_types`. Types a call
     /// result receiver (`make().stage()`) for chained-call resolution.
@@ -149,6 +152,13 @@ const IMPORT_PLACEHOLDER_SEP: char = '\0';
 /// Prefixes a placeholder member for a default import; the local name
 /// follows (`\u{1}api.get`).
 const DEFAULT_IMPORT_MARK: char = '\u{1}';
+
+/// Prefixes a `Known` receiver type pinned to one declaration: the
+/// qualname of the class (`src/node.Node`), which the resolver binds
+/// members against exactly instead of by bare type name. Before
+/// `resolve_import_file_edges` rewrites it, an imported type reads
+/// `\u{2}{local}\u{2}{specifier}\0{member}`.
+pub(crate) const PINNED_TYPE_MARK: char = '\u{2}';
 
 /// Locally-inferred type of a name bound within a single function body (or
 /// module top level). Deliberately coarse — see
@@ -372,6 +382,17 @@ pub fn resolve_import_file_edges(
         }
         if edge.kind == proto::RPC_IMPL_KIND {
             resolve_handler_candidates(edge, &mut rewrite);
+        }
+        if let ReceiverType::Known(ty) = &edge.receiver_type
+            && let Some(pinned) = ty.strip_prefix(PINNED_TYPE_MARK)
+            && let Some((local, placeholder)) = pinned.split_once(PINNED_TYPE_MARK)
+        {
+            // An import that names no repo declaration keeps the type as
+            // written, like an unpinned one.
+            edge.receiver_type = ReceiverType::Known(match rewrite(placeholder) {
+                Some(qualname) => format!("{PINNED_TYPE_MARK}{qualname}"),
+                None => local.to_string(),
+            });
         }
     }
     let mut resolved = Vec::new();
@@ -1342,6 +1363,7 @@ fn extract_with_parser(
         required_names: Rc::new(collect_required_names(root, source)),
         outer_locals: Rc::new(HashSet::new()),
         declared_names: Rc::new(collect_declared_names(root, source)),
+        declared_types: Rc::new(collect_declared_types(root, source)),
         return_types: Rc::new(collect_return_types(root, source)),
         is_esm: is_esm_file(root),
     };
@@ -2495,6 +2517,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     } else {
         (target, receiver_type, import_candidates)
     };
+    let receiver_type = pin_receiver_type(receiver_type, ctx);
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
@@ -2515,6 +2538,63 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         ..Default::default()
     });
     register_handled
+}
+
+/// Pins a known receiver type to the declaration this file means by its
+/// name: an imported type through its import (placeholder, rewritten by
+/// `resolve_import_file_edges`), a top-level type of this file to that
+/// declaration. Any other type stays the bare name.
+fn pin_receiver_type(receiver: ReceiverType, ctx: &Context) -> ReceiverType {
+    let ReceiverType::Known(ty) = &receiver else {
+        return receiver;
+    };
+    if !ty
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+    {
+        return receiver;
+    }
+    if ctx.declared_types.contains(ty) {
+        return ReceiverType::Known(format!("{PINNED_TYPE_MARK}{}.{ty}", ctx.module));
+    }
+    let Some((spec, Some(imported))) = ctx.import_bindings.get(ty) else {
+        return receiver;
+    };
+    let member = if imported == DEFAULT_EXPORT {
+        format!("{DEFAULT_IMPORT_MARK}{ty}")
+    } else {
+        imported.clone()
+    };
+    ReceiverType::Known(format!(
+        "{PINNED_TYPE_MARK}{ty}{PINNED_TYPE_MARK}{spec}{IMPORT_PLACEHOLDER_SEP}{member}"
+    ))
+}
+
+/// Class, interface, enum and type-alias names declared at the top level
+/// (exported or not).
+fn collect_declared_types(root: Node<'_>, source: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        let decl = match stmt.kind() {
+            "export_statement" => stmt.child_by_field_name("declaration"),
+            _ => Some(stmt),
+        };
+        if let Some(decl) = decl
+            && matches!(
+                decl.kind(),
+                "class_declaration"
+                    | "abstract_class_declaration"
+                    | "interface_declaration"
+                    | "enum_declaration"
+                    | "type_alias_declaration"
+            )
+            && let Some(name) = decl.child_by_field_name("name")
+        {
+            names.insert(node_text(name, source));
+        }
+    }
+    names
 }
 
 /// A member call whose text is not a simple dotted path (`a![k].m()`,
@@ -7380,7 +7460,13 @@ export function selfy() { return make().self().stage(1); }
                 .map(|e| (e.target_qualname.clone(), e.receiver_type.clone()))
                 .collect()
         };
-        let known = |q: &str, ty: &str| (Some(q.to_string()), ReceiverType::Known(ty.into()));
+        // Every type here is declared in this file, so it is pinned to it.
+        let known = |q: &str, ty: &str| {
+            (
+                Some(q.to_string()),
+                ReceiverType::Known(format!("\u{2}b.{ty}")),
+            )
+        };
         let unresolved = |q: &str| (Some(q.to_string()), ReceiverType::Unresolved);
 
         let use_c = calls("b.use");
@@ -7694,6 +7780,83 @@ export function Button() {
         assert_eq!(receiver.as_deref(), Some("Trie"));
         let (name, _) = row(6);
         assert!(name.ends_with("trim"), "{name}");
+    }
+
+    fn two_node_repo(trie_source: &str) -> (tempfile::TempDir, Connection) {
+        index_repo(&[
+            (
+                "src/reg/node.ts",
+                "export class Node {\n  insert(p: string) {}\n}\n",
+            ),
+            (
+                "src/trie/node.ts",
+                "export class Node {\n  insert(p: string) {}\n  only(p: string) {}\n}\n",
+            ),
+            ("src/reg/trie.ts", trie_source),
+        ])
+    }
+
+    #[test]
+    fn imported_receiver_type_binds_to_the_imported_class_not_a_same_named_one() {
+        let (_dir, conn) = two_node_repo(
+            "import { Node } from './node'\nexport class Trie {\n  #root: Node = new Node()\n  add(p: string) { this.#root.insert(p) }\n}\n",
+        );
+        assert_eq!(
+            callee(&conn, "src/reg/trie.Trie.add", "insert").as_deref(),
+            Some("src/reg/node.Node.insert")
+        );
+    }
+
+    #[test]
+    fn aliased_and_reexported_receiver_type_follows_the_import() {
+        let (_dir, conn) = index_repo(&[
+            (
+                "src/base.ts",
+                "export class HonoBase {\n  request(p: string) {}\n  get = (p: string) => p\n}\n",
+            ),
+            (
+                "src/hono.ts",
+                "import { HonoBase } from './base'\nexport class Hono extends HonoBase {}\n",
+            ),
+            (
+                "src/other/hono.ts",
+                "export class Hono {\n  request(p: string) {}\n  get = (p: string) => p\n}\n",
+            ),
+            ("src/index.ts", "export { Hono } from './hono'\n"),
+            (
+                "src/use.ts",
+                "import { Hono as App } from './index'\nexport function run(app: App) {\n  app.request('/')\n  app.get('/')\n}\n",
+            ),
+        ]);
+        assert_eq!(
+            callee(&conn, "src/use.run", "request").as_deref(),
+            Some("src/base.HonoBase.request")
+        );
+        assert_eq!(
+            callee(&conn, "src/use.run", "get").as_deref(),
+            Some("src/base.HonoBase.get")
+        );
+    }
+
+    #[test]
+    fn same_file_receiver_type_binds_to_that_files_declaration() {
+        let (_dir, conn) = two_node_repo(
+            "class Node {\n  insert(p: string) {}\n}\nexport function f(n: Node) { n.insert('a') }\n",
+        );
+        assert_eq!(
+            callee(&conn, "src/reg/trie.f", "insert").as_deref(),
+            Some("src/reg/trie.Node.insert")
+        );
+    }
+
+    #[test]
+    fn precise_receiver_type_without_the_member_stays_unresolved() {
+        // `only` exists on the other `Node`; the imported one has no such
+        // member anywhere in its ancestry, so it must not be guessed.
+        let (_dir, conn) = two_node_repo(
+            "import { Node } from './node'\nexport function f(n: Node) { n.only('a') }\n",
+        );
+        assert_eq!(callee(&conn, "src/reg/trie.f", "only"), None);
     }
 
     #[test]
