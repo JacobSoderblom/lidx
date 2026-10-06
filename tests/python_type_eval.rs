@@ -798,3 +798,216 @@ fn mixed_returns_do_not_count_as_returns_self() {
     );
     not_bound(&o);
 }
+
+// ---- a local assigned several times ----------------------------------------
+
+const REBOUND: &[(&str, &str)] = &[
+    ("pkg/__init__.py", ""),
+    (
+        "pkg/things.py",
+        r#"class Widget:
+    def run(self):
+        return 1
+
+
+class Gadget:
+    def run(self):
+        return 2
+
+
+def unknown():
+    return None
+"#,
+    ),
+    (
+        "app.py",
+        r#"from pkg.things import Widget, Gadget, unknown
+
+
+def agree():
+    w = Widget()
+    w.run()
+    w = Widget()
+    w.run()
+
+
+def disagree():
+    w = Widget()
+    w = Gadget()
+    w.run()
+
+
+def one_unknown():
+    w = Widget()
+    w = unknown()
+    w.run()
+
+
+def looped(items):
+    w = Widget()
+    for w in items:
+        pass
+    w.run()
+
+
+def augmented():
+    w = Widget()
+    w += 1
+    w.run()
+"#,
+    ),
+];
+
+#[test]
+fn a_local_assigned_the_same_type_every_time_binds() {
+    let fx = fixture(REBOUND);
+    // Both calls (lines of `w.run()` inside `agree`) bind.
+    let src = REBOUND[2].1;
+    let lines: Vec<i64> = src
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.trim() == "w.run()")
+        .map(|(i, _)| i as i64 + 1)
+        .collect();
+    let agree: Vec<_> = fx
+        .sites
+        .iter()
+        .filter(|(p, _, l, s)| p == "app.py" && *l <= lines[1] && callee_name(s) == Some("run"))
+        .collect();
+    assert_eq!(agree.len(), 2);
+    for (_, module, _, site) in agree {
+        assert_eq!(
+            bound(resolve_site(&fx.table, site, module)),
+            "pkg.things.Widget.run"
+        );
+    }
+}
+
+#[test]
+fn a_local_assigned_different_types_does_not_bind() {
+    let fx = fixture(REBOUND);
+    let src = REBOUND[2].1;
+    let line_of = |func: &str| -> i64 {
+        let start = src.find(&format!("def {func}(")).unwrap();
+        let rest = &src[start..];
+        let at = rest.find("w.run()").unwrap();
+        src[..start + at].matches('\n').count() as i64 + 1
+    };
+    for func in ["disagree", "one_unknown", "looped", "augmented"] {
+        let line = line_of(func);
+        let found: Vec<_> = fx
+            .sites
+            .iter()
+            .filter(|(p, _, l, s)| p == "app.py" && *l == line && callee_name(s) == Some("run"))
+            .collect();
+        assert_eq!(found.len(), 1, "{func}");
+        not_bound(&resolve_site(&fx.table, &found[0].3, &found[0].1));
+    }
+}
+
+// ---- the value a generator receives from `yield` ----------------------------
+
+const SENT: &[(&str, &str)] = &[
+    ("pkg/__init__.py", ""),
+    (
+        "pkg/msgs.py",
+        r#"class Request:
+    pass
+
+
+class Response:
+    def status(self):
+        return 1
+"#,
+    ),
+    (
+        "app.py",
+        r#"import typing
+from typing import Generator, AsyncGenerator
+from pkg.msgs import Request, Response
+
+
+def flow(request: Request) -> typing.Generator[Request, Response, None]:
+    response = yield request
+    response.status()
+
+
+async def aflow(request: Request) -> AsyncGenerator[Request, Response]:
+    response = yield request
+    response.status()
+
+
+def untyped(request: Request):
+    response = yield request
+    response.status()
+
+
+def only_yields(request: Request) -> Generator[Request]:
+    response = yield request
+    response.status()
+"#,
+    ),
+];
+
+#[test]
+fn a_yield_assignment_takes_the_declared_send_type() {
+    let fx = fixture(SENT);
+    let status_at = |func: &str| -> Outcome {
+        let src = SENT[2].1;
+        let start = src.find(&format!("def {func}(")).unwrap();
+        let at = src[start..].find("response.status()").unwrap();
+        let line = src[..start + at].matches('\n').count() as i64 + 1;
+        let found: Vec<_> = fx
+            .sites
+            .iter()
+            .filter(|(p, _, l, s)| p == "app.py" && *l == line && callee_name(s) == Some("status"))
+            .collect();
+        assert_eq!(found.len(), 1, "{func}");
+        resolve_site(&fx.table, &found[0].3, &found[0].1)
+    };
+    assert_eq!(bound(status_at("flow")), "pkg.msgs.Response.status");
+    assert_eq!(bound(status_at("aflow")), "pkg.msgs.Response.status");
+    // Nothing declares what is sent: unknown, never a guess.
+    not_bound(&status_at("untyped"));
+    not_bound(&status_at("only_yields"));
+}
+
+// ---- scripts importing their sibling modules --------------------------------
+
+const SCRIPT_DIR: &[(&str, &str)] = &[
+    (
+        "scripts/main.py",
+        "import util\nfrom util import helper\n\n\ndef start(n):\n    helper(n)\n    util.helper(n)\n",
+    ),
+    ("scripts/util.py", "def helper(x):\n    return x\n"),
+    (
+        "lib/other.py",
+        "import util\n\n\ndef go():\n    util.helper(1)\n",
+    ),
+    // In a regular package a sibling `json.py` does not hijack the stdlib's.
+    ("pkg/__init__.py", ""),
+    ("pkg/json.py", "def dumps(x):\n    return x\n"),
+    (
+        "pkg/main.py",
+        "from json import dumps\n\n\ndef go(n):\n    dumps(n)\n",
+    ),
+];
+
+#[test]
+fn a_script_imports_the_sibling_module_but_not_a_distant_one() {
+    let fx = fixture(SCRIPT_DIR);
+    let at = |path: &str, needle: &str, name: &str| outcome(&fx, path, needle, name, SCRIPT_DIR);
+    assert_eq!(
+        bound(at("scripts/main.py", "    helper(n)", "helper")),
+        "scripts.util.helper"
+    );
+    assert_eq!(
+        bound(at("scripts/main.py", "util.helper(n)", "helper")),
+        "scripts.util.helper"
+    );
+    // `lib/other.py` has no sibling `util`: the import names something
+    // outside the repo, never `scripts.util`.
+    not_bound(&at("lib/other.py", "util.helper(1)", "helper"));
+    // A package's sibling is not importable by its bare name.
+    not_bound(&at("pkg/main.py", "dumps(n)", "dumps"));
+}

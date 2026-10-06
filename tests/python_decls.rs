@@ -401,7 +401,7 @@ fn lowering_covers_await_calls_and_unknowns() {
 }
 
 #[test]
-fn locals_bound_once_are_inlined_and_rebound_are_unknown() {
+fn locals_bound_once_are_inlined_and_rebound_keep_every_value() {
     let d = decls(
         "class K:\n    def __init__(self):\n        once = Foo()\n        twice = A()\n        twice = B()\n        self.x = once\n        self.y = twice\n        for it in items:\n            self.z = it\n",
     );
@@ -410,7 +410,13 @@ fn locals_bound_once_are_inlined_and_rebound_are_unknown() {
         other => panic!("{other:?}"),
     };
     assert_eq!(v("x"), PyExpr::Call(Box::new(PyExpr::Name("Foo".into()))));
-    assert_eq!(v("y"), PyExpr::Unknown(Why::Rebound));
+    assert_eq!(
+        v("y"),
+        PyExpr::Agree(vec![
+            PyExpr::Call(Box::new(PyExpr::Name("A".into()))),
+            PyExpr::Call(Box::new(PyExpr::Name("B".into()))),
+        ])
+    );
     assert_eq!(v("z"), PyExpr::Unknown(Why::LoopVar));
 }
 

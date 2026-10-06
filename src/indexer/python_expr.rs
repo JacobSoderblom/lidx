@@ -65,6 +65,10 @@ pub enum PyExpr {
         #[serde(rename = "c")]
         class: String,
     },
+    /// A name bound by several plain assignments in one scope: evaluates to
+    /// a value only when every binding's value is the same.
+    #[serde(rename = "g")]
+    Agree(Vec<PyExpr>),
     #[serde(rename = "?")]
     Unknown(Why),
 }

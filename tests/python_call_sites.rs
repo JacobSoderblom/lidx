@@ -214,13 +214,15 @@ fn super_call_is_a_super_of_the_class() {
 }
 
 #[test]
-fn rebound_local_is_unknown() {
+fn local_assigned_several_times_agrees_or_is_unknown() {
     let src =
         "def f():\n    x = A()\n    x = B()\n    x.run()\n    y = A()\n    y += 1\n    y.run2()\n";
+    // Plain assignments are all kept: evaluation binds only if they agree.
     assert_eq!(
         site(src, "x.run", "run").callee,
-        attr(unknown(Why::Rebound), "run")
+        attr(PyExpr::Agree(vec![call(n("A")), call(n("B"))]), "run")
     );
+    // An augmented assignment is a rebinding nothing can follow.
     assert_eq!(
         site(src, "y.run2", "run2").callee,
         attr(unknown(Why::Rebound), "run2")
@@ -311,9 +313,10 @@ fn module_level_single_binding_is_inlined() {
         site(src, "client.get", "get").callee,
         attr(call(attr(n("httpx"), "Client")), "get")
     );
+    // Both assignments are literals: they collapse to one unknown value.
     assert_eq!(
         site(src, "other.m", "m").callee,
-        attr(unknown(Why::Rebound), "m")
+        attr(unknown(Why::Literal), "m")
     );
 }
 

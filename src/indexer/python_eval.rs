@@ -200,7 +200,65 @@ impl PyTypeTable {
             }
         }
         t.files = files;
+        t.absolutize_sibling_imports();
         t
+    }
+
+    /// An absolute `import util` / `from util import f` in a script run from
+    /// its own directory (`sys.path[0]`, a directory without an `__init__`)
+    /// names the sibling module: when no top-level module is called `util`
+    /// but the importing file's directory has one, the import means that
+    /// one. Rewrites those imports' targets.
+    fn absolutize_sibling_imports(&mut self) {
+        type Rewrites = Vec<(usize, String)>;
+        let mut fixes: Vec<(usize, Rewrites, Rewrites)> = Vec::new();
+        for (fi, file) in self.files.iter().enumerate() {
+            let package = if file.is_package {
+                continue;
+            } else {
+                match file.module.rsplit_once('.') {
+                    Some((p, _)) => p,
+                    None => continue,
+                }
+            };
+            // A regular package (one with an `__init__`) is imported as a
+            // package, where a bare `import util` is the top-level `util`.
+            if self.modules.contains_key(package) {
+                continue;
+            }
+            let rewrite = |target: &str| -> Option<String> {
+                let first = target.split('.').next()?;
+                if self.is_module(first) {
+                    return None;
+                }
+                let sibling = format!("{package}.{first}");
+                self.is_module(&sibling)
+                    .then(|| format!("{package}.{target}"))
+            };
+            let imports: Vec<(usize, String)> = file
+                .imports
+                .iter()
+                .enumerate()
+                .filter_map(|(i, imp)| rewrite(&imp.target).map(|t| (i, t)))
+                .collect();
+            let stars: Vec<(usize, String)> = file
+                .star_imports
+                .iter()
+                .enumerate()
+                .filter_map(|(i, st)| rewrite(st).map(|t| (i, t)))
+                .collect();
+            if !imports.is_empty() || !stars.is_empty() {
+                fixes.push((fi, imports, stars));
+            }
+        }
+        for (fi, imports, stars) in fixes {
+            for (i, target) in imports {
+                self.files[fi].imports[i].target = target;
+            }
+            for (i, target) in stars {
+                self.files[fi].star_imports[i] = target;
+            }
+        }
     }
 
     pub fn from_loaded(files: &[PyLoadedFile]) -> Self {
@@ -507,6 +565,14 @@ impl<'a> PyEval<'a> {
         match e {
             PyExpr::Name(n) => self.lookup_name(module, n),
             PyExpr::Imported(target) => self.imported(target),
+            PyExpr::Agree(values) => {
+                let vals: Vec<Value> = values.iter().map(|v| self.type_of(v, module)).collect();
+                match all_same(vals) {
+                    Some(Value::Unknown(w)) => Value::Unknown(w),
+                    Some(v) => v,
+                    None => Value::Unknown(Why::Disagree),
+                }
+            }
             PyExpr::Declared(tr) => self.ty_value(tr, module, None),
             PyExpr::SelfRef { class, cls } => {
                 if self.t.class_decl(class).is_none() {

@@ -40,6 +40,9 @@ enum Binding<'t> {
     SelfParam,
     /// Bound exactly once by a simple assignment (or walrus) to this value.
     Once(Node<'t>),
+    /// Bound several times, every time by a simple assignment: the value is
+    /// known only when all of them agree (evaluation decides).
+    Many(Vec<Node<'t>>),
     /// Bound exactly once as the `as` target of a `with`.
     Enter(Node<'t>, bool),
     /// Annotated: the annotation wins over any value.
@@ -73,6 +76,9 @@ pub struct Scope<'t> {
     /// The scope this one sits in: closure names of a nested `def`, the
     /// enclosing function of a lambda or comprehension.
     outer: Option<Rc<Scope<'t>>>,
+    /// What a `yield` in this function evaluates to: the send type of its
+    /// `Generator[Y, S, R]` / `AsyncGenerator[Y, S]` return annotation.
+    yield_send: Option<PyTypeRef>,
 }
 
 impl<'t> Scope<'t> {
@@ -84,6 +90,7 @@ impl<'t> Scope<'t> {
             is_class_body: false,
             bindings: HashMap::new(),
             outer: None,
+            yield_send: None,
         }
     }
 
@@ -158,6 +165,9 @@ impl<'t> Scope<'t> {
             is_class_body: false,
             bindings: HashMap::new(),
             outer: None,
+            yield_send: func
+                .child_by_field_name("return_type")
+                .and_then(|t| yield_send_type(lower_type(t, source))),
         };
         let mut first = true;
         if let Some(params) = func.child_by_field_name("parameters") {
@@ -278,6 +288,7 @@ impl<'t> Scope<'t> {
                 is_cls: scope.is_cls,
                 is_class_body: false,
                 bindings,
+                yield_send: scope.yield_send.clone(),
                 outer: Some(scope),
             });
         }
@@ -296,6 +307,15 @@ fn bind<'t>(bindings: &mut HashMap<String, Binding<'t>>, name: String, binding: 
         | (Some(Binding::ModuleImport(a)), Binding::ModuleImport(b))
             if a == b => {}
         (Some(Binding::Free), Binding::Free) => {}
+        (Some(Binding::Once(a)), Binding::Once(b)) => {
+            let many = Binding::Many(vec![*a, *b]);
+            bindings.insert(name, many);
+        }
+        (Some(Binding::Many(_)), Binding::Once(b)) => {
+            if let Some(Binding::Many(nodes)) = bindings.get_mut(&name) {
+                nodes.push(*b);
+            }
+        }
         (Some(_), _) => {
             bindings.insert(name, Binding::Unknown(Why::Rebound));
         }
@@ -625,8 +645,23 @@ fn lower(
         | "set_comprehension"
         | "dictionary_comprehension"
         | "generator_expression" => PyExpr::Unknown(Why::Comprehension),
-        "yield" => PyExpr::Unknown(Why::Yield),
+        "yield" => match &scope.yield_send {
+            Some(send) => PyExpr::Declared(send.clone()),
+            None => PyExpr::Unknown(Why::Yield),
+        },
         _ => PyExpr::Unknown(Why::Complex),
+    }
+}
+
+/// The send type of a generator return annotation: the second argument of
+/// `Generator[Y, S, R]` or `AsyncGenerator[Y, S]` (any module prefix).
+fn yield_send_type(ret: PyTypeRef) -> Option<PyTypeRef> {
+    let PyTypeRef::Name { path, mut args } = ret else {
+        return None;
+    };
+    match path.last().map(String::as_str) {
+        Some("Generator" | "AsyncGenerator") if args.len() >= 2 => Some(args.swap_remove(1)),
+        _ => None,
     }
 }
 
@@ -652,6 +687,20 @@ fn lower_name(
         Binding::Param(Some(ty)) | Binding::Declared(ty) => PyExpr::Declared(ty.clone()),
         Binding::Param(None) => PyExpr::Unknown(Why::Untracked),
         Binding::Once(value) => lower(*value, source, owner, depth + 1, budget),
+        Binding::Many(values) => {
+            let mut lowered: Vec<PyExpr> = Vec::new();
+            for value in values {
+                let e = lower(*value, source, owner, depth + 1, budget);
+                if !lowered.contains(&e) {
+                    lowered.push(e);
+                }
+            }
+            if lowered.len() == 1 {
+                lowered.remove(0)
+            } else {
+                PyExpr::Agree(lowered)
+            }
+        }
         Binding::Enter(value, is_async) => PyExpr::Enter {
             value: Box::new(lower(*value, source, owner, depth + 1, budget)),
             is_async: *is_async,
