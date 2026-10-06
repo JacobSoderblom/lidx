@@ -62,7 +62,7 @@
         "url": "https://github.com/honojs/hono",
         "commit": "5f36607f67aa9357887337328ac84a1c1d48dc04"
       },
-      "question": "What does `serveStatic` in `src/middleware/serve-static/index.ts` reach downstream within 2 calls? List the functions it calls (directly or through one intermediate call), with file and line of each declaration."
+      "question": "Within 2 calls, which functions declared in `src/utils/url.ts`, `src/utils/mime.ts` and `src/middleware/serve-static/path.ts` does `serveStatic` in `src/middleware/serve-static/index.ts` reach (directly or through one intermediate call)? List them with file and line of each declaration."
     },
     {
       "id": "derived:py-callers-baseclient-build-request",
@@ -89,7 +89,7 @@
         "url": "https://github.com/encode/httpx",
         "commit": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
       },
-      "question": "What does the synchronous `Client.send` in `httpx/_client.py` reach downstream within 3 calls? List the synchronous-path functions and methods it ends up calling, with file and line of each declaration (ignore the async twins)."
+      "question": "Within 3 calls, which of the functions and methods that the synchronous `Client.send` in `httpx/_client.py` reaches implement the request pipeline itself (authentication handling, redirect handling, the single-request send, building the redirect request, and the auth flow generator)? List those synchronous-path declarations with file and line (ignore the async twins and small helpers such as timeout or body-reading utilities)."
     }
   ]
 }
