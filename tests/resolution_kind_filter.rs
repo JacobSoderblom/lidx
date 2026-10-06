@@ -2,15 +2,14 @@
 //! `trace_flow` and `analyze_impact`.
 //!
 //! The filtered-vs-unfiltered scenario reuses `tests/fixtures/golden/python`
-//! plus the same `worker.py` incremental addition
-//! `tests/golden_python.rs`'s `incremental_add_file_resolves_previously_unresolved_name`
-//! test uses: before `worker.py` exists, `bare_call_method.bare_caller`'s
-//! bare `process()` call is UNRESOLVED (its only same-named candidate,
-//! `Widget.process`, is a method the bare-call guard refuses). Once
-//! `worker.py` exists, the guarded name-fallback tier binds it via
-//! `bare_name` -- the one heuristic CALLS edge this fixture produces at
-//! all, computed from the graph itself below rather than hardcoded, so a
+//! plus two TypeScript files added incrementally (a CommonJS-style owner and
+//! a caller whose `require` is not an import binding): the caller's bare
+//! `helperOne()` reaches the guarded name-fallback tier and binds via
+//! `bare_name` -- the one heuristic CALLS edge this fixture produces at all,
+//! computed from the graph itself below rather than hardcoded, so a
 //! resolver change that shifts which edge is heuristic here fails loudly.
+//! (Python no longer has a name-guess tier: its calls bind only through the
+//! declared-type evaluator, so this scenario cannot be built in Python.)
 //!
 //! The lower-bound scenario uses the base fixture's own permanently
 //! unresolved reference (`caller.call_ambiguous`, an ambiguous bare `run`)
@@ -24,23 +23,37 @@ use lidx::rpc;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-const WORKER_SOURCE: &str = "\
-def process() -> str:
-    # Top-level function, not a method: the name-fallback tier's first
-    # legal candidate for bare_call_method.bare_caller's bare call.
-    return \"worker\"
+const OWNER_SOURCE: &str = "\
+function helperOne(): string {
+  return \"one\";
+}
+module.exports = { helperOne };
 ";
 
-/// Reindex golden/python, then add and sync `worker.py` -- the state where
-/// `bare_call_method.bare_caller CALLS worker.process` resolves via the
-/// `bare_name` tier. Returns the temp dir guard, repo root and db path;
+const CALLER_SOURCE: &str = "\
+const { helperOne } = require(\"./heuristicOwner\");
+
+export function heuristicCaller(): string {
+  return helperOne();
+}
+";
+
+/// Reindex golden/python, then add and sync the two TypeScript files -- the
+/// state where `heuristicCaller.heuristicCaller CALLS heuristicOwner.helperOne`
+/// resolves via the `bare_name` tier. Returns the temp dir guard, repo root and db path;
 /// keep the guard bound for as long as the paths are used.
-fn setup_with_worker_added() -> (tempfile::TempDir, PathBuf, PathBuf) {
+fn setup_with_heuristic_edge() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let (tmp, repo_root, db_path) = common::setup_repo("golden/python");
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer.reindex().unwrap();
-    std::fs::write(repo_root.join("worker.py"), WORKER_SOURCE).unwrap();
-    indexer.sync_rel_paths(&["worker.py".to_string()]).unwrap();
+    std::fs::write(repo_root.join("heuristicOwner.ts"), OWNER_SOURCE).unwrap();
+    std::fs::write(repo_root.join("heuristicCaller.ts"), CALLER_SOURCE).unwrap();
+    indexer
+        .sync_rel_paths(&[
+            "heuristicOwner.ts".to_string(),
+            "heuristicCaller.ts".to_string(),
+        ])
+        .unwrap();
     (tmp, repo_root, db_path)
 }
 
@@ -85,7 +98,7 @@ fn impact_affected_qualnames(result: &Value) -> Vec<String> {
 }
 
 /// The one heuristic (`bare_name`/`two_segment`) CALLS edge present once
-/// `worker.py` is added -- read straight off the graph snapshot, not
+/// `the TypeScript files are added -- read straight off the graph snapshot, not
 /// hardcoded, and asserted to be exactly this fixture's known shape.
 fn the_heuristic_edge(db: &lidx::db::Db, graph_version: i64) -> golden::EdgeKey {
     let snapshot = golden::snapshot_edges(db, graph_version).unwrap();
@@ -102,18 +115,21 @@ fn the_heuristic_edge(db: &lidx::db::Db, graph_version: i64) -> golden::EdgeKey 
     assert_eq!(
         heuristic.len(),
         1,
-        "expected exactly one heuristic CALLS edge once worker.py is added, got {:?}",
+        "expected exactly one heuristic CALLS edge once the TypeScript files are added, got {:?}",
         heuristic
     );
     let edge = heuristic[0].clone();
-    assert_eq!(edge.source_qualname, "bare_call_method.bare_caller");
-    assert_eq!(edge.target_qualname.as_deref(), Some("worker.process"));
+    assert_eq!(edge.source_qualname, "heuristicCaller.heuristicCaller");
+    assert_eq!(
+        edge.target_qualname.as_deref(),
+        Some("heuristicOwner.helperOne")
+    );
     edge
 }
 
 #[test]
 fn filtered_trace_flow_excludes_exactly_the_heuristic_edge() {
-    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+    let (_tmp, repo_root, db_path) = setup_with_heuristic_edge();
     let target = {
         let indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
         let graph_version = indexer.db().current_graph_version().unwrap();
@@ -126,13 +142,13 @@ fn filtered_trace_flow_excludes_exactly_the_heuristic_edge() {
         &repo_root,
         &db_path,
         "trace_flow",
-        r#"{"start_qualname":"bare_call_method.bare_caller","direction":"downstream","kinds":["CALLS"]}"#,
+        r#"{"start_qualname":"heuristicCaller.heuristicCaller","direction":"downstream","kinds":["CALLS"]}"#,
     );
     let filtered = call(
         &repo_root,
         &db_path,
         "trace_flow",
-        r#"{"start_qualname":"bare_call_method.bare_caller","direction":"downstream","kinds":["CALLS"],
+        r#"{"start_qualname":"heuristicCaller.heuristicCaller","direction":"downstream","kinds":["CALLS"],
             "exclude_resolution_kinds":["bare_name","two_segment"]}"#,
     );
 
@@ -165,7 +181,7 @@ fn filtered_trace_flow_excludes_exactly_the_heuristic_edge() {
 
 #[test]
 fn filtered_analyze_impact_excludes_exactly_the_heuristic_edge() {
-    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+    let (_tmp, repo_root, db_path) = setup_with_heuristic_edge();
     let target = {
         let indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
         let graph_version = indexer.db().current_graph_version().unwrap();
@@ -178,13 +194,13 @@ fn filtered_analyze_impact_excludes_exactly_the_heuristic_edge() {
         &repo_root,
         &db_path,
         "analyze_impact",
-        r#"{"qualname":"bare_call_method.bare_caller","direction":"downstream","kinds":["CALLS"]}"#,
+        r#"{"qualname":"heuristicCaller.heuristicCaller","direction":"downstream","kinds":["CALLS"]}"#,
     );
     let filtered = call(
         &repo_root,
         &db_path,
         "analyze_impact",
-        r#"{"qualname":"bare_call_method.bare_caller","direction":"downstream","kinds":["CALLS"],
+        r#"{"qualname":"heuristicCaller.heuristicCaller","direction":"downstream","kinds":["CALLS"],
             "exclude_resolution_kinds":["bare_name","two_segment"]}"#,
     );
 
@@ -217,13 +233,13 @@ fn filtered_analyze_impact_excludes_exactly_the_heuristic_edge() {
 
 #[test]
 fn trace_flow_next_hops_suggest_filtered_and_unfiltered_variants() {
-    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+    let (_tmp, repo_root, db_path) = setup_with_heuristic_edge();
 
     let unfiltered = call(
         &repo_root,
         &db_path,
         "trace_flow",
-        r#"{"start_qualname":"bare_call_method.bare_caller","direction":"downstream","kinds":["CALLS"]}"#,
+        r#"{"start_qualname":"heuristicCaller.heuristicCaller","direction":"downstream","kinds":["CALLS"]}"#,
     );
     let hops = unfiltered["next_hops"].as_array().unwrap();
     assert!(
@@ -237,7 +253,7 @@ fn trace_flow_next_hops_suggest_filtered_and_unfiltered_variants() {
         &repo_root,
         &db_path,
         "trace_flow",
-        r#"{"start_qualname":"bare_call_method.bare_caller","direction":"downstream","kinds":["CALLS"],
+        r#"{"start_qualname":"heuristicCaller.heuristicCaller","direction":"downstream","kinds":["CALLS"],
             "exclude_resolution_kinds":["bare_name"]}"#,
     );
     let hops = filtered["next_hops"].as_array().unwrap();
@@ -325,23 +341,23 @@ fn analyze_impact_lower_bound_set_only_when_traversed_symbol_has_pending_unresol
 /// exactly as before issue #81.
 #[test]
 fn omitting_exclude_resolution_kinds_keeps_default_behaviour() {
-    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+    let (_tmp, repo_root, db_path) = setup_with_heuristic_edge();
 
     let result = call(
         &repo_root,
         &db_path,
         "trace_flow",
-        r#"{"start_qualname":"bare_call_method.bare_caller","direction":"downstream","kinds":["CALLS"]}"#,
+        r#"{"start_qualname":"heuristicCaller.heuristicCaller","direction":"downstream","kinds":["CALLS"]}"#,
     );
-    assert!(trace_hop_qualnames(&result).contains(&"worker.process".to_string()));
+    assert!(trace_hop_qualnames(&result).contains(&"heuristicOwner.helperOne".to_string()));
 
     let result = call(
         &repo_root,
         &db_path,
         "analyze_impact",
-        r#"{"qualname":"bare_call_method.bare_caller","direction":"downstream","kinds":["CALLS"]}"#,
+        r#"{"qualname":"heuristicCaller.heuristicCaller","direction":"downstream","kinds":["CALLS"]}"#,
     );
-    assert!(impact_affected_qualnames(&result).contains(&"worker.process".to_string()));
+    assert!(impact_affected_qualnames(&result).contains(&"heuristicOwner.helperOne".to_string()));
 }
 
 /// Issue #81 (R1): `analyze_impact`'s test layer (`impact/layers/test.rs`'s
@@ -352,21 +368,20 @@ fn omitting_exclude_resolution_kinds_keeps_default_behaviour() {
 /// with that resolution kind excluded.
 #[test]
 fn test_layer_honors_resolution_kind_filter() {
-    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+    let (_tmp, repo_root, db_path) = setup_with_heuristic_edge();
 
-    // `from worker import *` never populates import candidates for `process`
-    // (a star import), so the bare `process()` call inside `test_alpha`
-    // resolves via the guarded name-fallback tier, same shape as
-    // `bare_call_method.bare_caller`'s heuristic edge above.
+    // `require` is not an import binding, so the bare `helperOne()` call
+    // inside `testAlpha` resolves via the guarded name-fallback tier, same
+    // shape as `heuristicCaller`'s heuristic edge above.
     std::fs::create_dir_all(repo_root.join("tests")).unwrap();
     std::fs::write(
-        repo_root.join("tests").join("test_zzz.py"),
-        "from worker import *\n\ndef test_alpha():\n    process()\n",
+        repo_root.join("tests").join("test_zzz.ts"),
+        "const { helperOne } = require(\"../heuristicOwner\");\n\nexport function testAlpha(): string {\n  return helperOne();\n}\n",
     )
     .unwrap();
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer
-        .sync_rel_paths(&["tests/test_zzz.py".to_string()])
+        .sync_rel_paths(&["tests/test_zzz.ts".to_string()])
         .unwrap();
     drop(indexer);
 
@@ -374,11 +389,11 @@ fn test_layer_honors_resolution_kind_filter() {
         &repo_root,
         &db_path,
         "analyze_impact",
-        r#"{"qualname":"worker.process","direction":"upstream"}"#,
+        r#"{"qualname":"heuristicOwner.helperOne","direction":"upstream"}"#,
     );
     let unfiltered_affected = impact_affected_qualnames(&unfiltered);
     assert!(
-        unfiltered_affected.contains(&"tests.test_zzz.test_alpha".to_string()),
+        unfiltered_affected.contains(&"tests/test_zzz.testAlpha".to_string()),
         "precondition: unfiltered upstream impact must find the test via the call-based \
          test layer, got {:?}",
         unfiltered_affected
@@ -388,12 +403,12 @@ fn test_layer_honors_resolution_kind_filter() {
         &repo_root,
         &db_path,
         "analyze_impact",
-        r#"{"qualname":"worker.process","direction":"upstream",
+        r#"{"qualname":"heuristicOwner.helperOne","direction":"upstream",
             "exclude_resolution_kinds":["bare_name","two_segment"]}"#,
     );
     let filtered_affected = impact_affected_qualnames(&filtered);
     assert!(
-        !filtered_affected.contains(&"tests.test_zzz.test_alpha".to_string()),
+        !filtered_affected.contains(&"tests/test_zzz.testAlpha".to_string()),
         "R1: the test layer must also refuse a heuristically-resolved CALLS edge once \
          excluded, got {:?}",
         filtered_affected
@@ -408,13 +423,13 @@ fn test_layer_honors_resolution_kind_filter() {
 /// `resolve_symbol` already resolved the query to.
 #[test]
 fn trace_flow_query_started_retry_hop_is_followable() {
-    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+    let (_tmp, repo_root, db_path) = setup_with_heuristic_edge();
 
     let result = call(
         &repo_root,
         &db_path,
         "trace_flow",
-        r#"{"query":"bare_caller","direction":"downstream","kinds":["CALLS"]}"#,
+        r#"{"query":"heuristicCaller","direction":"downstream","kinds":["CALLS"]}"#,
     );
     let hops = result["next_hops"].as_array().unwrap();
     let hop = hops
@@ -451,15 +466,15 @@ fn trace_flow_query_started_retry_hop_is_followable() {
 /// toggled.
 #[test]
 fn trace_flow_retry_hop_preserves_end_kinds_max_hops_and_snippets() {
-    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+    let (_tmp, repo_root, db_path) = setup_with_heuristic_edge();
 
     let result = call(
         &repo_root,
         &db_path,
         "trace_flow",
-        r#"{"start_qualname":"bare_call_method.bare_caller","end_qualname":"worker.process",
+        r#"{"start_qualname":"heuristicCaller.heuristicCaller","end_qualname":"heuristicOwner.helperOne",
             "direction":"downstream","kinds":["CALLS"],"max_hops":3,"include_snippets":false,
-            "languages":["python"]}"#,
+            "languages":["typescript"]}"#,
     );
     let hops = result["next_hops"].as_array().unwrap();
     let hop = hops
@@ -469,11 +484,17 @@ fn trace_flow_retry_hop_preserves_end_kinds_max_hops_and_snippets() {
         })
         .unwrap_or_else(|| panic!("expected an exclude-heuristics retry hop, got {:?}", hops));
 
-    assert_eq!(hop["params"]["end_qualname"], Value::from("worker.process"));
+    assert_eq!(
+        hop["params"]["end_qualname"],
+        Value::from("heuristicOwner.helperOne")
+    );
     assert_eq!(hop["params"]["kinds"], serde_json::json!(["CALLS"]));
     assert_eq!(hop["params"]["max_hops"], Value::from(3));
     assert_eq!(hop["params"]["include_snippets"], Value::from(false));
-    assert_eq!(hop["params"]["languages"], serde_json::json!(["python"]));
+    assert_eq!(
+        hop["params"]["languages"],
+        serde_json::json!(["typescript"])
+    );
 }
 
 /// Issue #81 (R4): an `analyze_impact` retry hop used to keep only
@@ -483,13 +504,13 @@ fn trace_flow_retry_hop_preserves_end_kinds_max_hops_and_snippets() {
 /// with only the filter toggled.
 #[test]
 fn analyze_impact_retry_hop_preserves_max_depth_kinds_include_tests_and_layer_config() {
-    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+    let (_tmp, repo_root, db_path) = setup_with_heuristic_edge();
 
     let result = call(
         &repo_root,
         &db_path,
         "analyze_impact",
-        r#"{"qualname":"bare_call_method.bare_caller","direction":"downstream","kinds":["CALLS"],
+        r#"{"qualname":"heuristicCaller.heuristicCaller","direction":"downstream","kinds":["CALLS"],
             "max_depth":2,"include_tests":true,"enable_historical":false}"#,
     );
     let hops = result["next_hops"].as_array().unwrap();
@@ -502,7 +523,7 @@ fn analyze_impact_retry_hop_preserves_max_depth_kinds_include_tests_and_layer_co
 
     assert_eq!(
         hop["params"]["qualname"],
-        Value::from("bare_call_method.bare_caller")
+        Value::from("heuristicCaller.heuristicCaller")
     );
     assert_eq!(hop["params"]["max_depth"], Value::from(2));
     assert_eq!(hop["params"]["kinds"], serde_json::json!(["CALLS"]));
@@ -568,13 +589,13 @@ fn exclude_resolution_kinds_rejects_unknown_values() {
 /// zero-result recovery hops, or following them silently widens it.
 #[test]
 fn analyze_impact_recovery_hops_keep_the_filter() {
-    let (_tmp, repo_root, db_path) = setup_with_worker_added();
+    let (_tmp, repo_root, db_path) = setup_with_heuristic_edge();
 
     let result = call(
         &repo_root,
         &db_path,
         "analyze_impact",
-        r#"{"qualname":"worker.process","direction":"downstream","exclude_resolution_kinds":["bare_name"]}"#,
+        r#"{"qualname":"heuristicOwner.helperOne","direction":"downstream","exclude_resolution_kinds":["bare_name"]}"#,
     );
     let hops = result["next_hops"]
         .as_array()

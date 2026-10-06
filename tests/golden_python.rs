@@ -69,34 +69,16 @@ fn add_entry_parameter(root: &std::path::Path) {
 }
 
 /// A new file this suite's add-file test (issue #77) introduces: a
-/// top-level (non-method) `process`, giving the guarded name-fallback
-/// tier a legal candidate for `bare_call_method.bare_caller`'s bare
-/// `process()` call -- see `bare_call_method.py`'s own docstring for why
-/// that call stays UNRESOLVED without it (the only other `process` in the
-/// fixture is a method, which the bare-call guard refuses).
+/// top-level (non-method) `process` that `bare_call_method.bare_caller`'s
+/// bare `process()` call does NOT import. Python binds a free name only
+/// through the module's own definitions, its imports and builtins, so the
+/// call must stay UNRESOLVED (there is no repo-wide name guess).
 const WORKER_SOURCE: &str = "\
 def process() -> str:
     # Top-level function, not a method: the name-fallback tier's first
     # legal candidate for bare_call_method.bare_caller's bare call.
     return \"worker\"
 ";
-
-/// `expected_edges()`, with `bare_call_method.bare_caller`'s line
-/// (UNRESOLVED before `worker.py` exists) retargeted to `worker.process`
-/// via the `bare_name` tier.
-fn expected_edges_after_worker_added() -> Vec<ExpectedEdge> {
-    let mut edges = expected_edges();
-    for edge in &mut edges {
-        if edge.key.source_qualname == "bare_call_method.bare_caller"
-            && edge.key.kind == "CALLS"
-            && edge.key.target_qualname.is_none()
-        {
-            edge.key.target_qualname = Some("worker.process".to_string());
-            edge.key.resolution_kind = Some("bare_name".to_string());
-        }
-    }
-    edges
-}
 
 /// The extra call this test (see below) gives `downstream.py`, purely in
 /// its temp-repo copy -- never in the checked-in fixture, so it can't
@@ -421,20 +403,14 @@ fn incremental_delete_file_leaves_no_dangling_or_wrong_targets() {
 }
 
 /// Incremental scenario (issue #77): add a new file (`worker.py`)
-/// defining a symbol that an existing call site could not previously
-/// resolve to anything -- `bare_call_method.bare_caller`'s bare
-/// `process()` call, UNRESOLVED in the base fixture because the only
-/// other `process` in the repo is a method (see `bare_call_method.py`'s
-/// docstring) -- then sync just that path.
-///
-/// Exercises the same store-driven repair pass
-/// (`Db::repair_unresolved`, run by `Indexer::sync_abs_paths`
-/// after every sync that touches a file) as the edit-callee test above,
-/// but from the opposite direction: instead of an existing target
-/// surviving a sync of its own file, a previously-unresolved *caller*
-/// (never resynced itself) picks up a brand new target once one exists.
+/// defining a same-named symbol an existing unresolved call site does not
+/// import -- `bare_call_method.bare_caller`'s bare `process()` call -- then
+/// sync just that path. The call stays UNRESOLVED (before the Python
+/// declared-type evaluator, the guarded name fallback bound it to
+/// `worker.process`, a guess Python's own scoping rules refuse), and the
+/// result still equals a fresh index.
 #[test]
-fn incremental_add_file_resolves_previously_unresolved_name() {
+fn incremental_add_unimported_same_named_file_leaves_python_call_unresolved() {
     let (_tmp, repo_root, db_path) = common::setup_repo("golden/python");
     let mut indexer = Indexer::new(repo_root.clone(), db_path.clone()).unwrap();
     indexer.reindex().unwrap();
@@ -464,21 +440,16 @@ fn incremental_add_file_resolves_previously_unresolved_name() {
     common::assert_no_dangling_edge_targets(indexer.db());
 
     let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
-    let report = golden::compare(
-        &snapshot,
-        &expected_edges_after_worker_added(),
-        &fixture_modules(),
-    );
+    let report = golden::compare(&snapshot, &expected_edges(), &fixture_modules());
     report.assert_floors("python (post-add)", PRECISION_FLOOR, RECALL_FLOOR);
     golden::print_unresolved_summary(indexer.db(), graph_version, "python (post-add)");
 
-    // The targeted retry (`Db::retry_unresolved_references`) must have
-    // resolved bare_caller's call via `worker.process` and removed exactly
-    // its own row -- leaving the store, not just its edge.
+    // The unimported `worker.process` satisfies nothing: bare_caller's row
+    // stays in the store.
     assert_eq!(
         no_candidates_count(indexer.db()),
-        before_count - 1,
-        "worker.process must satisfy exactly bare_caller's stored reference"
+        before_count,
+        "an unimported same-named function must not satisfy bare_caller's reference"
     );
 
     let fresh = common::fresh_reindex_snapshot("golden/python", |root| {

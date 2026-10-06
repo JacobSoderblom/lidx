@@ -85,19 +85,20 @@ fn assert_stays_unresolved(conn: &rusqlite::Connection, target_qualname: &str, g
         "a builtin/unresolved receiver type must never bind to a repo symbol, \
          and CALLS isn't a Bridge Edge kind, so no edge at all must exist"
     );
-    let (receiver_type, reason): (Option<String>, String) = conn
+    let (deferred_kind, reason): (Option<String>, String) = conn
         .query_row(
-            "SELECT receiver_type, reason FROM unresolved_references
+            "SELECT deferred_kind, reason FROM unresolved_references
              WHERE edge_kind = 'CALLS' AND reference_name = ? AND graph_version = ?",
             params![target_qualname, graph_version],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
+    // The `""` receiver marker is gone: the row carries its lowered call
+    // site instead, and the evaluator refuses the unknown receiver.
     assert_eq!(
-        receiver_type.as_deref(),
-        Some(""),
-        "a builtin/unresolved receiver type must still be recorded as tracked-but-unresolved \
-         (empty string), not left as NULL (not-tracked)"
+        deferred_kind.as_deref(),
+        Some("py"),
+        "the unresolved row must keep its lowered call site"
     );
     assert_eq!(reason, "external");
 }
@@ -160,23 +161,19 @@ fn annotated_parameter_call_resolves_via_receiver_type() {
         .expect("EventStore.append must be indexed");
 
     let conn = indexer.db().read_conn().unwrap();
-    let (target_symbol_id, receiver_type, resolution_kind): (
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-    ) = conn
-        .query_row(
-            "SELECT target_symbol_id, receiver_type, resolution_kind FROM edges
+    let (target_symbol_id, site, resolution_kind): (Option<i64>, Option<String>, Option<String>) =
+        conn.query_row(
+            "SELECT target_symbol_id, deferred, resolution_kind FROM edges
              WHERE kind = 'CALLS' AND target_qualname = 'event_store.append' AND graph_version = ?",
             params![gv],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
 
-    assert_eq!(
-        receiver_type.as_deref(),
-        Some("EventStore"),
-        "the annotated parameter's type must be captured on the edge"
+    // The receiver type now lives in the lowered call site (`Declared`).
+    assert!(
+        site.as_deref().is_some_and(|d| d.contains("EventStore")),
+        "the annotated parameter's type must be captured in the edge's call site: {site:?}"
     );
     assert_eq!(
         target_symbol_id,

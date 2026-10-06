@@ -17,7 +17,8 @@ type Fixture = (tempfile::TempDir, PathBuf, PathBuf);
 fn setup() -> Fixture {
     let mut hub = String::new();
     let mut callers = String::new();
-    hub.push_str("def hub_root():\n");
+    // A Python call binds through imports: the hub star-imports its leaves.
+    hub.push_str("from leaves import *\n\n\ndef hub_root():\n");
     for i in 0..FANOUT {
         hub.push_str(&format!("    leaf_function_number_{i:03}()\n"));
         callers.push_str(&format!(

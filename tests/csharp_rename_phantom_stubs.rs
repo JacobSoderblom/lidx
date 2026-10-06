@@ -403,11 +403,13 @@ fn repair_pass_invents_no_stub_for_a_repo_namespace_or_receiver_text() {
 // Unresolved reason: carried/repair path == fresh parse
 // ---------------------------------------------------------------------
 
-const PY_CALLER: &str = "def run():\n    decorate()\n";
+// A Python name binds through the module's own definitions and imports, so
+// the caller star-imports both modules: two definitions make it ambiguous.
+const PY_CALLER: &str = "from a import *\nfrom b import *\n\n\ndef run():\n    decorate()\n";
 const PY_DECL_A: &str = "def decorate():\n    pass\n";
 const PY_DECL_B: &str = "def decorate():\n    return 1\n";
 
-/// `decorate()` is `no_candidates` until two declarations arrive; the
+/// `decorate()` is not ambiguous until two declarations arrive; the
 /// carried caller's stored label must follow to `ambiguous`, as a fresh
 /// parse records it (the reason decides whether a later deletion retries).
 fn candidates_arrive(process: Process) {
@@ -438,7 +440,8 @@ fn reason_follows_arriving_candidates_new_process() {
 }
 
 /// The reverse: both candidates are deleted, so the stored `ambiguous` label
-/// must become `no_candidates` even though no symbol matches it any more.
+/// must change even though no symbol matches it any more (the star imports
+/// now point outside the repo).
 fn candidates_vanish(process: Process) {
     let inc = edit_and_compare(
         &[
@@ -451,7 +454,12 @@ fn candidates_vanish(process: Process) {
         "lidx-256-reason-del-",
     );
     assert!(
-        inc.dump.1.iter().any(|u| u.ends_with("|no_candidates")),
+        inc.dump.1.iter().any(|u| u.contains("decorate")),
+        "{:#?}",
+        inc.dump.1
+    );
+    assert!(
+        !inc.dump.1.iter().any(|u| u.ends_with("|ambiguous")),
         "{:#?}",
         inc.dump.1
     );

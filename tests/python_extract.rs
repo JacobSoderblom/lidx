@@ -1,5 +1,62 @@
-use lidx::indexer::extract::{LanguageExtractor, ReceiverType};
+use lidx::indexer::extract::LanguageExtractor;
 use lidx::indexer::python::{PythonExtractor, module_name_from_rel_path};
+use lidx::indexer::python_eval::{Outcome, PyTypeTable, resolve_site};
+use lidx::indexer::python_expr::PyExpr;
+
+/// Bind every call of `caller_src` (at `caller_path`) against a table of
+/// `files` plus the caller, as `(callee text, bound qualname)` pairs.
+fn bound_in(files: &[(&str, &str)], caller_path: &str, caller_src: &str) -> Vec<(String, String)> {
+    let mut decls = Vec::new();
+    let mut sites = Vec::new();
+    let all: Vec<(&str, &str)> = files
+        .iter()
+        .copied()
+        .chain(std::iter::once((caller_path, caller_src)))
+        .collect();
+    for (path, src) in all {
+        let module = module_name_from_rel_path(path);
+        let mut x = PythonExtractor::new().unwrap();
+        x.set_current_path(path);
+        let out = x.extract(src, &module).unwrap();
+        decls.push(out.py_decls.unwrap());
+        if path == caller_path {
+            for e in out.edges.into_iter().filter(|e| e.kind == "CALLS") {
+                sites.push((module.clone(), e));
+            }
+        }
+    }
+    let table = PyTypeTable::build(decls);
+    sites
+        .into_iter()
+        .filter_map(|(module, e)| {
+            let site = e.py_site?;
+            match resolve_site(&table, &site, &module) {
+                Outcome::Bound { target, .. } => {
+                    Some((e.target_qualname.or(e.detail).unwrap_or_default(), target))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// The lowered callee of the call whose target text is `text`.
+fn callee_of(source: &str, path: &str, text: &str) -> PyExpr {
+    let mut x = PythonExtractor::new().unwrap();
+    x.set_current_path(path);
+    let out = x.extract(source, &module_name_from_rel_path(path)).unwrap();
+    out.edges
+        .into_iter()
+        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some(text))
+        .unwrap_or_else(|| panic!("{text}(...) call must be extracted"))
+        .py_site
+        .expect("every CALLS edge carries its site")
+        .callee
+}
+
+fn is_attr_of_unknown(e: &PyExpr, name: &str) -> bool {
+    matches!(e, PyExpr::Attr(inner, n) if n == name && matches!(**inner, PyExpr::Unknown(_)))
+}
 
 #[test]
 fn module_name_from_path() {
@@ -504,86 +561,46 @@ def make():
 }
 
 #[test]
-fn tuple_unpacking_target_is_tracked_as_unresolved_receiver() {
-    // Regression for a gap found while measuring on a real corpus (dpb):
-    // `base_var, body = f()` then `body.append(x)` — `body` is bound via
-    // tuple-unpacking, not a simple `identifier = ...` assignment. If it
-    // isn't tracked as a local at all, `body.append(...)` falls through to
-    // the untyped legacy resolution pipeline exactly like the false
-    // positives this fix targets (it was observed binding to a domain
-    // `append` method it has nothing to do with).
+fn tuple_unpacking_target_lowers_to_an_unknown_receiver() {
+    // `base_var, body = split()` then `body.append(x)`: `body` is bound by
+    // tuple-unpacking, so its value is unknown and the call can never bind
+    // by the name `append` (it was observed binding to a domain method).
     let source = r#"
 def render():
     base_var, body = split()
     body.append("line")
 "#;
-    let module = module_name_from_rel_path("app/gen.py");
-    let mut extractor = PythonExtractor::new().unwrap();
-    let extracted = extractor.extract(source, &module).unwrap();
-
-    let call = extracted
-        .edges
-        .iter()
-        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("body.append"))
-        .expect("body.append(...) call must be extracted");
-
-    assert_eq!(
-        call.receiver_type,
-        ReceiverType::Unresolved,
-        "a tuple-unpacked local must be tracked (gated), not silently left \
-         untracked and deferred to the legacy pipeline"
-    );
+    let callee = callee_of(source, "app/gen.py", "body.append");
+    assert!(is_attr_of_unknown(&callee, "append"), "{callee:?}");
 }
 
 #[test]
-fn for_loop_unpacking_target_is_tracked_as_unresolved_receiver() {
+fn for_loop_unpacking_target_lowers_to_an_unknown_receiver() {
     let source = r#"
 def render():
     for key, body in pairs():
         body.append("line")
 "#;
-    let module = module_name_from_rel_path("app/gen.py");
-    let mut extractor = PythonExtractor::new().unwrap();
-    let extracted = extractor.extract(source, &module).unwrap();
-
-    let call = extracted
-        .edges
-        .iter()
-        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("body.append"))
-        .expect("body.append(...) call must be extracted");
-
-    assert_eq!(call.receiver_type, ReceiverType::Unresolved);
+    let callee = callee_of(source, "app/gen.py", "body.append");
+    assert!(is_attr_of_unknown(&callee, "append"), "{callee:?}");
 }
 
 #[test]
-fn module_level_local_is_tracked_as_unresolved_receiver() {
-    // Regression for a second gap found on the same real corpus: a call at
-    // *module* top level through a module-level local (e.g. the common
+fn module_level_local_is_inlined_like_a_function_local() {
+    // A call at module top level through a module-level local (the
     // namespace-package idiom `__path__ = pkgutil.extend_path(...)` then
-    // `__path__.append(...)`) is its own single scope, exactly like a
-    // function body — but `local_types` used to start out empty for module
-    // scope, so this fell through to the untyped legacy pipeline exactly
-    // like the tuple-unpacking gap above.
+    // `__path__.append(...)`) is its own scope: the local is inlined, so the
+    // receiver is the call's value, not a free name.
     let source = r#"
 import pkgutil
 
 __path__ = pkgutil.extend_path(__path__, __name__)
 __path__.append("/extra")
 "#;
-    let module = module_name_from_rel_path("app/__init__.py");
-    let mut extractor = PythonExtractor::new().unwrap();
-    let extracted = extractor.extract(source, &module).unwrap();
-
-    let call = extracted
-        .edges
-        .iter()
-        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("__path__.append"))
-        .expect("__path__.append(...) call must be extracted");
-
-    assert_eq!(
-        call.receiver_type,
-        ReceiverType::Unresolved,
-        "a module-level local must be tracked (gated) the same way a function-local is"
+    let callee = callee_of(source, "app/__init__.py", "__path__.append");
+    assert!(
+        matches!(&callee, PyExpr::Attr(inner, n) if n == "append" && matches!(**inner, PyExpr::Call(_))),
+        "{callee:?}"
     );
 }
 
@@ -595,47 +612,28 @@ __path__.append("/extra")
 
 #[test]
 fn from_import_bare_name_resolves_to_its_module() {
-    let source = r#"
-from pkg.domain import Widget
-
-def run():
-    Widget.create()
-"#;
-    let module = module_name_from_rel_path("app/caller.py");
-    let mut extractor = PythonExtractor::new().unwrap();
-    let extracted = extractor.extract(source, &module).unwrap();
-    let call = extracted
-        .edges
-        .iter()
-        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("Widget.create"))
-        .expect("Widget.create() call edge");
+    let domain = "class Widget:\n    @staticmethod\n    def create():\n        return 1\n";
+    let source = "from pkg.domain import Widget\n\ndef run():\n    Widget.create()\n";
+    let bound = bound_in(&[("pkg/domain.py", domain)], "app/caller.py", source);
     assert_eq!(
-        call.import_candidates,
-        vec!["pkg.domain.Widget.create".to_string()],
-        "`from x import Y` must resolve the bare name to exactly that module-qualified target"
+        bound,
+        vec![(
+            "Widget.create".to_string(),
+            "pkg.domain.Widget.create".to_string()
+        )],
+        "`from x import Y` must bind the name to exactly that module's definition"
     );
 }
 
 #[test]
 fn import_module_as_alias_resolves_to_its_target() {
-    let source = r#"
-import pkg.domain as dom
-
-def run():
-    dom.create()
-"#;
-    let module = module_name_from_rel_path("app/caller.py");
-    let mut extractor = PythonExtractor::new().unwrap();
-    let extracted = extractor.extract(source, &module).unwrap();
-    let call = extracted
-        .edges
-        .iter()
-        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("dom.create"))
-        .expect("dom.create() call edge");
+    let domain = "def create():\n    return 1\n";
+    let source = "import pkg.domain as dom\n\ndef run():\n    dom.create()\n";
+    let bound = bound_in(&[("pkg/domain.py", domain)], "app/caller.py", source);
     assert_eq!(
-        call.import_candidates,
-        vec!["pkg.domain.create".to_string()],
-        "`import x.y as z` must resolve the alias to its dotted module target"
+        bound,
+        vec![("dom.create".to_string(), "pkg.domain.create".to_string())],
+        "`import x.y as z` must bind the alias to its dotted module"
     );
 }
 
@@ -716,9 +714,9 @@ from pkg.engine import (
 
 #[test]
 fn from_import_parenthesized_names_bind_for_call_resolution() {
-    // Before the fix, `parse_import_bindings` skipped any import statement
-    // whose text contained `(`, so calls below never got an import
-    // candidate and fell through to the ambiguous/bare-name tier.
+    // `parse_import_bindings` once skipped any import statement whose text
+    // contained `(`, so its calls never bound.
+    let engine = "def compute_frontier():\n    return 1\n\ndef other_fn():\n    return 2\n";
     let source = "
 from pkg.engine import (
     compute_frontier,
@@ -729,35 +727,20 @@ def run():
     compute_frontier()
     of()
 ";
-    let module = module_name_from_rel_path("app/caller.py");
-    let mut extractor = PythonExtractor::new().unwrap();
-    let extracted = extractor.extract(source, &module).unwrap();
-
-    // A bare `name()` call's `target_qualname` is qualified with the
-    // enclosing module (`resolve_call_target`'s single-segment branch);
-    // `import_candidates` is the separate, import-derived field this test
-    // is really about.
-    let plain_call = extracted
-        .edges
-        .iter()
-        .find(|e| {
-            e.kind == "CALLS" && e.target_qualname.as_deref() == Some("app.caller.compute_frontier")
-        })
-        .expect("compute_frontier() call edge");
+    let mut bound = bound_in(&[("pkg/engine.py", engine)], "app/caller.py", source);
+    bound.sort();
     assert_eq!(
-        plain_call.import_candidates,
-        vec!["pkg.engine.compute_frontier".to_string()],
-        "a parenthesized, unaliased import must still bind its call site"
-    );
-
-    let aliased_call = extracted
-        .edges
-        .iter()
-        .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("app.caller.of"))
-        .expect("of() call edge");
-    assert_eq!(
-        aliased_call.import_candidates,
-        vec!["pkg.engine.other_fn".to_string()],
-        "`as` inside a parenthesized import list must bind the alias to its target"
+        bound,
+        vec![
+            (
+                "app.caller.compute_frontier".to_string(),
+                "pkg.engine.compute_frontier".to_string()
+            ),
+            (
+                "app.caller.of".to_string(),
+                "pkg.engine.other_fn".to_string()
+            ),
+        ],
+        "a parenthesized import list must bind both the plain and the aliased name"
     );
 }

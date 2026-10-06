@@ -208,7 +208,9 @@ fn builtin_bare_call_stays_unresolved() {
         assert_eq!(f.target_names(&caller), Vec::<String>::new());
         assert_eq!(
             f.unresolved_rows(&caller),
-            vec![("len".to_string(), "no_candidates".to_string())]
+            // A builtin is provably outside the repo: `external`, not a
+            // lookup that found nothing.
+            vec![("len".to_string(), "external".to_string())]
         );
     });
 }
