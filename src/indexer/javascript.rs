@@ -2366,7 +2366,20 @@ fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         return;
     }
     let name = node_text(name_node, source);
+    let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
     push_field(node, name, is_private_member(node, source), ctx, output);
+    // Calls in the initializer (`request = (..) => this.fetch(..)`,
+    // `#root = new Node()`) belong to the field. An arrow value keeps the
+    // lexical `this`; a `function` value rebinds it (`walk_node`).
+    if let Some(value) = node.child_by_field_name("value") {
+        let mut next_ctx = ctx.clone();
+        next_ctx.fn_depth += 1;
+        next_ctx.this_rebound = false;
+        next_ctx.current_scope = qualname;
+        enter_scope(&mut next_ctx);
+        next_ctx.local_types = Rc::new(infer_module_level_types(value, source));
+        walk_node(value, &next_ctx, source, output);
+    }
 }
 
 /// `constructor(private x: T, readonly y: U)`: each parameter carrying an

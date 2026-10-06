@@ -1294,3 +1294,56 @@ class Foo {
         assert_eq!(e.source_qualname.as_deref(), Some("src/app.Foo.run"));
     }
 }
+
+#[test]
+fn class_field_initializer_calls_attribute_to_the_field() {
+    let source = r#"
+class Hono {
+  #dispatch(request: Request) { return compose([])() }
+  #root = new Node()
+  fetch: (request: Request) => Response = (request, ...rest) => {
+    return this.#dispatch(request, rest[1])
+  }
+  request = (input: string): Response => {
+    return this.fetch(new Request(`http://x${mergePath('/', input)}`))
+  }
+  legacy = function (x) {
+    this.fetch(x)
+    return other(x)
+  }
+}
+"#;
+    let calls = ts_calls(source);
+    let find = |snip: &str| {
+        calls
+            .iter()
+            .find(|e| {
+                e.evidence_snippet
+                    .as_deref()
+                    .is_some_and(|s| s.contains(snip))
+            })
+            .unwrap_or_else(|| panic!("no call {snip}: {calls:#?}"))
+    };
+    let e = find("this.#dispatch(");
+    assert_eq!(e.source_qualname.as_deref(), Some("src/app.Hono.fetch"));
+    assert_eq!(e.target_qualname.as_deref(), Some("src/app.Hono.#dispatch"));
+    let e = find("this.fetch(new");
+    assert_eq!(e.source_qualname.as_deref(), Some("src/app.Hono.request"));
+    assert_eq!(e.target_qualname.as_deref(), Some("src/app.Hono.fetch"));
+    assert_eq!(
+        find("mergePath(").source_qualname.as_deref(),
+        Some("src/app.Hono.request")
+    );
+    assert_eq!(
+        find("new Node()").source_qualname.as_deref(),
+        Some("src/app.Hono.#root")
+    );
+    let e = find("this.fetch(x)");
+    assert_eq!(e.source_qualname.as_deref(), Some("src/app.Hono.legacy"));
+    assert!(e.target_qualname.is_none());
+    assert_eq!(e.receiver_type, ReceiverType::Unresolved);
+    assert_eq!(
+        find("other(x)").source_qualname.as_deref(),
+        Some("src/app.Hono.legacy")
+    );
+}
