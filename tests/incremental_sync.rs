@@ -2904,3 +2904,68 @@ fn incremental_ts_type_use_follows_declaration_matches_fresh() {
     let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("types.ts", types_after)]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+const CTOR_USER: &str = "namespace App { public class User { \
+public T Make() { return new T(); } } }\n";
+const CTOR_T_PLAIN: &str = "namespace App { public class T { public void Run() { } } }\n";
+const CTOR_T_EXPLICIT: &str = "namespace App { public class T { public T() { } \
+public void Run() { } } }\n";
+
+/// The target `User.Make`'s `new T()` is bound to.
+fn new_target(indexer: &Indexer) -> Option<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    golden::snapshot_edges(indexer.db(), gv)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "CALLS" && e.source_qualname == "App.User.Make")
+        .and_then(|e| e.target_qualname)
+}
+
+fn assert_new_matches_fresh(indexer: &Indexer, t_src: &str) {
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_t, fresh) = common::index_files(&[("T.cs", t_src), ("User.cs", CTOR_USER)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// `new T()` binds to class `T` until `T` gains an explicit constructor,
+/// which moves it to `T..ctor`; losing the constructor moves it back.
+#[test]
+fn csharp_new_follows_the_class_gaining_and_losing_an_explicit_constructor() {
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "new-ctor",
+        &[("T.cs", CTOR_T_PLAIN), ("User.cs", CTOR_USER)],
+    );
+    assert_eq!(new_target(&indexer).as_deref(), Some("App.T"));
+    assert_new_matches_fresh(&indexer, CTOR_T_PLAIN);
+
+    common::write_files(&root, &[("T.cs", CTOR_T_EXPLICIT)]);
+    indexer.sync_rel_paths(&["T.cs".to_string()]).unwrap();
+    assert_eq!(new_target(&indexer).as_deref(), Some("App.T..ctor"));
+    assert_new_matches_fresh(&indexer, CTOR_T_EXPLICIT);
+
+    common::write_files(&root, &[("T.cs", CTOR_T_PLAIN)]);
+    indexer.sync_rel_paths(&["T.cs".to_string()]).unwrap();
+    assert_eq!(new_target(&indexer).as_deref(), Some("App.T"));
+    assert_new_matches_fresh(&indexer, CTOR_T_PLAIN);
+}
+
+const TS_NEW_USER: &str = "import { T } from './t';\nexport function make() { return new T(); }\n";
+const TS_T_PLAIN: &str = "export class T { run() {} }\n";
+const TS_T_EXPLICIT: &str = "export class T { constructor() {} run() {} }\n";
+
+#[test]
+fn typescript_new_follows_the_class_gaining_and_losing_a_constructor() {
+    let finals = |t: &'static str| [("t.ts", t), ("user.ts", TS_NEW_USER)];
+    let (_tmp, root, mut indexer) = indexed_tree("ts-new-ctor", &finals(TS_T_PLAIN));
+    for t in [TS_T_EXPLICIT, TS_T_PLAIN] {
+        common::write_files(&root, &[("t.ts", t)]);
+        indexer.sync_rel_paths(&["t.ts".to_string()]).unwrap();
+        common::assert_no_dangling_edge_targets(indexer.db());
+        let gv = indexer.db().current_graph_version().unwrap();
+        let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+        let (_t, fresh) = common::index_files(&finals(t));
+        common::assert_matches_fresh(&snapshot, &fresh);
+    }
+}
