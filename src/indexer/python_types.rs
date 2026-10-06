@@ -172,6 +172,11 @@ pub struct PyFuncDecl {
     /// An `@overload` stub; the evaluator binds to the implementation.
     #[serde(rename = "ov", default, skip_serializing_if = "is_false")]
     pub is_overload: bool,
+    /// A method with no return annotation whose every `return` statement is
+    /// exactly `return self` (and has at least one): the evaluator types its
+    /// call like `-> Self`.
+    #[serde(rename = "rs", default, skip_serializing_if = "is_false")]
+    pub returns_self: bool,
     #[serde(rename = "l")]
     pub start_line: i64,
 }
@@ -839,6 +844,15 @@ impl<'a> Builder<'a> {
             .child_by_field_name("return_type")
             .map(|t| lower_type(t, self.source));
         let qualname = qualify(&self.module, class_stack, &name);
+        let returns_self = returns.is_none()
+            && owner.is_some()
+            && kind == PyFuncKind::Method
+            && params
+                .first()
+                .is_some_and(|p| p.name == "self" && p.star == 0)
+            && node
+                .child_by_field_name("body")
+                .is_some_and(|b| only_returns_self(b, self.source));
         let is_async = {
             let text = self.source.get(node.start_byte()..).unwrap_or("");
             text.starts_with("async") && text[5..].chars().next().is_some_and(char::is_whitespace)
@@ -860,6 +874,7 @@ impl<'a> Builder<'a> {
             returns,
             is_async,
             is_overload,
+            returns_self,
             start_line: definition_span(node).0,
         });
     }
@@ -1079,4 +1094,36 @@ fn string_list(node: Node<'_>, source: &str) -> Option<Vec<String>> {
         out.push(text);
     }
     Some(out)
+}
+
+/// Whether `body` (a function body) has at least one `return` statement and
+/// every one of them is exactly `return self`. Nested defs, classes and
+/// lambdas own their returns; a body that yields is a generator.
+fn only_returns_self(body: Node<'_>, source: &str) -> bool {
+    fn walk(node: Node<'_>, source: &str, found: &mut u32, ok: &mut bool) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "function_definition" | "class_definition" | "lambda" => {}
+                "yield" => *ok = false,
+                "return_statement" => {
+                    *found += 1;
+                    let mut c = child.walk();
+                    let mut values = child.named_children(&mut c);
+                    let exact = matches!(
+                        (values.next(), values.next()),
+                        (Some(v), None) if v.kind() == "identifier" && node_text(v, source) == "self"
+                    );
+                    if !exact {
+                        *ok = false;
+                    }
+                    walk(child, source, found, ok);
+                }
+                _ => walk(child, source, found, ok),
+            }
+        }
+    }
+    let (mut found, mut ok) = (0, true);
+    walk(body, source, &mut found, &mut ok);
+    ok && found > 0
 }

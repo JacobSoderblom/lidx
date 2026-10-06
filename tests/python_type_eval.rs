@@ -727,3 +727,74 @@ fn type_of_and_trace_are_exposed() {
         Value::Unknown(Why::UnresolvedName)
     ));
 }
+
+// ---- unannotated `return self` ---------------------------------------------
+
+const RETURNS_SELF: &[(&str, &str)] = &[
+    ("pkg/__init__.py", ""),
+    (
+        "pkg/res.py",
+        r#"class Res:
+    def __enter__(self):
+        return self
+
+    def close(self):
+        return None
+
+    def mixed_enter(self, x):
+        if x:
+            return self
+        return 1
+
+
+class Sub(Res):
+    def extra(self):
+        return 1
+
+
+class Other:
+    def close(self):
+        return 2
+"#,
+    ),
+    (
+        "app.py",
+        r#"from pkg.res import Res, Sub
+
+
+def use():
+    with Res() as r:
+        r.close()
+    with Sub() as s:
+        s.extra()
+    Res().__enter__().close()
+
+
+def trap(res: Res):
+    res.mixed_enter(1).close()
+"#,
+    ),
+];
+
+#[test]
+fn unannotated_return_self_types_a_with_target_and_a_chain() {
+    let fx = fixture(RETURNS_SELF);
+    let b = |needle: &str, name: &str| bound(outcome(&fx, "app.py", needle, name, RETURNS_SELF));
+    assert_eq!(b("r.close()", "close"), "pkg.res.Res.close");
+    // The receiver is the subclass: `self` is whatever the method was reached on.
+    assert_eq!(b("s.extra()", "extra"), "pkg.res.Sub.extra");
+    assert_eq!(b(".__enter__().close()", "close"), "pkg.res.Res.close");
+}
+
+#[test]
+fn mixed_returns_do_not_count_as_returns_self() {
+    let fx = fixture(RETURNS_SELF);
+    let o = outcome(
+        &fx,
+        "app.py",
+        "res.mixed_enter(1).close()",
+        "close",
+        RETURNS_SELF,
+    );
+    not_bound(&o);
+}

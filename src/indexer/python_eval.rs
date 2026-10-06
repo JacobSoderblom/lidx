@@ -875,7 +875,18 @@ impl<'a> PyEval<'a> {
     /// annotations resolve there); `rc` is the receiver it was reached on.
     fn return_value(&mut self, f: &PyFuncDecl, module: &str, rc: Option<&Recv>) -> Value {
         let Some(ret) = &f.returns else {
-            return Value::Unknown(Why::NoAnnotation);
+            // An unannotated `return self` is `-> Self`.
+            return match rc {
+                Some(rc) if f.returns_self => {
+                    let v = Value::Instance(rc.class.clone());
+                    if f.is_async {
+                        Value::Coroutine(Box::new(v))
+                    } else {
+                        v
+                    }
+                }
+                _ => Value::Unknown(Why::NoAnnotation),
+            };
         };
         let mut v = None;
         // `def __enter__(self: T) -> T`: the receiver's own type.

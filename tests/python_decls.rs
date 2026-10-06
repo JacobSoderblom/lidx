@@ -542,3 +542,89 @@ fn deleted_and_renamed_files_drop_their_rows() {
     let live = indexer.db().py_decls(&conn, gv).unwrap();
     assert_eq!(live.len(), 2);
 }
+
+// ---- unannotated `return self` ---------------------------------------------
+
+fn returns_self_of(src: &str, name: &str) -> bool {
+    let d = decls(src);
+    d.functions
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| panic!("no function {name}"))
+        .returns_self
+}
+
+#[test]
+fn unannotated_function_returning_only_self_is_returns_self() {
+    let src = "class C:
+    def __enter__(self):
+        return self
+
+    def many(self, x):
+        if x:
+            return self
+        return self
+";
+    assert!(returns_self_of(src, "__enter__"));
+    assert!(returns_self_of(src, "many"));
+}
+
+#[test]
+fn returns_self_traps() {
+    let src = "class C:
+    def mixed(self, x):
+        if x:
+            return self
+        return 1
+
+    def bare(self, x):
+        if x:
+            return self
+        return
+
+    def none_only(self):
+        pass
+
+    def other(self, o):
+        return o
+
+    def annotated(self) -> \"C\":
+        return self
+
+    def attr(self):
+        return self.x
+
+    def nested(self):
+        def inner():
+            return 1
+        return self
+
+    def nested_other(self):
+        def inner():
+            return self
+        return 1
+
+    def generator(self):
+        yield 1
+        return self
+
+    @staticmethod
+    def static(self):
+        return self
+";
+    for n in [
+        "mixed",
+        "bare",
+        "none_only",
+        "other",
+        "annotated",
+        "attr",
+        "nested_other",
+        "generator",
+        "static",
+    ] {
+        assert!(!returns_self_of(src, n), "{n} must not be returns_self");
+    }
+    // A return inside a nested def belongs to that def, not to the method.
+    assert!(returns_self_of(src, "nested"));
+}

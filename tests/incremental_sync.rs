@@ -2547,3 +2547,429 @@ fn ts_dynamic_import_emits_imports_file_and_matches_fresh() {
     common::assert_matches_fresh(&snapshot, &fresh_snapshot);
     assert_eq!(unresolved(&indexer), unresolved(&fresh));
 }
+
+// ---- Python declared-type evaluator: incremental == fresh ------------------
+
+/// Every Python CALLS edge and CALLS unresolved row as text, target line and
+/// resolution kind included: the whole stored outcome of the evaluator.
+fn py_calls_dump(indexer: &Indexer) -> Vec<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    let conn = indexer.db().read_conn().unwrap();
+    let mut out = Vec::new();
+    let mut edges = conn
+        .prepare(
+            "SELECT s.qualname, t.qualname, t.start_line, e.resolution_kind, e.evidence_start_line
+             FROM edges e
+             JOIN symbols s ON s.id = e.source_symbol_id
+             LEFT JOIN symbols t ON t.id = e.target_symbol_id
+             JOIN files f ON f.id = e.file_id
+             WHERE e.kind = 'CALLS' AND e.graph_version = ? AND f.language = 'python'
+               AND t.kind IS NOT 'external'",
+        )
+        .unwrap();
+    for row in edges
+        .query_map([gv], |r| {
+            Ok(format!(
+                "E {} -> {:?}@{:?} {:?} L{:?}",
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+            ))
+        })
+        .unwrap()
+    {
+        out.push(row.unwrap());
+    }
+    let mut rows = conn
+        .prepare(
+            "SELECT s.qualname, ur.reference_name, ur.reason, ur.evidence_start_line
+             FROM unresolved_references ur
+             JOIN symbols s ON s.id = ur.source_symbol_id
+             JOIN files f ON f.id = ur.file_id
+             WHERE ur.edge_kind = 'CALLS' AND ur.graph_version = ? AND f.language = 'python'",
+        )
+        .unwrap();
+    for row in rows
+        .query_map([gv], |r| {
+            Ok(format!(
+                "U {} {:?} {} L{}",
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .unwrap()
+    {
+        out.push(row.unwrap());
+    }
+    out.sort();
+    out
+}
+
+/// Index `initial`, apply `edits` one sync at a time (`None` deletes), and
+/// require the stored Python call outcome and the edge snapshot to equal a
+/// fresh index of `finals`. Returns the incremental indexer.
+fn py_edits_match_fresh(
+    initial: &[(&str, &str)],
+    edits: &[(&str, Option<&str>)],
+    finals: &[(&str, &str)],
+) -> Indexer {
+    let (tmp, root, mut indexer) = indexed_tree("py-eval", initial);
+    // Keep the temp dir alive for the indexer's lifetime.
+    std::mem::forget(tmp);
+    for (path, content) in edits {
+        match content {
+            Some(c) => common::write_files(&root, &[(path, c)]),
+            None => std::fs::remove_file(root.join(path)).unwrap(),
+        }
+        indexer.sync_rel_paths(&[path.to_string()]).unwrap();
+    }
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_t, fresh_root, fresh_db) = common::index_repo("lidx-py-eval-fresh-", finals);
+    let fresh = Indexer::new(fresh_root, fresh_db).unwrap();
+    let fresh_gv = fresh.db().current_graph_version().unwrap();
+    let fresh_snapshot = golden::snapshot_edges(fresh.db(), fresh_gv).unwrap();
+    common::assert_matches_fresh(&snapshot, &fresh_snapshot);
+    assert_eq!(py_calls_dump(&indexer), py_calls_dump(&fresh));
+    indexer
+}
+
+fn dump_has(indexer: &Indexer, needle: &str) -> bool {
+    py_calls_dump(indexer).iter().any(|l| l.contains(needle))
+}
+
+const PY_PKG_INIT: (&str, &str) = ("pkg/__init__.py", "");
+
+const PY_STORES: &str = "class Store:
+    def write(self):
+        return 1
+
+
+class Other:
+    def write(self):
+        return 2
+";
+
+fn py_repo(ret: &str) -> String {
+    format!(
+        "from pkg.stores import Store, Other
+
+
+class Repo:
+    def open(self) -> {ret}:
+        raise NotImplementedError
+"
+    )
+}
+
+const PY_REPO_CALLER: &str = "from pkg.repo import Repo
+
+
+def run(repo: Repo):
+    s = repo.open()
+    return s.write()
+
+
+def chain(repo: Repo):
+    return repo.open().write()
+";
+
+#[test]
+fn python_evaluator_callee_return_annotation_edit_matches_fresh() {
+    let store = py_repo("Store");
+    let other = py_repo("Other");
+    let int = py_repo("int");
+    let initial = [
+        PY_PKG_INIT,
+        ("pkg/stores.py", PY_STORES),
+        ("pkg/repo.py", store.as_str()),
+        ("app.py", PY_REPO_CALLER),
+    ];
+    let indexer = py_edits_match_fresh(
+        &initial,
+        &[
+            ("pkg/repo.py", Some(other.as_str())),
+            ("pkg/repo.py", Some(int.as_str())),
+            ("pkg/repo.py", Some(store.as_str())),
+        ],
+        &initial,
+    );
+    assert!(
+        dump_has(&indexer, "pkg.stores.Store.write"),
+        "{:#?}",
+        py_calls_dump(&indexer)
+    );
+    // The intermediate states really did move the binding.
+    let (tmp, root, mut moved) = indexed_tree("py-eval-moved", &initial);
+    std::mem::forget(tmp);
+    common::write_files(&root, &[("pkg/repo.py", other.as_str())]);
+    moved.sync_rel_paths(&["pkg/repo.py".into()]).unwrap();
+    assert!(
+        dump_has(&moved, "pkg.stores.Other.write"),
+        "{:#?}",
+        py_calls_dump(&moved)
+    );
+    assert!(!dump_has(&moved, "pkg.stores.Store.write"));
+    common::write_files(&root, &[("pkg/repo.py", int.as_str())]);
+    moved.sync_rel_paths(&["pkg/repo.py".into()]).unwrap();
+    assert!(
+        !dump_has(&moved, "stores.Other.write"),
+        "{:#?}",
+        py_calls_dump(&moved)
+    );
+    assert!(!dump_has(&moved, "stores.Store.write"));
+}
+
+#[test]
+fn python_evaluator_base_class_added_binds_inherited_call() {
+    let base = "class Base:
+    def help(self):
+        return 1
+";
+    let plain = "class Derived:
+    pass
+";
+    let derived = "from pkg.base import Base
+
+
+class Derived(Base):
+    pass
+";
+    let caller = "from pkg.derived import Derived
+
+
+def go(d: Derived):
+    return d.help()
+";
+    let initial = [
+        PY_PKG_INIT,
+        ("pkg/base.py", base),
+        ("pkg/derived.py", plain),
+        ("app.py", caller),
+    ];
+    let finals = [
+        PY_PKG_INIT,
+        ("pkg/base.py", base),
+        ("pkg/derived.py", derived),
+        ("app.py", caller),
+    ];
+    let indexer = py_edits_match_fresh(&initial, &[("pkg/derived.py", Some(derived))], &finals);
+    assert!(
+        dump_has(&indexer, "pkg.base.Base.help"),
+        "{:#?}",
+        py_calls_dump(&indexer)
+    );
+    // And back: dropping the base unbinds it again.
+    let indexer = py_edits_match_fresh(&finals, &[("pkg/derived.py", Some(plain))], &initial);
+    assert!(
+        !dump_has(&indexer, "pkg.base.Base.help"),
+        "{:#?}",
+        py_calls_dump(&indexer)
+    );
+}
+
+#[test]
+fn python_evaluator_removing_a_package_reexport_unbinds_the_call() {
+    let init_with = "from pkg.impl import fn
+";
+    let imp = "def fn():
+    return 1
+";
+    let caller = "from pkg import fn
+
+
+def go():
+    return fn()
+";
+    let with = [
+        ("pkg/__init__.py", init_with),
+        ("pkg/impl.py", imp),
+        ("app.py", caller),
+    ];
+    let without = [
+        ("pkg/__init__.py", ""),
+        ("pkg/impl.py", imp),
+        ("app.py", caller),
+    ];
+    let indexer = py_edits_match_fresh(&with, &[("pkg/__init__.py", Some(""))], &without);
+    assert!(
+        !dump_has(&indexer, "pkg.impl.fn"),
+        "{:#?}",
+        py_calls_dump(&indexer)
+    );
+    let indexer = py_edits_match_fresh(&without, &[("pkg/__init__.py", Some(init_with))], &with);
+    assert!(
+        dump_has(&indexer, "pkg.impl.fn"),
+        "{:#?}",
+        py_calls_dump(&indexer)
+    );
+}
+
+#[test]
+fn python_evaluator_renaming_a_class_matches_fresh() {
+    let models = "class Client:
+    def send(self):
+        return 1
+";
+    let renamed = "class Client2:
+    def send(self):
+        return 1
+";
+    let caller = "from pkg.models import Client
+
+
+def make():
+    return Client()
+
+
+def go(c: Client):
+    return c.send()
+";
+    let initial = [PY_PKG_INIT, ("pkg/models.py", models), ("app.py", caller)];
+    let finals = [PY_PKG_INIT, ("pkg/models.py", renamed), ("app.py", caller)];
+    let before = py_edits_match_fresh(&initial, &[], &initial);
+    assert!(
+        dump_has(&before, "pkg.models.Client.send"),
+        "{:#?}",
+        py_calls_dump(&before)
+    );
+    let after = py_edits_match_fresh(&initial, &[("pkg/models.py", Some(renamed))], &finals);
+    assert!(
+        !dump_has(&after, "pkg.models.Client.send"),
+        "{:#?}",
+        py_calls_dump(&after)
+    );
+    assert!(
+        !dump_has(&after, "pkg.models.Client@"),
+        "{:#?}",
+        py_calls_dump(&after)
+    );
+}
+
+#[test]
+fn python_evaluator_self_attribute_assignment_edit_retargets_the_call() {
+    let parts = "class Foo:
+    def m(self):
+        return 1
+
+
+class Bar:
+    def m(self):
+        return 2
+";
+    let svc = |ctor: &str| {
+        format!(
+            "from pkg.parts import Foo, Bar
+
+
+class Svc:
+    def __init__(self):
+        self.x = {ctor}()
+"
+        )
+    };
+    let caller = "from pkg.svc import Svc
+
+
+def go(s: Svc):
+    return s.x.m()
+";
+    let foo = svc("Foo");
+    let bar = svc("Bar");
+    let initial = [
+        PY_PKG_INIT,
+        ("pkg/parts.py", parts),
+        ("pkg/svc.py", foo.as_str()),
+        ("app.py", caller),
+    ];
+    let finals = [
+        PY_PKG_INIT,
+        ("pkg/parts.py", parts),
+        ("pkg/svc.py", bar.as_str()),
+        ("app.py", caller),
+    ];
+    let before = py_edits_match_fresh(&initial, &[], &initial);
+    assert!(
+        dump_has(&before, "pkg.parts.Foo.m"),
+        "{:#?}",
+        py_calls_dump(&before)
+    );
+    let after = py_edits_match_fresh(&initial, &[("pkg/svc.py", Some(bar.as_str()))], &finals);
+    assert!(
+        dump_has(&after, "pkg.parts.Bar.m"),
+        "{:#?}",
+        py_calls_dump(&after)
+    );
+    assert!(
+        !dump_has(&after, "pkg.parts.Foo.m"),
+        "{:#?}",
+        py_calls_dump(&after)
+    );
+}
+
+#[test]
+fn python_evaluator_deleting_the_declaring_file_matches_fresh() {
+    let initial = [
+        PY_PKG_INIT,
+        ("pkg/stores.py", PY_STORES),
+        ("pkg/repo.py", &py_repo("Store")),
+        ("app.py", PY_REPO_CALLER),
+    ];
+    let finals = [
+        PY_PKG_INIT,
+        ("pkg/repo.py", &py_repo("Store")),
+        ("app.py", PY_REPO_CALLER),
+    ];
+    let indexer = py_edits_match_fresh(&initial, &[("pkg/stores.py", None)], &finals);
+    assert!(
+        !dump_has(&indexer, "Store.write"),
+        "{:#?}",
+        py_calls_dump(&indexer)
+    );
+    // Restoring it binds the calls again.
+    let restored = py_edits_match_fresh(&finals, &[("pkg/stores.py", Some(PY_STORES))], &initial);
+    assert!(
+        dump_has(&restored, "pkg.stores.Store.write"),
+        "{:#?}",
+        py_calls_dump(&restored)
+    );
+}
+
+#[test]
+fn python_evaluator_adding_an_overload_stub_binds_the_implementation() {
+    let plain = "def g(x):
+    return x
+";
+    let overloaded = "from typing import overload
+
+
+@overload
+def g(x: int) -> int: ...
+@overload
+def g(x: str) -> str: ...
+def g(x):
+    return x
+";
+    let caller = "from pkg.o import g
+
+
+def use():
+    return g(1)
+";
+    let initial = [PY_PKG_INIT, ("pkg/o.py", plain), ("app.py", caller)];
+    let finals = [PY_PKG_INIT, ("pkg/o.py", overloaded), ("app.py", caller)];
+    let indexer = py_edits_match_fresh(&initial, &[("pkg/o.py", Some(overloaded))], &finals);
+    // The edge lands on the implementation (the last, non-stub definition),
+    // not on a stub and not unresolved.
+    let dump = py_calls_dump(&indexer);
+    assert!(
+        dump.iter()
+            .any(|l| l.starts_with("E app.use -> Some(\"pkg.o.g\")@Some(8)")),
+        "{dump:#?}"
+    );
+}
