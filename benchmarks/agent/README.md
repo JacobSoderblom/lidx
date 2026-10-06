@@ -35,6 +35,11 @@ python3 test_bench.py             # parser/report/isolation tests
 `judge` skips trials that already have a `judge.json`. `--only REGEX` filters task ids.
 All path arguments (`--out`, `--workdir`, `--scratch`, `--lidx`, task/reference files, run dir) are made absolute at parse time,
 so relative paths work even though `claude` runs with the clone as its cwd.
+`--reuse-baseline RUN_DIR` copies the finished baseline trials (selected tasks, trials 1..`--trials`) from an earlier run and runs only
+the `lidx` profile: use it to iterate on lidx changes, since the baseline only needs to be run once per model/effort/task set.
+It refuses if the source run's model, effort, budget or task-file hashes differ, or a needed baseline trial is missing or failed.
+The new `run.json` records `reused_baseline_from`, `lidx_version` and `lidx_path`; the report header shows them. Copied trials keep
+their `judge.json`, so `judge` only scores the new lidx trials.
 Output layout: `RUN/<task>/<profile>/<trial>/{stream.jsonl, stderr.txt, mcp.json, trial.json, judge.json}`
 plus `RUN/run.json` (model, effort, budget, claude and lidx versions, task-file hashes).
 Judge defaults: `--model claude-opus-5-5 --effort high` (dry-run: Haiku). `--effort` is never passed to Haiku models.

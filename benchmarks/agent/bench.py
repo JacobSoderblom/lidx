@@ -354,6 +354,43 @@ def run_trial(args, task, profile, n, cache):
     return TrialResult(doc["status"], task, profile, n)
 
 
+def reuse_baseline(args, tasks, src):
+    """Validate run dir `src` against this run's settings and copy its finished baseline trials in.
+
+    -> abs path of src.  Raises Fatal before copying anything if anything is off."""
+    src = os.path.abspath(src)
+    rj = os.path.join(src, "run.json")
+    if not os.path.isfile(rj):
+        raise Fatal("--reuse-baseline: no run.json in %s" % src)
+    old = read_json(rj)
+    for key, mine in (("model", args.model), ("effort", args.effort), ("budget_usd", args.budget)):
+        if old.get(key) != mine:
+            raise Fatal("--reuse-baseline: %s differs (source %r, this run %r)" % (key, old.get(key), mine))
+    old_hashes = old.get("task_files") or {}
+    for t in tasks:
+        name = os.path.basename(t["source"])
+        if old_hashes.get(name) != file_hash(t["source"]):
+            raise Fatal("--reuse-baseline: task file %s differs from source run (needed by %s)" % (name, t["id"]))
+    plan = []
+    for t in tasks:
+        for n in range(1, args.trials + 1):
+            d = os.path.join(src, safe(t["id"]), "baseline", str(n))
+            tj = os.path.join(d, "trial.json")
+            try:
+                ok = os.path.isfile(tj) and read_json(tj).get("status") == "ok"
+            except ValueError:
+                ok = False
+            if not ok:
+                raise Fatal("--reuse-baseline: no successful baseline trial %s / %d in %s" % (t["id"], n, src))
+            plan.append((d, os.path.join(args.out, safe(t["id"]), "baseline", str(n))))
+    for d, dest in plan:
+        if os.path.isdir(dest):
+            shutil.rmtree(dest)
+        shutil.copytree(d, dest)
+    print("reused %d baseline trial(s) from %s" % (len(plan), src), flush=True)
+    return src
+
+
 def cmd_run(args):
     profiles = [p.strip() for p in args.profiles.split(",") if p.strip()]
     for p in profiles:
@@ -368,17 +405,27 @@ def cmd_run(args):
         print(m)
     if not tasks:
         raise Fatal("no tasks selected")
+    reused = None
+    run_profiles = profiles
+    if getattr(args, "reuse_baseline", None):
+        if "lidx" not in profiles:
+            raise Fatal("--reuse-baseline needs the lidx profile")
+        reused = reuse_baseline(args, tasks, args.reuse_baseline)     # validates, then copies
+        run_profiles = ["lidx"]
+        profiles = ["baseline", "lidx"]
     os.makedirs(args.out, exist_ok=True)
     write_json(os.path.join(args.out, "run.json"), {
         "started": time.strftime("%Y-%m-%dT%H:%M:%S"), "model": args.model, "effort": args.effort,
         "budget_usd": args.budget, "timeout": args.timeout, "trials": args.trials, "profiles": profiles,
         "claude_version": version_of(["claude"]),
         "lidx_version": version_of([args.lidx]) if "lidx" in profiles else None,
+        "lidx_path": args.lidx if "lidx" in profiles else None,
+        "reused_baseline_from": reused,
         "prompt_instruction": INSTRUCTION,
         "task_files": {os.path.basename(p): file_hash(p) for p in args.tasks},
         "tasks": [t["id"] for t in tasks]})
     caches = {t["id"]: cached_repo(t["repo"], args.workdir) for t in tasks}
-    jobs = [(t, p, n) for t in tasks for p in profiles for n in range(1, args.trials + 1)]
+    jobs = [(t, p, n) for t in tasks for p in run_profiles for n in range(1, args.trials + 1)]
     print("%d trial(s), parallel %d" % (len(jobs), args.jobs), flush=True)
     bad = 0
     with cf.ThreadPoolExecutor(max_workers=args.jobs) as ex:
@@ -669,6 +716,10 @@ def render(rep, settings=None):
             settings.get("model"), " effort " + settings["effort"] if settings.get("effort") else "",
             settings.get("budget_usd"), settings.get("trials"), settings.get("claude_version"),
             settings.get("lidx_version")))
+        if settings.get("lidx_path"):
+            lines[-1] += "  lidx binary: %s." % settings["lidx_path"]
+        if settings.get("reused_baseline_from"):
+            lines[-1] += "  Baseline reused from %s." % settings["reused_baseline_from"]
         lines.append("")
     lines.append("Each cell: baseline / lidx / change (judge: points; others: relative %). `±` is the "
                  "per-profile trial stdev (shown when trials > 1).  Means exclude errored trials; "
@@ -735,7 +786,7 @@ def cmd_report(args):
 # cli
 # --------------------------------------------------------------------------
 
-PATH_ARGS = ("out", "workdir", "scratch", "lidx", "tasks", "references", "run_dir", "json")
+PATH_ARGS = ("out", "workdir", "scratch", "lidx", "reuse_baseline", "tasks", "references", "run_dir", "json")
 
 
 def normalize_paths(args):
@@ -766,6 +817,8 @@ def add_run_args(p, dry=False):
     p.add_argument("--out", required=not dry, help="run directory")
     p.add_argument("--lidx", default=default_lidx(), help="lidx binary (default ~/.local/bin/lidx)")
     p.add_argument("--workdir", default=DEFAULT_WORKDIR, help="repo clone cache")
+    p.add_argument("--reuse-baseline", metavar="RUN_DIR", dest="reuse_baseline",
+                   help="copy finished baseline trials from RUN_DIR and run only the lidx profile")
     p.add_argument("--scratch", help="per-trial clone/db root (default: <tmp>/lidx-agent-bench/<run name>)")
 
 

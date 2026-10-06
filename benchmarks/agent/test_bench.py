@@ -1,4 +1,7 @@
+import argparse
 import json
+import os
+import tempfile
 import unittest
 
 import bench
@@ -191,6 +194,72 @@ class ErrorAsymmetry(unittest.TestCase):
         rep = bench.aggregate([bad, trial("a", "baseline", 1, 50, 1, 1, 1)])
         self.assertEqual(rep["rows"][0]["errors"]["lidx"], 1)
         self.assertTrue(rep["rows"][0]["error_asymmetry"])
+
+
+class ReuseBaseline(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        r = self.tmp.name
+        self.tf = os.path.join(r, "t.json")
+        bench.write_json(self.tf, {"tasks": []})
+        self.src, self.out = os.path.join(r, "src"), os.path.join(r, "out")
+        self.tasks = [{"id": "a:1", "source": self.tf}, {"id": "b:2", "source": self.tf}]
+        os.makedirs(self.src)
+        bench.write_json(os.path.join(self.src, "run.json"), {
+            "model": "m", "effort": "high", "budget_usd": 2.0,
+            "task_files": {"t.json": bench.file_hash(self.tf)}})
+        for t in ("a_1", "b_2"):
+            for n in (1, 2):
+                self.put(t, "baseline", n, "ok")
+        self.put("a_1", "lidx", 1, "ok")
+        self.args = argparse.Namespace(model="m", effort="high", budget=2.0, trials=2, out=self.out)
+
+    def put(self, t, profile, n, status):
+        d = os.path.join(self.src, t, profile, str(n))
+        os.makedirs(d)
+        bench.write_json(os.path.join(d, "trial.json"), {"status": status, "task": t})
+        for f, body in (("stream.jsonl", "{}"), ("judge.json", "{}")):
+            with open(os.path.join(d, f), "w") as fh:
+                fh.write(body)
+
+    def test_copies_selected_trials_only(self):
+        self.args.trials = 1
+        got = bench.reuse_baseline(self.args, self.tasks[:1], self.src)
+        self.assertEqual(got, self.src)
+        d = os.path.join(self.out, "a_1", "baseline", "1")
+        self.assertEqual(sorted(os.listdir(d)), ["judge.json", "stream.jsonl", "trial.json"])
+        self.assertFalse(os.path.islink(os.path.join(d, "trial.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.out, "a_1", "baseline", "2")))
+        self.assertFalse(os.path.exists(os.path.join(self.out, "b_2")))
+        self.assertFalse(os.path.exists(os.path.join(self.out, "a_1", "lidx")))
+
+    def test_refuses_on_settings_mismatch(self):
+        for k, v in (("model", "other"), ("effort", "low"), ("budget", 3.0)):
+            a = argparse.Namespace(**dict(vars(self.args), **{k: v}))
+            with self.assertRaises(bench.Fatal):
+                bench.reuse_baseline(a, self.tasks, self.src)
+        with open(self.tf, "w") as f:
+            f.write('{"tasks": [1]}')
+        with self.assertRaises(bench.Fatal):
+            bench.reuse_baseline(self.args, self.tasks, self.src)
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_refuses_on_missing_or_failed_trial(self):
+        self.args.trials = 3
+        with self.assertRaises(bench.Fatal):
+            bench.reuse_baseline(self.args, self.tasks, self.src)
+        self.args.trials = 2
+        bench.write_json(os.path.join(self.src, "b_2", "baseline", "2", "trial.json"), {"status": "error"})
+        with self.assertRaises(bench.Fatal):
+            bench.reuse_baseline(self.args, self.tasks, self.src)
+        self.assertFalse(os.path.exists(self.out))     # nothing copied on refusal
+
+    def test_header_shows_reuse_and_lidx(self):
+        rep = bench.aggregate([trial("a", "baseline", 1, 50, 1, 1, 1)])
+        txt = bench.render(rep, {"model": "m", "reused_baseline_from": "/x/run", "lidx_path": "/bin/lidx"})
+        self.assertIn("Baseline reused from /x/run", txt)
+        self.assertIn("lidx binary: /bin/lidx", txt)
 
 
 if __name__ == "__main__":
