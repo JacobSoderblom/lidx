@@ -1,0 +1,185 @@
+{
+  "name": "swe-qa",
+  "tasks": [
+    {
+      "id": "reflex:6",
+      "category": "what",
+      "repo": {
+        "url": "https://github.com/reflex-dev/reflex.git",
+        "commit": "fe0f946dc0c240c6c1e513318c21db407e191c78"
+      },
+      "question": "What is the role of the computation function returned by the derived state variable class's computation function accessor in the framework's dependency tracking for state recomputation?"
+    },
+    {
+      "id": "sqlfluff:2",
+      "category": "what",
+      "repo": {
+        "url": "https://github.com/sqlfluff/sqlfluff.git",
+        "commit": "db9801b7eb7fd014e765117f63ee1b0675fa9f87"
+      },
+      "question": "What is the architectural role of the functional-style wrapper classes that convert rule context segments into tuple-based collections with query methods in decoupling the layout rule that enforces select target line placement from direct parse tree structure access?"
+    },
+    {
+      "id": "conan:1",
+      "category": "what",
+      "repo": {
+        "url": "https://github.com/conan-io/conan.git",
+        "commit": "52f43d98fe44ab92d01317110488d0670c3e9e64"
+      },
+      "question": "What is the integration mechanism between the Basic authentication credential processor and the authorization header processing base class for processing Basic credentials in the web framework's plugin system of the application server?"
+    },
+    {
+      "id": "pylint:10",
+      "category": "what",
+      "repo": {
+        "url": "https://github.com/pylint-dev/pylint.git",
+        "commit": "44740e5e5cdd2b80321a4f0ed4254213d058b9f6"
+      },
+      "question": "What is the architectural pattern that distinguishes type-annotated from non-annotated instance attribute initialization using AST node type separation?"
+    },
+    {
+      "id": "pylint:9",
+      "category": "what",
+      "repo": {
+        "url": "https://github.com/pylint-dev/pylint.git",
+        "commit": "44740e5e5cdd2b80321a4f0ed4254213d058b9f6"
+      },
+      "question": "What is the scope resolution chain for the namedtuple class attribute used as return type annotation in the nested class that affects static type checking in importing modules?"
+    },
+    {
+      "id": "sympy:38",
+      "category": "where",
+      "repo": {
+        "url": "https://github.com/sympy/sympy.git",
+        "commit": "3c817ed8ab551d71e36907ce869afe5e4ca789ff"
+      },
+      "question": "Where does the data flow from the deprecated matrix entry method through the matrix determinant class method to the determinant computation module?"
+    },
+    {
+      "id": "conan:39",
+      "category": "where",
+      "repo": {
+        "url": "https://github.com/conan-io/conan.git",
+        "commit": "52f43d98fe44ab92d01317110488d0670c3e9e64"
+      },
+      "question": "Where in the control flow does the interaction between the timestamp separation delay, the targeted remote upload operation, and the update flag combined with remote filtering to a specific repository lead to the status assertion indicating the cached version is newer than the remote version in the integration test that verifies update behavior with remote filtering?"
+    },
+    {
+      "id": "xarray:46",
+      "category": "where",
+      "repo": {
+        "url": "https://github.com/pydata/xarray.git",
+        "commit": "40119bf35c53fc222934894d842cfc07b2e264bf"
+      },
+      "question": "Where does the cumprod function's data flow handle the propagation of NaN values through the cumulative product computation when skipna transitions from True to False, and what intermediate state changes occur in the numeric_only filtering before the reduce operation executes?"
+    },
+    {
+      "id": "astropy:38",
+      "category": "where",
+      "repo": {
+        "url": "https://github.com/astropy/astropy.git",
+        "commit": "0a041d38fbd0014298d4cf340d9f891c4522093f"
+      },
+      "question": "Where in the control flow of the Simple Imaging Polynomial distortion correction method does the transformation of input coordinates pass through intermediate shifted values before polynomial distortion application?"
+    },
+    {
+      "id": "matplotlib:37",
+      "category": "where",
+      "repo": {
+        "url": "https://github.com/matplotlib/matplotlib.git",
+        "commit": "a5e1f6086e92d5cc0a23f85685d03d85b89a8395"
+      },
+      "question": "Where does the FontInfo NamedTuple propagate font metrics and glyph data through the mathematical text rendering pipeline, and what control flow determines whether the postscript_name or the FT2Font object is used at different stages of character rendering?"
+    },
+    {
+      "id": "streamlink:14",
+      "category": "how",
+      "repo": {
+        "url": "https://github.com/streamlink/streamlink.git",
+        "commit": "ab1f36560005253ca6a290a614730bf18a29a7f9"
+      },
+      "question": "How does the stream retrieval method implement multi-stage validation schema composition for extracting and processing embedded media delivery platform metadata?"
+    },
+    {
+      "id": "conan:19",
+      "category": "how",
+      "repo": {
+        "url": "https://github.com/conan-io/conan.git",
+        "commit": "52f43d98fe44ab92d01317110488d0670c3e9e64"
+      },
+      "question": "How does the package manager compute the final target platform and build platform dependency sets when a package is declared both as a runtime dependency and as a build-time tool dependency, while preventing duplication and preserving correct context information?"
+    },
+    {
+      "id": "django:21",
+      "category": "how",
+      "repo": {
+        "url": "https://github.com/django/django.git",
+        "commit": "14fc2e97036fc9d7acb55ada4f16f1aa3bdc5ec7"
+      },
+      "question": "How should the migration system architecture handle the exception hierarchy to prevent irreversible operations from being executed, and what design pattern enables safe delegation of rollback decisions across multiple migration components?"
+    },
+    {
+      "id": "pylint:14",
+      "category": "how",
+      "repo": {
+        "url": "https://github.com/pylint-dev/pylint.git",
+        "commit": "44740e5e5cdd2b80321a4f0ed4254213d058b9f6"
+      },
+      "question": "How does a deep copying hook method with an extra parameter violate the protocol that Python's copy module expects?"
+    },
+    {
+      "id": "requests:16",
+      "category": "how",
+      "repo": {
+        "url": "https://github.com/psf/requests.git",
+        "commit": "46e939b5525d9c72b677340985582b04b128478a"
+      },
+      "question": "How does the SessionRedirectMixin handle the interplay between cookie extraction, cookie merging, and cookie preparation across multiple redirect hops while maintaining cookie jar consistency?"
+    },
+    {
+      "id": "django:32",
+      "category": "why",
+      "repo": {
+        "url": "https://github.com/django/django.git",
+        "commit": "14fc2e97036fc9d7acb55ada4f16f1aa3bdc5ec7"
+      },
+      "question": "Why does the User model's unique constraint on the username field interact with Django's ORM transaction handling and what cascading effects would occur if this constraint were removed on an existing database with formset-based bulk operations?"
+    },
+    {
+      "id": "xarray:32",
+      "category": "why",
+      "repo": {
+        "url": "https://github.com/pydata/xarray.git",
+        "commit": "40119bf35c53fc222934894d842cfc07b2e264bf"
+      },
+      "question": "Why do performance bottlenecks emerge from the sequential invocation of from_variables(), from_xindex(), and assign_coords() operations on large datasets, and how does the overhead of variable materialization during coordinate transformation impact throughput compared to direct index assignment?"
+    },
+    {
+      "id": "streamlink:43",
+      "category": "why",
+      "repo": {
+        "url": "https://github.com/streamlink/streamlink.git",
+        "commit": "ab1f36560005253ca6a290a614730bf18a29a7f9"
+      },
+      "question": "Why does the parameter that enables reduced-latency streaming mode in a platform-specific HLS stream implementation class's initialization affect HLS segment fetching performance and buffer management?"
+    },
+    {
+      "id": "sympy:26",
+      "category": "why",
+      "repo": {
+        "url": "https://github.com/sympy/sympy.git",
+        "commit": "3c817ed8ab551d71e36907ce869afe5e4ca789ff"
+      },
+      "question": "Why does the abstract base class for N-dimensional arrays delegate object creation to the immutable dense storage implementation instead of providing its own initialization?"
+    },
+    {
+      "id": "conan:27",
+      "category": "why",
+      "repo": {
+        "url": "https://github.com/conan-io/conan.git",
+        "commit": "52f43d98fe44ab92d01317110488d0670c3e9e64"
+      },
+      "question": "Why does the method that checks if a repository has uncommitted changes implement its own exclusion filtering instead of using git's built‑in pathspec options?"
+    }
+  ]
+}

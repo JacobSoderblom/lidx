@@ -1,0 +1,5 @@
+The SWE-QA task subset (tasks/swe-qa.json), its reference answers
+(references/swe-qa.json) and the judge rubric used by bench.py come from
+zvec-ai/zvec-grep (Apache-2.0, https://github.com/zvec-ai/zvec-grep), which
+selected them from peng-weihan/SWE-QA-Bench at revision
+c13deac7a0d99b0ca2e593e004c4739475785b08.
