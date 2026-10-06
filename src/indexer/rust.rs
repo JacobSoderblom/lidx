@@ -228,11 +228,6 @@ pub struct RustExtractor {
     crate_root_cache: RefCell<HashMap<PathBuf, Option<PathBuf>>>,
     /// Parsed `Cargo.toml` target roots per crate directory (see `Manifest`).
     manifest_cache: RefCell<HashMap<PathBuf, Rc<Manifest>>>,
-    /// The library crate name of the file `module_name_from_rel_path` last
-    /// saw, when that file is its crate's lib root: the next `extract` call
-    /// records it on the root module so the resolver can find the crate by
-    /// the name other crates use (`grep_cli::...`).
-    pending_crate_name: RefCell<Option<String>>,
 }
 
 impl RustExtractor {
@@ -245,7 +240,6 @@ impl RustExtractor {
             repo_root: None,
             crate_root_cache: RefCell::new(HashMap::new()),
             manifest_cache: RefCell::new(HashMap::new()),
-            pending_crate_name: RefCell::new(None),
         })
     }
 
@@ -284,12 +278,20 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
         self.manifest_cache.borrow_mut().clear();
     }
 
+    /// `crate <lib name>` when `rel_path` is its crate's lib root, so the
+    /// resolver can find the crate by the name other crates use
+    /// (`grep_cli::...`); the indexer applies it to the root module after
+    /// `extract`.
     fn root_module_signature(&self, rel_path: &str) -> Option<String> {
-        self.module_name_from_rel_path(rel_path);
-        self.pending_crate_name
-            .borrow_mut()
-            .take()
-            .map(|name| format!("crate {name}"))
+        let repo_root = self.repo_root.as_deref()?;
+        let dir = Path::new(rel_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
+        let crate_dir = find_crate_root(repo_root, dir, &self.crate_root_cache)?;
+        let name = self
+            .manifest(repo_root, &crate_dir)
+            .lib_crate_name(&crate_dir, rel_path)?;
+        Some(format!("crate {name}"))
     }
 
     fn module_name_from_rel_path(&self, rel_path: &str) -> String {
@@ -300,10 +302,8 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             .parent()
             .unwrap_or_else(|| Path::new(""));
         let crate_root = find_crate_root(repo_root, dir, &self.crate_root_cache);
-        *self.pending_crate_name.borrow_mut() = None;
         if let Some(crate_dir) = crate_root.as_deref() {
             let manifest = self.manifest(repo_root, crate_dir);
-            *self.pending_crate_name.borrow_mut() = manifest.lib_crate_name(crate_dir, rel_path);
             if let Some(module) = manifest.explicit_root_module(crate_dir, rel_path) {
                 return module;
             }
@@ -325,12 +325,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
         let root = tree.root_node();
 
         let module_span = span(root);
-        let mut module_symbol = module_symbol_with_span(module_name, module_span, "::", None);
-        if module_name == "crate"
-            && let Some(name) = self.pending_crate_name.borrow_mut().take()
-        {
-            module_symbol.signature = Some(format!("crate {name}"));
-        }
+        let module_symbol = module_symbol_with_span(module_name, module_span, "::", None);
         output.symbols.push(module_symbol);
         let mut macro_parser = Parser::new();
         macro_parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;

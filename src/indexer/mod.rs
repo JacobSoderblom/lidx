@@ -1257,6 +1257,12 @@ impl Indexer {
             .map_err(|err| anyhow!("extract error {} ({module_name}): {err}", file.rel_path))?;
         // Re-borrow immutably for resolve_imports (extract's &mut borrow is released)
         let extractor = self.extractors.get(file.language.as_str()).unwrap();
+        if module_name == "crate"
+            && let Some(signature) = extractor.root_module_signature(&file.rel_path)
+            && let Some(root) = extracted.symbols.first_mut()
+        {
+            root.signature = Some(signature);
+        }
         extractor.resolve_imports(
             &self.repo_root,
             &file.rel_path,
