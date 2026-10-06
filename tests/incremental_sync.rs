@@ -2960,3 +2960,42 @@ fn rust_fn_ref_target_added_then_removed_matches_fresh() {
     let (_f2, fresh) = common::index_files(&renamed);
     common::assert_matches_fresh(&snap, &fresh);
 }
+
+const RECV_LIB: &str = "mod types;\nmod user;\n";
+const RECV_TYPES: &str = "pub struct A;\nimpl A {\n    pub fn go(&self) {}\n}\n\
+pub struct B;\nimpl B {\n    pub fn go(&self) {}\n}\n";
+const RECV_USER_A: &str = "use crate::types::{A, B};\n\
+fn make() -> A {\n    A\n}\n\
+pub fn run() {\n    let make = make();\n    make.go();\n    B.go();\n}\n";
+const RECV_USER_B: &str = "use crate::types::{A, B};\n\
+fn make() -> B {\n    B\n}\n\
+pub fn run() {\n    let make = make();\n    make.go();\n    B.go();\n}\n";
+
+/// A local typed by a free fn's declared return type re-binds when the
+/// return type is edited, and a `Self`-returning chain follows its owner.
+#[test]
+fn rust_local_from_fn_return_type_edit_matches_fresh() {
+    let base: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", RECV_LIB),
+        ("src/types.rs", RECV_TYPES),
+        ("src/user.rs", RECV_USER_A),
+    ];
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-recv-ret", &base);
+    common::write_files(&repo_root, &[("src/user.rs", RECV_USER_B)]);
+    indexer
+        .sync_rel_paths(&["src/user.rs".to_string()])
+        .unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        snap.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "crate::user::run"
+            && e.target_qualname.as_deref() == Some("crate::types::B::go")),
+        "{snap:#?}"
+    );
+    let mut edited = base.clone();
+    edited[3] = ("src/user.rs", RECV_USER_B);
+    let (_f, fresh) = common::index_files(&edited);
+    common::assert_matches_fresh(&snap, &fresh);
+}

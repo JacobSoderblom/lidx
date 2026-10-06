@@ -1630,6 +1630,15 @@ fn lookup_local(locals: &Locals, name: &str, pos: usize) -> Ty {
     best.map_or(Ty::Unknown, |(_, ty)| ty)
 }
 
+/// Whether any binding of `name` (typed or not) is visible at byte `pos`.
+fn is_bound_at(locals: &Locals, name: &str, pos: usize) -> bool {
+    locals
+        .get(name)
+        .into_iter()
+        .flatten()
+        .any(|b| b.scope.0 <= pos && pos < b.scope.1)
+}
+
 fn record_local(out: &mut Locals, name: String, ty: Ty, scope: Scope) {
     out.entry(name).or_default().push(Binding { scope, ty });
 }
@@ -1935,8 +1944,13 @@ impl TypeEnv<'_> {
         let segs: Vec<&str> = raw.split("::").collect();
         // `shadowed_names` only guards a bare callee; a path's first segment
         // is a type or module, never a local.
+        // A bare callee is shadowed only by a binding visible at the call:
+        // `let matcher = matcher(..)` still calls the fn (the new binding
+        // starts after its initialiser).
         let shadowed = segs.len() == 1
-            && (ctx.shadowed_names.contains(segs[0]) || ctx.shadowed_names.contains("*"));
+            && (ctx.shadowed_names.contains("*")
+                || (ctx.shadowed_names.contains(segs[0])
+                    && is_bound_at(locals, segs[0], call.start_byte())));
         let imported = if shadowed {
             None
         } else {
@@ -2923,6 +2937,22 @@ fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
                     env.bind(pat, &ty.unwrap_or(Ty::Unknown), scope, out);
                 }
             }
+            "use_declaration" => {
+                // An in-fn `use` names a fn or type, never a typed local; it
+                // still shadows the same-named item for bare calls.
+                if let Some(block) = child.parent() {
+                    let mut names = HashSet::new();
+                    collect_identifiers(child, env.source, &mut names);
+                    for name in names {
+                        record_local(
+                            out,
+                            name,
+                            Ty::Unknown,
+                            (block.start_byte(), block.end_byte()),
+                        );
+                    }
+                }
+            }
             "let_declaration" => {
                 if let (Some(pat), Some(block)) =
                     (child.child_by_field_name("pattern"), child.parent())
@@ -2993,6 +3023,16 @@ fn collect_local_types(node: Node<'_>, env: &TypeEnv<'_>, out: &mut Locals) {
             _ => {}
         }
         collect_local_types(child, env, out);
+    }
+}
+
+fn collect_identifiers(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    if node.kind() == "identifier" {
+        out.insert(node_text(node, source));
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_identifiers(child, source, out);
     }
 }
 
