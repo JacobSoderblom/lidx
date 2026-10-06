@@ -2763,3 +2763,42 @@ fn incremental_ts_pinned_receiver_type_matches_fresh() {
     ]);
     common::assert_matches_fresh(&snapshot, &fresh);
 }
+
+#[test]
+fn incremental_ts_object_literal_namespace_member_matches_fresh() {
+    let lib_ts =
+        "export const sign = (p: string) => p;\nexport const verifyWithJwks = (t: string) => t;\n";
+    let index_before = "import { sign } from './jwt';\nexport const Jwt = { sign };\n";
+    let index_after = "import { sign, verifyWithJwks } from './jwt';\nexport const Jwt = { sign, verifyWithJwks };\n";
+    let caller_ts = "import { Jwt } from './jwt';\nexport function check(t: string) {\n  Jwt.verifyWithJwks(t);\n}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-object-ns",
+        &[
+            ("src/jwt/jwt.ts", lib_ts),
+            ("src/jwt/index.ts", index_before),
+            ("src/mw.ts", caller_ts),
+        ],
+    );
+    common::write_files(&repo_root, &[("src/jwt/index.ts", index_after)]);
+    indexer
+        .sync_rel_paths(&["src/jwt/index.ts".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "src/mw.check"
+            && e.target_qualname.as_deref() == Some("src/jwt/jwt.verifyWithJwks")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("src/jwt/jwt.ts", lib_ts),
+        ("src/jwt/index.ts", index_after),
+        ("src/mw.ts", caller_ts),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}

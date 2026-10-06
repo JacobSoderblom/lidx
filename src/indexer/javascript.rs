@@ -28,7 +28,6 @@ use tree_sitter::{Node, Parser};
 /// "typescript" and "tsx" alike (`db::resolver::profile_for`) since they
 /// share one resolution family.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
-    import_member_fallback: true,
     visibility: VisibilityRule::Recorded,
     ..LanguageProfile::DEFAULT
 };
@@ -490,6 +489,10 @@ struct FileExports {
     /// This file's own imports, so `import { Foo } from './foo'; export {
     /// Foo }` chases on to `./foo`.
     imports: ImportBindings,
+    /// Top-level `const X = { .. }` object literals: `X` -> property to the
+    /// identifier it is bound to (`{ a }`, `{ a: b }`), `None` for any other
+    /// value. A call `X.a()` goes to what `a` names, see `object_member_target`.
+    object_consts: HashMap<String, HashMap<String, Option<String>>>,
 }
 
 impl FileExports {
@@ -514,7 +517,7 @@ impl FileExports {
             format!("{v:?}")
         }
         format!(
-            "{}|{}|{:?}|{}|{}|{}|{}",
+            "{}|{}|{:?}|{}|{}|{}|{}|{}",
             sorted(self.names.iter()),
             sorted(self.aliases.iter()),
             self.default_local,
@@ -526,6 +529,11 @@ impl FileExports {
             sorted(self.stars.iter()),
             sorted(self.namespaces.iter()),
             sorted(self.imports.iter().map(|(k, (s, i))| (k, s, i))),
+            sorted(
+                self.object_consts
+                    .iter()
+                    .map(|(k, props)| (k, sorted(props.iter())))
+            ),
         )
     }
 }
@@ -570,6 +578,7 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
     let mut cursor = root.walk();
     for stmt in root.named_children(&mut cursor) {
         collect_exported_names(stmt, &source, &mut ex);
+        collect_object_consts(stmt, &source, &mut out.object_consts);
         if !matches!(stmt.kind(), "export_statement" | "export_declaration") {
             continue;
         }
@@ -636,6 +645,61 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
     }
     out.names = ex.names;
     out
+}
+
+/// Records the object-literal initializer of each `const` a top-level
+/// statement (or its `export`) declares; see `FileExports::object_consts`.
+fn collect_object_consts(
+    stmt: Node<'_>,
+    source: &str,
+    out: &mut HashMap<String, HashMap<String, Option<String>>>,
+) {
+    let decl = match stmt.kind() {
+        "export_statement" => stmt.child_by_field_name("declaration"),
+        _ => Some(stmt),
+    };
+    let Some(decl) = decl.filter(|d| d.kind() == "lexical_declaration") else {
+        return;
+    };
+    let mut cursor = decl.walk();
+    for declarator in decl.named_children(&mut cursor) {
+        let (Some(name), Some(mut value)) = (
+            declarator.child_by_field_name("name"),
+            declarator.child_by_field_name("value"),
+        ) else {
+            continue;
+        };
+        while matches!(value.kind(), "as_expression" | "satisfies_expression")
+            && let Some(inner) = value.named_child(0)
+        {
+            value = inner;
+        }
+        if name.kind() != "identifier" || value.kind() != "object" {
+            continue;
+        }
+        let mut props = HashMap::new();
+        let mut pc = value.walk();
+        for member in value.named_children(&mut pc) {
+            match member.kind() {
+                "shorthand_property_identifier" => {
+                    let id = node_text(member, source);
+                    props.insert(id.clone(), Some(id));
+                }
+                "pair" => {
+                    let (Some(key), Some(v)) = (
+                        member.child_by_field_name("key"),
+                        member.child_by_field_name("value"),
+                    ) else {
+                        continue;
+                    };
+                    let target = (v.kind() == "identifier").then(|| node_text(v, source));
+                    props.insert(node_text(key, source), target);
+                }
+                _ => {}
+            }
+        }
+        out.insert(node_text(name, source), props);
+    }
 }
 
 /// Hash of what `chase_export` can see of `rel` (its export surface), or
@@ -764,7 +828,10 @@ fn chase_member(
     let lookup = if is_default { DEFAULT_EXPORT } else { head };
     let fallback = || (dst.to_string(), member.to_string());
     match chase_export(repo_root, dst, lookup, cache, &mut Visited::new()) {
-        Some(ExportTarget::Symbol(path, name)) => (path, format!("{name}{tail}")),
+        Some(ExportTarget::Symbol(path, name)) => {
+            object_member_target(repo_root, &path, &name, &tail, cache)
+                .unwrap_or_else(|| (path, format!("{name}{tail}")))
+        }
         // `ns.fn()` through an exported namespace: chase `fn` in that module.
         Some(ExportTarget::Namespace(module)) => {
             let Some((next, rest)) = tail.strip_prefix('.').map(|t| match t.split_once('.') {
@@ -779,6 +846,44 @@ fn chase_member(
             }
         }
         None => fallback(),
+    }
+}
+
+/// `obj.member[.rest]` where `obj` is a const in `path` initialized with an
+/// object literal: the declaration the property `member` is bound to
+/// (`{ member }`, `{ member: other }`), chased through `other`'s import when
+/// it is one. `None` when `obj` is no such literal or the property is absent
+/// or not a plain identifier (an inline function has its own symbol, if any).
+fn object_member_target(
+    repo_root: &Path,
+    path: &str,
+    obj: &str,
+    tail: &str,
+    cache: &mut ExportCache,
+) -> Option<(String, String)> {
+    let tail = tail.strip_prefix('.')?;
+    let (member, rest) = match tail.split_once('.') {
+        Some((m, r)) => (m, format!(".{r}")),
+        None => (tail, String::new()),
+    };
+    let exports = cache
+        .entry(path.to_string())
+        .or_insert_with(|| scan_exports(repo_root, path).map(Rc::new))
+        .clone()?;
+    let ident = exports.object_consts.get(obj)?.get(member)?.as_ref()?;
+    let Some((spec, imported)) = exports.imports.get(ident) else {
+        return Some((path.to_string(), format!("{ident}{rest}")));
+    };
+    let dst = resolve_import_path(repo_root, path, spec)?;
+    match chase_export(
+        repo_root,
+        &dst,
+        imported.as_deref()?,
+        cache,
+        &mut Visited::new(),
+    )? {
+        ExportTarget::Symbol(p, n) => Some((p, format!("{n}{rest}"))),
+        ExportTarget::Namespace(_) => None,
     }
 }
 
@@ -7857,6 +7962,96 @@ export function Button() {
             "import { Node } from './node'\nexport function f(n: Node) { n.only('a') }\n",
         );
         assert_eq!(callee(&conn, "src/reg/trie.f", "only"), None);
+    }
+
+    const JWT_LIB: &str = "export const sign = (p: string) => p\nexport const verifyWithJwks = (t: string) => t\nexport function decode(t: string) { return t }\n";
+
+    fn jwt_repo(index_source: &str, caller: &str) -> (tempfile::TempDir, Connection) {
+        index_repo(&[
+            ("src/jwt/jwt.ts", JWT_LIB),
+            ("src/jwt/index.ts", index_source),
+            // Decoy: the only other symbol named `verifyWithJwks`.
+            (
+                "src/middleware/alias.ts",
+                "export const verifyWithJwks = () => 1\n",
+            ),
+            ("src/mw.ts", caller),
+        ])
+    }
+
+    const JWT_CALLER: &str = "import { Jwt } from './jwt'\nexport function check(t: string) {\n  Jwt.verifyWithJwks(t)\n  Jwt.sign(t)\n  Jwt.decode(t)\n  Jwt.missing(t)\n}\n";
+
+    #[test]
+    fn object_literal_namespace_member_follows_the_property_to_its_import() {
+        let (_dir, conn) = jwt_repo(
+            "import { decode, sign, verifyWithJwks } from './jwt'\nexport const Jwt = { sign, verifyWithJwks: verifyWithJwks, decode }\n",
+            JWT_CALLER,
+        );
+        assert_eq!(
+            callee(&conn, "src/mw.check", "verifyWithJwks").as_deref(),
+            Some("src/jwt/jwt.verifyWithJwks")
+        );
+        assert_eq!(
+            callee(&conn, "src/mw.check", "sign").as_deref(),
+            Some("src/jwt/jwt.sign")
+        );
+        assert_eq!(
+            callee(&conn, "src/mw.check", "decode").as_deref(),
+            Some("src/jwt/jwt.decode")
+        );
+    }
+
+    #[test]
+    fn object_literal_namespace_member_follows_an_aliased_import_and_same_file_decl() {
+        let (_dir, conn) = jwt_repo(
+            "import { sign as signToken, verifyWithJwks } from './jwt'\nfunction decode(t: string) { return t }\nexport const Jwt = { sign: signToken, verifyWithJwks, decode }\n",
+            JWT_CALLER,
+        );
+        assert_eq!(
+            callee(&conn, "src/mw.check", "sign").as_deref(),
+            Some("src/jwt/jwt.sign")
+        );
+        assert_eq!(
+            callee(&conn, "src/mw.check", "decode").as_deref(),
+            Some("src/jwt.decode")
+        );
+    }
+
+    #[test]
+    fn object_literal_namespace_member_that_cannot_resolve_never_binds_the_container() {
+        let (_dir, conn) = jwt_repo(
+            "import { sign } from './jwt'\nexport const Jwt = { sign, inline: () => 1 }\n",
+            "import { Jwt } from './jwt'\nexport function check(t: string) {\n  Jwt.verifyWithJwks(t)\n  Jwt.missing(t)\n}\n",
+        );
+        // Neither a decoy of the same name nor the `Jwt` const itself.
+        assert_eq!(callee(&conn, "src/mw.check", "verifyWithJwks"), None);
+        assert_eq!(callee(&conn, "src/mw.check", "missing"), None);
+        let bound_to_container: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM edges e JOIN symbols t ON t.id = e.target_symbol_id
+                 WHERE e.kind = 'CALLS' AND t.qualname = 'src/jwt.Jwt'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bound_to_container, 0);
+    }
+
+    #[test]
+    fn alias_of_an_object_literal_member_is_not_a_call() {
+        let (_dir, conn) = jwt_repo(
+            "import { sign } from './jwt'\nexport const Jwt = { sign }\n",
+            "import { Jwt } from './jwt'\nexport const signIt = Jwt.sign\n",
+        );
+        let calls: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+                 WHERE e.kind = 'CALLS' AND s.qualname LIKE 'src/mw%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(calls, 0);
     }
 
     #[test]

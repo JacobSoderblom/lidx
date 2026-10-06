@@ -360,12 +360,6 @@ pub(crate) struct LanguageProfile {
     /// suffix. Off for languages whose candidates are already absolute
     /// (Rust), where a suffix hit would be a same-named local module.
     pub import_suffix_matching: bool,
-    /// Whether `resolve_import`, when no candidate hits, retries each with
-    /// its last segment stripped (`mod.x.m` -> `mod.x`), so a member call on
-    /// an imported binding whose members aren't indexed (a JS/TS object
-    /// literal) binds to the binding itself. Only a `const`/`variable`
-    /// parent counts, never a class/module (issue #113).
-    pub import_member_fallback: bool,
     /// How the guarded name-fallback tier (`Resolver::same_lang_lookup`,
     /// tier 5 only — see the module doc) decides whether a same-language,
     /// same-kind, cross-file candidate is visible to the reference. Never
@@ -460,7 +454,6 @@ impl LanguageProfile {
         normalize_import_target: None,
         import_miss: ImportMissPolicy::Refuse,
         import_suffix_matching: true,
-        import_member_fallback: false,
         visibility: VisibilityRule::None,
         deferred_rpc: None,
         untyped_receiver_is_external: true,
@@ -2301,41 +2294,7 @@ impl<'c> Resolver<'c> {
                 return Ok(found);
             }
         }
-        if !profile_for(source_lang).import_member_fallback {
-            return Ok(None);
-        }
-        let mut found: Option<i64> = None;
-        for candidate in candidates {
-            // Walk up one segment at a time (`api.users.list` -> `api.users`
-            // -> `api`) until a symbol hits; only a const/variable binds, any
-            // other kind (class, module, ...) ends the walk unbound.
-            let mut rest = candidate.as_str();
-            let mut hit = None;
-            while let Some((parent, _)) = rest.rsplit_once('.') {
-                rest = parent;
-                let Some(id) = self.exact(parent, symbol_map, caller_file, false)? else {
-                    continue;
-                };
-                let kind: Option<String> = self
-                    .conn
-                    .query_row("SELECT kind FROM symbols WHERE id = ?", [id], |r| r.get(0))
-                    .optional()?;
-                if matches!(kind.as_deref(), Some("const" | "variable")) {
-                    hit = Some(id);
-                }
-                break;
-            }
-            let Some(id) = hit else { continue };
-            match found {
-                None => found = Some(id),
-                Some(existing) if existing == id => {}
-                Some(_) => {
-                    self.saw_ambiguous = true;
-                    return Ok(None);
-                }
-            }
-        }
-        Ok(found)
+        Ok(None)
     }
 
     /// Resolve an `IMPORTS_FILE` edge's ordered candidate list (see
@@ -2499,6 +2458,14 @@ impl<'c> Resolver<'c> {
         else {
             return Ok(Some(Resolution::Unresolved(UnresolvedReason::NoCandidates)));
         };
+        // A JS/TS member of an imported repo value (`Jwt.missing` with `Jwt` a
+        // repo const/class) is a repo-side miss, never an external symbol,
+        // and no name guess may stand in for it.
+        if resolution_language_family(source_lang) == "javascript"
+            && self.import_candidate_has_repo_container(source_lang, import_candidates)?
+        {
+            return Ok(Some(Resolution::Unresolved(UnresolvedReason::NoCandidates)));
+        }
         if !self.denotes_external_symbol(source_lang, &qualname, import_candidates)? {
             return Ok(None);
         }
@@ -2509,6 +2476,36 @@ impl<'c> Resolver<'c> {
                 via_language_fallback,
             },
         )))
+    }
+
+    /// Whether a leading part of some import candidate (`lib/api.api` of
+    /// `lib/api.api.users.list`) names a repo value or type whose member the
+    /// candidate is: a const, variable, class, interface or enum.
+    fn import_candidate_has_repo_container(
+        &mut self,
+        source_lang: &str,
+        import_candidates: &[String],
+    ) -> Result<bool> {
+        let family = resolution_language_family(source_lang);
+        let gv = self.graph_version;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT f.language FROM symbols s JOIN files f ON f.id = s.file_id
+             WHERE s.graph_version = ?1 AND s.qualname = ?2
+               AND s.kind IN ('const', 'variable', 'class', 'interface', 'enum')",
+        )?;
+        for candidate in import_candidates {
+            let prefixes = qualname_prefixes(candidate);
+            for prefix in &prefixes[..prefixes.len() - 1] {
+                let mut rows = stmt.query(params![gv, prefix])?;
+                while let Some(row) = rows.next()? {
+                    let language: String = row.get(0)?;
+                    if resolution_language_family(&language) == family {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Whether the stub name `qualname` (`ext:`-prefixed) can denote a real
