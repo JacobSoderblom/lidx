@@ -109,7 +109,32 @@ pub enum ReceiverType {
     /// A target-typed `new(..)` passed as a call argument: constructs the
     /// callee's declared parameter type (never a receiver type itself).
     DeferredArgument(DeferredArgument),
+    /// A `Known` type pinned to the one declaration the file means by its
+    /// name (TypeScript/JavaScript): the resolver binds members against
+    /// exactly that class and its ancestors, never another class of the
+    /// same bare name. See [`PinnedType`].
+    Pinned(PinnedType),
 }
+
+/// A receiver type pinned to one declaration. The persisted form of a
+/// pin lives with [`ReceiverType::to_columns`] ([`PINNED_TYPE_MARK`]);
+/// [`ReceiverType::decode_pinned`] is its only reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinnedType {
+    /// Declared in this file: the class's qualname (`src/node.Node`).
+    Declared(String),
+    /// Named through an import not yet located. `resolve_import_file_edges`
+    /// turns it into `Declared`; one it cannot locate is stored as the bare
+    /// `local` name, so the raw specifier is never persisted.
+    Imported {
+        local: String,
+        spec: String,
+        member: String,
+    },
+}
+
+/// Prefixes a pinned receiver type's qualname in `edges.receiver_type`.
+const PINNED_TYPE_MARK: char = '\u{2}';
 
 /// "The (optionally awaited) return value of `base.method(..)`".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,6 +352,12 @@ impl ReceiverType {
         }
     }
 
+    /// The pinned declaration's qualname in a stored `receiver_type`
+    /// column value; `None` for any other value.
+    pub fn decode_pinned(column: &str) -> Option<&str> {
+        column.strip_prefix(PINNED_TYPE_MARK)
+    }
+
     /// The columns to store: `receiver_type` `None` = not tracked (legacy
     /// resolution tiers apply) or deferred, `Some("")` = tracked but
     /// unresolved/builtin (must not bind, no lookup attempted at all),
@@ -337,6 +368,13 @@ impl ReceiverType {
             ReceiverType::NotTracked => {}
             ReceiverType::Unresolved => columns.receiver_type = Some(String::new()),
             ReceiverType::Known(ty) => columns.receiver_type = Some(ty.clone()),
+            ReceiverType::Pinned(PinnedType::Declared(qualname)) => {
+                columns.receiver_type = Some(format!("{PINNED_TYPE_MARK}{qualname}"));
+            }
+            // Never persist the unlocated `spec\0member` form.
+            ReceiverType::Pinned(PinnedType::Imported { local, .. }) => {
+                columns.receiver_type = Some(local.clone());
+            }
             ReceiverType::Scoped { scope, ty } => {
                 columns.receiver_type = Some(ty.clone());
                 columns.receiver_scope = scope.encode();

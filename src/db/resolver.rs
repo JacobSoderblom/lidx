@@ -62,7 +62,6 @@ use crate::indexer::channel::is_bridge_edge_kind;
 use crate::indexer::extract::{
     CallShape, DEFERRED_KIND_ARGUMENT, DEFERRED_KIND_RETURN, DeferredMarker, TypeScope,
 };
-use crate::indexer::javascript::PINNED_TYPE_MARK;
 use crate::model::{has_parameter_list, is_partial_signature};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Statement, ToSql, named_params, params};
@@ -1858,7 +1857,9 @@ impl<'c> Resolver<'c> {
                 // same name is never a candidate. A pin naming no indexed
                 // type falls back to the bare name.
                 let mut known_type = known_type;
-                if let Some(pinned) = known_type.strip_prefix(PINNED_TYPE_MARK) {
+                if let Some(pinned) =
+                    crate::indexer::extract::ReceiverType::decode_pinned(known_type)
+                {
                     match self.resolve_pinned_member(pinned, method, caller.file_path)? {
                         PinnedMember::Found(id, kind) => return Ok(Some((id, kind))),
                         PinnedMember::Missing => return Ok(None),
@@ -1963,7 +1964,7 @@ impl<'c> Resolver<'c> {
     }
 
     /// `method` of the type declared as `type_qualname` (a receiver type
-    /// pinned by the extractor, see `PINNED_TYPE_MARK`): its own member, else
+    /// pinned by the extractor, see `PinnedType`): its own member, else
     /// the nearest ancestor's along already-bound EXTENDS/IMPLEMENTS/INHERITS
     /// edges, level by level. Two distinct members at one level is ambiguous.
     fn resolve_pinned_member(

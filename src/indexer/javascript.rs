@@ -1,7 +1,9 @@
 use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{CallShape, EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
+use crate::indexer::extract::{
+    CallShape, EdgeInput, ExtractedFile, PinnedType, ReceiverType, SymbolInput,
+};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::string_consts::{LocalBinding, StringConsts};
@@ -151,13 +153,6 @@ const IMPORT_PLACEHOLDER_SEP: char = '\0';
 /// Prefixes a placeholder member for a default import; the local name
 /// follows (`\u{1}api.get`).
 const DEFAULT_IMPORT_MARK: char = '\u{1}';
-
-/// Prefixes a `Known` receiver type pinned to one declaration: the
-/// qualname of the class (`src/node.Node`), which the resolver binds
-/// members against exactly instead of by bare type name. Before
-/// `resolve_import_file_edges` rewrites it, an imported type reads
-/// `\u{2}{local}\u{2}{specifier}\0{member}`.
-pub(crate) const PINNED_TYPE_MARK: char = '\u{2}';
 
 /// Locally-inferred type of a name bound within a single function body (or
 /// module top level). Deliberately coarse — see
@@ -419,16 +414,18 @@ pub fn resolve_import_file_edges(
         if edge.kind == proto::RPC_IMPL_KIND {
             resolve_handler_candidates(edge, &mut rewrite);
         }
-        if let ReceiverType::Known(ty) = &edge.receiver_type
-            && let Some(pinned) = ty.strip_prefix(PINNED_TYPE_MARK)
-            && let Some((local, placeholder)) = pinned.split_once(PINNED_TYPE_MARK)
+        if let ReceiverType::Pinned(PinnedType::Imported {
+            local,
+            spec,
+            member,
+        }) = &edge.receiver_type
         {
             // An import that names no repo declaration keeps the type as
             // written, like an unpinned one.
-            edge.receiver_type = ReceiverType::Known(match rewrite(placeholder) {
-                Some(qualname) => format!("{PINNED_TYPE_MARK}{qualname}"),
-                None => local.to_string(),
-            });
+            edge.receiver_type = match rewrite(&format!("{spec}{IMPORT_PLACEHOLDER_SEP}{member}")) {
+                Some(qualname) => ReceiverType::Pinned(PinnedType::Declared(qualname)),
+                None => ReceiverType::Known(local.clone()),
+            };
         }
     }
     let mut resolved = Vec::new();
@@ -3321,7 +3318,7 @@ fn pin_receiver_type(receiver: ReceiverType, ctx: &Context) -> ReceiverType {
         return receiver;
     }
     if ctx.declared_types.contains(ty) {
-        return ReceiverType::Known(format!("{PINNED_TYPE_MARK}{}.{ty}", ctx.module));
+        return ReceiverType::Pinned(PinnedType::Declared(format!("{}.{ty}", ctx.module)));
     }
     let Some((spec, Some(imported))) = ctx.import_bindings.get(ty) else {
         return receiver;
@@ -3331,9 +3328,11 @@ fn pin_receiver_type(receiver: ReceiverType, ctx: &Context) -> ReceiverType {
     } else {
         imported.clone()
     };
-    ReceiverType::Known(format!(
-        "{PINNED_TYPE_MARK}{ty}{PINNED_TYPE_MARK}{spec}{IMPORT_PLACEHOLDER_SEP}{member}"
-    ))
+    ReceiverType::Pinned(PinnedType::Imported {
+        local: ty.clone(),
+        spec: spec.clone(),
+        member,
+    })
 }
 
 /// Class, interface, enum and type-alias names declared at the top level
@@ -7470,7 +7469,7 @@ mod tests {
         JavascriptExtractor, grpc_service_from_path, match_alias_pattern, strip_jsonc,
         substitute_alias_target,
     };
-    use crate::indexer::extract::{LanguageExtractor, ReceiverType};
+    use crate::indexer::extract::{LanguageExtractor, PinnedType, ReceiverType};
     use crate::indexer::http;
     use crate::indexer::proto;
 
@@ -8260,7 +8259,7 @@ export function selfy() { return make().self().stage(1); }
         let known = |q: &str, ty: &str| {
             (
                 Some(q.to_string()),
-                ReceiverType::Known(format!("\u{2}b.{ty}")),
+                ReceiverType::Pinned(PinnedType::Declared(format!("b.{ty}"))),
             )
         };
         let unresolved = |q: &str| (Some(q.to_string()), ReceiverType::Unresolved);
