@@ -11,8 +11,8 @@
 //! class body) are lowered with `python_lower` into [`PyExpr`] values, so the
 //! evaluator never re-reads source text.
 
+use crate::indexer::python::{RawImport, join_from_import_target, raw_import};
 use crate::indexer::python::{absolutize_module, base_package_parts, definition_span};
-use crate::indexer::python::{import_name_and_alias, join_from_import_target};
 use crate::indexer::python_expr::{PyExpr, Why};
 use crate::indexer::python_lower::{Scope, lower_expr};
 use crate::indexer::tree_helpers::node_text;
@@ -203,6 +203,7 @@ pub struct PyLoadedFile {
 impl PyFileDecls {
     /// Compact JSON payload stored in `py_decls.payload`.
     pub fn to_payload(&self) -> String {
+        // Plain structs of strings/vecs/maps with string keys: serde_json cannot fail on them.
         serde_json::to_string(self).expect("PyFileDecls serializes")
     }
 
@@ -216,6 +217,7 @@ impl PyFileDecls {
     }
 }
 
+/// blake3 hex digest of a stored `py_decls` payload.
 pub fn payload_hash(payload: &str) -> String {
     blake3::hash(payload.as_bytes()).to_hex().to_string()
 }
@@ -995,18 +997,10 @@ pub(crate) fn lower_import(node: Node<'_>, source: &str, base_package: &[String]
         imports: Vec::new(),
         star: None,
     };
-    match node.kind() {
-        "import_statement" => {
-            let mut cursor = node.walk();
-            for name_node in node.children_by_field_name("name", &mut cursor) {
-                let Some((item, alias)) = import_name_and_alias(name_node, source) else {
-                    continue;
-                };
-                let module = node_text(item, source);
-                if module.is_empty() {
-                    continue;
-                }
-                out.imports.push(match alias.filter(|a| !a.is_empty()) {
+    match raw_import(node, source) {
+        Some(RawImport::Import(items)) => {
+            for (module, alias) in items {
+                out.imports.push(match alias {
                     Some(bound) => PyImport {
                         bound,
                         target: module,
@@ -1023,42 +1017,23 @@ pub(crate) fn lower_import(node: Node<'_>, source: &str, base_package: &[String]
                 });
             }
         }
-        "import_from_statement" => {
-            let Some(module_node) = node.child_by_field_name("module_name") else {
-                return out;
-            };
-            let base = node_text(module_node, source);
+        Some(RawImport::From { base, star, items }) => {
             let Some(abs_base) = absolutize_module(&base, base_package) else {
                 return out;
             };
-            let mut wc = node.walk();
-            if node
-                .children(&mut wc)
-                .any(|c| c.kind() == "wildcard_import")
-            {
+            if star {
                 out.star = Some(abs_base);
                 return out;
             }
-            let mut cursor = node.walk();
-            for name_node in node.children_by_field_name("name", &mut cursor) {
-                let Some((item, alias)) = import_name_and_alias(name_node, source) else {
-                    continue;
-                };
-                let item = node_text(item, source);
-                if item.is_empty() {
-                    continue;
-                }
-                let bound = alias
-                    .filter(|a| !a.is_empty())
-                    .unwrap_or_else(|| item.clone());
+            for (item, alias) in items {
                 out.imports.push(PyImport {
-                    bound,
+                    bound: alias.unwrap_or_else(|| item.clone()),
                     target: join_from_import_target(&abs_base, &item),
                     member: true,
                 });
             }
         }
-        _ => {}
+        None => {}
     }
     out
 }

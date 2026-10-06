@@ -500,94 +500,6 @@ impl Db {
         paths: Option<&[String]>,
         graph_version: i64,
     ) -> Result<Vec<Symbol>> {
-        // A Python class whose only use is a subclass method a base-typed
-        // call reaches is live; that is a dispatch fact the SQL cannot see
-        // cheaply, so it is dropped here and the page refilled.
-        let mut fetch = limit;
-        loop {
-            let raw = self.dead_symbols_page(fetch, languages, paths, graph_version)?;
-            let exhausted = raw.len() < fetch;
-            let mut kept = self.drop_python_classes_live_by_dispatch(raw, graph_version)?;
-            if kept.len() >= limit || exhausted {
-                kept.truncate(limit);
-                return Ok(kept);
-            }
-            fetch = fetch.saturating_mul(2).max(limit + 1);
-        }
-    }
-
-    /// Drops the Python classes in `symbols` that have a method reached by a
-    /// call through a base class's same-named method (`Db::dispatch_pairs`).
-    fn drop_python_classes_live_by_dispatch(
-        &self,
-        symbols: Vec<Symbol>,
-        graph_version: i64,
-    ) -> Result<Vec<Symbol>> {
-        let classes: Vec<i64> = symbols
-            .iter()
-            .filter(|s| s.kind == "class" && s.file_path.ends_with(".py"))
-            .map(|s| s.id)
-            .collect();
-        if classes.is_empty() {
-            return Ok(symbols);
-        }
-        let list = classes
-            .iter()
-            .map(i64::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        let conn = self.read_conn()?;
-        let members: Vec<(i64, i64)> = {
-            let mut stmt = conn.prepare(&format!(
-                "SELECT e.source_symbol_id, e.target_symbol_id FROM edges e
-                 JOIN symbols m ON m.id = e.target_symbol_id
-                 WHERE e.kind = 'CONTAINS' AND e.graph_version = ?1
-                   AND e.source_symbol_id IN ({list}) AND m.kind = 'method'"
-            ))?;
-            let rows = stmt.query_map([graph_version], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            rows.collect::<rusqlite::Result<_>>()?
-        };
-        if members.is_empty() {
-            return Ok(symbols);
-        }
-        let member_ids: Vec<i64> = members.iter().map(|(_, m)| *m).collect();
-        let reached: std::collections::HashSet<i64> = {
-            let from = super::graph_query::dispatch_pairs_from(
-                graph_version,
-                &super::graph_query::DispatchSeed::impls(&member_ids),
-            );
-            let ids = member_ids
-                .iter()
-                .map(i64::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            let mut stmt = conn.prepare(&format!(
-                "SELECT DISTINCT cm.id {from} AND cm.id IN ({ids})
-                   AND EXISTS (SELECT 1 FROM edges ce
-                                WHERE ce.target_symbol_id = im.id AND ce.kind = 'CALLS'
-                                  AND ce.graph_version = {graph_version})"
-            ))?;
-            let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
-            rows.collect::<rusqlite::Result<_>>()?
-        };
-        let live: std::collections::HashSet<i64> = members
-            .iter()
-            .filter(|(_, m)| reached.contains(m))
-            .map(|(c, _)| *c)
-            .collect();
-        Ok(symbols
-            .into_iter()
-            .filter(|s| !live.contains(&s.id))
-            .collect())
-    }
-
-    fn dead_symbols_page(
-        &self,
-        limit: usize,
-        languages: Option<&[String]>,
-        paths: Option<&[String]>,
-        graph_version: i64,
-    ) -> Result<Vec<Symbol>> {
         // Issue #122: impl methods called only through their interface are live.
         let dispatch_from = super::graph_query::dispatch_pairs_from(
             graph_version,
@@ -646,6 +558,20 @@ impl Db {
                              AND {call_reaches}
                          )
                      )
+                     -- A Python class with a method a base-typed call reaches is live.
+                     AND NOT (s.kind = 'class' AND f.language = 'python' AND EXISTS (
+                       SELECT 1 {dispatch_from}
+                         AND cm.id IN (SELECT ce.target_symbol_id FROM edges ce
+                                        WHERE ce.source_symbol_id = s.id AND ce.kind = 'CONTAINS'
+                                          AND ce.graph_version = {gv}
+                                          AND ce.target_symbol_id IS NOT NULL)
+                         AND EXISTS (
+                           SELECT 1 FROM edges ce
+                           WHERE ce.target_symbol_id = im.id AND ce.kind = 'CALLS'
+                             AND ce.graph_version = {gv}
+                             AND {call_reaches}
+                         )
+                     ))
                      AND NOT (s.kind IN ('method', 'function') AND (
                        EXISTS (
                          SELECT 1 FROM edges e

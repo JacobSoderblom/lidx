@@ -453,8 +453,15 @@ fn candidates_vanish(process: Process) {
         process,
         "lidx-256-reason-del-",
     );
+    // With both star-imported modules gone, `decorate` has no definition
+    // anywhere: the call is recorded under the caller's own module name
+    // (`c.decorate`, the only reading left) with no candidates, not
+    // `ambiguous`. The star imports themselves go to `no_candidates` too.
     assert!(
-        inc.dump.1.iter().any(|u| u.contains("decorate")),
+        inc.dump
+            .1
+            .iter()
+            .any(|u| u == "c.run|CALLS|c.decorate|no_candidates"),
         "{:#?}",
         inc.dump.1
     );

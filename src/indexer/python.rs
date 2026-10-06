@@ -2046,120 +2046,98 @@ pub(crate) fn import_name_and_alias<'a>(
     }
 }
 
-/// Parse a `from x import Y [as Z], A [as B]` or `import x.y [as z], a.b`
-/// statement node into `(bound_name, fully_qualified_target)` pairs — the
-/// name this statement introduces into the file's scope, and what it
-/// stands for. Walks the tree-sitter `name` field children directly rather
-/// than splitting the statement's raw text, so parenthesized, multi-line,
-/// trailing-comma, and wildcard forms are all handled correctly by
-/// construction — the parens/newlines/trailing comma are punctuation the
-/// grammar already stripped out of the field, not text this function has
-/// to account for.
-pub(crate) fn parse_import_bindings(node: Node<'_>, source: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    match node.kind() {
-        "import_statement" => {
-            let mut cursor = node.walk();
-            for name_node in node.children_by_field_name("name", &mut cursor) {
-                let Some((item_node, alias)) = import_name_and_alias(name_node, source) else {
-                    continue;
-                };
-                let module = node_text(item_node, source);
-                if module.is_empty() {
-                    continue;
-                }
-                let bound = alias
-                    .filter(|a| !a.is_empty())
-                    .unwrap_or_else(|| module.split('.').next().unwrap_or(&module).to_string());
-                if bound.is_empty() {
-                    continue;
-                }
-                out.push((bound, module));
+/// The names one import statement mentions, before any consumer decides what
+/// they bind or point at. The single statement walk behind
+/// `parse_import_bindings`, `parse_imports` and `python_types::lower_import`.
+/// Walks the tree-sitter `name` field children directly rather than splitting
+/// the statement's raw text, so parenthesized, multi-line, trailing-comma and
+/// wildcard forms are handled by construction.
+pub(crate) enum RawImport {
+    /// `import a.b [as c], d`: `(dotted module, alias)` pairs.
+    Import(Vec<(String, Option<String>)>),
+    /// `from base import x [as y], z` (or `*`): `(item, alias)` pairs.
+    From {
+        base: String,
+        star: bool,
+        items: Vec<(String, Option<String>)>,
+    },
+}
+
+/// Extract the raw names of an `import_statement` / `import_from_statement`.
+/// Empty names and empty aliases are dropped; `None` for any other node or a
+/// `from` statement with no module.
+pub(crate) fn raw_import(node: Node<'_>, source: &str) -> Option<RawImport> {
+    let collect = |node: Node<'_>| {
+        let mut items = Vec::new();
+        let mut cursor = node.walk();
+        for name_node in node.children_by_field_name("name", &mut cursor) {
+            let Some((item_node, alias)) = import_name_and_alias(name_node, source) else {
+                continue;
+            };
+            let item = node_text(item_node, source);
+            if !item.is_empty() {
+                items.push((item, alias.filter(|a| !a.is_empty())));
             }
         }
+        items
+    };
+    match node.kind() {
+        "import_statement" => Some(RawImport::Import(collect(node))),
         "import_from_statement" => {
-            let Some(module_node) = node.child_by_field_name("module_name") else {
-                return out;
-            };
-            let base = node_text(module_node, source);
-            // Wildcard imports (`from x import *`) bind no discoverable
-            // names, so there's nothing to add as a candidate.
-            let mut wildcard_cursor = node.walk();
-            if node
-                .children(&mut wildcard_cursor)
-                .any(|c| c.kind() == "wildcard_import")
-            {
-                return out;
-            }
+            let base = node_text(node.child_by_field_name("module_name")?, source);
             let mut cursor = node.walk();
-            for name_node in node.children_by_field_name("name", &mut cursor) {
-                let Some((item_node, alias)) = import_name_and_alias(name_node, source) else {
-                    continue;
-                };
-                let item = node_text(item_node, source);
-                if item.is_empty() {
-                    continue;
-                }
+            let star = node
+                .children(&mut cursor)
+                .any(|c| c.kind() == "wildcard_import");
+            let items = if star { Vec::new() } else { collect(node) };
+            Some(RawImport::From { base, star, items })
+        }
+        _ => None,
+    }
+}
+
+/// Parse a `from x import Y [as Z], A [as B]` or `import x.y [as z], a.b`
+/// statement node into `(bound_name, fully_qualified_target)` pairs: the
+/// name this statement introduces into the file's scope, and what it
+/// stands for. Wildcard imports bind no discoverable names.
+pub(crate) fn parse_import_bindings(node: Node<'_>, source: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    match raw_import(node, source) {
+        Some(RawImport::Import(items)) => {
+            for (module, alias) in items {
                 let bound = alias
-                    .filter(|a| !a.is_empty())
-                    .unwrap_or_else(|| item.clone());
-                if bound.is_empty() {
-                    continue;
+                    .unwrap_or_else(|| module.split('.').next().unwrap_or(&module).to_string());
+                if !bound.is_empty() {
+                    out.push((bound, module));
                 }
+            }
+        }
+        Some(RawImport::From { base, items, .. }) => {
+            for (item, alias) in items {
+                let bound = alias.unwrap_or_else(|| item.clone());
                 out.push((bound, join_from_import_target(&base, &item)));
             }
         }
-        _ => {}
+        None => {}
     }
     out
 }
 
-/// Parse an `import_statement`'s or `import_from_statement`'s node into
-/// the raw IMPORTS-edge target texts (alias discarded — this only needs
-/// what the import statement stands for, not the name bound into scope).
-/// Same tree-walking approach as `parse_import_bindings`; see its doc.
+/// Parse an import statement into the raw IMPORTS-edge target texts (alias
+/// discarded; a wildcard yields `base.*`). Shares `raw_import` with
+/// `parse_import_bindings`.
 fn parse_imports(node: Node<'_>, source: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    match node.kind() {
-        "import_statement" => {
-            let mut cursor = node.walk();
-            for name_node in node.children_by_field_name("name", &mut cursor) {
-                let Some((item_node, _alias)) = import_name_and_alias(name_node, source) else {
-                    continue;
-                };
-                let module = node_text(item_node, source);
-                if !module.is_empty() {
-                    out.push(module);
-                }
-            }
-        }
-        "import_from_statement" => {
-            let Some(module_node) = node.child_by_field_name("module_name") else {
-                return out;
-            };
-            let base = node_text(module_node, source);
-            let mut wildcard_cursor = node.walk();
-            if node
-                .children(&mut wildcard_cursor)
-                .any(|c| c.kind() == "wildcard_import")
-            {
-                out.push(format!("{base}.*"));
-                return out;
-            }
-            let mut cursor = node.walk();
-            for name_node in node.children_by_field_name("name", &mut cursor) {
-                let Some((item_node, _alias)) = import_name_and_alias(name_node, source) else {
-                    continue;
-                };
-                let item = node_text(item_node, source);
-                if !item.is_empty() {
-                    out.push(join_from_import_target(&base, &item));
-                }
-            }
-        }
-        _ => {}
+    match raw_import(node, source) {
+        Some(RawImport::Import(items)) => items.into_iter().map(|(m, _)| m).collect(),
+        Some(RawImport::From {
+            base, star: true, ..
+        }) => vec![format!("{base}.*")],
+        Some(RawImport::From { base, items, .. }) => items
+            .into_iter()
+            .map(|(item, _)| join_from_import_target(&base, &item))
+            .collect(),
+        None => Vec::new(),
     }
-    out
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

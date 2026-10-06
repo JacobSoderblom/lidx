@@ -1,6 +1,6 @@
 use lidx::indexer::extract::LanguageExtractor;
 use lidx::indexer::python::{PythonExtractor, module_name_from_rel_path};
-use lidx::indexer::python_eval::{Outcome, PyTypeTable, resolve_site};
+use lidx::indexer::python_eval::{Outcome, PyEval, PyTypeTable};
 use lidx::indexer::python_expr::PyExpr;
 
 /// Bind every call of `caller_src` (at `caller_path`) against a table of
@@ -30,7 +30,7 @@ fn bound_in(files: &[(&str, &str)], caller_path: &str, caller_src: &str) -> Vec<
         .into_iter()
         .filter_map(|(module, e)| {
             let site = e.py_site?;
-            match resolve_site(&table, &site, &module) {
+            match PyEval::new(&table).resolve_site(&site, &module) {
                 Outcome::Bound { target, .. } => {
                     Some((e.target_qualname.or(e.detail).unwrap_or_default(), target))
                 }

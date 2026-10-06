@@ -2633,6 +2633,13 @@ fn py_edits_match_fresh(
         }
         indexer.sync_rel_paths(&[path.to_string()]).unwrap();
     }
+    py_assert_matches_fresh(&indexer, finals);
+    indexer
+}
+
+/// Require `indexer`'s edge snapshot and Python call outcome to equal a
+/// fresh index of `finals`.
+fn py_assert_matches_fresh(indexer: &Indexer, finals: &[(&str, &str)]) {
     common::assert_no_dangling_edge_targets(indexer.db());
     let gv = indexer.db().current_graph_version().unwrap();
     let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
@@ -2641,8 +2648,7 @@ fn py_edits_match_fresh(
     let fresh_gv = fresh.db().current_graph_version().unwrap();
     let fresh_snapshot = golden::snapshot_edges(fresh.db(), fresh_gv).unwrap();
     common::assert_matches_fresh(&snapshot, &fresh_snapshot);
-    assert_eq!(py_calls_dump(&indexer), py_calls_dump(&fresh));
-    indexer
+    assert_eq!(py_calls_dump(indexer), py_calls_dump(&fresh));
 }
 
 fn dump_has(indexer: &Indexer, needle: &str) -> bool {
@@ -2977,5 +2983,123 @@ def use():
         dump.iter()
             .any(|l| l.starts_with("E app.use -> Some(\"pkg.o.g\")@Some(8)")),
         "{dump:#?}"
+    );
+}
+
+/// Full `Indexer::reindex()` (the carry-forward path, not `sync_rel_paths`):
+/// a return-annotation edit in A must re-target the call in unchanged B.
+#[test]
+fn python_evaluator_full_reindex_rejudges_unchanged_caller() {
+    let store = py_repo("Store");
+    let other = py_repo("Other");
+    let initial = [
+        PY_PKG_INIT,
+        ("pkg/stores.py", PY_STORES),
+        ("pkg/repo.py", store.as_str()),
+        ("app.py", PY_REPO_CALLER),
+    ];
+    let finals = [
+        PY_PKG_INIT,
+        ("pkg/stores.py", PY_STORES),
+        ("pkg/repo.py", other.as_str()),
+        ("app.py", PY_REPO_CALLER),
+    ];
+    let (tmp, root, mut indexer) = indexed_tree("py-eval-reindex", &initial);
+    assert!(dump_has(&indexer, "pkg.stores.Store.write"));
+    common::write_files(&root, &[("pkg/repo.py", other.as_str())]);
+    indexer.reindex().unwrap();
+    assert!(
+        dump_has(&indexer, "pkg.stores.Other.write"),
+        "{:#?}",
+        py_calls_dump(&indexer)
+    );
+    assert!(!dump_has(&indexer, "pkg.stores.Store.write"));
+    py_assert_matches_fresh(&indexer, &finals);
+    drop(tmp);
+}
+
+/// The global Python re-judge runs only when a declaration changed: a body
+/// edit that leaves every declaration alone skips it, a return-annotation
+/// change runs it exactly once.
+#[test]
+fn python_rejudge_runs_only_when_declarations_change() {
+    let store = py_repo("Store");
+    let other = py_repo("Other");
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "py-rejudge-gate",
+        &[
+            PY_PKG_INIT,
+            ("pkg/stores.py", PY_STORES),
+            ("pkg/repo.py", store.as_str()),
+            ("app.py", PY_REPO_CALLER),
+        ],
+    );
+    let base = indexer.db().py_rejudge_runs();
+
+    // Body-only edit: same line count, no declaration change.
+    let body_edit = PY_STORES.replacen("return 1", "return 3", 1);
+    assert_ne!(body_edit, PY_STORES);
+    common::write_files(&root, &[("pkg/stores.py", body_edit.as_str())]);
+    indexer.sync_rel_paths(&["pkg/stores.py".into()]).unwrap();
+    assert_eq!(indexer.db().py_rejudge_runs(), base, "body edit re-judged");
+    common::write_files(&root, &[("pkg/stores.py", PY_STORES)]);
+    indexer.reindex().unwrap();
+    assert_eq!(indexer.db().py_rejudge_runs(), base, "body edit re-judged");
+
+    // Return-annotation change: exactly one re-judge.
+    common::write_files(&root, &[("pkg/repo.py", other.as_str())]);
+    indexer.sync_rel_paths(&["pkg/repo.py".into()]).unwrap();
+    assert_eq!(indexer.db().py_rejudge_runs(), base + 1);
+}
+
+/// Whether the snapshot has a CALLS edge whose target debug text contains `needle`.
+fn calls_target_dbg(indexer: &Indexer, needle: &str) -> bool {
+    let gv = indexer.db().current_graph_version().unwrap();
+    golden::snapshot_edges(indexer.db(), gv)
+        .unwrap()
+        .iter()
+        .any(|e| e.kind == "CALLS" && format!("{:?}", e.target_qualname).contains(needle))
+}
+
+const PY_EXT_CALLER: &str = "import requests_like
+
+
+def fetch():
+    return requests_like.get()
+";
+
+const PY_EXT_MODULE: &str = "def get():
+    return 1
+";
+
+/// `requests_like` is not in the repo, so the call lands on an `ext:` stub;
+/// adding the module re-binds it to the repo symbol, deleting it goes back.
+#[test]
+fn python_evaluator_ext_stub_rebinds_when_module_added_and_removed() {
+    let without = [("app.py", PY_EXT_CALLER)];
+    let with = [
+        ("app.py", PY_EXT_CALLER),
+        ("requests_like.py", PY_EXT_MODULE),
+    ];
+    let indexer = py_edits_match_fresh(
+        &without,
+        &[("requests_like.py", Some(PY_EXT_MODULE))],
+        &with,
+    );
+    assert!(
+        dump_has(&indexer, "requests_like.get\")@Some(1)"),
+        "{:#?}",
+        py_calls_dump(&indexer)
+    );
+    assert!(!calls_target_dbg(&indexer, "ext:requests_like.get"));
+    let indexer = py_edits_match_fresh(&with, &[("requests_like.py", None)], &without);
+    assert!(
+        calls_target_dbg(&indexer, "\"ext:requests_like.get\""),
+        "deleted module should fall back to the ext stub"
+    );
+    assert!(
+        !dump_has(&indexer, "requests_like.get\")@Some(1)"),
+        "{:#?}",
+        py_calls_dump(&indexer)
     );
 }

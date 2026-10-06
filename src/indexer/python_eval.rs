@@ -489,22 +489,14 @@ struct Recv {
 #[derive(Default)]
 pub struct PyMroCache(HashMap<String, Rc<Mro>>);
 
+/// Declared-type evaluator over one [`PyTypeTable`]: evaluates expressions to
+/// [`Value`]s and binds call sites to [`Outcome`]s, memoizing class hierarchies.
 pub struct PyEval<'a> {
     t: &'a PyTypeTable,
     guard: Vec<Guard>,
     depth: usize,
     member_depth: usize,
     mro_cache: HashMap<String, Rc<Mro>>,
-}
-
-/// Evaluate `e` in the scope of `module`.
-pub fn type_of(t: &PyTypeTable, e: &PyExpr, module: &str) -> Value {
-    PyEval::new(t).type_of(e, module)
-}
-
-/// Bind one call site made from `caller_module`.
-pub fn resolve_site(t: &PyTypeTable, site: &PyCallSite, caller_module: &str) -> Outcome {
-    PyEval::new(t).resolve_site(site, caller_module)
 }
 
 fn all_same(values: Vec<Value>) -> Option<Value> {
@@ -1234,11 +1226,6 @@ fn c3_merge(mut seqs: Vec<Vec<String>>) -> Option<Vec<String>> {
         }
         out.push(cand);
     }
-}
-
-/// Convenience for tests and tooling: the trace of one site.
-pub fn trace_site(t: &PyTypeTable, site: &PyCallSite, module: &str) -> String {
-    PyEval::new(t).trace_site(site, module)
 }
 
 #[cfg(test)]

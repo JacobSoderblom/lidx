@@ -4,9 +4,17 @@
 
 use lidx::indexer::extract::LanguageExtractor;
 use lidx::indexer::python::{PythonExtractor, module_name_from_rel_path};
-use lidx::indexer::python_eval::{How, Outcome, PyTypeTable, Value, Why, resolve_site, type_of};
+use lidx::indexer::python_eval::{How, Outcome, PyEval, PyTypeTable, Value, Why};
 use lidx::indexer::python_expr::{PyCallSite, PyExpr};
 use lidx::indexer::python_types::PyFileDecls;
+
+fn type_of(t: &PyTypeTable, e: &PyExpr, module: &str) -> Value {
+    PyEval::new(t).type_of(e, module)
+}
+
+fn resolve_site(t: &PyTypeTable, site: &PyCallSite, module: &str) -> Outcome {
+    PyEval::new(t).resolve_site(site, module)
+}
 
 struct Fx {
     table: PyTypeTable,
@@ -720,7 +728,7 @@ fn type_of_and_trace_are_exposed() {
         type_of(&fx.table, recv, m),
         Value::Instance("pkg._client.Client".into())
     );
-    let t = lidx::indexer::python_eval::trace_site(&fx.table, site, m);
+    let t = PyEval::new(&fx.table).trace_site(site, m);
     assert!(t.contains("Instance(\"pkg._client.Client\")"), "{t}");
     assert!(matches!(
         type_of(&fx.table, &PyExpr::Name("nothing_here".into()), m),
