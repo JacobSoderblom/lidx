@@ -807,6 +807,145 @@
       "note": "doc/version.rs::generate_short (22). flags/mod.rs re-exports `version::generate_short as generate_version_short` and `help::generate_short as generate_help_short`. Callers: version.rs:35 (local call in generate_long) and main.rs:396 (`flags::generate_version_short()` via the alias). main.rs:394 `flags::generate_help_short()` is help.rs:24's generate_short, not this one. grep -rnw generate_short -> two defs (version.rs:22, help.rs:24), the local call version.rs:35 and the four `as` imports in flags/mod.rs; the aliased names account for the rest."
     },
     {
+      "id": "rs-callers-tseq-choose",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/regex/src/literal.rs",
+        "line": 587
+      },
+      "expect": [
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 216
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 225
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 381
+        }
+      ],
+      "tags": [
+        "pattern-binding",
+        "match-arm-binding",
+        "if-let-binding",
+        "self-by-value",
+        "locally-typed-receiver"
+      ],
+      "note": "grep -rnw choose over all .rs -> 16 hits: 1 def (literal.rs:587), 3 calls, 12 are English prose in comments/flag help text. literal.rs:216 is `Some(prev) => prev.choose(seq)` inside `match prev` where `prev: Option<TSeq>` (receiver typed only via the match-arm pattern binding); literal.rs:225 is `if let Some(prev) = prev { prev.choose(seq) }` (receiver typed only via the if-let pattern); literal.rs:381 is `seq1.choose(seq2)` where seq1 is a `TSeq` parameter of Extractor::cross. No fn-ref uses; no other type defines `choose`."
+    },
+    {
+      "id": "rs-callers-tseq-min-literal-len",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/regex/src/literal.rs",
+        "line": 533
+      },
+      "expect": [
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 557
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 574
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 604
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 605
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-type",
+        "tuple-destructure",
+        "self-method"
+      ],
+      "note": "grep -rnw min_literal_len over all .rs -> 6 hits, all in regex/src/literal.rs: def 533 (TSeq), 534 (`self.seq.min_literal_len()` inside the def, where `seq: Seq` is regex_syntax's Seq::min_literal_len, so excluded), 557 and 574 (`self.min_literal_len()` in TSeq::is_good / is_really_good, both inside impl TSeq), 604 and 605 (`seq1.min_literal_len()` / `seq2.min_literal_len()` in TSeq::choose, where `let (mut seq1, mut seq2) = (self, other);` tuple-destructures a `(TSeq, TSeq)` so the receivers are typed only through the tuple pattern)."
+    },
+    {
+      "id": "rs-callers-category-as-str",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/core/flags/mod.rs",
+        "line": 228
+      },
+      "expect": [
+        {
+          "file": "crates/core/flags/doc/man.rs",
+          "line": 39
+        },
+        {
+          "file": "crates/core/flags/doc/help.rs",
+          "line": 40
+        },
+        {
+          "file": "crates/core/flags/doc/help.rs",
+          "line": 133
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-type",
+        "macro-args",
+        "format-macro",
+        "private-method"
+      ],
+      "note": "grep -rnw as_str over all .rs -> 10 hits: 1 def (Category::as_str, flags/mod.rs:228), 3 calls and 6 `n.as_str()` in defs.rs tests (lines 306,312,491,497,1151,1157) where `n` is a String, so they are String::as_str (trap, excluded). The 3 real calls are `cat.as_str()` as a named argument inside `format!(\"!!{name}!!\", name = cat.as_str())` at man.rs:39, help.rs:40 and help.rs:133, with `cat` bound by `for (cat, value) in cats.iter()` over a map keyed by Category. All three are calls inside format! macro args."
+    },
+    {
+      "id": "rs-callers-globset-test-rclass",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/globset/src/glob.rs",
+        "line": 1217
+      },
+      "expect": [
+        {
+          "file": "crates/globset/src/glob.rs",
+          "line": 1253
+        },
+        {
+          "file": "crates/globset/src/glob.rs",
+          "line": 1254
+        },
+        {
+          "file": "crates/globset/src/glob.rs",
+          "line": 1255
+        },
+        {
+          "file": "crates/globset/src/glob.rs",
+          "line": 1259
+        },
+        {
+          "file": "crates/globset/src/glob.rs",
+          "line": 1264
+        },
+        {
+          "file": "crates/globset/src/glob.rs",
+          "line": 1265
+        }
+      ],
+      "tags": [
+        "free-fn",
+        "cfg-test",
+        "macro-args",
+        "vec-macro",
+        "multi-line"
+      ],
+      "note": "grep -rnw rclass over all .rs -> 7 hits: def at glob.rs:1217 (private fn inside the #[cfg(test)] module) and 6 calls, every one inside `vec![..]` (which in 5 cases is itself an argument of the `syntax!` macro): cls9 1253, cls10 1254, cls11 1255, cls12 1259 (multi-line syntax! call, `vec![rclass(..),]` on its own line), cls16 1264, cls17 1265. Not callers: `rclassn` (1221, calls at 1266/1267) and `class`/`classn` are different names, so `grep -w` excludes them. No fn-ref uses."
+    },
+    {
       "id": "rs-dead-regex-literal-tseq",
       "lang": "rust",
       "kind": "dead",
