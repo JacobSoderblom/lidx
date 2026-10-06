@@ -211,6 +211,11 @@ pub struct RustExtractor {
     crate_root_cache: RefCell<HashMap<PathBuf, Option<PathBuf>>>,
     /// Parsed `Cargo.toml` target roots per crate directory (see `Manifest`).
     manifest_cache: RefCell<HashMap<PathBuf, Rc<Manifest>>>,
+    /// The library crate name of the file `module_name_from_rel_path` last
+    /// saw, when that file is its crate's lib root: the next `extract` call
+    /// records it on the root module so the resolver can find the crate by
+    /// the name other crates use (`grep_cli::...`).
+    pending_crate_name: RefCell<Option<String>>,
 }
 
 impl RustExtractor {
@@ -223,6 +228,7 @@ impl RustExtractor {
             repo_root: None,
             crate_root_cache: RefCell::new(HashMap::new()),
             manifest_cache: RefCell::new(HashMap::new()),
+            pending_crate_name: RefCell::new(None),
         })
     }
 
@@ -263,8 +269,10 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             .parent()
             .unwrap_or_else(|| Path::new(""));
         let crate_root = find_crate_root(repo_root, dir, &self.crate_root_cache);
+        *self.pending_crate_name.borrow_mut() = None;
         if let Some(crate_dir) = crate_root.as_deref() {
             let manifest = self.manifest(repo_root, crate_dir);
+            *self.pending_crate_name.borrow_mut() = manifest.lib_crate_name(crate_dir, rel_path);
             if let Some(module) = manifest.explicit_root_module(crate_dir, rel_path) {
                 return module;
             }
@@ -286,12 +294,13 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
         let root = tree.root_node();
 
         let module_span = span(root);
-        output.symbols.push(module_symbol_with_span(
-            module_name,
-            module_span,
-            "::",
-            None,
-        ));
+        let mut module_symbol = module_symbol_with_span(module_name, module_span, "::", None);
+        if module_name == "crate"
+            && let Some(name) = self.pending_crate_name.borrow_mut().take()
+        {
+            module_symbol.signature = Some(format!("crate {name}"));
+        }
+        output.symbols.push(module_symbol);
         let mut macro_parser = Parser::new();
         macro_parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
         let ctx = Context {
@@ -422,6 +431,21 @@ impl Manifest {
             }
         }
         manifest
+    }
+
+    /// The name other crates import this crate by, when `rel_path` is its
+    /// library root (`[lib] path`, else `src/lib.rs`): `[lib] name`, else
+    /// `[package] name`, with `-` as `_` like cargo.
+    fn lib_crate_name(&self, crate_dir: &Path, rel_path: &str) -> Option<String> {
+        let lib_root = match self.lib_path.as_deref() {
+            Some(path) => crate_dir.join(path.trim_start_matches("./")),
+            None => crate_dir.join("src/lib.rs"),
+        };
+        if Path::new(rel_path) != lib_root {
+            return None;
+        }
+        let name = self.lib_name.as_ref().or(self.package_name.as_ref())?;
+        Some(name.replace('-', "_"))
     }
 
     /// The module qualname of `rel_path` when it sits under an explicit
@@ -574,6 +598,12 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         "use_declaration" | "use_item" => {
             if ctx.container_stack.is_empty() {
                 handle_use(node, ctx, source, output);
+            }
+            return;
+        }
+        "extern_crate_declaration" => {
+            if ctx.container_stack.is_empty() {
+                handle_extern_crate(node, ctx, source, output);
             }
             return;
         }
@@ -1107,6 +1137,30 @@ fn handle_use(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     }
 }
 
+/// `extern crate x as y;` binds crate `x` as `y` in this module, like
+/// `use x as y;`, so it is recorded the same way: an IMPORTS edge to the
+/// crate name carrying the bound name.
+fn handle_extern_crate(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let Some(name) = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, source))
+    else {
+        return;
+    };
+    let alias = node
+        .child_by_field_name("alias")
+        .map(|n| node_text(n, source))
+        .filter(|alias| *alias != name);
+    output.edges.push(EdgeInput {
+        kind: "IMPORTS".to_string(),
+        source_qualname: Some(ctx.module.clone()),
+        target_qualname: Some(name),
+        detail: alias.map(|alias| format!("as {alias}")),
+        evidence_snippet: None,
+        ..Default::default()
+    });
+}
+
 /// Std macros whose arguments are ordinary expressions (modulo the format
 /// string / `matches!` pattern), so calls inside them are real calls.
 const EXPR_ARG_MACROS: &[&str] = &[
@@ -1269,6 +1323,30 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     let Some(value) = function_node.child_by_field_name("value") else {
         return ReceiverType::NotTracked;
     };
+    if value.kind() == "field_expression"
+        && value
+            .child_by_field_name("value")
+            .is_some_and(|base| base.kind() == "self")
+    {
+        // `self.field.method()`: the field's declared type.
+        let self_ty = ctx
+            .container_stack
+            .last()
+            .filter(|_| !(ctx.in_trait_scope && ctx.in_trait_impl.is_none()))
+            .map(|c| c.rsplit("::").next().unwrap_or(c));
+        let env = TypeEnv {
+            source,
+            self_ty,
+            generics: HashSet::new(),
+            adts: &ctx.adts,
+            ctx: Some(ctx),
+        };
+        return match env.expr_ty(value, &ctx.local_types) {
+            Ty::Named(ty) => ReceiverType::Known(ty),
+            Ty::Pending(p) => ReceiverType::RustDeferred(p),
+            _ => ReceiverType::NotTracked,
+        };
+    }
     if value.kind() != "identifier" {
         return ReceiverType::NotTracked;
     }

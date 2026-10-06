@@ -1079,6 +1079,9 @@ pub(crate) struct Resolver<'c> {
 
 /// One Rust crate root: a file whose module is `crate`.
 struct RustRoot {
+    /// The name other crates import it by, for a library root (the module
+    /// symbol's `crate <name>` signature).
+    name: Option<String>,
     /// The directory the module tree is rooted at (repo-relative, no
     /// trailing slash; empty for a root at the repo root).
     dir: String,
@@ -1614,14 +1617,19 @@ impl<'c> Resolver<'c> {
     fn rust_roots(&mut self) -> Result<&[RustRoot]> {
         if self.rust_roots.is_none() {
             let mut stmt = self.conn.prepare(
-                "SELECT f.path FROM symbols s JOIN files f ON f.id = s.file_id
+                "SELECT f.path, s.signature FROM symbols s JOIN files f ON f.id = s.file_id
                  WHERE s.graph_version = ?1 AND s.kind = 'module' AND s.qualname = 'crate'
                    AND f.language = 'rust'",
             )?;
             let roots = stmt
                 .query_map(params![self.graph_version], |row| {
                     let path: String = row.get(0)?;
+                    let signature: Option<String> = row.get(1)?;
                     Ok(RustRoot {
+                        name: signature
+                            .as_deref()
+                            .and_then(|sig| sig.strip_prefix("crate "))
+                            .map(str::to_string),
                         dir: path.rsplit_once('/').map_or("", |(dir, _)| dir).to_string(),
                     })
                 })?
@@ -1653,13 +1661,32 @@ impl<'c> Resolver<'c> {
     /// `None` when the path leaves the crate, or anything is ambiguous.
     fn rust_follow_path(&mut self, path: &str, caller_file: &str) -> Result<Option<i64>> {
         let segments: Vec<&str> = path.split("::").collect();
-        if segments.len() < 2 || segments[0] != "crate" {
+        if segments.len() < 2 {
             return Ok(None);
         }
-        let Some(dir) = self.rust_crate_dir(caller_file)? else {
-            return Ok(None);
+        let dir = if segments[0] == "crate" {
+            self.rust_crate_dir(caller_file)?
+        } else {
+            self.rust_crate_dir_by_name(segments[0])?
         };
-        self.rust_walk(&dir, &segments[1..], 0)
+        match dir {
+            Some(dir) => self.rust_walk(&dir, &segments[1..], 0),
+            None => Ok(None),
+        }
+    }
+
+    /// The root directory of the one library crate named `name` (as other
+    /// crates write it); `None` when no or several repo crates have it.
+    fn rust_crate_dir_by_name(&mut self, name: &str) -> Result<Option<String>> {
+        let mut dirs = self
+            .rust_roots()?
+            .iter()
+            .filter(|root| root.name.as_deref() == Some(name))
+            .map(|root| root.dir.as_str());
+        Ok(match (dirs.next(), dirs.next()) {
+            (Some(dir), None) => Some(dir.to_string()),
+            _ => None,
+        })
     }
 
     /// `rem` is the path below the root of the crate rooted at `dir`.
@@ -1693,10 +1720,15 @@ impl<'c> Resolver<'c> {
             };
             let mut next: Vec<&str> = target.split("::").collect();
             next.extend_from_slice(&rem[k..]);
-            if next.first() == Some(&"crate") {
-                return self.rust_walk(dir, &next[1..], depth + 1);
-            }
-            return Ok(None);
+            let next_dir = if next[0] == "crate" {
+                Some(dir.to_string())
+            } else {
+                self.rust_crate_dir_by_name(next[0])?
+            };
+            return match next_dir {
+                Some(next_dir) => self.rust_walk(&next_dir, &next[1..], depth + 1),
+                None => Ok(None),
+            };
         }
         Ok(None)
     }
@@ -1710,8 +1742,10 @@ impl<'c> Resolver<'c> {
         module: &str,
         name: &str,
     ) -> Result<Option<String>> {
+        // An unresolved `use` (its target is itself a re-export, or another
+        // crate's item) lives only in the unresolved-reference store.
         let mut stmt = self.conn.prepare_cached(
-            "SELECT DISTINCT e.target_qualname, f.path
+            "SELECT e.target_qualname, f.path
              FROM edges e
              JOIN symbols s ON s.id = e.source_symbol_id
              JOIN files f ON f.id = e.file_id
@@ -1719,7 +1753,17 @@ impl<'c> Resolver<'c> {
                AND e.target_qualname IS NOT NULL
                AND (e.detail = ?3
                     OR (e.detail IS NULL AND (e.target_qualname = ?4
-                        OR substr(e.target_qualname, -length(?5)) = ?5)))",
+                        OR substr(e.target_qualname, -length(?5)) = ?5)))
+             UNION
+             SELECT ur.reference_name, f.path
+             FROM unresolved_references ur
+             JOIN symbols s ON s.id = ur.source_symbol_id
+             JOIN files f ON f.id = ur.file_id
+             WHERE ur.graph_version = ?1 AND ur.edge_kind = 'IMPORTS' AND s.qualname = ?2
+               AND ur.reference_name IS NOT NULL
+               AND (ur.detail = ?3
+                    OR (ur.detail IS NULL AND (ur.reference_name = ?4
+                        OR substr(ur.reference_name, -length(?5)) = ?5)))",
         )?;
         let rows = stmt
             .query_map(
@@ -3553,19 +3597,15 @@ impl Db {
             |row| row.get(0),
         )?;
         let inheritance_changed = max_inheritance_edge_id > inheritance_watermark;
-        // A Rust `use` edge written since the last pass can make a stored
-        // `crate::a::alias` path resolvable (`Resolver::rust_follow_path`)
-        // without any symbol named like the reference being new.
-        let rust_import_watermark = self
-            .get_meta_i64("unresolved_reference_rust_import_watermark")?
-            .unwrap_or(0);
-        let max_rust_import_edge_id: i64 = self.read_conn()?.query_row(
-            "SELECT COALESCE(MAX(e.id), 0) FROM edges e JOIN files f ON f.id = e.file_id
-             WHERE e.graph_version = ? AND e.kind = 'IMPORTS' AND f.language = 'rust'",
-            params![graph_version],
-            |row| row.get(0),
-        )?;
-        let rust_imports_changed = max_rust_import_edge_id > rust_import_watermark;
+        // A Rust `use` edge written since the last pass (`rust_import_epoch`,
+        // bumped by `Db::insert_edges`) can make a stored `crate::a::alias`
+        // path resolvable (`Resolver::rust_follow_path`) without any symbol
+        // named like the reference being new.
+        let rust_import_epoch = self.get_meta_i64("rust_import_epoch")?.unwrap_or(0);
+        let rust_imports_changed = rust_import_epoch
+            > self
+                .get_meta_i64("unresolved_reference_rust_import_epoch")?
+                .unwrap_or(0);
         // A stored deferred-receiver row hangs on its callee's signature,
         // not on any symbol sharing its name, so it is always retried.
         let has_deferred_rows: bool = self.read_conn()?.query_row(
@@ -3782,9 +3822,9 @@ impl Db {
             params![max_inheritance_edge_id.to_string()],
         )?;
         tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('unresolved_reference_rust_import_watermark', ?)
+            "INSERT INTO meta (key, value) VALUES ('unresolved_reference_rust_import_epoch', ?)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![max_rust_import_edge_id.to_string()],
+            params![rust_import_epoch.to_string()],
         )?;
         tx.commit()?;
         Ok(total_resolved)

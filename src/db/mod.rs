@@ -1733,6 +1733,15 @@ impl Db {
                     ])?;
                 }
             }
+            // A Rust `use` can re-export an item under a new path, which may let
+            // a stored reference resolve (`Db::retry_unresolved_references`).
+            if source_lang == "rust" && edges.iter().any(|e| e.kind == "IMPORTS") {
+                tx.execute(
+                    "INSERT INTO meta (key, value) VALUES ('rust_import_epoch', '1')
+                     ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+                    [],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(count)

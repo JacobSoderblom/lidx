@@ -2698,3 +2698,84 @@ fn rust_bin_path_root_alias_reexport_edited_matches_fresh() {
         "crate::flags::doc::version::generate_long",
     );
 }
+
+const FACADE_FILES: [(&str, &str); 11] = [
+    ("crates/cli/Cargo.toml", "[package]\nname = \"grep-cli\"\n"),
+    (
+        "crates/cli/src/lib.rs",
+        "mod human;\npub use crate::human::parse_size;\n",
+    ),
+    (
+        "crates/cli/src/human.rs",
+        "pub fn parse_size(n: u64) -> u64 {\n    n\n}\n",
+    ),
+    ("crates/grep/Cargo.toml", "[package]\nname = \"grep\"\n"),
+    (
+        "crates/grep/src/lib.rs",
+        "pub extern crate grep_cli as cli;\n",
+    ),
+    ("Cargo.toml", "[package]\nname = \"app\"\n"),
+    (
+        "src/main.rs",
+        "fn main() {\n    grep::cli::parse_size(1);\n}\n",
+    ),
+    ("crates/other/Cargo.toml", "[package]\nname = \"other\"\n"),
+    ("crates/other/src/lib.rs", "pub fn unrelated() {}\n"),
+    ("crates/other/src/b.rs", "pub fn also() {}\n"),
+    ("crates/other/src/c.rs", "pub fn too() {}\n"),
+];
+
+fn assert_facade_call_matches_fresh(
+    indexer: &Indexer,
+    files: &[(&str, &str)],
+    target: Option<&str>,
+) {
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let call: Vec<_> = snapshot
+        .iter()
+        .filter(|e| e.kind == "CALLS" && e.source_qualname == "crate::main")
+        .map(|e| e.target_qualname.as_deref())
+        .collect();
+    assert_eq!(call, vec![target], "{snapshot:#?}");
+    let (_fresh_tmp, fresh) = common::index_files(files);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// The facade crate arrives after its caller: the call resolves through the
+/// new `extern crate .. as ..` and the member's own `pub use`.
+#[test]
+fn rust_extern_crate_facade_added_later_matches_fresh() {
+    let early: Vec<_> = FACADE_FILES
+        .iter()
+        .copied()
+        .filter(|(p, _)| !p.starts_with("crates/grep/"))
+        .collect();
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-facade-add", &early);
+    let late: Vec<_> = FACADE_FILES
+        .iter()
+        .copied()
+        .filter(|(p, _)| p.starts_with("crates/grep/"))
+        .collect();
+    common::write_files(&repo_root, &late);
+    let rels: Vec<String> = late.iter().map(|(p, _)| p.to_string()).collect();
+    indexer.sync_rel_paths(&rels).unwrap();
+    assert_facade_call_matches_fresh(&indexer, &FACADE_FILES, Some("crate::human::parse_size"));
+}
+
+/// Editing the facade to stop re-exporting the member unbinds the call.
+#[test]
+fn rust_extern_crate_facade_edited_away_matches_fresh() {
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-facade-edit", &FACADE_FILES);
+    common::write_files(
+        &repo_root,
+        &[("crates/grep/src/lib.rs", "pub extern crate other as cli;\n")],
+    );
+    indexer
+        .sync_rel_paths(&["crates/grep/src/lib.rs".to_string()])
+        .unwrap();
+    let mut edited = FACADE_FILES.to_vec();
+    edited[4] = ("crates/grep/src/lib.rs", "pub extern crate other as cli;\n");
+    assert_facade_call_matches_fresh(&indexer, &edited, Some("ext:grep::cli::parse_size"));
+}
