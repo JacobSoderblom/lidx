@@ -2907,3 +2907,56 @@ fn rust_assoc_type_bound_edited_matches_fresh() {
         Some("crate::sink::Other::error_message"),
     );
 }
+
+const FNREF_MAIN: &str = "mod conv;\nuse conv::convert;\n\
+pub fn run(r: Result<(), u8>) -> Result<(), String> {\n    r.map_err(convert)\n}\n";
+
+/// A function passed as a value binds once its definition exists, and
+/// unbinds when it is removed.
+#[test]
+fn rust_fn_ref_target_added_then_removed_matches_fresh() {
+    let base: Vec<(&str, &str)> = vec![("Cargo.toml", ASSOC_TOML), ("src/lib.rs", FNREF_MAIN)];
+    let full: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", FNREF_MAIN),
+        (
+            "src/conv.rs",
+            "pub fn convert(e: u8) -> String {\n    e.to_string()\n}\n",
+        ),
+    ];
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-fnref", &base);
+    common::write_files(&repo_root, &full[2..]);
+    indexer
+        .sync_rel_paths(&["src/conv.rs".to_string()])
+        .unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        snap.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "crate::run"
+            && e.target_qualname.as_deref() == Some("crate::conv::convert")),
+        "{snap:#?}"
+    );
+    let (_f, fresh) = common::index_files(&full);
+    common::assert_matches_fresh(&snap, &fresh);
+
+    common::write_files(
+        &repo_root,
+        &[(
+            "src/conv.rs",
+            "pub fn other(e: u8) -> String {\n    e.to_string()\n}\n",
+        )],
+    );
+    indexer
+        .sync_rel_paths(&["src/conv.rs".to_string()])
+        .unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let mut renamed = full.clone();
+    renamed[2] = (
+        "src/conv.rs",
+        "pub fn other(e: u8) -> String {\n    e.to_string()\n}\n",
+    );
+    let (_f2, fresh) = common::index_files(&renamed);
+    common::assert_matches_fresh(&snap, &fresh);
+}

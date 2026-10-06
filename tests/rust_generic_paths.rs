@@ -144,8 +144,30 @@ fn assoc_type_path_binds_to_trait_decl() {
 }
 
 #[test]
+fn assoc_type_path_as_value_is_a_call_to_trait_decl() {
+    assert!(
+        has("crate::core::Core::by_ref", TRAIT_EM),
+        "{:?}",
+        calls("crate::core::Core::by_ref")
+    );
+}
+
+#[test]
 fn self_path_in_trait_default_body_binds_to_trait_decl() {
     assert!(has("crate::sink::SinkError::error_io", TRAIT_EM));
+}
+
+#[test]
+fn concrete_path_as_value_is_a_call_to_the_impl() {
+    let c = calls("crate::util::concrete");
+    assert!(
+        c.iter().any(|(t, _)| t.as_deref() == Some(IMPL_EM)),
+        "{c:?}"
+    );
+    assert!(
+        c.iter().all(|(t, _)| t.as_deref() != Some(TRAIT_EM)),
+        "{c:?}"
+    );
 }
 
 #[test]
@@ -192,6 +214,17 @@ fn unbound_generic_stays_unresolved() {
 }
 
 #[test]
+fn non_function_value_paths_are_not_calls() {
+    let c = calls("crate::util::noise");
+    assert!(
+        c.iter().all(|(t, _)| t
+            .as_deref()
+            .is_none_or(|t| !t.contains("SeqCst") && !t.contains("Wrapper") && t != "None")),
+        "{c:?}"
+    );
+}
+
+#[test]
 fn where_clause_bound_on_assoc_type_binds_to_trait_decl() {
     assert!(
         has("crate::core::where_assoc", TRAIT_EM),
@@ -206,5 +239,24 @@ fn rebound_parameter_name_does_not_type_the_receiver() {
         !has("crate::core::rebound", "crate::sink::Greet::hi"),
         "{:?}",
         calls("crate::core::rebound")
+    );
+}
+
+#[test]
+fn bare_function_name_passed_as_value_is_a_call() {
+    assert!(
+        has("crate::util::local_fn", "crate::util::convert"),
+        "{:?}",
+        calls("crate::util::local_fn")
+    );
+}
+
+#[test]
+fn local_variable_passed_as_argument_is_not_a_call() {
+    let c = calls("crate::util::passes_local");
+    assert!(
+        c.iter()
+            .all(|(t, _)| t.as_deref().is_none_or(|t| !t.contains("convert2"))),
+        "{c:?}"
     );
 }

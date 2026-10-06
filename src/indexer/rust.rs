@@ -580,6 +580,9 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     if node.kind() == "call_expression" {
         handle_call(node, ctx, source, output);
     }
+    if matches!(node.kind(), "identifier" | "scoped_identifier") {
+        handle_fn_ref(node, ctx, source, output);
+    }
     match node.kind() {
         "macro_invocation" => {
             handle_macro_invocation(node, ctx, source, output);
@@ -1373,7 +1376,14 @@ fn push_call_edge(
         });
         return;
     }
-    let import_candidates = import_qualified_candidates(&collapsed, ctx);
+    let import_candidates = if function_node.kind() == "identifier" && is_value_ref(function_node) {
+        // A function used as a value: its own name is among the function's
+        // non-callee identifiers (so `shadowed_names` holds it), but the
+        // pattern scan already proved it is no local.
+        ctx.imports.get(&collapsed).cloned().unwrap_or_default()
+    } else {
+        import_qualified_candidates(&collapsed, ctx)
+    };
     // When full resolution fails for a dotted call (e.g. `db.insert(...)`),
     // emit the bare method name as target_qualname rather than dropping the
     // target, giving Rust the same reach as Python, C#, and Go. Fully-resolved
@@ -1401,6 +1411,51 @@ fn push_call_edge(
         receiver_type: infer_receiver_type(function_node, source, ctx),
         ..Default::default()
     });
+}
+
+/// A path or identifier written where a function value is expected -- a call
+/// argument, a `let` initializer, a struct field value or an array/tuple
+/// element -- as in `.map_err(io::Error::error_message)`. `node` is
+/// the `identifier`/`scoped_identifier` itself.
+fn is_value_ref(node: Node<'_>) -> bool {
+    let mut at = node;
+    // `parse::<u8>` as a value: the path sits under a `generic_function`.
+    if let Some(parent) = at.parent()
+        && parent.kind() == "generic_function"
+        && parent.child_by_field_name("function") == Some(at)
+    {
+        at = parent;
+    }
+    let Some(parent) = at.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        "arguments" | "array_expression" | "tuple_expression" => true,
+        "let_declaration" => parent.child_by_field_name("value") == Some(at),
+        "field_initializer" => parent.child_by_field_name("value") == Some(at),
+        _ => false,
+    }
+}
+
+/// Records a function reference (`.map_err(f)`, `.map(Type::new)`) as a
+/// call. Only a lowercase last segment can name a function: `Ordering::SeqCst`,
+/// `None` and tuple-struct constructors are values, and a bare identifier the
+/// function itself binds is a local.
+fn handle_fn_ref(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    if !is_value_ref(node) {
+        return;
+    }
+    let text = collapse_call_target_whitespace(&node_text(node, source));
+    let Some(last) = text.rsplit("::").next() else {
+        return;
+    };
+    if !last.starts_with(|c: char| c.is_lowercase()) {
+        return;
+    }
+    if node.kind() == "identifier" && ctx.local_names.contains(&text) {
+        return;
+    }
+    push_call_edge(node, node, ctx, source, output);
 }
 
 /// `x.method()` where `x` is a plain local/param with a locally-inferred

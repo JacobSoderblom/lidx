@@ -145,8 +145,10 @@ crate::shadowing::shadow_closure_use CALLS UNRESOLVED
 
 # A plain value reference (`let _ = helper;`, not a call or any pattern) is
 # a non-callee occurrence too, so the later call is suppressed as well —
-# documents the accepted over-suppression trade-off.
+# documents the accepted over-suppression trade-off. The reference itself is
+# a function used as a value: a CALLS edge to the real `a::helper`.
 crate::shadowing::uses_helper_as_value CALLS UNRESOLVED
+crate::shadowing::uses_helper_as_value CALLS crate::shadowing::a::helper import
 
 # `use log::info` names an external crate, not this file's own
 # `util::log` submodule. The import tier must miss outright rather than
