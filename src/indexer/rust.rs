@@ -1889,7 +1889,7 @@ impl TypeEnv<'_> {
             {
                 return entry.clone().unwrap_or(Ty::Unknown);
             }
-            if matches!(method, "unwrap" | "expect") {
+            if matches!(method, "unwrap" | "expect" | "clone") {
                 return recv;
             }
             return self.pending(
@@ -2217,7 +2217,7 @@ impl TypeEnv<'_> {
 fn method_ty(recv: Ty, method: &str) -> Ty {
     match (recv, method) {
         (Ty::Option(t) | Ty::Result(t, _), "unwrap" | "expect") => *t,
-        (Ty::Named(n), "unwrap" | "expect") => Ty::Named(n),
+        (Ty::Named(n), "unwrap" | "expect" | "clone") => Ty::Named(n),
         (Ty::Result(t, _), "ok") => Ty::Option(t),
         (Ty::Result(_, e), "err") => Ty::Option(e),
         (t @ (Ty::Option(_) | Ty::Result(..)), "as_ref" | "as_mut" | "clone") => t,

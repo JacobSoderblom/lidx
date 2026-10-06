@@ -3067,3 +3067,41 @@ fn rust_imported_receiver_type_import_edit_matches_fresh() {
     let (_f, fresh) = common::index_files(&edited);
     common::assert_matches_fresh(&snap, &fresh);
 }
+
+const CLONE_TYPES_W: &str = "#[derive(Clone)]\npub struct W;\nimpl W {\n    pub fn go(&self) {}\n}\n\
+#[derive(Clone)]\npub struct V;\nimpl V {\n    pub fn go(&self) {}\n}\n\
+pub fn make() -> Result<W, u8> {\n    Ok(W)\n}\n";
+const CLONE_TYPES_V: &str = "#[derive(Clone)]\npub struct W;\nimpl W {\n    pub fn go(&self) {}\n}\n\
+#[derive(Clone)]\npub struct V;\nimpl V {\n    pub fn go(&self) {}\n}\n\
+pub fn make() -> Result<V, u8> {\n    Ok(V)\n}\n";
+const CLONE_USER: &str = "use crate::types::make;\n\
+pub fn run() {\n    let w = make().unwrap();\n    let f = move || {\n        let c = w.clone();\n        c.go();\n    };\n    f();\n}\n";
+
+/// `.clone()` on a deferred receiver keeps its type, and follows an edit of
+/// the declaring fn's return type.
+#[test]
+fn rust_clone_keeps_deferred_type_after_return_edit_matches_fresh() {
+    let base: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ASSOC_TOML),
+        ("src/lib.rs", "mod types;\nmod user;\n"),
+        ("src/types.rs", CLONE_TYPES_W),
+        ("src/user.rs", CLONE_USER),
+    ];
+    let (_tmp, repo_root, mut indexer) = indexed_tree("rust-clone", &base);
+    common::write_files(&repo_root, &[("src/types.rs", CLONE_TYPES_V)]);
+    indexer
+        .sync_rel_paths(&["src/types.rs".to_string()])
+        .unwrap();
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snap = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    assert!(
+        snap.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "crate::user::run"
+            && e.target_qualname.as_deref() == Some("crate::types::V::go")),
+        "{snap:#?}"
+    );
+    let mut edited = base.clone();
+    edited[2] = ("src/types.rs", CLONE_TYPES_V);
+    let (_f, fresh) = common::index_files(&edited);
+    common::assert_matches_fresh(&snap, &fresh);
+}
