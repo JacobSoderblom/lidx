@@ -11,6 +11,7 @@ answer against an isolated reference.  Python 3 stdlib only.  See README.md.
     bench.py dry-run
 """
 import argparse
+import collections
 import concurrent.futures as cf
 import glob
 import hashlib
@@ -26,10 +27,15 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(HERE))      # the lidx checkout holding references/ and results
 DEFAULT_WORKDIR = os.path.join(HERE, ".work")
 PROFILES = ("baseline", "lidx")
 BASE_TOOLS = ["Read", "Grep", "Glob"]
 LIDX_TOOL = "mcp__lidx__lidx"
+TrialResult = collections.namedtuple("TrialResult", "status task profile n")
+# metric -> (value format, change is relative %)
+METRIC_SPECS = {"judge": ("%.1f", False), "input_tokens": ("%.0f", True),
+                "tool_calls": ("%.1f", True), "wall_seconds": ("%.1f", True)}
 INSTRUCTION = ("Answer using the repository in the current directory. "
                "Be specific: name the files, classes and functions involved.")
 DIMS = ("correctness", "completeness", "relevance", "clarity", "coherence")
@@ -212,10 +218,18 @@ def trial_metrics(parsed):
     return m, err
 
 
+def expected_tools(profile):
+    return sorted(BASE_TOOLS + ([LIDX_TOOL] if profile == "lidx" else []))
+
+
 def check_init(profile, init):
     """Isolation check on the system/init event; -> error string or None."""
     if init is None:
         return "no system/init event in stream"
+    want = expected_tools(profile)
+    got = sorted(init.get("tools") or [])
+    if got != want:
+        return "tool set %s != expected %s" % (got, want)
     servers = init.get("mcp_servers") or []
     if profile == "baseline":
         if servers:
@@ -235,6 +249,25 @@ def build_prompt(question):
     return "%s\n\n%s" % (question.strip(), INSTRUCTION)
 
 
+def deny_rules(paths):
+    """Read deny rules for absolute paths (`//` = absolute in permission syntax; Read rules cover Grep/Glob)."""
+    seen = []
+    for p in paths:
+        for q in (os.path.abspath(p), os.path.realpath(p)):
+            if q not in seen:
+                seen.append(q)
+    return ["Read(//%s/**)" % q.lstrip("/") for q in seen]
+
+
+def deny_args(out):
+    """--disallowedTools hiding the lidx checkout (references) and the run dir (other trials' results)."""
+    return ["--disallowedTools"] + deny_rules([REPO_ROOT, out])
+
+
+def default_scratch(out):
+    return os.path.join(os.path.realpath(tempfile.gettempdir()), "lidx-agent-bench", safe(os.path.basename(out)))
+
+
 def claude_cmd(args, profile, mcp_json, prompt):
     allowed = BASE_TOOLS + ([LIDX_TOOL] if profile == "lidx" else [])
     cmd = ["claude", "-p", prompt, "--model", args.model] + effort_args(args.model, args.effort)
@@ -243,22 +276,26 @@ def claude_cmd(args, profile, mcp_json, prompt):
             "--no-session-persistence", "--disable-slash-commands",
             "--max-budget-usd", str(args.budget),
             "--tools", ",".join(BASE_TOOLS), "--allowedTools", ",".join(allowed)]
-    return cmd
+    return cmd + deny_args(args.out)
 
 
 def run_trial(args, task, profile, n, cache):
     tdir = os.path.join(args.out, safe(task["id"]), profile, str(n))
+    sdir = os.path.join(args.scratch, safe(task["id"]), profile, str(n))     # clone + db, outside the run dir
     tjson = os.path.join(tdir, "trial.json")
     if os.path.isfile(tjson):
         try:
             if read_json(tjson).get("status") == "ok":
-                return "skip", task, profile, n
+                return TrialResult("skip", task, profile, n)
         except ValueError:
             pass
     if os.path.isdir(tdir):
         shutil.rmtree(tdir)
     os.makedirs(tdir)
-    repo_dir, db = os.path.join(tdir, "repo"), os.path.join(tdir, "lidx.sqlite")   # db outside repo cwd
+    if os.path.isdir(sdir):
+        shutil.rmtree(sdir)
+    os.makedirs(sdir)
+    repo_dir, db = os.path.join(sdir, "repo"), os.path.join(sdir, "lidx.sqlite")   # db outside repo cwd
     doc = {"task": task["id"], "category": task.get("category"), "profile": profile, "trial": n,
            "question": task["question"], "model": args.model, "effort": args.effort,
            "status": "error", "error": None, "index_seconds": None, "wall_seconds": None}
@@ -312,8 +349,9 @@ def run_trial(args, task, profile, n, cache):
                 shutil.rmtree(p, ignore_errors=True)
             elif os.path.isfile(p):
                 os.remove(p)
+        shutil.rmtree(sdir, ignore_errors=True)
     write_json(tjson, doc)
-    return doc["status"], task, profile, n
+    return TrialResult(doc["status"], task, profile, n)
 
 
 def cmd_run(args):
@@ -321,7 +359,8 @@ def cmd_run(args):
     for p in profiles:
         if p not in PROFILES:
             raise Fatal("unknown profile %r (choose from %s)" % (p, ",".join(PROFILES)))
-    args.lidx = os.path.abspath(os.path.expanduser(args.lidx))
+    if getattr(args, "scratch", None) is None:
+        args.scratch = default_scratch(args.out)
     if "lidx" in profiles and not os.access(args.lidx, os.X_OK):
         raise Fatal("lidx binary not found or not executable: %s" % args.lidx)
     tasks, notes = load_tasks(args.tasks, args.only)
@@ -345,9 +384,9 @@ def cmd_run(args):
     with cf.ThreadPoolExecutor(max_workers=args.jobs) as ex:
         futs = [ex.submit(run_trial, args, t, p, n, caches[t["id"]]) for t, p, n in jobs]
         for f in cf.as_completed(futs):
-            status, t, p, n = f.result()
-            bad += status == "error"
-            print("  %-5s %s / %s / %d" % (status, t["id"], p, n), flush=True)
+            r = f.result()
+            bad += r.status == "error"
+            print("  %-5s %s / %s / %d" % (r.status, r.task["id"], r.profile, r.n), flush=True)
     if bad:
         print("%d trial(s) errored (kept in raw output, excluded from means)" % bad)
     return 0
@@ -490,7 +529,7 @@ def spread(xs):
             "min": min(xs) if xs else None, "max": max(xs) if xs else None, "n": len(xs)}
 
 
-METRICS = ("judge", "input_tokens", "tool_calls", "wall_seconds")
+METRICS = tuple(METRIC_SPECS)
 
 
 def trial_values(t):
@@ -518,17 +557,51 @@ def pct_change(base, other):
     return (other - base) / base * 100.0
 
 
+def overall_agg(m, xs):
+    return mean(xs) if m == "judge" else sum(xs)      # zvec-grep: mean judge, summed efficiency
+
+
+def changes(b, l):
+    """Per-metric change from baseline dict b to lidx dict l: points if absolute, else relative %."""
+    def one(m):
+        if METRIC_SPECS[m][1]:
+            return pct_change(b[m], l[m])
+        return None if b[m] is None or l[m] is None else l[m] - b[m]
+    return {m: one(m) for m in METRICS}
+
+
+def overall_sd(per_task, tasks, m, profile):
+    """Stdev over trial index i of the overall aggregate at i (tasks lacking trial i make i unusable)."""
+    idx = [set(per_task[t][profile][m]) for t in tasks]
+    common = sorted(set.intersection(*idx)) if idx else []
+    if len(common) < 2:
+        return None
+    return statistics.stdev(overall_agg(m, [per_task[t][profile][m][i] for t in tasks]) for i in common)
+
+
 def aggregate(trials):
     """Pure aggregation of trial dicts -> report structure."""
     ok = [t for t in trials if t["status"] == "ok"]
     errors = [t for t in trials if t["status"] != "ok"]
     profiles = sorted({t["profile"] for t in trials}, key=lambda p: PROFILES.index(p) if p in PROFILES else 9)
-    tasks = {}
+    tasks, by_trial = {}, {}
+    for t in trials:
+        tasks.setdefault(t["task"], {})
     for t in ok:
-        tasks.setdefault(t["task"], {}).setdefault(t["profile"], []).append(trial_values(t))
+        v = trial_values(t)
+        tasks[t["task"]].setdefault(t["profile"], []).append(v)
+        for m in METRICS:
+            if v[m] is not None:
+                by_trial.setdefault(t["task"], {}).setdefault(t["profile"], {}).setdefault(m, {})[t["trial"]] = v[m]
+    err_counts = {}
+    for t in errors:
+        c = err_counts.setdefault(t["task"], {})
+        c[t["profile"]] = c.get(t["profile"], 0) + 1
     rows = []
     for task in sorted(tasks):
-        row = {"task": task, "profiles": {}, "flags": {}, "index_seconds": None}
+        errs = {p: err_counts.get(task, {}).get(p, 0) for p in profiles}
+        row = {"task": task, "profiles": {}, "flags": {}, "index_seconds": None, "errors": errs,
+               "error_asymmetry": len(set(errs.values())) > 1}
         for p, vals in tasks[task].items():
             row["profiles"][p] = {m: spread([v[m] for v in vals if v[m] is not None]) for m in METRICS}
             why = flag_task(row["profiles"][p])
@@ -538,24 +611,23 @@ def aggregate(trials):
                and t.get("index_seconds") is not None]
         row["index_seconds"] = mean(idx)
         if "baseline" in row["profiles"] and "lidx" in row["profiles"]:
-            b, l = row["profiles"]["baseline"], row["profiles"]["lidx"]
-            row["change"] = {
-                "judge": (l["judge"]["mean"] - b["judge"]["mean"]) if b["judge"]["n"] and l["judge"]["n"] else None,
-                **{m: pct_change(b[m]["mean"], l[m]["mean"]) for m in METRICS[1:]}}
+            row["change"] = changes({m: row["profiles"]["baseline"][m]["mean"] for m in METRICS},
+                                    {m: row["profiles"]["lidx"][m]["mean"] for m in METRICS})
         rows.append(row)
-    overall = {"profiles": {}, "change": {}, "paired_tasks": {}}
+    overall = {"profiles": {}, "sd": {}, "change": {}, "paired_tasks": {},
+               "errors": {p: sum(err_counts.get(t, {}).get(p, 0) for t in tasks) for p in profiles}}
     both = [r for r in rows if "baseline" in r["profiles"] and "lidx" in r["profiles"]]
     for m in METRICS:
         # paired: only tasks where both profiles have a value for this metric
         use = [r for r in both if r["profiles"]["baseline"][m]["n"] and r["profiles"]["lidx"][m]["n"]]
         overall["paired_tasks"][m] = len(use)
-        agg = (lambda xs: mean(xs)) if m == "judge" else (lambda xs: sum(xs))   # zvec-grep: mean judge, summed efficiency
         for p in ("baseline", "lidx"):
-            overall["profiles"].setdefault(p, {})[m] = agg([r["profiles"][p][m]["mean"] for r in use]) if use else None
+            overall["profiles"].setdefault(p, {})[m] = \
+                overall_agg(m, [r["profiles"][p][m]["mean"] for r in use]) if use else None
+            overall["sd"].setdefault(p, {})[m] = \
+                overall_sd(by_trial, [r["task"] for r in use], m, p) if use else None
     if both:
-        b, l = overall["profiles"]["baseline"], overall["profiles"]["lidx"]
-        overall["change"] = {"judge": (l["judge"] - b["judge"]) if b["judge"] is not None and l["judge"] is not None else None,
-                             **{m: pct_change(b[m], l[m]) for m in METRICS[1:]}}
+        overall["change"] = changes(overall["profiles"]["baseline"], overall["profiles"]["lidx"])
     agent_cost = sum((t.get("metrics") or {}).get("cost_usd", 0.0) for t in trials)
     judge_cost = sum(t["judge"]["cost_usd"] for t in trials if t.get("judge"))
     return {"profiles": profiles, "rows": rows, "overall": overall,
@@ -567,75 +639,87 @@ def aggregate(trials):
                         "cost_usd": (t.get("metrics") or {}).get("cost_usd", 0.0)} for t in errors]}
 
 
-def fnum(v, kind):
+def fnum(v, metric):
+    return "-" if v is None else METRIC_SPECS[metric][0] % v
+
+
+def fchange(v, metric):
     if v is None:
         return "-"
-    return {"judge": "%.1f", "tok": "%.0f", "calls": "%.1f", "sec": "%.1f"}[kind] % v
+    return ("%+.0f%%" if METRIC_SPECS[metric][1] else "%+.1f") % v
 
 
-def fchange(v, rel):
-    if v is None:
-        return "-"
-    return ("%+.0f%%" if rel else "%+.1f") % v
-
-
-def cell(s, kind, sd=True):
+def cell(s, metric, sd=True):
     if not s or s["n"] == 0:
         return "-"
-    txt = fnum(s["mean"], kind)
+    txt = fnum(s["mean"], metric)
     if sd and s["sd"] is not None:
-        txt += "±" + fnum(s["sd"], kind)
+        txt += "±" + fnum(s["sd"], metric)
     return txt
 
 
+def err_cell(errs):
+    return "/".join(str(errs.get(p, 0)) for p in ("baseline", "lidx"))
+
+
 def render(rep, settings=None):
-    L = []
+    lines = []
     if settings:
-        L.append("Model `%s`%s, budget $%s/trial, %s trial(s) per profile.  claude %s, lidx %s." % (
+        lines.append("Model `%s`%s, budget $%s/trial, %s trial(s) per profile.  claude %s, lidx %s." % (
             settings.get("model"), " effort " + settings["effort"] if settings.get("effort") else "",
             settings.get("budget_usd"), settings.get("trials"), settings.get("claude_version"),
             settings.get("lidx_version")))
-        L.append("")
-    L.append("Each cell: baseline / lidx / change (judge: points; others: relative %). `±` is the "
-             "per-profile trial stdev (shown when trials > 1).  Means exclude errored trials.")
-    L.append("")
-    L.append("| Task | Judge (5-100) | Input tokens | Tool calls | Wall s | Index s | |")
-    L.append("|---|---|---|---|---|---|---|")
-    kinds = {"judge": "judge", "input_tokens": "tok", "tool_calls": "calls", "wall_seconds": "sec"}
+        lines.append("")
+    lines.append("Each cell: baseline / lidx / change (judge: points; others: relative %). `±` is the "
+                 "per-profile trial stdev (shown when trials > 1).  Means exclude errored trials; "
+                 "Errors = errored trials, baseline/lidx.")
+    lines.append("")
+    lines.append("| Task | Judge (5-100) | Input tokens | Tool calls | Wall s | Index s | Errors | |")
+    lines.append("|---|---|---|---|---|---|---|---|")
     for r in rep["rows"]:
         b, l = r["profiles"].get("baseline"), r["profiles"].get("lidx")
         cols = []
-        for m, k in kinds.items():
-            parts = [cell(b[m], k) if b else "-", cell(l[m], k) if l else "-"]
+        for m in METRICS:
+            parts = [cell(b[m], m) if b else "-", cell(l[m], m) if l else "-"]
             if "change" in r:
-                parts.append(fchange(r["change"][m], m != "judge"))
+                parts.append(fchange(r["change"][m], m))
             cols.append(" / ".join(parts))
-        flags = "; ".join("%s: %s" % (p, ", ".join(w)) for p, w in sorted(r["flags"].items()))
-        L.append("| %s | %s | %s | %s |" % (r["task"], " | ".join(cols),
-                                           fnum(r["index_seconds"], "sec"), ("⚠ " + flags) if flags else ""))
+        notes = ["%s: %s" % (p, ", ".join(w)) for p, w in sorted(r["flags"].items())]
+        if r["error_asymmetry"]:
+            notes.append("errors differ between profiles")
+        lines.append("| %s | %s | %s | %s | %s |" % (
+            r["task"], " | ".join(cols), fnum(r["index_seconds"], "wall_seconds"), err_cell(r["errors"]),
+            ("⚠ " + "; ".join(notes)) if notes else ""))
     o = rep["overall"]
     if o["profiles"]:
         b, l = o["profiles"].get("baseline", {}), o["profiles"].get("lidx", {})
+        bs, ls = o["sd"].get("baseline", {}), o["sd"].get("lidx", {})
         cols = []
-        for m, k in kinds.items():
-            cols.append(" / ".join([fnum(b.get(m), k), fnum(l.get(m), k)] +
-                                   ([fchange(o["change"].get(m), m != "judge")] if o["change"] else [])))
-        L.append("| **Overall** | %s | | |" % " | ".join(cols))
-        L.append("")
-        L.append("Overall: mean judge score across tasks; input tokens, tool calls and wall time are sums of "
-                 "per-task means; change is computed from those aggregates.  Paired tasks per metric: %s." %
-                 ", ".join("%s=%d" % kv for kv in o["paired_tasks"].items()))
+        for m in METRICS:
+            def sdv(mean_, sd_, m=m):
+                return fnum(mean_, m) + (("±" + fnum(sd_, m)) if sd_ is not None and mean_ is not None else "")
+            cols.append(" / ".join([sdv(b.get(m), bs.get(m)), sdv(l.get(m), ls.get(m))] +
+                                   ([fchange(o["change"].get(m), m)] if o["change"] else [])))
+        asym = len(set(o["errors"].values())) > 1
+        lines.append("| **Overall** | %s | | %s | %s |" % (
+            " | ".join(cols), err_cell(o["errors"]), "⚠ errors differ between profiles" if asym else ""))
+        lines.append("")
+        lines.append("Overall: mean judge score across tasks; input tokens, tool calls and wall time are sums of "
+                     "per-task means; change is computed from those aggregates.  `±` on the Overall row is the "
+                     "stdev across trial index i of that aggregate computed on trial i alone (needs every paired "
+                     "task to have trial i).  Paired tasks per metric: %s." %
+                     ", ".join("%s=%d" % kv for kv in o["paired_tasks"].items()))
     c = rep["cost"]
-    L += ["", "Cost: agent $%.2f + judge $%.2f = $%.2f." % (c["agent_usd"], c["judge_usd"], c["total_usd"])]
+    lines += ["", "Cost: agent $%.2f + judge $%.2f = $%.2f." % (c["agent_usd"], c["judge_usd"], c["total_usd"])]
     if rep["unjudged"]:
-        L.append("%d successful trial(s) have no judge score yet (run `bench.py judge`)." % rep["unjudged"])
+        lines.append("%d successful trial(s) have no judge score yet (run `bench.py judge`)." % rep["unjudged"])
     if rep["denials"]:
-        L += ["", "Permission denials (answers may be affected): " +
-              "; ".join("%s/%s/%s x%d" % tuple(d) for d in rep["denials"])]
-    L += ["", "Errored / excluded trials: %s" % ("none" if not rep["errors"] else "")]
+        lines += ["", "Permission denials (answers may be affected): " +
+                  "; ".join("%s/%s/%s x%d" % tuple(d) for d in rep["denials"])]
+    lines += ["", "Errored / excluded trials: %s" % ("none" if not rep["errors"] else "")]
     for e in rep["errors"]:
-        L.append("- %s / %s / %s: %s (cost $%.2f)" % (e["task"], e["profile"], e["trial"], e["error"], e["cost_usd"]))
-    return "\n".join(L)
+        lines.append("- %s / %s / %s: %s (cost $%.2f)" % (e["task"], e["profile"], e["trial"], e["error"], e["cost_usd"]))
+    return "\n".join(lines)
 
 
 def cmd_report(args):
@@ -650,6 +734,20 @@ def cmd_report(args):
 # --------------------------------------------------------------------------
 # cli
 # --------------------------------------------------------------------------
+
+PATH_ARGS = ("out", "workdir", "scratch", "lidx", "tasks", "references", "run_dir", "json")
+
+
+def normalize_paths(args):
+    """Absolute-ize every path arg: claude runs with cwd=<clone>, so relative paths would break."""
+    for name in PATH_ARGS:
+        v = getattr(args, name, None)
+        if isinstance(v, list):
+            setattr(args, name, [os.path.abspath(os.path.expanduser(x)) for x in v])
+        elif v:
+            setattr(args, name, os.path.abspath(os.path.expanduser(v)))
+    return args
+
 
 def default_lidx():
     return os.path.expanduser("~/.local/bin/lidx")
@@ -668,6 +766,7 @@ def add_run_args(p, dry=False):
     p.add_argument("--out", required=not dry, help="run directory")
     p.add_argument("--lidx", default=default_lidx(), help="lidx binary (default ~/.local/bin/lidx)")
     p.add_argument("--workdir", default=DEFAULT_WORKDIR, help="repo clone cache")
+    p.add_argument("--scratch", help="per-trial clone/db root (default: <tmp>/lidx-agent-bench/<run name>)")
 
 
 def add_judge_args(p, dry=False):
@@ -683,7 +782,7 @@ def cmd_dry_run(args):
     run = argparse.Namespace(
         tasks=[os.path.join(HERE, "tasks", "swe-qa.json")], only=DRY_TASKS, profiles="baseline,lidx",
         trials=1, model=DRY_MODEL, effort=None, budget=0.5, timeout=900, jobs=args.jobs, out=out,
-        lidx=args.lidx, workdir=args.workdir)
+        lidx=args.lidx, workdir=args.workdir, scratch=args.scratch)
     cmd_run(run)
     judge = argparse.Namespace(run_dir=out, references=[os.path.join(HERE, "references", "swe-qa.json")],
                                model=DRY_MODEL, effort=None, timeout=600, jobs=args.jobs)
@@ -707,8 +806,10 @@ def main():
     d.add_argument("--out")
     d.add_argument("--lidx", default=default_lidx())
     d.add_argument("--workdir", default=DEFAULT_WORKDIR)
+    d.add_argument("--scratch")
     d.add_argument("-j", "--jobs", type=int, default=2)
     args = ap.parse_args()
+    normalize_paths(args)
     try:
         return {"run": cmd_run, "judge": cmd_judge, "report": cmd_report, "dry-run": cmd_dry_run}[args.cmd](args)
     except Fatal as e:

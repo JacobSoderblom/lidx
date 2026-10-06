@@ -9,7 +9,7 @@ def ev(**kw):
 
 
 STREAM = [
-    ev(type="system", subtype="init", tools=["Read", "Grep"], mcp_servers=[{"name": "lidx", "status": "connected"}],
+    ev(type="system", subtype="init", tools=["Read", "Grep", "Glob", "mcp__lidx__lidx"], mcp_servers=[{"name": "lidx", "status": "connected"}],
        model="m"),
     ev(type="assistant", message={"content": [{"type": "text", "text": "hi"},
                                               {"type": "tool_use", "name": "Grep", "input": {}},
@@ -49,10 +49,19 @@ class Parse(unittest.TestCase):
     def test_init_checks(self):
         init = bench.parse_stream(STREAM)["init"]
         self.assertIsNone(bench.check_init("lidx", init))
-        self.assertIn("baseline has MCP", bench.check_init("baseline", init))
-        down = {"mcp_servers": [{"name": "lidx", "status": "failed"}]}
+        self.assertIn("baseline has MCP", bench.check_init("baseline", dict(init, tools=["Glob", "Grep", "Read"])))
+        down = {"mcp_servers": [{"name": "lidx", "status": "failed"}], "tools": init["tools"]}
         self.assertIn("not connected", bench.check_init("lidx", down))
-        self.assertIsNone(bench.check_init("baseline", {"mcp_servers": []}))
+        self.assertIsNone(bench.check_init("baseline", {"mcp_servers": [], "tools": ["Glob", "Grep", "Read"]}))
+
+    def test_tool_set_validation(self):
+        base = {"mcp_servers": [], "tools": ["Read", "Grep", "Glob"]}
+        self.assertIsNone(bench.check_init("baseline", base))
+        self.assertIn("tool set", bench.check_init("baseline", dict(base, tools=["Read", "Grep", "Glob", "Bash"])))
+        self.assertIn("tool set", bench.check_init("baseline", dict(base, tools=["Read", "Grep"])))
+        lidx = {"mcp_servers": [{"name": "lidx", "status": "connected"}], "tools": base["tools"]}
+        self.assertIn("tool set", bench.check_init("lidx", lidx))        # lidx tool missing
+        self.assertIsNone(bench.check_init("lidx", dict(lidx, tools=base["tools"] + ["mcp__lidx__lidx"])))
 
     def test_judge_scores_strict(self):
         ok = {d: 10 for d in bench.DIMS}
@@ -103,6 +112,85 @@ class Report(unittest.TestCase):
         self.assertEqual(len(rep["errors"]), 1)
         self.assertIsNotNone(row["profiles"]["baseline"]["judge"]["sd"])
         self.assertIn("budget", bench.render(rep))
+
+
+class Paths(unittest.TestCase):
+    def test_relative_paths_become_absolute(self):
+        import argparse
+        import os
+        a = argparse.Namespace(out=".work/x", workdir="w", lidx="~/bin/lidx", tasks=["t.json", "/abs/u.json"],
+                               scratch=None, other="keep")
+        bench.normalize_paths(a)
+        self.assertEqual(a.out, os.path.join(os.getcwd(), ".work/x"))
+        self.assertEqual(a.workdir, os.path.join(os.getcwd(), "w"))
+        self.assertEqual(a.lidx, os.path.expanduser("~/bin/lidx"))
+        self.assertEqual(a.tasks, [os.path.join(os.getcwd(), "t.json"), "/abs/u.json"])
+        self.assertIsNone(a.scratch)
+        self.assertEqual(a.other, "keep")
+
+    def test_deny_rules(self):
+        rules = bench.deny_rules(["/Users/x/lidx", "/tmp/run"])
+        self.assertIn("Read(//Users/x/lidx/**)", rules)
+        self.assertIn("Read(//tmp/run/**)", rules)
+        self.assertTrue(all(r.startswith("Read(//") and not r.startswith("Read(///") for r in rules))
+
+    def test_deny_args_in_command(self):
+        import argparse
+        import os
+        a = argparse.Namespace(model="claude-haiku-4-5-20251001", effort=None, budget=0.1, out="/tmp/some/run")
+        cmd = bench.claude_cmd(a, "lidx", "/tmp/some/run/mcp.json", "q")
+        i = cmd.index("--disallowedTools")
+        denied = cmd[i + 1:]
+        self.assertIn("Read(//tmp/some/run/**)", denied)
+        self.assertIn("Read(//%s/**)" % bench.REPO_ROOT.lstrip("/"), denied)
+        self.assertEqual(cmd.count("--disallowedTools"), 1)
+        self.assertFalse(os.path.commonpath([bench.default_scratch("/tmp/some/run"), bench.REPO_ROOT]) == bench.REPO_ROOT)
+
+
+class Variance(unittest.TestCase):
+    def test_overall_stdev_over_trial_index(self):
+        import statistics
+        ts = []
+        # trial i: judge a=(40,50) b=(60,70) per profile; lidx = baseline + 10
+        for task, vals in (("a", (40, 60)), ("b", (50, 70))):
+            for i, v in enumerate(vals, 1):
+                ts.append(trial(task, "baseline", i, v, 100 * i, 10, 10))
+                ts.append(trial(task, "lidx", i, v + 10, 50 * i, 5, 5))
+        o = bench.aggregate(ts)["overall"]
+        # trial 1 mean judge 45, trial 2 mean judge 65 -> stdev of [45, 65]
+        self.assertAlmostEqual(o["sd"]["baseline"]["judge"], statistics.stdev([45, 65]))
+        # tokens: sum over tasks at trial i = 200*i -> [200, 400]
+        self.assertAlmostEqual(o["sd"]["baseline"]["input_tokens"], statistics.stdev([200, 400]))
+        overall_row = [x for x in bench.render(bench.aggregate(ts)).splitlines() if x.startswith("| **Overall**")][0]
+        self.assertIn("±", overall_row)
+
+    def test_single_trial_has_no_stdev(self):
+        o = bench.aggregate([trial("a", "baseline", 1, 50, 1, 1, 1), trial("a", "lidx", 1, 50, 1, 1, 1)])["overall"]
+        self.assertIsNone(o["sd"]["lidx"]["judge"])
+
+
+class ErrorAsymmetry(unittest.TestCase):
+    def test_flag_and_counts(self):
+        bad = trial("a", "lidx", 2, None, 0, 0, 0, status="error")
+        bad["error"] = "boom"
+        ts = [trial("a", "baseline", 1, 50, 1, 1, 1), trial("a", "baseline", 2, 50, 1, 1, 1),
+              trial("a", "lidx", 1, 50, 1, 1, 1), bad,
+              trial("b", "baseline", 1, 50, 1, 1, 1), trial("b", "lidx", 1, 50, 1, 1, 1)]
+        rep = bench.aggregate(ts)
+        a, b = rep["rows"]
+        self.assertEqual(a["errors"], {"baseline": 0, "lidx": 1})
+        self.assertTrue(a["error_asymmetry"])
+        self.assertFalse(b["error_asymmetry"])
+        self.assertEqual(rep["overall"]["errors"], {"baseline": 0, "lidx": 1})
+        text = bench.render(rep)
+        self.assertIn("⚠ errors differ between profiles", text)
+        self.assertEqual(sum("errors differ" in line for line in text.splitlines()), 2)   # task a + overall
+
+    def test_all_errored_task_still_listed(self):
+        bad = trial("a", "lidx", 1, None, 0, 0, 0, status="error")
+        rep = bench.aggregate([bad, trial("a", "baseline", 1, 50, 1, 1, 1)])
+        self.assertEqual(rep["rows"][0]["errors"]["lidx"], 1)
+        self.assertTrue(rep["rows"][0]["error_asymmetry"])
 
 
 if __name__ == "__main__":

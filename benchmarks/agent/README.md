@@ -28,11 +28,13 @@ python3 bench.py run --tasks tasks/swe-qa.json --tasks tasks/derived.json \
     --budget 2 --timeout 900 -j 4 --out .work/run-1
 python3 bench.py judge .work/run-1 --references references/swe-qa.json --references references/derived.json
 python3 bench.py report .work/run-1 [--json out.json]
-python3 -m unittest test_bench    # parser/report tests
+python3 test_bench.py             # parser/report/isolation tests
 ```
 
 `run` is resumable: trials whose `trial.json` has `status: ok` are skipped, errored ones are rerun.
 `judge` skips trials that already have a `judge.json`. `--only REGEX` filters task ids.
+All path arguments (`--out`, `--workdir`, `--scratch`, `--lidx`, task/reference files, run dir) are made absolute at parse time,
+so relative paths work even though `claude` runs with the clone as its cwd.
 Output layout: `RUN/<task>/<profile>/<trial>/{stream.jsonl, stderr.txt, mcp.json, trial.json, judge.json}`
 plus `RUN/run.json` (model, effort, budget, claude and lidx versions, task-file hashes).
 Judge defaults: `--model claude-opus-5-5 --effort high` (dry-run: Haiku). `--effort` is never passed to Haiku models.
@@ -73,11 +75,19 @@ Isolation:
 * Each trial gets a fresh `git clone` of a per-commit cache in its own directory,
   used as cwd, so there is no shared Claude memory (keyed by cwd), no session
   persistence, and no user hooks, plugins or CLAUDE.md.
-* The lidx db lives next to the clone, never inside it, so `Grep` cannot see it.
-* References live in this repo, outside the trial cwd. Any `permission_denials`
+* Clones and the lidx db live in a per-trial scratch dir outside the run dir
+  (`--scratch`, default `<tmp>/lidx-agent-bench/<run name>/<task>/<profile>/<trial>`,
+  removed after each trial), never inside the clone, so `Grep` cannot see the db
+  and the agent sees no sibling results.
+* References live in this repo and results in the run dir (default `.work/`, also in this
+  repo), which are readable by absolute path. Every trial therefore passes
+  `--disallowedTools "Read(//<lidx repo root>/**)" "Read(//<run dir>/**)"` (`//` = absolute
+  path; Read rules also govern Grep and Glob). Verified with a Haiku probe: Read, Grep and
+  Glob on `references/` are denied, a read inside the clone works. Any `permission_denials`
   are recorded in `trial.json` and reported.
 * The `system/init` event (tools, mcp servers) is stored in `trial.json`. A
-  trial fails if the lidx profile's server is not `connected` or the baseline has any MCP server.
+  trial fails if the tool list is not exactly Glob, Grep, Read (+ `mcp__lidx__lidx` for lidx),
+  if the lidx profile's server is not `connected`, or if the baseline has any MCP server.
 
 Index timing: before each lidx trial `lidx reindex` builds a fresh db; its time
 is `index_seconds`, reported separately and **not** part of agent wall time.
@@ -100,12 +110,18 @@ strictly and invalid output is retried up to 3 times. Judge cost is tracked sepa
 * A trial whose result subtype is not `success` (e.g. budget exceeded), a failed
   isolation check, or an empty answer is an **error**: kept in raw output,
   excluded from means, listed in the report.
+* **Errors**: the report shows errored-trial counts per profile (baseline/lidx) per task and
+  overall; a task or the overall row is flagged ⚠ when the two profiles' error counts differ,
+  since excluding errors from means can bias the comparison.
 * **Per task**: mean over successful trials per profile, `±` stdev when trials > 1,
   change = point difference for judge and relative % for the rest. A warning flag
   appears when trials disagree (judge range across trials > 20 points, or tool-call max > 2x min).
 * **Overall** (zvec-grep convention): mean of per-task judge means; sums of
   per-task means for tokens, calls and time, with change computed from those
-  aggregates. Only tasks where both profiles have a value count.
+  aggregates. Only tasks where both profiles have a value count. The `±` on the Overall row is
+  the stdev across trial index i of the overall aggregate computed from trial i alone (per task,
+  trial i's judge score or metric; then mean judge / sum of metric across tasks). It needs trials
+  >= 2 and every paired task to have a successful trial i; otherwise it is omitted.
 * **Cost**: agent + judge total.
 
 ## Attribution
