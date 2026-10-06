@@ -892,10 +892,18 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
                 String::new(),
                 String::new(),
             ),
+            // `s.name = ?4` (the last path segment: every Rust method
+            // qualname ends in `::<name>`) lets SQLite use `idx_symbols_name`
+            // instead of scanning every method for the suffix match.
             DeclarationQuery::Method(qualified) => (
-                "s.kind = 'method' AND (s.qualname = ?1 OR substr(s.qualname, -length(?1) - 2) = '::' || ?1)",
+                "s.kind = 'method' AND s.name = ?4
+                 AND (s.qualname = ?1 OR substr(s.qualname, -length(?1) - 2) = '::' || ?1)",
                 qualified.to_string(),
-                String::new(),
+                qualified
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(qualified)
+                    .to_string(),
                 String::new(),
             ),
             DeclarationQuery::Type(name) => (
@@ -1807,8 +1815,8 @@ impl<'c> Resolver<'c> {
         // crate's item) lives only in the unresolved-reference store.
         let mut stmt = self.conn.prepare_cached(
             "SELECT e.target_qualname, f.path
-             FROM edges e
-             JOIN symbols s ON s.id = e.source_symbol_id
+             FROM symbols s
+             CROSS JOIN edges e ON e.source_symbol_id = s.id
              JOIN files f ON f.id = e.file_id
              WHERE e.graph_version = ?1 AND e.kind = 'IMPORTS' AND s.qualname = ?2
                AND e.target_qualname IS NOT NULL
@@ -1817,8 +1825,8 @@ impl<'c> Resolver<'c> {
                         OR substr(e.target_qualname, -length(?5)) = ?5)))
              UNION
              SELECT ur.reference_name, f.path
-             FROM unresolved_references ur
-             JOIN symbols s ON s.id = ur.source_symbol_id
+             FROM symbols s
+             CROSS JOIN unresolved_references ur ON ur.source_symbol_id = s.id
              JOIN files f ON f.id = ur.file_id
              WHERE ur.graph_version = ?1 AND ur.edge_kind = 'IMPORTS' AND s.qualname = ?2
                AND ur.reference_name IS NOT NULL
