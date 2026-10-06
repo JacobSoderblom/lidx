@@ -1,0 +1,1170 @@
+{
+  "name": "ripgrep",
+  "repo": {
+    "url": "https://github.com/BurntSushi/ripgrep",
+    "commit": "3fce3b5bb0236da2df6d99672afb8a719642eca7"
+  },
+  "questions": [
+    {
+      "id": "rs-callers-globmatcher-is-match-candidate",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/globset/src/glob.rs",
+        "line": 147
+      },
+      "expect": [
+        {
+          "file": "crates/globset/src/glob.rs",
+          "line": 143
+        },
+        {
+          "file": "crates/globset/benches/bench.rs",
+          "line": 46
+        },
+        {
+          "file": "crates/globset/benches/bench.rs",
+          "line": 59
+        },
+        {
+          "file": "crates/globset/benches/bench.rs",
+          "line": 72
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-type",
+        "bench",
+        "self-method",
+        "locally-typed-receiver"
+      ],
+      "note": "grep -rnw is_match_candidate -> 9 hits: 3 defs (GlobSet lib.rs:350, GlobMatcher glob.rs:147, #[cfg(test)] GlobStrategic glob.rs:175) and 6 calls. glob.rs:143 is GlobMatcher::is_match (self.is_match_candidate). bench.rs:46/59/72: `set` = new_reglob(..) which returns GlobMatcher (bench.rs:24), so GlobMatcher's, not GlobSet's. Excluded: lib.rs:343 (GlobSet::is_match -> GlobSet's) and glob.rs:171 (GlobStrategic::is_match -> GlobStrategic's)."
+    },
+    {
+      "id": "rs-callers-globset-candidate-new",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/globset/src/lib.rs",
+        "line": 617
+      },
+      "expect": [
+        {
+          "file": "crates/globset/benches/bench.rs",
+          "line": 45
+        },
+        {
+          "file": "crates/globset/benches/bench.rs",
+          "line": 58
+        },
+        {
+          "file": "crates/globset/benches/bench.rs",
+          "line": 71
+        },
+        {
+          "file": "crates/globset/src/glob.rs",
+          "line": 143
+        },
+        {
+          "file": "crates/globset/src/glob.rs",
+          "line": 171
+        },
+        {
+          "file": "crates/globset/src/lib.rs",
+          "line": 343
+        },
+        {
+          "file": "crates/globset/src/lib.rs",
+          "line": 380
+        },
+        {
+          "file": "crates/globset/src/lib.rs",
+          "line": 402
+        },
+        {
+          "file": "crates/globset/src/lib.rs",
+          "line": 430
+        },
+        {
+          "file": "crates/ignore/src/gitignore.rs",
+          "line": 269
+        }
+      ],
+      "tags": [
+        "assoc-fn",
+        "name-collision",
+        "cross-crate",
+        "bench"
+      ],
+      "note": "grep -rn 'Candidate::' over all .rs -> 10 hits, all `Candidate::new(`; no `Candidate::from_bytes` calls, no fn-ref usage. glob.rs:143 is GlobMatcher::is_match, glob.rs:171 is the #[cfg(test)] GlobStrategic::is_match. gitignore.rs:269 is the only cross-crate-ish caller (ignore crate using globset::Candidate). `new` is among the most collided names in the repo so a name-only resolver would explode."
+    },
+    {
+      "id": "rs-callers-stats-bytes-searched",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/printer/src/stats.rs",
+        "line": 47
+      },
+      "expect": [
+        {
+          "file": "crates/core/main.rs",
+          "line": 484
+        },
+        {
+          "file": "crates/printer/src/standard.rs",
+          "line": 1850
+        },
+        {
+          "file": "crates/printer/src/standard.rs",
+          "line": 1887
+        }
+      ],
+      "tags": [
+        "macro-args",
+        "write-macro",
+        "assert-eq-macro",
+        "named-format-arg",
+        "test-callers",
+        "cross-crate"
+      ],
+      "note": "grep -rnw bytes_searched -> Stats::bytes_searched def stats.rs:47, a struct field/serde key (stats.rs:17,48,88,124,143,165, json.rs docs, tests/json.rs:132,263: field accesses, not calls) and 3 calls, ALL inside macro args: core/main.rs:484 is the named arg `bytes_searched = stats.bytes_searched(),` of the multi-line `write!(wtr, \"..\", ..)` in print_stats (line 475 is the `{bytes_searched}` placeholder in the format string, not a call); printer/standard.rs:1850 and :1887 are `assert_eq!(stats.bytes_searched(), ..)` in #[cfg(test)] tests. Siblings searches_with_match/matched_lines/matches/bytes_printed follow the same pattern but are different methods."
+    },
+    {
+      "id": "rs-callers-partialerrorbuilder-into-error-option",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/ignore/src/lib.rs",
+        "line": 398
+      },
+      "expect": [
+        {
+          "file": "crates/ignore/src/dir.rs",
+          "line": 257
+        },
+        {
+          "file": "crates/ignore/src/dir.rs",
+          "line": 466
+        },
+        {
+          "file": "crates/ignore/src/dir.rs",
+          "line": 1050
+        },
+        {
+          "file": "crates/ignore/src/incremental.rs",
+          "line": 221
+        },
+        {
+          "file": "crates/ignore/src/gitignore.rs",
+          "line": 112
+        },
+        {
+          "file": "crates/ignore/src/gitignore.rs",
+          "line": 115
+        },
+        {
+          "file": "crates/ignore/src/gitignore.rs",
+          "line": 387
+        },
+        {
+          "file": "crates/ignore/src/gitignore.rs",
+          "line": 390
+        },
+        {
+          "file": "crates/ignore/src/gitignore.rs",
+          "line": 433
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 811
+        }
+      ],
+      "tags": [
+        "locally-typed-receiver",
+        "cross-module",
+        "private-method",
+        "tuple-return"
+      ],
+      "note": "grep -rnw into_error_option -> 11 hits: def lib.rs:398 + 10 calls, every one on a local `errs` bound via `PartialErrorBuilder::default()` (only one def of the name in the repo). gitignore.rs:112 and :115 are separate arms of one match, both counted; dir.rs:1050 is in the free fn create_gitignore."
+    },
+    {
+      "id": "rs-callers-error-with-depth",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/ignore/src/lib.rs",
+        "line": 271
+      },
+      "expect": [
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 184
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 306
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 332
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 345
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 395
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 414
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 1622
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 1634
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 2044
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 2048
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 2055
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 2140
+        }
+      ],
+      "tags": [
+        "method-chain",
+        "multi-line-chain",
+        "trap",
+        "closure"
+      ],
+      "note": "grep -rnw with_depth -> 13 hits: def lib.rs:271 + 12 calls, all in walk.rs, all on an `Error` (`Error::Io(..)`, `Error::from(..)`, `Error::Loop{..}` chains). Multi-line chains use the line of the `.with_depth(` token: 184, 1622, 1634, 2055. Many sit inside map_err closures. Sibling `with_path` has the same chain shape but is a different method and is not counted."
+    },
+    {
+      "id": "rs-callers-walkbuilder-add-custom-ignore-filename",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/ignore/src/walk.rs",
+        "line": 820
+      },
+      "expect": [
+        {
+          "file": "crates/core/flags/hiargs.rs",
+          "line": 916
+        },
+        {
+          "file": "crates/ignore/src/incremental.rs",
+          "line": 689
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 2321
+        },
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 2341
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-type",
+        "self-field-receiver",
+        "cross-crate",
+        "test-callers"
+      ],
+      "note": "grep -rnw add_custom_ignore_filename -> 2 defs (WalkBuilder walk.rs:820, pub(crate) IgnoreBuilder dir.rs:908). WalkBuilder receivers: hiargs.rs:916 (`let mut builder = ignore::WalkBuilder::new(..)` in walk_builder), incremental.rs:689 (`let mut builder = builder(&root)`; local test helper fn builder -> WalkBuilder, incremental.rs:585), walk.rs:2321/2341 (`let mut builder = WalkBuilder::new(..)` tests). Excluded: incremental.rs:48 and walk.rs:654 (doc comments) and all IgnoreBuilder callers (see sibling question)."
+    },
+    {
+      "id": "rs-callers-ignorebuilder-add-custom-ignore-filename",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/ignore/src/dir.rs",
+        "line": 908
+      },
+      "expect": [
+        {
+          "file": "crates/ignore/src/walk.rs",
+          "line": 824
+        },
+        {
+          "file": "crates/ignore/src/dir.rs",
+          "line": 1244
+        },
+        {
+          "file": "crates/ignore/src/dir.rs",
+          "line": 1262
+        },
+        {
+          "file": "crates/ignore/src/dir.rs",
+          "line": 1279
+        },
+        {
+          "file": "crates/ignore/src/dir.rs",
+          "line": 1280
+        },
+        {
+          "file": "crates/ignore/src/dir.rs",
+          "line": 1541
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-type",
+        "self-field-receiver",
+        "multi-line-chain",
+        "test-callers"
+      ],
+      "note": "Same grep as the WalkBuilder sibling. IgnoreBuilder callers: walk.rs:824 (`self.ig_builder.add_custom_ignore_filename(file_name)`, ig_builder: IgnoreBuilder, inside the WalkBuilder wrapper) and dir.rs tests, all `IgnoreBuilder::new()\\n .add_custom_ignore_filename(..)` multi-line chains (1244,1262,1279,1280,1541; 1279/1280 are two calls on consecutive lines). The WalkBuilder wrapper (walk.rs:820) is NOT a caller of itself."
+    },
+    {
+      "id": "rs-callers-haystackbuilder-build-from-result",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/core/haystack.rs",
+        "line": 31
+      },
+      "expect": [
+        {
+          "file": "crates/core/main.rs",
+          "line": 119
+        },
+        {
+          "file": "crates/core/main.rs",
+          "line": 190
+        },
+        {
+          "file": "crates/core/main.rs",
+          "line": 246
+        },
+        {
+          "file": "crates/core/main.rs",
+          "line": 307
+        }
+      ],
+      "tags": [
+        "closure",
+        "locally-typed-receiver",
+        "cross-module",
+        "private-module"
+      ],
+      "note": "grep -rnw build_from_result -> def + 4 calls, all on `haystack_builder = args.haystack_builder()` (HaystackBuilder). 119 and 246 are inside `.filter_map(|result| ..)` closures, 190 and 307 inside the parallel walker closures in search_parallel/files_parallel. The inner `build` (haystack.rs, private) is a different, unrelated name."
+    },
+    {
+      "id": "rs-callers-printer-util-trim-ascii-prefix-free",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/printer/src/util.rs",
+        "line": 452
+      },
+      "expect": [
+        {
+          "file": "crates/printer/src/standard.rs",
+          "line": 1198
+        },
+        {
+          "file": "crates/printer/src/standard.rs",
+          "line": 1587
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-fn-and-method",
+        "recursion-lookalike",
+        "use-import"
+      ],
+      "note": "grep -rnw trim_ascii_prefix -> import (standard.rs:26), free fn def util.rs:452, method def standard.rs:1582, and calls. Unqualified `trim_ascii_prefix(lineterm, ..)` at standard.rs:1198 (in write_line) and :1587 (INSIDE the method of the same name, calls the free fn with a different arity, not recursion) resolve to the imported free fn. The `self.trim_ascii_prefix(bytes, &mut line)` calls (1053,1075,1137,1231) go to the method standard.rs:1582 and are excluded."
+    },
+    {
+      "id": "rs-callers-matcher-trait-find-iter",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/matcher/src/lib.rs",
+        "line": 629
+      },
+      "expect": [
+        {
+          "file": "crates/matcher/src/lib.rs",
+          "line": 912
+        },
+        {
+          "file": "crates/matcher/src/lib.rs",
+          "line": 1185
+        },
+        {
+          "file": "crates/matcher/tests/test_matcher.rs",
+          "line": 31
+        },
+        {
+          "file": "crates/matcher/tests/test_matcher.rs",
+          "line": 41
+        }
+      ],
+      "tags": [
+        "trait-default",
+        "trait-generic",
+        "interface-rule",
+        "multi-line-chain",
+        "test-callers"
+      ],
+      "note": "Matcher::find_iter is a trait default method (lib.rs:629); `impl Matcher for &M` redeclares it at lib.rs:1177. grep -rnw find_iter -> other hits are regex-crate `self.regex.find_iter(..)` (regex/matcher.rs:447, pcre2/matcher.rs:351: regex::bytes::Regex, unrelated) and comments. Real callers: lib.rs:912 (`self.find_iter` in trait default `replace`), lib.rs:1185 (`(*self).find_iter` with M: Matcher generic -> trait decl by the interface rule, not the &M impl), test_matcher.rs:31 and :41 (`matcher.find_iter(` on the test RegexMatcher which deliberately does not override it -> trait default; multi-line chain, line of the `.find_iter(` token). No one calls the &M impl (1177) directly."
+    },
+    {
+      "id": "rs-callers-matcher-trait-find-iter-at",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/matcher/src/lib.rs",
+        "line": 648
+      },
+      "expect": [
+        {
+          "file": "crates/matcher/src/lib.rs",
+          "line": 637
+        },
+        {
+          "file": "crates/matcher/src/lib.rs",
+          "line": 1198
+        },
+        {
+          "file": "crates/printer/src/util.rs",
+          "line": 523
+        }
+      ],
+      "tags": [
+        "trait-default",
+        "trait-generic",
+        "interface-rule",
+        "cross-crate",
+        "multi-line-chain"
+      ],
+      "note": "grep -rnw find_iter_at -> defs lib.rs:648 (trait default) and :1189 (&M impl) + calls. lib.rs:637 is `self.find_iter_at` in trait default find_iter; lib.rs:1198 is `(*self).find_iter_at` forwarding to M (trait decl); printer/src/util.rs:523 is `matcher.find_iter_at(..)` in find_iter_at_in_context with M: Matcher (multi-line chain, `.find_iter_at(` token line) -> trait decl. Distinct from the printer helper find_iter_at_in_context (different name)."
+    },
+    {
+      "id": "rs-callers-sinkerror-trait-error-message",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/searcher/src/sink.rs",
+        "line": 21
+      },
+      "expect": [
+        {
+          "file": "crates/searcher/src/searcher/core.rs",
+          "line": 121
+        },
+        {
+          "file": "crates/searcher/src/searcher/core.rs",
+          "line": 132
+        },
+        {
+          "file": "crates/searcher/src/searcher/core.rs",
+          "line": 149
+        },
+        {
+          "file": "crates/searcher/src/searcher/core.rs",
+          "line": 489
+        },
+        {
+          "file": "crates/searcher/src/sink.rs",
+          "line": 28
+        },
+        {
+          "file": "crates/searcher/src/sink.rs",
+          "line": 36
+        }
+      ],
+      "tags": [
+        "trait-static-method",
+        "trait-generic",
+        "interface-rule",
+        "fn-ref",
+        "trait-default-body"
+      ],
+      "note": "SinkError::error_message(message) is a static trait fn (sink.rs:21) with impls for io::Error (sink.rs:43) and Box<dyn Error> (sink.rs:55). Calls through the generic `S::Error::error_message` (S: Sink, S::Error: SinkError) are trait-decl callers: core.rs:121 is a fn ref (`.map_err(S::Error::error_message)`), 132/149/489 direct. sink.rs:28 and :36 are `Self::error_message(err)` in the trait's default bodies of error_io/error_config. All `io::Error::error_message` calls are excluded (concrete type -> impl; see sibling question)."
+    },
+    {
+      "id": "rs-callers-io-error-sinkerror-error-message-impl",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/searcher/src/sink.rs",
+        "line": 43
+      },
+      "expect": [
+        {
+          "file": "crates/searcher/src/sink.rs",
+          "line": 557
+        },
+        {
+          "file": "crates/searcher/src/sink.rs",
+          "line": 563
+        },
+        {
+          "file": "crates/searcher/src/sink.rs",
+          "line": 617
+        },
+        {
+          "file": "crates/searcher/src/sink.rs",
+          "line": 657
+        },
+        {
+          "file": "crates/printer/src/util.rs",
+          "line": 106
+        },
+        {
+          "file": "crates/printer/src/util.rs",
+          "line": 149
+        },
+        {
+          "file": "crates/printer/src/util.rs",
+          "line": 529
+        },
+        {
+          "file": "crates/printer/src/summary.rs",
+          "line": 698
+        }
+      ],
+      "tags": [
+        "impl-trait-for-concrete",
+        "fn-ref",
+        "cross-crate",
+        "trait-static-method"
+      ],
+      "note": "grep -rnw error_message: concrete-type calls `io::Error::error_message` resolve to `impl SinkError for io::Error` (sink.rs:43). sink.rs:557/563/617/657 are in the `impl Sink for` blocks of the sinks module (Error = io::Error); printer/util.rs:106, 149, 529 are `.map_err(io::Error::error_message)` fn refs; summary.rs:698 direct. Excluded: S::Error::error_message (core.rs) and Self:: calls in default bodies -> trait decl (sibling question). Box<dyn Error> impl (sink.rs:55) has no callers."
+    },
+    {
+      "id": "rs-callers-cli-parse-human-readable-size",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/cli/src/human.rs",
+        "line": 79
+      },
+      "expect": [
+        {
+          "file": "crates/core/flags/defs.rs",
+          "line": 7985
+        },
+        {
+          "file": "crates/cli/src/human.rs",
+          "line": 108
+        },
+        {
+          "file": "crates/cli/src/human.rs",
+          "line": 114
+        },
+        {
+          "file": "crates/cli/src/human.rs",
+          "line": 120
+        },
+        {
+          "file": "crates/cli/src/human.rs",
+          "line": 126
+        },
+        {
+          "file": "crates/cli/src/human.rs",
+          "line": 132
+        },
+        {
+          "file": "crates/cli/src/human.rs",
+          "line": 137
+        },
+        {
+          "file": "crates/cli/src/human.rs",
+          "line": 142
+        },
+        {
+          "file": "crates/cli/src/human.rs",
+          "line": 147
+        }
+      ],
+      "tags": [
+        "cross-crate",
+        "full-path",
+        "test-callers",
+        "use-import"
+      ],
+      "note": "grep -rnw parse_human_readable_size -> def human.rs:79, re-export (cli/lib.rs:141, `use`), doc (cli/lib.rs:118), and 9 calls: core/flags/defs.rs:7985 via full path `grep::cli::parse_human_readable_size` (cross-crate re-export of grep_cli) plus 8 calls inside human.rs `#[cfg(test)] mod tests` (via `use super::*`)."
+    },
+    {
+      "id": "rs-callers-searcher-search-path",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/searcher/src/searcher/mod.rs",
+        "line": 643
+      },
+      "expect": [
+        {
+          "file": "crates/core/search.rs",
+          "line": 389
+        },
+        {
+          "file": "crates/core/search.rs",
+          "line": 397
+        },
+        {
+          "file": "crates/core/search.rs",
+          "line": 405
+        },
+        {
+          "file": "crates/grep/examples/simplegrep.rs",
+          "line": 58
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-fn-and-method",
+        "typed-param-receiver",
+        "cross-crate",
+        "example"
+      ],
+      "note": "Searcher::search_path (searcher/mod.rs:643). Name is shared with SearchWorker::search_path (core/search.rs:342) and the free fn search_path (core/search.rs:380); those are separate questions. Callers on a real Searcher: core/search.rs:389/397/405 (`searcher: &mut grep::searcher::Searcher` param of the free fn, one per Printer arm) and examples/simplegrep.rs:58 (`searcher = SearcherBuilder::new()...build()`). Excluded: core/search.rs:265, 331 (self.search_path -> SearchWorker method), 347, 349 (free fn)."
+    },
+    {
+      "id": "rs-callers-searchworker-search-path-method",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/core/search.rs",
+        "line": 342
+      },
+      "expect": [
+        {
+          "file": "crates/core/search.rs",
+          "line": 265
+        },
+        {
+          "file": "crates/core/search.rs",
+          "line": 331
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-fn-and-method",
+        "self-method",
+        "private-method"
+      ],
+      "note": "SearchWorker::search_path method (core/search.rs:342). `self.search_path(path)` at 265 (in SearchWorker::search) and 331 (in search_decompress). Excluded: 347 and 349 are unqualified `search_path(m, searcher, printer, path)` = module-level free fn (380); 389/397/405 are Searcher::search_path."
+    },
+    {
+      "id": "rs-callers-core-search-path-free-fn",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/core/search.rs",
+        "line": 380
+      },
+      "expect": [
+        {
+          "file": "crates/core/search.rs",
+          "line": 347
+        },
+        {
+          "file": "crates/core/search.rs",
+          "line": 349
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-fn-and-method",
+        "generic-fn",
+        "private-fn"
+      ],
+      "note": "Free generic fn `search_path<M: Matcher, W: WriteColor>` (core/search.rs:380). Called unqualified from SearchWorker::search_path inside the `RustRegex` arm (347) and the #[cfg(feature=\"pcre2\")] PCRE2 arm (349). `self.search_path(..)` (265, 331) are the method. Searcher::search_path calls at 389/397/405 are method calls on `searcher`."
+    },
+    {
+      "id": "rs-callers-searchworker-search",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/core/search.rs",
+        "line": 245
+      },
+      "expect": [
+        {
+          "file": "crates/core/main.rs",
+          "line": 132
+        },
+        {
+          "file": "crates/core/main.rs",
+          "line": 196
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-fn-and-method",
+        "question-mark-unwrapped",
+        "closure",
+        "cross-module"
+      ],
+      "note": "grep -rn '\\.search(' over all .rs -> only main.rs:132 and :196 (plus defs core/search.rs:245, main.rs:113 and simplegrep.rs:32 which are different fns named search). Both receivers are `searcher = args.search_worker(..)?` (?-unwrapped SearchWorker<W>); 196 is inside the Box::new(move |result| ..) closure in search_parallel (receiver `searcher.clone()`)."
+    },
+    {
+      "id": "rs-callers-main-search",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/core/main.rs",
+        "line": 113
+      },
+      "expect": [
+        {
+          "file": "crates/core/main.rs",
+          "line": 89
+        },
+        {
+          "file": "crates/core/index/enabled.rs",
+          "line": 12
+        }
+      ],
+      "tags": [
+        "crate-path",
+        "trap",
+        "same-name-fn-and-method",
+        "cfg-feature",
+        "private-fn"
+      ],
+      "note": "Free fn `search(args, mode)` in core/main.rs:113. Callers: main.rs:89 (match arm in run, bare `search(&args, mode)`) and core/index/enabled.rs:12 (`crate::search(args, mode)`, crate:: path; enabled.rs is only compiled with feature unstable-index but is in the repo). Not callers: `searcher.search(&haystack)` main.rs:132/196 (SearchWorker::search), search_parallel (166) is a different fn. index/disabled.rs has no calls."
+    },
+    {
+      "id": "rs-callers-doc-render-custom-markup",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/core/flags/doc/mod.rs",
+        "line": 18
+      },
+      "expect": [
+        {
+          "file": "crates/core/flags/doc/help.rs",
+          "line": 169
+        },
+        {
+          "file": "crates/core/flags/doc/help.rs",
+          "line": 178
+        },
+        {
+          "file": "crates/core/flags/doc/man.rs",
+          "line": 72
+        },
+        {
+          "file": "crates/core/flags/doc/man.rs",
+          "line": 84
+        }
+      ],
+      "tags": [
+        "super-path",
+        "private-fn",
+        "closure-arg",
+        "cross-module"
+      ],
+      "note": "grep -rnw render_custom_markup -> def doc/mod.rs:18 (private fn in the parent module) + 4 calls spelled `super::render_custom_markup(..)` in the child modules help.rs (generate_long_flag path, 169/178) and man.rs (generate_flag, 72/84). Each has a closure argument that is not itself a call of the target."
+    },
+    {
+      "id": "rs-callers-version-generate-short-alias",
+      "lang": "rust",
+      "kind": "callers",
+      "target": {
+        "file": "crates/core/flags/doc/version.rs",
+        "line": 22
+      },
+      "expect": [
+        {
+          "file": "crates/core/flags/doc/version.rs",
+          "line": 35
+        },
+        {
+          "file": "crates/core/main.rs",
+          "line": 396
+        }
+      ],
+      "tags": [
+        "use-as-alias",
+        "reexport",
+        "same-name-different-module",
+        "private-fn"
+      ],
+      "note": "doc/version.rs::generate_short (22). flags/mod.rs re-exports `version::generate_short as generate_version_short` and `help::generate_short as generate_help_short`. Callers: version.rs:35 (local call in generate_long) and main.rs:396 (`flags::generate_version_short()` via the alias). main.rs:394 `flags::generate_help_short()` is help.rs:24's generate_short, not this one. grep -rnw generate_short -> two defs (version.rs:22, help.rs:24), the local call version.rs:35 and the four `as` imports in flags/mod.rs; the aliased names account for the rest."
+    },
+    {
+      "id": "rs-dead-regex-literal-tseq",
+      "lang": "rust",
+      "kind": "dead",
+      "scope": {
+        "path": "crates/regex/src/",
+        "lang": "rust"
+      },
+      "live": [
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 447
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 451
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 455
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 467
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 471
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 475
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 479
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 483
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 488
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 492
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 500
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 504
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 508
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 512
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 520
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 524
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 528
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 533
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 546
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 553
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 570
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 580
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 587
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 635
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 379
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 398
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 434
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 106
+        }
+      ],
+      "dead": [
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 459
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 496
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 516
+        },
+        {
+          "file": "crates/regex/src/literal.rs",
+          "line": 537
+        }
+      ],
+      "tags": [
+        "trap",
+        "allow-dead-code",
+        "wrapper-forwarders",
+        "fn-ref",
+        "self-name-collision"
+      ],
+      "note": "TSeq (literal.rs, #[allow(dead_code)] impl) is a forwarding wrapper over regex_syntax Seq; the attribute hides rustc's dead-code warnings so each method was grepped. Dead: TSeq::new (459; no `TSeq::new` anywhere, Extractor::new is a different fn), sort (496; `.sort()` appears only in its own body, forwarding to Seq::sort), is_exact (516; only `self.seq.is_exact()` in its own body, a Seq method), max_literal_len (537; its body calls Seq::max_literal_len, nobody calls TSeq's). A name-only resolver will see `.max_literal_len()`/`.is_exact()` at 538/517 and wrongly call them used. Live (all read in extract_*/cross/union/choose): empty/infinite/singleton, literals (via has_poisonous_literal), push, make_inexact, make_infinite, cross_forward, union, dedup, keep_first_bytes, is_finite, is_empty, len, is_inexact, max_union_len, max_cross_len, min_literal_len, make_not_prefix, is_good, is_really_good, has_poisonous_literal, choose, is_poisonous (only used as fn ref `lits.iter().any(is_poisonous)` at 582), Extractor::cross/union/enforce_literal_len, InnerLiterals::one_regex (called from regex/matcher.rs:78). Trait impl FromIterator for TSeq and test fns excluded; pub(crate)/pub items of other files not listed."
+    },
+    {
+      "id": "rs-dead-index-crate",
+      "lang": "rust",
+      "kind": "dead",
+      "scope": {
+        "path": "crates/index/src/",
+        "lang": "rust"
+      },
+      "live": [
+        {
+          "file": "crates/index/src/index.rs",
+          "line": 52
+        },
+        {
+          "file": "crates/index/src/index.rs",
+          "line": 69
+        },
+        {
+          "file": "crates/index/src/literal.rs",
+          "line": 45
+        },
+        {
+          "file": "crates/index/src/literal.rs",
+          "line": 49
+        },
+        {
+          "file": "crates/index/src/literal.rs",
+          "line": 53
+        },
+        {
+          "file": "crates/index/src/literal.rs",
+          "line": 65
+        },
+        {
+          "file": "crates/index/src/literal.rs",
+          "line": 363
+        },
+        {
+          "file": "crates/index/src/literal.rs",
+          "line": 766
+        },
+        {
+          "file": "crates/index/src/literal.rs",
+          "line": 795
+        },
+        {
+          "file": "crates/index/src/literal.rs",
+          "line": 822
+        }
+      ],
+      "dead": [
+        {
+          "file": "crates/index/src/index.rs",
+          "line": 181
+        },
+        {
+          "file": "crates/index/src/index.rs",
+          "line": 191
+        },
+        {
+          "file": "crates/index/src/index.rs",
+          "line": 200
+        }
+      ],
+      "tags": [
+        "trap",
+        "private-methods",
+        "fn-ref",
+        "allow-warnings"
+      ],
+      "note": "crates/index has #![allow(warnings)] so rustc does not flag dead code. Dead: private `Handle` (index.rs, enum not exported from lib.rs) methods begin_read (181), read_write (191), read_write_mut (200): grep -rnw over the repo finds no calls (the `database.begin_read()` calls at 186/187 are redb's Database/ReadOnlyDatabase methods, not Handle's). Live: IndexBuilder::build_create/build_open (called from build, 52/69); GramQuery::is_literal/is_and/is_or/unwrap_literal are only referenced as fn refs (`.all(GramQuery::is_literal)`, `.any(GramQuery::is_and)`, `.map(GramQuery::unwrap_literal)`) plus method calls; Analysis::max_len (739), class_over_limit_unicode (687), combine_literals (735), ngrams (267). pub items (Index, IndexBuilder, IndexDiscovery and their pub methods) are API and excluded."
+    },
+    {
+      "id": "rs-trace-searchworker-search",
+      "lang": "rust",
+      "kind": "trace_reaches",
+      "start": {
+        "file": "crates/core/search.rs",
+        "line": 245
+      },
+      "max_hops": 3,
+      "must_reach": [
+        {
+          "file": "crates/core/search.rs",
+          "line": 342
+        },
+        {
+          "file": "crates/core/search.rs",
+          "line": 362
+        },
+        {
+          "file": "crates/core/search.rs",
+          "line": 380
+        },
+        {
+          "file": "crates/core/search.rs",
+          "line": 416
+        },
+        {
+          "file": "crates/searcher/src/searcher/mod.rs",
+          "line": 643
+        },
+        {
+          "file": "crates/searcher/src/searcher/mod.rs",
+          "line": 727
+        },
+        {
+          "file": "crates/searcher/src/searcher/mod.rs",
+          "line": 798
+        }
+      ],
+      "must_not_reach": [
+        {
+          "file": "crates/core/main.rs",
+          "line": 166
+        },
+        {
+          "file": "crates/grep/examples/simplegrep.rs",
+          "line": 32
+        },
+        {
+          "file": "crates/searcher/src/searcher/mod.rs",
+          "line": 769
+        },
+        {
+          "file": "crates/searcher/src/testutil.rs",
+          "line": 693
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-fn-and-method",
+        "self-field-receiver",
+        "cross-crate",
+        "generic-dispatch"
+      ],
+      "note": "Start SearchWorker::search (core/search.rs:245). Hop1: self.search_path (342), self.search_reader (362; the stdin branch), self.searcher.set_binary_detection(bin) -> Searcher::set_binary_detection (searcher/mod.rs:798; field typed grep::searcher::Searcher), also search_preprocessor/search_decompress. Hop2: method search_path -> free fn search_path (380); method search_reader -> free fn search_reader (416). Hop3: free search_path -> Searcher::search_path (643), free search_reader -> Searcher::search_reader (727). Not within 3: Searcher::search_slice (769) is hop 5 (search_path -> search_file_maybe_path -> search_slice); main.rs:166 search_parallel and simplegrep.rs:32 search are unrelated same-named fns; testutil.rs:693 search_reader is a test-helper method with the same name as the reached ones."
+    },
+    {
+      "id": "rs-trace-incremental-matched",
+      "lang": "rust",
+      "kind": "trace_reaches",
+      "start": {
+        "file": "crates/ignore/src/incremental.rs",
+        "line": 194
+      },
+      "max_hops": 3,
+      "must_reach": [
+        {
+          "file": "crates/ignore/src/incremental.rs",
+          "line": 213
+        },
+        {
+          "file": "crates/ignore/src/incremental.rs",
+          "line": 224
+        },
+        {
+          "file": "crates/ignore/src/incremental.rs",
+          "line": 310
+        },
+        {
+          "file": "crates/ignore/src/incremental.rs",
+          "line": 456
+        },
+        {
+          "file": "crates/ignore/src/incremental.rs",
+          "line": 464
+        },
+        {
+          "file": "crates/ignore/src/incremental.rs",
+          "line": 477
+        },
+        {
+          "file": "crates/ignore/src/incremental.rs",
+          "line": 481
+        },
+        {
+          "file": "crates/ignore/src/lib.rs",
+          "line": 398
+        }
+      ],
+      "must_not_reach": [
+        {
+          "file": "crates/ignore/src/dir.rs",
+          "line": 500
+        },
+        {
+          "file": "crates/ignore/src/gitignore.rs",
+          "line": 202
+        },
+        {
+          "file": "crates/ignore/src/overrides.rs",
+          "line": 97
+        },
+        {
+          "file": "crates/ignore/src/types.rs",
+          "line": 263
+        },
+        {
+          "file": "crates/ignore/src/lib.rs",
+          "line": 437
+        }
+      ],
+      "tags": [
+        "trap",
+        "same-name-different-type",
+        "self-method",
+        "private-method"
+      ],
+      "note": "Start IncrementalIgnore::matched (incremental.rs:194). Hop1: self.matched_with_errors (213). Hop2: matched_with_errors_impl (224) and PartialErrorBuilder::into_error_option (lib.rs:398, called in matched_with_errors as errs.into_error_option()). Hop3 (all inside matched_with_errors_impl): matched_with_errors_ignore (310), IncrementalMatch::none (456) / ::ignore (464) / not_within_depth (481) / no_descent (477). Hop4+ (not required, and the traps): matched_with_errors_ignore calls Ignore::matched (dir.rs:500, hop4); Gitignore::matched, Override::matched, Types::matched are deeper still; Match::is_ignore (lib.rs:437) is only called from IncrementalMatch::is_ignore (491, hop3) -> hop4. All of these share the name `matched`/`is_ignore` with the start/neighbours."
+    }
+  ]
+}
