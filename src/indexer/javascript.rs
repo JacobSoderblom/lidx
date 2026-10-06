@@ -1,7 +1,9 @@
 use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
+use crate::indexer::extract::{
+    CallShape, EdgeInput, ExtractedFile, PinnedType, ReceiverType, SymbolInput,
+};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::string_consts::{LocalBinding, StringConsts};
@@ -28,7 +30,6 @@ use tree_sitter::{Node, Parser};
 /// "typescript" and "tsx" alike (`db::resolver::profile_for`) since they
 /// share one resolution family.
 pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
-    import_member_fallback: true,
     visibility: VisibilityRule::Recorded,
     ..LanguageProfile::DEFAULT
 };
@@ -78,6 +79,10 @@ struct Context {
     ns_depth: usize,
     fn_depth: usize,
     current_scope: String,
+    /// `this` is dynamically bound here (inside a `function` expression or
+    /// nested `function` declaration), so a `this.x()` call must never
+    /// resolve against the enclosing class — see `rebind_this_scope`.
+    this_rebound: bool,
     route_prefix: Option<String>,
     router_aliases: Vec<String>,
     /// Same-file `const api = axios.create({ baseURL })` instances: name to
@@ -120,6 +125,9 @@ struct Context {
     /// Names this file declares (any function/class/enum/namespace, plus
     /// module-level variables) — see `collect_declared_names`.
     declared_names: Rc<HashSet<String>>,
+    /// Types (class/interface/enum/type alias) declared at this file's top
+    /// level, for pinning a receiver type to this file's own declaration.
+    declared_types: Rc<HashSet<String>>,
     /// Declared return types of this file's functions (`name`) and class
     /// methods (`Class.method`) — see `collect_return_types`. Types a call
     /// result receiver (`make().stage()`) for chained-call resolution.
@@ -155,6 +163,11 @@ enum LocalType {
     /// Inferred (via type annotation or `new T()` construction) to be this
     /// non-builtin type name.
     Known(String),
+    /// Annotated as a container of this non-builtin element type
+    /// (`Record<string, T>`, `{ [k: string]: T }`, `T[]`, `Array<T>`). Only
+    /// a subscript read of the name (`x[i].m()`) uses it; anywhere else it
+    /// behaves like `Other`.
+    Elements(String),
     /// Builtin type, untyped parameter, destructured binding, loop/catch
     /// target, or anything else not explicitly recognized. A name landing
     /// here (rather than simply absent from the map) still gates
@@ -190,7 +203,7 @@ impl crate::indexer::extract::LanguageExtractor for JavascriptExtractor {
     }
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
-        extract_with_parser(&mut self.parser, source, module_name)
+        extract_with_parser(&mut self.parser, source, module_name, false)
     }
 
     fn resolve_imports(
@@ -219,7 +232,7 @@ impl crate::indexer::extract::LanguageExtractor for TypescriptExtractor {
     }
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
-        extract_with_parser(&mut self.parser, source, module_name)
+        extract_with_parser(&mut self.parser, source, module_name, true)
     }
 
     fn resolve_imports(
@@ -248,7 +261,7 @@ impl crate::indexer::extract::LanguageExtractor for TsxExtractor {
     }
 
     fn extract(&mut self, source: &str, module_name: &str) -> Result<ExtractedFile> {
-        extract_with_parser(&mut self.parser, source, module_name)
+        extract_with_parser(&mut self.parser, source, module_name, false)
     }
 
     fn resolve_imports(
@@ -342,14 +355,51 @@ pub fn resolve_import_file_edges(
     // original declaration rather than the barrel.
     resolve_pending_wrapper_calls(repo_root, file_rel_path, edges);
     let mut resolved_specs: HashMap<String, Option<String>> = HashMap::new();
-    let mut rewrite = |candidate: &str| -> Option<String> {
+    // The declaring file and plain member a `{specifier}\0{member}`
+    // placeholder names; `None` when the specifier is no repo file.
+    fn locate(
+        repo_root: &Path,
+        file_rel_path: &str,
+        resolved_specs: &mut HashMap<String, Option<String>>,
+        candidate: &str,
+    ) -> Option<(String, String)> {
         let (spec, member) = candidate.split_once(IMPORT_PLACEHOLDER_SEP)?;
         let dst = resolved_specs
             .entry(spec.to_string())
             .or_insert_with(|| resolve_import_path(repo_root, file_rel_path, spec))
             .as_ref()?;
-        let (path, member) =
-            EXPORT_CACHE.with(|c| chase_member(repo_root, dst, member, &mut c.borrow_mut()));
+        Some(EXPORT_CACHE.with(|c| chase_member(repo_root, dst, member, &mut c.borrow_mut())))
+    }
+    // A value reference or type use through an import that names no repo
+    // file (a package, `react`), or a value reference that names only a
+    // declaration it cannot mean (a class passed to `toBeInstanceOf`), is no
+    // edge at all, unlike a call.
+    edges.retain(|e| {
+        let value_ref = is_value_ref(e);
+        if !value_ref && e.kind != "USES" {
+            return true;
+        }
+        e.import_candidates.iter().all(|c| {
+            if !c.contains(IMPORT_PLACEHOLDER_SEP) {
+                return true;
+            }
+            let Some((path, member)) = locate(repo_root, file_rel_path, &mut resolved_specs, c)
+            else {
+                return false;
+            };
+            !value_ref
+                || !EXPORT_CACHE.with(|cache| {
+                    cache
+                        .borrow_mut()
+                        .entry(path.clone())
+                        .or_insert_with(|| scan_exports(repo_root, &path).map(Rc::new))
+                        .as_ref()
+                        .is_some_and(|ex| ex.non_value.contains(&member))
+                })
+        })
+    });
+    let mut rewrite = |candidate: &str| -> Option<String> {
+        let (path, member) = locate(repo_root, file_rel_path, &mut resolved_specs, candidate)?;
         Some(format!("{}.{member}", module_name_from_rel_path(&path)))
     };
     for edge in edges.iter_mut() {
@@ -363,6 +413,19 @@ pub fn resolve_import_file_edges(
         }
         if edge.kind == proto::RPC_IMPL_KIND {
             resolve_handler_candidates(edge, &mut rewrite);
+        }
+        if let ReceiverType::Pinned(PinnedType::Imported {
+            local,
+            spec,
+            member,
+        }) = &edge.receiver_type
+        {
+            // An import that names no repo declaration keeps the type as
+            // written, like an unpinned one.
+            edge.receiver_type = match rewrite(&format!("{spec}{IMPORT_PLACEHOLDER_SEP}{member}")) {
+                Some(qualname) => ReceiverType::Pinned(PinnedType::Declared(qualname)),
+                None => ReceiverType::Known(local.clone()),
+            };
         }
     }
     let mut resolved = Vec::new();
@@ -460,6 +523,13 @@ struct FileExports {
     /// This file's own imports, so `import { Foo } from './foo'; export {
     /// Foo }` chases on to `./foo`.
     imports: ImportBindings,
+    /// Top-level `const X = { .. }` object literals: `X` -> property to the
+    /// identifier it is bound to (`{ a }`, `{ a: b }`), `None` for any other
+    /// value. A call `X.a()` goes to what `a` names, see `object_member_target`.
+    object_consts: HashMap<String, HashMap<String, Option<String>>>,
+    /// Top-level classes, enums, interfaces, type aliases and namespaces:
+    /// declarations a value reference never binds (`toBeInstanceOf(Foo)`).
+    non_value: HashSet<String>,
 }
 
 impl FileExports {
@@ -484,7 +554,7 @@ impl FileExports {
             format!("{v:?}")
         }
         format!(
-            "{}|{}|{:?}|{}|{}|{}|{}",
+            "{}|{}|{:?}|{}|{}|{}|{}|{}|{}",
             sorted(self.names.iter()),
             sorted(self.aliases.iter()),
             self.default_local,
@@ -496,6 +566,12 @@ impl FileExports {
             sorted(self.stars.iter()),
             sorted(self.namespaces.iter()),
             sorted(self.imports.iter().map(|(k, (s, i))| (k, s, i))),
+            sorted(
+                self.object_consts
+                    .iter()
+                    .map(|(k, props)| (k, sorted(props.iter())))
+            ),
+            sorted(self.non_value.iter()),
         )
     }
 }
@@ -540,6 +616,8 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
     let mut cursor = root.walk();
     for stmt in root.named_children(&mut cursor) {
         collect_exported_names(stmt, &source, &mut ex);
+        collect_object_consts(stmt, &source, &mut out.object_consts);
+        collect_non_value_names(stmt, &source, &mut out.non_value);
         if !matches!(stmt.kind(), "export_statement" | "export_declaration") {
             continue;
         }
@@ -606,6 +684,84 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
     }
     out.names = ex.names;
     out
+}
+
+/// Names of the classes, enums, interfaces, type aliases and namespaces a
+/// top-level statement (or its `export`) declares; see `FileExports::non_value`.
+fn collect_non_value_names(stmt: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    let decl = match stmt.kind() {
+        "export_statement" | "export_declaration" => stmt.child_by_field_name("declaration"),
+        _ => Some(stmt),
+    };
+    if let Some(decl) = decl
+        && matches!(
+            decl.kind(),
+            "class_declaration"
+                | "abstract_class_declaration"
+                | "enum_declaration"
+                | "interface_declaration"
+                | "type_alias_declaration"
+                | "internal_module"
+                | "module"
+        )
+    {
+        declared_names(decl, source, out);
+    }
+}
+
+/// Records the object-literal initializer of each `const` a top-level
+/// statement (or its `export`) declares; see `FileExports::object_consts`.
+fn collect_object_consts(
+    stmt: Node<'_>,
+    source: &str,
+    out: &mut HashMap<String, HashMap<String, Option<String>>>,
+) {
+    let decl = match stmt.kind() {
+        "export_statement" => stmt.child_by_field_name("declaration"),
+        _ => Some(stmt),
+    };
+    let Some(decl) = decl.filter(|d| d.kind() == "lexical_declaration") else {
+        return;
+    };
+    let mut cursor = decl.walk();
+    for declarator in decl.named_children(&mut cursor) {
+        let (Some(name), Some(mut value)) = (
+            declarator.child_by_field_name("name"),
+            declarator.child_by_field_name("value"),
+        ) else {
+            continue;
+        };
+        while matches!(value.kind(), "as_expression" | "satisfies_expression")
+            && let Some(inner) = value.named_child(0)
+        {
+            value = inner;
+        }
+        if name.kind() != "identifier" || value.kind() != "object" {
+            continue;
+        }
+        let mut props = HashMap::new();
+        let mut pc = value.walk();
+        for member in value.named_children(&mut pc) {
+            match member.kind() {
+                "shorthand_property_identifier" => {
+                    let id = node_text(member, source);
+                    props.insert(id.clone(), Some(id));
+                }
+                "pair" => {
+                    let (Some(key), Some(v)) = (
+                        member.child_by_field_name("key"),
+                        member.child_by_field_name("value"),
+                    ) else {
+                        continue;
+                    };
+                    let target = (v.kind() == "identifier").then(|| node_text(v, source));
+                    props.insert(node_text(key, source), target);
+                }
+                _ => {}
+            }
+        }
+        out.insert(node_text(name, source), props);
+    }
 }
 
 /// Hash of what `chase_export` can see of `rel` (its export surface), or
@@ -734,7 +890,10 @@ fn chase_member(
     let lookup = if is_default { DEFAULT_EXPORT } else { head };
     let fallback = || (dst.to_string(), member.to_string());
     match chase_export(repo_root, dst, lookup, cache, &mut Visited::new()) {
-        Some(ExportTarget::Symbol(path, name)) => (path, format!("{name}{tail}")),
+        Some(ExportTarget::Symbol(path, name)) => {
+            object_member_target(repo_root, &path, &name, &tail, cache)
+                .unwrap_or_else(|| (path, format!("{name}{tail}")))
+        }
         // `ns.fn()` through an exported namespace: chase `fn` in that module.
         Some(ExportTarget::Namespace(module)) => {
             let Some((next, rest)) = tail.strip_prefix('.').map(|t| match t.split_once('.') {
@@ -752,8 +911,46 @@ fn chase_member(
     }
 }
 
+/// `obj.member[.rest]` where `obj` is a const in `path` initialized with an
+/// object literal: the declaration the property `member` is bound to
+/// (`{ member }`, `{ member: other }`), chased through `other`'s import when
+/// it is one. `None` when `obj` is no such literal or the property is absent
+/// or not a plain identifier (an inline function has its own symbol, if any).
+fn object_member_target(
+    repo_root: &Path,
+    path: &str,
+    obj: &str,
+    tail: &str,
+    cache: &mut ExportCache,
+) -> Option<(String, String)> {
+    let tail = tail.strip_prefix('.')?;
+    let (member, rest) = match tail.split_once('.') {
+        Some((m, r)) => (m, format!(".{r}")),
+        None => (tail, String::new()),
+    };
+    let exports = cache
+        .entry(path.to_string())
+        .or_insert_with(|| scan_exports(repo_root, path).map(Rc::new))
+        .clone()?;
+    let ident = exports.object_consts.get(obj)?.get(member)?.as_ref()?;
+    let Some((spec, imported)) = exports.imports.get(ident) else {
+        return Some((path.to_string(), format!("{ident}{rest}")));
+    };
+    let dst = resolve_import_path(repo_root, path, spec)?;
+    match chase_export(
+        repo_root,
+        &dst,
+        imported.as_deref()?,
+        cache,
+        &mut Visited::new(),
+    )? {
+        ExportTarget::Symbol(p, n) => Some((p, format!("{n}{rest}"))),
+        ExportTarget::Namespace(_) => None,
+    }
+}
+
 /// Splits off any `?query`/`#hash` suffix and classifies whether `target`
-/// is a relative specifier (`./`, `../`, or a repo-absolute `/`) — `None`
+/// is a relative specifier (`./`, `../`, bare `.`/`..`, or a repo-absolute `/`) — `None`
 /// for an empty specifier. Shared by `resolve_import_path`'s disk-backed
 /// resolution and `resolve_import_file_edges`'s disk-independent fallback
 /// for a relative specifier that doesn't currently resolve to a file
@@ -764,8 +961,11 @@ fn classify_import_target(target: &str) -> Option<(&str, bool)> {
     if target.is_empty() {
         return None;
     }
-    let is_relative =
-        target.starts_with("./") || target.starts_with("../") || target.starts_with('/');
+    // Bare `.` / `..` name the directory's index file.
+    let is_relative = matches!(target, "." | "..")
+        || target.starts_with("./")
+        || target.starts_with("../")
+        || target.starts_with('/');
     Some((target, is_relative))
 }
 
@@ -1275,10 +1475,80 @@ fn strip_trailing_commas(input: &str) -> String {
     out
 }
 
+fn count_error_nodes(node: Node<'_>) -> usize {
+    let mut n = usize::from(node.is_error() || node.is_missing());
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.has_error() || child.is_missing() {
+            n += count_error_nodes(child);
+        }
+    }
+    n
+}
+
+/// Source copy with `;` written over the whitespace byte before a line-leading
+/// `<` that continues a type/signature from the previous code line. Byte- and
+/// line-length preserving, so every span in the patched tree is valid for the
+/// original text.
+fn patch_generic_signature_separators(source: &str) -> Option<String> {
+    let mut bytes = source.as_bytes().to_vec();
+    let mut changed = false;
+    let mut prev_end: Option<u8> = None;
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with("//") {
+            let lead = line.len() - line.trim_start().len();
+            if trimmed.starts_with('<')
+                && lead > 0
+                && matches!(line.as_bytes()[lead - 1], b' ' | b'\t')
+                && prev_end.is_some_and(|b| {
+                    matches!(b, b']' | b')' | b'>' | b'}' | b'_' | b'$')
+                        || b.is_ascii_alphanumeric()
+                })
+            {
+                bytes[offset + lead - 1] = b';';
+                changed = true;
+            }
+            prev_end = trimmed.bytes().last();
+        }
+        offset += line.len();
+    }
+    if changed {
+        String::from_utf8(bytes).ok()
+    } else {
+        None
+    }
+}
+
+/// tree-sitter-typescript 0.23.2 (issue #335) loses everything after an
+/// anonymous generic call signature that is separated from the previous one
+/// only by a line break. Re-parse with `;` injected and keep that tree only
+/// if it has strictly fewer error nodes.
+// ponytail: .ts/.mts/.cts only; in .tsx a line-leading `<` is usually JSX.
+fn reparse_with_signature_separators(
+    parser: &mut Parser,
+    source: &str,
+    original: tree_sitter::Tree,
+) -> tree_sitter::Tree {
+    let Some(patched) = patch_generic_signature_separators(source) else {
+        return original;
+    };
+    match parser.parse(&patched, None) {
+        Some(tree)
+            if count_error_nodes(tree.root_node()) < count_error_nodes(original.root_node()) =>
+        {
+            tree
+        }
+        _ => original,
+    }
+}
+
 fn extract_with_parser(
     parser: &mut Parser,
     source: &str,
     module_name: &str,
+    patch_ts_signatures: bool,
 ) -> Result<ExtractedFile> {
     let mut output = ExtractedFile::default();
     let tree = match parser.parse(source, None) {
@@ -1289,6 +1559,11 @@ fn extract_with_parser(
                 .push(module_symbol_fallback(module_name, source, "/", None));
             return Ok(output);
         }
+    };
+    let tree = if patch_ts_signatures && tree.root_node().has_error() {
+        reparse_with_signature_separators(parser, source, tree)
+    } else {
+        tree
     };
     let root = tree.root_node();
 
@@ -1313,6 +1588,7 @@ fn extract_with_parser(
         )),
         module: module_name.to_string(),
         class_stack: Vec::new(),
+        this_rebound: false,
         ns_depth: 0,
         fn_depth: 0,
         current_scope: module_name.to_string(),
@@ -1329,6 +1605,7 @@ fn extract_with_parser(
         required_names: Rc::new(collect_required_names(root, source)),
         outer_locals: Rc::new(HashSet::new()),
         declared_names: Rc::new(collect_declared_names(root, source)),
+        declared_types: Rc::new(collect_declared_types(root, source)),
         return_types: Rc::new(collect_return_types(root, source)),
         is_esm: is_esm_file(root),
     };
@@ -1336,6 +1613,8 @@ fn extract_with_parser(
     bind_next_routes_to_handlers(&mut output, module_name);
     dedup_namespace_symbols(&mut output);
     mark_unexported_private(root, source, module_name, &mut output);
+    finish_value_references(&mut output);
+    collect_type_references(root, &ctx, source, &mut output);
     output.export_surface = Some(surface_hash(root, source, &http_wrappers));
     Ok(output)
 }
@@ -1943,6 +2222,11 @@ fn grpc_service_from_client_initializer(
 }
 
 fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    if matches!(node.kind(), "identifier" | "shorthand_property_identifier")
+        && let Some(edge) = value_reference_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
+    }
     if (node.kind() == "jsx_element" || node.kind() == "jsx_self_closing_element")
         && let Some(edge) = jsx_route_edge(node, ctx, source)
     {
@@ -1992,14 +2276,24 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             && name_node.kind() == "identifier"
             && let Some(value) = node.child_by_field_name("value")
         {
-            let mut next_ctx = ctx.clone();
-            next_ctx.fn_owner = Some(build_qualname(
-                &ctx.module,
-                &ctx.class_stack,
-                &node_text(name_node, source),
-            ));
-            walk_node(value, &next_ctx, source, output);
-            return;
+            // `current_scope` also equals the container inside a module-level
+            // callback, where the const is local and got no symbol: only own
+            // the initializer when `handle_variable_declaration` emitted one
+            // for this very declarator.
+            let owner =
+                build_qualname(&ctx.module, &ctx.class_stack, &node_text(name_node, source));
+            let start = node.start_byte() as i64;
+            if output
+                .symbols
+                .iter()
+                .rev()
+                .any(|s| s.qualname == owner && s.start_byte == start)
+            {
+                let mut next_ctx = ctx.clone();
+                next_ctx.fn_owner = Some(owner);
+                walk_node(value, &next_ctx, source, output);
+                return;
+            }
         }
     }
     if let Some(next_ctx) = owned_function_scope(node, ctx, source) {
@@ -2021,6 +2315,13 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         output.edges.push(edge);
     }
     if is_dynamic_this_function_node(node.kind()) {
+        // Not a symbol: its calls belong to the enclosing one, with their
+        // own locals and a rebound `this`.
+        let next_ctx = rebind_this_scope(node, ctx, source);
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk_node(child, &next_ctx, source, output);
+        }
         return;
     }
     // An arrow function body is a nested *scope*, not a new symbol — fall
@@ -2043,10 +2344,7 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 // Not a symbol, but its calls belong to the enclosing one,
                 // resolved against its own locals plus the enclosing ones.
                 if let Some(body) = node.child_by_field_name("body") {
-                    let mut next_ctx = ctx.clone();
-                    next_ctx.class_stack.truncate(ctx.ns_depth);
-                    enter_scope(&mut next_ctx);
-                    next_ctx.local_types = Rc::new(infer_local_types(node, source));
+                    let next_ctx = rebind_this_scope(node, ctx, source);
                     walk_node(body, &next_ctx, source, output);
                 }
                 return;
@@ -2063,7 +2361,11 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             return;
         }
         "type_alias_declaration" => {
-            handle_named_item(node, ctx, source, output, "type");
+            // A block-scoped alias (`it(() => { type Env = ..})`) cannot be
+            // imported and is no module symbol.
+            if !is_local_declaration(node) {
+                handle_named_item(node, ctx, source, output, "type");
+            }
             return;
         }
         "enum_declaration" => {
@@ -2140,6 +2442,7 @@ fn handle_class_named(
 
     let mut next_ctx = ctx.clone();
     next_ctx.class_stack.push(name);
+    next_ctx.this_rebound = false;
     next_ctx.current_scope = qualname.clone();
     if let Some(prefix) = controller_prefix_from_class(node, source) {
         next_ctx.route_prefix = Some(prefix);
@@ -2356,7 +2659,20 @@ fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
         return;
     }
     let name = node_text(name_node, source);
+    let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
     push_field(node, name, is_private_member(node, source), ctx, output);
+    // Calls in the initializer (`request = (..) => this.fetch(..)`,
+    // `#root = new Node()`) belong to the field. An arrow value keeps the
+    // lexical `this`; a `function` value rebinds it (`walk_node`).
+    if let Some(value) = node.child_by_field_name("value") {
+        let mut next_ctx = ctx.clone();
+        next_ctx.fn_depth += 1;
+        next_ctx.this_rebound = false;
+        next_ctx.current_scope = qualname;
+        enter_scope(&mut next_ctx);
+        next_ctx.local_types = Rc::new(infer_module_level_types(value, source));
+        walk_node(value, &next_ctx, source, output);
+    }
 }
 
 /// `constructor(private x: T, readonly y: U)`: each parameter carrying an
@@ -2396,6 +2712,509 @@ fn handle_parameter_properties(
     }
 }
 
+/// Whether `node` (an identifier) is read as a value rather than named: an
+/// operand, argument, array element, return value, template substitution,
+/// the right-hand side of an assignment/declarator/default/property, a
+/// condition, or the object of a member access (`config.port` reads
+/// `config`). Callees, declaration names, keys, member properties,
+/// specifiers and `export default X` match none of these.
+fn in_value_position(node: Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    if node.kind() == "shorthand_property_identifier" {
+        return parent.kind() == "object";
+    }
+    let is_field = |field: &str| {
+        parent
+            .child_by_field_name(field)
+            .is_some_and(|c| c.id() == node.id())
+    };
+    match parent.kind() {
+        "arguments"
+        | "array"
+        | "jsx_expression"
+        | "return_statement"
+        | "binary_expression"
+        | "unary_expression"
+        | "await_expression"
+        | "yield_expression"
+        | "spread_element"
+        | "template_substitution"
+        | "ternary_expression"
+        | "parenthesized_expression"
+        | "non_null_expression"
+        | "as_expression"
+        | "satisfies_expression"
+        | "type_assertion"
+        | "sequence_expression"
+        | "expression_statement"
+        | "throw_statement"
+        | "subscript_expression"
+        | "computed_property_name" => true,
+        "member_expression" | "optional_member_expression" => is_field("object"),
+        "assignment_expression" | "augmented_assignment_expression" | "assignment_pattern" => {
+            is_field("right")
+        }
+        "variable_declarator"
+        | "pair"
+        | "public_field_definition"
+        | "field_definition"
+        | "required_parameter"
+        | "optional_parameter"
+        | "enum_assignment" => is_field("value"),
+        "for_in_statement" => is_field("right"),
+        "arrow_function" => is_field("body"),
+        _ => false,
+    }
+}
+
+/// A function or parameter-bearing node of `name`'s enclosing scopes binds
+/// it (a parameter, `let`/`const`/`var`, catch parameter, nested function or
+/// class). Deliberately over-approximate: a missed edge beats a wrong one.
+fn enclosing_function_binds(node: Node<'_>, name: &str, source: &str) -> bool {
+    // Bindings of this function's own scope: nested functions have their own
+    // (only their declared names bind here).
+    fn body_binds(node: Node<'_>, name: &str, source: &str) -> bool {
+        let mut names = Vec::new();
+        match node.kind() {
+            "variable_declarator" => {
+                if let Some(n) = node.child_by_field_name("name") {
+                    collect_binding_names(n, source, &mut names);
+                }
+            }
+            "catch_clause" => {
+                if let Some(n) = node.child_by_field_name("parameter") {
+                    collect_binding_names(n, source, &mut names);
+                }
+            }
+            "function_declaration" | "generator_function_declaration" | "class_declaration" => {
+                if let Some(n) = node.child_by_field_name("name") {
+                    names.push(node_text(n, source));
+                }
+            }
+            _ => {}
+        }
+        if names.iter().any(|n| n == name) {
+            return true;
+        }
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor).any(|c| {
+            if is_function_like(c.kind()) {
+                // A nested declaration binds its name here, nothing else.
+                c.child_by_field_name("name").is_some_and(|n| {
+                    c.kind().ends_with("declaration") && node_text(n, source) == name
+                })
+            } else {
+                body_binds(c, name, source)
+            }
+        })
+    }
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if is_function_like(n.kind()) {
+            let mut params = Vec::new();
+            collect_lambda_parameter_bindings(n, source, &mut params);
+            let body_binds_name = n
+                .child_by_field_name("body")
+                .is_some_and(|b| body_binds(b, name, source));
+            if params.iter().any(|(p, _)| p == name) || body_binds_name {
+                return true;
+            }
+        }
+        cur = n.parent();
+    }
+    false
+}
+
+fn is_function_like(kind: &str) -> bool {
+    matches!(
+        kind,
+        "arrow_function"
+            | "function_expression"
+            | "function"
+            | "function_declaration"
+            | "generator_function"
+            | "generator_function_expression"
+            | "generator_function_declaration"
+            | "method_definition"
+    )
+}
+
+/// `CALLS` edge for an identifier used as a value (`options.getPath ?? getPath`,
+/// `register(handler)`): an import, or a declaration of this file, that no
+/// local shadows. Resolved like a bare call to the name; see
+/// `finish_value_references` for what is dropped afterwards.
+fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    if !in_value_position(node) {
+        return None;
+    }
+    // `module.exports = { helper }` and `export const Api = { helper }`
+    // declare an export surface, they use nothing.
+    let mut up = node.parent();
+    while let Some(n) = up {
+        if is_function_like(n.kind()) {
+            break;
+        }
+        if n.kind() == "variable_declarator"
+            && n.parent()
+                .and_then(|d| d.parent())
+                .is_some_and(|e| e.kind() == "export_statement")
+            && n.child_by_field_name("value")
+                .is_some_and(|v| v.kind() == "object")
+        {
+            return None;
+        }
+        if n.kind() == "assignment_expression"
+            && n.child_by_field_name("left").is_some_and(|l| {
+                let text = node_text(l, source);
+                text == "module.exports" || text.starts_with("exports.")
+            })
+        {
+            return None;
+        }
+        up = n.parent();
+    }
+    let name = node_text(node, source);
+    let shadowed = if ctx.fn_depth == 0
+        && ctx.local_types.contains_key(&name)
+        && (ctx.declared_names.contains(&name) || ctx.import_bindings.contains_key(&name))
+    {
+        // Module-level inference folds module consts and arrow locals
+        // into one map: ask the enclosing functions instead.
+        enclosing_function_binds(node, &name, source)
+    } else {
+        is_local_non_import_binding(ctx, &name)
+    };
+    if shadowed {
+        return None;
+    }
+    let import_candidates: Vec<String> = match (ctx.import_bindings.get(&name), node.parent()) {
+        // `ns.CONST` (not a call, which `handle_call` records): the export.
+        (Some((spec, None)), Some(member))
+            if matches!(
+                member.kind(),
+                "member_expression" | "optional_member_expression"
+            ) =>
+        {
+            let is_callee = member.parent().is_some_and(|call| {
+                call.child_by_field_name("function")
+                    .or_else(|| call.child_by_field_name("constructor"))
+                    .is_some_and(|f| f.id() == member.id())
+            });
+            member
+                .child_by_field_name("property")
+                .filter(|p| p.kind() == "property_identifier" && !is_callee)
+                .map(|p| format!("{spec}{IMPORT_PLACEHOLDER_SEP}{}", node_text(p, source)))
+                .into_iter()
+                .collect()
+        }
+        _ => import_placeholder_unshadowed(&name, ctx)
+            .into_iter()
+            .collect(),
+    };
+    // An import resolves through its candidate alone: a container-qualified
+    // guess would bind a same-named member of the enclosing class.
+    let target = if !import_candidates.is_empty() {
+        None
+    } else if ctx.declared_names.contains(&name) && !ctx.import_bindings.contains_key(&name) {
+        Some(build_qualname(
+            &ctx.module,
+            &ctx.class_stack[..ctx.ns_depth],
+            &name,
+        ))
+    } else {
+        return None;
+    };
+    // `config.port` reads the object, it does not call it: a `USES` edge.
+    let is_root = node.parent().is_some_and(|p| {
+        matches!(
+            p.kind(),
+            "member_expression" | "optional_member_expression" | "subscript_expression"
+        ) && p
+            .child_by_field_name("object")
+            .is_some_and(|o| o.id() == node.id())
+    });
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+    Some(EdgeInput {
+        kind: if is_root { "USES" } else { "CALLS" }.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        detail: target.is_none().then(|| name.clone()),
+        target_qualname: target,
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        import_candidates,
+        bare_call: !is_root,
+        call_shape: (!is_root).then_some(CallShape {
+            arg_count: 0,
+            is_new: false,
+            implicit_this: false,
+            is_ref: true,
+        }),
+        ..Default::default()
+    })
+}
+
+fn is_value_ref(edge: &EdgeInput) -> bool {
+    edge.call_shape.is_some_and(|s| s.is_ref)
+}
+
+/// Keeps a value reference only when its target can exist: an import (an
+/// unresolvable specifier is dropped later by `resolve_import_file_edges`)
+/// or a symbol of this file, and not already recorded for the same source,
+/// line and target — by a call or an earlier reference.
+fn finish_value_references(output: &mut ExtractedFile) {
+    // At this point a `USES` edge is a member-access read (`config.port`).
+    let is_ref = |e: &EdgeInput| is_value_ref(e) || e.kind == "USES";
+    if !output.edges.iter().any(is_ref) {
+        return;
+    }
+    // A value reference must name something callable or a value (not a
+    // class, type, ...); a read of an object's member may name any symbol.
+    let any: HashSet<&str> = output.symbols.iter().map(|s| s.qualname.as_str()).collect();
+    let values: HashSet<&str> = output
+        .symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind.as_str(),
+                "function" | "const" | "variable" | "method"
+            )
+        })
+        .map(|s| s.qualname.as_str())
+        .collect();
+    type Site<'a> = (
+        &'a str,
+        Option<&'a str>,
+        Option<i64>,
+        Option<&'a str>,
+        &'a [String],
+    );
+    fn site(e: &EdgeInput) -> Site<'_> {
+        (
+            e.kind.as_str(),
+            e.source_qualname.as_deref(),
+            e.evidence_start_line,
+            e.target_qualname.as_deref(),
+            e.import_candidates.as_slice(),
+        )
+    }
+    let mut seen: HashSet<Site<'_>> = output
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CALLS" && !is_value_ref(e))
+        .map(site)
+        .collect();
+    let keep: Vec<bool> = output
+        .edges
+        .iter()
+        .map(|e| {
+            if !is_ref(e) {
+                return true;
+            }
+            let symbols = if e.kind == "USES" { &any } else { &values };
+            let known = !e.import_candidates.is_empty()
+                || e.target_qualname.as_deref().is_some_and(|t| {
+                    symbols.contains(t) && Some(t) != e.source_qualname.as_deref()
+                });
+            known && seen.insert(site(e))
+        })
+        .collect();
+    let mut keep = keep.into_iter();
+    output.edges.retain(|_| keep.next().unwrap_or(true));
+}
+
+/// State of one `collect_type_references` walk.
+struct Scan<'a> {
+    ctx: &'a Context,
+    source: &'a str,
+    spans: Vec<(i64, i64, &'a str)>,
+    symbols: HashSet<&'a str>,
+    seen: HashSet<(String, String)>,
+    edges: Vec<EdgeInput>,
+}
+/// A type parameter named `name` is declared by an ancestor of `node`.
+fn declares_type_parameter(node: Node<'_>, name: &str, source: &str) -> bool {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if let Some(params) = n.child_by_field_name("type_parameters") {
+            let mut cursor = params.walk();
+            if params.named_children(&mut cursor).any(|p| {
+                p.child_by_field_name("name")
+                    .is_some_and(|n| node_text(n, source) == name)
+            }) {
+                return true;
+            }
+        }
+        cur = n.parent();
+    }
+    false
+}
+/// Leftmost identifier of `typeof a.b.c`.
+fn query_root(node: Node<'_>) -> Option<Node<'_>> {
+    match node.kind() {
+        "identifier" => Some(node),
+        "member_expression" | "nested_identifier" | "subscript_expression" => node
+            .child_by_field_name("object")
+            .or_else(|| node.named_child(0))
+            .and_then(query_root),
+        _ => None,
+    }
+}
+impl Scan<'_> {
+    fn emit(&mut self, node: Node<'_>, dotted: &str) {
+        let name = dotted.split('.').next().unwrap_or(dotted);
+        if declares_type_parameter(node, name, self.source) {
+            return;
+        }
+        let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+        let owner = self
+            .spans
+            .iter()
+            .filter(|(lo, hi, _)| *lo <= start_byte && end_byte <= *hi)
+            .min_by_key(|(lo, hi, _)| hi - lo)
+            .map_or(self.ctx.module.as_str(), |(_, _, q)| *q)
+            .to_string();
+        let candidates: Vec<String> = import_placeholder(dotted, self.ctx).into_iter().collect();
+        let target = if !candidates.is_empty() {
+            None
+        } else if !dotted.contains('.')
+            && (self.ctx.declared_types.contains(name) || self.ctx.declared_names.contains(name))
+            && !self.ctx.import_bindings.contains_key(name)
+        {
+            let q = build_qualname(&self.ctx.module, &[], name);
+            if !self.symbols.contains(q.as_str()) {
+                return;
+            }
+            Some(q)
+        } else {
+            return;
+        };
+        if target.as_deref() == Some(owner.as_str()) {
+            return;
+        }
+        let key = target.clone().unwrap_or_else(|| candidates.join(","));
+        if !self.seen.insert((owner.clone(), key)) {
+            return;
+        }
+        self.edges.push(EdgeInput {
+            kind: "USES".to_string(),
+            source_qualname: Some(owner),
+            detail: target.is_none().then(|| dotted.to_string()),
+            target_qualname: target,
+            evidence_snippet: util::edge_evidence_snippet(
+                self.source,
+                start_byte,
+                end_byte,
+                start_line,
+                end_line,
+            ),
+            evidence_start_line: Some(start_line),
+            evidence_end_line: Some(end_line),
+            import_candidates: candidates,
+            ..Default::default()
+        });
+    }
+    fn walk(&mut self, node: Node<'_>) {
+        let parent = node.parent();
+        let parent_kind = parent.map_or("", |p| p.kind());
+        match node.kind() {
+            "type_identifier" => {
+                let is_name = parent.is_some_and(|p| {
+                    p.child_by_field_name("name")
+                        .is_some_and(|n| n.id() == node.id())
+                });
+                let declares = parent_kind == "infer_type"
+                    || parent_kind == "nested_type_identifier"
+                    || (is_name
+                        && matches!(
+                            parent_kind,
+                            "type_alias_declaration"
+                                | "interface_declaration"
+                                | "class_declaration"
+                                | "abstract_class_declaration"
+                                | "type_parameter"
+                                | "mapped_type_clause"
+                        ));
+                if !declares {
+                    let name = node_text(node, self.source);
+                    self.emit(node, &name);
+                }
+            }
+            "nested_type_identifier" => {
+                if let Some(module) = node.child_by_field_name("module")
+                    && module.kind() == "identifier"
+                    && let Some(name) = node.child_by_field_name("name")
+                {
+                    let dotted = format!(
+                        "{}.{}",
+                        node_text(module, self.source),
+                        node_text(name, self.source)
+                    );
+                    self.emit(node, &dotted);
+                }
+            }
+            "type_query" => {
+                if let Some(root) = node.named_child(0).and_then(query_root) {
+                    let name = node_text(root, self.source);
+                    self.emit(root, &name);
+                }
+            }
+            _ => {}
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            self.walk(child);
+        }
+    }
+}
+
+/// `USES` edges for TS type references: annotations, generic arguments,
+/// `implements`/interface `extends`, `as`/`satisfies`, alias bodies and
+/// `typeof X` / `keyof typeof X` (a use of `X`). The source is the innermost
+/// symbol around the reference (the module otherwise). A reference names an
+/// import (an unresolvable one is dropped later by `resolve_import_file_edges`)
+/// or a top-level declaration of this file; a declaration's own name, a type
+/// parameter, a reference to the source itself and repeats are skipped.
+fn collect_type_references(
+    root: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    let mut scan = Scan {
+        ctx,
+        source,
+        spans: output
+            .symbols
+            .iter()
+            .filter(|s| s.kind != "module")
+            .map(|s| (s.start_byte, s.end_byte, s.qualname.as_str()))
+            .collect(),
+        symbols: output.symbols.iter().map(|s| s.qualname.as_str()).collect(),
+        seen: output
+            .edges
+            .iter()
+            .filter(|e| e.kind == "USES")
+            .filter_map(|e| {
+                Some((
+                    e.source_qualname.clone()?,
+                    e.target_qualname
+                        .clone()
+                        .unwrap_or_else(|| e.import_candidates.join(",")),
+                ))
+            })
+            .collect(),
+        edges: Vec::new(),
+    };
+    scan.walk(root);
+    let edges = scan.edges;
+    output.edges.extend(edges);
+}
+
 /// Returns `true` when `fastify_register_walk` already fully walked a
 /// `.register(...)` callback argument itself (with the accumulated route
 /// prefix folded into its context) — see that function's doc comment and
@@ -2428,12 +3247,33 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let (target, receiver_type, import_candidates) =
         match chained_call_target(target_node, ctx, source) {
             Some((target, receiver_type)) => (Some(target), receiver_type, Vec::new()),
-            None => (
-                resolve_call_target(&raw, ctx),
-                infer_receiver_type(target_node, source, ctx),
-                import_placeholder(&raw, ctx).into_iter().collect(),
-            ),
+            None => {
+                let target = resolve_call_target(&raw, ctx);
+                let receiver_type = infer_receiver_type(target_node, source, ctx);
+                let import_candidates: Vec<String> =
+                    import_placeholder(&raw, ctx).into_iter().collect();
+                match target {
+                    None if import_candidates.is_empty() => {
+                        unnamed_receiver_target(target_node, receiver_type, source)
+                    }
+                    target => (target, receiver_type, import_candidates),
+                }
+            }
         };
+    // `this` is rebound here: keep the call as an unresolved reference
+    // instead of binding it to the enclosing class.
+    let (target, receiver_type, import_candidates) = if ctx.this_rebound
+        && matches!(
+            target_node.kind(),
+            "member_expression" | "optional_member_expression"
+        )
+        && member_chain_root(target_node).0.kind() == "this"
+    {
+        (None, ReceiverType::Unresolved, Vec::new())
+    } else {
+        (target, receiver_type, import_candidates)
+    };
+    let receiver_type = pin_receiver_type(receiver_type, ctx);
     let detail = if target.is_some() { None } else { Some(raw) };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
@@ -2451,9 +3291,101 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         // (`this.foo()`, `obj.foo()`, ...) — see `EdgeInput::bare_call`'s
         // doc.
         bare_call: target_node.kind() == "identifier",
+        call_shape: (node.kind() == "new_expression").then(|| CallShape {
+            arg_count: node
+                .child_by_field_name("arguments")
+                .map_or(0, |args| args.named_child_count() as u32),
+            is_new: true,
+            implicit_this: false,
+            is_ref: false,
+        }),
         ..Default::default()
     });
     register_handled
+}
+
+/// Pins a known receiver type to the declaration this file means by its
+/// name: an imported type through its import (placeholder, rewritten by
+/// `resolve_import_file_edges`), a top-level type of this file to that
+/// declaration. Any other type stays the bare name.
+fn pin_receiver_type(receiver: ReceiverType, ctx: &Context) -> ReceiverType {
+    let ReceiverType::Known(ty) = &receiver else {
+        return receiver;
+    };
+    if !is_type_name_text(ty, false) {
+        return receiver;
+    }
+    if ctx.declared_types.contains(ty) {
+        return ReceiverType::Pinned(PinnedType::Declared(format!("{}.{ty}", ctx.module)));
+    }
+    let Some((spec, Some(imported))) = ctx.import_bindings.get(ty) else {
+        return receiver;
+    };
+    let member = if imported == DEFAULT_EXPORT {
+        format!("{DEFAULT_IMPORT_MARK}{ty}")
+    } else {
+        imported.clone()
+    };
+    ReceiverType::Pinned(PinnedType::Imported {
+        local: ty.clone(),
+        spec: spec.clone(),
+        member,
+    })
+}
+
+/// Class, interface, enum and type-alias names declared at the top level
+/// (exported or not).
+fn collect_declared_types(root: Node<'_>, source: &str) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        let decl = match stmt.kind() {
+            "export_statement" => stmt.child_by_field_name("declaration"),
+            _ => Some(stmt),
+        };
+        if let Some(decl) = decl
+            && matches!(
+                decl.kind(),
+                "class_declaration"
+                    | "abstract_class_declaration"
+                    | "interface_declaration"
+                    | "enum_declaration"
+                    | "type_alias_declaration"
+            )
+            && let Some(name) = decl.child_by_field_name("name")
+        {
+            names.insert(node_text(name, source));
+        }
+    }
+    names
+}
+
+/// A member call whose text is not a simple dotted path (`a![k].m()`,
+/// `list[0].m()`, `(await x).m()`): the edge target and receiver type, so
+/// the call is recorded rather than dropped. A known receiver type gives
+/// `Type.m`; otherwise just `m` with an `Unresolved` receiver (never bound
+/// from the name alone). No target when the callee has no property name.
+fn unnamed_receiver_target(
+    callee: Node<'_>,
+    receiver_type: ReceiverType,
+    source: &str,
+) -> (Option<String>, ReceiverType, Vec<String>) {
+    let method = match callee.kind() {
+        "member_expression" | "optional_member_expression" => callee
+            .child_by_field_name("property")
+            .map(|p| node_text(p, source))
+            .filter(|m| !m.is_empty() && is_simple_call_target(m)),
+        _ => None,
+    };
+    match (method, receiver_type) {
+        (Some(method), ReceiverType::Known(ty)) => (
+            Some(format!("{ty}.{method}")),
+            ReceiverType::Known(ty),
+            Vec::new(),
+        ),
+        (Some(method), _) => (Some(method), ReceiverType::Unresolved, Vec::new()),
+        (None, receiver_type) => (None, receiver_type, Vec::new()),
+    }
 }
 
 /// Deepest call chain `expression_type` follows before giving up.
@@ -2522,14 +3454,14 @@ fn expression_type(node: Node<'_>, ctx: &Context, source: &str, depth: usize) ->
         }
         return match classify_type_name(&node_text(asserted, source)) {
             LocalType::Known(ty) => Some(ty),
-            LocalType::Other => None,
+            _ => None,
         };
     }
     if node.kind() == "new_expression" {
         let ctor = node_text(node.child_by_field_name("constructor")?, source);
         return match classify_annotation(&ctor) {
             LocalType::Known(ty) => Some(ty),
-            LocalType::Other => None,
+            _ => None,
         };
     }
     if node.kind() != "call_expression" {
@@ -2542,12 +3474,13 @@ fn expression_type(node: Node<'_>, ctx: &Context, source: &str, depth: usize) ->
             let object = peel_expression(callee.child_by_field_name("object")?);
             let method = node_text(callee.child_by_field_name("property")?, source);
             let owner = match object.kind() {
+                "this" if ctx.this_rebound => return None,
                 "this" => ctx.class_stack.last().cloned()?,
                 "identifier" => {
                     let name = node_text(object, source);
                     match ctx.local_types.get(&name) {
                         Some(LocalType::Known(ty)) => ty.clone(),
-                        Some(LocalType::Other) => return None,
+                        Some(_) => return None,
                         None => name,
                     }
                 }
@@ -2773,6 +3706,16 @@ fn is_local_non_import_binding(ctx: &Context, name: &str) -> bool {
 /// root identifier is an import binding not shadowed by a local: `cn()` →
 /// `cn`, `api.get()` (namespace) → `get`, `Foo.bar()` (named) → `Foo.bar`.
 fn import_placeholder(raw: &str, ctx: &Context) -> Option<String> {
+    let root = raw.split('.').next().unwrap_or(raw);
+    if ctx.local_types.contains_key(root) {
+        return None;
+    }
+    import_placeholder_unshadowed(raw, ctx)
+}
+
+/// `import_placeholder` for a root the caller has already established no
+/// local shadows.
+fn import_placeholder_unshadowed(raw: &str, ctx: &Context) -> Option<String> {
     let raw = collapse_call_target_whitespace(raw);
     if !is_simple_call_target(&raw) {
         return None;
@@ -2781,9 +3724,6 @@ fn import_placeholder(raw: &str, ctx: &Context) -> Option<String> {
         Some((root, rest)) => (root, Some(rest)),
         None => (raw.as_str(), None),
     };
-    if ctx.local_types.contains_key(root) {
-        return None;
-    }
     let (spec, imported) = ctx.import_bindings.get(root)?;
     let member = match (imported, rest) {
         (Some(name), rest) if name == DEFAULT_EXPORT => {
@@ -4995,6 +5935,13 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
     Some(raw.to_string())
 }
 
+/// `text` is spelled like a plain type name: identifier characters, plus
+/// `.` for a qualified one (`ns.Type`) when `dotted`.
+fn is_type_name_text(text: &str, dotted: bool) -> bool {
+    text.chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '$' || (dotted && c == '.'))
+}
+
 fn is_simple_call_target(raw: &str) -> bool {
     raw.chars()
         .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == '$' || ch == '#')
@@ -5004,14 +5951,13 @@ fn is_simple_call_target(raw: &str) -> bool {
 /// `function() {...}` / `function*() {...}`, named or anonymous, most often
 /// seen as a callback. Unlike an arrow function, one of these dynamically
 /// rebinds `this` (and `arguments`) to whatever the caller supplies at call
-/// time, instead of inheriting the enclosing lexical `this`. Walking its
-/// body with the *enclosing* scope's unchanged `Context` — same
-/// `current_scope`, same `this`-relative resolution in `infer_receiver_type`
-/// — would misattribute a `this.method()` call inside it to the wrong
-/// class method, which is worse than not indexing the call at all. So
-/// `walk_node` and `is_local_scope_boundary` both still treat this as a
-/// hard boundary; see `is_lambda_node` below for the one kind that's safe
-/// to fall through instead. (`"function"` is the bare `function` keyword
+/// time, instead of inheriting the enclosing lexical `this`.
+/// `walk_node` walks its body with calls attributed to the enclosing
+/// symbol, but through `rebind_this_scope`: its own locals, and a
+/// `this.x()` inside it is left unresolved instead of being bound to the
+/// enclosing class (a wrong edge). `is_local_scope_boundary` still treats
+/// it as a separate local-type scope; see `is_lambda_node` below for the
+/// kind that shares the enclosing `this` and locals. (`"function"` is the bare `function` keyword
 /// token itself — unnamed, so `named_children()` never yields it and this
 /// arm is unreachable in practice — kept only for parity with the
 /// pre-existing list this replaces.)
@@ -5022,12 +5968,30 @@ fn is_dynamic_this_function_node(kind: &str) -> bool {
     )
 }
 
+/// Context for walking the body of a function that is not a symbol and
+/// rebinds `this` — a nested `function` expression/generator or `function`
+/// declaration: calls keep the enclosing `current_scope`, the function gets
+/// its own locals (plus the enclosing ones as outer locals), `class_stack`
+/// is cut back to the namespaces (bare names are not class members), and
+/// `this_rebound` makes a `this.x()` call unresolved rather than a member of
+/// the enclosing class.
+fn rebind_this_scope(node: Node<'_>, ctx: &Context, source: &str) -> Context {
+    let mut next_ctx = ctx.clone();
+    next_ctx.class_stack.truncate(ctx.ns_depth);
+    next_ctx.fn_depth += 1;
+    next_ctx.this_rebound = true;
+    enter_scope(&mut next_ctx);
+    next_ctx.local_types = Rc::new(infer_local_types(node, source));
+    next_ctx
+}
+
 /// A JS/TS arrow function (`x => ...`, `(x, y) => ...`, `async (x) => ...`).
 /// Always lexically captures the enclosing `this`/`arguments` — never
 /// rebinds them like a plain `function` expression does (see
-/// `is_dynamic_this_function_node`) — so it's safe for `walk_node` and
-/// `collect_statement_bindings` to recurse straight through one with the
-/// *same* `Context`/bindings map: it's a nested scope, not a new symbol.
+/// `is_dynamic_this_function_node`) — so `walk_node` and
+/// `collect_statement_bindings` recurse straight through one with the
+/// *same* `Context`/bindings map (`this` keeps resolving against the
+/// enclosing class): it's a nested scope, not a new symbol.
 /// Calls inside it (e.g. `.map(x => this.transform(x))`, `useEffect(() =>
 /// fetchData(), [])`) attribute to the enclosing named symbol via
 /// `ctx.current_scope`, and the arrow's own parameters are folded into the
@@ -5067,6 +6031,7 @@ fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<C
     if !is_lambda_node(kind) {
         enter_scope(&mut next_ctx);
         next_ctx.local_types = Rc::new(infer_local_types(node, source));
+        next_ctx.this_rebound = true;
     }
     Some(next_ctx)
 }
@@ -5205,6 +6170,7 @@ fn handle_method(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extra
     if let Some(body) = node.child_by_field_name("body") {
         let mut next_ctx = ctx.clone();
         next_ctx.fn_depth += 1;
+        next_ctx.this_rebound = false;
         next_ctx.current_scope = build_qualname(&ctx.module, &ctx.class_stack, &name);
         enter_scope(&mut next_ctx);
         next_ctx.local_types = Rc::new(infer_local_types(node, source));
@@ -5944,6 +6910,16 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     let Some(object) = function_node.child_by_field_name("object") else {
         return ReceiverType::NotTracked;
     };
+    if let Some(ty) = instanceof_narrowed_type(function_node, object, source) {
+        return ReceiverType::Known(ty);
+    }
+    let object = peel_expression(object);
+    if object.kind() == "subscript_expression" {
+        return match subscript_element_type(object, source, ctx) {
+            Some(ty) => ReceiverType::Known(ty),
+            None => ReceiverType::Unresolved,
+        };
+    }
     let (root, hops) = member_chain_root(object);
 
     if root.kind() == "super" {
@@ -5978,7 +6954,7 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     if hops == 0 {
         return match ctx.local_types.get(&root_name) {
             Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
-            Some(LocalType::Other) => ReceiverType::Unresolved,
+            Some(_) => ReceiverType::Unresolved,
             None => ReceiverType::NotTracked,
         };
     }
@@ -5986,6 +6962,85 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
         ReceiverType::Unresolved
     } else {
         ReceiverType::NotTracked
+    }
+}
+
+/// The element type of `container[index]` when `container` is `this.field`
+/// or a local/parameter annotated as a container of a plain type name (see
+/// `container_element_type`).
+fn subscript_element_type(subscript: Node<'_>, source: &str, ctx: &Context) -> Option<String> {
+    let container = peel_expression(subscript.child_by_field_name("object")?);
+    let declared = match container.kind() {
+        "identifier" => ctx.local_types.get(&node_text(container, source)),
+        "member_expression" => {
+            let owner = peel_expression(container.child_by_field_name("object")?);
+            if owner.kind() != "this" || ctx.this_rebound {
+                return None;
+            }
+            let name = node_text(container.child_by_field_name("property")?, source);
+            ctx.class_attr_types.get(&name)
+        }
+        _ => None,
+    };
+    match declared {
+        Some(LocalType::Elements(ty)) => Some(ty.clone()),
+        _ => None,
+    }
+}
+
+/// The type `C` when `receiver` (the callee's object) is the left side of an
+/// `X instanceof C` that is the condition, or a `&&` conjunct of it, of an
+/// enclosing `if` whose consequence contains the call. The nearest such `if`
+/// wins; `else` branches, negations, `||` and function boundaries are not
+/// narrowed (no guess).
+fn instanceof_narrowed_type(callee: Node<'_>, receiver: Node<'_>, source: &str) -> Option<String> {
+    let receiver_text = narrowing_text(receiver, source);
+    let mut child = callee;
+    while let Some(parent) = child.parent() {
+        if is_local_scope_boundary(parent.kind())
+            || is_lambda_node(parent.kind())
+            || parent.kind() == "program"
+        {
+            return None;
+        }
+        if parent.kind() == "if_statement"
+            && parent.child_by_field_name("consequence") == Some(child)
+            && let Some(condition) = parent.child_by_field_name("condition")
+            && let Some(ty) = instanceof_in_condition(condition, &receiver_text, source)
+        {
+            return Some(ty);
+        }
+        child = parent;
+    }
+    None
+}
+
+fn narrowing_text(node: Node<'_>, source: &str) -> String {
+    node_text(peel_expression(node), source)
+        .split_whitespace()
+        .collect()
+}
+
+fn instanceof_in_condition(cond: Node<'_>, receiver_text: &str, source: &str) -> Option<String> {
+    let cond = peel_expression(cond);
+    if cond.kind() != "binary_expression" {
+        return None;
+    }
+    let operator = cond.child_by_field_name("operator")?;
+    let (left, right) = (
+        cond.child_by_field_name("left")?,
+        cond.child_by_field_name("right")?,
+    );
+    match operator.kind() {
+        "&&" => instanceof_in_condition(left, receiver_text, source)
+            .or_else(|| instanceof_in_condition(right, receiver_text, source)),
+        "instanceof" if narrowing_text(left, source) == receiver_text => {
+            match classify_annotation(&node_text(right, source)) {
+                LocalType::Known(ty) => Some(ty),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -6023,6 +7078,105 @@ fn classify_annotation(text: &str) -> LocalType {
     classify_type_name(bare)
 }
 
+/// `classify_annotation` for a declared name (parameter, local, field): a
+/// container annotation whose element type is a plain non-builtin type name
+/// becomes `Elements`, everything else classifies as usual.
+fn classify_declared_type(type_annotation: Node<'_>, source: &str) -> LocalType {
+    match container_element_type(type_annotation, source) {
+        Some(ty) => LocalType::Elements(ty),
+        None => classify_annotation(&annotation_text(type_annotation, source)),
+    }
+}
+
+/// The element type of `Record<K, T>`, `Array<T>`, `ReadonlyArray<T>`,
+/// `T[]` or `{ [k: string]: T }` when `T` is a plain non-builtin type name
+/// (`type_identifier` or `A.B`); a `| undefined`/`| null` member is ignored.
+/// Read off the type nodes, so a nested generic (`Record<string, Map<K, V>>`)
+/// has no element type, while `Record<Foo<A, B>, T>` still has `T`.
+fn container_element_type(type_annotation: Node<'_>, source: &str) -> Option<String> {
+    let ty = non_nullable_type(type_annotation.named_child(0)?, source)?;
+    let element = match ty.kind() {
+        "array_type" => ty.named_child(0)?,
+        "generic_type" => {
+            let name = node_text(ty.child_by_field_name("name")?, source);
+            let args = ty.child_by_field_name("type_arguments")?;
+            let mut cursor = args.walk();
+            let args: Vec<Node<'_>> = args
+                .named_children(&mut cursor)
+                .filter(|n| n.kind() != "comment")
+                .collect();
+            match (name.as_str(), args.as_slice()) {
+                ("Array" | "ReadonlyArray", [element]) => *element,
+                ("Record", [_, element]) => *element,
+                _ => return None,
+            }
+        }
+        "object_type" => {
+            let mut cursor = ty.walk();
+            let members: Vec<Node<'_>> = ty
+                .named_children(&mut cursor)
+                .filter(|n| n.kind() != "comment")
+                .collect();
+            let [sig] = members.as_slice() else {
+                return None;
+            };
+            // `[k: string]: T`, not a mapped type (`[K in Keys]: T`).
+            if sig.kind() != "index_signature"
+                || sig.child_by_field_name("name").is_none()
+                || sig.child_by_field_name("index_type").is_none()
+            {
+                return None;
+            }
+            let value = sig.child_by_field_name("type")?;
+            if value.kind() != "type_annotation" {
+                return None;
+            }
+            value.named_child(0)?
+        }
+        _ => return None,
+    };
+    if !matches!(element.kind(), "type_identifier" | "nested_type_identifier") {
+        return None;
+    }
+    let text = node_text(element, source);
+    if !is_type_name_text(&text, true) {
+        return None;
+    }
+    match classify_annotation(&text) {
+        LocalType::Known(ty) => Some(ty),
+        _ => None,
+    }
+}
+
+/// `ty` without parentheses, and without its `undefined`/`null` members
+/// when a union; `None` when more than one member remains.
+fn non_nullable_type<'t>(ty: Node<'t>, source: &str) -> Option<Node<'t>> {
+    fn collect<'t>(ty: Node<'t>, source: &str, out: &mut Vec<Node<'t>>) {
+        match ty.kind() {
+            "union_type" => {
+                let mut cursor = ty.walk();
+                for member in ty.named_children(&mut cursor) {
+                    collect(member, source, out);
+                }
+            }
+            "parenthesized_type" => {
+                if let Some(inner) = ty.named_child(0) {
+                    collect(inner, source, out);
+                }
+            }
+            "comment" => {}
+            _ if matches!(node_text(ty, source).as_str(), "undefined" | "null") => {}
+            _ => out.push(ty),
+        }
+    }
+    let mut members = Vec::new();
+    collect(ty, source, &mut members);
+    match members.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+
 fn classify_type_name(name: &str) -> LocalType {
     if name.is_empty() || JS_TS_BUILTIN_TYPES.contains(&name) {
         LocalType::Other
@@ -6057,11 +7211,11 @@ fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
 /// Infer types for names bound within a single function body: parameters
 /// and `const`/`let`/`var` declarations. Scope is strictly this function —
 /// never a caller, a callee, or another method of the same class (see
-/// `Context::local_types`'s doc comment). No CALLS edges are ever extracted
-/// from inside a nested plain `function`/`function*` expression (see
-/// `is_dynamic_this_function_node`, which stops `walk_node` there
-/// entirely), so this deliberately doesn't recurse into one either. An
-/// arrow function is different — see `is_lambda_node` — so
+/// `Context::local_types`'s doc comment). A nested plain `function`/
+/// `function*` expression is a scope of its own (see
+/// `is_dynamic_this_function_node`): `walk_node` gives it a fresh
+/// `infer_local_types` via `rebind_this_scope`, so this doesn't recurse
+/// into one. An arrow function is different — see `is_lambda_node` — so
 /// `collect_statement_bindings` (which this calls into) does recurse into
 /// one of those, folding its parameters into this same map.
 fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {
@@ -6087,18 +7241,23 @@ fn infer_module_level_types(root: Node<'_>, source: &str) -> HashMap<String, Loc
     bindings_to_local_types(bindings)
 }
 
-/// Fold a scope's raw (name, inferred-type) bindings into a lookup map,
-/// with a name bound more than once anywhere in the scope collapsing to
-/// `Other` — mirrors `python::bindings_to_local_types`.
+/// Fold a scope's raw (name, inferred-type) bindings into a lookup map. A
+/// name bound more than once collapses to `Other` unless every binding is
+/// the same `Known` type (sibling callbacks each declaring
+/// `const x = new Foo()`); any `Other` or a differing type still forces
+/// `Other`. Mirrors `python::bindings_to_local_types` otherwise.
 fn bindings_to_local_types(bindings: Vec<(String, LocalType)>) -> HashMap<String, LocalType> {
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for (name, _) in &bindings {
-        *counts.entry(name.clone()).or_default() += 1;
-    }
-    let mut result = HashMap::new();
+    let mut result: HashMap<String, LocalType> = HashMap::new();
     for (name, ty) in bindings {
-        let reassigned = counts.get(&name).copied().unwrap_or(0) > 1;
-        result.insert(name, if reassigned { LocalType::Other } else { ty });
+        match result.get(&name) {
+            Some(prev) if *prev == ty => {}
+            Some(_) => {
+                result.insert(name, LocalType::Other);
+            }
+            None => {
+                result.insert(name, ty);
+            }
+        }
     }
     result
 }
@@ -6114,7 +7273,7 @@ fn collect_param_bindings(param: Node<'_>, source: &str, bindings: &mut Vec<(Str
                 let name = node_text(pattern, source);
                 let ty = param
                     .child_by_field_name("type")
-                    .map(|t| classify_annotation(&annotation_text(t, source)))
+                    .map(|t| classify_declared_type(t, source))
                     .unwrap_or(LocalType::Other);
                 bindings.push((name, ty));
             } else {
@@ -6266,7 +7425,7 @@ fn collect_variable_declarator_binding(
     }
     let name = node_text(name_node, source);
     let ty = if let Some(type_node) = node.child_by_field_name("type") {
-        classify_annotation(&annotation_text(type_node, source))
+        classify_declared_type(type_node, source)
     } else if let Some(value_node) = node.child_by_field_name("value") {
         classify_value_expr(value_node, source)
     } else {
@@ -6299,10 +7458,7 @@ fn collect_class_level_attr_types(
                 if name.is_empty() {
                     continue;
                 }
-                result.insert(
-                    name,
-                    classify_annotation(&annotation_text(type_node, source)),
-                );
+                result.insert(name, classify_declared_type(type_node, source));
             }
             "method_definition" => {
                 let is_ctor = member
@@ -6341,7 +7497,7 @@ fn collect_class_level_attr_types(
                     let name = node_text(pattern, source);
                     let ty = param
                         .child_by_field_name("type")
-                        .map(|t| classify_annotation(&annotation_text(t, source)))
+                        .map(|t| classify_declared_type(t, source))
                         .unwrap_or(LocalType::Other);
                     result.insert(name, ty);
                 }
@@ -6358,7 +7514,7 @@ mod tests {
         JavascriptExtractor, grpc_service_from_path, match_alias_pattern, strip_jsonc,
         substitute_alias_target,
     };
-    use crate::indexer::extract::{LanguageExtractor, ReceiverType};
+    use crate::indexer::extract::{LanguageExtractor, PinnedType, ReceiverType};
     use crate::indexer::http;
     use crate::indexer::proto;
 
@@ -7098,6 +8254,29 @@ init();
     /// Issue #320: a call whose receiver is itself a call expression
     /// (`make().stage(1).storage()`) must still record a CALLS edge per link.
     #[test]
+    fn new_expression_records_its_argument_count_and_calls_do_not() {
+        let source = "export function f() {\n  new Foo(1, 2);\n  new Bar;\n  go(1);\n}\n";
+        let mut extractor = super::TypescriptExtractor::new().unwrap();
+        let file = extractor.extract(source, "m").unwrap();
+        let shape = |name: &str| {
+            file.edges
+                .iter()
+                .find(|e| {
+                    e.kind == "CALLS"
+                        && e.target_qualname
+                            .as_deref()
+                            .is_some_and(|t| t.ends_with(&format!(".{name}")))
+                })
+                .unwrap()
+                .call_shape
+                .map(|s| (s.is_new, s.arg_count))
+        };
+        assert_eq!(shape("Foo"), Some((true, 2)));
+        assert_eq!(shape("Bar"), Some((true, 0)));
+        assert_eq!(shape("go"), None);
+    }
+
+    #[test]
     fn chained_call_on_call_receiver_records_each_link() {
         let source = r#"
 export class Builder {
@@ -7121,7 +8300,13 @@ export function selfy() { return make().self().stage(1); }
                 .map(|e| (e.target_qualname.clone(), e.receiver_type.clone()))
                 .collect()
         };
-        let known = |q: &str, ty: &str| (Some(q.to_string()), ReceiverType::Known(ty.into()));
+        // Every type here is declared in this file, so it is pinned to it.
+        let known = |q: &str, ty: &str| {
+            (
+                Some(q.to_string()),
+                ReceiverType::Pinned(PinnedType::Declared(format!("b.{ty}"))),
+            )
+        };
         let unresolved = |q: &str| (Some(q.to_string()), ReceiverType::Unresolved);
 
         let use_c = calls("b.use");
@@ -7374,6 +8559,234 @@ export function Button() {
             callee(&conn, "components/button.Button", "get").as_deref(),
             Some("lib/api.get")
         );
+    }
+
+    #[test]
+    fn bare_dot_import_binds_to_the_directory_index() {
+        let (_dir, conn) = index_repo(&[
+            (
+                "src/helper/cookie/index.ts",
+                "export function deleteCookie(n: string) { return n; }\n",
+            ),
+            (
+                "src/helper/cookie/index.test.ts",
+                "import { deleteCookie } from '.';\nexport function t() { return deleteCookie('a'); }\n",
+            ),
+            (
+                "src/helper/dev/index.ts",
+                "export function showRoutes() { return 1; }\n",
+            ),
+            (
+                "src/helper/dev/sub/x.test.ts",
+                "import { showRoutes } from '..';\nexport function t() { return showRoutes(); }\n",
+            ),
+        ]);
+        assert_eq!(
+            callee(&conn, "src/helper/cookie/index.test.t", "deleteCookie").as_deref(),
+            Some("src/helper/cookie.deleteCookie")
+        );
+        assert_eq!(
+            callee(&conn, "src/helper/dev/sub/x.test.t", "showRoutes").as_deref(),
+            Some("src/helper/dev.showRoutes")
+        );
+    }
+
+    #[test]
+    fn non_null_subscript_call_is_never_silently_dropped() {
+        let (_dir, conn) = index_repo(&[
+            (
+                "src/trie.ts",
+                "export class Trie {\n  insert(p: string, b: boolean) {}\n}\n",
+            ),
+            (
+                "src/router.ts",
+                "export class Router {\n  #tries?: Record<string, Trie>\n  #other?: Record<string, string>\n  add(m: string) {\n    this.#tries![m].insert('a', true)\n    this.#other![m].trim()\n  }\n}\n",
+            ),
+        ]);
+        let row = |line: i64| -> (String, Option<String>) {
+            conn.query_row(
+                "SELECT reference_name, receiver_type FROM unresolved_references
+                 WHERE evidence_start_line = ?1 AND edge_kind = 'CALLS'
+                 UNION ALL
+                 SELECT e.target_qualname, e.receiver_type FROM edges e
+                 WHERE e.evidence_start_line = ?1 AND e.kind = 'CALLS'",
+                [line],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or_else(|_| panic!("line {line} has neither an edge nor an unresolved row"))
+        };
+        let (name, receiver) = row(5);
+        assert!(name.ends_with("insert"), "{name}");
+        assert_eq!(receiver.as_deref(), Some("Trie"));
+        let (name, _) = row(6);
+        assert!(name.ends_with("trim"), "{name}");
+    }
+
+    fn two_node_repo(trie_source: &str) -> (tempfile::TempDir, Connection) {
+        index_repo(&[
+            (
+                "src/reg/node.ts",
+                "export class Node {\n  insert(p: string) {}\n}\n",
+            ),
+            (
+                "src/trie/node.ts",
+                "export class Node {\n  insert(p: string) {}\n  only(p: string) {}\n}\n",
+            ),
+            ("src/reg/trie.ts", trie_source),
+        ])
+    }
+
+    #[test]
+    fn imported_receiver_type_binds_to_the_imported_class_not_a_same_named_one() {
+        let (_dir, conn) = two_node_repo(
+            "import { Node } from './node'\nexport class Trie {\n  #root: Node = new Node()\n  add(p: string) { this.#root.insert(p) }\n}\n",
+        );
+        assert_eq!(
+            callee(&conn, "src/reg/trie.Trie.add", "insert").as_deref(),
+            Some("src/reg/node.Node.insert")
+        );
+    }
+
+    #[test]
+    fn aliased_and_reexported_receiver_type_follows_the_import() {
+        let (_dir, conn) = index_repo(&[
+            (
+                "src/base.ts",
+                "export class HonoBase {\n  request(p: string) {}\n  get = (p: string) => p\n}\n",
+            ),
+            (
+                "src/hono.ts",
+                "import { HonoBase } from './base'\nexport class Hono extends HonoBase {}\n",
+            ),
+            (
+                "src/other/hono.ts",
+                "export class Hono {\n  request(p: string) {}\n  get = (p: string) => p\n}\n",
+            ),
+            ("src/index.ts", "export { Hono } from './hono'\n"),
+            (
+                "src/use.ts",
+                "import { Hono as App } from './index'\nexport function run(app: App) {\n  app.request('/')\n  app.get('/')\n}\n",
+            ),
+        ]);
+        assert_eq!(
+            callee(&conn, "src/use.run", "request").as_deref(),
+            Some("src/base.HonoBase.request")
+        );
+        assert_eq!(
+            callee(&conn, "src/use.run", "get").as_deref(),
+            Some("src/base.HonoBase.get")
+        );
+    }
+
+    #[test]
+    fn same_file_receiver_type_binds_to_that_files_declaration() {
+        let (_dir, conn) = two_node_repo(
+            "class Node {\n  insert(p: string) {}\n}\nexport function f(n: Node) { n.insert('a') }\n",
+        );
+        assert_eq!(
+            callee(&conn, "src/reg/trie.f", "insert").as_deref(),
+            Some("src/reg/trie.Node.insert")
+        );
+    }
+
+    #[test]
+    fn precise_receiver_type_without_the_member_stays_unresolved() {
+        // `only` exists on the other `Node`; the imported one has no such
+        // member anywhere in its ancestry, so it must not be guessed.
+        let (_dir, conn) = two_node_repo(
+            "import { Node } from './node'\nexport function f(n: Node) { n.only('a') }\n",
+        );
+        assert_eq!(callee(&conn, "src/reg/trie.f", "only"), None);
+    }
+
+    const JWT_LIB: &str = "export const sign = (p: string) => p\nexport const verifyWithJwks = (t: string) => t\nexport function decode(t: string) { return t }\n";
+
+    fn jwt_repo(index_source: &str, caller: &str) -> (tempfile::TempDir, Connection) {
+        index_repo(&[
+            ("src/jwt/jwt.ts", JWT_LIB),
+            ("src/jwt/index.ts", index_source),
+            // Decoy: the only other symbol named `verifyWithJwks`.
+            (
+                "src/middleware/alias.ts",
+                "export const verifyWithJwks = () => 1\n",
+            ),
+            ("src/mw.ts", caller),
+        ])
+    }
+
+    const JWT_CALLER: &str = "import { Jwt } from './jwt'\nexport function check(t: string) {\n  Jwt.verifyWithJwks(t)\n  Jwt.sign(t)\n  Jwt.decode(t)\n  Jwt.missing(t)\n}\n";
+
+    #[test]
+    fn object_literal_namespace_member_follows_the_property_to_its_import() {
+        let (_dir, conn) = jwt_repo(
+            "import { decode, sign, verifyWithJwks } from './jwt'\nexport const Jwt = { sign, verifyWithJwks: verifyWithJwks, decode }\n",
+            JWT_CALLER,
+        );
+        assert_eq!(
+            callee(&conn, "src/mw.check", "verifyWithJwks").as_deref(),
+            Some("src/jwt/jwt.verifyWithJwks")
+        );
+        assert_eq!(
+            callee(&conn, "src/mw.check", "sign").as_deref(),
+            Some("src/jwt/jwt.sign")
+        );
+        assert_eq!(
+            callee(&conn, "src/mw.check", "decode").as_deref(),
+            Some("src/jwt/jwt.decode")
+        );
+    }
+
+    #[test]
+    fn object_literal_namespace_member_follows_an_aliased_import_and_same_file_decl() {
+        let (_dir, conn) = jwt_repo(
+            "import { sign as signToken, verifyWithJwks } from './jwt'\nfunction decode(t: string) { return t }\nexport const Jwt = { sign: signToken, verifyWithJwks, decode }\n",
+            JWT_CALLER,
+        );
+        assert_eq!(
+            callee(&conn, "src/mw.check", "sign").as_deref(),
+            Some("src/jwt/jwt.sign")
+        );
+        assert_eq!(
+            callee(&conn, "src/mw.check", "decode").as_deref(),
+            Some("src/jwt.decode")
+        );
+    }
+
+    #[test]
+    fn object_literal_namespace_member_that_cannot_resolve_never_binds_the_container() {
+        let (_dir, conn) = jwt_repo(
+            "import { sign } from './jwt'\nexport const Jwt = { sign, inline: () => 1 }\n",
+            "import { Jwt } from './jwt'\nexport function check(t: string) {\n  Jwt.verifyWithJwks(t)\n  Jwt.missing(t)\n}\n",
+        );
+        // Neither a decoy of the same name nor the `Jwt` const itself.
+        assert_eq!(callee(&conn, "src/mw.check", "verifyWithJwks"), None);
+        assert_eq!(callee(&conn, "src/mw.check", "missing"), None);
+        let bound_to_container: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM edges e JOIN symbols t ON t.id = e.target_symbol_id
+                 WHERE e.kind = 'CALLS' AND t.qualname = 'src/jwt.Jwt'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bound_to_container, 0);
+    }
+
+    #[test]
+    fn alias_of_an_object_literal_member_is_not_a_call() {
+        let (_dir, conn) = jwt_repo(
+            "import { sign } from './jwt'\nexport const Jwt = { sign }\n",
+            "import { Jwt } from './jwt'\nexport const signIt = Jwt.sign\n",
+        );
+        let calls: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM edges e JOIN symbols s ON s.id = e.source_symbol_id
+                 WHERE e.kind = 'CALLS' AND s.qualname LIKE 'src/mw%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(calls, 0);
     }
 
     #[test]

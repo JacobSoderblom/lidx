@@ -252,6 +252,17 @@ def call_sites_for(lx, target_id, entries):
     """
     sites, unlocated = set(), []
     con = lx.con
+    # `new T()` binds to T's explicit constructor, and a class's callers
+    # aggregate its members, so a class target's sites are edges to the class
+    # or its constructor symbol.
+    qual = con.execute("SELECT qualname FROM symbols WHERE id = ?", (target_id,)).fetchone()
+    target_ids = [target_id]
+    if qual:
+        target_ids += [r[0] for r in con.execute(
+            "SELECT id FROM symbols WHERE qualname IN (?, ?) AND kind = 'method' "
+            "AND graph_version = (SELECT graph_version FROM symbols WHERE id = ?)",
+            (qual[0] + ".constructor", qual[0] + "..ctor", target_id))]
+    marks = ",".join("?" * len(target_ids))
     for ent in entries:
         sym = ent.get("symbol") or {}
         cid = sym.get("id")
@@ -259,8 +270,8 @@ def call_sites_for(lx, target_id, entries):
         rows = con.execute(
             "SELECT f.path, e.evidence_start_line AS ln, e.evidence_end_line AS ln_end FROM edges e "
             "JOIN files f ON f.id = e.file_id "
-            "WHERE e.source_symbol_id = ? AND e.target_symbol_id = ? AND (? IS NULL OR e.kind = ?) "
-            "AND e.evidence_start_line IS NOT NULL", (cid, target_id, kind, kind)).fetchall()
+            "WHERE e.source_symbol_id = ? AND e.target_symbol_id IN (%s) AND (? IS NULL OR e.kind = ?) "
+            "AND e.evidence_start_line IS NOT NULL" % marks, (cid, *target_ids, kind, kind)).fetchall()
         if not rows and ent.get("evidence"):
             rows = con.execute(
                 "SELECT f.path, e.evidence_start_line AS ln, e.evidence_end_line AS ln_end FROM edges e "

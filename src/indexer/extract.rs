@@ -109,7 +109,32 @@ pub enum ReceiverType {
     /// A target-typed `new(..)` passed as a call argument: constructs the
     /// callee's declared parameter type (never a receiver type itself).
     DeferredArgument(DeferredArgument),
+    /// A `Known` type pinned to the one declaration the file means by its
+    /// name (TypeScript/JavaScript): the resolver binds members against
+    /// exactly that class and its ancestors, never another class of the
+    /// same bare name. See [`PinnedType`].
+    Pinned(PinnedType),
 }
+
+/// A receiver type pinned to one declaration. The persisted form of a
+/// pin lives with [`ReceiverType::to_columns`] ([`PINNED_TYPE_MARK`]);
+/// [`ReceiverType::decode_pinned`] is its only reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinnedType {
+    /// Declared in this file: the class's qualname (`src/node.Node`).
+    Declared(String),
+    /// Named through an import not yet located. `resolve_import_file_edges`
+    /// turns it into `Declared`; one it cannot locate is stored as the bare
+    /// `local` name, so the raw specifier is never persisted.
+    Imported {
+        local: String,
+        spec: String,
+        member: String,
+    },
+}
+
+/// Prefixes a pinned receiver type's qualname in `edges.receiver_type`.
+const PINNED_TYPE_MARK: char = '\u{2}';
 
 /// "The (optionally awaited) return value of `base.method(..)`".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,6 +352,12 @@ impl ReceiverType {
         }
     }
 
+    /// The pinned declaration's qualname in a stored `receiver_type`
+    /// column value; `None` for any other value.
+    pub fn decode_pinned(column: &str) -> Option<&str> {
+        column.strip_prefix(PINNED_TYPE_MARK)
+    }
+
     /// The columns to store: `receiver_type` `None` = not tracked (legacy
     /// resolution tiers apply) or deferred, `Some("")` = tracked but
     /// unresolved/builtin (must not bind, no lookup attempted at all),
@@ -337,6 +368,13 @@ impl ReceiverType {
             ReceiverType::NotTracked => {}
             ReceiverType::Unresolved => columns.receiver_type = Some(String::new()),
             ReceiverType::Known(ty) => columns.receiver_type = Some(ty.clone()),
+            ReceiverType::Pinned(PinnedType::Declared(qualname)) => {
+                columns.receiver_type = Some(format!("{PINNED_TYPE_MARK}{qualname}"));
+            }
+            // Never persist the unlocated `spec\0member` form.
+            ReceiverType::Pinned(PinnedType::Imported { local, .. }) => {
+                columns.receiver_type = Some(local.clone());
+            }
             ReceiverType::Scoped { scope, ty } => {
                 columns.receiver_type = Some(ty.clone());
                 columns.receiver_scope = scope.encode();
@@ -399,7 +437,7 @@ impl TypeScope {
 /// same-qualname overloads (C# issue #123) and, for `new T(...)`, between
 /// the class and its constructor (issue #124). Persisted in the
 /// `call_shape` column as `"<n>"` (a call with `n` arguments) or
-/// `"new:<n>"` (an object creation).
+/// `"new:<n>"` (an object creation), or `"ref"` (a value reference).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CallShape {
     pub arg_count: u32,
@@ -411,12 +449,18 @@ pub struct CallShape {
     /// `is_new` (an object creation has no receiver concept), so the
     /// encoding has one prefix at most; `encode` gives `is_new` precedence.
     pub implicit_this: bool,
+    /// TS/JS: not a call at all but a function or const used as a value
+    /// (`cb ?? fallback`, `register(handler)`). Persisted as `"ref"`. The
+    /// resolver binds such a reference only to something callable.
+    pub is_ref: bool,
 }
 
 impl CallShape {
     /// The `call_shape` column text: `"<n>"` or `"new:<n>"`.
     pub fn encode(self) -> String {
-        if self.is_new {
+        if self.is_ref {
+            "ref".to_string()
+        } else if self.is_new {
             format!("new:{}", self.arg_count)
         } else if self.implicit_this {
             format!("this:{}", self.arg_count)
@@ -427,6 +471,14 @@ impl CallShape {
 
     /// Inverse of `encode`; `None` for text that isn't a valid shape.
     pub fn decode(raw: &str) -> Option<Self> {
+        if raw == "ref" {
+            return Some(Self {
+                arg_count: 0,
+                is_new: false,
+                implicit_this: false,
+                is_ref: true,
+            });
+        }
         let (is_new, implicit_this, count) =
             match (raw.strip_prefix("new:"), raw.strip_prefix("this:")) {
                 (Some(rest), _) => (true, false, rest),
@@ -437,6 +489,7 @@ impl CallShape {
             arg_count: count.parse().ok()?,
             is_new,
             implicit_this,
+            is_ref: false,
         })
     }
 }

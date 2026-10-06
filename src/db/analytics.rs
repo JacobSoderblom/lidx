@@ -518,7 +518,27 @@ impl Db {
                    JOIN files f ON s.file_id = f.id
                    WHERE s.graph_version = ?
                      AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-                     AND s.kind IN ('function', 'method', 'class', 'struct')
+                     AND s.kind IN ('function', 'method', 'class', 'struct', 'const', 'type')
+                     -- Module-level JS/TS constants and type aliases only: a
+                     -- Rust `const`/`type` or a nested one is judged elsewhere.
+                     AND NOT (s.kind IN ('const', 'type') AND NOT (
+                       f.language IN ('javascript', 'typescript', 'tsx')
+                       AND EXISTS (
+                         SELECT 1 FROM edges c
+                         JOIN symbols p ON p.id = c.source_symbol_id
+                         WHERE c.target_symbol_id = s.id AND c.kind = 'CONTAINS'
+                           AND p.kind = 'module' AND c.graph_version = {gv}
+                       )
+                     ))
+                     -- Next.js route-segment exports are read by the framework.
+                     AND NOT (f.language IN ('javascript', 'typescript', 'tsx')
+                              AND s.name IN ('metadata', 'generateMetadata', 'viewport',
+                                             'generateViewport', 'revalidate', 'dynamic',
+                                             'dynamicParams', 'fetchCache', 'runtime', 'config',
+                                             'preferredRegion', 'maxDuration',
+                                             'generateStaticParams')
+                              AND (f.path LIKE 'app/%' OR f.path LIKE '%/app/%'
+                                   OR f.path LIKE 'pages/%' OR f.path LIKE '%/pages/%'))
                      AND s.name NOT IN ('main', '__init__', 'setup', 'teardown', 'configure', 'register', '.cctor')
                      -- Operators and finalizers are invoked implicitly (#247).
                      AND NOT (f.language = 'csharp' AND (s.name LIKE 'operator %'

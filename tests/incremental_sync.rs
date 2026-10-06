@@ -2547,3 +2547,425 @@ fn ts_dynamic_import_emits_imports_file_and_matches_fresh() {
     common::assert_matches_fresh(&snapshot, &fresh_snapshot);
     assert_eq!(unresolved(&indexer), unresolved(&fresh));
 }
+
+#[test]
+fn incremental_ts_function_expression_calls_match_fresh() {
+    let app_ts = "import { helper } from './lib';\nexport class Foo {\n  m() {}\n  run() {\n    list.forEach(function (x) {\n      this.m();\n      helper(x);\n    });\n  }\n}\n";
+    let lib_ts = "export function helper(x: number) {}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree("ts-fn-expr", &[("app.ts", app_ts)]);
+    common::write_files(&repo_root, &[("lib.ts", lib_ts)]);
+    indexer.sync_rel_paths(&["lib.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        !snapshot
+            .iter()
+            .any(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("app.Foo.m")),
+        "this.m() inside a function expression must not bind to Foo.m: {snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("lib.ts", lib_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_class_field_arrow_calls_match_fresh() {
+    let app_ts = "import { mergePath } from './lib';\nexport class Hono {\n  fetch(r: string) {}\n  request = (input: string) => {\n    return this.fetch(mergePath('/', input));\n  };\n}\n";
+    let lib_ts = "export function mergePath(a: string, b: string) { return a + b; }\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree("ts-field-arrow", &[("app.ts", app_ts)]);
+    common::write_files(&repo_root, &[("lib.ts", lib_ts)]);
+    indexer.sync_rel_paths(&["lib.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "app.Hono.request"
+            && e.target_qualname.as_deref() == Some("lib.mergePath")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("lib.ts", lib_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_callback_local_const_calls_match_fresh() {
+    let app_test_ts = "import { fail } from './lib';\ndescribe('x', () => {\n  it('y', () => {\n    const handler = wrap(() => { fail(); });\n  });\n});\n";
+    let lib_ts = "export function fail() {}\n";
+
+    let (_tmp, repo_root, mut indexer) =
+        indexed_tree("ts-cb-const", &[("app.test.ts", app_test_ts)]);
+    common::write_files(&repo_root, &[("lib.ts", lib_ts)]);
+    indexer.sync_rel_paths(&["lib.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "app.test"
+            && e.target_qualname.as_deref() == Some("lib.fail")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("app.test.ts", app_test_ts), ("lib.ts", lib_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_bare_dot_import_matches_fresh() {
+    let test_ts = "import { del } from '.';\nexport function t() { return del('a'); }\n";
+    let index_ts = "export function del(n: string) { return n; }\n";
+
+    let (_tmp, repo_root, mut indexer) =
+        indexed_tree("ts-bare-dot", &[("cookie/a.test.ts", test_ts)]);
+    common::write_files(&repo_root, &[("cookie/index.ts", index_ts)]);
+    indexer
+        .sync_rel_paths(&["cookie/index.ts".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "cookie/a.test.t"
+            && e.target_qualname.as_deref() == Some("cookie.del")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("cookie/a.test.ts", test_ts), ("cookie/index.ts", index_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_sibling_callback_same_name_locals_match_fresh() {
+    let spec_ts = "import { HTTPException } from './http-exception';\ndescribe('x', () => {\n  it('a', () => { const e = new HTTPException(); e.getResponse(); });\n  it('b', () => { const e = new HTTPException(); e.getResponse(); });\n});\n";
+    let lib_ts = "export class HTTPException {\n  getResponse() {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) =
+        indexed_tree("ts-sibling-locals", &[("e.test.ts", spec_ts)]);
+    common::write_files(&repo_root, &[("http-exception.ts", lib_ts)]);
+    indexer
+        .sync_rel_paths(&["http-exception.ts".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "e.test"
+            && e.target_qualname.as_deref() == Some("http-exception.HTTPException.getResponse")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("e.test.ts", spec_ts), ("http-exception.ts", lib_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_instanceof_narrowing_matches_fresh() {
+    let handler_ts = "import { HTTPException } from './http-exception';\nexport const handle = (context: { error: unknown }) => {\n  if (context.error instanceof HTTPException) {\n    return context.error.getResponse();\n  }\n};\n";
+    let lib_ts = "export class HTTPException {\n  getResponse() {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) =
+        indexed_tree("ts-instanceof", &[("handler.ts", handler_ts)]);
+    common::write_files(&repo_root, &[("http-exception.ts", lib_ts)]);
+    indexer
+        .sync_rel_paths(&["http-exception.ts".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "handler.handle"
+            && e.target_qualname.as_deref() == Some("http-exception.HTTPException.getResponse")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("handler.ts", handler_ts), ("http-exception.ts", lib_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_non_null_subscript_receiver_matches_fresh() {
+    let router_ts = "import { Trie } from './trie';\nexport class Router {\n  #tries?: Record<string, Trie>\n  add(m: string) {\n    this.#tries![m].insert('a');\n  }\n}\n";
+    let trie_ts = "export class Trie {\n  insert(p: string) {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree("ts-subscript", &[("router.ts", router_ts)]);
+    common::write_files(&repo_root, &[("trie.ts", trie_ts)]);
+    indexer.sync_rel_paths(&["trie.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "router.Router.add"
+            && e.target_qualname.as_deref() == Some("trie.Trie.insert")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("router.ts", router_ts), ("trie.ts", trie_ts)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_pinned_receiver_type_matches_fresh() {
+    let trie_ts = "import { Node } from './node';\nexport class Trie {\n  #root: Node = new Node();\n  add(p: string) {\n    this.#root.insert(p);\n    this.#root.base(p);\n  }\n}\n";
+    let node_ts = "import { Base } from './base';\nexport class Node extends Base {\n  insert(p: string) {}\n}\n";
+    let base_ts = "export class Base {\n  base(p: string) {}\n}\n";
+    let decoy_ts = "export class Node {\n  insert(p: string) {}\n  base(p: string) {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-pinned",
+        &[("reg/trie.ts", trie_ts), ("other/node.ts", decoy_ts)],
+    );
+    common::write_files(
+        &repo_root,
+        &[("reg/node.ts", node_ts), ("reg/base.ts", base_ts)],
+    );
+    indexer
+        .sync_rel_paths(&["reg/node.ts".to_string(), "reg/base.ts".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    for target in ["reg/node.Node.insert", "reg/base.Base.base"] {
+        assert!(
+            snapshot.iter().any(|e| e.kind == "CALLS"
+                && e.source_qualname == "reg/trie.Trie.add"
+                && e.target_qualname.as_deref() == Some(target)),
+            "{target}: {snapshot:#?}"
+        );
+    }
+
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("reg/trie.ts", trie_ts),
+        ("other/node.ts", decoy_ts),
+        ("reg/node.ts", node_ts),
+        ("reg/base.ts", base_ts),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_object_literal_namespace_member_matches_fresh() {
+    let lib_ts =
+        "export const sign = (p: string) => p;\nexport const verifyWithJwks = (t: string) => t;\n";
+    let index_before = "import { sign } from './jwt';\nexport const Jwt = { sign };\n";
+    let index_after = "import { sign, verifyWithJwks } from './jwt';\nexport const Jwt = { sign, verifyWithJwks };\n";
+    let caller_ts = "import { Jwt } from './jwt';\nexport function check(t: string) {\n  Jwt.verifyWithJwks(t);\n}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-object-ns",
+        &[
+            ("src/jwt/jwt.ts", lib_ts),
+            ("src/jwt/index.ts", index_before),
+            ("src/mw.ts", caller_ts),
+        ],
+    );
+    common::write_files(&repo_root, &[("src/jwt/index.ts", index_after)]);
+    indexer
+        .sync_rel_paths(&["src/jwt/index.ts".to_string()])
+        .unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "src/mw.check"
+            && e.target_qualname.as_deref() == Some("src/jwt/jwt.verifyWithJwks")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) = common::index_files(&[
+        ("src/jwt/jwt.ts", lib_ts),
+        ("src/jwt/index.ts", index_after),
+        ("src/mw.ts", caller_ts),
+    ]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_new_binds_constructor_matches_fresh() {
+    let app_ts =
+        "import { Context } from './context';\nexport function run() {\n  new Context('r');\n}\n";
+    let ctx_before = "export class Context {\n  render() {}\n}\n";
+    let ctx_after = "export class Context {\n  constructor(r: string) {}\n  render() {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-new-ctor",
+        &[("app.ts", app_ts), ("context.ts", ctx_before)],
+    );
+    common::write_files(&repo_root, &[("context.ts", ctx_after)]);
+    indexer.sync_rel_paths(&["context.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "app.run"
+            && e.target_qualname.as_deref() == Some("context.Context.constructor")),
+        "{snapshot:#?}"
+    );
+
+    let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("context.ts", ctx_after)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_new_after_constructor_removed_matches_fresh() {
+    let app_ts =
+        "import { Context } from './context';\nexport function run() {\n  new Context('r');\n}\n";
+    let ctx_before = "export class Context {\n  constructor(r: string) {}\n  render() {}\n}\n";
+    let ctx_after = "export class Context {\n  render() {}\n}\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-new-ctor-removed",
+        &[("app.ts", app_ts), ("context.ts", ctx_before)],
+    );
+    common::write_files(&repo_root, &[("context.ts", ctx_after)]);
+    indexer.sync_rel_paths(&["context.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("context.ts", ctx_after)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_value_reference_follows_renamed_export_matches_fresh() {
+    let app_ts = "import { pick } from './util';\nexport function run(o: { f?: () => void }) {\n  return o.f ?? pick;\n}\n";
+    let util_before = "export const pick = () => 1;\n";
+    let util_after = "export const other = () => 1;\nexport const pick = () => 2;\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-value-ref",
+        &[("app.ts", app_ts), ("util.ts", util_before)],
+    );
+    common::write_files(&repo_root, &[("util.ts", util_after)]);
+    indexer.sync_rel_paths(&["util.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "CALLS"
+            && e.source_qualname == "app.run"
+            && e.target_qualname.as_deref() == Some("util.pick")),
+        "{snapshot:#?}"
+    );
+    let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("util.ts", util_after)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+#[test]
+fn incremental_ts_type_use_follows_declaration_matches_fresh() {
+    let app_ts =
+        "import type { Opts } from './types';\nexport function run(o: Opts) {\n  return o;\n}\n";
+    let types_before = "export type Other = number;\n";
+    let types_after = "export type Other = number;\nexport type Opts = { a: number };\n";
+
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "ts-type-use",
+        &[("app.ts", app_ts), ("types.ts", types_before)],
+    );
+    common::write_files(&repo_root, &[("types.ts", types_after)]);
+    indexer.sync_rel_paths(&["types.ts".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    assert!(
+        snapshot.iter().any(|e| e.kind == "USES"
+            && e.source_qualname == "app.run"
+            && e.target_qualname.as_deref() == Some("types.Opts")),
+        "{snapshot:#?}"
+    );
+    let (_fresh_tmp, fresh) = common::index_files(&[("app.ts", app_ts), ("types.ts", types_after)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+const CTOR_USER: &str = "namespace App { public class User { \
+public T Make() { return new T(); } } }\n";
+const CTOR_T_PLAIN: &str = "namespace App { public class T { public void Run() { } } }\n";
+const CTOR_T_EXPLICIT: &str = "namespace App { public class T { public T() { } \
+public void Run() { } } }\n";
+
+/// The target `User.Make`'s `new T()` is bound to.
+fn new_target(indexer: &Indexer) -> Option<String> {
+    let gv = indexer.db().current_graph_version().unwrap();
+    golden::snapshot_edges(indexer.db(), gv)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "CALLS" && e.source_qualname == "App.User.Make")
+        .and_then(|e| e.target_qualname)
+}
+
+fn assert_new_matches_fresh(indexer: &Indexer, t_src: &str) {
+    common::assert_no_dangling_edge_targets(indexer.db());
+    let gv = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+    let (_t, fresh) = common::index_files(&[("T.cs", t_src), ("User.cs", CTOR_USER)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
+
+/// `new T()` binds to class `T` until `T` gains an explicit constructor,
+/// which moves it to `T..ctor`; losing the constructor moves it back.
+#[test]
+fn csharp_new_follows_the_class_gaining_and_losing_an_explicit_constructor() {
+    let (_tmp, root, mut indexer) = indexed_tree(
+        "new-ctor",
+        &[("T.cs", CTOR_T_PLAIN), ("User.cs", CTOR_USER)],
+    );
+    assert_eq!(new_target(&indexer).as_deref(), Some("App.T"));
+    assert_new_matches_fresh(&indexer, CTOR_T_PLAIN);
+
+    common::write_files(&root, &[("T.cs", CTOR_T_EXPLICIT)]);
+    indexer.sync_rel_paths(&["T.cs".to_string()]).unwrap();
+    assert_eq!(new_target(&indexer).as_deref(), Some("App.T..ctor"));
+    assert_new_matches_fresh(&indexer, CTOR_T_EXPLICIT);
+
+    common::write_files(&root, &[("T.cs", CTOR_T_PLAIN)]);
+    indexer.sync_rel_paths(&["T.cs".to_string()]).unwrap();
+    assert_eq!(new_target(&indexer).as_deref(), Some("App.T"));
+    assert_new_matches_fresh(&indexer, CTOR_T_PLAIN);
+}
+
+const TS_NEW_USER: &str = "import { T } from './t';\nexport function make() { return new T(); }\n";
+const TS_T_PLAIN: &str = "export class T { run() {} }\n";
+const TS_T_EXPLICIT: &str = "export class T { constructor() {} run() {} }\n";
+
+#[test]
+fn typescript_new_follows_the_class_gaining_and_losing_a_constructor() {
+    let finals = |t: &'static str| [("t.ts", t), ("user.ts", TS_NEW_USER)];
+    let (_tmp, root, mut indexer) = indexed_tree("ts-new-ctor", &finals(TS_T_PLAIN));
+    for t in [TS_T_EXPLICIT, TS_T_PLAIN] {
+        common::write_files(&root, &[("t.ts", t)]);
+        indexer.sync_rel_paths(&["t.ts".to_string()]).unwrap();
+        common::assert_no_dangling_edge_targets(indexer.db());
+        let gv = indexer.db().current_graph_version().unwrap();
+        let snapshot = golden::snapshot_edges(indexer.db(), gv).unwrap();
+        let (_t, fresh) = common::index_files(&finals(t));
+        common::assert_matches_fresh(&snapshot, &fresh);
+    }
+}
