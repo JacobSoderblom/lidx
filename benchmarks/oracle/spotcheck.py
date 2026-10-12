@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -36,13 +37,21 @@ def ident(cell, kind, item):
     return hashlib.sha1(("%s|%s|%s|%s" % (cell, kind, key(item["caller"]), key(item["callee"]))).encode()).hexdigest()[:8]
 
 
+# Corpus repositories contain fixture secrets (gitleaks' own rule tests); a pasted snippet must not trip secret scanners.
+SECRET_RE = re.compile(r"""xox[a-z]-[^\s"'`]*|gh[pousr]_\w{20,}|AKIA\w{12,}|sk-[\w-]{20,}|\b(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{28,}\b""")
+
+
+def redact(text):
+    return SECRET_RE.sub("<redacted>", text)
+
+
 def snippet(repo, path, line, before=1, after=1):
     try:
         lines = open(os.path.join(repo, path), encoding="utf-8", errors="replace").read().split("\n")
     except OSError:
         return []
     lo, hi = max(1, line - before), min(len(lines), line + after)
-    return ["%d: %s" % (i, lines[i - 1][:200]) for i in range(lo, hi + 1)]
+    return ["%d: %s" % (i, redact(lines[i - 1][:200])) for i in range(lo, hi + 1)]
 
 
 def sample(results, cache):

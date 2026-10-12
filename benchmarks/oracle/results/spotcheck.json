@@ -6,138 +6,138 @@
   "go/syft/no_tests",
   "ts/zod",
   "ts/hono",
-  "rust/ripgrep",
-  "rust/fd"
+  "rust/ripgrep/no_tests",
+  "rust/fd/no_tests"
  ],
- "notes": "**How the matching rule was iterated.** The first hand-read samples found artefacts well above 10%, so the oracle and matcher were changed and the samples redrawn:\n\n- Go FN, first sample: 9 of 20 (45%) were dynamic-dispatch edges. RTA lists every possible target of an interface call or function-value call, so lidx missing one of them is not evidence of an error. Dispatch edges now leave the headline recall and get their own column.\n- TypeScript FN, first sample: 5 of 20 (25%) had a callee that is a function nested inside another function. lidx indexes no such symbol, so the edge cannot exist in its graph. Callees lidx does not index now join the caller capture gap.\n- Oracle bugs found while reading failures (not sampled): Go range-over-func loop bodies and generic instances were missing from the graph, and RTA reported unreachable functions as judgeable callers; TypeScript callees typed through an interface or function type, JSX components, tagged templates and parameters; Rust tuple-struct and enum-variant constructors, trait-method dispatch; interface and const of the same name treated as two declarations. All are fixed in the oracles or the matcher.\n\nThe final samples (this section) were drawn after those changes: 120 items, none an artefact. For 40 items per language a rate of 0 has a 95% Wilson upper bound of 8.8%, under the 10% bar. Two caveats on reading the table: (1) the sample is stratified only by random draw, so rare categories (e.g. the handful of Go closure-callee FPs) are unlikely to appear; (2) verdicts are one reader's judgement from the source at the call site, recorded with a note per item.\n\nCategories that dominate each language drive the next fixes: see the per-cell FN/FP category lines above and `results/lists/`.",
+ "notes": "**How the rules were iterated.** The first samples found artefacts and mis-bucketed exclusions well above 10%; every item below was read by hand and led to a rule change before the final samples were drawn:\n\n- Review of the first report (5 of 14 dispatch FNs mis-bucketed): TypeScript marked calls to a single-initialiser `const X = core.$constructor(...)` as dispatch (281 of 359 TypeScript dispatch edges), and Rust marked 449 inherent methods and 54 tuple-struct constructors as trait dispatch because the symbol was split on `/`. Both rules were rewritten and have unit tests.\n- Bucket sample, Go `callee_file_not_covered`: 10 of 10 were production code resolved to a symbol in a `_test.go` file, an edge that cannot exist; the exclusion hid wrong edges. They are now counted as wrong edges (category `calls_test_code`). The same rule covers Rust and TypeScript. One further item was hidden behind a build tag although the oracle knew the site calls the standard library; sites the oracle knows call code outside the repo are now graded.\n- Bucket sample, TypeScript `caller_not_judged`: 17 of 17 were mis-bucketed (export-list entries and shorthand properties at module level, class-field initialisers that only name a function, `export default function` callers). tsc analyses every call in a covered file, so the TypeScript oracle now judges every caller in the analysed files.\n- Bucket sample, `oracle_unresolved_site`: 5 of 6 TypeScript items and 10 of 10 Rust items withheld an edge for a different call on the same line, or for an enum-variant constructor whose in-repo lookalike is a wrong edge. An unresolved call now withholds only a lidx edge whose callee has the same name; Rust variant constructor sites count as sites that call outside the repository.\n- Bucket sample, Rust `callee_file_not_covered`: 2 of 2 were production code calling into `tests/`. Fixed with the `calls_test_code` rule.\n- FP/FN samples before the final round: 3 of 20 TypeScript FPs were matching artefacts (calls from several module-level containers merged into one oracle edge that kept only the first container as an acceptable caller; `const objectKeys: ObjectConstructor[\"keys\"]` resolved to lib.d.ts instead of the in-repo const; a local `const match = ... as Router[\"match\"]` resolved to the interface member). A Rust edge to `SinkContext::bytes` was missing from the oracle because `#[cfg(test)]` on a struct field made the region detector swallow the next function; regions are now computed per gated item.\n- Earlier rounds (first report): 9 of 20 Go FNs were dispatch fan-out and 5 of 20 TypeScript FNs had a nested callee lidx cannot index; Go range-over-func bodies, generic instances and unreachable \"judgeable\" callers, JSX, tagged templates, enum-variant constructors, merged declarations.\n\nThe final samples were drawn after all of the above: 120 FP/FN items and the exclusion-bucket items, none an artefact and none mis-bucketed. A rate of 0 over n items has a 95% Wilson upper bound of 3.84/(n+3.84); the report prints the interval per row and pooled. Caveats: (1) verdicts are one reader's judgement, with a note per item; (2) rare categories are unlikely to appear in a random sample of 10 to 20; (3) correct exclusions are judged against the source, but \"unreachable from main\" rests on RTA, which is sound for what it keeps and silent about code it never reaches.\n\nCategories that dominate each language drive the next fixes: see the per-cell FN/FP category lines above and `results/lists/`.",
  "languages": {
   "go": {
    "fp": [
     {
-     "id": "4c301268",
-     "caller": "syft/format/internal/cyclonedxutil/helpers/property_encoder.decode",
-     "callee": "internal/unknown/coordinate_error.Append",
+     "id": "49129eee",
+     "caller": "syft/pkg/cataloger/internal/licenses/find_licenses.FindInDirs",
+     "callee": "internal/unknown/coordinate_error.Join",
      "verdict": "lidx_error",
-     "note": "reflect.Append resolved to the in-repo Append (bare-name collision with a stdlib/third-party callee)"
+     "note": "path.Join resolved to the in-repo unknown.Join"
     },
     {
-     "id": "e202d261",
-     "caller": "syft/pkg/cataloger/binary/internal/manager/internal/config/binary_from_image.BinaryFromImage.Name",
-     "callee": "syft/internal/fileresolver/chroot_context.ChrootContext.Base",
-     "verdict": "lidx_error",
-     "note": "filepath.Base resolved to ChrootContext.Base"
-    },
-    {
-     "id": "bc0f652d",
-     "caller": "internal/capabilities/generate/merge.purlTypesFromPackageTypes",
-     "callee": "internal/task/set.set.Add",
-     "verdict": "lidx_error",
-     "note": "set.Add on a strset variable resolved to internal/task set.Add (two-segment guess)"
-    },
-    {
-     "id": "d0738594",
-     "caller": "syft/pkg/cataloger/python/parse_requirements.requirementsParser.parseRequirementsTxt",
-     "callee": "cmd/syft/internal/commands/scan.Scan",
-     "verdict": "lidx_error",
-     "note": "bufio.Scanner.Scan resolved to the cobra command constructor Scan"
-    },
-    {
-     "id": "0e658300",
-     "caller": "syft/pkg/cataloger/debian/parse_deb_archive.processControlTar",
-     "callee": "syft/internal/fileresolver/chroot_context.ChrootContext.Base",
-     "verdict": "lidx_error",
-     "note": "filepath.Base resolved to ChrootContext.Base"
-    },
-    {
-     "id": "18fa045f",
-     "caller": "syft/pkg/cataloger/golang/licenses.findVersionPath",
+     "id": "e533d133",
+     "caller": "syft/internal/fileresolver/directory_indexer.allContainedPaths",
      "callee": "internal/unknown/coordinate_error.Join",
      "verdict": "lidx_error",
      "note": "path.Join resolved to unknown.Join"
     },
     {
-     "id": "34edccdb",
-     "caller": "examples/select_catalogers/main.main",
-     "callee": "syft/format/internal/cyclonedxutil/encoder.NewEncoder",
-     "verdict": "lidx_error",
-     "note": "json.NewEncoder resolved to cyclonedxutil.NewEncoder"
-    },
-    {
-     "id": "1adc2069",
-     "caller": "syft/pkg/cataloger/debian/parse_dpkg_db.findDpkgInfoFiles",
-     "callee": "internal/unknown/coordinate_error.Join",
-     "verdict": "lidx_error",
-     "note": "path.Join resolved to unknown.Join"
-    },
-    {
-     "id": "4e6180d6",
-     "caller": "syft/pkg/cataloger/python/parse_wheel_egg.fetchTopLevelPackages",
-     "callee": "cmd/syft/internal/commands/scan.Scan",
-     "verdict": "lidx_error",
-     "note": "bufio.Scanner.Scan resolved to commands.Scan"
-    },
-    {
-     "id": "32b2bcb0",
-     "caller": "completions_test.TestNoValidArgsFuncInBashScript",
-     "callee": "completions_test.customMultiString.String",
-     "verdict": "lidx_error",
-     "note": "bytes.Buffer.String resolved to a test type's String method"
-    },
-    {
-     "id": "95531033",
-     "caller": "syft/pkg/cataloger/binary/internal/manager/internal/cli/commands/write_snippet.runWriteSnippet",
-     "callee": "syft/internal/fileresolver/chroot_context.ChrootContext.Base",
-     "verdict": "lidx_error",
-     "note": "filepath.Base resolved to ChrootContext.Base"
-    },
-    {
-     "id": "34b8de12",
-     "caller": "internal/capabilities/generate/cataloger_config_linking.LinkCatalogersToConfigs",
-     "callee": "internal/unknown/coordinate_error.Join",
-     "verdict": "lidx_error",
-     "note": "filepath.Join resolved to unknown.Join"
-    },
-    {
-     "id": "7be526dc",
-     "caller": "syft/format/spdxjson/encoder.encoder.Encode",
-     "callee": "syft/format/internal/cyclonedxutil/encoder.NewEncoder",
-     "verdict": "lidx_error",
-     "note": "json.NewEncoder resolved to cyclonedxutil.NewEncoder"
-    },
-    {
-     "id": "7e918523",
-     "caller": "cmd/syft/cli/ui/handle_pull_containerd_image.containerdPullStatusFormatter.Render",
-     "callee": "cmd/syft/cli/ui/handle_pull_docker_image.dockerPullStatusFormatter.Render",
-     "verdict": "lidx_error",
-     "note": "lipgloss Style.Render resolved to dockerPullStatusFormatter.Render"
-    },
-    {
-     "id": "0096eac7",
-     "caller": "syft/artifact/id.IDByHash",
-     "callee": "syft/artifact/id.ID",
-     "verdict": "lidx_error",
-     "note": "type conversion ID(...) recorded as a call to the type; the compiler graph has no call here"
-    },
-    {
-     "id": "1149789e",
-     "caller": "syft/pkg/cataloger/internal/dotnet/pe/pe.Read",
+     "id": "b80f7ba2",
+     "caller": "syft/format/purls/decoder.toSyftModel",
      "callee": "internal/unknown/coordinate_error.Join",
      "verdict": "lidx_error",
      "note": "errors.Join resolved to unknown.Join"
     },
     {
-     "id": "9ff0d57e",
-     "caller": "internal/spdxlicense/generate/license.buildLicenseIDPermutations",
+     "id": "ce6f2e73",
+     "caller": "command_test.TestConsistentNormalizedName",
+     "callee": "completions.flagCompError.Error",
+     "verdict": "lidx_error",
+     "note": "testing.T.Error resolved to flagCompError.Error"
+    },
+    {
+     "id": "0f2fc975",
+     "caller": "syft/pkg/cataloger/r/parse_description.extractFieldsFromDescriptionFile",
+     "callee": "internal/licenses/scanner.NewScanner",
+     "verdict": "lidx_error",
+     "note": "bufio.NewScanner resolved to licenses/scanner.NewScanner"
+    },
+    {
+     "id": "19333457",
+     "caller": "cmd/syft/internal/ui/ui.UI.Teardown",
+     "callee": "cmd/syft/cli/ui/handler.Handler.Wait",
+     "verdict": "lidx_error",
+     "note": "m.handler.Wait() on an external handler resolved to the in-repo Handler.Wait"
+    },
+    {
+     "id": "33f9a989",
+     "caller": "command_test.TestSetContextPreRunOverwrite",
+     "callee": "completions.flagCompError.Error",
+     "verdict": "lidx_error",
+     "note": "testing.T.Error resolved to flagCompError.Error"
+    },
+    {
+     "id": "1aaccd3f",
+     "caller": "cmd/syft/cli/ui/handle_attestation.backgroundLineReader.read",
+     "callee": "internal/licenses/scanner.NewScanner",
+     "verdict": "lidx_error",
+     "note": "bufio.NewScanner resolved to licenses/scanner.NewScanner"
+    },
+    {
+     "id": "4bbf7f38",
+     "caller": "completions_test.TestCompleteCmdInBashScript",
+     "callee": "completions_test.customMultiString.String",
+     "verdict": "lidx_error",
+     "note": "bytes.Buffer.String resolved to a test type's String method"
+    },
+    {
+     "id": "31e31434",
+     "caller": "syft/source/stereoscopesource/image_source.stereoscopeImageSource.Close",
+     "callee": "internal/tmpdir/tmpdir.TempDir.Cleanup",
+     "verdict": "lidx_error",
+     "note": "image.Cleanup() on an external image resolved to TempDir.Cleanup"
+    },
+    {
+     "id": "966e5285",
+     "caller": "syft/format/internal/cyclonedxutil/helpers/component.getPURL",
+     "callee": "syft/pkg/cataloger/internal/pkgtest/test_generic_parser.CatalogTester.FromString",
+     "verdict": "lidx_error",
+     "note": "packageurl.FromString resolved to CatalogTester.FromString"
+    },
+    {
+     "id": "33459de7",
+     "caller": "syft/pkg/cataloger/homebrew/parse_homebrew_formula.parseFormulaFile",
+     "callee": "internal/licenses/scanner.NewScanner",
+     "verdict": "lidx_error",
+     "note": "bufio.NewScanner resolved to licenses/scanner.NewScanner"
+    },
+    {
+     "id": "7926d4de",
+     "caller": "syft/pkg/cataloger/gentoo/license.parseLicenseGroups",
+     "callee": "internal/licenses/scanner.NewScanner",
+     "verdict": "lidx_error",
+     "note": "bufio.NewScanner resolved to licenses/scanner.NewScanner"
+    },
+    {
+     "id": "7b52930b",
+     "caller": "doc/yaml_docs_test.TestGenYamlDocRunnable",
+     "callee": "completions_test.customMultiString.String",
+     "verdict": "lidx_error",
+     "note": "bytes.Buffer.String resolved to a test type's String method"
+    },
+    {
+     "id": "00128625",
+     "caller": "syft/pkg/cataloger/debian/parse_copyright.parseLicensesFromCopyright",
+     "callee": "internal/licenses/scanner.NewScanner",
+     "verdict": "lidx_error",
+     "note": "bufio.NewScanner resolved to licenses/scanner.NewScanner"
+    },
+    {
+     "id": "11783d22",
+     "caller": "syft/format/spdxtagvalue/decoder.decoder.Identify",
+     "callee": "cmd/syft/internal/commands/scan.Scan",
+     "verdict": "lidx_error",
+     "note": "bufio.Scanner.Scan resolved to the cobra command constructor commands.Scan"
+    },
+    {
+     "id": "a07e3e5f",
+     "caller": "internal/capabilities/internal/paths.CapabilitiesDir",
+     "callee": "internal/unknown/coordinate_error.Join",
+     "verdict": "lidx_error",
+     "note": "filepath.Join resolved to unknown.Join"
+    },
+    {
+     "id": "b46f05c6",
+     "caller": "internal/capabilities/generate/discover_app_config.cleanDescription",
      "callee": "internal/unknown/coordinate_error.Join",
      "verdict": "lidx_error",
      "note": "strings.Join resolved to unknown.Join"
-    },
-    {
-     "id": "b643bc7e",
-     "caller": "syft/pkg/cataloger/r/parse_description.extractFieldsFromDescriptionFile",
-     "callee": "cmd/syft/internal/commands/scan.Scan",
-     "verdict": "lidx_error",
-     "note": "bufio.Scanner.Scan resolved to commands.Scan"
     },
     {
      "id": "2dbf8f88",
@@ -147,725 +147,1581 @@
      "note": "time.Time.Format resolved to the options.Format struct"
     },
     {
-     "id": "5b6b3309",
-     "caller": "syft/pkg/cataloger/internal/licenses/find_licenses.FindByGlob",
-     "callee": "syft/internal/fileresolver/chroot_context.ChrootContext.Base",
+     "id": "58af68fb",
+     "caller": "cmd/syft/cli/ui/handle_pull_containerd_image.containerdPullProgressAdapter.Error",
+     "callee": "cmd/syft/cli/ui/handle_pull_docker_image_test.mockDockerPullStatus.Complete",
      "verdict": "lidx_error",
-     "note": "path.Base resolved to ChrootContext.Base"
+     "note": "production code resolved to a mock type that exists only in a _test.go file"
     }
    ],
    "fn": [
     {
-     "id": "ab0e87c2",
-     "caller": "FilesByPath",
-     "callee": "NewVirtualLocationFromDirectory",
-     "verdict": "lidx_error",
-     "note": "call nested inside append(...) arguments, no edge extracted"
-    },
-    {
-     "id": "5590f2bf",
-     "caller": "AlibabaAccessKey",
-     "callee": "Validate",
-     "verdict": "lidx_error",
-     "note": "call in a return statement, no edge extracted"
-    },
-    {
-     "id": "d8be5b3e",
-     "caller": "logRpmArchiveErr",
-     "callee": "WithFields",
-     "verdict": "lidx_error",
-     "note": "log.WithFields(...).Trace chain: package-qualified call at the head of a chain missed"
-    },
-    {
-     "id": "548713a0",
-     "caller": "ToSBOMConfig",
-     "callee": "WithExpression",
-     "verdict": "lidx_error",
-     "note": "multi-line method chain: WithExpression missed"
-    },
-    {
-     "id": "6239a4c5",
-     "caller": "getSource",
-     "callee": "WithPlatform",
-     "verdict": "lidx_error",
-     "note": "cfg = cfg.WithPlatform(...) on a local pointer, no edge"
-    },
-    {
-     "id": "5f56fe86",
-     "caller": "AllCoordinates",
-     "callee": "ToSlice",
-     "verdict": "lidx_error",
-     "note": "return set.ToSlice(): method call on local in a return, missed"
-    },
-    {
-     "id": "af2d4746",
-     "caller": "Scan",
-     "callee": "runScan",
-     "verdict": "lidx_error",
-     "note": "call inside a closure assigned to a struct field (RunE), attributed to nothing"
-    },
-    {
-     "id": "84e21cd4",
-     "caller": "parseJVMRelease",
-     "callee": "Add",
-     "verdict": "lidx_error",
-     "note": "locations.Add(...) on a local variable, no edge"
-    },
-    {
-     "id": "901bb223",
-     "caller": "Twilio",
-     "callee": "Validate",
-     "verdict": "lidx_error",
-     "note": "call in a return statement, no edge extracted"
-    },
-    {
-     "id": "7017fdf6",
-     "caller": "candidateVendorsForAPK",
-     "callee": "candidateVendorsFromURL",
-     "verdict": "lidx_error",
-     "note": "call nested as an argument of vendors.union(...)"
-    },
-    {
-     "id": "9863fa55",
-     "caller": "toDpkgEntry",
-     "callee": "Debugf",
-     "verdict": "lidx_error",
-     "note": "log.Debugf on a package-level helper, no edge extracted at all"
-    },
-    {
-     "id": "d2c1782d",
-     "caller": "AirtablePersonalAccessToken",
+     "id": "b1cfa958",
+     "caller": "SlackLegacyWorkspaceToken",
      "callee": "AlphaNumeric",
      "verdict": "lidx_error",
-     "note": "call nested in string concatenation inside another call"
+     "note": "utils.AlphaNumeric(\"12\") nested as an argument of NewSecret(...) inside fmt.Sprintf: nested calls missed"
     },
     {
-     "id": "b65d92d7",
-     "caller": "addToExisting",
-     "callee": "Merge",
+     "id": "585c50b6",
+     "caller": "Catalog",
+     "callee": "process",
      "verdict": "lidx_error",
-     "note": "m, err := v.Merge(license): method call on a local, no edge"
+     "note": "return c.process(...): method call in a return statement, no edge"
     },
     {
-     "id": "4ab0d432",
-     "caller": "invokeParser",
-     "callee": "NewLocationReadCloser",
+     "id": "df2c1c28",
+     "caller": "WriteMemoryProfile",
+     "callee": "Error",
      "verdict": "lidx_error",
-     "note": "call nested as an argument of a func-value call"
+     "note": "logging.Error().Err(err).Msgf(...): package-qualified call at the head of a chain, missed"
     },
     {
-     "id": "99ea058c",
-     "caller": "GitHubPat",
-     "callee": "Validate",
+     "id": "56abf403",
+     "caller": "newFieldCandidateSetFromSets",
+     "callee": "list",
      "verdict": "lidx_error",
-     "note": "call in a return statement, no edge extracted"
+     "note": "s.add(set.list()...): call nested as an argument, sibling found"
     },
     {
-     "id": "292bcc2c",
-     "caller": "excludeCacheDir",
-     "callee": "Tracef",
+     "id": "646b12c1",
+     "caller": "newExecutableCatalogerTask",
+     "callee": "NewCataloger",
      "verdict": "lidx_error",
-     "note": "log.Tracef on a package-level helper, no edge extracted at all"
+     "note": "executable.NewCataloger(cfg).CatalogCtx(...): head of a chain missed"
     },
     {
-     "id": "eb7dfe06",
-     "caller": "TestHelpCommandExecutedOnChildWithFlagThatShadowsParentFlag",
+     "id": "62068c1a",
+     "caller": "SlackBotToken",
+     "callee": "AlphaNumeric",
+     "verdict": "lidx_error",
+     "note": "utils.Numeric / AlphaNumeric nested in secrets.NewSecret inside fmt.Sprintf: nested calls missed"
+    },
+    {
+     "id": "b59f57f6",
+     "caller": "SlackConfigurationToken",
+     "callee": "NewSecret",
+     "verdict": "lidx_error",
+     "note": "secrets.NewSecret(utils.AlphaNumeric(\"163\")) in a string concatenation: missed"
+    },
+    {
+     "id": "897912e2",
+     "caller": "Describe",
+     "callee": "IsEmpty",
+     "verdict": "lidx_error",
+     "note": "!s.alias.IsEmpty() in an if condition: method call on a field, no edge"
+    },
+    {
+     "id": "96606f3e",
+     "caller": "OpenshiftUserToken",
+     "callee": "NewSecret",
+     "verdict": "lidx_error",
+     "note": "secrets.NewSecret(...) nested as an argument of GenerateSampleSecrets: missed"
+    },
+    {
+     "id": "73c52824",
+     "caller": "HubSpot",
+     "callee": "Hex8_4_4_4_12",
+     "verdict": "lidx_error",
+     "note": "utils.Hex8_4_4_4_12() nested twice as an argument: missed"
+    },
+    {
+     "id": "9ec828cb",
+     "caller": "TestMaximumNArgs_WithMoreArgs",
+     "callee": "MaximumNArgs",
+     "verdict": "lidx_error",
+     "note": "MaximumNArgs(2) as an argument of getCommand: nested call missed"
+    },
+    {
+     "id": "d9520284",
+     "caller": "TestRpad",
+     "callee": "rpad",
+     "verdict": "lidx_error",
+     "note": "rpad(...) inside the closure passed to t.Run: only the external t.Run edge exists"
+    },
+    {
+     "id": "bc87fc7f",
+     "caller": "TestFlagDirFilterCompletionInGo",
      "callee": "Flags",
      "verdict": "lidx_error",
-     "note": "child.Flags().Bool(...): call at the head of a chain missed"
+     "note": "rootCmd.Flags().StringP(...): head of chain missed"
     },
     {
-     "id": "8fe5236c",
-     "caller": "TestFlagErrorFuncHelp",
-     "callee": "PersistentFlags",
+     "id": "4c90159d",
+     "caller": "runProtect",
+     "callee": "Config",
      "verdict": "lidx_error",
-     "note": "c.PersistentFlags().Bool(...): call at the head of a chain missed"
+     "note": "cfg := Config(cmd): plain function call in an assignment, no edge"
     },
     {
-     "id": "cf567153",
-     "caller": "TestFlagCompletionForPersistentFlagsCalledFromSubCmd",
-     "callee": "PersistentFlags",
+     "id": "a046fef1",
+     "caller": "CatalogerList",
+     "callee": "runCatalogerList",
      "verdict": "lidx_error",
-     "note": "rootCmd.PersistentFlags().String(...): head of chain missed"
+     "note": "runCatalogerList(opts) inside the RunE closure of a struct literal: closure call missed"
     },
     {
-     "id": "e8ced598",
-     "caller": "TestBashCompletionNoActiveHelp",
-     "callee": "GenBashCompletion",
+     "id": "2b1c4da7",
+     "caller": "extendDefault",
+     "callee": "Debug",
      "verdict": "lidx_error",
-     "note": "call nested as an argument of assertNoErr(...)"
+     "note": "logging.Debug().Msg(...): package-qualified call at the head of a chain, missed"
+    },
+    {
+     "id": "f4042119",
+     "caller": "candidateProductSet",
+     "callee": "candidateProductsForJava",
+     "verdict": "lidx_error",
+     "note": "products.addValue(candidateProductsForJava(p)...): nested call missed"
+    },
+    {
+     "id": "95f0daf9",
+     "caller": "ToPackagesConfig",
+     "callee": "WithSearchLocalModCacheLicenses",
+     "verdict": "lidx_error",
+     "note": "WithSearchLocalModCacheLicenses in a multi-line method chain: missed"
+    },
+    {
+     "id": "d539a1ab",
+     "caller": "WithParserByMediaType",
+     "callee": "WithFields",
+     "verdict": "lidx_error",
+     "note": "log.WithFields(...).Trace(...): head of a chain missed"
+    },
+    {
+     "id": "f17cc262",
+     "caller": "GitHubFineGrainedPat",
+     "callee": "MustCompile",
+     "verdict": "lidx_error",
+     "note": "regexp.MustCompile resolved to nothing: gitleaks' own regexp wrapper package was not followed"
     }
    ]
   },
   "ts": {
    "fp": [
     {
-     "id": "99fe9ba2",
-     "caller": "packages/zod/src/v4/core/util.defineLazyInternal",
-     "callee": "packages/zod/src/v4/core/util.installing",
+     "id": "b2ba33e7",
+     "caller": "src/jsx",
+     "callee": "src/jsx/hooks.useId",
      "verdict": "lidx_error",
-     "note": "read of a module-level let (installing) recorded as a call"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "0f556af2",
-     "caller": "packages/bench/compile-vs-arktype",
-     "callee": "packages/bench/compile-vs-arktype.INVALID",
+     "id": "56d5ce58",
+     "caller": "packages/zod/src/v4/classic/errors",
+     "callee": "packages/zod/src/v4/classic/errors.initializer",
      "verdict": "lidx_error",
-     "note": "read of a constant (INVALID) recorded as a call"
+     "note": "callback passed as an argument (initializer) recorded as a call"
     },
     {
-     "id": "ddb24dd8",
-     "caller": "packages/zod/src/v4/core/core.$constructor",
-     "callee": "packages/zod/src/v4/core/registries.$ZodRegistry.has",
+     "id": "03aaf82c",
+     "caller": "src/jsx",
+     "callee": "src/jsx/context.createContext",
      "verdict": "lidx_error",
-     "note": "Set.has on a local resolved to $ZodRegistry.has (bare-name collision)"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "6b169334",
-     "caller": "src/utils/ipaddr.parseIPv4ToBinary",
-     "callee": "src/utils/ipaddr.CHAR_CODE_0",
+     "id": "c01a6243",
+     "caller": "src/router/trie-router/node.Node.#params",
+     "callee": "src/router/trie-router/node.emptyParams",
      "verdict": "lidx_error",
-     "note": "read of a numeric constant recorded as a call"
+     "note": "field initialiser naming a const is a reference"
     },
     {
-     "id": "3bb61b04",
-     "caller": "src/jsx/context.getCurrentStore",
-     "callee": "src/jsx/context.fallbackStore",
+     "id": "c47ad93f",
+     "caller": "src/jsx/hooks.startViewTransition",
+     "callee": "src/jsx/hooks.viewTransitionHook",
      "verdict": "lidx_error",
-     "note": "read of a module-level variable recorded as a call"
+     "note": "class field initialiser naming a function is a reference, not a call"
     },
     {
-     "id": "fb45b564",
-     "caller": "packages/zod/src/v4/core/regexes.emoji",
-     "callee": "packages/zod/src/v4/core/regexes._emoji",
+     "id": "f75597fd",
+     "caller": "src/jsx/context.createContext",
+     "callee": "src/jsx/constants.DOM_RENDERER",
      "verdict": "lidx_error",
-     "note": "read of a string constant (_emoji) recorded as a call"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "4c6c63f1",
-     "caller": "packages/zod/src/v4/core/memoizer.memoizer",
-     "callee": "packages/zod/src/v4/core/memoizer.memo",
+     "id": "4eeed716",
+     "caller": "src/adapter/cloudflare-workers/utils.getContentFromKVAsset",
+     "callee": "src/utils/cookie.parse",
      "verdict": "lidx_error",
-     "note": "returned object (memo) recorded as a call"
+     "note": "JSON.parse resolved to the in-repo cookie parse"
     },
     {
-     "id": "94eb2c00",
-     "caller": "packages/bench/compile-matrix",
-     "callee": "packages/bench/compile-matrix.flat",
+     "id": "cc8a8443",
+     "caller": "packages/zod/src/v4/core/to-json-schema.finalize",
+     "callee": "packages/zod/src/v3/types.ZodType.parse",
      "verdict": "lidx_error",
-     "note": "read of a constant object recorded as a call"
+     "note": "JSON.parse resolved to ZodType.parse"
     },
     {
-     "id": "051bc0c8",
-     "caller": "packages/docs/app/blog/[slug]/page.Page",
-     "callee": "packages/docs/app/blog/[slug]/page.AUTHOR_URL",
+     "id": "fade53b2",
+     "caller": "src/helper/css/common.buildStyleString",
+     "callee": "src/helper/css/common.SELECTORS",
      "verdict": "lidx_error",
-     "note": "JSX attribute value (constant) recorded as a call"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "9d82e52c",
-     "caller": "packages/bench/memory/prop-arrays",
-     "callee": "packages/bench/memory/prop-arrays.which",
+     "id": "1c44c479",
+     "caller": "src/jsx/dom/server",
+     "callee": "src/jsx/dom/server.renderToString",
      "verdict": "lidx_error",
-     "note": "read of a constant used as an index recorded as a call"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "ed990850",
-     "caller": "src/middleware/bearer-auth.bearerAuth",
-     "callee": "src/middleware/bearer-auth.PREFIX",
+     "id": "50667360",
+     "caller": "src/router/pattern-router/router.PatternRouter.match",
+     "callee": "src/router/pattern-router/router.emptyParams",
      "verdict": "lidx_error",
-     "note": "assignment from a string constant recorded as a call"
+     "note": "constant read recorded as a call"
     },
     {
-     "id": "de13b069",
-     "caller": "packages/bench/validate-abort-sweep",
-     "callee": "packages/bench/validate-abort-sweep.problems",
+     "id": "66426f26",
+     "caller": "src/jsx/dom/css.createCssJsxDomObjects",
+     "callee": "src/helper/css/common.SELECTOR",
      "verdict": "lidx_error",
-     "note": "iterated local array recorded as a call"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "ec92a396",
-     "caller": "packages/bench/compile-vs-arktype.printAvailableCases",
-     "callee": "packages/bench/compile-vs-arktype.caseOrder",
-     "verdict": "lidx_error",
-     "note": "iterated constant array recorded as a call"
-    },
-    {
-     "id": "104ae609",
-     "caller": "packages/zod/src/v4/core/compile.numericOperand",
-     "callee": "packages/zod/src/v3/types.ZodNumber.isFinite",
-     "verdict": "lidx_error",
-     "note": "Number.isFinite resolved to the ZodNumber.isFinite getter"
-    },
-    {
-     "id": "f1908a40",
-     "caller": "src/router/reg-exp-router/prepared-router.buildInitParams",
+     "id": "ec400fe0",
+     "caller": "src/router/pattern-router/router.PatternRouter.match",
      "callee": "src/router.METHOD_NAME_ALL",
      "verdict": "lidx_error",
-     "note": "constant passed as an argument recorded as a call"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "5a37fa61",
-     "caller": "benchmarks/http-server/benchmark.main",
-     "callee": "benchmarks/http-server/benchmark.baseline",
+     "id": "f6f2ef33",
+     "caller": "src/client/client.hc",
+     "callee": "src/jsx/base.JSXNode.toString",
      "verdict": "lidx_error",
-     "note": "template-literal read of a constant recorded as a call"
+     "note": "Function.prototype.toString resolved to JSXNode.toString"
     },
     {
-     "id": "ce145d71",
-     "caller": "src/adapter/bun/websocket.createBunWebSocket",
-     "callee": "src/adapter/bun/websocket.websocket",
+     "id": "6f0682d0",
+     "caller": "src/helper/ssg/ssg.toSSG",
+     "callee": "src/helper/ssg/ssg.DEFAULT_OUTPUT_DIR",
      "verdict": "lidx_error",
-     "note": "shorthand property value (constant) recorded as a call"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "311897eb",
-     "caller": "packages/zod/src/v4/core/to-json-schema.foldIntersection",
-     "callee": "packages/zod/src/v3/helpers/util.util.find",
+     "id": "6e3fd323",
+     "caller": "src/helper/css",
+     "callee": "src/helper/css/common.DEFAULT_STYLE_ID",
      "verdict": "lidx_error",
-     "note": "Array.prototype.find resolved to util.find"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "aa858ddf",
-     "caller": "benchmarks/routers-deno/src/hono.createHonoRouter",
-     "callee": "benchmarks/routers-deno/src/tool.routes",
+     "id": "8771e6b0",
+     "caller": "src/jsx/dom/render.buildNode",
+     "callee": "src/jsx/constants.DOM_STASH",
      "verdict": "lidx_error",
-     "note": "iterated imported constant array recorded as a call"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "2ddd35e5",
-     "caller": "src/jsx/hooks.useViewTransition",
-     "callee": "src/jsx/hooks.startViewTransition",
+     "id": "e2f0ac0c",
+     "caller": "src/jsx/dom",
+     "callee": "src/jsx/dom/hooks.useActionState",
      "verdict": "lidx_error",
-     "note": "function returned as a value recorded as a call; nothing is invoked here"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+    },
+    {
+     "id": "83adbbdd",
+     "caller": "src/jsx/streaming",
+     "callee": "src/jsx/constants.DOM_RENDERER",
+     "verdict": "lidx_error",
+     "note": "symbol constant used as a property key recorded as a call"
+    },
+    {
+     "id": "024d97da",
+     "caller": "src/utils/ipaddr.convertIPv6ToBinary",
+     "callee": "src/utils/ipaddr.CHAR_CODE_PERCENT",
+     "verdict": "lidx_error",
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     }
    ],
    "fn": [
     {
-     "id": "a859c27e",
-     "caller": "convertBaseSchema",
-     "callee": "_minLength",
-     "verdict": "lidx_error",
-     "note": "z.minLength(...) resolved by bare name to the v3 ZodString.minLength method"
-    },
-    {
-     "id": "e3233c68",
-     "caller": "validator",
-     "callee": "param",
-     "verdict": "lidx_error",
-     "note": "c.req.param() with a type assertion, no edge extracted"
-    },
-    {
-     "id": "094e7a7e",
-     "caller": "<module>",
-     "callee": "parse",
-     "verdict": "lidx_error",
-     "note": "double.parse(...) on a local resolved to an unrelated symbol"
-    },
-    {
-     "id": "e98c2283",
-     "caller": "args",
-     "callee": "rest",
-     "verdict": "lidx_error",
-     "note": "ZodTuple.create(items).rest(...): the .rest call after a chain is missing; only a USES edge on ZodTuple"
-    },
-    {
-     "id": "a9f24443",
-     "caller": "_parse",
-     "callee": "_parseAsync",
-     "verdict": "lidx_error",
-     "note": "return option._parseAsync({...}): method call on a local in a return, no edge"
-    },
-    {
-     "id": "52a02819",
-     "caller": "methodNotAllowed",
-     "callee": "match",
-     "verdict": "lidx_error",
-     "note": "methodRouter.match(...) missed; the argument constant METHOD_NAME_ALL was recorded as the callee instead"
-    },
-    {
-     "id": "03d4a294",
-     "caller": "describe",
-     "callee": "add",
-     "verdict": "lidx_error",
-     "note": "core.globalRegistry.add(...) recorded as a USES edge on globalRegistry, no CALLS edge to add"
-    },
-    {
-     "id": "ba1ca868",
-     "caller": "handwritten",
-     "callee": "handwrittenArray",
-     "verdict": "lidx_error",
-     "note": "call inside an object-literal method attributed to the enclosing const, although lidx indexes the method"
-    },
-    {
-     "id": "bc1f9036",
-     "caller": "describe",
-     "callee": "add",
-     "verdict": "lidx_error",
-     "note": "core.globalRegistry.add(...) recorded as a USES edge on globalRegistry"
-    },
-    {
-     "id": "a6acc311",
-     "caller": "wrapped",
-     "callee": "constructor",
-     "verdict": "lidx_error",
-     "note": "new $ZodCyclicError() inside an object-literal method attributed to the enclosing const memo"
-    },
-    {
-     "id": "49078411",
-     "caller": "<module>",
-     "callee": "match",
-     "verdict": "lidx_error",
-     "note": "router.match(...) inside a callback: only an external edge for the outer group() call exists"
-    },
-    {
-     "id": "598a364f",
-     "caller": "convertBaseSchema",
-     "callee": "xid",
-     "verdict": "lidx_error",
-     "note": "z.xid() recorded as a USES edge on the namespace import z"
-    },
-    {
-     "id": "b1f5031c",
-     "caller": "wrapped",
-     "callee": "isBackEdge",
-     "verdict": "lidx_error",
-     "note": "isBackEdge(...) in an object-literal method attributed to the enclosing const memo"
-    },
-    {
-     "id": "e4952959",
-     "caller": "onumber",
-     "callee": "optional",
-     "verdict": "lidx_error",
-     "note": "numberType().optional(): the chained .optional() call is missing"
-    },
-    {
-     "id": "f4898a48",
-     "caller": "_parse",
-     "callee": "_parseAsync",
-     "verdict": "lidx_error",
-     "note": "await option._parseAsync({...}): method call on a local, no edge"
-    },
-    {
-     "id": "f7454f0b",
-     "caller": "lazycreate",
-     "callee": "constructor",
-     "verdict": "lidx_error",
-     "note": "new ZodObject({...}) in an arrow function, no edge or USES edge extracted"
-    },
-    {
-     "id": "a2351dbd",
-     "caller": "convertBaseSchema",
-     "callee": "object",
-     "verdict": "lidx_error",
-     "note": "z.object(shape) recorded as a USES edge on the namespace import z"
-    },
-    {
-     "id": "934bb3e7",
+     "id": "61f25532",
      "caller": "create",
-     "callee": "constructor",
+     "callee": "ZodNaN",
      "verdict": "lidx_error",
-     "note": "new ZodNull({...}) in a static arrow property, no edge extracted"
+     "note": "new-expression of a class: no CALLS (or USES) edge extracted"
     },
     {
-     "id": "f796bb9a",
+     "id": "05defcaa",
+     "caller": "convertBaseSchema",
+     "callee": "jwt",
+     "verdict": "lidx_error",
+     "note": "namespace-member or class call recorded as a USES edge only, no CALLS edge"
+    },
+    {
+     "id": "c265f908",
+     "caller": "validator",
+     "callee": "queries",
+     "verdict": "lidx_error",
+     "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted"
+    },
+    {
+     "id": "f7dcf2a2",
+     "caller": "buildRegExpStr",
+     "callee": "buildRegExpStr",
+     "verdict": "lidx_error",
+     "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted"
+    },
+    {
+     "id": "e3842df7",
+     "caller": "create",
+     "callee": "ZodOptional",
+     "verdict": "lidx_error",
+     "note": "new-expression of a class: no CALLS (or USES) edge extracted"
+    },
+    {
+     "id": "625b6436",
+     "caller": "meta",
+     "callee": "get",
+     "verdict": "lidx_error",
+     "note": "namespace-member or class call recorded as a USES edge only, no CALLS edge"
+    },
+    {
+     "id": "850aff0c",
+     "caller": "etag",
+     "callee": "header",
+     "verdict": "lidx_error",
+     "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted"
+    },
+    {
+     "id": "e8284269",
      "caller": "_parse",
-     "callee": "floatSafeRemainder",
+     "callee": "OK",
      "verdict": "lidx_error",
-     "note": "floatSafeRemainder(...) inside an if comparison, no edge extracted"
+     "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted"
     },
     {
-     "id": "47323972",
-     "caller": "custom",
+     "id": "13294a5d",
+     "caller": "required",
+     "callee": "ZodObject",
+     "verdict": "lidx_error",
+     "note": "new-expression of a class: no CALLS (or USES) edge extracted"
+    },
+    {
+     "id": "ba70f37b",
+     "caller": "deepPartialify",
      "callee": "create",
      "verdict": "lidx_error",
-     "note": "ZodAny.create().superRefine(...) recorded as a USES edge on ZodAny, chain calls missing"
+     "note": "chained or nested call missed while a sibling call on the line was found"
+    },
+    {
+     "id": "aad04ca0",
+     "caller": "methodOverride",
+     "callee": "header",
+     "verdict": "lidx_error",
+     "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted"
+    },
+    {
+     "id": "0b42f271",
+     "caller": "meta",
+     "callee": "$ZodCheck",
+     "verdict": "lidx_error",
+     "note": "new-expression of a class: no CALLS (or USES) edge extracted"
+    },
+    {
+     "id": "a4cf62a5",
+     "caller": "appendTrailingSlash",
+     "callee": "redirect",
+     "verdict": "lidx_error",
+     "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted"
+    },
+    {
+     "id": "74b9ee2f",
+     "caller": "union",
+     "callee": "ZodMiniUnion",
+     "verdict": "lidx_error",
+     "note": "new-expression of a class: no CALLS (or USES) edge extracted"
+    },
+    {
+     "id": "e1426b12",
+     "caller": "_length",
+     "callee": "$ZodCheckLengthEquals",
+     "verdict": "lidx_error",
+     "note": "new-expression of a class: no CALLS (or USES) edge extracted"
+    },
+    {
+     "id": "63f7adc8",
+     "caller": "partial",
+     "callee": "optional",
+     "verdict": "lidx_error",
+     "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted"
+    },
+    {
+     "id": "b64f23e4",
+     "caller": "merge",
+     "callee": "ZodObject",
+     "verdict": "lidx_error",
+     "note": "new-expression of a class: no CALLS (or USES) edge extracted"
+    },
+    {
+     "id": "f76634a8",
+     "caller": "disableSSG",
+     "callee": "notFound",
+     "verdict": "lidx_error",
+     "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted"
+    },
+    {
+     "id": "241fb43d",
+     "caller": "convertBaseSchema",
+     "callee": "uuid",
+     "verdict": "lidx_error",
+     "note": "namespace-member or class call recorded as a USES edge only, no CALLS edge"
+    },
+    {
+     "id": "99d2a283",
+     "caller": "_multipleOf",
+     "callee": "$ZodCheckMultipleOf",
+     "verdict": "lidx_error",
+     "note": "new-expression of a class: no CALLS (or USES) edge extracted"
     }
    ]
   },
   "rust": {
    "fp": [
     {
-     "id": "d48d9a3a",
-     "caller": "crate::dir::Ignore::add_child_with_entries",
-     "callee": "crate::glob::Glob::as_ref",
-     "verdict": "lidx_error",
-     "note": "AsRef::as_ref on a path resolved to Glob::as_ref (bare name)"
-    },
-    {
-     "id": "103557bb",
-     "caller": "crate::glob::GlobStrategic::is_match",
-     "callee": "crate::glob::Glob::as_ref",
-     "verdict": "lidx_error",
-     "note": "path.as_ref() resolved to Glob::as_ref instead of AsRef"
-    },
-    {
-     "id": "eaf6d142",
-     "caller": "crate::decompress::is_exe",
-     "callee": "crate::walk::DirEntry::is_dir",
-     "verdict": "lidx_error",
-     "note": "std Metadata::is_dir resolved to DirEntry::is_dir"
-    },
-    {
-     "id": "29ebdb00",
-     "caller": "crate::crates::core::flags::hiargs::HiArgs::from_low_args",
-     "callee": "crate::crates::core::flags::hiargs::HiArgs::stats",
-     "verdict": "lidx_error",
-     "note": "free function stats(&low) resolved to the HiArgs::stats method"
-    },
-    {
-     "id": "aaf09699",
-     "caller": "crate::filter::time::tests::is_time_filter_applicable",
-     "callee": "crate::fmt::FormatTemplate::parse",
-     "verdict": "lidx_error",
-     "note": "str::parse::<T>() resolved to FormatTemplate::parse"
-    },
-    {
-     "id": "bdf4faa5",
-     "caller": "crate::new_regex",
-     "callee": "crate::matcher::RegexMatcherBuilder::dot_matches_new_line",
-     "verdict": "lidx_error",
-     "note": "regex_automata builder method resolved to RegexMatcherBuilder::dot_matches_new_line"
-    },
-    {
-     "id": "073344e0",
-     "caller": "crate::matcher::RegexMatcher::find_at",
-     "callee": "crate::Match::map",
-     "verdict": "lidx_error",
-     "note": "Option/Result::map resolved to Match::map"
-    },
-    {
-     "id": "22937394",
-     "caller": "crate::standard::StandardImpl::sink_slow_multi_per_match",
-     "callee": "crate::Match::map",
-     "verdict": "lidx_error",
-     "note": "Option::map resolved to Match::map"
-    },
-    {
-     "id": "4f193a52",
-     "caller": "crate::crates::core::search::SearchWorker::should_decompress",
-     "callee": "crate::glob::Glob::as_ref",
-     "verdict": "lidx_error",
-     "note": "Option::as_ref resolved to Glob::as_ref"
-    },
-    {
-     "id": "81fb6728",
-     "caller": "crate::testutil::RegexMatcher::find_candidate_line",
-     "callee": "crate::Match::map",
-     "verdict": "lidx_error",
-     "note": "memchr find_byte / Option::map chain resolved to Match::map"
-    },
-    {
-     "id": "ae3ce781",
-     "caller": "crate::index::IndexDiscovery::cwd",
-     "callee": "crate::glob::Glob::as_ref",
-     "verdict": "lidx_error",
-     "note": "AsRef::as_ref resolved to Glob::as_ref"
-    },
-    {
-     "id": "bd801354",
-     "caller": "crate::gitignore::gitconfig_system_contents",
-     "callee": "crate::Match::map",
-     "verdict": "lidx_error",
-     "note": "std::env::var_os(...).map resolved to Match::map"
-    },
-    {
-     "id": "fbfc5e05",
-     "caller": "crate::tests::testenv::format_output_error",
-     "callee": "crate::walk::Batch::into_iter",
-     "verdict": "lidx_error",
-     "note": "external diff::lines(...) chain resolved to Batch::into_iter"
-    },
-    {
-     "id": "bf06fb9d",
-     "caller": "crate::crates::core::search::search_reader",
+     "id": "85c842a3",
+     "caller": "crate::sink::SinkMatch::bytes_range_in_buffer",
      "callee": "crate::Error::clone",
      "verdict": "lidx_error",
-     "note": "clone() on an external stats value resolved to Error::clone"
+     "note": "Range clone() resolved to Error::clone"
     },
     {
-     "id": "c18a4f0d",
-     "caller": "crate::crates::core::search::SearchResult::stats",
-     "callee": "crate::glob::Glob::as_ref",
+     "id": "ecfc0e9d",
+     "caller": "crate::crates::core::search::SearchWorker::search_reader",
+     "callee": "crate::crates::core::search::SearchWorker::search_reader",
      "verdict": "lidx_error",
-     "note": "Option::as_ref resolved to Glob::as_ref"
+     "note": "free function search_reader(m, ..) resolved to the enclosing SearchWorker::search_reader method (false recursion)"
     },
     {
-     "id": "3251d673",
-     "caller": "crate::walk::DirEntryInner::is_dir",
+     "id": "e5db65e5",
+     "caller": "crate::crates::core::flags::doc::render_custom_markup",
      "callee": "crate::Match::map",
      "verdict": "lidx_error",
      "note": "Option::map resolved to Match::map"
     },
     {
-     "id": "4b3206b0",
-     "caller": "crate::Captures::interpolate",
-     "callee": "crate::Captures::interpolate",
+     "id": "f65b83d1",
+     "caller": "crate::walk::WalkEventIter::next",
+     "callee": "crate::tests::util::Dir",
      "verdict": "lidx_error",
-     "note": "free function interpolate(...) resolved to the enclosing Captures::interpolate method (false self-recursion)"
+     "note": "enum variant WalkEvent::Dir resolved to tests::util::Dir, a test-only struct"
     },
     {
-     "id": "b9d960d5",
-     "caller": "crate::dir::Ignore::add_child_path_with_found_ignore_files",
-     "callee": "crate::walk::DirEntry::metadata",
+     "id": "8e64b312",
+     "caller": "crate::json::JSONBuilder::build",
+     "callee": "crate::Error::clone",
      "verdict": "lidx_error",
-     "note": "std Path::metadata resolved to DirEntry::metadata"
+     "note": "config.clone() resolved to Error::clone"
     },
     {
-     "id": "9212acfa",
-     "caller": "crate::crates::core::flags::defs::Colors::update",
-     "callee": "crate::crates::core::flags::parse::parse",
+     "id": "61e3e344",
+     "caller": "crate::searcher::glue::MultiLine::find",
+     "callee": "crate::Match::map",
      "verdict": "lidx_error",
-     "note": "str::parse() resolved to the in-repo parse() function"
+     "note": "Option::map resolved to Match::map"
     },
     {
-     "id": "45781f44",
+     "id": "9d6fd2e8",
+     "caller": "crate::testutil::RegexMatcher::find_at",
+     "callee": "crate::Match::end",
+     "verdict": "lidx_error",
+     "note": "Range end() resolved to Match::end"
+    },
+    {
+     "id": "188cd68a",
+     "caller": "crate::counter::CounterWriter::supports_color",
+     "callee": "crate::wtr::StandardStream::supports_color",
+     "verdict": "lidx_error",
+     "note": "WriteColor::supports_color on a generic writer resolved to StandardStream::supports_color by name"
+    },
+    {
+     "id": "e2b15f78",
+     "caller": "crate::searcher::SearcherBuilder::build",
+     "callee": "crate::Match::map",
+     "verdict": "lidx_error",
+     "note": "Option::map resolved to Match::map"
+    },
+    {
+     "id": "d2e75e4c",
      "caller": "crate::pathutil::strip_prefix",
      "callee": "crate::glob::Glob::as_ref",
      "verdict": "lidx_error",
      "note": "AsRef::as_ref resolved to Glob::as_ref"
+    },
+    {
+     "id": "94b024d1",
+     "caller": "crate::regex_helper::pattern_has_uppercase_char",
+     "callee": "crate::fmt::FormatTemplate::parse",
+     "verdict": "lidx_error",
+     "note": "str parse resolved to FormatTemplate::parse"
+    },
+    {
+     "id": "50f23a55",
+     "caller": "crate::crates::core::flags::parse::suggest",
+     "callee": "crate::Match::map",
+     "verdict": "lidx_error",
+     "note": "iterator map resolved to Match::map"
+    },
+    {
+     "id": "ac6c49d2",
+     "caller": "crate::path::PathPrinterBuilder::build",
+     "callee": "crate::Error::clone",
+     "verdict": "lidx_error",
+     "note": "config.clone() resolved to Error::clone"
+    },
+    {
+     "id": "0c035c17",
+     "caller": "crate::decompress::DecompressionMatcherBuilder::try_associate",
+     "callee": "crate::Match::map",
+     "verdict": "lidx_error",
+     "note": "iterator map resolved to Match::map"
+    },
+    {
+     "id": "a6f71daa",
+     "caller": "crate::util::NiceDuration::serialize",
+     "callee": "crate::Match::end",
+     "verdict": "lidx_error",
+     "note": "serializer end() resolved to Match::end"
+    },
+    {
+     "id": "59228137",
+     "caller": "crate::walk::walkdir_is_dir",
+     "callee": "crate::walk::DirEntry::depth",
+     "verdict": "lidx_error",
+     "note": "walkdir DirEntry::depth resolved to the in-repo DirEntry::depth"
+    },
+    {
+     "id": "9c6846ac",
+     "caller": "crate::lines::LineStep::next_match",
+     "callee": "crate::Match::map",
+     "verdict": "lidx_error",
+     "note": "Option::map resolved to Match::map"
+    },
+    {
+     "id": "4784a198",
+     "caller": "crate::dir::Ignore::add_parents",
+     "callee": "crate::glob::Glob::as_ref",
+     "verdict": "lidx_error",
+     "note": "AsRef::as_ref resolved to Glob::as_ref"
+    },
+    {
+     "id": "95762f9e",
+     "caller": "crate::types::TypesBuilder::definitions",
+     "callee": "crate::crates::core::flags::hiargs::HiArgs::sort",
+     "verdict": "lidx_error",
+     "note": "Vec::sort resolved to HiArgs::sort"
+    },
+    {
+     "id": "01961661",
+     "caller": "crate::walk::WalkParallel::visit",
+     "callee": "crate::Error::clone",
+     "verdict": "lidx_error",
+     "note": "Arc clone() resolved to Error::clone"
     }
    ],
    "fn": [
     {
-     "id": "b88623df",
-     "caller": "count_path_separator",
-     "callee": "sink_with_path",
+     "id": "87502bb5",
+     "caller": "resolve_git_commondir",
+     "callee": "with_path",
      "verdict": "lidx_error",
-     "note": "printer.sink_with_path(...) as an argument of a multi-line call; a sibling call on the line was found, this one was not"
+     "note": "Error::Io(err).with_path(..): chained method on a variant constructor, no edge"
     },
     {
-     "id": "b1d56a9a",
-     "caller": "ino",
-     "callee": "ino",
+     "id": "d3ef1f7a",
+     "caller": "get_mut",
+     "callee": "get_mut",
      "verdict": "lidx_error",
-     "note": "self.dent.ino(): method call through a field, no edge"
+     "note": "self.wtr.get_mut(): method call through a field, no edge"
     },
     {
-     "id": "3f7e0c57",
-     "caller": "per_match_multi_line2_only_first_line",
-     "callee": "per_match",
+     "id": "de7b28a0",
+     "caller": "matches_into",
+     "callee": "matches_into",
      "verdict": "lidx_error",
-     "note": "builder chain StandardBuilder::new().per_match(...): chained method not extracted"
+     "note": "s.matches_into(..) in match arms: calls inside match arms, no edge"
     },
     {
-     "id": "f3e733d3",
+     "id": "189f72fd",
      "caller": "matcher_rust",
-     "callee": "new",
+     "callee": "fixed_strings",
      "verdict": "lidx_error",
-     "note": "path-qualified grep::regex::RegexMatcherBuilder::new() not extracted"
+     "note": ".fixed_strings(..) in a builder chain, missed"
     },
     {
-     "id": "268c403a",
-     "caller": "replacement_only_matching",
+     "id": "f5ad6887",
+     "caller": "printer_standard",
+     "callee": "into_bytes",
+     "verdict": "lidx_error",
+     "note": "self.field_match_separator.clone().into_bytes(): chain resolved by bare name to Error::clone instead"
+    },
+    {
+     "id": "3660fadb",
+     "caller": "search",
+     "callee": "line_number",
+     "verdict": "lidx_error",
+     "note": ".line_number(false) in a builder chain, missed"
+    },
+    {
+     "id": "8cdd16e1",
+     "caller": "search_reader",
+     "callee": "run",
+     "verdict": "lidx_error",
+     "note": "ReadByLine::new(..).run(): chained call missed, sibling found"
+    },
+    {
+     "id": "c69c4675",
+     "caller": "find_short",
+     "callee": "find",
+     "verdict": "lidx_error",
+     "note": "self.map.find(&[byte]): method call through a field in a let-else, no edge"
+    },
+    {
+     "id": "1fe04753",
+     "caller": "replace",
+     "callee": "clear",
+     "verdict": "lidx_error",
+     "note": "self.replacer.clear(): method call through a field, no edge"
+    },
+    {
+     "id": "d59964a3",
+     "caller": "new",
      "callee": "build",
      "verdict": "lidx_error",
-     "note": ".build() at the end of a multi-line builder chain missed"
+     "note": "JSONBuilder::new().build(wtr): chain head missed"
     },
     {
-     "id": "5d9424d1",
-     "caller": "count_path_with_zero",
-     "callee": "sink_with_path",
+     "id": "9a9cb0bc",
+     "caller": "special",
+     "callee": "generate_long",
      "verdict": "lidx_error",
-     "note": "printer.sink_with_path(...) as a call argument, missed"
+     "note": "flags::generate_version_long() marked external although it is in the repository"
     },
     {
-     "id": "5fb2eac5",
-     "caller": "invert_context_multi_line",
-     "callee": "new",
+     "id": "2774e575",
+     "caller": "main",
+     "callee": "build",
      "verdict": "lidx_error",
-     "note": "RegexMatcher::new(...).unwrap(): associated function at the head of a chain missed"
+     "note": "WalkBuilder::new(path).build(): chain, sibling found"
     },
     {
-     "id": "2a1bc373",
-     "caller": "count_path",
-     "callee": "sink_with_path",
+     "id": "b8e22e86",
+     "caller": "interpolate",
+     "callee": "interpolate",
      "verdict": "lidx_error",
-     "note": "printer.sink_with_path(...) as a call argument, missed"
+     "note": "free function interpolate(..) resolved to the enclosing Captures::interpolate method, real callee missed"
     },
     {
-     "id": "62e43a41",
-     "caller": "invert",
-     "callee": "sink",
+     "id": "52f17e23",
+     "caller": "start_hyperlink",
+     "callee": "column",
      "verdict": "lidx_error",
-     "note": "printer.sink(&matcher) as a call argument, missed"
+     "note": ".column(column) in a builder chain, missed"
     },
     {
-     "id": "ad269817",
-     "caller": "context_sherlock1",
-     "callee": "before_context",
+     "id": "17d86afe",
+     "caller": "start_color_match",
+     "callee": "[WriteColor]set_color",
      "verdict": "lidx_error",
-     "note": ".before_context(1) in a builder chain, missed"
+     "note": "self.wtr().borrow_mut().set_color(..): chained call missed"
     },
     {
-     "id": "e4553494",
-     "caller": "column_number_multi_line",
-     "callee": "line_number",
+     "id": "76726080",
+     "caller": "depth",
+     "callee": "depth",
      "verdict": "lidx_error",
-     "note": ".line_number(false) in a builder chain, missed"
+     "note": "self.dent.depth(): method call through a field, no edge"
     },
     {
-     "id": "4893dfc5",
-     "caller": "invert",
-     "callee": "line_number",
+     "id": "ff2953f1",
+     "caller": "sink_slow_multi_per_match",
+     "callee": "line_terminator",
      "verdict": "lidx_error",
-     "note": ".line_number(true) in a builder chain, missed"
+     "note": "self.searcher.line_terminator().as_byte(): chain head missed"
     },
     {
-     "id": "03fad3b6",
-     "caller": "reports_stats_multiple",
-     "callee": "line_number",
+     "id": "dbc84450",
+     "caller": "write_byte_offset",
+     "callee": "column",
      "verdict": "lidx_error",
-     "note": ".line_number(false) in a builder chain, missed"
+     "note": "self.config().colors.column(): chain through a field, missed"
     },
     {
-     "id": "7eb287e9",
+     "id": "b5380e4c",
+     "caller": "new",
+     "callee": "FieldContextSeparator",
+     "verdict": "lidx_error",
+     "note": "Vec::unescape_bytes(..).into(): tuple-struct constructor FieldContextSeparator(..) not recorded"
+    },
+    {
+     "id": "64f6b1dd",
+     "caller": "sink_slow_multi_line",
+     "callee": "multi_line",
+     "verdict": "lidx_error",
+     "note": "self.multi_line() inside debug_assert!: macro argument call, no edge"
+    }
+   ]
+  }
+ },
+ "buckets": {
+  "go": {
+   "dispatch": [
+    {
+     "id": "73dc3ca0",
+     "cell": "go/syft/no_tests",
+     "caller": "Execute",
+     "callee": "NewEnvironmentTask",
+     "verdict": "correct_exclusion",
+     "note": "call through an interface method or a function value: dispatch",
+     "bucket_size": 3634
+    },
+    {
+     "id": "74d92742",
+     "cell": "go/syft/no_tests",
+     "caller": "processV10DB",
+     "callee": "runTaskSafely",
+     "verdict": "correct_exclusion",
+     "note": "call through an interface method or a function value: dispatch",
+     "bucket_size": 3634
+    },
+    {
+     "id": "133e4a6c",
+     "cell": "go/syft/no_tests",
+     "caller": "main",
+     "callee": "Describe",
+     "verdict": "correct_exclusion",
+     "note": "call through an interface method or a function value: dispatch",
+     "bucket_size": 3634
+    },
+    {
+     "id": "cbc996ae",
+     "cell": "go/gitleaks/no_tests",
+     "caller": "findingSummaryAndExit",
+     "callee": "Write",
+     "verdict": "correct_exclusion",
+     "note": "call through an interface method or a function value: dispatch",
+     "bucket_size": 3634
+    },
+    {
+     "id": "de099482",
+     "cell": "go/syft/no_tests",
+     "caller": "catalogLocation",
+     "callee": "FileContentsByLocation",
+     "verdict": "correct_exclusion",
+     "note": "call through an interface method or a function value: dispatch",
+     "bucket_size": 3634
+    },
+    {
+     "id": "62f5dcc8",
+     "cell": "go/syft/no_tests",
+     "caller": "coordinateReferenceLookup",
+     "callee": "FilesByPath",
+     "verdict": "correct_exclusion",
+     "note": "call through an interface method or a function value: dispatch",
+     "bucket_size": 3634
+    },
+    {
+     "id": "497a9426",
+     "cell": "go/syft/no_tests",
+     "caller": "processV10DB",
+     "callee": "FileContentsByLocation",
+     "verdict": "correct_exclusion",
+     "note": "call through an interface method or a function value: dispatch",
+     "bucket_size": 3634
+    },
+    {
+     "id": "e1919460",
+     "cell": "go/syft/no_tests",
+     "caller": "main",
+     "callee": "Error",
+     "verdict": "correct_exclusion",
+     "note": "call through an interface method or a function value: dispatch",
+     "bucket_size": 3634
+    },
+    {
+     "id": "bf8c9824",
+     "cell": "go/syft/no_tests",
+     "caller": "View",
+     "callee": "View",
+     "verdict": "correct_exclusion",
+     "note": "call through an interface method or a function value: dispatch",
+     "bucket_size": 3634
+    },
+    {
+     "id": "e511a510",
+     "cell": "go/syft/no_tests",
+     "caller": "onWriteEvent",
+     "callee": "ByFileOwnershipOverlapWorker",
+     "verdict": "correct_exclusion",
+     "note": "call through an interface method or a function value: dispatch",
+     "bucket_size": 3634
+    }
+   ],
+   "ungradable:caller_file_not_covered": [
+    {
+     "id": "bf04b3b3",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/internal/fileresolver/path_skipper_test.Test_newPathSkipper",
+     "callee": "syft/internal/fileresolver/path_skipper_test.assertSkipErr",
+     "verdict": "correct_exclusion",
+     "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+     "bucket_size": 1474
+    },
+    {
+     "id": "4d21893a",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/format/common/spdxhelpers/to_syft_model_test.Test_toSyftRelationships",
+     "callee": "syft/format/common/spdxhelpers/to_format_model.toSPDXID",
+     "verdict": "correct_exclusion",
+     "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+     "bucket_size": 1474
+    },
+    {
+     "id": "e280bd7e",
+     "cell": "go/syft/no_tests",
+     "caller": "test/cli/scan_cmd_test.TestPackagesCmdFlags",
+     "callee": "test/cli/trait_assertions_test.assertFileOutput",
+     "verdict": "correct_exclusion",
+     "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+     "bucket_size": 1474
+    },
+    {
+     "id": "28dfe1f6",
+     "cell": "go/syft/no_tests",
+     "caller": "test/cli/convert_cmd_test.TestConvertCmd",
+     "callee": "test/cli/convert_cmd_test.mustEncoder",
+     "verdict": "correct_exclusion",
+     "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+     "bucket_size": 1474
+    },
+    {
+     "id": "f71dee10",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/format/cyclonedxjson/encoder_test.TestSupportedVersions",
+     "callee": "syft/format/internal/testutil/directory_input.DirectoryInput",
+     "verdict": "correct_exclusion",
+     "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+     "bucket_size": 1474
+    },
+    {
+     "id": "0f4097ba",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/pkg/cataloger/javascript/parse_yarn_lock_test.TestParseYarnBerryWithDuplicates",
+     "callee": "syft/file/location_set.NewLocationSet",
+     "verdict": "correct_exclusion",
+     "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+     "bucket_size": 1474
+    },
+    {
+     "id": "d455ca96",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/pkg/cataloger/rust/cataloger_test.TestNewAuditBinaryCataloger",
+     "callee": "syft/file/location_set.NewLocationSet",
+     "verdict": "correct_exclusion",
+     "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+     "bucket_size": 1474
+    },
+    {
+     "id": "2fbb04c9",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/format/cyclonedxjson/encoder_test.TestCycloneDxDirectoryEncoder",
+     "callee": "internal/tmpdir/tmpdir.TempDir",
+     "verdict": "correct_exclusion",
+     "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+     "bucket_size": 1474
+    },
+    {
+     "id": "bc5a9ad7",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/internal/fileresolver/container_image_deep_squash_test.TestContainerImageDeepSquash_MergeLocationStreams",
+     "callee": "syft/internal/fileresolver/container_image_deep_squash_test.makeLocation",
+     "verdict": "correct_exclusion",
+     "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+     "bucket_size": 1474
+    },
+    {
+     "id": "a918ca4f",
+     "cell": "go/syft/no_tests",
+     "caller": "internal/licenses/find_evidence_test.TestDefaultScanner_FindEvidence",
+     "callee": "internal/licenses/find_evidence_test.testScanner",
+     "verdict": "correct_exclusion",
+     "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+     "bucket_size": 1474
+    }
+   ],
+   "ungradable:caller_not_judged": [
+    {
+     "id": "5e70e9fc",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/format/internal/testutil/redactor.NewRedactions",
+     "callee": "syft/format/internal/testutil/redactor.Redactions.WithFunctions",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+     "bucket_size": 190
+    },
+    {
+     "id": "e828f728",
+     "cell": "go/syft/no_tests",
+     "caller": "cmd/syft/cli/cli.Command",
+     "callee": "cmd/syft/cli/cli.create",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+     "bucket_size": 190
+    },
+    {
+     "id": "ce2dc345",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/pkg/cataloger/internal/pkgtest/test_generic_parser.CatalogTester.trackParserMetadata",
+     "callee": "syft/pkg/cataloger/internal/pkgtest/test_generic_parser.getPackagePath",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+     "bucket_size": 190
+    },
+    {
+     "id": "3e691856",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/internal/fileresolver/unindexed_directory.UnindexedDirectory.RelativeFileByPath",
+     "callee": "syft/internal/fileresolver/unindexed_directory.UnindexedDirectory.isRegularFile",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+     "bucket_size": 190
+    },
+    {
+     "id": "9e8c6c7e",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/file/mock_resolver.NewMockResolverForPaths",
+     "callee": "syft/internal/fileresolver/chroot_context.ChrootContext.Base",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+     "bucket_size": 190
+    },
+    {
+     "id": "ec97cea5",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/pkg/cataloger/internal/pkgtest/test_generic_parser.CatalogTester.TestCataloger",
+     "callee": "syft/pkg/cataloger/internal/pkgtest/test_generic_parser.CatalogTester.assertPkgs",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+     "bucket_size": 190
+    },
+    {
+     "id": "e82cddac",
+     "cell": "go/gitleaks/no_tests",
+     "caller": "detect/detect.NewDetectorDefaultConfig",
+     "callee": "detect/detect.NewDetector",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+     "bucket_size": 190
+    },
+    {
+     "id": "b22aedaf",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/pkg/cataloger/internal/pkgtest/metadata_tracker.writeJSONFile",
+     "callee": "syft/create_sbom_config.CreateSBOMConfig.Create",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+     "bucket_size": 190
+    },
+    {
+     "id": "0248bd0a",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/pkg/cataloger/internal/pkgtest/test_generic_parser.Context",
+     "callee": "internal/tmpdir/tmpdir.WithValue",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+     "bucket_size": 190
+    },
+    {
+     "id": "1ce65a5a",
+     "cell": "go/syft/no_tests",
+     "caller": "syft/pkg/license_deprecated.NewLicenseFromFields",
+     "callee": "syft/pkg/license.stripUnwantedCharacters",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+     "bucket_size": 190
+    }
+   ]
+  },
+  "ts": {
+   "capture_gap:callee_not_indexed": [
+    {
+     "id": "cbed2b5e",
+     "cell": "ts/zod",
+     "caller": "parse",
+     "callee": "run",
+     "verdict": "correct_exclusion",
+     "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+     "bucket_size": 373
+    },
+    {
+     "id": "46976674",
+     "cell": "ts/zod",
+     "caller": "emoji",
+     "callee": "check",
+     "verdict": "correct_exclusion",
+     "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+     "bucket_size": 373
+    },
+    {
+     "id": "d4a2738b",
+     "cell": "ts/hono",
+     "caller": "unmount",
+     "callee": "setJsxNode",
+     "verdict": "correct_exclusion",
+     "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+     "bucket_size": 373
+    },
+    {
+     "id": "38dc235a",
+     "cell": "ts/hono",
+     "caller": "Suspense",
+     "callee": "popNodeStack",
+     "verdict": "correct_exclusion",
+     "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+     "bucket_size": 373
+    },
+    {
+     "id": "ef620338",
+     "cell": "ts/hono",
+     "caller": "serveStatic",
+     "callee": "getContent",
+     "verdict": "correct_exclusion",
+     "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+     "bucket_size": 373
+    },
+    {
+     "id": "2f87fdb0",
+     "cell": "ts/hono",
+     "caller": "buildInitParams",
+     "callee": "RegExpRouterWithMatcherExport",
+     "verdict": "correct_exclusion",
+     "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+     "bucket_size": 373
+    },
+    {
+     "id": "87122668",
+     "cell": "ts/hono",
+     "caller": "composeRef",
+     "callee": "refCleanup",
+     "verdict": "correct_exclusion",
+     "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+     "bucket_size": 373
+    },
+    {
+     "id": "a3476948",
+     "cell": "ts/hono",
+     "caller": "createCssContext",
+     "callee": "newCssClassNameObject",
+     "verdict": "correct_exclusion",
+     "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+     "bucket_size": 373
+    },
+    {
+     "id": "3a2c6d30",
+     "cell": "ts/hono",
+     "caller": "runWithRenderContext",
+     "callee": "run",
+     "verdict": "correct_exclusion",
+     "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+     "bucket_size": 373
+    },
+    {
+     "id": "28b1e346",
+     "cell": "ts/hono",
+     "caller": "ErrorBoundary",
+     "callee": "catchCallback",
+     "verdict": "correct_exclusion",
+     "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+     "bucket_size": 373
+    }
+   ],
+   "dispatch": [
+    {
+     "id": "2f855d74",
+     "cell": "ts/zod",
+     "caller": "_parse",
+     "callee": "_parse",
+     "verdict": "correct_exclusion",
+     "note": "keyType._parse / valueType._parse: abstract method",
+     "bucket_size": 12
+    },
+    {
+     "id": "a2039370",
+     "cell": "ts/zod",
+     "caller": "_parse",
+     "callee": "_parse",
+     "verdict": "correct_exclusion",
+     "note": "keyType._parse: abstract method",
+     "bucket_size": 12
+    },
+    {
+     "id": "5f101b39",
+     "cell": "ts/zod",
+     "caller": "_parse",
+     "callee": "_parse",
+     "verdict": "correct_exclusion",
+     "note": "innerType._parse: abstract method",
+     "bucket_size": 12
+    },
+    {
+     "id": "6bf8e341",
+     "cell": "ts/zod",
+     "caller": "_parse",
+     "callee": "_parse",
+     "verdict": "correct_exclusion",
+     "note": "innerType._parse: abstract method",
+     "bucket_size": 12
+    },
+    {
+     "id": "0f055867",
+     "cell": "ts/zod",
+     "caller": "_parse",
+     "callee": "_parse",
+     "verdict": "correct_exclusion",
+     "note": "keyValidator._parse: _parse is abstract on ZodType, so any subclass may run",
+     "bucket_size": 12
+    },
+    {
+     "id": "96ffa4d7",
+     "cell": "ts/zod",
+     "caller": "_parse",
+     "callee": "_parse",
+     "verdict": "correct_exclusion",
+     "note": "this._def.type._parse: abstract method",
+     "bucket_size": 12
+    },
+    {
+     "id": "3b760d82",
+     "cell": "ts/zod",
+     "caller": "_parse",
+     "callee": "_parse",
+     "verdict": "correct_exclusion",
+     "note": "schema._parse: abstract method",
+     "bucket_size": 12
+    },
+    {
+     "id": "099232c0",
+     "cell": "ts/zod",
+     "caller": "_parse",
+     "callee": "_parse",
+     "verdict": "correct_exclusion",
+     "note": "innerType._parse: abstract method",
+     "bucket_size": 12
+    },
+    {
+     "id": "fe6e5fb6",
+     "cell": "ts/zod",
+     "caller": "_parse",
+     "callee": "_parse",
+     "verdict": "correct_exclusion",
+     "note": "innerType._parse: abstract method",
+     "bucket_size": 12
+    },
+    {
+     "id": "0d0916ee",
+     "cell": "ts/zod",
+     "caller": "_parse",
+     "callee": "_parse",
+     "verdict": "correct_exclusion",
+     "note": "innerType._parse: abstract method",
+     "bucket_size": 12
+    }
+   ],
+   "ungradable:caller_file_not_covered": [
+    {
+     "id": "da988e3a",
+     "cell": "ts/zod",
+     "caller": "packages/docs/next.config.config",
+     "callee": "packages/docs/next.config.generateRedirects",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "bucket_size": 1327
+    },
+    {
+     "id": "c422ce0c",
+     "cell": "ts/hono",
+     "caller": "benchmarks/routers/src/rou3.rou3Router",
+     "callee": "benchmarks/routers/src/rou3.router",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "bucket_size": 1327
+    },
+    {
+     "id": "6328e317",
+     "cell": "ts/zod",
+     "caller": "scripts/check-semver",
+     "callee": "packages/zod/src/v3/types.ZodType.parse",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "bucket_size": 1327
+    },
+    {
+     "id": "26bd6b57",
+     "cell": "ts/hono",
+     "caller": "src/utils/ipaddr.test",
+     "callee": "src/utils/ipaddr.test.expectInvalidIPAddressError",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "bucket_size": 1327
+    },
+    {
+     "id": "28c541cc",
+     "cell": "ts/zod",
+     "caller": "packages/docs/components/ecosystem.ZodUtilities",
+     "callee": "packages/docs/components/ecosystem.zodUtilities",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "bucket_size": 1327
+    },
+    {
+     "id": "bce9b036",
+     "cell": "ts/zod",
+     "caller": "packages/tsc/bench/strongly-connected",
+     "callee": "packages/tsc/generate.generate",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "bucket_size": 1327
+    },
+    {
+     "id": "59c05582",
+     "cell": "ts/hono",
+     "caller": "benchmarks/query-param/src/bench",
+     "callee": "benchmarks/query-param/src/hono.default",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "bucket_size": 1327
+    },
+    {
+     "id": "a2237deb",
+     "cell": "ts/hono",
+     "caller": "src/middleware/basic-auth/index.test",
+     "callee": "src/hono.Hono.constructor",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "bucket_size": 1327
+    },
+    {
+     "id": "fdd77f09",
+     "cell": "ts/hono",
+     "caller": "src/middleware/trailing-slash/index.test",
+     "callee": "src/middleware/trailing-slash.appendTrailingSlash",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "bucket_size": 1327
+    },
+    {
+     "id": "cfa57a28",
+     "cell": "ts/hono",
+     "caller": "src/jsx/dom/components.test",
+     "callee": "src/jsx/dom/components.ErrorBoundary",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "bucket_size": 1327
+    }
+   ],
+   "ungradable:oracle_unresolved_site": [
+    {
+     "id": "60c7eba3",
+     "cell": "ts/hono",
+     "caller": "src/adapter/bun/ssg.bunFileSystemModule",
+     "callee": "src/adapter/bun/ssg.write",
+     "verdict": "correct_exclusion",
+     "note": "write(path, data): unresolved Bun global, same name as the lidx target",
+     "bucket_size": 2
+    },
+    {
+     "id": "b0dc7c48",
+     "cell": "ts/hono",
+     "caller": "src/adapter/deno/serve-static.serveStatic",
+     "callee": "src/adapter/deno/serve-static.open",
+     "verdict": "correct_exclusion",
+     "note": "open(path): the oracle could not resolve the call to open (Deno global), same name as the lidx target",
+     "bucket_size": 2
+    }
+   ]
+  },
+  "rust": {
+   "dispatch": [
+    {
+     "id": "cef89026",
+     "cell": "rust/ripgrep/no_tests",
      "caller": "generate",
-     "callee": "description",
-     "verdict": "lidx_error",
-     "note": "alias.description() resolved by bare name to an unrelated symbol; the real callee missed"
+     "callee": "name_short",
+     "verdict": "correct_exclusion",
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
+     "bucket_size": 98
     },
     {
-     "id": "2904f943",
-     "caller": "default_case_sensitive",
-     "callee": "build",
-     "verdict": "lidx_error",
-     "note": ".build() in OverrideBuilder::new(ROOT).add(...).unwrap().build() chain, missed"
+     "id": "0b65a739",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "generate_long_flag",
+     "callee": "doc_variable",
+     "verdict": "correct_exclusion",
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
+     "bucket_size": 98
     },
     {
-     "id": "da5b4e07",
-     "caller": "generate_work",
-     "callee": "file_type",
-     "verdict": "lidx_error",
-     "note": "dent.file_type() resolved to another file_type in the same file"
+     "id": "42c6736f",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "sink_other_context",
+     "callee": "context",
+     "verdict": "correct_exclusion",
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
+     "bucket_size": 98
     },
     {
-     "id": "ac8eaee6",
-     "caller": "should_ignore",
-     "callee": "is_socket",
-     "verdict": "lidx_error",
-     "note": "filesystem::is_socket(...) inside an || chain, no edge extracted"
+     "id": "b8cf4352",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "begin",
+     "callee": "begin",
+     "verdict": "correct_exclusion",
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
+     "bucket_size": 98
     },
     {
-     "id": "a5ed1f06",
-     "caller": "max_columns_multi_line",
-     "callee": "max_columns",
-     "verdict": "lidx_error",
-     "note": ".max_columns(...) in a builder chain, missed"
+     "id": "6f0962c6",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "[Matcher]new_captures",
+     "callee": "new_captures",
+     "verdict": "correct_exclusion",
+     "note": "(*self).new_captures() through the Matcher trait: trait dispatch",
+     "bucket_size": 98
     },
     {
-     "id": "7b2cfccb",
-     "caller": "quiet_with_stats",
-     "callee": "kind",
-     "verdict": "lidx_error",
-     "note": ".kind(...) in a builder chain, missed"
+     "id": "e60e44d9",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "generate",
+     "callee": "name_long",
+     "verdict": "correct_exclusion",
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
+     "bucket_size": 98
     },
     {
-     "id": "b2ff016e",
-     "caller": "case_insensitive",
-     "callee": "matched",
-     "verdict": "lidx_error",
-     "note": "ov.matched(...) as the receiver of is_whitelist() inside assert!, missed"
+     "id": "94feb843",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "generate",
+     "callee": "is_switch",
+     "verdict": "correct_exclusion",
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
+     "bucket_size": 98
+    },
+    {
+     "id": "5efb41d2",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "generate",
+     "callee": "doc_choices",
+     "verdict": "correct_exclusion",
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
+     "bucket_size": 98
+    },
+    {
+     "id": "11b44470",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "generate",
+     "callee": "name_negated",
+     "verdict": "correct_exclusion",
+     "note": "call through a trait (dyn Flag / generic Matcher / Sink): trait dispatch",
+     "bucket_size": 98
+    },
+    {
+     "id": "08fb8e7f",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "[Matcher]find_candidate_line",
+     "callee": "find_candidate_line",
+     "verdict": "correct_exclusion",
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
+     "bucket_size": 98
+    }
+   ],
+   "ungradable:caller_file_not_covered": [
+    {
+     "id": "423cfd47",
+     "cell": "rust/fd/no_tests",
+     "caller": "crate::tests::tests::get_absolute_root_path",
+     "callee": "crate::tests::testenv::TestEnv::test_root",
+     "verdict": "correct_exclusion",
+     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "78339f7a",
+     "cell": "rust/fd/no_tests",
+     "caller": "crate::tests::tests::test_smart_case_glob_searches",
+     "callee": "crate::tests::testenv::TestEnv::new",
+     "verdict": "correct_exclusion",
+     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "280c3cd8",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "crate::tests::test_matcher::no_captures",
+     "callee": "crate::tests::util::RegexMatcherNoCaps::new_captures",
+     "verdict": "correct_exclusion",
+     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "e4d1132e",
+     "cell": "rust/fd/no_tests",
+     "caller": "crate::tests::tests::test_case_sensitive",
+     "callee": "crate::tests::testenv::TestEnv::assert_output",
+     "verdict": "correct_exclusion",
+     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "e47c0db5",
+     "cell": "rust/fd/no_tests",
+     "caller": "crate::tests::testenv::TestEnv::assert_success_and_get_normalized_output",
+     "callee": "crate::tests::testenv::normalize_output",
+     "verdict": "correct_exclusion",
+     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "faf4c4f5",
+     "cell": "rust/fd/no_tests",
+     "caller": "crate::tests::tests::test_size",
+     "callee": "crate::tests::testenv::TestEnv::new",
+     "verdict": "correct_exclusion",
+     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "2c23616f",
+     "cell": "rust/fd/no_tests",
+     "caller": "crate::tests::tests::test_hyperlink",
+     "callee": "crate::tests::testenv::TestEnv::new",
+     "verdict": "correct_exclusion",
+     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "b88d4741",
+     "cell": "rust/fd/no_tests",
+     "caller": "crate::tests::tests::test_no_ignore_parent_inner_git",
+     "callee": "crate::tests::testenv::TestEnv::test_root",
+     "verdict": "correct_exclusion",
+     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "c41e8601",
+     "cell": "rust/fd/no_tests",
+     "caller": "crate::tests::tests::test_owner_current_group",
+     "callee": "crate::tests::testenv::TestEnv::new",
+     "verdict": "correct_exclusion",
+     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "3c09c1df",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "crate::tests::test_matcher::find",
+     "callee": "crate::tests::test_matcher::matcher",
+     "verdict": "correct_exclusion",
+     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "bucket_size": 388
+    }
+   ],
+   "ungradable:caller_not_judged": [
+    {
+     "id": "96f3a6b3",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "crate::crates::core::flags::defs::test_before_context",
+     "callee": "crate::crates::core::flags::lowargs::ContextMode::set_before",
+     "verdict": "correct_exclusion",
+     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
+     "bucket_size": 1510
+    },
+    {
+     "id": "ee7e1165",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "crate::gitignore::tests::parse_excludes_file5",
+     "callee": "crate::gitignore::parse_excludes_file",
+     "verdict": "correct_exclusion",
+     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
+     "bucket_size": 1510
+    },
+    {
+     "id": "c4749d4f",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "crate::escape::tests::nothing_hex1",
+     "callee": "crate::escape::tests::b",
+     "verdict": "correct_exclusion",
+     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
+     "bucket_size": 1510
+    },
+    {
+     "id": "78a8c5f9",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "crate::json::tests::always_begin_end_no_match",
+     "callee": "crate::json::JSONBuilder::always_begin_end",
+     "verdict": "correct_exclusion",
+     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
+     "bucket_size": 1510
+    },
+    {
+     "id": "15b7415d",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "crate::searcher::glue::tests::multi_line_overlap1",
+     "callee": "crate::testutil::SearcherTester::by_line",
+     "verdict": "correct_exclusion",
+     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
+     "bucket_size": 1510
+    },
+    {
+     "id": "5d105153",
+     "cell": "rust/fd/no_tests",
+     "caller": "crate::walk::tests::search_str_for_entry_with_absolute_path",
+     "callee": "crate::walk::search_str_for_entry",
+     "verdict": "correct_exclusion",
+     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
+     "bucket_size": 1510
+    },
+    {
+     "id": "d532c3e2",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "crate::hyperlink::tests::build_format",
+     "callee": "crate::crates::core::flags::defs::Text",
+     "verdict": "correct_exclusion",
+     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
+     "bucket_size": 1510
+    },
+    {
+     "id": "4837794a",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "crate::literal::tests::class",
+     "callee": "crate::literal::tests::exact",
+     "verdict": "correct_exclusion",
+     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
+     "bucket_size": 1510
+    },
+    {
+     "id": "3a19c414",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "crate::hyperlink::tests::handle_alias",
+     "callee": "crate::hyperlink::HyperlinkFormat::from_str",
+     "verdict": "correct_exclusion",
+     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
+     "bucket_size": 1510
+    },
+    {
+     "id": "4091916c",
+     "cell": "rust/ripgrep/no_tests",
+     "caller": "crate::searcher::glue::tests::passthru_sherlock1",
+     "callee": "crate::testutil::SearcherTester::expected_no_line_number",
+     "verdict": "correct_exclusion",
+     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
+     "bucket_size": 1510
     }
    ]
   }

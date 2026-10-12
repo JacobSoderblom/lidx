@@ -1,0 +1,5 @@
+[
+{"callee":{"file":"command.go","line":1435,"name":"Print","qualname":"command.Command.Print"},"caller":{"file":"command_win.go","line":30,"name":"preExecHook","qualname":"command_win.preExecHook"},"evidence_file":"command_win.go","evidence_lines":[32],"reason":"caller_file_not_covered","resolution_kind":"bare_name"},
+{"callee":{"file":"command.go","line":1440,"name":"Println","qualname":"command.Command.Println"},"caller":{"file":"command_win.go","line":30,"name":"preExecHook","qualname":"command_win.preExecHook"},"evidence_file":"command_win.go","evidence_lines":[36],"reason":"caller_file_not_covered","resolution_kind":"bare_name"},
+{"callee":{"file":"completions.go","line":955,"name":"CompDebug","qualname":"completions.CompDebug"},"caller":{"file":"completions.go","line":980,"name":"CompDebugln","qualname":"completions.CompDebugln"},"evidence_file":"completions.go","evidence_lines":[981],"reason":"caller_not_judged","resolution_kind":"exact"}
+]
