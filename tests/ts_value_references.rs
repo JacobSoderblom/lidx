@@ -145,8 +145,10 @@ fn functions_inside_an_exported_object_still_use_what_they_call() {
             "import { helper, settings } from './h';\nexport const Api = { run: () => take(helper), port: settings.port };\ndeclare function take(f: unknown): void;\n",
         ),
     ];
-    let t = ref_targets(files, "src/api.Api");
+    // `Api.run` owns what its body uses (#426).
+    let t = ref_targets(files, "src/api.Api.run");
     assert!(t.contains(&"src/h.helper".to_string()), "{t:?}");
     // `settings.port` reads the object: a use, not a call.
+    let t = ref_targets(files, "src/api.Api");
     assert!(!t.contains(&"src/h.settings".to_string()), "{t:?}");
 }

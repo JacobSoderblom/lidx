@@ -123,6 +123,9 @@ struct Context {
     /// the module's own locals), so a nested function sees them as locals
     /// too — see `enter_scope`.
     outer_locals: Rc<HashSet<String>>,
+    /// Names bound at module (or namespace) scope: this file's own
+    /// declarations, never a function-local shadow.
+    module_names: Rc<HashSet<String>>,
     /// Names this file declares (any function/class/enum/namespace, plus
     /// module-level variables) — see `collect_declared_names`.
     declared_names: Rc<HashSet<String>>,
@@ -169,6 +172,10 @@ enum LocalType {
     /// a subscript read of the name (`x[i].m()`) uses it; anywhere else it
     /// behaves like `Other`.
     Elements(String),
+    /// Initialised from a call to this file's function of this name
+    /// (`const p = getProcessor(event)`): typed by that function's declared
+    /// return type, looked up in `Context::return_types` where it is used.
+    ReturnOf(String),
     /// Builtin type, untyped parameter, destructured binding, loop/catch
     /// target, or anything else not explicitly recognized. A name landing
     /// here (rather than simply absent from the map) still gates
@@ -1579,6 +1586,7 @@ fn extract_with_parser(
     let grpc_evidence = Rc::new(collect_grpc_evidence(root, source));
     let grpc_clients = collect_grpc_clients(root, source, &grpc_evidence);
     let http_wrappers = Rc::new(collect_http_wrappers(root, source));
+    let module_types = Rc::new(infer_module_level_types(root, source));
     let ctx = Context {
         string_consts: Rc::new(crate::indexer::string_consts::collect_string_consts(
             crate::indexer::string_consts::ConstLang::JavaScript,
@@ -1597,7 +1605,8 @@ fn extract_with_parser(
         http_wrappers: Rc::clone(&http_wrappers),
         grpc_clients,
         grpc_evidence,
-        local_types: Rc::new(infer_module_level_types(root, source)),
+        local_types: Rc::clone(&module_types),
+        module_names: Rc::new(module_types.keys().cloned().collect()),
         class_attr_types: Rc::new(HashMap::new()),
         fn_owner: None,
         import_bindings: Rc::new(collect_import_bindings(root, source)),
@@ -2317,6 +2326,15 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         && let Some(edge) = process_env_subscript_edge(node, ctx, source)
     {
         output.edges.push(edge);
+    }
+    if is_lambda_node(node.kind()) {
+        let mut next_ctx = ctx.clone();
+        next_ctx.local_types = lambda_local_types(node, ctx, source);
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            walk_node(child, &next_ctx, source, output);
+        }
+        return;
     }
     if is_dynamic_this_function_node(node.kind()) {
         // Not a symbol: its calls belong to the enclosing one, with their
@@ -3546,6 +3564,7 @@ fn expression_type(node: Node<'_>, ctx: &Context, source: &str, depth: usize) ->
                     let name = node_text(object, source);
                     match ctx.local_types.get(&name) {
                         Some(LocalType::Known(ty)) => ty.clone(),
+                        Some(LocalType::ReturnOf(f)) => ctx.return_types.get(f)?.clone(),
                         Some(_) => return None,
                         None => name,
                     }
@@ -3782,10 +3801,10 @@ fn enter_scope(ctx: &mut Context) {
 /// that this file does not also declare at module scope: a call to it can
 /// only be the local.
 fn is_shadowing_local(ctx: &Context, name: &str) -> bool {
-    ctx.fn_depth > 0
-        && ctx.local_types.contains_key(name)
+    ctx.local_types.contains_key(name)
         && !ctx.required_names.contains(name)
         && !ctx.declared_names.contains(name)
+        && !ctx.module_names.contains(name)
 }
 
 /// A bare call target bound by a parameter, destructuring or `let`/`const`
@@ -6150,8 +6169,29 @@ fn owned_function_scope(node: Node<'_>, ctx: &Context, source: &str) -> Option<C
         enter_scope(&mut next_ctx);
         next_ctx.local_types = Rc::new(infer_local_types(node, source));
         next_ctx.this_rebound = true;
+    } else {
+        // The module-wide map folds every module-level arrow's parameters
+        // together (`c: Context` here, `c: Foo` there collapse to `Other`).
+        // This arrow's own parameters and locals win over that.
+        next_ctx.local_types = lambda_local_types(node, ctx, source);
     }
     Some(next_ctx)
+}
+
+/// The enclosing scope's local types plus the arrow function `node`'s own
+/// parameters and locals, which shadow them.
+fn lambda_local_types(
+    node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+) -> Rc<HashMap<String, LocalType>> {
+    let own = infer_local_types(node, source);
+    if own.is_empty() {
+        return ctx.local_types.clone();
+    }
+    let mut types = (*ctx.local_types).clone();
+    types.extend(own);
+    Rc::new(types)
 }
 
 /// The qualname `emit_object_literal_methods` gave `node` when it is a
@@ -7183,6 +7223,10 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     if hops == 0 {
         return match ctx.local_types.get(&root_name) {
             Some(LocalType::Known(ty)) => ReceiverType::Known(ty.clone()),
+            Some(LocalType::ReturnOf(f)) => match ctx.return_types.get(f) {
+                Some(ty) => ReceiverType::Known(ty.clone()),
+                None => ReceiverType::Unresolved,
+            },
             Some(_) => ReceiverType::Unresolved,
             None => ReceiverType::NotTracked,
         };
@@ -7459,6 +7503,19 @@ fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
     {
         return classify_annotation(&node_text(ctor, source));
     }
+    // `f(..)` / `await f(..)` / `f(..)!`: typed by `f`'s declared return type.
+    let call = peel_expression(value);
+    let call = if call.kind() == "await_expression" {
+        call.named_child(0).map(peel_expression).unwrap_or(call)
+    } else {
+        call
+    };
+    if call.kind() == "call_expression"
+        && let Some(callee) = call.child_by_field_name("function")
+        && callee.kind() == "identifier"
+    {
+        return LocalType::ReturnOf(node_text(callee, source));
+    }
     LocalType::Other
 }
 
@@ -7474,7 +7531,9 @@ fn classify_value_expr(value: Node<'_>, source: &str) -> LocalType {
 /// one of those, folding its parameters into this same map.
 fn infer_local_types(function_node: Node<'_>, source: &str) -> HashMap<String, LocalType> {
     let mut bindings: Vec<(String, LocalType)> = Vec::new();
-    if let Some(params) = function_node.child_by_field_name("parameters") {
+    if is_lambda_node(function_node.kind()) {
+        collect_lambda_parameter_bindings(function_node, source, &mut bindings);
+    } else if let Some(params) = function_node.child_by_field_name("parameters") {
         let mut cursor = params.walk();
         for param in params.named_children(&mut cursor) {
             collect_param_bindings(param, source, &mut bindings);
@@ -7629,11 +7688,13 @@ fn collect_statement_bindings(
     if is_local_scope_boundary(node.kind()) {
         return;
     }
+    // A nested arrow function is a scope of its own: `walk_node` binds its
+    // parameters and locals when it enters it, so they never leak into the
+    // enclosing scope (two sibling callbacks taking `c: Context` and
+    // `c: Other` must not collapse each other's types, and a callback
+    // parameter must not shadow an import used elsewhere in the function).
     if is_lambda_node(node.kind()) {
-        collect_lambda_parameter_bindings(node, source, bindings);
-        // No `return`: still recurse into children below (the body may
-        // declare further locals, or contain a nested arrow function whose
-        // own parameters also need folding in).
+        return;
     }
     match node.kind() {
         "lexical_declaration" | "variable_declaration" => {
@@ -8483,8 +8544,8 @@ const cfg = buildConfig();
         let mut extractor = super::TypescriptExtractor::new().unwrap();
         let file = extractor.extract(source, "lib.api").unwrap();
         assert_eq!(call_source(&file, "fetchItem"), "lib.api.load");
-        assert_eq!(call_source(&file, "apiClientFetch"), "lib.api.apiClient");
-        assert_eq!(call_source(&file, "apiPost"), "lib.api.apiClient");
+        assert_eq!(call_source(&file, "apiClientFetch"), "lib.api.apiClient.get");
+        assert_eq!(call_source(&file, "apiPost"), "lib.api.apiClient.post");
         assert_eq!(call_source(&file, "buildConfig"), "lib.api");
     }
 
