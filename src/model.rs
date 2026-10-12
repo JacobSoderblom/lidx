@@ -1002,6 +1002,9 @@ pub struct ExplainRef {
     pub symbol: Symbol,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    /// 1-based line of the call-site/evidence in the referencing symbol's file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_line: Option<i64>,
     pub edge_kind: String,
     /// Service/rpc, route, channel or config key for a cross-boundary
     /// (RPC_CALL, HTTP_CALL, CHANNEL_PUBLISH, CONFIG_READ, ...) ref.
