@@ -797,12 +797,11 @@ fn in_value_position(node: Node<'_>) -> bool {
         // `class A(Base)` and a decorator's bare call carry argument lists too.
         "argument_list" => parent.parent().is_some_and(|call| call.kind() == "call"),
         "keyword_argument" => is_field("value"),
-        "list" | "tuple" | "set" | "return_statement" | "expression_list" => {
-            parent.kind() != "expression_list"
-                || parent
-                    .parent()
-                    .is_some_and(|p| matches!(p.kind(), "return_statement" | "assignment"))
-        }
+        "list" | "tuple" | "set" | "return_statement" => true,
+        // `return a, b` / `x = a, b`
+        "expression_list" => parent
+            .parent()
+            .is_some_and(|p| matches!(p.kind(), "return_statement" | "assignment")),
         "pair" => is_field("value"),
         "assignment" => is_field("right"),
         _ => false,

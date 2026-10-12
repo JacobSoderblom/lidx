@@ -60,6 +60,10 @@ def returned():
     return handler
 
 
+def returned_pair():
+    return handler, second
+
+
 def assigned():
     cb = handler
     return cb
@@ -139,6 +143,10 @@ fn collection_return_and_assignment_shapes() {
             vec!["app.main.handler", "app.main.second"],
         ),
         ("app.main.returned", vec!["app.main.handler"]),
+        (
+            "app.main.returned_pair",
+            vec!["app.main.handler", "app.main.second"],
+        ),
         ("app.main.assigned", vec!["app.main.handler"]),
     ] {
         assert_eq!(ref_targets(FILES, caller), want, "{caller}");
