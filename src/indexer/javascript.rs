@@ -2227,6 +2227,11 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
     {
         output.edges.push(edge);
     }
+    if node.kind() == "member_expression"
+        && let Some(edge) = this_member_reference_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
+    }
     if (node.kind() == "jsx_element" || node.kind() == "jsx_self_closing_element")
         && let Some(edge) = jsx_route_edge(node, ctx, source)
     {
@@ -2765,6 +2770,7 @@ fn in_value_position(node: Node<'_>) -> bool {
         | "enum_assignment" => is_field("value"),
         "for_in_statement" => is_field("right"),
         "arrow_function" => is_field("body"),
+        "export_statement" => is_field("value"),
         _ => false,
     }
 }
@@ -2937,7 +2943,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     });
     let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
-        kind: if is_root { "USES" } else { "CALLS" }.to_string(),
+        kind: if is_root { "USES" } else { "REFERENCES" }.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
         detail: target.is_none().then(|| name.clone()),
         target_qualname: target,
@@ -2954,6 +2960,44 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
             implicit_this: false,
             is_ref: true,
         }),
+        ..Default::default()
+    })
+}
+
+/// `REFERENCES` edge for a method of the enclosing class used as a value
+/// (`bus.on('x', this.handle)`, `{ run: this.run }`): `this.name` in a value
+/// position, not called and not the root of a longer chain.
+fn this_member_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    if ctx.this_rebound
+        || ctx.class_stack.len() <= ctx.ns_depth
+        || !in_value_position(node)
+        || node
+            .parent()
+            .is_some_and(|p| matches!(p.kind(), "member_expression" | "optional_member_expression"))
+    {
+        return None;
+    }
+    let object = node.child_by_field_name("object")?;
+    let property = node.child_by_field_name("property")?;
+    if object.kind() != "this" || property.kind() != "property_identifier" {
+        return None;
+    }
+    let raw = node_text(node, source);
+    let target = resolve_call_target(&raw, ctx)?;
+    let receiver_type = pin_receiver_type(infer_receiver_type(node, source, ctx), ctx);
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+    Some(EdgeInput {
+        kind: "REFERENCES".to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(target),
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        receiver_type,
+        bare_call: false,
+        call_shape: Some(CallShape::value_reference()),
         ..Default::default()
     })
 }

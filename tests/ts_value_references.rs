@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::call_targets;
+use common::{edge_targets, ref_targets};
 
 const FILES: &[(&str, &str)] = &[
     (
@@ -32,7 +32,7 @@ const FILES: &[(&str, &str)] = &[
 
 #[test]
 fn ternary_and_nullish_operands_are_references() {
-    let mut t = call_targets(FILES, "src/hono-base.Hono.constructor");
+    let mut t = ref_targets(FILES, "src/hono-base.Hono.constructor");
     t.sort();
     assert_eq!(
         t,
@@ -43,26 +43,30 @@ fn ternary_and_nullish_operands_are_references() {
 
 #[test]
 fn nullish_fallback_to_an_imported_function_is_a_reference() {
-    let t = call_targets(FILES, "src/serve.serve");
+    let t = ref_targets(FILES, "src/serve.serve");
     assert!(t.contains(&"src/path.defaultJoin".to_string()), "{t:?}");
 }
 
 #[test]
 fn same_file_const_is_referenced_once_per_site_and_externals_stay_out() {
-    let mut t = call_targets(FILES, "src/local.setup");
+    let mut t = ref_targets(FILES, "src/local.setup");
     t.sort();
     // `register(handler)` resolves; `useState` (react) and `Math.max` emit nothing.
-    assert!(t.contains(&"src/local.handler".to_string()), "{t:?}");
-    assert!(t.contains(&"src/local.register".to_string()), "{t:?}");
+    assert_eq!(t, ["src/local.handler"], "{t:?}");
+    let calls = edge_targets(FILES, "src/local.setup", "CALLS");
+    assert!(
+        calls.contains(&"src/local.register".to_string()),
+        "{calls:?}"
+    );
     assert!(!t.iter().any(|q| q.contains("useState")), "{t:?}");
     assert!(!t.iter().any(|q| q.contains("max")), "{t:?}");
 }
 
 #[test]
 fn locals_shadow_imports_and_calls_are_not_doubled() {
-    let t = call_targets(FILES, "src/local.shadowed");
+    let t = ref_targets(FILES, "src/local.shadowed");
     assert!(!t.iter().any(|q| q.contains("getPath")), "{t:?}");
-    let t = call_targets(FILES, "src/local.calledToo");
+    let t = edge_targets(FILES, "src/local.calledToo", "CALLS");
     assert_eq!(
         t.iter()
             .filter(|q| q.as_str() == "src/utils/url.getPath")
@@ -70,13 +74,16 @@ fn locals_shadow_imports_and_calls_are_not_doubled() {
         1,
         "{t:?}"
     );
-    // One call plus two references on another line: the same-line pair counts once.
-    let t = call_targets(FILES, "src/local.called");
+    // One call plus two references on another line: the pair has a CALLS edge,
+    // so it keeps no REFERENCES edge at all.
+    let t = ref_targets(FILES, "src/local.called");
+    assert!(t.is_empty(), "{t:?}");
+    let t = edge_targets(FILES, "src/local.called", "CALLS");
     assert_eq!(
         t.iter()
             .filter(|q| q.as_str() == "src/local.handler")
             .count(),
-        2,
+        1,
         "{t:?}"
     );
 }
@@ -111,19 +118,13 @@ const SURFACES: &[(&str, &str)] = &[
 
 #[test]
 fn classes_and_exported_object_surfaces_are_not_references() {
-    let mut t = call_targets(SURFACES, "src/use.run");
-    t.sort();
-    assert_eq!(
-        t,
-        [
-            "src/err.op",
-            "src/use.check",
-            "src/use.check",
-            "src/use.check"
-        ],
-        "{t:?}"
-    );
-    let t = call_targets(SURFACES, "src/use.Api");
+    // `check(Failure)` / `check(Local)` pass classes (no reference); `check(op)`
+    // passes a function; the three `check(..)` calls are CALLS edges.
+    let t = ref_targets(SURFACES, "src/use.run");
+    assert_eq!(t, ["src/err.op"], "{t:?}");
+    let t = edge_targets(SURFACES, "src/use.run", "CALLS");
+    assert_eq!(t, ["src/use.check"; 3], "{t:?}");
+    let t = ref_targets(SURFACES, "src/use.Api");
     assert!(t.is_empty(), "{t:?}");
 }
 
@@ -139,7 +140,7 @@ fn functions_inside_an_exported_object_still_use_what_they_call() {
             "import { helper, settings } from './h';\nexport const Api = { run: () => take(helper), port: settings.port };\ndeclare function take(f: unknown): void;\n",
         ),
     ];
-    let t = call_targets(files, "src/api.Api");
+    let t = ref_targets(files, "src/api.Api");
     assert!(t.contains(&"src/h.helper".to_string()), "{t:?}");
     // `settings.port` reads the object: a use, not a call.
     assert!(!t.contains(&"src/h.settings".to_string()), "{t:?}");
