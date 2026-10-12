@@ -210,7 +210,9 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
     dispatch_pairs (Go): {(interface method key, implementing method key)} of lidx's graph. An oracle dispatch edge lists
     the interface methods its call sites invoke (`callee_alts`). A lidx edge to such an interface method, from a caller
     with such a site, is a true edge (the call exists), and it covers the oracle edge to a concrete implementation only
-    when lidx's graph links that implementation to the interface method. Without the oracle site the edge is a wrong edge."""
+    when lidx's graph links that implementation to the interface method. The oracle also lists every interface invocation
+    of a reachable function (`iface_calls`), including those RTA found no in-repo target behind. Without such a site the edge is a
+    wrong edge."""
     sym_keys = {s["key"] for s in syms.values() if "key" in s}
     # Declaration merging (an interface and a const of the same name, overloads) is one declaration: compare
     # declarations by (file, qualname) whenever lidx has a symbol at the position.
@@ -249,6 +251,8 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
         return "%s:%d" % (d["file"], d["line"])
 
     dpairs = {(cn(a), cn(b)) for a, b in dispatch_pairs} if dispatch_pairs is not None else None
+    # (caller, interface method) of every interface invocation the compiler saw in a reachable function
+    iface_calls = {(cn(okey(c["caller"])), cn(c["method"])) for c in oracle.get("iface_calls", [])}
     oedges = []
     by_pair = defaultdict(list)
     by_alt = defaultdict(list)  # (caller, interface method) -> oracle edges invoking it through an interface
@@ -345,7 +349,7 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
         res = pick_res(set(p["kinds"]))
         hits = by_pair.get((cn(ck), cn(tk)))
         alt_hits = by_alt.get((cn(ck), cn(tk)))
-        if hits or alt_hits:
+        if hits or alt_hits or (dispatch_pairs is not None and (cn(ck), cn(tk)) in iface_calls):
             for h in hits or ():
                 h["matched"] = True
             for h in alt_hits or ():

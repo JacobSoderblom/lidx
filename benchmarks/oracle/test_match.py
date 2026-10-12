@@ -232,3 +232,13 @@ class GoInterfaceDispatch(unittest.TestCase):
         summ = self.grade([edge(1, 3, 3, "receiver_type")], set())
         self.assertEqual((summ["tp"], summ["fp"]), (1, 0))
         self.assertEqual(summ["dispatch_matched"], 1)
+
+    def test_interface_call_with_no_in_repo_target_is_a_true_edge(self):
+        oracle = {"files": ["a.go"], "callers": [{"file": "a.go", "line": 1, "name": "use"}], "edges": [],
+                  "iface_calls": [{"caller": {"file": "a.go", "line": 1, "name": "use"}, "method": "a.go:10"}]}
+        syms = dict(self.SYMS)
+        summ = match.grade(oracle, syms, [edge(1, 2, 3, "receiver_type")], "go", match.Sources("/nonexistent"), dispatch_pairs=set())[0]
+        self.assertEqual((summ["tp"], summ["fp"]), (1, 0))
+        # an interface method the caller never invokes stays wrong
+        summ = match.grade(oracle, syms, [edge(1, 4, 3, "receiver_type")], "go", match.Sources("/nonexistent"), dispatch_pairs=set())[0]
+        self.assertEqual((summ["tp"], summ["fp"]), (0, 1))

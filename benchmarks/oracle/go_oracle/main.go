@@ -67,6 +67,15 @@ type Output struct {
 	// compiler knows what they call but the callee is not gradable.
 	ExtSites     []string `json:"ext_sites"`
 	ClosureSites []string `json:"closure_sites"`
+	// IfaceCalls are the (caller, interface method) pairs of every interface method invocation in a reachable
+	// function, whatever RTA found behind it (nothing in the repository, or only types outside it). The type
+	// checker resolves the call to the interface method; a graph edge to it is a true call.
+	IfaceCalls []IfaceCall `json:"iface_calls"`
+}
+
+type IfaceCall struct {
+	Caller Decl   `json:"caller"`
+	Method string `json:"method"`
 }
 
 func main() {
@@ -409,6 +418,49 @@ func main() {
 			callerSeen[d] = true
 		}
 	}
+
+	ifaceSeen := map[IfaceCall]bool{}
+	for fn := range res.Reachable {
+		if fn == nil {
+			continue
+		}
+		cf, why := declOf(fn)
+		if why != "" {
+			continue
+		}
+		for _, b := range fn.Blocks {
+			for _, in := range b.Instrs {
+				ci, ok := in.(ssa.CallInstruction)
+				if !ok || !ci.Common().IsInvoke() || ci.Common().Method == nil {
+					continue
+				}
+				m := ci.Common().Method
+				if o := m.Origin(); o != nil {
+					m = o
+				}
+				pos := prog.Fset.Position(m.Pos())
+				if !pos.IsValid() {
+					continue
+				}
+				if rel, ok := inRepo(pos.Filename); ok {
+					ifaceSeen[IfaceCall{Caller: cf, Method: fmt.Sprintf("%s:%d", rel, pos.Line)}] = true
+				}
+			}
+		}
+	}
+	for c := range ifaceSeen {
+		out.IfaceCalls = append(out.IfaceCalls, c)
+	}
+	sort.Slice(out.IfaceCalls, func(i, j int) bool {
+		a, b := out.IfaceCalls[i], out.IfaceCalls[j]
+		if a.Caller.File != b.Caller.File {
+			return a.Caller.File < b.Caller.File
+		}
+		if a.Caller.Line != b.Caller.Line {
+			return a.Caller.Line < b.Caller.Line
+		}
+		return a.Method < b.Method
+	})
 
 	for f := range fileSet {
 		out.Files = append(out.Files, f)
