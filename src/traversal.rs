@@ -285,17 +285,11 @@ fn counts_as_successor(edge: &Edge, id: i64, is_upstream: bool, walk: WalkDirect
 /// Stateless look at `id`'s successors for a node the BFS never expanded
 /// (hop ceiling, byte break, config cap). Edges whose endpoint is already in
 /// `visited` count as `seen`, others as `fresh`.
-fn dry_outcome(
-    db: &Db,
-    id: i64,
-    is_upstream: bool,
-    config: &TraceConfig,
-    entry: &Entry,
-    languages: Option<&[String]>,
-    graph_version: i64,
-    visited: &HashSet<i64>,
-) -> Result<Outcome> {
-    let edges = db.edges_for_symbol_with_dispatch(id, languages, graph_version)?;
+fn dry_outcome(ctx: &StopContext, id: i64, entry: &Entry) -> Result<Outcome> {
+    let (is_upstream, config) = (ctx.is_upstream, ctx.config);
+    let edges = ctx
+        .db
+        .edges_for_symbol_with_dispatch(id, ctx.languages, ctx.graph_version)?;
     let walk = walk_direction(is_upstream);
     let allowed = ConfigScope::allowed(entry, &edges);
     let mut out = Outcome::default();
@@ -318,7 +312,7 @@ fn dry_outcome(
             continue;
         }
         match successor_of(edge, id, is_upstream).flatten() {
-            Some(next) if visited.contains(&next) => out.seen += 1,
+            Some(next) if ctx.visited.contains(&next) => out.seen += 1,
             _ => out.fresh += 1,
         }
     }
@@ -979,17 +973,7 @@ fn decide(ctx: &StopContext, leaf: &LeafRef) -> Result<Decision> {
         Some(o) => (o.clone(), true),
         None => {
             let entry = ctx.unexpanded.get(&key).cloned().unwrap_or(Entry::Unscoped);
-            let o = dry_outcome(
-                ctx.db,
-                leaf.sym.id,
-                ctx.is_upstream,
-                ctx.config,
-                &entry,
-                ctx.languages,
-                ctx.graph_version,
-                ctx.visited,
-            )?;
-            (o, false)
+            (dry_outcome(ctx, leaf.sym.id, &entry)?, false)
         }
     };
     if !expanded && outcome.fresh > 0 {
@@ -1063,12 +1047,12 @@ fn finish_stops(ctx: &StopContext, leaves: &[(LeafRef, Decision)]) -> Result<Vec
     Ok(out)
 }
 
+/// Per-reason leaf counts and the stop of each hop (aligned with the trace).
+type LeafStops = (BTreeMap<String, usize>, Vec<Option<TraceStop>>);
+
 /// Stop reason for every leaf hop of the settled trace (`None` for non-leaf
 /// hops, aligned with `trace`) and the per-reason leaf counts (issue #410).
-fn leaf_stops(
-    ctx: &StopContext,
-    trace: &[TraceHop],
-) -> Result<(BTreeMap<String, usize>, Vec<Option<TraceStop>>)> {
+fn leaf_stops(ctx: &StopContext, trace: &[TraceHop]) -> Result<LeafStops> {
     let parents: HashSet<(i64, usize)> = trace
         .iter()
         .filter_map(|h| Some((h.predecessor_id, h.distance.checked_sub(1)?)))
