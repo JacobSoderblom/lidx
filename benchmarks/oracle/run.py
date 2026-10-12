@@ -293,6 +293,10 @@ def main():
                 comp["module_level_removed"] = sum(1 for e in oracle["edges"] if e["caller"]["line"] == 0)
                 comp["abstract_target_removed"] = sum(1 for e in oracle["edges"] if e.get("dispatch"))
                 res["comparable"] = comp  # other languages: `calls` is the comparable grading
+            if cell["lang"] == "go":
+                # the repowise-comparable Go grading: no interface edges, no dispatch credit (match.repowise_go_scope);
+                # `calls` stays the dispatch-credited, lidx-native grading (a labelled diagnostic)
+                res["comparable"] = match.grade(match.repowise_go_scope(oracle), syms, edges, repo["lang"], src, ("CALLS",))[0]
             res["calls_plus_references"] = {k: summ_r[k] for k in ("graded", "tp", "fp", "precision", "precision_ci", "recall", "recall_ci",
                                                                    "matched_oracle_edges")}
             res["lidx_edge_counts"] = {k: sum(1 for e in edges if e["kind"] == k) for k in ("CALLS", "REFERENCES", "USES")}

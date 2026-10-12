@@ -107,8 +107,12 @@ def build(results_dir):
       "those callers unjudged for precision. The stricter grading is in the diagnostic table below.")
     w("- **Rust**: repowise excludes test files by path only (`tests/` or `test/` directories) and keeps `#[cfg(test)]` code. "
       "The `path_tests_excluded` cell does the same. The `#[cfg(test)]`-excluded cell is in the diagnostic table.")
-    w("- **Go**: unchanged; the cells already match (closure callees are keyed at the enclosing declaration here and at the "
-      "literal in repowise, see the README).")
+    w("- **Go**: repowise counts `calls` edges keyed (caller declaration, callee declaration), keys a dynamic call at the concrete "
+      "implementation RTA names and never expands an interface method into its implementations. The Go rows grade lidx the same "
+      "way: an edge to `Iface.Method` is contradicted where RTA names a concrete implementation, and no edge earns dispatch "
+      "credit for a callee it did not name. The \"dispatch-credited, lidx-native\" table below grades the interface edges the way "
+      "lidx's own graph can use them. Closure callees are keyed at the enclosing declaration here and at the literal in repowise, "
+      "see the README.")
     w("")
     w("repowise columns are their published point estimates "
       "(`docs/BENCHMARKS.md`, repowise main, 2026-10-03) with Wilson intervals computed by us from the edge counts of the "
@@ -152,6 +156,25 @@ def build(results_dir):
         w("| %s | %s | %s %s | %s %s | %d | %s |" % (cid, why, pct(s["precision"]), ci(s["precision_ci"]), pct(s["recall_comparable"]),
                                                   ci(s["recall_comparable_ci"]), s["oracle_edges"], ref))
     w("")
+    gocells = [cid for cid in ORDER if cid in cells and cells[cid]["lang"] == "go" and "comparable" in cells[cid]]
+    if gocells:
+        w("### Go: dispatch-credited, lidx-native (diagnostic, no verdict)")
+        w("")
+        w("lidx binds a call on an interface-typed receiver to the interface method and reaches the implementations through "
+          "dispatch (`analyze_impact`, `trace_flow`). Graded that way an edge to `Iface.Method` is true when the compiler saw the "
+          "caller invoke that method, and covers an RTA edge to an implementation when lidx's own IMPLEMENTS edges link it. "
+          "repowise does neither, so this is **not** comparable to its figures and carries no verdict; the head-to-head table above "
+          "uses the repowise rules. Both columns are over the same oracle edges.")
+        w("")
+        w("| Cell | repowise rules P | repowise rules R | dispatch-credited P [95% CI] | dispatch-credited R [95% CI] | dispatch matched / edges |")
+        w("|---|---|---|---|---|---|")
+        for cid in gocells:
+            c, d = cells[cid]["comparable"], cells[cid]["calls"]
+            w("| %s%s | %s | %s | %s %s | %s %s | %d / %d |" % (
+                cid, " (held-out)" if cid in held_out_ids(meta) else "", pct(c["precision"]), pct(c["recall_comparable"]),
+                pct(d["precision"]), ci(d["precision_ci"]), pct(d["recall_comparable"]), ci(d["recall_comparable_ci"]),
+                d["dispatch_matched"], d["dispatch_edges"]))
+        w("")
     held = held_out_ids(meta)
     if held:
         w("### Held-out cells (no repowise figure)")
@@ -198,7 +221,8 @@ def build(results_dir):
     w("")
     w("`recall (static)` is over static edges whose caller and callee lidx indexes (dispatch, capture gaps out); "
       "`recall incl. dispatch` adds dispatch back; `recall comparable` is the head-to-head figure for cells graded the same way "
-      "as repowise (for TypeScript the head-to-head table uses repowise's narrower scope, so its figure differs from this column).")
+      "as repowise (for TypeScript the head-to-head table uses repowise's narrower scope, so its figure differs from this column; for Go "
+      "the columns here are the dispatch-credited, lidx-native grading, the head-to-head table uses the repowise rules).")
     w("")
     w("| Cell | Oracle | Oracle edges | static edges judged | dispatch edges | capture gap | graded lidx edges | P | recall (static) | recall incl. dispatch | recall comparable |")
     w("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")

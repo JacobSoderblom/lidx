@@ -190,10 +190,6 @@ class RepowiseTypeScriptScope(unittest.TestCase):
         self.assertEqual(withheld, {"a.ts:9", "a.ts:1"})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class GoInterfaceDispatch(unittest.TestCase):
     """A lidx edge to a Go interface method is graded against the interface methods the oracle's dynamic sites invoke."""
 
@@ -242,3 +238,34 @@ class GoInterfaceDispatch(unittest.TestCase):
         # an interface method the caller never invokes stays wrong
         summ = match.grade(oracle, syms, [edge(1, 4, 3, "receiver_type")], "go", match.Sources("/nonexistent"), dispatch_pairs=set())[0]
         self.assertEqual((summ["tp"], summ["fp"]), (0, 1))
+
+    def test_repowise_scoring_gives_no_fan_out_credit(self):
+        """One lidx edge to `Doer.Do` covers two RTA edges (two implementations) under the lidx-native scoring only."""
+        oracle = {
+            "files": ["a.go"],
+            "callers": [{"file": "a.go", "line": 1, "name": "use"}, {"file": "a.go", "line": 20, "name": "Do"},
+                        {"file": "a.go", "line": 30, "name": "Do"}],
+            "edges": [{"caller": {"file": "a.go", "line": 1, "name": "use"}, "callee": {"file": "a.go", "line": c, "name": "Do"},
+                       "sites": ["a.go:3"], "dispatch": True, "callee_alts": ["a.go:10"]} for c in (20, 30)],
+            "iface_calls": [{"caller": {"file": "a.go", "line": 1, "name": "use"}, "method": "a.go:10"}],
+        }
+        syms = dict(self.SYMS)
+        edges = [edge(1, 2, 3, "receiver_type")]
+        pairs = {("a.go:10", "a.go:20"), ("a.go:10", "a.go:30")}
+        src = match.Sources("/nonexistent")
+        native = match.grade(oracle, syms, edges, "go", src, dispatch_pairs=pairs)[0]
+        rw = match.grade(match.repowise_go_scope(oracle), syms, edges, "go", src)[0]
+        self.assertEqual((native["tp"], native["fp"], native["dispatch_matched"]), (1, 0, 2))
+        self.assertEqual(native["recall_comparable"], 1.0)
+        # repowise's rules: the interface edge is contradicted (RTA names the implementations) and covers nothing
+        self.assertEqual((rw["tp"], rw["fp"], rw["dispatch_matched"]), (0, 1, 0))
+        self.assertEqual(rw["recall_comparable"], 0.0)
+        self.assertEqual(rw["precision"], 0.0)
+        # a concrete edge scores the same under both
+        both = [edge(1, 3, 3, "receiver_type")]
+        self.assertEqual(match.grade(oracle, syms, both, "go", src, dispatch_pairs=pairs)[0]["recall_comparable"], 0.5)
+        self.assertEqual(match.grade(match.repowise_go_scope(oracle), syms, both, "go", src)[0]["recall_comparable"], 0.5)
+
+
+if __name__ == "__main__":
+    unittest.main()

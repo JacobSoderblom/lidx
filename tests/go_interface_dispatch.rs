@@ -243,3 +243,33 @@ fn deleting_the_interface_file_drops_its_edges_like_a_fresh_reindex() {
         .collect();
     assert_incremental_equals_fresh(&indexer, &rest);
 }
+
+#[test]
+fn a_method_with_other_parameter_or_result_types_is_no_implementation() {
+    let files = [
+        ("go.mod", GO_MOD),
+        (
+            "artifact/artifact.go",
+            "package artifact\n\ntype ID string\n\ntype Identifiable interface {\n\tID() ID\n}\n\ntype Sink interface {\n\tPut(v int) error\n}\n",
+        ),
+        ("sbom/sbom.go", "package sbom\n\ntype FormatID string\n"),
+        (
+            "enc/enc.go",
+            "package enc\n\nimport \"example.com/m/sbom\"\n\ntype Encoder struct{}\n\nfunc (e Encoder) ID() sbom.FormatID { return \"\" }\n",
+        ),
+        (
+            "enc/ok.go",
+            "package enc\n\nimport \"example.com/m/artifact\"\n\ntype Plain struct{}\n\nfunc (p Plain) ID() artifact.ID { return \"\" }\n\ntype Store struct{}\n\nfunc (s Store) Put(v int) error { return nil }\n\ntype Wrong struct{}\n\nfunc (w Wrong) Put(v string) error { return nil }\n",
+        ),
+    ];
+    let (_tmp, _root, indexer) = indexed(&files);
+    let mut got = edges(&indexer, "IMPLEMENTS", "enc/%");
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "enc/ok.Plain -> artifact/artifact.Identifiable",
+            "enc/ok.Store -> artifact/artifact.Sink",
+        ]
+    );
+}

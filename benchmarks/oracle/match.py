@@ -197,6 +197,20 @@ def repowise_ts_scope(oracle):
     return out, withheld
 
 
+def repowise_go_scope(oracle):
+    """The Go oracle as repowise's G4 grading sees it: `calls` edges keyed (caller declaration, callee declaration), the callee
+    of a dynamic call at the concrete implementation RTA names, dispatch edges never expanded from an interface method.
+
+    Drops what only our oracle knows: the interface methods behind a dispatch edge (`callee_alts`) and every interface
+    invocation (`iface_calls`). Graded without `dispatch_pairs`, a lidx edge to `Iface.Method` then has no oracle edge to
+    match (a wrong edge where RTA names a concrete implementation) and covers no implementation, so one edge never earns
+    the fan-out. The lidx-native grading (`dispatch_pairs`) stays a separate, labelled diagnostic."""
+    out = dict(oracle)
+    out["edges"] = [{k: v for k, v in e.items() if k != "callee_alts"} for e in oracle["edges"]]
+    out.pop("iface_calls", None)
+    return out
+
+
 def okey_of(d):
     return "%s:%d" % (d["file"], d["line"])
 

@@ -101,14 +101,32 @@ pub(super) fn pick_build_twin(
     }
 }
 
+/// What `collapse_build_twins` groups a declaration by: twins share `kind` and
+/// `member` (`Name`, or `Type.Method`); `visibility` carries the file's
+/// build constraint. The one place a call site builds it.
+pub(super) struct TwinKey {
+    kind: String,
+    member: String,
+    visibility: Option<String>,
+}
+
+impl TwinKey {
+    pub(super) fn new(kind: &str, member: &str, visibility: Option<&str>) -> Self {
+        Self {
+            kind: kind.to_string(),
+            member: member.to_string(),
+            visibility: visibility.map(str::to_string),
+        }
+    }
+}
+
 /// `items` with every set of build-constraint twins -- same `kind` and
 /// member key, different file, at least one file constrained -- reduced to
 /// the twin `pick_build_twin` chooses. A set no twin is picked from stays as
-/// it is (ambiguous when named). `view` gives `(kind, member key,
-/// visibility)`.
+/// it is (ambiguous when named). `view` gives each item's [`TwinKey`].
 pub(super) fn collapse_build_twins<T>(
     items: Vec<T>,
-    view: impl Fn(&T) -> (String, String, Option<String>),
+    view: impl Fn(&T) -> TwinKey,
     caller: Option<&BuildTag>,
 ) -> Vec<T> {
     if items.len() < 2 {
@@ -118,13 +136,13 @@ pub(super) fn collapse_build_twins<T>(
     {
         let mut groups: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
         let views: Vec<_> = items.iter().map(&view).collect();
-        for (i, (kind, member, _)) in views.iter().enumerate() {
-            groups.entry((kind, member)).or_default().push(i);
+        for (i, key) in views.iter().enumerate() {
+            groups.entry((&key.kind, &key.member)).or_default().push(i);
         }
         for group in groups.values().filter(|g| g.len() > 1) {
             let tags: Vec<Option<BuildTag>> = group
                 .iter()
-                .map(|&i| BuildTag::parse(views[i].2.as_deref()))
+                .map(|&i| BuildTag::parse(views[i].visibility.as_deref()))
                 .collect();
             if tags.iter().all(Option::is_none) {
                 continue;
@@ -160,6 +178,15 @@ impl GoSymbol {
             last
         };
         cut.map_or(self.qualname.as_str(), |i| &self.qualname[i + 1..])
+    }
+
+    /// The symbol as `collapse_build_twins` groups it.
+    fn twin_key(&self) -> TwinKey {
+        TwinKey::new(
+            &self.kind,
+            self.name_in_package(),
+            self.visibility.as_deref(),
+        )
     }
 
     /// The package directory the symbol is declared in.
@@ -294,13 +321,7 @@ impl Resolver<'_> {
         let caller = self.go_caller_tag()?;
         Ok(collapse_build_twins(
             rows.into_iter().filter(|s| s.dir() == dir).collect(),
-            |s: &GoSymbol| {
-                (
-                    s.kind.clone(),
-                    s.name_in_package().to_string(),
-                    s.visibility.clone(),
-                )
-            },
+            GoSymbol::twin_key,
             caller.as_ref(),
         ))
     }
@@ -354,13 +375,7 @@ impl Resolver<'_> {
                 rows.into_iter()
                     .filter(|s| s.qualname.ends_with(&suffix) && s.dir() == dir)
                     .collect::<Vec<_>>(),
-                |s: &GoSymbol| {
-                    (
-                        s.kind.clone(),
-                        s.name_in_package().to_string(),
-                        s.visibility.clone(),
-                    )
-                },
+                GoSymbol::twin_key,
                 caller.as_ref(),
             )
         };
@@ -745,17 +760,13 @@ fn struct_fields(signature: Option<&str>) -> Vec<(Option<String>, String)> {
         .collect()
 }
 
-/// `edges.derived` value of the `IMPLEMENTS` edges `Db::rederive_go_implements`
-/// writes (1 is the deferred-RPC `RPC_CALL` edges).
-pub(super) const GO_STRUCTURAL_DERIVED: i64 = 2;
-
-/// Parameter and result counts of a method.
-type Arity = (usize, usize);
+/// A method's parameter and result types, each normalized (`method_type_key`).
+type MethodSig = (Vec<String>, Vec<String>);
 
 /// The methods of a Go type, promoted ones included.
 #[derive(Default, Clone)]
 struct MethodSet {
-    methods: HashMap<String, Arity>,
+    methods: HashMap<String, MethodSig>,
     /// False when an embedded type's methods could not be told.
     complete: bool,
 }
@@ -777,53 +788,125 @@ impl GoTypeRow {
     }
 }
 
-/// `(params, results)` counts of a stored signature `(params) -> results`.
-fn signature_arity(signature: Option<&str>) -> Arity {
-    let Some(sig) = signature else {
-        return (0, 0);
-    };
-    let (params, results) = match sig.rsplit_once(" -> ") {
-        Some((p, r)) => (p, Some(r.trim())),
-        None => (sig, None),
-    };
-    let count = |list: &str| {
-        let inner = list
-            .trim()
-            .strip_prefix('(')
-            .and_then(|l| l.strip_suffix(')'));
-        inner.map_or(1, |inner| split_top_level(inner, ',').len())
-    };
-    (count(params), results.map_or(0, count))
+/// A type text with the parts two declarations of one signature may spell
+/// differently dropped: whitespace, package qualifiers (`sbom.FormatID` and
+/// `FormatID` are the same simple name) and `interface{}` for `any`. Two
+/// methods have the same signature when their normalized texts are equal --
+/// `ID() sbom.FormatID` is not `ID() artifact.ID`.
+fn method_type_key(text: &str) -> String {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let chars: Vec<char> = text.chars().collect();
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if is_word(chars[i]) {
+            let start = i;
+            while i < chars.len() && is_word(chars[i]) {
+                i += 1;
+            }
+            // `pkg.Name`: drop the qualifier and its dot.
+            let qualifier = chars.get(i) == Some(&'.')
+                && chars
+                    .get(i + 1)
+                    .is_some_and(|&c| c.is_alphabetic() || c == '_');
+            if qualifier {
+                i += 1;
+            } else {
+                out.extend(&chars[start..i]);
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out.replace("interface{}", "any")
 }
 
-/// The methods of the standard-library interfaces repositories embed most;
-/// any other foreign embedded interface leaves the embedding one incomplete.
-fn std_interface(path: &str, name: &str) -> Option<&'static [(&'static str, usize, usize)]> {
+/// The parameter types of a stored signature `(params) -> results`, one per
+/// parameter (`(a, b int, c string)` is `int, int, string`).
+fn signature_params(signature: &str) -> Vec<String> {
+    let params = signature.rsplit_once(" -> ").map_or(signature, |(p, _)| p);
+    let Some(inner) = params
+        .trim()
+        .strip_prefix('(')
+        .and_then(|p| p.strip_suffix(')'))
+    else {
+        return Vec::new();
+    };
+    let parts = split_top_level(inner, ',');
+    let named = parts
+        .iter()
+        .any(|p| split_top_level(p.trim(), ' ').len() > 1);
+    if !named {
+        return parts.into_iter().map(|p| p.trim().to_string()).collect();
+    }
+    let mut types = Vec::with_capacity(parts.len());
+    let mut carry = String::new();
+    for part in parts.iter().rev() {
+        let part = part.trim();
+        if let Some((_, ty)) = part.split_once(' ') {
+            carry = ty.trim().to_string();
+        }
+        types.push(carry.clone());
+    }
+    types.reverse();
+    types
+}
+
+/// The normalized parameter and result types of a stored method signature.
+fn method_signature(signature: Option<&str>) -> MethodSig {
+    let Some(sig) = signature else {
+        return (Vec::new(), Vec::new());
+    };
+    (
+        signature_params(sig)
+            .iter()
+            .map(|t| method_type_key(t))
+            .collect(),
+        signature_results(Some(sig))
+            .iter()
+            .map(|t| method_type_key(t))
+            .collect(),
+    )
+}
+
+/// The methods of the standard-library interfaces repositories embed most
+/// (name and Go signature); any other foreign embedded interface leaves the
+/// embedding one incomplete.
+fn std_interface(path: &str, name: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    const READ: (&str, &str) = ("Read", "(p []byte) -> (n int, err error)");
+    const WRITE: (&str, &str) = ("Write", "(p []byte) -> (n int, err error)");
+    const CLOSE: (&str, &str) = ("Close", "() -> error");
     Some(match (path, name) {
-        ("io", "Reader") => &[("Read", 1, 2)],
-        ("io", "Writer") => &[("Write", 1, 2)],
-        ("io", "Closer") => &[("Close", 0, 1)],
-        ("io", "Seeker") => &[("Seek", 2, 2)],
-        ("io", "ReaderAt") => &[("ReadAt", 2, 2)],
-        ("io", "WriterAt") => &[("WriteAt", 2, 2)],
-        ("io", "ReaderFrom") => &[("ReadFrom", 1, 2)],
-        ("io", "WriterTo") => &[("WriteTo", 1, 2)],
-        ("io", "ByteReader") => &[("ReadByte", 0, 2)],
-        ("io", "ByteWriter") => &[("WriteByte", 1, 1)],
-        ("io", "RuneReader") => &[("ReadRune", 0, 3)],
-        ("io", "StringWriter") => &[("WriteString", 1, 2)],
-        ("io", "ReadWriter") => &[("Read", 1, 2), ("Write", 1, 2)],
-        ("io", "ReadCloser") => &[("Read", 1, 2), ("Close", 0, 1)],
-        ("io", "WriteCloser") => &[("Write", 1, 2), ("Close", 0, 1)],
-        ("io", "ReadWriteCloser") => &[("Read", 1, 2), ("Write", 1, 2), ("Close", 0, 1)],
-        ("fmt", "Stringer") => &[("String", 0, 1)],
-        ("sort", "Interface") => &[("Len", 0, 1), ("Less", 2, 1), ("Swap", 2, 0)],
-        ("net/http", "Handler") => &[("ServeHTTP", 2, 0)],
+        ("io", "Reader") => &[READ],
+        ("io", "Writer") => &[WRITE],
+        ("io", "Closer") => &[CLOSE],
+        ("io", "Seeker") => &[("Seek", "(offset int64, whence int) -> (int64, error)")],
+        ("io", "ReaderAt") => &[("ReadAt", "(p []byte, off int64) -> (n int, err error)")],
+        ("io", "WriterAt") => &[("WriteAt", "(p []byte, off int64) -> (n int, err error)")],
+        ("io", "ReaderFrom") => &[("ReadFrom", "(r io.Reader) -> (n int64, err error)")],
+        ("io", "WriterTo") => &[("WriteTo", "(w io.Writer) -> (n int64, err error)")],
+        ("io", "ByteReader") => &[("ReadByte", "() -> (byte, error)")],
+        ("io", "ByteWriter") => &[("WriteByte", "(c byte) -> error")],
+        ("io", "RuneReader") => &[("ReadRune", "() -> (r rune, size int, err error)")],
+        ("io", "StringWriter") => &[("WriteString", "(s string) -> (n int, err error)")],
+        ("io", "ReadWriter") => &[READ, WRITE],
+        ("io", "ReadCloser") => &[READ, CLOSE],
+        ("io", "WriteCloser") => &[WRITE, CLOSE],
+        ("io", "ReadWriteCloser") => &[READ, WRITE, CLOSE],
+        ("fmt", "Stringer") => &[("String", "() -> string")],
+        ("sort", "Interface") => &[
+            ("Len", "() -> int"),
+            ("Less", "(i, j int) -> bool"),
+            ("Swap", "(i, j int)"),
+        ],
+        ("net/http", "Handler") => &[("ServeHTTP", "(http.ResponseWriter, *http.Request)")],
         ("context", "Context") => &[
-            ("Deadline", 0, 2),
-            ("Done", 0, 1),
-            ("Err", 0, 1),
-            ("Value", 1, 1),
+            ("Deadline", "() -> (deadline time.Time, ok bool)"),
+            ("Done", "() -> <-chan struct{}"),
+            ("Err", "() -> error"),
+            ("Value", "(key any) -> any"),
         ],
         _ => return None,
     })
@@ -832,7 +915,7 @@ fn std_interface(path: &str, name: &str) -> Option<&'static [(&'static str, usiz
 impl Resolver<'_> {
     /// Every `(type, interface)` pair where the type's method set (own and
     /// promoted from embedded types) holds each method of the interface's
-    /// (own and embedded interfaces') by name and arity -- Go's implicit
+    /// (own and embedded interfaces') by name and signature -- Go's implicit
     /// `implements`. An interface with an embedded interface whose methods
     /// are not known is skipped, so no pair rests on a guess.
     fn go_structural_implements(&mut self) -> Result<Vec<(i64, i64, i64)>> {
@@ -857,7 +940,7 @@ impl Resolver<'_> {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
         };
-        let mut own_methods: HashMap<String, Vec<(String, Arity)>> = HashMap::new();
+        let mut own_methods: HashMap<String, Vec<(String, MethodSig)>> = HashMap::new();
         let mut types: Vec<GoTypeRow> = Vec::new();
         for row in rows {
             if row.kind == "method" {
@@ -865,7 +948,7 @@ impl Resolver<'_> {
                     own_methods
                         .entry(container.to_string())
                         .or_default()
-                        .push((row.name.clone(), signature_arity(row.signature.as_deref())));
+                        .push((row.name.clone(), method_signature(row.signature.as_deref())));
                 }
             } else {
                 types.push(row);
@@ -920,7 +1003,7 @@ impl Resolver<'_> {
         &mut self,
         idx: usize,
         types: &[GoTypeRow],
-        own: &HashMap<String, Vec<(String, Arity)>>,
+        own: &HashMap<String, Vec<(String, MethodSig)>>,
         by_name: &HashMap<(String, String), Vec<usize>>,
         memo: &mut HashMap<usize, MethodSet>,
         depth: usize,
@@ -933,8 +1016,8 @@ impl Resolver<'_> {
             methods: HashMap::new(),
             complete: true,
         };
-        for (name, arity) in own.get(&t.qualname).into_iter().flatten() {
-            set.methods.insert(name.clone(), *arity);
+        for (name, sig) in own.get(&t.qualname).into_iter().flatten() {
+            set.methods.insert(name.clone(), sig.clone());
         }
         let embedded: Vec<String> = struct_fields(t.signature.as_deref())
             .into_iter()
@@ -949,7 +1032,9 @@ impl Resolver<'_> {
                 let dir = t.dir().to_string();
                 for text in embedded {
                     if text == "error" {
-                        set.methods.entry("Error".into()).or_insert((0, 1));
+                        set.methods
+                            .entry("Error".into())
+                            .or_insert_with(|| method_signature(Some("() -> string")));
                         continue;
                     }
                     match canonical_type(&text, &dir, &imports) {
@@ -959,10 +1044,10 @@ impl Resolver<'_> {
                             let found = collapse_build_twins(
                                 found,
                                 |&i: &usize| {
-                                    (
-                                        types[i].kind.clone(),
-                                        types[i].name.clone(),
-                                        types[i].visibility.clone(),
+                                    TwinKey::new(
+                                        &types[i].kind,
+                                        &types[i].name,
+                                        types[i].visibility.as_deref(),
                                     )
                                 },
                                 None,
@@ -984,8 +1069,10 @@ impl Resolver<'_> {
                         }
                         Some(GoType::Foreign { path, name }) => match std_interface(&path, &name) {
                             Some(methods) => {
-                                for (m, p, r) in methods {
-                                    set.methods.entry((*m).to_string()).or_insert((*p, *r));
+                                for (m, sig) in methods {
+                                    set.methods
+                                        .entry((*m).to_string())
+                                        .or_insert_with(|| method_signature(Some(sig)));
                                 }
                             }
                             None => set.complete = false,
@@ -1020,13 +1107,16 @@ impl Db {
                 "SELECT id, source_symbol_id, target_symbol_id FROM edges
                  WHERE graph_version = ?1 AND derived = ?2 AND kind = 'IMPLEMENTS'",
             )?;
-            stmt.query_map(params![graph_version, GO_STRUCTURAL_DERIVED], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                    row.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                ))
-            })?
+            stmt.query_map(
+                params![graph_version, crate::model::DERIVED_GO_STRUCTURAL],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    ))
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?
         };
         let wanted_set: HashSet<(i64, i64)> = wanted.iter().map(|&(c, i, _)| (c, i)).collect();
@@ -1056,7 +1146,7 @@ impl Db {
                     class,
                     iface,
                     graph_version,
-                    GO_STRUCTURAL_DERIVED
+                    crate::model::DERIVED_GO_STRUCTURAL
                 ])?;
                 changed += 1;
             }
@@ -1166,5 +1256,22 @@ mod tests {
                 (Some("m".to_string()), "map[string]int".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn method_signatures_compare_by_normalized_simple_type_names() {
+        let sig = |s: &str| method_signature(Some(s));
+        // package qualifiers and spacing do not matter ...
+        assert_eq!(
+            sig("(r io.Reader, n int) -> (*sbom.SBOM, error)"),
+            sig("(in  Reader, count int) -> (*SBOM,error)")
+        );
+        assert_eq!(sig("(a, b int) -> bool"), sig("(int, int) -> bool"));
+        assert_eq!(sig("(v interface{}) -> any"), sig("(v any) -> any"));
+        // ... but the types do
+        assert_ne!(sig("() -> sbom.FormatID"), sig("() -> artifact.ID"));
+        assert_ne!(sig("(x int) -> error"), sig("(x string) -> error"));
+        assert_ne!(sig("(x int) -> error"), sig("(x int)"));
+        assert_ne!(sig("(x ...int)"), sig("(x []int)"));
     }
 }

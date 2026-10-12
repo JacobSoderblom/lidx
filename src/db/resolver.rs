@@ -488,6 +488,9 @@ pub(crate) struct LanguageProfile {
     /// told, so the call binds nothing.
     pub deferred_candidate: Option<DeferredCandidateFn>,
     /// What two symbols of one kind sharing a qualname in one file are.
+    /// Go declares no such twins; its conditional-compilation variants live
+    /// in different files (so different qualnames) and are chosen by the
+    /// package-member lookup instead: see `resolver_go::collapse_build_twins`.
     pub same_file_twins: SameFileTwins,
     /// The package a file belongs to (Cargo crate directory), for a language
     /// whose qualnames restart at each package root (`crate::`): among
@@ -2878,7 +2881,7 @@ impl<'c> Resolver<'c> {
             let mut hits = resolver_go::collapse_build_twins(
                 hits,
                 |(_, _, kind, visibility): &(i64, String, String, Option<String>)| {
-                    (kind.clone(), member.to_string(), visibility.clone())
+                    resolver_go::TwinKey::new(kind, member, visibility.as_deref())
                 },
                 caller_tag.as_ref(),
             )
@@ -4693,15 +4696,15 @@ impl Db {
     /// another file). The extractor can't see that return type, so the call
     /// site's `CALLS` edge (or its unresolved-store row) is re-read here and
     /// the edges derived from the callee's declaration. Last pass's derived
-    /// edges (`derived = 1`) go first, so the outcome
+    /// edges (`derived = DERIVED_DEFERRED_RPC`) go first, so the outcome
     /// depends only on the current symbols and incremental sync equals a
     /// fresh reindex (issue #77). Returns how many edges it wrote.
     pub fn rederive_deferred_rpc_calls(&self, graph_version: i64) -> Result<usize> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
-            "DELETE FROM edges WHERE graph_version = ?1 AND derived = 1",
-            params![graph_version],
+            "DELETE FROM edges WHERE graph_version = ?1 AND derived = ?2",
+            params![graph_version, crate::model::DERIVED_DEFERRED_RPC],
         )?;
         let sites = load_deferred_call_sites(&tx, graph_version)?;
         let derived = {
@@ -5368,7 +5371,7 @@ fn insert_derived_rpc_calls(
          (file_id, source_symbol_id, target_symbol_id, kind, target_qualname, detail,
           evidence_snippet, evidence_start_line, evidence_end_line, confidence,
           graph_version, commit_sha, trace_id, span_id, event_ts, resolution_kind, derived)
-         VALUES (?, ?, ?, 'RPC_CALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+         VALUES (?, ?, ?, 'RPC_CALL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )?;
     for d in derived {
         let site = d.site;
@@ -5388,6 +5391,7 @@ fn insert_derived_rpc_calls(
             site.span_id,
             site.event_ts,
             d.resolution_kind,
+            crate::model::DERIVED_DEFERRED_RPC,
         ])?;
     }
     Ok(derived.len())

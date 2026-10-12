@@ -107,7 +107,14 @@ calls of function values; TypeScript interface and type-literal members and abst
 initialiser is a static call); Rust methods declared on a trait (`Trait#method()`, not `impl#[T][Trait]method()`),
 which also carry the trait's in-repo implementations as acceptable targets. They stay in the comparable recall.
 
-**Go interface edges.** RTA keys a call through an interface at the concrete implementations; lidx binds it to the interface
+**Two Go scorings.** The head-to-head with repowise (`comparable` in `cells.json`, the verdict and held-out tables) uses
+repowise's rules: `calls` edges keyed (caller declaration, callee declaration), a dynamic call keyed at the concrete implementation
+RTA names, dispatch edges never expanded (`match.repowise_go_scope`). A lidx edge to `Iface.Method` has no oracle edge to match
+there, so it is a wrong edge, and it covers no implementation. The **dispatch-credited, lidx-native** scoring (`calls`, its own
+labelled table in the report, no verdict) is described next; it measures what lidx's graph can answer through its dispatch
+machinery and is not comparable to repowise.
+
+**Go interface edges (dispatch-credited, lidx-native).** RTA keys a call through an interface at the concrete implementations; lidx binds it to the interface
 method (`Doer.Do`) and fans out to implementations through its dispatch machinery. The Go oracle therefore also records, per
 edge, the interface methods its dynamic call sites invoke (`callee_alts`, `file:line` of the method name). Grading a lidx edge
 to an interface method: it is a **true edge** when the caller has such a site invoking exactly that method, and a **wrong edge**
