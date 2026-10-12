@@ -3405,7 +3405,59 @@ fn query_exact_candidates(
         }
         candidates.push(candidate);
     }
-    Ok(candidates)
+    Ok(narrow_rust_candidates(candidates, caller_file))
+}
+
+/// The Cargo package directory a Rust path belongs to: everything before the
+/// first `src/`, `tests/`, `benches/` or `examples/` component (`""` for a
+/// root package).
+fn rust_crate_dir(path: &str) -> &str {
+    let mut offset = 0;
+    for component in path.split('/') {
+        if matches!(component, "src" | "tests" | "benches" | "examples") {
+            return path[..offset].trim_end_matches('/');
+        }
+        offset += component.len() + 1;
+    }
+    ""
+}
+
+/// Rust has no overloading, so same-qualname candidates in one file are
+/// `#[cfg]` twins of one declaration: they count as one (the lowest id, as
+/// the full reindex binds). Workspace crates each have their own `crate::`
+/// root, so what is left, when it spans crates and the caller's crate holds
+/// some, is narrowed to the caller's crate. Other languages are untouched.
+fn narrow_rust_candidates(
+    candidates: Vec<ExactCandidate>,
+    caller_file: &str,
+) -> Vec<ExactCandidate> {
+    if candidates.len() < 2 || !candidates.iter().all(|c| c.path.ends_with(".rs")) {
+        return candidates;
+    }
+    let mut twins: HashMap<(i64, &str), i64> = HashMap::new();
+    for c in &candidates {
+        let id = twins.entry((c.file_id, c.kind.as_str())).or_insert(c.id);
+        *id = (*id).min(c.id);
+    }
+    let keep: std::collections::HashSet<i64> = twins.values().copied().collect();
+    let mut narrowed: Vec<ExactCandidate> = candidates
+        .into_iter()
+        .filter(|c| keep.contains(&c.id))
+        .collect();
+    if narrowed.len() > 1 && caller_file.ends_with(".rs") {
+        let home = rust_crate_dir(caller_file);
+        let local: Vec<usize> = (0..narrowed.len())
+            .filter(|&i| rust_crate_dir(&narrowed[i].path) == home)
+            .collect();
+        if !local.is_empty() && local.len() < narrowed.len() {
+            let mut i = 0;
+            narrowed.retain(|_| {
+                i += 1;
+                local.contains(&(i - 1))
+            });
+        }
+    }
+    narrowed
 }
 
 impl Db {

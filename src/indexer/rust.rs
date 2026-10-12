@@ -123,6 +123,11 @@ struct Context {
     /// (`collect_local_types`), scoped to the block/arm that binds them.
     /// Empty outside a function body.
     local_types: Rc<Locals>,
+    /// The current function's `Self` type and generic parameter names (what
+    /// `local_types` was built with), so a call's receiver expression is typed
+    /// the same way as a `let` initializer. Empty outside a function body.
+    fn_self_ty: Option<String>,
+    fn_generics: Rc<HashSet<String>>,
     /// Same-file struct / enum-variant field types (`collect_adts`), used to
     /// type struct and tuple-struct patterns.
     adts: Rc<Adts>,
@@ -287,6 +292,8 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             shadowed_names: Rc::new(HashSet::new()),
             bound_names: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
+            fn_self_ty: None,
+            fn_generics: Rc::new(HashSet::new()),
             adts: Rc::new(collect_adts(root, source)),
             returns: Rc::new(collect_returns(root, source)),
             in_trait_scope: false,
@@ -660,6 +667,8 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     next_ctx.shadowed_names = Rc::new(HashSet::new());
     next_ctx.bound_names = Rc::new(HashSet::new());
     next_ctx.local_types = Rc::new(HashMap::new());
+    next_ctx.fn_self_ty = None;
+    next_ctx.fn_generics = Rc::new(HashSet::new());
     walk_node(body, &next_ctx, source, output);
 }
 
@@ -832,15 +841,18 @@ fn handle_function(
             .filter(|_| !(ctx.in_trait_scope && ctx.in_trait_impl.is_none()))
             .map(|c| c.rsplit("::").next().unwrap_or(c).to_string());
         let mut local_types = HashMap::new();
+        let generics = collect_generic_names(node, source);
         let env = TypeEnv {
             source,
             self_ty: self_ty.as_deref(),
-            generics: collect_generic_names(node, source),
+            generics: generics.clone(),
             adts: &ctx.adts,
             ctx: Some(&next_ctx),
         };
         collect_local_types(node, &env, &mut local_types);
         next_ctx.local_types = Rc::new(local_types);
+        next_ctx.fn_self_ty = self_ty;
+        next_ctx.fn_generics = Rc::new(generics);
 
         walk_node(body, &next_ctx, source, output);
     }
@@ -1283,9 +1295,13 @@ fn qualified_value_path(raw: &str, ctx: &Context) -> Option<(String, Vec<String>
     Some((format!("{}::{raw}", ctx.module), expanded))
 }
 
-/// `x.method()` where `x` is a plain local/param with a locally-inferred
-/// type -> `Known(T)`, so the resolver binds `T::method` instead of
-/// refusing an ambiguous bare name. Anything else stays `NotTracked`.
+/// `recv.method()` where `recv`'s type is provable: a local/param with a
+/// locally-inferred type, a field chain (`self.core`, `a.b.c`), or a call
+/// result (`B::new().a(1)`, `x.build()?`) -> `Known(T)` (or a deferred
+/// marker the resolver finishes from declarations in other files), so the
+/// resolver binds `T::method` instead of refusing an ambiguous bare name.
+/// Anything else stays `NotTracked`. A bare `self` receiver is left to the
+/// call-target path: `self.m()` may name a trait's default method.
 fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> ReceiverType {
     if function_node.kind() != "field_expression" {
         return ReceiverType::NotTracked;
@@ -1293,14 +1309,17 @@ fn infer_receiver_type(function_node: Node<'_>, source: &str, ctx: &Context) -> 
     let Some(value) = function_node.child_by_field_name("value") else {
         return ReceiverType::NotTracked;
     };
-    if value.kind() != "identifier" {
+    if value.kind() == "self" {
         return ReceiverType::NotTracked;
     }
-    match lookup_local(
-        &ctx.local_types,
-        &node_text(value, source),
-        value.start_byte(),
-    ) {
+    let env = TypeEnv {
+        source,
+        self_ty: ctx.fn_self_ty.as_deref(),
+        generics: (*ctx.fn_generics).clone(),
+        adts: &ctx.adts,
+        ctx: Some(ctx),
+    };
+    match env.expr_ty(value, &ctx.local_types) {
         Ty::Named(ty) => ReceiverType::Known(ty),
         Ty::Pending(p) => ReceiverType::RustDeferred(p),
         _ => ReceiverType::NotTracked,
@@ -1334,36 +1353,16 @@ enum Ty {
     Pending(RustDeferred),
 }
 
-/// Method names `project` follows on a `Pending` type.
-const TRACKED_METHODS: &[&str] = &[
-    "unwrap",
-    "expect",
-    "ok",
-    "err",
-    "as_ref",
-    "as_mut",
-    "clone",
-    "take",
-    "cloned",
-    "copied",
-    "iter",
-    "into_iter",
-    "iter_mut",
-    "drain",
-    "by_ref",
-    "next",
-    "next_back",
-    "last",
-    "pop",
-    "pop_front",
-    "pop_back",
-    "first",
-];
+/// Longest projection chain stored on a `Pending` type.
+const MAX_PENDING_STEPS: usize = 12;
 
 /// Apply one projection step; `Unknown` when the shape doesn't fit.
 fn project(ty: Ty, step: Step) -> Ty {
     if let Ty::Pending(mut p) = ty {
-        if matches!(&step, Step::Method(m) if !TRACKED_METHODS.contains(&m.as_str())) {
+        // Any method may be a user method on the pending type (a builder
+        // link); the resolver follows it through the declarations. Bounded
+        // so a long chain cannot bloat the stored marker.
+        if p.steps.len() >= MAX_PENDING_STEPS {
             return Ty::Unknown;
         }
         let keeps_fallback = matches!(&step, Step::Await)
@@ -2102,7 +2101,8 @@ fn resolve_deferred(
         let Some(signature) = &declaration.signature else {
             return Ok(Some(deferred.fallback.clone()));
         };
-        let Some(ty) = declared_receiver_type(deferred, &declaration.qualname, signature) else {
+        let Some(ty) = declared_receiver_type(deferred, &declaration.qualname, signature, index)?
+        else {
             return Ok(Some(None));
         };
         match &found {
@@ -2123,9 +2123,91 @@ fn declared_receiver_type(
     deferred: &RustDeferred,
     qualname: &str,
     signature: &str,
-) -> Option<String> {
+    index: &dyn DeclarationIndex,
+) -> anyhow::Result<Option<String>> {
+    let Some(mut ty) = declared_source_ty(&deferred.source, qualname, signature) else {
+        return Ok(None);
+    };
+    for step in &deferred.steps {
+        ty = match (&ty, step) {
+            // A user method on a repo type: its declared return type. Std
+            // projections (`unwrap`, `clone`, ..) are not looked up.
+            (Ty::Named(owner), Step::Method(m)) if !matches!(m.as_str(), "unwrap" | "expect") => {
+                user_method_ty(owner, m, index)?
+            }
+            _ => project(ty, step.clone()),
+        };
+    }
+    Ok(match ty {
+        Ty::Named(n) => Some(n),
+        _ => None,
+    })
+}
+
+/// Return type of `owner::method` from its declaration(s) in the index;
+/// `Unknown` when there is none or the declarations disagree. A method the
+/// type does not declare itself but every std type has (`clone`) keeps the
+/// type.
+fn user_method_ty(owner: &str, method: &str, index: &dyn DeclarationIndex) -> anyhow::Result<Ty> {
+    let declarations =
+        index.declarations(DeclarationQuery::Method(&format!("{owner}::{method}")))?;
+    if declarations.is_empty() {
+        return Ok(if method == "clone" {
+            Ty::Named(owner.to_string())
+        } else {
+            Ty::Unknown
+        });
+    }
+    let mut found: Option<Ty> = None;
+    for declaration in &declarations {
+        let Some(signature) = &declaration.signature else {
+            return Ok(Ty::Unknown);
+        };
+        let Some(ty) = callable_return_ty(&declaration.qualname, signature) else {
+            return Ok(Ty::Unknown);
+        };
+        match &found {
+            Some(prev) if *prev != ty => return Ok(Ty::Unknown),
+            _ => found = Some(ty),
+        }
+    }
+    Ok(found.unwrap_or(Ty::Unknown))
+}
+
+/// A callable's declared return type, `Self` read as its owner (the
+/// qualname's second-to-last segment when that is a type).
+fn callable_return_ty(qualname: &str, signature: &str) -> Option<Ty> {
+    let (is_async, signature) = split_callable_signature(signature);
+    let src = format!("fn __f{signature} {{}}");
+    let tree = parse_declaration(&src)?;
+    let func = tree.root_node().named_child(0)?;
+    if func.kind() != "function_item" {
+        return None;
+    }
+    let owner = qualname
+        .rsplit("::")
+        .nth(1)
+        .filter(|o| o.starts_with(char::is_uppercase));
+    let env = TypeEnv {
+        source: &src,
+        self_ty: owner,
+        // The signature keeps the fn's and its impl's `<..>`.
+        generics: collect_generic_names(func, &src),
+        adts: &Adts::new(),
+        ctx: None,
+    };
+    let ret = env.ty(func.child_by_field_name("return_type")?);
+    Some(if is_async {
+        Ty::Future(Box::new(ret))
+    } else {
+        ret
+    })
+}
+
+/// The type a marker's source names, before any steps.
+fn declared_source_ty(source: &DeferredSource, qualname: &str, signature: &str) -> Option<Ty> {
     let name = qualname.rsplit("::").next()?;
-    let mut ty = match &deferred.source {
+    match source {
         DeferredSource::Field { field, .. } => {
             // `struct Name<G> { .. }` / `enum Name<G> { .. }` (`adt_signature`).
             let src = if signature.ends_with('}') {
@@ -2140,47 +2222,18 @@ fn declared_receiver_type(
                 None => (None, field.as_str()),
             };
             let key = variant.map_or_else(|| name.to_string(), |v| format!("{name}::{v}"));
-            adts.get(&key)?
-                .as_ref()?
-                .iter()
-                .find(|(n, _)| n == field)?
-                .1
-                .clone()
+            Some(
+                adts.get(&key)?
+                    .as_ref()?
+                    .iter()
+                    .find(|(n, _)| n == field)?
+                    .1
+                    .clone(),
+            )
         }
         DeferredSource::Call { .. } | DeferredSource::Method { .. } => {
-            let (is_async, signature) = split_callable_signature(signature);
-            let src = format!("fn __f{signature} {{}}");
-            let tree = parse_declaration(&src)?;
-            let func = tree.root_node().named_child(0)?;
-            if func.kind() != "function_item" {
-                return None;
-            }
-            let owner = qualname
-                .rsplit("::")
-                .nth(1)
-                .filter(|o| o.starts_with(char::is_uppercase));
-            let env = TypeEnv {
-                source: &src,
-                self_ty: owner,
-                // The signature keeps the fn's and its impl's `<..>`.
-                generics: collect_generic_names(func, &src),
-                adts: &Adts::new(),
-                ctx: None,
-            };
-            let ret = env.ty(func.child_by_field_name("return_type")?);
-            if is_async {
-                Ty::Future(Box::new(ret))
-            } else {
-                ret
-            }
+            callable_return_ty(qualname, signature)
         }
-    };
-    for step in &deferred.steps {
-        ty = project(ty, step.clone());
-    }
-    match ty {
-        Ty::Named(n) => Some(n),
-        _ => None,
     }
 }
 
