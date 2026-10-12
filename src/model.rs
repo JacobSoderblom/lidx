@@ -32,10 +32,35 @@ pub const NESTED_MARKER_PREFIX: &str = "#[nested(";
 /// inherent twin wins). Resolver-only, hidden on read like the nested marker.
 pub const TRAIT_IMPL_MARKER: &str = "#[trait_impl]";
 
+/// Line a Go struct or package variable stores its typing data on, between
+/// `GO_TYPE_MARKER_PREFIX` and `GO_TYPE_MARKER_SUFFIX`: a struct's field list
+/// (`{conn net.Conn; ~Embedded}`) or a variable's declared type text / `= <json
+/// GoValue>`. Resolver-only (`db::resolver_go` reads it through
+/// [`go_type_data`], `indexer::go` writes it through [`go_type_marker`]),
+/// hidden on read like the Rust markers. See CONTEXT.md.
+pub const GO_TYPE_MARKER_PREFIX: &str = "#[go_type(";
+pub const GO_TYPE_MARKER_SUFFIX: &str = ")]";
+
+/// The stored signature carrying Go typing `data`.
+pub fn go_type_marker(data: &str) -> String {
+    format!("{GO_TYPE_MARKER_PREFIX}{data}{GO_TYPE_MARKER_SUFFIX}")
+}
+
+/// The Go typing data of a stored signature, if it carries any.
+pub fn go_type_data(signature: &str) -> Option<&str> {
+    signature
+        .strip_prefix(GO_TYPE_MARKER_PREFIX)?
+        .strip_suffix(GO_TYPE_MARKER_SUFFIX)
+}
+
 /// `signature` without the resolver-only marker lines of a Rust fn (the
-/// real `#[cfg(..)]` lines stay).
+/// real `#[cfg(..)]` lines stay) and the Go typing line.
 pub fn strip_internal_markers(signature: &str) -> std::borrow::Cow<'_, str> {
-    let internal = |line: &str| line.starts_with(NESTED_MARKER_PREFIX) || line == TRAIT_IMPL_MARKER;
+    let internal = |line: &str| {
+        line.starts_with(NESTED_MARKER_PREFIX)
+            || line == TRAIT_IMPL_MARKER
+            || line.starts_with(GO_TYPE_MARKER_PREFIX)
+    };
     if !signature.lines().any(internal) {
         return signature.into();
     }
@@ -79,6 +104,9 @@ pub fn public_signature(signature: Option<String>) -> Option<String> {
         std::borrow::Cow::Borrowed(_) => sig,
         std::borrow::Cow::Owned(stripped) => stripped,
     };
+    if sig.trim().is_empty() {
+        return None;
+    }
     if !is_partial_signature(Some(&sig)) {
         return Some(sig);
     }
@@ -1427,5 +1455,19 @@ mod display_signature_tests {
         );
         let long_fn = format!("({})", "a: u8, ".repeat(100));
         assert_eq!(display_signature(&long_fn), long_fn.as_str());
+    }
+}
+
+#[cfg(test)]
+mod go_type_marker_tests {
+    use super::*;
+
+    #[test]
+    fn go_typing_data_round_trips_and_is_hidden() {
+        let stored = go_type_marker("{conn net.Conn; ~Base}");
+        assert_eq!(go_type_data(&stored), Some("{conn net.Conn; ~Base}"));
+        assert_eq!(public_signature(Some(stored.clone())), None);
+        assert_eq!(display_signature(&stored), "");
+        assert_eq!(go_type_data("(a int) -> error"), None);
     }
 }

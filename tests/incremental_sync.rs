@@ -2969,3 +2969,44 @@ fn typescript_new_follows_the_class_gaining_and_losing_a_constructor() {
         common::assert_matches_fresh(&snapshot, &fresh);
     }
 }
+
+/// A call bound by its bare name (`helper()` found in another module) was
+/// the only candidate when it was made. A same-named function added by a
+/// later sync makes a fresh reindex refuse it, so the incremental result must
+/// unbind it as well.
+#[test]
+fn incremental_add_same_named_function_unbinds_a_bare_name_guess() {
+    let a_py = "def helper():\n    pass\n";
+    let caller_py = "def use():\n    helper()\n";
+    let (_tmp, repo_root, mut indexer) = indexed_tree(
+        "bare-name-recheck",
+        &[("a.py", a_py), ("caller.py", caller_py)],
+    );
+
+    let target = |indexer: &Indexer| {
+        let graph_version = indexer.db().current_graph_version().unwrap();
+        golden::snapshot_edges(indexer.db(), graph_version)
+            .unwrap()
+            .into_iter()
+            .find(|edge| edge.source_qualname == "caller.use" && edge.kind == "CALLS")
+            .expect("caller.use has a CALLS edge into helper()")
+            .target_qualname
+    };
+    assert_eq!(target(&indexer).as_deref(), Some("a.helper"));
+
+    let b_py = "def helper():\n    pass\n";
+    common::write_files(&repo_root, &[("b.py", b_py)]);
+    indexer.sync_rel_paths(&["b.py".to_string()]).unwrap();
+
+    common::assert_no_dangling_edge_targets(indexer.db());
+    assert_eq!(
+        target(&indexer),
+        None,
+        "two same-named functions must unbind the earlier guess"
+    );
+    let graph_version = indexer.db().current_graph_version().unwrap();
+    let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
+    let (_fresh_tmp, fresh) =
+        common::index_files(&[("a.py", a_py), ("caller.py", caller_py), ("b.py", b_py)]);
+    common::assert_matches_fresh(&snapshot, &fresh);
+}
