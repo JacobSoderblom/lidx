@@ -25,7 +25,7 @@ NB = 10  # per exclusion bucket
 POOL = {
     "go": ["go/cobra/tests", "go/gitleaks/no_tests", "go/syft/no_tests"],
     "ts": ["ts/zod", "ts/hono"],
-    "rust": ["rust/ripgrep/no_tests", "rust/fd/no_tests"],
+    "rust": ["rust/ripgrep/path_tests_excluded", "rust/fd/path_tests_excluded"],
 }
 
 

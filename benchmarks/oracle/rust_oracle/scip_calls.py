@@ -388,7 +388,7 @@ def main():
             lines = open(os.path.join(repo, path), encoding="utf-8", errors="replace").read().split("\n")
         except OSError:
             continue
-        fdefs = []  # (start, end, symbol)
+        fdefs = []  # (start, end, this occurrence's own (file, line, name)); a symbol such as `main().` can be defined in several files of one package
         for o in d["occ"]:
             if a.no_tests and o["range"] and in_test(path, rng(o)[0]):
                 continue
@@ -396,8 +396,9 @@ def main():
                 e = o["encl"] or list(rng(o))
                 if len(e) == 3:
                     e = [e[0], e[1], e[0], e[2]]
-                fdefs.append(((e[0], e[1]), (e[2], e[3]), o["symbol"]))
-                dl = defs[o["symbol"]]
+                l0 = rng(o)[0]
+                dl = (path, l0 + 1, short_name(o["symbol"]))
+                fdefs.append(((e[0], e[1]), (e[2], e[3]), dl))
                 callers.add((dl[0], dl[1], dl[2]))
         for o in d["occ"]:
             sym = o["symbol"]
@@ -420,7 +421,7 @@ def main():
             if best is None:
                 out["dropped"]["caller_not_in_function"] += 1
                 continue
-            cdef = defs[best[2]]
+            cdef = best[2]
             row = lines[el] if el < len(lines) else ""
             rest = row[ec:].lstrip()
             if rest.startswith("::<"):
