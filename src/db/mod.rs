@@ -1666,12 +1666,27 @@ impl Db {
                     )?,
                     None => edge.target_qualname.clone(),
                 };
+                // A value reference that lands on a JS/TS `const` or variable
+                // reads data rather than naming a function: a plain use.
+                let stored_kind = match resolution.target_id() {
+                    Some(id) if resolver::is_value_reference(&edge.kind, edge.call_shape) => {
+                        let target_kind: Option<String> = tx
+                            .prepare_cached("SELECT kind FROM symbols WHERE id = ?")?
+                            .query_row([id], |row| row.get(0))
+                            .optional()?;
+                        match target_kind.as_deref() {
+                            Some("const" | "variable") => "USES",
+                            _ => edge.kind.as_str(),
+                        }
+                    }
+                    _ => edge.kind.as_str(),
+                };
                 let edge_id = if resolution.target_id().is_some() || is_bridge {
                     insert_stmt.execute(params![
                         file_id,
                         source_id,
                         resolution.target_id(),
-                        &edge.kind,
+                        stored_kind,
                         stored_target.as_deref(),
                         edge.detail.as_deref(),
                         edge.evidence_snippet.as_deref(),

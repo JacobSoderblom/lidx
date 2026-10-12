@@ -1127,9 +1127,10 @@ impl<'c> Resolver<'c> {
     /// names something callable: an exact / import / receiver-type /
     /// inherited match (never the heuristic name tiers or an external stub)
     /// whose target is a function or class -- a method only when the
-    /// reference is qualified, since a bare identifier cannot name one. A JS/TS
-    /// module-level `const`/`variable` also counts (an arrow function or data
-    /// the file reads), a JS/TS class never does (`toBeInstanceOf(Foo)`).
+    /// reference is qualified, since a bare identifier cannot name one. A
+    /// JS/TS module-level `const`/`variable` is kept too (`Db::insert_edges`
+    /// stores that edge as a plain `USES`: data read, not a function named),
+    /// a JS/TS class never is (`toBeInstanceOf(Foo)`).
     fn filter_value_reference(
         &mut self,
         r: &Reference<'_>,
