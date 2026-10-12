@@ -1,4 +1,5 @@
 use crate::db::resolver::{LanguageProfile, VisibilityRule};
+use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
@@ -527,8 +528,8 @@ struct FileExports {
     /// identifier it is bound to (`{ a }`, `{ a: b }`), `None` for any other
     /// value. A call `X.a()` goes to what `a` names, see `object_member_target`.
     object_consts: HashMap<String, HashMap<String, Option<String>>>,
-    /// Top-level classes, enums, interfaces, type aliases and namespaces:
-    /// declarations a value reference never binds (`toBeInstanceOf(Foo)`).
+    /// Top-level enums, interfaces, type aliases and namespaces: declarations
+    /// a value reference never binds. (A class is a value: `register(Foo)`.)
     non_value: HashSet<String>,
 }
 
@@ -686,7 +687,7 @@ fn exports_from_root(root: Node<'_>, source: &str) -> FileExports {
     out
 }
 
-/// Names of the classes, enums, interfaces, type aliases and namespaces a
+/// Names of the enums, interfaces, type aliases and namespaces a
 /// top-level statement (or its `export`) declares; see `FileExports::non_value`.
 fn collect_non_value_names(stmt: Node<'_>, source: &str, out: &mut HashSet<String>) {
     let decl = match stmt.kind() {
@@ -696,9 +697,7 @@ fn collect_non_value_names(stmt: Node<'_>, source: &str, out: &mut HashSet<Strin
     if let Some(decl) = decl
         && matches!(
             decl.kind(),
-            "class_declaration"
-                | "abstract_class_declaration"
-                | "enum_declaration"
+            "enum_declaration"
                 | "interface_declaration"
                 | "type_alias_declaration"
                 | "internal_module"
@@ -2943,7 +2942,12 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     });
     let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
-        kind: if is_root { "USES" } else { "REFERENCES" }.to_string(),
+        kind: if is_root {
+            edge_views::USES
+        } else {
+            edge_views::REFERENCES
+        }
+        .to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
         detail: target.is_none().then(|| name.clone()),
         target_qualname: target,
@@ -2987,7 +2991,7 @@ fn this_member_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Op
     let receiver_type = pin_receiver_type(infer_receiver_type(node, source, ctx), ctx);
     let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
-        kind: "REFERENCES".to_string(),
+        kind: edge_views::REFERENCES.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
         target_qualname: Some(target),
         evidence_snippet: util::edge_evidence_snippet(
@@ -3017,7 +3021,7 @@ fn finish_value_references(output: &mut ExtractedFile) {
         return;
     }
     // A value reference must name something callable or a value (not a
-    // class, type, ...); a read of an object's member may name any symbol.
+    // type, enum, ...); a read of an object's member may name any symbol.
     let any: HashSet<&str> = output.symbols.iter().map(|s| s.qualname.as_str()).collect();
     let values: HashSet<&str> = output
         .symbols
@@ -3025,7 +3029,7 @@ fn finish_value_references(output: &mut ExtractedFile) {
         .filter(|s| {
             matches!(
                 s.kind.as_str(),
-                "function" | "const" | "variable" | "method"
+                "function" | "class" | "const" | "variable" | "method"
             )
         })
         .map(|s| s.qualname.as_str())

@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{edge_targets, ref_targets, unresolved_reference_rows};
+use common::{edge_targets, ref_targets, unresolved_accounting};
 
 const FILES: &[(&str, &str)] = &[
     (
@@ -191,6 +191,49 @@ fn locals_params_data_and_calls_are_not_references() {
 }
 
 #[test]
-fn unresolved_value_references_leave_no_rows() {
-    assert_eq!(unresolved_reference_rows(FILES), 0);
+fn unresolved_value_references_are_not_counted() {
+    unresolved_accounting(FILES).assert_value_references_not_counted();
+}
+
+const SHADOWS: &[(&str, &str)] = &[(
+    "app/shadow.py",
+    r#"def handler(x):
+    return x
+
+
+def h(x):
+    return x
+
+
+def register(cb):
+    return cb
+
+
+def comprehension(handlers):
+    return [register(h) for h in handlers]
+
+
+def dict_comprehension(pairs):
+    return {k: register(v) for k, v in pairs}
+
+
+def walrus(xs):
+    if (handler := xs[0]):
+        register(handler)
+
+
+MODULE_LEVEL = [register(h) for h in range(3)]
+MODULE_LAMBDA = lambda handler: register(handler)
+"#,
+)];
+
+#[test]
+fn comprehension_variables_and_walrus_names_are_locals() {
+    for caller in ["comprehension", "dict_comprehension", "walrus"] {
+        let t = ref_targets(SHADOWS, &format!("app.shadow.{caller}"));
+        assert!(t.is_empty(), "{caller}: {t:?}");
+    }
+    // Module-level expressions have no function scope to fold bindings into.
+    let t = ref_targets(SHADOWS, "app.shadow");
+    assert!(t.is_empty(), "{t:?}");
 }

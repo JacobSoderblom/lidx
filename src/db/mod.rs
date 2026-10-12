@@ -1666,27 +1666,16 @@ impl Db {
                     )?,
                     None => edge.target_qualname.clone(),
                 };
-                // A value reference that lands on a JS/TS `const` or variable
-                // reads data rather than naming a function: a plain use.
                 let stored_kind = match resolution.target_id() {
-                    Some(id) if resolver::is_value_reference(&edge.kind, edge.call_shape) => {
-                        let target_kind: Option<String> = tx
-                            .prepare_cached("SELECT kind FROM symbols WHERE id = ?")?
-                            .query_row([id], |row| row.get(0))
-                            .optional()?;
-                        match target_kind.as_deref() {
-                            Some("const" | "variable") => "USES",
-                            _ => edge.kind.as_str(),
-                        }
-                    }
-                    _ => edge.kind.as_str(),
+                    Some(id) => resolver::stored_edge_kind(&tx, &edge.kind, edge.call_shape, id)?,
+                    None => edge.kind.clone(),
                 };
                 let edge_id = if resolution.target_id().is_some() || is_bridge {
                     insert_stmt.execute(params![
                         file_id,
                         source_id,
                         resolution.target_id(),
-                        stored_kind,
+                        &stored_kind,
                         stored_target.as_deref(),
                         edge.detail.as_deref(),
                         edge.evidence_snippet.as_deref(),
@@ -1713,10 +1702,7 @@ impl Db {
                     None
                 };
 
-                // A value reference that did not resolve is mostly a local or
-                // parameter: it leaves no row at all.
                 if let Some(reason) = resolution.unresolved_reason()
-                    && !resolver::is_value_reference(&edge.kind, edge.call_shape)
                     && let Some((reference_name, name_tail)) =
                         resolver::store_reference_name_and_tail(
                             edge.target_qualname.as_deref(),

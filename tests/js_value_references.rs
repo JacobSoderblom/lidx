@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{edge_targets, ref_targets, unresolved_reference_rows};
+use common::{edge_targets, ref_targets, unresolved_accounting};
 
 const FILES: &[(&str, &str)] = &[
     (
@@ -175,6 +175,54 @@ fn locals_params_externals_and_calls_are_not_references() {
 }
 
 #[test]
-fn unresolved_value_references_leave_no_rows() {
-    assert_eq!(unresolved_reference_rows(FILES), 0);
+fn unresolved_value_references_are_not_counted() {
+    unresolved_accounting(FILES).assert_value_references_not_counted();
+}
+
+const CLASSES: &[(&str, &str)] = &[
+    (
+        "src/svc.ts",
+        "export class Service {}\nexport interface Shape { a: number }\n",
+    ),
+    (
+        "src/di.ts",
+        r#"import { Service, Shape } from './svc';
+class Local {}
+declare function provide(c: unknown): void;
+export function di() {
+  provide(Service);
+  provide(Local);
+}
+export function mapped() {
+  return new Map([['k', Service]]);
+}
+export function typeOnly(s: Shape) {
+  return s;
+}
+"#,
+    ),
+    (
+        "src/routes.tsx",
+        r#"import { Service } from './svc';
+declare function Route(p: { component: unknown }): unknown;
+export function Routes() {
+  return <Route component={Service} />;
+}
+"#,
+    ),
+];
+
+#[test]
+fn classes_passed_as_values_are_references() {
+    assert_eq!(
+        ref_targets(CLASSES, "src/di.di"),
+        ["src/di.Local", "src/svc.Service"]
+    );
+    assert_eq!(ref_targets(CLASSES, "src/di.mapped"), ["src/svc.Service"]);
+    assert_eq!(
+        ref_targets(CLASSES, "src/routes.Routes"),
+        ["src/svc.Service"]
+    );
+    // An interface is a type, never a value.
+    assert!(ref_targets(CLASSES, "src/di.typeOnly").is_empty());
 }

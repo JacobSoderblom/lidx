@@ -1,4 +1,5 @@
 use crate::db::resolver::{DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile};
+use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
@@ -808,6 +809,47 @@ fn in_value_position(node: Node<'_>) -> bool {
     }
 }
 
+/// A comprehension variable or lambda parameter of `name` encloses `node`.
+/// Function bodies fold these into `local_types`; this also covers module-
+/// and class-level expressions, which have no such map.
+fn bound_by_enclosing_expression(node: Node<'_>, name: &str, source: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        match ancestor.kind() {
+            "list_comprehension"
+            | "set_comprehension"
+            | "dictionary_comprehension"
+            | "generator_expression" => {
+                let mut cursor = ancestor.walk();
+                for clause in ancestor.named_children(&mut cursor) {
+                    if clause.kind() != "for_in_clause" {
+                        continue;
+                    }
+                    let mut bound = Vec::new();
+                    if let Some(left) = clause.child_by_field_name("left") {
+                        collect_pattern_identifiers(left, source, &mut bound);
+                    }
+                    if bound.iter().any(|(n, _)| n == name) {
+                        return true;
+                    }
+                }
+            }
+            "lambda" => {
+                if let Some(params) = ancestor.child_by_field_name("parameters") {
+                    let mut bound = Vec::new();
+                    collect_lambda_parameter_bindings(params, source, &mut bound);
+                    if bound.iter().any(|(n, _)| n == name) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        current = ancestor.parent();
+    }
+    false
+}
+
 /// `REFERENCES` edge for a function (or class) used as a value rather than
 /// called -- `register(handler)`, `{"k": self.handle}`, `return fn`,
 /// `cb = mod.fn` -- resolved like the call to the same text would be (see
@@ -823,7 +865,9 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         return None;
     }
     let bare = node.kind() == "identifier";
-    if bare && ctx.local_types.contains_key(&raw) {
+    if bare
+        && (ctx.local_types.contains_key(&raw) || bound_by_enclosing_expression(node, &raw, source))
+    {
         return None;
     }
     let receiver_type = infer_receiver_type(node, source, ctx);
@@ -838,7 +882,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     let target = resolve_call_target(&raw, ctx)?;
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     Some(EdgeInput {
-        kind: "REFERENCES".to_string(),
+        kind: edge_views::REFERENCES.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
         target_qualname: Some(target),
         evidence_snippet: util::edge_evidence_snippet(
@@ -1489,13 +1533,20 @@ fn collect_statement_bindings(
                 }
             }
         }
-        "for_statement" => {
+        // `for x in xs:` and the `for x in xs` of a comprehension.
+        "for_statement" | "for_in_clause" => {
             if let Some(left) = node.child_by_field_name("left") {
                 if left.kind() == "identifier" {
                     bindings.push((node_text(left, source), LocalType::Other));
                 } else {
                     collect_pattern_identifiers(left, source, bindings);
                 }
+            }
+        }
+        // `(name := value)`
+        "named_expression" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                bindings.push((node_text(name, source), LocalType::Other));
             }
         }
         "with_item" | "except_clause" => {

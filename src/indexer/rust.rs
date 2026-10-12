@@ -1,6 +1,7 @@
 use crate::db::resolver::{
     DeclarationIndex, DeclarationQuery, ImportMissPolicy, LanguageProfile, VisibilityRule,
 };
+use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
@@ -11,8 +12,8 @@ use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::string_consts::{LocalBinding, StringConsts};
 use crate::indexer::tree_helpers::{
-    collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
-    span,
+    collapse_call_target_whitespace, collect_identifier_names, module_symbol_fallback,
+    module_symbol_with_span, node_text, span,
 };
 use crate::util;
 use anyhow::Result;
@@ -440,12 +441,14 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
             if ctx.container_stack.is_empty() {
                 handle_named_item(node, ctx, source, output, "const");
             }
+            walk_value_references(node, ctx, source, output);
             return;
         }
         "static_item" => {
             if ctx.container_stack.is_empty() {
                 handle_named_item(node, ctx, source, output, "static");
             }
+            walk_value_references(node, ctx, source, output);
             return;
         }
         "function_item" => {
@@ -1149,20 +1152,26 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     });
 }
 
+/// Value references anywhere under `node` (a `const` / `static` item, whose
+/// initializer -- `Profile { hook: Some(f) }` -- holds functions as values).
+/// Sourced from the enclosing module symbol.
+fn walk_value_references(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if matches!(child.kind(), "identifier" | "scoped_identifier")
+            && let Some(edge) = value_reference_edge(child, ctx, source)
+        {
+            output.edges.push(edge);
+        }
+        walk_value_references(child, ctx, source, output);
+    }
+}
+
 /// Every name `node` (a function item) binds: parameters and the patterns of
 /// `let`, `for`, `if let` / `while let`, `match` arms and closures. Over-
 /// approximate on purpose (a path or constructor inside a pattern is kept
 /// too): a missed reference is cheaper than one bound to a local's namesake.
 fn collect_bound_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
-    fn identifiers(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
-        if node.kind() == "identifier" {
-            out.insert(node_text(node, source));
-        }
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            identifiers(child, source, out);
-        }
-    }
     let pattern = match node.kind() {
         "parameter" | "let_declaration" | "for_expression" | "let_condition" => {
             node.child_by_field_name("pattern")
@@ -1171,11 +1180,34 @@ fn collect_bound_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) 
         _ => None,
     };
     if let Some(pattern) = pattern {
-        identifiers(pattern, source, out);
+        collect_identifier_names(pattern, source, out);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
+        // A nested `fn` item is a local name too.
+        if child.kind() == "function_item"
+            && let Some(name) = child.child_by_field_name("name")
+        {
+            out.insert(node_text(name, source));
+        }
         collect_bound_names(child, source, out);
+    }
+}
+
+/// Whether `node` is read as a value that can name a function: a call
+/// argument, a struct field's value (plain or shorthand) or an array element.
+fn is_value_position(node: Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        "array_expression" => true,
+        "arguments" => parent
+            .parent()
+            .is_some_and(|c| c.kind() == "call_expression"),
+        "shorthand_field_initializer" => node.kind() == "identifier",
+        "field_initializer" => parent.child_by_field_name("value") == Some(node),
+        _ => false,
     }
 }
 
@@ -1186,19 +1218,8 @@ fn collect_bound_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) 
 /// enclosing module -- never an associated item, which needs `Self::` -- and
 /// a name the function binds itself is a variable.
 fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
-    let parent = node.parent()?;
-    let is_field_value = |p: Node<'_>| {
-        p.kind() == "field_initializer" && p.child_by_field_name("value") == Some(node)
-    };
-    let in_value_position = match parent.kind() {
-        "arguments" => parent
-            .parent()
-            .is_some_and(|c| c.kind() == "call_expression"),
-        "shorthand_field_initializer" => node.kind() == "identifier",
-        _ => is_field_value(parent),
-    };
     // A path that is itself a segment of a longer path is not the whole value.
-    if !in_value_position || is_call_callee(node) {
+    if !is_value_position(node) || is_call_callee(node) {
         return None;
     }
     let raw = collapse_call_target_whitespace(&node_text(node, source));
@@ -1215,7 +1236,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
         let imported = if ctx.shadowed_names.contains("*") {
             Vec::new()
         } else {
-            ctx.imports.get(&raw).cloned().unwrap_or_default()
+            named_import_candidates(&raw, ctx)
         };
         (format!("{}::{raw}", ctx.module), imported)
     } else {
@@ -1227,7 +1248,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     };
     let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
-        kind: "REFERENCES".to_string(),
+        kind: edge_views::REFERENCES.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
         target_qualname: Some(target),
         import_candidates,
@@ -3421,7 +3442,27 @@ fn import_qualified_candidates(raw: &str, ctx: &Context) -> Vec<String> {
     if ctx.shadowed_names.contains(raw) || ctx.shadowed_names.contains("*") {
         return Vec::new();
     }
-    ctx.imports.get(raw).cloned().unwrap_or_default()
+    named_import_candidates(raw, ctx)
+}
+
+/// The targets this scope's `use`s bind the bare name `name` to: its own
+/// `use` if it has one, else that name inside each glob-imported module
+/// (`use super::*` makes `super::name` a candidate). A glob never shadows an
+/// explicit import.
+fn named_import_candidates(name: &str, ctx: &Context) -> Vec<String> {
+    if let Some(targets) = ctx.imports.get(name) {
+        return targets.clone();
+    }
+    ctx.imports
+        .get("*")
+        .map(|globs| {
+            globs
+                .iter()
+                .filter_map(|glob| glob.strip_suffix("::*"))
+                .map(|module| format!("{module}::{name}"))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Names a bare call in this function must not get an import candidate for:
@@ -3439,6 +3480,9 @@ fn collect_shadowed_names(node: Node<'_>, source: &str, out: &mut HashSet<String
             out.insert("*".to_string());
         } else if matches!(child.kind(), "identifier" | "shorthand_field_identifier")
             && !is_call_callee(child)
+            // Passing a name along binds nothing (`apply(handler)` does not
+            // hide the module's `handler` from a call to it).
+            && !is_value_position(child)
         {
             out.insert(node_text(child, source));
         }

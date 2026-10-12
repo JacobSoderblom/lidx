@@ -457,6 +457,12 @@ pub struct CallShape {
 }
 
 impl CallShape {
+    /// `call_shape` column text of a value reference.
+    pub const REF_ENCODING: &'static str = "ref";
+    /// `call_shape` column text of a value reference with an implicit
+    /// receiver (C# `Select(Parse)` inside a type body).
+    pub const REF_THIS_ENCODING: &'static str = "ref:this";
+
     /// The shape of a value reference (a function used as a value, not
     /// called): see `is_ref`.
     pub fn value_reference() -> Self {
@@ -490,11 +496,11 @@ impl CallShape {
 
     /// Inverse of `encode`; `None` for text that isn't a valid shape.
     pub fn decode(raw: &str) -> Option<Self> {
-        if raw == "ref" || raw == "ref:this" {
+        if raw == Self::REF_ENCODING || raw == Self::REF_THIS_ENCODING {
             return Some(Self {
                 arg_count: 0,
                 is_new: false,
-                implicit_this: raw == "ref:this",
+                implicit_this: raw == Self::REF_THIS_ENCODING,
                 is_ref: true,
             });
         }

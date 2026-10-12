@@ -2,6 +2,7 @@ use crate::db::resolver::{
     Declaration, DeclarationIndex, DeclarationQuery, LanguageProfile, RpcCallEdge, ScopeImports,
     VisibilityRule,
 };
+use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{
@@ -2203,7 +2204,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     let target = resolve_call_target(&raw, ctx)?;
     let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
-        kind: "REFERENCES".to_string(),
+        kind: edge_views::REFERENCES.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
         target_qualname: Some(target),
         evidence_snippet: util::edge_evidence_snippet(
@@ -6545,6 +6546,13 @@ fn collect_statement_bindings(
                 }
             }
         }
+        // `o is string s`, `case int n:`, `out var v`, `o is T { .. } t`:
+        // the pattern or declaration expression names a local.
+        "declaration_pattern" | "declaration_expression" | "recursive_pattern" => {
+            if let Some(name) = pattern_variable(node) {
+                bindings.push((node_text(name, source), LocalType::Other));
+            }
+        }
         "foreach_statement"
             if node
                 .child_by_field_name("left")
@@ -6573,6 +6581,19 @@ fn collect_statement_bindings(
     for child in node.named_children(&mut cursor) {
         collect_statement_bindings(child, source, method_returns, raw, bindings);
     }
+}
+
+/// The identifier a pattern or `out` declaration binds, if it binds one: the
+/// `name` field, else a trailing identifier that is not the pattern's type.
+fn pattern_variable(node: Node<'_>) -> Option<Node<'_>> {
+    if let Some(name) = node.child_by_field_name("name") {
+        return Some(name);
+    }
+    let ty = node.child_by_field_name("type");
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .filter(|c| c.kind() == "identifier" && Some(*c) != ty)
+        .last()
 }
 
 /// Bind the names of `foreach (var (k, v) in expr)`. Each gets the matching

@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{edge_targets, ref_targets, unresolved_reference_rows};
+use common::{edge_targets, edge_targets_with_resolution, ref_targets, unresolved_accounting};
 
 const FILES: &[(&str, &str)] = &[
     (
@@ -174,6 +174,101 @@ fn locals_params_data_and_calls_are_not_references() {
 }
 
 #[test]
-fn unresolved_value_references_leave_no_rows() {
-    assert_eq!(unresolved_reference_rows(FILES), 0);
+fn unresolved_value_references_are_not_counted() {
+    unresolved_accounting(FILES).assert_value_references_not_counted();
+}
+
+const MODULE_SCOPE: &[(&str, &str)] = &[(
+    "src/lib.rs",
+    r#"fn handler(x: i32) -> i32 {
+    x
+}
+
+fn apply(f: fn(i32) -> i32, v: i32) -> i32 {
+    f(v)
+}
+
+struct Profile {
+    hook: Option<fn(i32) -> i32>,
+    fixed: fn(i32) -> i32,
+}
+
+static PROFILE: Profile = Profile {
+    hook: Some(handler),
+    fixed: handler,
+};
+
+const TABLE: [fn(i32) -> i32; 1] = [handler];
+
+fn nested_fn() -> i32 {
+    fn handler(x: i32) -> i32 {
+        x + 1
+    }
+    apply(handler, 1)
+}
+
+mod tests {
+    use super::*;
+
+    fn through_glob() -> i32 {
+        handler(1) + apply(handler, 2)
+    }
+}
+"#,
+)];
+
+#[test]
+fn module_level_initializers_reference_from_the_module() {
+    let t = ref_targets(MODULE_SCOPE, "crate");
+    assert_eq!(
+        t,
+        ["crate::handler", "crate::handler", "crate::handler"],
+        "{t:?}"
+    );
+}
+
+#[test]
+fn a_nested_fn_item_is_a_local_name() {
+    assert!(ref_targets(MODULE_SCOPE, "crate::nested_fn").is_empty());
+}
+
+#[test]
+fn glob_imports_resolve_references_and_calls_alike() {
+    assert!(ref_targets(MODULE_SCOPE, "crate::tests::through_glob").is_empty());
+    // `handler(1)` is a call through `use super::*`, so the pair keeps only it.
+    assert_eq!(
+        edge_targets_with_resolution(MODULE_SCOPE, "crate::tests::through_glob", "CALLS"),
+        [
+            ("crate::apply".to_string(), "import".to_string()),
+            ("crate::handler".to_string(), "import".to_string())
+        ]
+    );
+}
+
+const GLOB_REF: &[(&str, &str)] = &[(
+    "src/lib.rs",
+    r#"fn handler(x: i32) -> i32 {
+    x
+}
+
+fn apply(f: fn(i32) -> i32, v: i32) -> i32 {
+    f(v)
+}
+
+mod tests {
+    use super::*;
+
+    fn only_a_reference() -> i32 {
+        apply(handler, 2)
+    }
+}
+"#,
+)];
+
+#[test]
+fn a_value_reference_through_a_glob_import_binds() {
+    assert_eq!(
+        edge_targets_with_resolution(GLOB_REF, "crate::tests::only_a_reference", "REFERENCES"),
+        [("crate::handler".to_string(), "import".to_string())]
+    );
 }

@@ -117,11 +117,16 @@ const SURFACES: &[(&str, &str)] = &[
 ];
 
 #[test]
-fn classes_and_exported_object_surfaces_are_not_references() {
-    // `check(Failure)` / `check(Local)` pass classes (no reference); `check(op)`
-    // passes a function; the three `check(..)` calls are CALLS edges.
+fn classes_are_references_and_exported_object_surfaces_are_not() {
+    // `check(Failure)` / `check(Local)` pass classes, which are values
+    // (DI registration, `new Map([[k, Foo]])`); `check(op)` a function. The
+    // three `check(..)` calls are CALLS edges.
     let t = ref_targets(SURFACES, "src/use.run");
-    assert_eq!(t, ["src/err.op"], "{t:?}");
+    assert_eq!(
+        t,
+        ["src/err.Failure", "src/err.op", "src/use.Local"],
+        "{t:?}"
+    );
     let t = edge_targets(SURFACES, "src/use.run", "CALLS");
     assert_eq!(t, ["src/use.check"; 3], "{t:?}");
     let t = ref_targets(SURFACES, "src/use.Api");

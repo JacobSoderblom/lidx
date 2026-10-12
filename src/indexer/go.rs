@@ -1,4 +1,5 @@
 use crate::db::resolver::{LanguageProfile, VisibilityRule};
+use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
 use crate::indexer::extract::{CallShape, EdgeInput, ExtractedFile, SymbolInput};
@@ -6,8 +7,8 @@ use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::string_consts::{LocalBinding, StringConsts};
 use crate::indexer::tree_helpers::{
-    collapse_call_target_whitespace, module_symbol_fallback, module_symbol_with_span, node_text,
-    span,
+    collapse_call_target_whitespace, collect_identifier_names, module_symbol_fallback,
+    module_symbol_with_span, node_text, span,
 };
 use crate::util;
 use anyhow::Result;
@@ -130,11 +131,12 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
 
     fn resolve_imports(
         &self,
-        _repo_root: &Path,
-        _file_rel_path: &str,
+        repo_root: &Path,
+        file_rel_path: &str,
         _module_name: &str,
         edges: &mut Vec<EdgeInput>,
     ) {
+        bind_value_reference_imports(repo_root, file_rel_path, edges);
         // For now, just add detail field with import path
         for edge in edges.iter_mut() {
             if edge.kind == "IMPORTS"
@@ -671,6 +673,77 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     });
 }
 
+/// Maps each package-qualified value reference (`pkg.Handler`, candidate
+/// `<import path>|Handler`) onto the repo directory its import path names:
+/// only a path under the nearest `go.mod`'s module path is in this repo (the
+/// module path itself is the module's root package). A reference through any
+/// other import is foreign and its edge is dropped; the candidate becomes
+/// `><dir>|Handler` otherwise.
+fn bind_value_reference_imports(repo_root: &Path, file_rel_path: &str, edges: &mut Vec<EdgeInput>) {
+    let is_import_ref = |e: &EdgeInput| {
+        e.kind == edge_views::REFERENCES
+            && e.import_candidates
+                .first()
+                .is_some_and(|c| !c.starts_with('='))
+    };
+    if !edges.iter().any(is_import_ref) {
+        return;
+    }
+    let module = nearest_go_module(repo_root, file_rel_path);
+    edges.retain_mut(|edge| {
+        if !is_import_ref(edge) {
+            return true;
+        }
+        let Some((module_path, module_dir)) = &module else {
+            return false;
+        };
+        let bound = edge.import_candidates.iter().find_map(|candidate| {
+            let (import_path, member) = candidate.split_once('|')?;
+            let rest = if import_path == module_path {
+                ""
+            } else {
+                import_path
+                    .strip_prefix(module_path.as_str())?
+                    .strip_prefix('/')?
+            };
+            let dir = match (module_dir.as_str(), rest) {
+                ("", rest) => rest.to_string(),
+                (dir, "") => dir.to_string(),
+                (dir, rest) => format!("{dir}/{rest}"),
+            };
+            Some(format!(">{dir}|{member}"))
+        });
+        match bound {
+            Some(candidate) => {
+                edge.import_candidates = vec![candidate];
+                true
+            }
+            None => false,
+        }
+    });
+}
+
+/// The `module` path of the nearest `go.mod` at or above `file_rel_path`'s
+/// directory, with that `go.mod`'s directory relative to the repo root.
+fn nearest_go_module(repo_root: &Path, file_rel_path: &str) -> Option<(String, String)> {
+    let mut dir = Path::new(file_rel_path).parent()?.to_path_buf();
+    loop {
+        let go_mod = repo_root.join(&dir).join("go.mod");
+        if let Ok(text) = std::fs::read_to_string(&go_mod) {
+            let path = text.lines().find_map(|line| {
+                let rest = line.trim().strip_prefix("module")?;
+                let path = rest.trim().trim_matches('"');
+                (!path.is_empty() && rest.starts_with(char::is_whitespace))
+                    .then(|| path.to_string())
+            })?;
+            return Some((path, dir.to_string_lossy().replace('\\', "/")));
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 /// Import alias (or the path's last element) -> import path.
 fn collect_import_aliases(root: Node<'_>, source: &str) -> HashMap<String, String> {
     fn walk(node: Node<'_>, source: &str, out: &mut HashMap<String, String>) {
@@ -745,30 +818,21 @@ fn enter_function_scope(node: Node<'_>, source: &str, ctx: &mut Context) {
 /// Every name `node` (a function) binds: parameters (receiver included),
 /// `:=` and `var` names, `range` variables and type-switch bindings.
 fn collect_bound_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
-    fn identifiers(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
-        if node.kind() == "identifier" {
-            out.insert(node_text(node, source));
-        }
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            identifiers(child, source, out);
-        }
-    }
     match node.kind() {
         "parameter_declaration" | "variadic_parameter_declaration" | "var_spec" => {
             let mut cursor = node.walk();
             for name in node.children_by_field_name("name", &mut cursor) {
-                identifiers(name, source, out);
+                collect_identifier_names(name, source, out);
             }
         }
         "short_var_declaration" | "range_clause" => {
             if let Some(left) = node.child_by_field_name("left") {
-                identifiers(left, source, out);
+                collect_identifier_names(left, source, out);
             }
         }
         "type_switch_statement" => {
             if let Some(alias) = node.child_by_field_name("alias") {
-                identifiers(alias, source, out);
+                collect_identifier_names(alias, source, out);
             }
         }
         _ => {}
@@ -839,7 +903,7 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
     };
     let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
-        kind: "REFERENCES".to_string(),
+        kind: edge_views::REFERENCES.to_string(),
         source_qualname: Some(ctx.current_scope.clone()),
         target_qualname: Some(target),
         import_candidates: vec![candidate],

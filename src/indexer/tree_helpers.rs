@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use tree_sitter::Node;
 
 use crate::indexer::extract::SymbolInput;
@@ -106,6 +107,19 @@ pub fn module_symbol_fallback(
         name_delimiter,
         docstring,
     )
+}
+
+/// Inserts the text of every `identifier` node in `node`'s subtree (`node`
+/// included) into `out`. How extractors gather the names a pattern or
+/// parameter list binds.
+pub fn collect_identifier_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    if node.kind() == "identifier" {
+        out.insert(node_text(node, source));
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_identifier_names(child, source, out);
+    }
 }
 
 #[cfg(test)]

@@ -5,9 +5,10 @@
 
 mod common;
 
-use common::{edge_targets, ref_targets, unresolved_reference_rows};
+use common::{edge_targets, edge_targets_with_resolution, ref_targets, unresolved_accounting};
 
 const FILES: &[(&str, &str)] = &[
+    ("go.mod", "module example.com/app\n"),
     (
         "internal/handlers/users.go",
         r#"package handlers
@@ -199,6 +200,105 @@ fn locals_params_data_and_calls_are_not_references() {
 }
 
 #[test]
-fn unresolved_value_references_leave_no_rows() {
-    assert_eq!(unresolved_reference_rows(FILES), 0);
+fn unresolved_value_references_are_not_counted() {
+    unresolved_accounting(FILES).assert_value_references_not_counted();
+}
+
+#[test]
+fn same_package_references_are_exact_and_imported_ones_import() {
+    let m = "cmd/app/main";
+    assert_eq!(
+        edge_targets_with_resolution(FILES, &format!("{m}.sameFolderSibling"), "REFERENCES"),
+        [("cmd/app/helpers.sibling".to_string(), "exact".to_string())]
+    );
+    assert_eq!(
+        edge_targets_with_resolution(FILES, &format!("{m}.packageQualified"), "REFERENCES"),
+        [
+            (
+                "internal/handlers/users.Do".to_string(),
+                "import".to_string()
+            ),
+            (
+                "internal/handlers/users.Other".to_string(),
+                "import".to_string()
+            )
+        ]
+    );
+}
+
+const FOREIGN: &[(&str, &str)] = &[
+    ("go.mod", "module example.com/app\n"),
+    (
+        "internal/util/util.go",
+        "package util\n\nfunc Do(x int) int { return x }\n",
+    ),
+    (
+        "cmd/cmd.go",
+        r#"package cmd
+
+import "github.com/other/dep/internal/util"
+
+func apply(f func(int) int) int { return f(1) }
+
+func useForeign() int { return apply(util.Do) }
+"#,
+    ),
+];
+
+#[test]
+fn an_import_outside_the_module_never_binds_a_repo_directory() {
+    // `github.com/other/dep/internal/util` ends with this repo's
+    // `internal/util`, but it is another module's package.
+    assert!(ref_targets(FOREIGN, "cmd/cmd.useForeign").is_empty());
+}
+
+const ROOT: &[(&str, &str)] = &[
+    ("go.mod", "module github.com/spf13/cobra\n"),
+    (
+        "cobra.go",
+        "package cobra\n\nfunc NoArgs(x int) int { return x }\n",
+    ),
+    (
+        "doc/doc.go",
+        r#"package doc
+
+import "github.com/spf13/cobra"
+
+func apply(f func(int) int) int { return f(1) }
+
+func useRoot() int { return apply(cobra.NoArgs) }
+"#,
+    ),
+];
+
+#[test]
+fn the_module_root_package_is_resolvable() {
+    assert_eq!(ref_targets(ROOT, "doc/doc.useRoot"), ["cobra.NoArgs"]);
+}
+
+const NESTED: &[(&str, &str)] = &[
+    ("services/api/go.mod", "module example.com/api\n"),
+    (
+        "services/api/store/store.go",
+        "package store\n\nfunc Open(x int) int { return x }\n",
+    ),
+    (
+        "services/api/main.go",
+        r#"package main
+
+import "example.com/api/store"
+
+func apply(f func(int) int) int { return f(1) }
+
+func run() int { return apply(store.Open) }
+"#,
+    ),
+];
+
+#[test]
+fn a_nested_module_maps_import_paths_below_its_own_directory() {
+    assert_eq!(
+        ref_targets(NESTED, "services/api/main.run"),
+        ["services/api/store/store.Open"]
+    );
 }

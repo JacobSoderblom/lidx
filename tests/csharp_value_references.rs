@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{edge_targets, ref_targets, unresolved_reference_rows};
+use common::{edge_targets, ref_targets, unresolved_accounting};
 use lidx::indexer::Indexer;
 use lidx::rpc;
 
@@ -130,8 +130,8 @@ fn locals_properties_nameof_and_calls_are_not_references() {
 }
 
 #[test]
-fn unresolved_value_references_leave_no_rows() {
-    assert_eq!(unresolved_reference_rows(FILES), 0);
+fn unresolved_value_references_are_not_counted() {
+    unresolved_accounting(FILES).assert_value_references_not_counted();
 }
 
 const ISSUE_323: &[(&str, &str)] = &[(
@@ -145,17 +145,20 @@ public static class P {
 )];
 
 #[test]
-fn issue_323_fixture_has_a_caller_and_is_not_dead() {
+fn issue_323_fixture_is_referenced_by_run_and_not_dead() {
     let (_tmp, root, db_path) = common::index_repo("lidx-cs-valref-", ISSUE_323);
     let mut indexer = Indexer::new(root, db_path).unwrap();
     let explained = rpc::handle_method(
         &mut indexer,
         "explain_symbol",
-        serde_json::json!({"query": "App.P.Parse", "sections": ["callers"]}),
+        serde_json::json!({"query": "App.P.Parse", "sections": ["callers", "other_edges"]}),
     )
     .unwrap();
-    assert_eq!(explained["callers_total"], 1, "{explained}");
-    assert_eq!(explained["callers"][0]["symbol"]["qualname"], "App.P.Run");
+    // A method group is not a caller: it is reported under `other_edges`.
+    assert_eq!(explained["callers_total"], 0, "{explained}");
+    let group = &explained["other_edges"]["REFERENCES"];
+    assert_eq!(group["total"], 1, "{explained}");
+    assert_eq!(group["items"][0]["symbol"]["qualname"], "App.P.Run");
 
     let dead = rpc::handle_method(
         &mut indexer,
@@ -170,4 +173,33 @@ fn issue_323_fixture_has_a_caller_and_is_not_dead() {
         .filter_map(|s| s["qualname"].as_str())
         .collect();
     assert!(!names.contains(&"App.P.Parse"), "{names:?}");
+}
+
+const PATTERN_LOCALS: &[(&str, &str)] = &[(
+    "src/Neg.cs",
+    r#"using System;
+namespace App;
+public class N
+{
+    static int Parse(string s) => s.Length;
+    static int Use(object o) => 0;
+
+    public void Pattern(object o) { if (o is string Parse) Use(Parse); }
+    public void OutVar(string s) { int.TryParse(s, out var Parse); Use(Parse); }
+    public void OutTyped(string s) { int.TryParse(s, out int Parse); Use(Parse); }
+    public void Switch(object o) { switch (o) { case int Parse: Use(Parse); break; } }
+    public void Recursive(object o) { if (o is N { } Parse) Use(Parse); }
+    public void Real() { Use(Parse); }
+}
+"#,
+)];
+
+#[test]
+fn pattern_and_out_variables_are_locals() {
+    for caller in ["Pattern", "OutVar", "OutTyped", "Switch", "Recursive"] {
+        let t = ref_targets(PATTERN_LOCALS, &format!("App.N.{caller}"));
+        assert!(t.is_empty(), "{caller}: {t:?}");
+    }
+    // The same name with no local binding still resolves.
+    assert_eq!(ref_targets(PATTERN_LOCALS, "App.N.Real"), ["App.N.Parse"]);
 }
