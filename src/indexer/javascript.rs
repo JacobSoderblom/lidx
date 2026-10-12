@@ -123,6 +123,9 @@ struct Context {
     /// the module's own locals), so a nested function sees them as locals
     /// too — see `enter_scope`.
     outer_locals: Rc<HashSet<String>>,
+    /// Source text of the `extends` target of the class whose body is being
+    /// walked, the callee of its `super(..)` calls.
+    superclass: Option<String>,
     /// Names bound at module (or namespace) scope: this file's own
     /// declarations, never a function-local shadow.
     module_names: Rc<HashSet<String>>,
@@ -1612,6 +1615,7 @@ fn extract_with_parser(
         import_bindings: Rc::new(collect_import_bindings(root, source)),
         required_names: Rc::new(collect_required_names(root, source)),
         outer_locals: Rc::new(HashSet::new()),
+        superclass: None,
         declared_names: Rc::new(collect_declared_names(root, source)),
         declared_types: Rc::new(collect_declared_types(root, source)),
         return_types: Rc::new(collect_return_types(root, source)),
@@ -2460,9 +2464,17 @@ fn handle_class_named(
         ..Default::default()
     });
 
-    handle_class_heritage(node, &qualname, source, output);
+    handle_class_heritage(node, &qualname, ctx, source, output);
 
     let mut next_ctx = ctx.clone();
+    next_ctx.superclass = collect_clause_targets_from(node, "extends_clause", source)
+        .into_iter()
+        .next()
+        .or_else(|| {
+            node.child_by_field_name("superclass")
+                .map(|n| node_text(n, source))
+        })
+        .filter(|base| !base.is_empty());
     next_ctx.class_stack.push(name);
     next_ctx.this_rebound = false;
     next_ctx.current_scope = qualname.clone();
@@ -2478,6 +2490,7 @@ fn handle_class_named(
 fn handle_class_heritage(
     node: Node<'_>,
     class_qualname: &str,
+    ctx: &Context,
     source: &str,
     output: &mut ExtractedFile,
 ) {
@@ -2497,6 +2510,7 @@ fn handle_class_heritage(
         output.edges.push(EdgeInput {
             kind: "EXTENDS".to_string(),
             source_qualname: Some(class_qualname.to_string()),
+            import_candidates: import_placeholder(&target, ctx).into_iter().collect(),
             target_qualname: Some(target),
             detail: None,
             evidence_snippet: None,
@@ -2511,6 +2525,7 @@ fn handle_class_heritage(
         output.edges.push(EdgeInput {
             kind: "IMPLEMENTS".to_string(),
             source_qualname: Some(class_qualname.to_string()),
+            import_candidates: import_placeholder(&target, ctx).into_iter().collect(),
             target_qualname: Some(target),
             detail: None,
             evidence_snippet: None,
@@ -3320,6 +3335,16 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     if raw.is_empty() {
         return register_handled;
     }
+    // `super(..)` constructs the base class: the same edge `new Base(..)`
+    // would make, from the constructor that calls it.
+    if target_node.kind() == "super" {
+        if let (Some(base), false) = (ctx.superclass.as_deref(), ctx.this_rebound) {
+            output
+                .edges
+                .push(super_constructor_edge(node, base, ctx, source));
+        }
+        return register_handled;
+    }
     let (target, receiver_type, import_candidates) =
         match chained_call_target(target_node, ctx, source) {
             Some((target, receiver_type)) => (Some(target), receiver_type, Vec::new()),
@@ -3386,6 +3411,34 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         ..Default::default()
     });
     register_handled
+}
+
+fn super_constructor_edge(node: Node<'_>, base: &str, ctx: &Context, source: &str) -> EdgeInput {
+    let target = resolve_call_target(base, ctx);
+    let import_candidates: Vec<String> = import_placeholder(base, ctx).into_iter().collect();
+    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+    EdgeInput {
+        kind: "CALLS".to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        detail: target.is_none().then(|| base.to_string()),
+        target_qualname: target,
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        import_candidates,
+        bare_call: !base.contains('.'),
+        call_shape: Some(CallShape {
+            arg_count: node
+                .child_by_field_name("arguments")
+                .map_or(0, |args| args.named_child_count() as u32),
+            is_new: true,
+            implicit_this: false,
+            is_ref: false,
+        }),
+        ..Default::default()
+    }
 }
 
 /// Pins a known receiver type to the declaration this file means by its
