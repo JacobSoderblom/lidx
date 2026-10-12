@@ -3,6 +3,7 @@ pub mod config;
 pub mod context;
 pub mod db;
 pub mod edge_views;
+pub mod freshness;
 pub mod gather_context;
 pub mod git_mining;
 pub mod impact;
