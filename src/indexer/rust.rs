@@ -109,6 +109,10 @@ struct Context {
     /// is a variable and never a reference to a same-named item
     /// (`collect_bound_names`); empty outside a function body.
     bound_names: Rc<HashSet<String>>,
+    /// Names of the `fn` items nested in the enclosing function bodies. A
+    /// nested `fn` is symbolised under the enclosing impl/trait, so a bare
+    /// call to one is qualified with that container, not the module.
+    nested_fns: Rc<HashSet<String>>,
     /// Set on entry to a trait declaration's own body (default methods)
     /// or a `impl Trait for Type` block's body (trait method
     /// implementations) — either way, the method's real visibility is the
@@ -286,6 +290,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             local_traits: Rc::new(collect_local_traits(root, source, module_name)),
             shadowed_names: Rc::new(HashSet::new()),
             bound_names: Rc::new(HashSet::new()),
+            nested_fns: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
             adts: Rc::new(collect_adts(root, source)),
             returns: Rc::new(collect_returns(root, source)),
@@ -659,6 +664,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     // names carry in, even for a `mod` declared inside a function.
     next_ctx.shadowed_names = Rc::new(HashSet::new());
     next_ctx.bound_names = Rc::new(HashSet::new());
+    next_ctx.nested_fns = Rc::new(HashSet::new());
     next_ctx.local_types = Rc::new(HashMap::new());
     walk_node(body, &next_ctx, source, output);
 }
@@ -824,6 +830,9 @@ fn handle_function(
         let mut bound = HashSet::new();
         collect_bound_names(node, source, &mut bound);
         next_ctx.bound_names = Rc::new(bound);
+        let mut nested: HashSet<String> = (*ctx.nested_fns).clone();
+        collect_nested_fn_names(body, source, &mut nested);
+        next_ctx.nested_fns = Rc::new(nested);
 
         // In a trait declaration `Self` is not the trait.
         let self_ty = ctx
@@ -1016,7 +1025,78 @@ const EXPR_ARG_MACROS: &[&str] = &[
     "write",
     "writeln",
     "panic",
+    "debug_assert",
+    "debug_assert_eq",
+    "debug_assert_ne",
+    "unreachable",
+    "unimplemented",
+    "todo",
+    "dbg",
+    "assert_matches",
+    "debug_assert_matches",
 ];
+
+/// Method names std types (`Clone`, `AsRef`/`AsMut`, `Iterator`, `Option`,
+/// `Result`, `Path`, `str`, `Vec`, slices, ...) define. A call to one of
+/// these through a receiver whose type is not tracked and that is not `self`
+/// almost always dispatches into std, so it must not bind to the repo's one
+/// same-named method (see [`refuses_std_method`]). Every entry is justified
+/// by the oracle benchmark (ripgrep + fd, `path_tests_excluded`): it
+/// removed more false edges than true ones it cost. A name whose true edges
+/// cost as many as it removed (`start`, `offset`, `open`, `capacity`, ...)
+/// is deliberately absent. Names listed with (FP removed / TP lost) in the
+/// PR for issue #425.
+const STD_METHOD_NAMES: &[&str] = &[
+    "map",
+    "as_ref",
+    "clone",
+    "end",
+    "parse",
+    "contains",
+    "push",
+    "sort",
+    "filter",
+    "elapsed",
+    "file_type",
+    "parent",
+    "metadata",
+    "as_path",
+    "is_symlink",
+    "is_dir",
+    "reset",
+    "read",
+    "count",
+    "drop",
+    "clear",
+    "is_empty",
+    "into_iter",
+    "file_name",
+];
+
+/// The method-name token of `recv.name(..)`.
+fn method_name_node(function_node: Node<'_>) -> Option<Node<'_>> {
+    (function_node.kind() == "field_expression")
+        .then(|| function_node.child_by_field_name("field"))
+        .flatten()
+}
+
+/// Whether the method call `function_node` (`recv.name(..)`) is a std method
+/// name on a receiver that is neither `self` nor of a tracked type.
+fn refuses_std_method(function_node: Node<'_>, source: &str) -> bool {
+    if function_node.kind() != "field_expression" {
+        return false;
+    }
+    let (Some(value), Some(field)) = (
+        function_node.child_by_field_name("value"),
+        function_node.child_by_field_name("field"),
+    ) else {
+        return false;
+    };
+    if value.kind() == "self" || node_text(value, source) == "self" {
+        return false;
+    }
+    STD_METHOD_NAMES.contains(&node_text(field, source).as_str())
+}
 
 /// tree-sitter leaves macro arguments as an opaque `token_tree`; for the
 /// known std macros, re-parse just that byte range as an expression (the
@@ -1132,7 +1212,16 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             .filter(|name| !name.is_empty())
     });
     let detail = if target.is_some() { None } else { Some(raw) };
-    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+    let mut receiver_type = infer_receiver_type(function_node, source, ctx);
+    if receiver_type == ReceiverType::NotTracked && refuses_std_method(function_node, source) {
+        receiver_type = ReceiverType::Unresolved;
+    }
+    let (mut start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
+    // A chained call's evidence starts at its method-name token, not at the
+    // head of the chain several lines above.
+    if let Some(field) = method_name_node(function_node) {
+        start_line = start_line.max(field.start_position().row as i64 + 1);
+    }
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     output.edges.push(EdgeInput {
         kind: "CALLS".to_string(),
@@ -1147,7 +1236,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         // (`self.foo()`, `Type::method()`, `obj.foo()`) — see
         // `EdgeInput::bare_call`'s doc.
         bare_call: function_node.kind() == "identifier",
-        receiver_type: infer_receiver_type(function_node, source, ctx),
+        receiver_type,
         ..Default::default()
     });
 }
@@ -1191,6 +1280,19 @@ fn collect_bound_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) 
             out.insert(node_text(name, source));
         }
         collect_bound_names(child, source, out);
+    }
+}
+
+/// Names of every `fn` item nested anywhere under `node`.
+fn collect_nested_fn_names(node: Node<'_>, source: &str, out: &mut HashSet<String>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "function_item"
+            && let Some(name) = child.child_by_field_name("name")
+        {
+            out.insert(node_text(name, source));
+        }
+        collect_nested_fn_names(child, source, out);
     }
 }
 
@@ -3550,11 +3652,14 @@ fn resolve_call_target(raw: &str, ctx: &Context) -> Option<String> {
     if raw.contains('.') {
         return None;
     }
-    let base = ctx
-        .container_stack
-        .last()
-        .cloned()
-        .unwrap_or_else(|| ctx.module.clone());
+    // A bare `f()` names a free function in scope -- the module's -- never
+    // an associated function of the enclosing impl (those need `Self::f`).
+    // The exception is a `fn` nested in the current body, which is
+    // symbolised under the enclosing impl.
+    let base = match ctx.container_stack.last() {
+        Some(container) if ctx.nested_fns.contains(raw) => container,
+        _ => &ctx.module,
+    };
     Some(format!("{base}::{raw}"))
 }
 
