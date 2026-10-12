@@ -521,7 +521,11 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
     match rpc::handle_method_lenient(indexer, &method, call_params) {
         Ok((result, ignored)) => {
             let payload = call_result_ok(result, text_mode, include_structured);
-            jsonrpc_result(id, with_ignored_params(payload, &ignored, text_mode))
+            let freshness = indexer.freshness();
+            jsonrpc_result(
+                id,
+                with_meta(payload, &ignored, freshness.as_ref(), text_mode),
+            )
         }
         Err(err) => jsonrpc_result(
             id,
@@ -530,27 +534,44 @@ fn handle_tool_call(id: Value, message: &Value, state: &mut State) -> Value {
     }
 }
 
-/// Report ignored params without touching the result's own shape: the
-/// tool result gains `_meta.ignored_params` and (unless `text_mode` is
-/// `none`) one extra trailing text block so a model that only reads text
-/// still sees it. `structuredContent` and the first content block stay
-/// exactly as for a well-formed call, and nothing is added when nothing was
-/// ignored.
-fn with_ignored_params(mut payload: Value, ignored: &[String], text_mode: TextMode) -> Value {
-    if ignored.is_empty() {
+/// Report ignored params and a stale index without touching the result's own
+/// shape: the tool result gains `_meta.ignored_params` and/or the
+/// `_meta.stale` freshness fields and (unless `text_mode` is `none`) one extra
+/// trailing text block per finding so a model that only reads text still sees
+/// it. `structuredContent` and the first content block stay exactly as for a
+/// well-formed call, and nothing is added when nothing was ignored and the
+/// index is fresh.
+fn with_meta(
+    mut payload: Value,
+    ignored: &[String],
+    freshness: Option<&crate::freshness::Freshness>,
+    text_mode: TextMode,
+) -> Value {
+    let mut meta = serde_json::Map::new();
+    let mut lines = Vec::new();
+    if !ignored.is_empty() {
+        meta.insert("ignored_params".into(), json!(ignored));
+        lines.push(format!(
+            "ignored_params: {} (not accepted by this method; the call ran without them)",
+            ignored.join(", ")
+        ));
+    }
+    if let Some(fresh) = freshness
+        && let Some(Value::Object(fields)) = fresh.stale_meta()
+    {
+        meta.extend(fields);
+        lines.extend(fresh.warning_line());
+    }
+    if meta.is_empty() {
         return payload;
     }
-    payload["_meta"] = json!({ "ignored_params": ignored });
+    payload["_meta"] = Value::Object(meta);
     if !matches!(text_mode, TextMode::None)
         && let Some(content) = payload["content"].as_array_mut()
     {
-        content.push(json!({
-            "type": "text",
-            "text": format!(
-                "ignored_params: {} (not accepted by this method; the call ran without them)",
-                ignored.join(", ")
-            )
-        }));
+        for text in lines {
+            content.push(json!({ "type": "text", "text": text }));
+        }
     }
     payload
 }
@@ -1206,6 +1227,39 @@ mod tests {
             }
         });
         assert_eq!(resp, expected);
+    }
+
+    #[test]
+    fn stale_index_adds_meta_and_one_trailing_warning_line() {
+        let (mut state, repo) = mcp_state("stale");
+        full_response(&mut state, "reindex", json!({}));
+        let fresh = full_response(&mut state, "search", json!({"query": "needle"}));
+        assert!(fresh["result"].get("_meta").is_none(), "{fresh}");
+        assert_eq!(fresh["result"]["content"].as_array().unwrap().len(), 1);
+
+        std::fs::write(repo.join("app.py"), "def needle():\n    return 1\n").unwrap();
+        // Freshness is cached for a second; drop the cached fresh result.
+        state
+            .get_indexer(repo.clone(), default_db_path(&repo))
+            .unwrap()
+            .invalidate_freshness();
+        let stale = full_response(&mut state, "search", json!({"query": "needle"}));
+        let result = &stale["result"];
+        assert_eq!(result["_meta"]["stale"]["changed_files"], 1, "{result}");
+        assert_eq!(result["_meta"]["stale"]["head_moved"], false);
+        assert!(result["_meta"]["index_age_s"].is_i64());
+        let blocks = result["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(
+            blocks[1]["text"],
+            "\u{26a0} index stale: 1 changed file \u{2014} run reindex"
+        );
+        // The result itself is unchanged.
+        assert_eq!(blocks[0], fresh["result"]["content"][0]);
+        assert_eq!(
+            result["structuredContent"],
+            fresh["result"]["structuredContent"]
+        );
     }
 
     #[test]

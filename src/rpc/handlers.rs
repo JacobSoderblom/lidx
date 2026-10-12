@@ -3684,6 +3684,18 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
         "index current"
     };
 
+    let mut index_status = json!({ "stale": stale, "hint": hint });
+    if let Some(fresh) = indexer.freshness() {
+        index_status["indexed_commit"] = json!(fresh.indexed_commit);
+        index_status["indexed_at"] = json!(fresh.indexed_at);
+        index_status["index_age_s"] = json!(fresh.index_age_s);
+        if let Some(stale) = &fresh.stale {
+            index_status["head_moved"] = json!(stale.head_moved);
+            index_status["current_head"] = json!(stale.current_head);
+            index_status["changed_files"] = json!(stale.changed_files);
+        }
+    }
+
     // 5. Suggested queries
     let suggested = json!([
         { "method": "explain_symbol", "params": { "query": "<symbol_name>" }, "why": "Understand any symbol deeply" },
@@ -3696,7 +3708,7 @@ pub(super) fn handle_onboard(indexer: &mut Indexer, params: Value) -> Result<Val
         "overview": overview,
         "languages": lang_list,
         "modules": module_nodes,
-        "index_status": { "stale": stale, "hint": hint },
+        "index_status": index_status,
         "suggested_queries": suggested,
     }))
 }
