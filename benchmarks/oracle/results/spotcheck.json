@@ -6,10 +6,10 @@
   "go/syft/no_tests",
   "ts/zod",
   "ts/hono",
-  "rust/ripgrep/no_tests",
-  "rust/fd/no_tests"
+  "rust/ripgrep/path_tests_excluded",
+  "rust/fd/path_tests_excluded"
  ],
- "notes": "**How the rules were iterated.** The first samples found artefacts and mis-bucketed exclusions well above 10%; every item below was read by hand and led to a rule change before the final samples were drawn:\n\n- Review of the first report (5 of 14 dispatch FNs mis-bucketed): TypeScript marked calls to a single-initialiser `const X = core.$constructor(...)` as dispatch (281 of 359 TypeScript dispatch edges), and Rust marked 449 inherent methods and 54 tuple-struct constructors as trait dispatch because the symbol was split on `/`. Both rules were rewritten and have unit tests.\n- Bucket sample, Go `callee_file_not_covered`: 10 of 10 were production code resolved to a symbol in a `_test.go` file, an edge that cannot exist; the exclusion hid wrong edges. They are now counted as wrong edges (category `calls_test_code`). The same rule covers Rust and TypeScript. One further item was hidden behind a build tag although the oracle knew the site calls the standard library; sites the oracle knows call code outside the repo are now graded.\n- Bucket sample, TypeScript `caller_not_judged`: 17 of 17 were mis-bucketed (export-list entries and shorthand properties at module level, class-field initialisers that only name a function, `export default function` callers). tsc analyses every call in a covered file, so the TypeScript oracle now judges every caller in the analysed files.\n- Bucket sample, `oracle_unresolved_site`: 5 of 6 TypeScript items and 10 of 10 Rust items withheld an edge for a different call on the same line, or for an enum-variant constructor whose in-repo lookalike is a wrong edge. An unresolved call now withholds only a lidx edge whose callee has the same name; Rust variant constructor sites count as sites that call outside the repository.\n- Bucket sample, Rust `callee_file_not_covered`: 2 of 2 were production code calling into `tests/`. Fixed with the `calls_test_code` rule.\n- FP/FN samples before the final round: 3 of 20 TypeScript FPs were matching artefacts (calls from several module-level containers merged into one oracle edge that kept only the first container as an acceptable caller; `const objectKeys: ObjectConstructor[\"keys\"]` resolved to lib.d.ts instead of the in-repo const; a local `const match = ... as Router[\"match\"]` resolved to the interface member). A Rust edge to `SinkContext::bytes` was missing from the oracle because `#[cfg(test)]` on a struct field made the region detector swallow the next function; regions are now computed per gated item.\n- Earlier rounds (first report): 9 of 20 Go FNs were dispatch fan-out and 5 of 20 TypeScript FNs had a nested callee lidx cannot index; Go range-over-func bodies, generic instances and unreachable \"judgeable\" callers, JSX, tagged templates, enum-variant constructors, merged declarations.\n\nThe final samples were drawn after all of the above: 120 FP/FN items and the exclusion-bucket items, none an artefact and none mis-bucketed. A rate of 0 over n items has a 95% Wilson upper bound of 3.84/(n+3.84); the report prints the interval per row and pooled. Caveats: (1) verdicts are one reader's judgement, with a note per item; (2) rare categories are unlikely to appear in a random sample of 10 to 20; (3) correct exclusions are judged against the source, but \"unreachable from main\" rests on RTA, which is sound for what it keeps and silent about code it never reaches.\n\nCategories that dominate each language drive the next fixes: see the per-cell FN/FP category lines above and `results/lists/`.",
+ "notes": "**How the rules were iterated.** The first samples found artefacts and mis-bucketed exclusions well above 10%; every item below was read by hand and led to a rule change before the final samples were drawn:\n\n- Review of the first report (5 of 14 dispatch FNs mis-bucketed): TypeScript marked calls to a single-initialiser `const X = core.$constructor(...)` as dispatch (281 of 359 TypeScript dispatch edges), and Rust marked 449 inherent methods and 54 tuple-struct constructors as trait dispatch because the symbol was split on `/`. Both rules were rewritten and have unit tests.\n- Bucket sample, Go `callee_file_not_covered`: 10 of 10 were production code resolved to a symbol in a `_test.go` file, an edge that cannot exist; the exclusion hid wrong edges. They are now counted as wrong edges (category `calls_test_code`). The same rule covers Rust and TypeScript. One further item was hidden behind a build tag although the oracle knew the site calls the standard library; sites the oracle knows call code outside the repo are now graded.\n- Bucket sample, TypeScript `caller_not_judged`: 17 of 17 were mis-bucketed (export-list entries and shorthand properties at module level, class-field initialisers that only name a function, `export default function` callers). tsc analyses every call in a covered file, so the TypeScript oracle now judges every caller in the analysed files.\n- Bucket sample, `oracle_unresolved_site`: 5 of 6 TypeScript items and 10 of 10 Rust items withheld an edge for a different call on the same line, or for an enum-variant constructor whose in-repo lookalike is a wrong edge. An unresolved call now withholds only a lidx edge whose callee has the same name; Rust variant constructor sites count as sites that call outside the repository.\n- Bucket sample, Rust `callee_file_not_covered`: 2 of 2 were production code calling into `tests/`. Fixed with the `calls_test_code` rule.\n- FP/FN samples before the final round: 3 of 20 TypeScript FPs were matching artefacts (calls from several module-level containers merged into one oracle edge that kept only the first container as an acceptable caller; `const objectKeys: ObjectConstructor[\"keys\"]` resolved to lib.d.ts instead of the in-repo const; a local `const match = ... as Router[\"match\"]` resolved to the interface member). A Rust edge to `SinkContext::bytes` was missing from the oracle because `#[cfg(test)]` on a struct field made the region detector swallow the next function; regions are now computed per gated item.\n- Earlier rounds (first report): 9 of 20 Go FNs were dispatch fan-out and 5 of 20 TypeScript FNs had a nested callee lidx cannot index; Go range-over-func bodies, generic instances and unreachable \"judgeable\" callers, JSX, tagged templates, enum-variant constructors, merged declarations.\n\n**Rust re-sample on the comparison cells.** After the comparison moved to repowise's scope, the Rust sample was redrawn from the `path_tests_excluded` lists (20 FP + 20 FN + 10 per bucket) and read against the source. It found one defect in the SCIP reader: a caller was keyed by its symbol, so `build.rs` and `crates/core/main.rs`, which both define `main()` in one package, shared one caller and the edge `main -> run` of `crates/core/main.rs` was attributed to `build.rs` (a `caller_not_judged` item that should have been graded). Callers are now keyed by their own definition occurrence and the cells were regenerated. It also found one oracle artefact: an FP whose call sits under `#[cfg(feature = \"pcre2\")]`, which rust-analyzer did not enable. Linux-only tests (`#[cfg(target_os = \"linux\")]`) are correctly absent from an oracle that ran on macOS and are not judged. The TypeScript and Go samples were redrawn too (the regenerated lists differ slightly from run to run on merged declarations, so some sampled ids changed) and the new items were read.\n\nThe final samples were drawn after all of the above: 120 FP/FN items and the exclusion-bucket items, one an artefact and none mis-bucketed. A rate of 0 over n items has a 95% Wilson upper bound of 3.84/(n+3.84); the report prints the interval per row and pooled. Caveats: (1) verdicts are one reader's judgement, with a note per item; (2) rare categories are unlikely to appear in a random sample of 10 to 20; (3) correct exclusions are judged against the source, but \"unreachable from main\" rests on RTA, which is sound for what it keeps and silent about code it never reaches.\n\nCategories that dominate each language drive the next fixes: see the per-cell FN/FP category lines above and `results/lists/`.",
  "languages": {
   "go": {
    "fp": [
@@ -300,18 +300,18 @@
   "ts": {
    "fp": [
     {
-     "id": "b2ba33e7",
-     "caller": "src/jsx",
-     "callee": "src/jsx/hooks.useId",
-     "verdict": "lidx_error",
-     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
-    },
-    {
-     "id": "56d5ce58",
-     "caller": "packages/zod/src/v4/classic/errors",
-     "callee": "packages/zod/src/v4/classic/errors.initializer",
+     "id": "b1c1e316",
+     "caller": "packages/zod/src/v4/core/errors",
+     "callee": "packages/zod/src/v4/core/errors.initializer",
      "verdict": "lidx_error",
      "note": "callback passed as an argument (initializer) recorded as a call"
+    },
+    {
+     "id": "558fb17d",
+     "caller": "packages/zod/src/v4/core/regexes",
+     "callee": "packages/zod/src/v4/core/regexes.dateSource",
+     "verdict": "lidx_error",
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
      "id": "03aaf82c",
@@ -321,32 +321,32 @@
      "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "c01a6243",
-     "caller": "src/router/trie-router/node.Node.#params",
-     "callee": "src/router/trie-router/node.emptyParams",
+     "id": "bfd02584",
+     "caller": "src/helper/css.createCssContext",
+     "callee": "src/helper/css/common.STYLE_STRING",
      "verdict": "lidx_error",
-     "note": "field initialiser naming a const is a reference"
+     "note": "computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "c47ad93f",
-     "caller": "src/jsx/hooks.startViewTransition",
-     "callee": "src/jsx/hooks.viewTransitionHook",
-     "verdict": "lidx_error",
-     "note": "class field initialiser naming a function is a reference, not a call"
-    },
-    {
-     "id": "f75597fd",
-     "caller": "src/jsx/context.createContext",
-     "callee": "src/jsx/constants.DOM_RENDERER",
+     "id": "c3906d7a",
+     "caller": "src/jsx/dom/render.createPortal",
+     "callee": "src/jsx/dom/render.HONO_PORTAL_ELEMENT",
      "verdict": "lidx_error",
      "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "4eeed716",
-     "caller": "src/adapter/cloudflare-workers/utils.getContentFromKVAsset",
-     "callee": "src/utils/cookie.parse",
+     "id": "f7871d1d",
+     "caller": "src/jsx/dom",
+     "callee": "src/jsx/dom/components.ErrorBoundary",
      "verdict": "lidx_error",
-     "note": "JSON.parse resolved to the in-repo cookie parse"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+    },
+    {
+     "id": "4e4802f5",
+     "caller": "src/jsx/dom/intrinsic-element/components.formActionableElement",
+     "callee": "src/jsx/dom/intrinsic-element/components.customEventFormAction",
+     "verdict": "lidx_error",
+     "note": "computed key recorded as a call; nothing is invoked"
     },
     {
      "id": "cc8a8443",
@@ -356,9 +356,9 @@
      "note": "JSON.parse resolved to ZodType.parse"
     },
     {
-     "id": "fade53b2",
-     "caller": "src/helper/css/common.buildStyleString",
-     "callee": "src/helper/css/common.SELECTORS",
+     "id": "fb931d1f",
+     "caller": "src/jsx/dom/server",
+     "callee": "src/jsx/dom/server.renderToReadableStream",
      "verdict": "lidx_error",
      "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
@@ -370,67 +370,67 @@
      "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "50667360",
-     "caller": "src/router/pattern-router/router.PatternRouter.match",
-     "callee": "src/router/pattern-router/router.emptyParams",
-     "verdict": "lidx_error",
-     "note": "constant read recorded as a call"
-    },
-    {
-     "id": "66426f26",
-     "caller": "src/jsx/dom/css.createCssJsxDomObjects",
-     "callee": "src/helper/css/common.SELECTOR",
+     "id": "500151e0",
+     "caller": "packages/zod/src/v3/benchmarks/primitives",
+     "callee": "packages/zod/src/v3/benchmarks/primitives.longEnumSuite",
      "verdict": "lidx_error",
      "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "ec400fe0",
-     "caller": "src/router/pattern-router/router.PatternRouter.match",
-     "callee": "src/router.METHOD_NAME_ALL",
+     "id": "64dc25ef",
+     "caller": "packages/zod/src/v3/benchmarks/object",
+     "callee": "packages/zod/src/v3/benchmarks/object.shortSuite",
      "verdict": "lidx_error",
      "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "f6f2ef33",
-     "caller": "src/client/client.hc",
-     "callee": "src/jsx/base.JSXNode.toString",
+     "id": "ed0fa79a",
+     "caller": "src/router/linear-router/router.LinearRouter.match",
+     "callee": "src/router/linear-router/router.splitPathRe",
      "verdict": "lidx_error",
-     "note": "Function.prototype.toString resolved to JSXNode.toString"
+     "note": "regular expression constant passed as an argument recorded as a call"
     },
     {
-     "id": "6f0682d0",
-     "caller": "src/helper/ssg/ssg.toSSG",
-     "callee": "src/helper/ssg/ssg.DEFAULT_OUTPUT_DIR",
-     "verdict": "lidx_error",
-     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
-    },
-    {
-     "id": "6e3fd323",
-     "caller": "src/helper/css",
-     "callee": "src/helper/css/common.DEFAULT_STYLE_ID",
+     "id": "f71a0a04",
+     "caller": "src/utils/ipaddr.parseIPv6HexCode",
+     "callee": "src/utils/ipaddr.CHAR_CODE_A",
      "verdict": "lidx_error",
      "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "8771e6b0",
-     "caller": "src/jsx/dom/render.buildNode",
-     "callee": "src/jsx/constants.DOM_STASH",
+     "id": "6e85f2c8",
+     "caller": "packages/zod/src/v3/benchmarks/string",
+     "callee": "packages/zod/src/v3/benchmarks/string.SUITE_NAME",
      "verdict": "lidx_error",
      "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "e2f0ac0c",
+     "id": "6dc85736",
      "caller": "src/jsx/dom",
-     "callee": "src/jsx/dom/hooks.useActionState",
+     "callee": "src/jsx/hooks.startTransition",
+     "verdict": "lidx_error",
+     "note": "export-list entry recorded as a call; nothing is invoked"
+    },
+    {
+     "id": "876125d1",
+     "caller": "src/adapter/bun/websocket.createBunWebSocket",
+     "callee": "src/adapter/bun/websocket.upgradeWebSocket",
+     "verdict": "lidx_error",
+     "note": "shorthand property naming a const recorded as a call; nothing is invoked"
+    },
+    {
+     "id": "e35339c7",
+     "caller": "src/router/trie-router/node.Node.#pushHandlerSets",
+     "callee": "src/router/trie-router/node.emptyParams",
      "verdict": "lidx_error",
      "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
-     "id": "83adbbdd",
-     "caller": "src/jsx/streaming",
-     "callee": "src/jsx/constants.DOM_RENDERER",
+     "id": "82b63231",
+     "caller": "src/jsx/dom/render.buildNode",
+     "callee": "src/jsx/dom/render.nameSpaceContext",
      "verdict": "lidx_error",
-     "note": "symbol constant used as a property key recorded as a call"
+     "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
     },
     {
      "id": "024d97da",
@@ -586,286 +586,286 @@
   "rust": {
    "fp": [
     {
-     "id": "85c842a3",
-     "caller": "crate::sink::SinkMatch::bytes_range_in_buffer",
-     "callee": "crate::Error::clone",
-     "verdict": "lidx_error",
-     "note": "Range clone() resolved to Error::clone"
+     "id": "7246198e",
+     "caller": "crate::crates::core::flags::hiargs::HiArgs::matcher_pcre2",
+     "callee": "crate::matcher::RegexMatcherBuilder::utf",
+     "verdict": "oracle_artefact",
+     "note": "builder.utf(true).ucp(true) is a real call to the pcre2 RegexMatcherBuilder; it sits under #[cfg(feature = \"pcre2\")], which rust-analyzer did not enable, so SCIP has no occurrence there and lidx is right"
     },
     {
-     "id": "ecfc0e9d",
-     "caller": "crate::crates::core::search::SearchWorker::search_reader",
-     "callee": "crate::crates::core::search::SearchWorker::search_reader",
-     "verdict": "lidx_error",
-     "note": "free function search_reader(m, ..) resolved to the enclosing SearchWorker::search_reader method (false recursion)"
-    },
-    {
-     "id": "e5db65e5",
-     "caller": "crate::crates::core::flags::doc::render_custom_markup",
-     "callee": "crate::Match::map",
-     "verdict": "lidx_error",
-     "note": "Option::map resolved to Match::map"
-    },
-    {
-     "id": "f65b83d1",
-     "caller": "crate::walk::WalkEventIter::next",
-     "callee": "crate::tests::util::Dir",
-     "verdict": "lidx_error",
-     "note": "enum variant WalkEvent::Dir resolved to tests::util::Dir, a test-only struct"
-    },
-    {
-     "id": "8e64b312",
-     "caller": "crate::json::JSONBuilder::build",
-     "callee": "crate::Error::clone",
-     "verdict": "lidx_error",
-     "note": "config.clone() resolved to Error::clone"
-    },
-    {
-     "id": "61e3e344",
-     "caller": "crate::searcher::glue::MultiLine::find",
-     "callee": "crate::Match::map",
-     "verdict": "lidx_error",
-     "note": "Option::map resolved to Match::map"
-    },
-    {
-     "id": "9d6fd2e8",
-     "caller": "crate::testutil::RegexMatcher::find_at",
-     "callee": "crate::Match::end",
-     "verdict": "lidx_error",
-     "note": "Range end() resolved to Match::end"
-    },
-    {
-     "id": "188cd68a",
-     "caller": "crate::counter::CounterWriter::supports_color",
-     "callee": "crate::wtr::StandardStream::supports_color",
-     "verdict": "lidx_error",
-     "note": "WriteColor::supports_color on a generic writer resolved to StandardStream::supports_color by name"
-    },
-    {
-     "id": "e2b15f78",
-     "caller": "crate::searcher::SearcherBuilder::build",
-     "callee": "crate::Match::map",
-     "verdict": "lidx_error",
-     "note": "Option::map resolved to Match::map"
-    },
-    {
-     "id": "d2e75e4c",
-     "caller": "crate::pathutil::strip_prefix",
+     "id": "d0415ed7",
+     "caller": "crate::summary::SummarySink::stats",
      "callee": "crate::glob::Glob::as_ref",
      "verdict": "lidx_error",
-     "note": "AsRef::as_ref resolved to Glob::as_ref"
+     "note": "Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref"
     },
     {
-     "id": "94b024d1",
-     "caller": "crate::regex_helper::pattern_has_uppercase_char",
-     "callee": "crate::fmt::FormatTemplate::parse",
-     "verdict": "lidx_error",
-     "note": "str parse resolved to FormatTemplate::parse"
-    },
-    {
-     "id": "50f23a55",
-     "caller": "crate::crates::core::flags::parse::suggest",
-     "callee": "crate::Match::map",
-     "verdict": "lidx_error",
-     "note": "iterator map resolved to Match::map"
-    },
-    {
-     "id": "ac6c49d2",
-     "caller": "crate::path::PathPrinterBuilder::build",
-     "callee": "crate::Error::clone",
-     "verdict": "lidx_error",
-     "note": "config.clone() resolved to Error::clone"
-    },
-    {
-     "id": "0c035c17",
-     "caller": "crate::decompress::DecompressionMatcherBuilder::try_associate",
-     "callee": "crate::Match::map",
-     "verdict": "lidx_error",
-     "note": "iterator map resolved to Match::map"
-    },
-    {
-     "id": "a6f71daa",
-     "caller": "crate::util::NiceDuration::serialize",
-     "callee": "crate::Match::end",
-     "verdict": "lidx_error",
-     "note": "serializer end() resolved to Match::end"
-    },
-    {
-     "id": "59228137",
-     "caller": "crate::walk::walkdir_is_dir",
-     "callee": "crate::walk::DirEntry::depth",
-     "verdict": "lidx_error",
-     "note": "walkdir DirEntry::depth resolved to the in-repo DirEntry::depth"
-    },
-    {
-     "id": "9c6846ac",
-     "caller": "crate::lines::LineStep::next_match",
+     "id": "cacf5ccf",
+     "caller": "crate::pathutil::file_name",
      "callee": "crate::Match::map",
      "verdict": "lidx_error",
      "note": "Option::map resolved to Match::map"
     },
     {
-     "id": "4784a198",
+     "id": "dace4558",
+     "caller": "crate::gitignore::gitconfig_home_contents",
+     "callee": "crate::Match::map",
+     "verdict": "lidx_error",
+     "note": "Option::map resolved to Match::map"
+    },
+    {
+     "id": "797aba7e",
+     "caller": "crate::gitignore::parse_excludes_file",
+     "callee": "crate::Match::map",
+     "verdict": "lidx_error",
+     "note": "Option::map resolved to Match::map"
+    },
+    {
+     "id": "4b9c4f37",
+     "caller": "crate::dir::Ignore::add_child",
+     "callee": "crate::glob::Glob::as_ref",
+     "verdict": "lidx_error",
+     "note": "Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref"
+    },
+    {
+     "id": "86af1968",
+     "caller": "crate::config::ConfiguredHIR::new",
+     "callee": "crate::matcher::RegexMatcherBuilder::dot_matches_new_line",
+     "verdict": "lidx_error",
+     "note": "regex_syntax TranslatorBuilder builder method (external) resolved to RegexMatcherBuilder::dot_matches_new_line"
+    },
+    {
+     "id": "0e3136f6",
+     "caller": "crate::pathutil::file_name",
+     "callee": "crate::Match::map",
+     "verdict": "lidx_error",
+     "note": "Option::map resolved to Match::map"
+    },
+    {
+     "id": "c5e9ade1",
+     "caller": "crate::pattern::patterns_from_path",
+     "callee": "crate::glob::Glob::as_ref",
+     "verdict": "lidx_error",
+     "note": "Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref"
+    },
+    {
+     "id": "b89b0d7f",
+     "caller": "crate::config::ConfiguredHIR::new",
+     "callee": "crate::matcher::RegexMatcherBuilder::ignore_whitespace",
+     "verdict": "lidx_error",
+     "note": "regex_syntax ParserBuilder::ignore_whitespace (external) resolved to RegexMatcherBuilder::ignore_whitespace"
+    },
+    {
+     "id": "82c8a6f3",
+     "caller": "crate::matcher::RegexMatcher::try_find_iter",
+     "callee": "crate::Match::start",
+     "verdict": "lidx_error",
+     "note": "m.start() on a pcre2 match (external) resolved to grep_matcher Match::start"
+    },
+    {
+     "id": "3cb7e462",
+     "caller": "crate::literal::TSeq::union",
+     "callee": "crate::literal::Extractor::union",
+     "verdict": "lidx_error",
+     "note": "self.seq.union(..) on a regex_syntax Seq (external) resolved to Extractor::union"
+    },
+    {
+     "id": "94179f1c",
+     "caller": "crate::dir::IgnoreBuilder::build_with_cwd",
+     "callee": "crate::Error::clone",
+     "verdict": "lidx_error",
+     "note": ".clone() on an Option/Arc field resolved to Error::clone"
+    },
+    {
+     "id": "07f346c2",
      "caller": "crate::dir::Ignore::add_parents",
      "callee": "crate::glob::Glob::as_ref",
      "verdict": "lidx_error",
-     "note": "AsRef::as_ref resolved to Glob::as_ref"
+     "note": "Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref"
     },
     {
-     "id": "95762f9e",
-     "caller": "crate::types::TypesBuilder::definitions",
-     "callee": "crate::crates::core::flags::hiargs::HiArgs::sort",
+     "id": "8f455f6a",
+     "caller": "crate::crates::core::flags::hiargs::HiArgs::matcher_pcre2",
+     "callee": "crate::crates::core::flags::defs::PCRE2",
      "verdict": "lidx_error",
-     "note": "Vec::sort resolved to HiArgs::sort"
+     "note": "enum variant PatternMatcher::PCRE2(m) resolved to the unrelated struct PCRE2 in flags/defs.rs"
     },
     {
-     "id": "01961661",
-     "caller": "crate::walk::WalkParallel::visit",
-     "callee": "crate::Error::clone",
+     "id": "447bd49a",
+     "caller": "crate::process::CommandReader::read",
+     "callee": "crate::decompress::DecompressionReader::read",
      "verdict": "lidx_error",
-     "note": "Arc clone() resolved to Error::clone"
+     "note": "ChildStdout::read (external) resolved to DecompressionReader::read"
+    },
+    {
+     "id": "855cfa69",
+     "caller": "crate::pathutil::is_file_name",
+     "callee": "crate::Match::map",
+     "verdict": "lidx_error",
+     "note": "Option::map resolved to Match::map"
+    },
+    {
+     "id": "30a0e6ad",
+     "caller": "crate::walk::device_num",
+     "callee": "crate::error::Error::new",
+     "verdict": "lidx_error",
+     "note": "std::io::Error::new resolved to the regex crate Error::new"
+    },
+    {
+     "id": "f1c5c82c",
+     "caller": "std::io::Error::from",
+     "callee": "crate::error::Error::new",
+     "verdict": "lidx_error",
+     "note": "std::io::Error::new resolved to the regex crate Error::new"
+    },
+    {
+     "id": "8393ee2e",
+     "caller": "crate::cli::Opts::no_search_paths",
+     "callee": "crate::filesystem::is_empty",
+     "verdict": "lidx_error",
+     "note": "Vec::is_empty on a field resolved to filesystem::is_empty"
     }
    ],
    "fn": [
     {
-     "id": "87502bb5",
-     "caller": "resolve_git_commondir",
-     "callee": "with_path",
+     "id": "cc7d501e",
+     "caller": "spawn_senders",
+     "callee": "osstr_to_bytes",
      "verdict": "lidx_error",
-     "note": "Error::Io(err).with_path(..): chained method on a variant constructor, no edge"
+     "note": "filesystem::osstr_to_bytes(..) inside a closure argument, no edge"
     },
     {
-     "id": "d3ef1f7a",
-     "caller": "get_mut",
-     "callee": "get_mut",
-     "verdict": "lidx_error",
-     "note": "self.wtr.get_mut(): method call through a field, no edge"
-    },
-    {
-     "id": "de7b28a0",
-     "caller": "matches_into",
-     "callee": "matches_into",
-     "verdict": "lidx_error",
-     "note": "s.matches_into(..) in match arms: calls inside match arms, no edge"
-    },
-    {
-     "id": "189f72fd",
-     "caller": "matcher_rust",
-     "callee": "fixed_strings",
-     "verdict": "lidx_error",
-     "note": ".fixed_strings(..) in a builder chain, missed"
-    },
-    {
-     "id": "f5ad6887",
-     "caller": "printer_standard",
-     "callee": "into_bytes",
-     "verdict": "lidx_error",
-     "note": "self.field_match_separator.clone().into_bytes(): chain resolved by bare name to Error::clone instead"
-    },
-    {
-     "id": "3660fadb",
-     "caller": "search",
+     "id": "63fcd0bf",
+     "caller": "trim_ascii_with_line_term",
      "callee": "line_number",
      "verdict": "lidx_error",
-     "note": ".line_number(false) in a builder chain, missed"
+     "note": "line_number(..) in a builder/method chain, missed"
     },
     {
-     "id": "8cdd16e1",
-     "caller": "search_reader",
-     "callee": "run",
-     "verdict": "lidx_error",
-     "note": "ReadByLine::new(..).run(): chained call missed, sibling found"
-    },
-    {
-     "id": "c69c4675",
-     "caller": "find_short",
-     "callee": "find",
-     "verdict": "lidx_error",
-     "note": "self.map.find(&[byte]): method call through a field in a let-else, no edge"
-    },
-    {
-     "id": "1fe04753",
-     "caller": "replace",
-     "callee": "clear",
-     "verdict": "lidx_error",
-     "note": "self.replacer.clear(): method call through a field, no edge"
-    },
-    {
-     "id": "d59964a3",
-     "caller": "new",
+     "id": "9f5596eb",
+     "caller": "regression_after_context_with_match",
      "callee": "build",
      "verdict": "lidx_error",
-     "note": "JSONBuilder::new().build(wtr): chain head missed"
+     "note": "StandardBuilder::new().build(..): the call is a chained method with NoColor::new as argument, lidx recorded only the external argument call"
     },
     {
-     "id": "9a9cb0bc",
-     "caller": "special",
-     "callee": "generate_long",
-     "verdict": "lidx_error",
-     "note": "flags::generate_version_long() marked external although it is in the repository"
-    },
-    {
-     "id": "2774e575",
-     "caller": "main",
-     "callee": "build",
-     "verdict": "lidx_error",
-     "note": "WalkBuilder::new(path).build(): chain, sibling found"
-    },
-    {
-     "id": "b8e22e86",
-     "caller": "interpolate",
-     "callee": "interpolate",
-     "verdict": "lidx_error",
-     "note": "free function interpolate(..) resolved to the enclosing Captures::interpolate method, real callee missed"
-    },
-    {
-     "id": "52f17e23",
-     "caller": "start_hyperlink",
-     "callee": "column",
-     "verdict": "lidx_error",
-     "note": ".column(column) in a builder chain, missed"
-    },
-    {
-     "id": "17d86afe",
-     "caller": "start_color_match",
-     "callee": "[WriteColor]set_color",
-     "verdict": "lidx_error",
-     "note": "self.wtr().borrow_mut().set_color(..): chained call missed"
-    },
-    {
-     "id": "76726080",
-     "caller": "depth",
-     "callee": "depth",
-     "verdict": "lidx_error",
-     "note": "self.dent.depth(): method call through a field, no edge"
-    },
-    {
-     "id": "ff2953f1",
-     "caller": "sink_slow_multi_per_match",
+     "id": "a7303b5c",
+     "caller": "regression_search_empty_with_crlf",
      "callee": "line_terminator",
      "verdict": "lidx_error",
-     "note": "self.searcher.line_terminator().as_byte(): chain head missed"
+     "note": "line_terminator(..) in a builder/method chain, missed"
     },
     {
-     "id": "dbc84450",
-     "caller": "write_byte_offset",
-     "callee": "column",
+     "id": "0ec1fad7",
+     "caller": "visit",
+     "callee": "run",
      "verdict": "lidx_error",
-     "note": "self.config().colors.column(): chain through a field, missed"
+     "note": "worker.run() inside a closure passed to spawn, no edge"
     },
     {
-     "id": "b5380e4c",
-     "caller": "new",
-     "callee": "FieldContextSeparator",
+     "id": "b8d9f46e",
+     "caller": "buffer_binary_convert1",
+     "callee": "build",
      "verdict": "lidx_error",
-     "note": "Vec::unescape_bytes(..).into(): tuple-struct constructor FieldContextSeparator(..) not recorded"
+     "note": "build(..) in a builder/method chain, missed"
     },
     {
-     "id": "64f6b1dd",
-     "caller": "sink_slow_multi_line",
-     "callee": "multi_line",
+     "id": "272ee393",
+     "caller": "max_columns_preview",
+     "callee": "sink",
      "verdict": "lidx_error",
-     "note": "self.multi_line() inside debug_assert!: macro argument call, no edge"
+     "note": "sink(..) in a builder/method chain, missed"
+    },
+    {
+     "id": "ee62f630",
+     "caller": "read_dir",
+     "callee": "with_depth",
+     "verdict": "lidx_error",
+     "note": ".with_depth(..) in a chain on Error resolved by bare name to another with_depth"
+    },
+    {
+     "id": "dcbc8b9e",
+     "caller": "heading_multiple",
+     "callee": "line_number",
+     "verdict": "lidx_error",
+     "note": "line_number(..) in a builder/method chain, missed"
+    },
+    {
+     "id": "685d74e8",
+     "caller": "max_matches_context",
+     "callee": "line_number",
+     "verdict": "lidx_error",
+     "note": "line_number(..) in a builder/method chain, missed"
+    },
+    {
+     "id": "93e3ffac",
+     "caller": "count_path_with_zero",
+     "callee": "build_no_color",
+     "verdict": "lidx_error",
+     "note": "build_no_color(..) in a builder/method chain, missed"
+    },
+    {
+     "id": "15b0c633",
+     "caller": "exclude_lowest",
+     "callee": "matched",
+     "verdict": "lidx_error",
+     "note": "matched(..) in a builder/method chain, missed"
+    },
+    {
+     "id": "cc8d0e15",
+     "caller": "basic1",
+     "callee": "line_number",
+     "verdict": "lidx_error",
+     "note": "line_number(..) in a builder/method chain, missed"
+    },
+    {
+     "id": "a0fa9fb6",
+     "caller": "add_parents",
+     "callee": "path",
+     "verdict": "lidx_error",
+     "note": "self.dent.path() through a field, no edge"
+    },
+    {
+     "id": "76dbaac2",
+     "caller": "matched",
+     "callee": "matched",
+     "verdict": "lidx_error",
+     "note": "self.overrides.matched(..) through a field, no edge"
+    },
+    {
+     "id": "fb4a7e28",
+     "caller": "disabled",
+     "callee": "ContextSeparator",
+     "verdict": "lidx_error",
+     "note": "tuple-struct constructor ContextSeparator(None) is a call to a declaration lidx indexes, no edge"
+    },
+    {
+     "id": "19ef53a8",
+     "caller": "sink_other_context",
+     "callee": "end",
+     "verdict": "lidx_error",
+     "note": "range.end() on a Match alias, no edge"
+    },
+    {
+     "id": "8b30cbca",
+     "caller": "max_matches_multi_line1",
+     "callee": "build",
+     "verdict": "lidx_error",
+     "note": "build(..) in a builder/method chain, missed"
+    },
+    {
+     "id": "cc57d1c3",
+     "caller": "path_with_match_found",
+     "callee": "new",
+     "verdict": "lidx_error",
+     "note": "RegexMatcher::new(..) in a test body, no edge"
+    },
+    {
+     "id": "3dad4ab9",
+     "caller": "binary3",
+     "callee": "line_number",
+     "verdict": "lidx_error",
+     "note": "line_number(..) in a builder/method chain, missed"
     }
    ]
   }
@@ -1336,21 +1336,21 @@
    ],
    "ungradable:caller_file_not_covered": [
     {
-     "id": "da988e3a",
-     "cell": "ts/zod",
-     "caller": "packages/docs/next.config.config",
-     "callee": "packages/docs/next.config.generateRedirects",
+     "id": "db079bc9",
+     "cell": "ts/hono",
+     "caller": "runtime-tests/lambda/index.test",
+     "callee": "src/helper/streaming/sse.streamSSE",
      "verdict": "correct_exclusion",
-     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)",
      "bucket_size": 1327
     },
     {
-     "id": "c422ce0c",
-     "cell": "ts/hono",
-     "caller": "benchmarks/routers/src/rou3.rou3Router",
-     "callee": "benchmarks/routers/src/rou3.router",
+     "id": "c43c83a2",
+     "cell": "ts/zod",
+     "caller": "packages/bench/jit-union",
+     "callee": "packages/bench/metabench.metabench",
      "verdict": "correct_exclusion",
-     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)",
      "bucket_size": 1327
     },
     {
@@ -1381,12 +1381,12 @@
      "bucket_size": 1327
     },
     {
-     "id": "bce9b036",
-     "cell": "ts/zod",
-     "caller": "packages/tsc/bench/strongly-connected",
-     "callee": "packages/tsc/generate.generate",
+     "id": "bd225121",
+     "cell": "ts/hono",
+     "caller": "runtime-tests/lambda/stream.test",
+     "callee": "src/utils/cookie.parse",
      "verdict": "correct_exclusion",
-     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)",
      "bucket_size": 1327
     },
     {
@@ -1417,12 +1417,12 @@
      "bucket_size": 1327
     },
     {
-     "id": "cfa57a28",
-     "cell": "ts/hono",
-     "caller": "src/jsx/dom/components.test",
-     "callee": "src/jsx/dom/components.ErrorBoundary",
+     "id": "cfafc684",
+     "cell": "ts/zod",
+     "caller": "packages/bench/string",
+     "callee": "packages/bench/metabench.metabench",
      "verdict": "correct_exclusion",
-     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+     "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)",
      "bucket_size": 1327
     }
    ],
@@ -1448,280 +1448,372 @@
    ]
   },
   "rust": {
+   "capture_gap:macro_generated": [
+    {
+     "id": "e87071db",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "cls18",
+     "callee": "rclassn",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it",
+     "bucket_size": 62
+    },
+    {
+     "id": "b0b1e990",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "matchnot2",
+     "callee": "types",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it",
+     "bucket_size": 62
+    },
+    {
+     "id": "ce1ba5b6",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "matchnot4",
+     "callee": "types",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it",
+     "bucket_size": 62
+    },
+    {
+     "id": "df12a935",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "cls7",
+     "callee": "class",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it",
+     "bucket_size": 62
+    },
+    {
+     "id": "5f7904e4",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "cls4",
+     "callee": "classn",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it",
+     "bucket_size": 62
+    },
+    {
+     "id": "eedffa74",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "extract_lit4",
+     "callee": "s",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it",
+     "bucket_size": 62
+    },
+    {
+     "id": "0ad208f3",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "cls8",
+     "callee": "classn",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it",
+     "bucket_size": 62
+    },
+    {
+     "id": "fbc2b43b",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "cls2",
+     "callee": "classn",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it",
+     "bucket_size": 62
+    },
+    {
+     "id": "9c22b0c8",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "matchnot5",
+     "callee": "types",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it",
+     "bucket_size": 62
+    },
+    {
+     "id": "cc693aa1",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "extract_ext3",
+     "callee": "s",
+     "verdict": "correct_exclusion",
+     "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it",
+     "bucket_size": 62
+    }
+   ],
    "dispatch": [
     {
-     "id": "cef89026",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "generate",
-     "callee": "name_short",
-     "verdict": "correct_exclusion",
-     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
-     "bucket_size": 98
-    },
-    {
-     "id": "0b65a739",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "generate_long_flag",
-     "callee": "doc_variable",
-     "verdict": "correct_exclusion",
-     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
-     "bucket_size": 98
-    },
-    {
-     "id": "42c6736f",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "sink_other_context",
-     "callee": "context",
-     "verdict": "correct_exclusion",
-     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
-     "bucket_size": 98
-    },
-    {
-     "id": "b8cf4352",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "begin",
+     "id": "d47cb0fd",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "[Sink]begin",
      "callee": "begin",
      "verdict": "correct_exclusion",
-     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
-     "bucket_size": 98
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch",
+     "bucket_size": 125
     },
     {
-     "id": "6f0962c6",
-     "cell": "rust/ripgrep/no_tests",
+     "id": "e9cb4a57",
+     "cell": "rust/ripgrep/path_tests_excluded",
      "caller": "[Matcher]new_captures",
      "callee": "new_captures",
      "verdict": "correct_exclusion",
-     "note": "(*self).new_captures() through the Matcher trait: trait dispatch",
-     "bucket_size": 98
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch",
+     "bucket_size": 125
     },
     {
-     "id": "e60e44d9",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "generate",
+     "id": "979478d4",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "[Sink]matched",
+     "callee": "matched",
+     "verdict": "correct_exclusion",
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch",
+     "bucket_size": 125
+    },
+    {
+     "id": "ebab9513",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "generate_flag",
+     "callee": "doc_variable",
+     "verdict": "correct_exclusion",
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch",
+     "bucket_size": 125
+    },
+    {
+     "id": "0f3ffceb",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "new",
+     "callee": "name_short",
+     "verdict": "correct_exclusion",
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch",
+     "bucket_size": 125
+    },
+    {
+     "id": "2f69885a",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "find_similar_names",
      "callee": "name_long",
      "verdict": "correct_exclusion",
-     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
-     "bucket_size": 98
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch",
+     "bucket_size": 125
     },
     {
-     "id": "94feb843",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "generate",
-     "callee": "is_switch",
+     "id": "c6933d9c",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "find_iter_at_in_context",
+     "callee": "find_iter_at",
      "verdict": "correct_exclusion",
-     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
-     "bucket_size": 98
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch",
+     "bucket_size": 125
     },
     {
-     "id": "5efb41d2",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "generate",
-     "callee": "doc_choices",
+     "id": "e69b310c",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "longs_all_ascii_alphanumeric",
+     "callee": "aliases",
      "verdict": "correct_exclusion",
-     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
-     "bucket_size": 98
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch",
+     "bucket_size": 125
     },
     {
-     "id": "11b44470",
-     "cell": "rust/ripgrep/no_tests",
+     "id": "882fa286",
+     "cell": "rust/ripgrep/path_tests_excluded",
      "caller": "generate",
      "callee": "name_negated",
      "verdict": "correct_exclusion",
-     "note": "call through a trait (dyn Flag / generic Matcher / Sink): trait dispatch",
-     "bucket_size": 98
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch",
+     "bucket_size": 125
     },
     {
-     "id": "08fb8e7f",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "[Matcher]find_candidate_line",
-     "callee": "find_candidate_line",
+     "id": "52abd2d3",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "generate",
+     "callee": "is_switch",
      "verdict": "correct_exclusion",
-     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch",
-     "bucket_size": 98
+     "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch",
+     "bucket_size": 125
     }
    ],
    "ungradable:caller_file_not_covered": [
     {
-     "id": "423cfd47",
-     "cell": "rust/fd/no_tests",
+     "id": "3fb0c7d6",
+     "cell": "rust/fd/path_tests_excluded",
+     "caller": "crate::tests::tests::test_custom_ignore_precedence",
+     "callee": "crate::tests::testenv::TestEnv::assert_output",
+     "verdict": "correct_exclusion",
+     "note": "caller is in the tests/ directory, outside the path_tests_excluded cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "74dbbcc1",
+     "cell": "rust/fd/path_tests_excluded",
+     "caller": "crate::tests::tests::test_type_empty",
+     "callee": "crate::tests::testenv::TestEnv::test_root",
+     "verdict": "correct_exclusion",
+     "note": "caller is in the tests/ directory, outside the path_tests_excluded cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "1ef89168",
+     "cell": "rust/fd/path_tests_excluded",
+     "caller": "crate::tests::tests::test_custom_path_separator",
+     "callee": "crate::tests::testenv::TestEnv::new",
+     "verdict": "correct_exclusion",
+     "note": "caller is in the tests/ directory, outside the path_tests_excluded cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "e1bd4286",
+     "cell": "rust/fd/path_tests_excluded",
+     "caller": "crate::tests::tests::test_global_ignore",
+     "callee": "crate::tests::testenv::TestEnv::new",
+     "verdict": "correct_exclusion",
+     "note": "caller is in the tests/ directory, outside the path_tests_excluded cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "e06eb060",
+     "cell": "rust/fd/path_tests_excluded",
+     "caller": "crate::tests::tests::test_exec_multi",
+     "callee": "crate::tests::tests::get_test_env_with_abs_path",
+     "verdict": "correct_exclusion",
+     "note": "caller is in the tests/ directory, outside the path_tests_excluded cell",
+     "bucket_size": 388
+    },
+    {
+     "id": "fbda5fd0",
+     "cell": "rust/fd/path_tests_excluded",
      "caller": "crate::tests::tests::get_absolute_root_path",
      "callee": "crate::tests::testenv::TestEnv::test_root",
      "verdict": "correct_exclusion",
-     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "note": "caller is in the tests/ directory, outside the path_tests_excluded cell",
      "bucket_size": 388
     },
     {
-     "id": "78339f7a",
-     "cell": "rust/fd/no_tests",
-     "caller": "crate::tests::tests::test_smart_case_glob_searches",
-     "callee": "crate::tests::testenv::TestEnv::new",
-     "verdict": "correct_exclusion",
-     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
-     "bucket_size": 388
-    },
-    {
-     "id": "280c3cd8",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "crate::tests::test_matcher::no_captures",
-     "callee": "crate::tests::util::RegexMatcherNoCaps::new_captures",
-     "verdict": "correct_exclusion",
-     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
-     "bucket_size": 388
-    },
-    {
-     "id": "e4d1132e",
-     "cell": "rust/fd/no_tests",
-     "caller": "crate::tests::tests::test_case_sensitive",
+     "id": "264ab3a4",
+     "cell": "rust/fd/path_tests_excluded",
+     "caller": "crate::tests::tests::test_exec_multi",
      "callee": "crate::tests::testenv::TestEnv::assert_output",
      "verdict": "correct_exclusion",
-     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "note": "caller is in the tests/ directory, outside the path_tests_excluded cell",
      "bucket_size": 388
     },
     {
-     "id": "e47c0db5",
-     "cell": "rust/fd/no_tests",
-     "caller": "crate::tests::testenv::TestEnv::assert_success_and_get_normalized_output",
-     "callee": "crate::tests::testenv::normalize_output",
+     "id": "b804f8fd",
+     "cell": "rust/fd/path_tests_excluded",
+     "caller": "crate::tests::tests::test_global_ignore",
+     "callee": "crate::tests::testenv::TestEnv::assert_output",
      "verdict": "correct_exclusion",
-     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "note": "caller is in the tests/ directory, outside the path_tests_excluded cell",
      "bucket_size": 388
     },
     {
-     "id": "faf4c4f5",
-     "cell": "rust/fd/no_tests",
-     "caller": "crate::tests::tests::test_size",
-     "callee": "crate::tests::testenv::TestEnv::new",
+     "id": "c1defa57",
+     "cell": "rust/fd/path_tests_excluded",
+     "caller": "crate::tests::tests::test_invalid_cwd",
+     "callee": "crate::tests::testenv::TestEnv::test_exe",
      "verdict": "correct_exclusion",
-     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "note": "caller is in the tests/ directory, outside the path_tests_excluded cell",
      "bucket_size": 388
     },
     {
-     "id": "2c23616f",
-     "cell": "rust/fd/no_tests",
-     "caller": "crate::tests::tests::test_hyperlink",
-     "callee": "crate::tests::testenv::TestEnv::new",
+     "id": "34ade1f4",
+     "cell": "rust/fd/path_tests_excluded",
+     "caller": "crate::tests::tests::test_exec_batch_with_limit",
+     "callee": "crate::tests::testenv::TestEnv::assert_success_and_get_output",
      "verdict": "correct_exclusion",
-     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
-     "bucket_size": 388
-    },
-    {
-     "id": "b88d4741",
-     "cell": "rust/fd/no_tests",
-     "caller": "crate::tests::tests::test_no_ignore_parent_inner_git",
-     "callee": "crate::tests::testenv::TestEnv::test_root",
-     "verdict": "correct_exclusion",
-     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
-     "bucket_size": 388
-    },
-    {
-     "id": "c41e8601",
-     "cell": "rust/fd/no_tests",
-     "caller": "crate::tests::tests::test_owner_current_group",
-     "callee": "crate::tests::testenv::TestEnv::new",
-     "verdict": "correct_exclusion",
-     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
-     "bucket_size": 388
-    },
-    {
-     "id": "3c09c1df",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "crate::tests::test_matcher::find",
-     "callee": "crate::tests::test_matcher::matcher",
-     "verdict": "correct_exclusion",
-     "note": "caller is in a tests/ directory, excluded from the no_tests cell",
+     "note": "caller is in the tests/ directory, outside the path_tests_excluded cell",
      "bucket_size": 388
     }
    ],
    "ungradable:caller_not_judged": [
     {
-     "id": "96f3a6b3",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "crate::crates::core::flags::defs::test_before_context",
-     "callee": "crate::crates::core::flags::lowargs::ContextMode::set_before",
+     "id": "e268005d",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::tests::assert_paths",
      "verdict": "correct_exclusion",
-     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
-     "bucket_size": 1510
+     "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition",
+     "bucket_size": 10
     },
     {
-     "id": "ee7e1165",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "crate::gitignore::tests::parse_excludes_file5",
-     "callee": "crate::gitignore::parse_excludes_file",
+     "id": "d3627809",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::tests::mkdirp",
      "verdict": "correct_exclusion",
-     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
-     "bucket_size": 1510
+     "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition",
+     "bucket_size": 10
     },
     {
-     "id": "c4749d4f",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "crate::escape::tests::nothing_hex1",
-     "callee": "crate::escape::tests::b",
+     "id": "550792fe",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::tests::TempDir::path",
      "verdict": "correct_exclusion",
-     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
-     "bucket_size": 1510
+     "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition",
+     "bucket_size": 10
     },
     {
-     "id": "78a8c5f9",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "crate::json::tests::always_begin_end_no_match",
-     "callee": "crate::json::JSONBuilder::always_begin_end",
+     "id": "5586b333",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::WalkBuilder::new",
      "verdict": "correct_exclusion",
-     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
-     "bucket_size": 1510
+     "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition",
+     "bucket_size": 10
     },
     {
-     "id": "15b7415d",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "crate::searcher::glue::tests::multi_line_overlap1",
-     "callee": "crate::testutil::SearcherTester::by_line",
+     "id": "b1126286",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "crate::walk::tests::no_read_permissions",
+     "callee": "crate::walk::WalkBuilder::new",
      "verdict": "correct_exclusion",
-     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
-     "bucket_size": 1510
+     "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition",
+     "bucket_size": 10
     },
     {
-     "id": "5d105153",
-     "cell": "rust/fd/no_tests",
-     "caller": "crate::walk::tests::search_str_for_entry_with_absolute_path",
-     "callee": "crate::walk::search_str_for_entry",
+     "id": "e28b88be",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::tests::tmpdir",
      "verdict": "correct_exclusion",
-     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
-     "bucket_size": 1510
+     "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition",
+     "bucket_size": 10
     },
     {
-     "id": "d532c3e2",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "crate::hyperlink::tests::build_format",
-     "callee": "crate::crates::core::flags::defs::Text",
+     "id": "e9b06b11",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::WalkBuilder::follow_links",
      "verdict": "correct_exclusion",
-     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
-     "bucket_size": 1510
+     "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition",
+     "bucket_size": 10
     },
     {
-     "id": "4837794a",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "crate::literal::tests::class",
-     "callee": "crate::literal::tests::exact",
+     "id": "08627fa1",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::tests::symlink",
      "verdict": "correct_exclusion",
-     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
-     "bucket_size": 1510
+     "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition",
+     "bucket_size": 10
     },
     {
-     "id": "3a19c414",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "crate::hyperlink::tests::handle_alias",
-     "callee": "crate::hyperlink::HyperlinkFormat::from_str",
+     "id": "af12e011",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "crate::walk::tests::same_file_system",
+     "callee": "crate::walk::WalkBuilder::same_file_system",
      "verdict": "correct_exclusion",
-     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
-     "bucket_size": 1510
+     "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition",
+     "bucket_size": 10
     },
     {
-     "id": "4091916c",
-     "cell": "rust/ripgrep/no_tests",
-     "caller": "crate::searcher::glue::tests::passthru_sherlock1",
-     "callee": "crate::testutil::SearcherTester::expected_no_line_number",
+     "id": "e9f34c08",
+     "cell": "rust/ripgrep/path_tests_excluded",
+     "caller": "crate::walk::tests::no_read_permissions",
+     "callee": "crate::walk::tests::assert_paths",
      "verdict": "correct_exclusion",
-     "note": "caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell",
-     "bucket_size": 1510
+     "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition",
+     "bucket_size": 10
     }
    ]
   }

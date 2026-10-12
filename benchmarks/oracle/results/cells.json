@@ -9,7 +9,7 @@
  "generated": "2026-10-12",
  "lidx_version": "lidx 0.7.0",
  "main_commit": "8e3206a0b0639ae8ad531c2a0a7eb47a7171d790",
- "head_commit": "754db9683d159fb9dc0ae866c5877907e281d76a",
+ "head_commit": "d5eb1cefb8735cb642d13c8a5c805e16f56d7b04",
  "corpus": {
   "cobra": {
    "lang": "go",
@@ -772,7 +772,7 @@
    "repo": "zod",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 5.0,
+   "index_seconds": 4.9,
    "oracle_mode": null,
    "oracle_meta": {
     "seconds": 2.8
@@ -1284,7 +1284,7 @@
    "index_seconds": 3.4,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 6.7
+    "seconds": 6.8
    },
    "oracle_dropped": {
     "caller_not_in_function": 1539,
@@ -1299,42 +1299,42 @@
      "macro_generated": 62
     },
     "lifted_caller_edges": 0,
-    "matched_oracle_edges": 3053,
+    "matched_oracle_edges": 3054,
     "dispatch_edges": 167,
     "dispatch_matched": 42,
-    "recall_comparable": 0.6453,
+    "recall_comparable": 0.6455,
     "recall_comparable_ci": [
-     0.6317,
-     0.6587
+     0.6319,
+     0.659
     ],
     "closure_edges": 0,
     "unresolved_pairs_excluded": 0,
     "precision_if_unresolved_counted_wrong": 0.8783,
-    "recall_strict": 0.6538,
+    "recall_strict": 0.654,
     "recall_strict_ci": [
-     0.6401,
-     0.6672
+     0.6403,
+     0.6674
     ],
     "lidx_pairs_total": 3650,
-    "graded": 3524,
-    "tp": 3095,
+    "graded": 3525,
+    "tp": 3096,
     "fp": 429,
     "precision": 0.8783,
     "precision_ci": [
      0.8671,
-     0.8886
+     0.8887
     ],
-    "recall": 0.6685,
+    "recall": 0.6687,
     "recall_ci": [
-     0.6547,
-     0.682
+     0.6549,
+     0.6822
     ],
     "oracle_edges_both_ends_indexed": 4567,
-    "recall_both_ends_indexed": 0.6685,
-    "recall_incl_capture_gap": 0.6366,
+    "recall_both_ends_indexed": 0.6687,
+    "recall_incl_capture_gap": 0.6368,
     "ungradable": {
-     "caller_not_judged": 11,
-     "caller_file_not_covered": 115
+     "caller_file_not_covered": 115,
+     "caller_not_judged": 10
     },
     "by_resolution_kind": {
      "bare_name": {
@@ -1347,9 +1347,9 @@
       ]
      },
      "exact": {
-      "graded": 919,
-      "tp": 907,
-      "precision": 0.9869,
+      "graded": 920,
+      "tp": 908,
+      "precision": 0.987,
       "ci": [
        0.9773,
        0.9925
@@ -1390,28 +1390,27 @@
      "calls_test_code": 4
     },
     "fn_categories": {
-     "no_edge_at_site": 693,
+     "no_edge_at_site": 692,
      "other_call_on_line_missed": 626,
-     "marked_external": 135,
-     "wrong_target": 59,
-     "attributed_to_other_caller": 1
+     "marked_external": 136,
+     "wrong_target": 59
     }
    },
    "calls_plus_references": {
-    "graded": 3524,
-    "tp": 3095,
+    "graded": 3525,
+    "tp": 3096,
     "fp": 429,
     "precision": 0.8783,
     "precision_ci": [
      0.8671,
-     0.8886
+     0.8887
     ],
-    "recall": 0.6685,
+    "recall": 0.6687,
     "recall_ci": [
-     0.6547,
-     0.682
+     0.6549,
+     0.6822
     ],
-    "matched_oracle_edges": 3053
+    "matched_oracle_edges": 3054
    },
    "lidx_edge_counts": {
     "CALLS": 6764,
@@ -1442,41 +1441,41 @@
     "capture_gap_edges": 0,
     "capture_gap_reasons": {},
     "lifted_caller_edges": 0,
-    "matched_oracle_edges": 1633,
+    "matched_oracle_edges": 1634,
     "dispatch_edges": 139,
     "dispatch_matched": 42,
-    "recall_comparable": 0.7235,
+    "recall_comparable": 0.724,
     "recall_comparable_ci": [
-     0.705,
-     0.7414
+     0.7054,
+     0.7418
     ],
     "closure_edges": 0,
     "unresolved_pairs_excluded": 0,
-    "precision_if_unresolved_counted_wrong": 0.8175,
-    "recall_strict": 0.7235,
+    "precision_if_unresolved_counted_wrong": 0.8176,
+    "recall_strict": 0.724,
     "recall_strict_ci": [
-     0.705,
-     0.7414
+     0.7054,
+     0.7418
     ],
     "lidx_pairs_total": 3650,
-    "graded": 2049,
-    "tp": 1675,
+    "graded": 2050,
+    "tp": 1676,
     "fp": 374,
-    "precision": 0.8175,
+    "precision": 0.8176,
     "precision_ci": [
-     0.8002,
-     0.8336
+     0.8003,
+     0.8337
     ],
-    "recall": 0.7505,
+    "recall": 0.7509,
     "recall_ci": [
-     0.7318,
-     0.7682
+     0.7323,
+     0.7686
     ],
     "oracle_edges_both_ends_indexed": 2176,
-    "recall_both_ends_indexed": 0.7505,
-    "recall_incl_capture_gap": 0.7054,
+    "recall_both_ends_indexed": 0.7509,
+    "recall_incl_capture_gap": 0.7058,
     "ungradable": {
-     "caller_not_judged": 1439,
+     "caller_not_judged": 1438,
      "caller_file_not_covered": 162
     },
     "by_resolution_kind": {
@@ -1490,9 +1489,9 @@
       ]
      },
      "exact": {
-      "graded": 557,
-      "tp": 547,
-      "precision": 0.982,
+      "graded": 558,
+      "tp": 548,
+      "precision": 0.9821,
       "ci": [
        0.9673,
        0.9902
@@ -1533,28 +1532,27 @@
      "calls_test_code": 2
     },
     "fn_categories": {
-     "no_edge_at_site": 308,
+     "no_edge_at_site": 307,
      "other_call_on_line_missed": 131,
      "wrong_target": 54,
-     "marked_external": 49,
-     "attributed_to_other_caller": 1
+     "marked_external": 50
     }
    },
    "calls_plus_references": {
-    "graded": 2049,
-    "tp": 1675,
+    "graded": 2050,
+    "tp": 1676,
     "fp": 374,
-    "precision": 0.8175,
+    "precision": 0.8176,
     "precision_ci": [
-     0.8002,
-     0.8336
+     0.8003,
+     0.8337
     ],
-    "recall": 0.7505,
+    "recall": 0.7509,
     "recall_ci": [
-     0.7318,
-     0.7682
+     0.7323,
+     0.7686
     ],
-    "matched_oracle_edges": 1633
+    "matched_oracle_edges": 1634
    },
    "lidx_edge_counts": {
     "CALLS": 6764,
@@ -1587,42 +1585,42 @@
      "macro_generated": 1229
     },
     "lifted_caller_edges": 0,
-    "matched_oracle_edges": 3130,
+    "matched_oracle_edges": 3131,
     "dispatch_edges": 181,
     "dispatch_matched": 46,
-    "recall_comparable": 0.5231,
+    "recall_comparable": 0.5232,
     "recall_comparable_ci": [
-     0.5105,
-     0.5356
+     0.5106,
+     0.5358
     ],
     "closure_edges": 0,
     "unresolved_pairs_excluded": 0,
-    "precision_if_unresolved_counted_wrong": 0.8749,
-    "recall_strict": 0.6558,
+    "precision_if_unresolved_counted_wrong": 0.875,
+    "recall_strict": 0.656,
     "recall_strict_ci": [
-     0.6423,
-     0.669
+     0.6425,
+     0.6692
     ],
     "lidx_pairs_total": 3650,
-    "graded": 3630,
-    "tp": 3176,
+    "graded": 3631,
+    "tp": 3177,
     "fp": 454,
-    "precision": 0.8749,
+    "precision": 0.875,
     "precision_ci": [
      0.8638,
      0.8853
     ],
-    "recall": 0.6714,
+    "recall": 0.6716,
     "recall_ci": [
-     0.6578,
-     0.6847
+     0.658,
+     0.6849
     ],
     "oracle_edges_both_ends_indexed": 4662,
-    "recall_both_ends_indexed": 0.6714,
-    "recall_incl_capture_gap": 0.5155,
+    "recall_both_ends_indexed": 0.6716,
+    "recall_incl_capture_gap": 0.5156,
     "ungradable": {
-     "caller_not_judged": 11,
-     "caller_file_not_covered": 9
+     "caller_file_not_covered": 9,
+     "caller_not_judged": 10
     },
     "by_resolution_kind": {
      "bare_name": {
@@ -1635,8 +1633,8 @@
       ]
      },
      "exact": {
-      "graded": 951,
-      "tp": 939,
+      "graded": 952,
+      "tp": 940,
       "precision": 0.9874,
       "ci": [
        0.9781,
@@ -1687,28 +1685,27 @@
      "calls_test_code": 4
     },
     "fn_categories": {
-     "no_edge_at_site": 708,
+     "no_edge_at_site": 707,
      "other_call_on_line_missed": 628,
-     "marked_external": 136,
-     "wrong_target": 59,
-     "attributed_to_other_caller": 1
+     "marked_external": 137,
+     "wrong_target": 59
     }
    },
    "calls_plus_references": {
-    "graded": 3630,
-    "tp": 3176,
+    "graded": 3631,
+    "tp": 3177,
     "fp": 454,
-    "precision": 0.8749,
+    "precision": 0.875,
     "precision_ci": [
      0.8638,
      0.8853
     ],
-    "recall": 0.6714,
+    "recall": 0.6716,
     "recall_ci": [
-     0.6578,
-     0.6847
+     0.658,
+     0.6849
     ],
-    "matched_oracle_edges": 3130
+    "matched_oracle_edges": 3131
    },
    "lidx_edge_counts": {
     "CALLS": 6764,
@@ -2075,15 +2072,6 @@
        1.0
       ]
      },
-     "bare_name": {
-      "graded": 101,
-      "tp": 70,
-      "precision": 0.6931,
-      "ci": [
-       0.5974,
-       0.7746
-      ]
-     },
      "exact": {
       "graded": 101,
       "tp": 101,
@@ -2091,6 +2079,15 @@
       "ci": [
        0.9634,
        1.0
+      ]
+     },
+     "bare_name": {
+      "graded": 101,
+      "tp": 70,
+      "precision": 0.6931,
+      "ci": [
+       0.5974,
+       0.7746
       ]
      },
      "import": {

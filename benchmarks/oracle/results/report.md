@@ -36,7 +36,7 @@ The same repositories graded with our own, stricter scope. They answer "how good
 |---|---|---|---|---:|---|
 | ts/zod | module-level callers and abstract targets kept (dispatch counted in recall) | 0.934 [0.920, 0.946] | 0.691 [0.670, 0.711] | 1947 | 0.971 / 0.791 |
 | ts/hono | module-level callers and abstract targets kept (dispatch counted in recall) | 0.653 [0.624, 0.681] | 0.751 [0.722, 0.778] | 921 | 0.666 / 0.793 |
-| rust/ripgrep/no_tests | `#[cfg(test)]` items and cfg-gated modules also excluded | 0.818 [0.800, 0.834] | 0.724 [0.705, 0.741] | 2315 | 0.878 / 0.645 |
+| rust/ripgrep/no_tests | `#[cfg(test)]` items and cfg-gated modules also excluded | 0.818 [0.800, 0.834] | 0.724 [0.705, 0.742] | 2315 | 0.878 / 0.645 |
 | rust/fd/no_tests | `#[cfg(test)]` items and cfg-gated modules also excluded | 0.860 [0.805, 0.901] | 0.900 [0.850, 0.935] | 191 | 0.890 / 0.914 |
 
 TypeScript scope effect: ts/zod removes 112 module-level and 215 abstract-target oracle edges (321 distinct, some are both) and withholds 149 lidx edges from precision (caller not judged by the oracle); ts/hono removes 24 module-level and 68 abstract-target oracle edges (88 distinct, some are both) and withholds 68 lidx edges from precision (caller not judged by the oracle).
@@ -57,9 +57,9 @@ Rust denominators: rust/ripgrep/path_tests_excluded 4796 compiler edges here aga
 | go/syft/tests | Go RTA | 25902 | 8838 | 17064 | 0 | 4771 | 0.880 | 0.471 | 0.162 | 0.162 |
 | ts/zod | tsc | 1947 | 1687 | 15 | 245 | 1435 | 0.934 | 0.796 | 0.791 | 0.691 |
 | ts/hono | tsc | 921 | 780 | 13 | 128 | 1038 | 0.653 | 0.871 | 0.873 | 0.751 |
-| rust/ripgrep/path_tests_excluded | rust-analyzer SCIP | 4796 | 4567 | 167 | 62 | 3524 | 0.878 | 0.668 | 0.654 | 0.645 |
-| rust/ripgrep/no_tests | rust-analyzer SCIP | 2315 | 2176 | 139 | 0 | 2049 | 0.818 | 0.750 | 0.724 | 0.724 |
-| rust/ripgrep/tests | rust-analyzer SCIP | 6072 | 4662 | 181 | 1229 | 3630 | 0.875 | 0.671 | 0.656 | 0.523 |
+| rust/ripgrep/path_tests_excluded | rust-analyzer SCIP | 4796 | 4567 | 167 | 62 | 3525 | 0.878 | 0.669 | 0.654 | 0.645 |
+| rust/ripgrep/no_tests | rust-analyzer SCIP | 2315 | 2176 | 139 | 0 | 2050 | 0.818 | 0.751 | 0.724 | 0.724 |
+| rust/ripgrep/tests | rust-analyzer SCIP | 6072 | 4662 | 181 | 1229 | 3631 | 0.875 | 0.672 | 0.656 | 0.523 |
 | rust/fd/path_tests_excluded | rust-analyzer SCIP | 257 | 257 | 0 | 0 | 264 | 0.890 | 0.914 | 0.914 | 0.914 |
 | rust/fd/no_tests | rust-analyzer SCIP | 191 | 191 | 0 | 0 | 200 | 0.860 | 0.900 | 0.900 | 0.900 |
 | rust/fd/tests | rust-analyzer SCIP | 516 | 516 | 0 | 0 | 525 | 0.941 | 0.957 | 0.957 | 0.957 |
@@ -90,9 +90,9 @@ Same grading with lidx's REFERENCES and USES edges added to CALLS (the compiler 
 | go/syft/tests | 0.880 | 0.471 | 0.880 | 0.471 | 0 | 20 |
 | ts/zod | 0.934 | 0.796 | 0.242 | 0.860 | 0 | 6549 |
 | ts/hono | 0.653 | 0.871 | 0.245 | 0.873 | 0 | 2572 |
-| rust/ripgrep/path_tests_excluded | 0.878 | 0.668 | 0.878 | 0.668 | 0 | 1225 |
-| rust/ripgrep/no_tests | 0.818 | 0.750 | 0.818 | 0.750 | 0 | 1225 |
-| rust/ripgrep/tests | 0.875 | 0.671 | 0.875 | 0.671 | 0 | 1225 |
+| rust/ripgrep/path_tests_excluded | 0.878 | 0.669 | 0.878 | 0.669 | 0 | 1225 |
+| rust/ripgrep/no_tests | 0.818 | 0.751 | 0.818 | 0.751 | 0 | 1225 |
+| rust/ripgrep/tests | 0.875 | 0.672 | 0.875 | 0.672 | 0 | 1225 |
 | rust/fd/path_tests_excluded | 0.890 | 0.914 | 0.890 | 0.914 | 0 | 196 |
 | rust/fd/no_tests | 0.860 | 0.900 | 0.860 | 0.900 | 0 | 196 |
 | rust/fd/tests | 0.941 | 0.957 | 0.941 | 0.957 | 0 | 196 |
@@ -222,7 +222,7 @@ Lists: `results/lists/go__syft__tests.fn.json`, `go__syft__tests.fp.json`, `go__
 - repowise-comparable scope: 1626 oracle edges (112 module-level and 215 abstract-target edges removed), P 0.971 [0.961, 0.979], R 0.791 [0.770, 0.810]; the figures in this section are the stricter grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.934 if they were counted wrong
 - recall when both ends are indexed symbols: 0.796 (1687 oracle edges); caller lifted to an enclosing declaration for 278 edges; capture gap reasons: {'callee_not_indexed': 245}
-- lidx: 1969 resolved in-repo CALLS pairs; 1435 graded (1341 correct, 94 wrong); lidx indexed in 5.0s
+- lidx: 1969 resolved in-repo CALLS pairs; 1435 graded (1341 correct, 94 wrong); lidx indexed in 4.9s
 - ungradable lidx pairs: caller_file_not_covered 534
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -266,21 +266,21 @@ Lists: `results/lists/ts__hono.fn.json`, `ts__hono.fp.json`, `ts__hono.capture_g
 
 - oracle: None, 4796 edges: 4567 static with an indexed caller, 167 dispatch (42 of them found), 62 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.878 if they were counted wrong
-- recall when both ends are indexed symbols: 0.668 (4567 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 62}
-- lidx: 3650 resolved in-repo CALLS pairs; 3524 graded (3095 correct, 429 wrong); lidx indexed in 3.4s
-- ungradable lidx pairs: caller_file_not_covered 115, caller_not_judged 11
+- recall when both ends are indexed symbols: 0.669 (4567 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 62}
+- lidx: 3650 resolved in-repo CALLS pairs; 3525 graded (3096 correct, 429 wrong); lidx indexed in 3.4s
+- ungradable lidx pairs: caller_file_not_covered 115, caller_not_judged 10
 
 | resolution_kind | graded | correct | precision | 95% CI |
 |---|---:|---:|---:|---|
 | bare_name | 1136 | 750 | 0.660 | [0.632, 0.687] |
-| exact | 919 | 907 | 0.987 | [0.977, 0.993] |
+| exact | 920 | 908 | 0.987 | [0.977, 0.993] |
 | receiver_type | 735 | 723 | 0.984 | [0.972, 0.991] |
 | two_segment | 711 | 692 | 0.973 | [0.959, 0.983] |
 | import | 23 | 23 | 1.000 | [0.857, 1.000] |
 
 Wrong edges (FP) by category: external_callee_at_site 299, wrong_target 109, no_call_at_site 17, calls_test_code 4
 
-Missed edges (FN) by category: no_edge_at_site 693, other_call_on_line_missed 626, marked_external 135, wrong_target 59, attributed_to_other_caller 1
+Missed edges (FN) by category: no_edge_at_site 692, other_call_on_line_missed 626, marked_external 136, wrong_target 59
 
 Lists: `results/lists/rust__ripgrep__path_tests_excluded.fn.json`, `rust__ripgrep__path_tests_excluded.fp.json`, `rust__ripgrep__path_tests_excluded.capture_gap.json`, `rust__ripgrep__path_tests_excluded.ungradable.json`, `rust__ripgrep__path_tests_excluded.dispatch_fn.json` (the last is not committed for go/syft/tests, regenerate with run.py).
 
@@ -288,21 +288,21 @@ Lists: `results/lists/rust__ripgrep__path_tests_excluded.fn.json`, `rust__ripgre
 
 - oracle: None, 2315 edges: 2176 static with an indexed caller, 139 dispatch (42 of them found), 0 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.818 if they were counted wrong
-- recall when both ends are indexed symbols: 0.750 (2176 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 3650 resolved in-repo CALLS pairs; 2049 graded (1675 correct, 374 wrong); lidx indexed in 3.4s
-- ungradable lidx pairs: caller_file_not_covered 162, caller_not_judged 1439
+- recall when both ends are indexed symbols: 0.751 (2176 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
+- lidx: 3650 resolved in-repo CALLS pairs; 2050 graded (1676 correct, 374 wrong); lidx indexed in 3.4s
+- ungradable lidx pairs: caller_file_not_covered 162, caller_not_judged 1438
 
 | resolution_kind | graded | correct | precision | 95% CI |
 |---|---:|---:|---:|---|
 | bare_name | 640 | 307 | 0.480 | [0.441, 0.518] |
-| exact | 557 | 547 | 0.982 | [0.967, 0.990] |
+| exact | 558 | 548 | 0.982 | [0.967, 0.990] |
 | receiver_type | 515 | 503 | 0.977 | [0.960, 0.987] |
 | two_segment | 320 | 301 | 0.941 | [0.909, 0.962] |
 | import | 17 | 17 | 1.000 | [0.816, 1.000] |
 
 Wrong edges (FP) by category: external_callee_at_site 258, wrong_target 97, no_call_at_site 17, calls_test_code 2
 
-Missed edges (FN) by category: no_edge_at_site 308, other_call_on_line_missed 131, wrong_target 54, marked_external 49, attributed_to_other_caller 1
+Missed edges (FN) by category: no_edge_at_site 307, other_call_on_line_missed 131, wrong_target 54, marked_external 50
 
 Lists: `results/lists/rust__ripgrep__no_tests.fn.json`, `rust__ripgrep__no_tests.fp.json`, `rust__ripgrep__no_tests.capture_gap.json`, `rust__ripgrep__no_tests.ungradable.json`, `rust__ripgrep__no_tests.dispatch_fn.json` (the last is not committed for go/syft/tests, regenerate with run.py).
 
@@ -310,14 +310,14 @@ Lists: `results/lists/rust__ripgrep__no_tests.fn.json`, `rust__ripgrep__no_tests
 
 - oracle: None, 6072 edges: 4662 static with an indexed caller, 181 dispatch (46 of them found), 1229 capture gap
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.875 if they were counted wrong
-- recall when both ends are indexed symbols: 0.671 (4662 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 1229}
-- lidx: 3650 resolved in-repo CALLS pairs; 3630 graded (3176 correct, 454 wrong); lidx indexed in 3.4s
-- ungradable lidx pairs: caller_file_not_covered 9, caller_not_judged 11
+- recall when both ends are indexed symbols: 0.672 (4662 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 1229}
+- lidx: 3650 resolved in-repo CALLS pairs; 3631 graded (3177 correct, 454 wrong); lidx indexed in 3.4s
+- ungradable lidx pairs: caller_file_not_covered 9, caller_not_judged 10
 
 | resolution_kind | graded | correct | precision | 95% CI |
 |---|---:|---:|---:|---|
 | bare_name | 1181 | 770 | 0.652 | [0.624, 0.679] |
-| exact | 951 | 939 | 0.987 | [0.978, 0.993] |
+| exact | 952 | 940 | 0.987 | [0.978, 0.993] |
 | receiver_type | 751 | 739 | 0.984 | [0.972, 0.991] |
 | two_segment | 720 | 701 | 0.974 | [0.959, 0.983] |
 | import | 23 | 23 | 1.000 | [0.857, 1.000] |
@@ -325,7 +325,7 @@ Lists: `results/lists/rust__ripgrep__no_tests.fn.json`, `rust__ripgrep__no_tests
 
 Wrong edges (FP) by category: external_callee_at_site 316, wrong_target 116, no_call_at_site 18, calls_test_code 4
 
-Missed edges (FN) by category: no_edge_at_site 708, other_call_on_line_missed 628, marked_external 136, wrong_target 59, attributed_to_other_caller 1
+Missed edges (FN) by category: no_edge_at_site 707, other_call_on_line_missed 628, marked_external 137, wrong_target 59
 
 Lists: `results/lists/rust__ripgrep__tests.fn.json`, `rust__ripgrep__tests.fp.json`, `rust__ripgrep__tests.capture_gap.json`, `rust__ripgrep__tests.ungradable.json`, `rust__ripgrep__tests.dispatch_fn.json` (the last is not committed for go/syft/tests, regenerate with run.py).
 
@@ -385,8 +385,8 @@ Lists: `results/lists/rust__fd__no_tests.fn.json`, `rust__fd__no_tests.fp.json`,
 |---|---:|---:|---:|---|
 | receiver_type | 162 | 162 | 1.000 | [0.977, 1.000] |
 | two_segment | 142 | 142 | 1.000 | [0.974, 1.000] |
-| bare_name | 101 | 70 | 0.693 | [0.597, 0.775] |
 | exact | 101 | 101 | 1.000 | [0.963, 1.000] |
+| bare_name | 101 | 70 | 0.693 | [0.597, 0.775] |
 | import | 19 | 19 | 1.000 | [0.832, 1.000] |
 
 Wrong edges (FP) by category: external_callee_at_site 28, wrong_target 2, reference_as_call 1
@@ -397,7 +397,7 @@ Lists: `results/lists/rust__fd__tests.fn.json`, `rust__fd__tests.fp.json`, `rust
 
 ## Spot-check
 
-Everything below was read by hand against the source at the call site (seed 412; cells go/cobra/tests, go/gitleaks/no_tests, go/syft/no_tests, ts/zod, ts/hono, rust/ripgrep/no_tests, rust/fd/no_tests).
+Everything below was read by hand against the source at the call site (seed 412; cells go/cobra/tests, go/gitleaks/no_tests, go/syft/no_tests, ts/zod, ts/hono, rust/ripgrep/path_tests_excluded, rust/fd/path_tests_excluded).
 
 **Committed edges.** 20 random wrong edges (FP) and 20 random missed edges (FN) per language. Verdicts: `lidx_error` (lidx is wrong or missed a real call), `oracle_artefact` (the compiler graph is not the right judge), `matching_artefact` (our matching rule mis-keyed a declaration).
 
@@ -409,9 +409,9 @@ Everything below was read by hand against the source at the call site (seed 412;
 | ts | FP (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
 | ts | FN (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
 | ts | both (n=40) | 40 | 0 | 0 | **0/40 = 0.0%** [0.0%, 8.8%] |
-| rust | FP (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
+| rust | FP (n=20) | 19 | 1 | 0 | 1/20 = 5.0% [0.9%, 23.6%] |
 | rust | FN (n=20) | 20 | 0 | 0 | 0/20 = 0.0% [0.0%, 16.1%] |
-| rust | both (n=40) | 40 | 0 | 0 | **0/40 = 0.0%** [0.0%, 8.8%] |
+| rust | both (n=40) | 39 | 1 | 0 | **1/40 = 2.5%** [0.4%, 12.9%] |
 
 **Exclusion buckets.** Up to 10 random items from every bucket that removes edges from precision or recall, per language. Verdicts: `correct_exclusion` (the bucket rule is right for this item) or `misbucketed` (the item should have been graded, so the exclusion flatters or hides something).
 
@@ -424,12 +424,13 @@ Everything below was read by hand against the source at the call site (seed 412;
 | ts | dispatch | 12 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | ts | ungradable:caller_file_not_covered | 1327 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | ts | ungradable:oracle_unresolved_site | 2 | 2 | 0 | 0.0% [0.0%, 65.8%] |
-| rust | dispatch | 98 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| rust | capture_gap:macro_generated | 62 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| rust | dispatch | 125 | 10 | 0 | 0.0% [0.0%, 27.8%] |
 | rust | ungradable:caller_file_not_covered | 388 | 10 | 0 | 0.0% [0.0%, 27.8%] |
-| rust | ungradable:caller_not_judged | 1510 | 10 | 0 | 0.0% [0.0%, 27.8%] |
-| all | all buckets | | 92 | 0 | **0.0%** [0.0%, 4.0%] |
+| rust | ungradable:caller_not_judged | 10 | 10 | 0 | 0.0% [0.0%, 27.8%] |
+| all | all buckets | | 102 | 0 | **0.0%** [0.0%, 3.6%] |
 
-Pooled over every sampled item: 0/212 = 0.0% [0.0%, 1.8%].
+Pooled over every sampled item: 1/222 = 0.5% [0.1%, 2.5%].
 
 **How the rules were iterated.** The first samples found artefacts and mis-bucketed exclusions well above 10%; every item below was read by hand and led to a rule change before the final samples were drawn:
 
@@ -441,7 +442,9 @@ Pooled over every sampled item: 0/212 = 0.0% [0.0%, 1.8%].
 - FP/FN samples before the final round: 3 of 20 TypeScript FPs were matching artefacts (calls from several module-level containers merged into one oracle edge that kept only the first container as an acceptable caller; `const objectKeys: ObjectConstructor["keys"]` resolved to lib.d.ts instead of the in-repo const; a local `const match = ... as Router["match"]` resolved to the interface member). A Rust edge to `SinkContext::bytes` was missing from the oracle because `#[cfg(test)]` on a struct field made the region detector swallow the next function; regions are now computed per gated item.
 - Earlier rounds (first report): 9 of 20 Go FNs were dispatch fan-out and 5 of 20 TypeScript FNs had a nested callee lidx cannot index; Go range-over-func bodies, generic instances and unreachable "judgeable" callers, JSX, tagged templates, enum-variant constructors, merged declarations.
 
-The final samples were drawn after all of the above: 120 FP/FN items and the exclusion-bucket items, none an artefact and none mis-bucketed. A rate of 0 over n items has a 95% Wilson upper bound of 3.84/(n+3.84); the report prints the interval per row and pooled. Caveats: (1) verdicts are one reader's judgement, with a note per item; (2) rare categories are unlikely to appear in a random sample of 10 to 20; (3) correct exclusions are judged against the source, but "unreachable from main" rests on RTA, which is sound for what it keeps and silent about code it never reaches.
+**Rust re-sample on the comparison cells.** After the comparison moved to repowise's scope, the Rust sample was redrawn from the `path_tests_excluded` lists (20 FP + 20 FN + 10 per bucket) and read against the source. It found one defect in the SCIP reader: a caller was keyed by its symbol, so `build.rs` and `crates/core/main.rs`, which both define `main()` in one package, shared one caller and the edge `main -> run` of `crates/core/main.rs` was attributed to `build.rs` (a `caller_not_judged` item that should have been graded). Callers are now keyed by their own definition occurrence and the cells were regenerated. It also found one oracle artefact: an FP whose call sits under `#[cfg(feature = "pcre2")]`, which rust-analyzer did not enable. Linux-only tests (`#[cfg(target_os = "linux")]`) are correctly absent from an oracle that ran on macOS and are not judged. The TypeScript and Go samples were redrawn too (the regenerated lists differ slightly from run to run on merged declarations, so some sampled ids changed) and the new items were read.
+
+The final samples were drawn after all of the above: 120 FP/FN items and the exclusion-bucket items, one an artefact and none mis-bucketed. A rate of 0 over n items has a 95% Wilson upper bound of 3.84/(n+3.84); the report prints the interval per row and pooled. Caveats: (1) verdicts are one reader's judgement, with a note per item; (2) rare categories are unlikely to appear in a random sample of 10 to 20; (3) correct exclusions are judged against the source, but "unreachable from main" rests on RTA, which is sound for what it keeps and silent about code it never reaches.
 
 Categories that dominate each language drive the next fixes: see the per-cell FN/FP category lines above and `results/lists/`.
 
@@ -536,25 +539,25 @@ Categories that dominate each language drive the next fixes: see the per-cell FN
 
 **FP**
 
-- `b2ba33e7` src/jsx -> src/jsx/hooks.useId: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
-- `56d5ce58` packages/zod/src/v4/classic/errors -> packages/zod/src/v4/classic/errors.initializer: **lidx_error**, callback passed as an argument (initializer) recorded as a call
+- `b1c1e316` packages/zod/src/v4/core/errors -> packages/zod/src/v4/core/errors.initializer: **lidx_error**, callback passed as an argument (initializer) recorded as a call
+- `558fb17d` packages/zod/src/v4/core/regexes -> packages/zod/src/v4/core/regexes.dateSource: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
 - `03aaf82c` src/jsx -> src/jsx/context.createContext: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
-- `c01a6243` src/router/trie-router/node.Node.#params -> src/router/trie-router/node.emptyParams: **lidx_error**, field initialiser naming a const is a reference
-- `c47ad93f` src/jsx/hooks.startViewTransition -> src/jsx/hooks.viewTransitionHook: **lidx_error**, class field initialiser naming a function is a reference, not a call
-- `f75597fd` src/jsx/context.createContext -> src/jsx/constants.DOM_RENDERER: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
-- `4eeed716` src/adapter/cloudflare-workers/utils.getContentFromKVAsset -> src/utils/cookie.parse: **lidx_error**, JSON.parse resolved to the in-repo cookie parse
+- `bfd02584` src/helper/css.createCssContext -> src/helper/css/common.STYLE_STRING: **lidx_error**, computed key recorded as a call; nothing is invoked
+- `c3906d7a` src/jsx/dom/render.createPortal -> src/jsx/dom/render.HONO_PORTAL_ELEMENT: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
+- `f7871d1d` src/jsx/dom -> src/jsx/dom/components.ErrorBoundary: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
+- `4e4802f5` src/jsx/dom/intrinsic-element/components.formActionableElement -> src/jsx/dom/intrinsic-element/components.customEventFormAction: **lidx_error**, computed key recorded as a call; nothing is invoked
 - `cc8a8443` packages/zod/src/v4/core/to-json-schema.finalize -> packages/zod/src/v3/types.ZodType.parse: **lidx_error**, JSON.parse resolved to ZodType.parse
-- `fade53b2` src/helper/css/common.buildStyleString -> src/helper/css/common.SELECTORS: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
+- `fb931d1f` src/jsx/dom/server -> src/jsx/dom/server.renderToReadableStream: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
 - `1c44c479` src/jsx/dom/server -> src/jsx/dom/server.renderToString: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
-- `50667360` src/router/pattern-router/router.PatternRouter.match -> src/router/pattern-router/router.emptyParams: **lidx_error**, constant read recorded as a call
-- `66426f26` src/jsx/dom/css.createCssJsxDomObjects -> src/helper/css/common.SELECTOR: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
-- `ec400fe0` src/router/pattern-router/router.PatternRouter.match -> src/router.METHOD_NAME_ALL: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
-- `f6f2ef33` src/client/client.hc -> src/jsx/base.JSXNode.toString: **lidx_error**, Function.prototype.toString resolved to JSXNode.toString
-- `6f0682d0` src/helper/ssg/ssg.toSSG -> src/helper/ssg/ssg.DEFAULT_OUTPUT_DIR: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
-- `6e3fd323` src/helper/css -> src/helper/css/common.DEFAULT_STYLE_ID: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
-- `8771e6b0` src/jsx/dom/render.buildNode -> src/jsx/constants.DOM_STASH: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
-- `e2f0ac0c` src/jsx/dom -> src/jsx/dom/hooks.useActionState: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
-- `83adbbdd` src/jsx/streaming -> src/jsx/constants.DOM_RENDERER: **lidx_error**, symbol constant used as a property key recorded as a call
+- `500151e0` packages/zod/src/v3/benchmarks/primitives -> packages/zod/src/v3/benchmarks/primitives.longEnumSuite: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
+- `64dc25ef` packages/zod/src/v3/benchmarks/object -> packages/zod/src/v3/benchmarks/object.shortSuite: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
+- `ed0fa79a` src/router/linear-router/router.LinearRouter.match -> src/router/linear-router/router.splitPathRe: **lidx_error**, regular expression constant passed as an argument recorded as a call
+- `f71a0a04` src/utils/ipaddr.parseIPv6HexCode -> src/utils/ipaddr.CHAR_CODE_A: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
+- `6e85f2c8` packages/zod/src/v3/benchmarks/string -> packages/zod/src/v3/benchmarks/string.SUITE_NAME: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
+- `6dc85736` src/jsx/dom -> src/jsx/hooks.startTransition: **lidx_error**, export-list entry recorded as a call; nothing is invoked
+- `876125d1` src/adapter/bun/websocket.createBunWebSocket -> src/adapter/bun/websocket.upgradeWebSocket: **lidx_error**, shorthand property naming a const recorded as a call; nothing is invoked
+- `e35339c7` src/router/trie-router/node.Node.#pushHandlerSets -> src/router/trie-router/node.emptyParams: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
+- `82b63231` src/jsx/dom/render.buildNode -> src/jsx/dom/render.nameSpaceContext: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
 - `024d97da` src/utils/ipaddr.convertIPv6ToBinary -> src/utils/ipaddr.CHAR_CODE_PERCENT: **lidx_error**, identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked
 
 **FN**
@@ -608,16 +611,16 @@ Categories that dominate each language drive the next fixes: see the per-cell FN
 
 **bucket ungradable:caller_file_not_covered**
 
-- `da988e3a` packages/docs/next.config.config -> packages/docs/next.config.generateRedirects: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)
-- `c422ce0c` benchmarks/routers/src/rou3.rou3Router -> benchmarks/routers/src/rou3.router: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)
+- `db079bc9` runtime-tests/lambda/index.test -> src/helper/streaming/sse.streamSSE: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)
+- `c43c83a2` packages/bench/jit-union -> packages/bench/metabench.metabench: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)
 - `6328e317` scripts/check-semver -> packages/zod/src/v3/types.ZodType.parse: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)
 - `26bd6b57` src/utils/ipaddr.test -> src/utils/ipaddr.test.expectInvalidIPAddressError: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)
 - `28c541cc` packages/docs/components/ecosystem.ZodUtilities -> packages/docs/components/ecosystem.zodUtilities: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)
-- `bce9b036` packages/tsc/bench/strongly-connected -> packages/tsc/generate.generate: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)
+- `bd225121` runtime-tests/lambda/stream.test -> src/utils/cookie.parse: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)
 - `59c05582` benchmarks/query-param/src/bench -> benchmarks/query-param/src/hono.default: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)
 - `a2237deb` src/middleware/basic-auth/index.test -> src/hono.Hono.constructor: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)
 - `fdd77f09` src/middleware/trailing-slash/index.test -> src/middleware/trailing-slash.appendTrailingSlash: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)
-- `cfa57a28` src/jsx/dom/components.test -> src/jsx/dom/components.ErrorBoundary: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)
+- `cfafc684` packages/bench/string -> packages/bench/metabench.metabench: **correct_exclusion**, caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)
 
 **bucket ungradable:oracle_unresolved_site**
 
@@ -628,86 +631,99 @@ Categories that dominate each language drive the next fixes: see the per-cell FN
 
 **FP**
 
-- `85c842a3` crate::sink::SinkMatch::bytes_range_in_buffer -> crate::Error::clone: **lidx_error**, Range clone() resolved to Error::clone
-- `ecfc0e9d` crate::crates::core::search::SearchWorker::search_reader -> crate::crates::core::search::SearchWorker::search_reader: **lidx_error**, free function search_reader(m, ..) resolved to the enclosing SearchWorker::search_reader method (false recursion)
-- `e5db65e5` crate::crates::core::flags::doc::render_custom_markup -> crate::Match::map: **lidx_error**, Option::map resolved to Match::map
-- `f65b83d1` crate::walk::WalkEventIter::next -> crate::tests::util::Dir: **lidx_error**, enum variant WalkEvent::Dir resolved to tests::util::Dir, a test-only struct
-- `8e64b312` crate::json::JSONBuilder::build -> crate::Error::clone: **lidx_error**, config.clone() resolved to Error::clone
-- `61e3e344` crate::searcher::glue::MultiLine::find -> crate::Match::map: **lidx_error**, Option::map resolved to Match::map
-- `9d6fd2e8` crate::testutil::RegexMatcher::find_at -> crate::Match::end: **lidx_error**, Range end() resolved to Match::end
-- `188cd68a` crate::counter::CounterWriter::supports_color -> crate::wtr::StandardStream::supports_color: **lidx_error**, WriteColor::supports_color on a generic writer resolved to StandardStream::supports_color by name
-- `e2b15f78` crate::searcher::SearcherBuilder::build -> crate::Match::map: **lidx_error**, Option::map resolved to Match::map
-- `d2e75e4c` crate::pathutil::strip_prefix -> crate::glob::Glob::as_ref: **lidx_error**, AsRef::as_ref resolved to Glob::as_ref
-- `94b024d1` crate::regex_helper::pattern_has_uppercase_char -> crate::fmt::FormatTemplate::parse: **lidx_error**, str parse resolved to FormatTemplate::parse
-- `50f23a55` crate::crates::core::flags::parse::suggest -> crate::Match::map: **lidx_error**, iterator map resolved to Match::map
-- `ac6c49d2` crate::path::PathPrinterBuilder::build -> crate::Error::clone: **lidx_error**, config.clone() resolved to Error::clone
-- `0c035c17` crate::decompress::DecompressionMatcherBuilder::try_associate -> crate::Match::map: **lidx_error**, iterator map resolved to Match::map
-- `a6f71daa` crate::util::NiceDuration::serialize -> crate::Match::end: **lidx_error**, serializer end() resolved to Match::end
-- `59228137` crate::walk::walkdir_is_dir -> crate::walk::DirEntry::depth: **lidx_error**, walkdir DirEntry::depth resolved to the in-repo DirEntry::depth
-- `9c6846ac` crate::lines::LineStep::next_match -> crate::Match::map: **lidx_error**, Option::map resolved to Match::map
-- `4784a198` crate::dir::Ignore::add_parents -> crate::glob::Glob::as_ref: **lidx_error**, AsRef::as_ref resolved to Glob::as_ref
-- `95762f9e` crate::types::TypesBuilder::definitions -> crate::crates::core::flags::hiargs::HiArgs::sort: **lidx_error**, Vec::sort resolved to HiArgs::sort
-- `01961661` crate::walk::WalkParallel::visit -> crate::Error::clone: **lidx_error**, Arc clone() resolved to Error::clone
+- `7246198e` crate::crates::core::flags::hiargs::HiArgs::matcher_pcre2 -> crate::matcher::RegexMatcherBuilder::utf: **oracle_artefact**, builder.utf(true).ucp(true) is a real call to the pcre2 RegexMatcherBuilder; it sits under #[cfg(feature = "pcre2")], which rust-analyzer did not enable, so SCIP has no occurrence there and lidx is right
+- `d0415ed7` crate::summary::SummarySink::stats -> crate::glob::Glob::as_ref: **lidx_error**, Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref
+- `cacf5ccf` crate::pathutil::file_name -> crate::Match::map: **lidx_error**, Option::map resolved to Match::map
+- `dace4558` crate::gitignore::gitconfig_home_contents -> crate::Match::map: **lidx_error**, Option::map resolved to Match::map
+- `797aba7e` crate::gitignore::parse_excludes_file -> crate::Match::map: **lidx_error**, Option::map resolved to Match::map
+- `4b9c4f37` crate::dir::Ignore::add_child -> crate::glob::Glob::as_ref: **lidx_error**, Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref
+- `86af1968` crate::config::ConfiguredHIR::new -> crate::matcher::RegexMatcherBuilder::dot_matches_new_line: **lidx_error**, regex_syntax TranslatorBuilder builder method (external) resolved to RegexMatcherBuilder::dot_matches_new_line
+- `0e3136f6` crate::pathutil::file_name -> crate::Match::map: **lidx_error**, Option::map resolved to Match::map
+- `c5e9ade1` crate::pattern::patterns_from_path -> crate::glob::Glob::as_ref: **lidx_error**, Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref
+- `b89b0d7f` crate::config::ConfiguredHIR::new -> crate::matcher::RegexMatcherBuilder::ignore_whitespace: **lidx_error**, regex_syntax ParserBuilder::ignore_whitespace (external) resolved to RegexMatcherBuilder::ignore_whitespace
+- `82c8a6f3` crate::matcher::RegexMatcher::try_find_iter -> crate::Match::start: **lidx_error**, m.start() on a pcre2 match (external) resolved to grep_matcher Match::start
+- `3cb7e462` crate::literal::TSeq::union -> crate::literal::Extractor::union: **lidx_error**, self.seq.union(..) on a regex_syntax Seq (external) resolved to Extractor::union
+- `94179f1c` crate::dir::IgnoreBuilder::build_with_cwd -> crate::Error::clone: **lidx_error**, .clone() on an Option/Arc field resolved to Error::clone
+- `07f346c2` crate::dir::Ignore::add_parents -> crate::glob::Glob::as_ref: **lidx_error**, Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref
+- `8f455f6a` crate::crates::core::flags::hiargs::HiArgs::matcher_pcre2 -> crate::crates::core::flags::defs::PCRE2: **lidx_error**, enum variant PatternMatcher::PCRE2(m) resolved to the unrelated struct PCRE2 in flags/defs.rs
+- `447bd49a` crate::process::CommandReader::read -> crate::decompress::DecompressionReader::read: **lidx_error**, ChildStdout::read (external) resolved to DecompressionReader::read
+- `855cfa69` crate::pathutil::is_file_name -> crate::Match::map: **lidx_error**, Option::map resolved to Match::map
+- `30a0e6ad` crate::walk::device_num -> crate::error::Error::new: **lidx_error**, std::io::Error::new resolved to the regex crate Error::new
+- `f1c5c82c` std::io::Error::from -> crate::error::Error::new: **lidx_error**, std::io::Error::new resolved to the regex crate Error::new
+- `8393ee2e` crate::cli::Opts::no_search_paths -> crate::filesystem::is_empty: **lidx_error**, Vec::is_empty on a field resolved to filesystem::is_empty
 
 **FN**
 
-- `87502bb5` resolve_git_commondir -> with_path: **lidx_error**, Error::Io(err).with_path(..): chained method on a variant constructor, no edge
-- `d3ef1f7a` get_mut -> get_mut: **lidx_error**, self.wtr.get_mut(): method call through a field, no edge
-- `de7b28a0` matches_into -> matches_into: **lidx_error**, s.matches_into(..) in match arms: calls inside match arms, no edge
-- `189f72fd` matcher_rust -> fixed_strings: **lidx_error**, .fixed_strings(..) in a builder chain, missed
-- `f5ad6887` printer_standard -> into_bytes: **lidx_error**, self.field_match_separator.clone().into_bytes(): chain resolved by bare name to Error::clone instead
-- `3660fadb` search -> line_number: **lidx_error**, .line_number(false) in a builder chain, missed
-- `8cdd16e1` search_reader -> run: **lidx_error**, ReadByLine::new(..).run(): chained call missed, sibling found
-- `c69c4675` find_short -> find: **lidx_error**, self.map.find(&[byte]): method call through a field in a let-else, no edge
-- `1fe04753` replace -> clear: **lidx_error**, self.replacer.clear(): method call through a field, no edge
-- `d59964a3` new -> build: **lidx_error**, JSONBuilder::new().build(wtr): chain head missed
-- `9a9cb0bc` special -> generate_long: **lidx_error**, flags::generate_version_long() marked external although it is in the repository
-- `2774e575` main -> build: **lidx_error**, WalkBuilder::new(path).build(): chain, sibling found
-- `b8e22e86` interpolate -> interpolate: **lidx_error**, free function interpolate(..) resolved to the enclosing Captures::interpolate method, real callee missed
-- `52f17e23` start_hyperlink -> column: **lidx_error**, .column(column) in a builder chain, missed
-- `17d86afe` start_color_match -> [WriteColor]set_color: **lidx_error**, self.wtr().borrow_mut().set_color(..): chained call missed
-- `76726080` depth -> depth: **lidx_error**, self.dent.depth(): method call through a field, no edge
-- `ff2953f1` sink_slow_multi_per_match -> line_terminator: **lidx_error**, self.searcher.line_terminator().as_byte(): chain head missed
-- `dbc84450` write_byte_offset -> column: **lidx_error**, self.config().colors.column(): chain through a field, missed
-- `b5380e4c` new -> FieldContextSeparator: **lidx_error**, Vec::unescape_bytes(..).into(): tuple-struct constructor FieldContextSeparator(..) not recorded
-- `64f6b1dd` sink_slow_multi_line -> multi_line: **lidx_error**, self.multi_line() inside debug_assert!: macro argument call, no edge
+- `cc7d501e` spawn_senders -> osstr_to_bytes: **lidx_error**, filesystem::osstr_to_bytes(..) inside a closure argument, no edge
+- `63fcd0bf` trim_ascii_with_line_term -> line_number: **lidx_error**, line_number(..) in a builder/method chain, missed
+- `9f5596eb` regression_after_context_with_match -> build: **lidx_error**, StandardBuilder::new().build(..): the call is a chained method with NoColor::new as argument, lidx recorded only the external argument call
+- `a7303b5c` regression_search_empty_with_crlf -> line_terminator: **lidx_error**, line_terminator(..) in a builder/method chain, missed
+- `0ec1fad7` visit -> run: **lidx_error**, worker.run() inside a closure passed to spawn, no edge
+- `b8d9f46e` buffer_binary_convert1 -> build: **lidx_error**, build(..) in a builder/method chain, missed
+- `272ee393` max_columns_preview -> sink: **lidx_error**, sink(..) in a builder/method chain, missed
+- `ee62f630` read_dir -> with_depth: **lidx_error**, .with_depth(..) in a chain on Error resolved by bare name to another with_depth
+- `dcbc8b9e` heading_multiple -> line_number: **lidx_error**, line_number(..) in a builder/method chain, missed
+- `685d74e8` max_matches_context -> line_number: **lidx_error**, line_number(..) in a builder/method chain, missed
+- `93e3ffac` count_path_with_zero -> build_no_color: **lidx_error**, build_no_color(..) in a builder/method chain, missed
+- `15b0c633` exclude_lowest -> matched: **lidx_error**, matched(..) in a builder/method chain, missed
+- `cc8d0e15` basic1 -> line_number: **lidx_error**, line_number(..) in a builder/method chain, missed
+- `a0fa9fb6` add_parents -> path: **lidx_error**, self.dent.path() through a field, no edge
+- `76dbaac2` matched -> matched: **lidx_error**, self.overrides.matched(..) through a field, no edge
+- `fb4a7e28` disabled -> ContextSeparator: **lidx_error**, tuple-struct constructor ContextSeparator(None) is a call to a declaration lidx indexes, no edge
+- `19ef53a8` sink_other_context -> end: **lidx_error**, range.end() on a Match alias, no edge
+- `8b30cbca` max_matches_multi_line1 -> build: **lidx_error**, build(..) in a builder/method chain, missed
+- `cc57d1c3` path_with_match_found -> new: **lidx_error**, RegexMatcher::new(..) in a test body, no edge
+- `3dad4ab9` binary3 -> line_number: **lidx_error**, line_number(..) in a builder/method chain, missed
+
+**bucket capture_gap:macro_generated**
+
+- `e87071db` cls18 -> rclassn: **correct_exclusion**, caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it
+- `b0b1e990` matchnot2 -> types: **correct_exclusion**, caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it
+- `ce1ba5b6` matchnot4 -> types: **correct_exclusion**, caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it
+- `df12a935` cls7 -> class: **correct_exclusion**, caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it
+- `5f7904e4` cls4 -> classn: **correct_exclusion**, caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it
+- `eedffa74` extract_lit4 -> s: **correct_exclusion**, caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it
+- `0ad208f3` cls8 -> classn: **correct_exclusion**, caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it
+- `fbc2b43b` cls2 -> classn: **correct_exclusion**, caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it
+- `9c22b0c8` matchnot5 -> types: **correct_exclusion**, caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it
+- `cc693aa1` extract_ext3 -> s: **correct_exclusion**, caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it
 
 **bucket dispatch**
 
-- `cef89026` generate -> name_short: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch
-- `0b65a739` generate_long_flag -> doc_variable: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch
-- `42c6736f` sink_other_context -> context: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch
-- `b8cf4352` begin -> begin: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch
-- `6f0962c6` [Matcher]new_captures -> new_captures: **correct_exclusion**, (*self).new_captures() through the Matcher trait: trait dispatch
-- `e60e44d9` generate -> name_long: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch
-- `94feb843` generate -> is_switch: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch
-- `5efb41d2` generate -> doc_choices: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch
-- `11b44470` generate -> name_negated: **correct_exclusion**, call through a trait (dyn Flag / generic Matcher / Sink): trait dispatch
-- `08fb8e7f` [Matcher]find_candidate_line -> find_candidate_line: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink): trait dispatch
+- `d47cb0fd` [Sink]begin -> begin: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch
+- `e9cb4a57` [Matcher]new_captures -> new_captures: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch
+- `979478d4` [Sink]matched -> matched: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch
+- `ebab9513` generate_flag -> doc_variable: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch
+- `0f3ffceb` new -> name_short: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch
+- `2f69885a` find_similar_names -> name_long: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch
+- `c6933d9c` find_iter_at_in_context -> find_iter_at: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch
+- `e69b310c` longs_all_ascii_alphanumeric -> aliases: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch
+- `882fa286` generate -> name_negated: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch
+- `52abd2d3` generate -> is_switch: **correct_exclusion**, call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch
 
 **bucket ungradable:caller_file_not_covered**
 
-- `423cfd47` crate::tests::tests::get_absolute_root_path -> crate::tests::testenv::TestEnv::test_root: **correct_exclusion**, caller is in a tests/ directory, excluded from the no_tests cell
-- `78339f7a` crate::tests::tests::test_smart_case_glob_searches -> crate::tests::testenv::TestEnv::new: **correct_exclusion**, caller is in a tests/ directory, excluded from the no_tests cell
-- `280c3cd8` crate::tests::test_matcher::no_captures -> crate::tests::util::RegexMatcherNoCaps::new_captures: **correct_exclusion**, caller is in a tests/ directory, excluded from the no_tests cell
-- `e4d1132e` crate::tests::tests::test_case_sensitive -> crate::tests::testenv::TestEnv::assert_output: **correct_exclusion**, caller is in a tests/ directory, excluded from the no_tests cell
-- `e47c0db5` crate::tests::testenv::TestEnv::assert_success_and_get_normalized_output -> crate::tests::testenv::normalize_output: **correct_exclusion**, caller is in a tests/ directory, excluded from the no_tests cell
-- `faf4c4f5` crate::tests::tests::test_size -> crate::tests::testenv::TestEnv::new: **correct_exclusion**, caller is in a tests/ directory, excluded from the no_tests cell
-- `2c23616f` crate::tests::tests::test_hyperlink -> crate::tests::testenv::TestEnv::new: **correct_exclusion**, caller is in a tests/ directory, excluded from the no_tests cell
-- `b88d4741` crate::tests::tests::test_no_ignore_parent_inner_git -> crate::tests::testenv::TestEnv::test_root: **correct_exclusion**, caller is in a tests/ directory, excluded from the no_tests cell
-- `c41e8601` crate::tests::tests::test_owner_current_group -> crate::tests::testenv::TestEnv::new: **correct_exclusion**, caller is in a tests/ directory, excluded from the no_tests cell
-- `3c09c1df` crate::tests::test_matcher::find -> crate::tests::test_matcher::matcher: **correct_exclusion**, caller is in a tests/ directory, excluded from the no_tests cell
+- `3fb0c7d6` crate::tests::tests::test_custom_ignore_precedence -> crate::tests::testenv::TestEnv::assert_output: **correct_exclusion**, caller is in the tests/ directory, outside the path_tests_excluded cell
+- `74dbbcc1` crate::tests::tests::test_type_empty -> crate::tests::testenv::TestEnv::test_root: **correct_exclusion**, caller is in the tests/ directory, outside the path_tests_excluded cell
+- `1ef89168` crate::tests::tests::test_custom_path_separator -> crate::tests::testenv::TestEnv::new: **correct_exclusion**, caller is in the tests/ directory, outside the path_tests_excluded cell
+- `e1bd4286` crate::tests::tests::test_global_ignore -> crate::tests::testenv::TestEnv::new: **correct_exclusion**, caller is in the tests/ directory, outside the path_tests_excluded cell
+- `e06eb060` crate::tests::tests::test_exec_multi -> crate::tests::tests::get_test_env_with_abs_path: **correct_exclusion**, caller is in the tests/ directory, outside the path_tests_excluded cell
+- `fbda5fd0` crate::tests::tests::get_absolute_root_path -> crate::tests::testenv::TestEnv::test_root: **correct_exclusion**, caller is in the tests/ directory, outside the path_tests_excluded cell
+- `264ab3a4` crate::tests::tests::test_exec_multi -> crate::tests::testenv::TestEnv::assert_output: **correct_exclusion**, caller is in the tests/ directory, outside the path_tests_excluded cell
+- `b804f8fd` crate::tests::tests::test_global_ignore -> crate::tests::testenv::TestEnv::assert_output: **correct_exclusion**, caller is in the tests/ directory, outside the path_tests_excluded cell
+- `c1defa57` crate::tests::tests::test_invalid_cwd -> crate::tests::testenv::TestEnv::test_exe: **correct_exclusion**, caller is in the tests/ directory, outside the path_tests_excluded cell
+- `34ade1f4` crate::tests::tests::test_exec_batch_with_limit -> crate::tests::testenv::TestEnv::assert_success_and_get_output: **correct_exclusion**, caller is in the tests/ directory, outside the path_tests_excluded cell
 
 **bucket ungradable:caller_not_judged**
 
-- `96f3a6b3` crate::crates::core::flags::defs::test_before_context -> crate::crates::core::flags::lowargs::ContextMode::set_before: **correct_exclusion**, caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell
-- `ee7e1165` crate::gitignore::tests::parse_excludes_file5 -> crate::gitignore::parse_excludes_file: **correct_exclusion**, caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell
-- `c4749d4f` crate::escape::tests::nothing_hex1 -> crate::escape::tests::b: **correct_exclusion**, caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell
-- `78a8c5f9` crate::json::tests::always_begin_end_no_match -> crate::json::JSONBuilder::always_begin_end: **correct_exclusion**, caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell
-- `15b7415d` crate::searcher::glue::tests::multi_line_overlap1 -> crate::testutil::SearcherTester::by_line: **correct_exclusion**, caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell
-- `5d105153` crate::walk::tests::search_str_for_entry_with_absolute_path -> crate::walk::search_str_for_entry: **correct_exclusion**, caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell
-- `d532c3e2` crate::hyperlink::tests::build_format -> crate::crates::core::flags::defs::Text: **correct_exclusion**, caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell
-- `4837794a` crate::literal::tests::class -> crate::literal::tests::exact: **correct_exclusion**, caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell
-- `3a19c414` crate::hyperlink::tests::handle_alias -> crate::hyperlink::HyperlinkFormat::from_str: **correct_exclusion**, caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell
-- `4091916c` crate::searcher::glue::tests::passthru_sherlock1 -> crate::testutil::SearcherTester::expected_no_line_number: **correct_exclusion**, caller is a #[cfg(test)] / #[test] function, excluded from the no_tests cell
+- `e268005d` crate::walk::tests::same_file_system -> crate::walk::tests::assert_paths: **correct_exclusion**, caller is a test gated by #[cfg(target_os = "linux")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition
+- `d3627809` crate::walk::tests::same_file_system -> crate::walk::tests::mkdirp: **correct_exclusion**, caller is a test gated by #[cfg(target_os = "linux")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition
+- `550792fe` crate::walk::tests::same_file_system -> crate::tests::TempDir::path: **correct_exclusion**, caller is a test gated by #[cfg(target_os = "linux")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition
+- `5586b333` crate::walk::tests::same_file_system -> crate::walk::WalkBuilder::new: **correct_exclusion**, caller is a test gated by #[cfg(target_os = "linux")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition
+- `b1126286` crate::walk::tests::no_read_permissions -> crate::walk::WalkBuilder::new: **correct_exclusion**, caller is a test gated by #[cfg(target_os = "linux")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition
+- `e28b88be` crate::walk::tests::same_file_system -> crate::walk::tests::tmpdir: **correct_exclusion**, caller is a test gated by #[cfg(target_os = "linux")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition
+- `e9b06b11` crate::walk::tests::same_file_system -> crate::walk::WalkBuilder::follow_links: **correct_exclusion**, caller is a test gated by #[cfg(target_os = "linux")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition
+- `08627fa1` crate::walk::tests::same_file_system -> crate::walk::tests::symlink: **correct_exclusion**, caller is a test gated by #[cfg(target_os = "linux")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition
+- `af12e011` crate::walk::tests::same_file_system -> crate::walk::WalkBuilder::same_file_system: **correct_exclusion**, caller is a test gated by #[cfg(target_os = "linux")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition
+- `e9f34c08` crate::walk::tests::no_read_permissions -> crate::walk::tests::assert_paths: **correct_exclusion**, caller is a test gated by #[cfg(target_os = "linux")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition
 

@@ -131,10 +131,7 @@ random FPs and 20 random FNs per language **plus up to 10 random items from ever
 (dispatch, each ungradable reason, capture gaps), read against the source. Items are classified `lidx_error`,
 `oracle_artefact` or `matching_artefact` (FP/FN), or `correct_exclusion` / `misbucketed` (buckets). The rules above were
 changed until the artefact and mis-bucketing rates were under 10%; the history of that iteration, which found real
-problems in the first version, is in the report. The sample was drawn from the stricter gradings (TypeScript with every edge, Rust
-`no_tests`) before `no_tests` stopped leaking modules gated by `#[cfg(test)]` in their parent; the Go and TypeScript lists are
-unchanged by the scope work, and a few sampled Rust items in `crates/searcher/src/testutil.rs` are no longer in the regenerated
-Rust `no_tests` lists.
+problems in the first version, is in the report. The Rust sample is drawn from the `path_tests_excluded` cells that are compared with repowise; re-sampling it found a caller-keying defect in the SCIP reader (`build.rs` and `crates/core/main.rs` both define `main()`), now fixed.
 
 ## Results next to repowise
 
