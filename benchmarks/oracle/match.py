@@ -329,7 +329,7 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
             ungradable[reason] += 1
             ungr_list.append({"caller": {k: csym[k] for k in ("file", "line", "name", "qualname")},
                               "callee": {k: tsym[k] for k in ("file", "line", "name", "qualname")}, "reason": reason,
-                              "resolution_kind": res, "evidence_lines": sorted(p["lines"])[:5],
+                              "resolution_kind": res, "evidence_lines": sorted(l for l in p["lines"] if l is not None)[:5],
                               "evidence_file": sorted(p["epaths"])[0]})
             continue
         fp += 1
@@ -362,7 +362,7 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
             cat = "calls_test_code"  # production code cannot call into a test file: certainly wrong
         fp_list.append({"caller": {k: csym[k] for k in ("file", "line", "name", "qualname")},
                         "callee": {k: tsym[k] for k in ("file", "line", "name", "qualname")},
-                        "resolution_kind": res, "kinds": dict(p["kinds"]), "evidence_lines": sorted(p["lines"])[:5],
+                        "resolution_kind": res, "kinds": dict(p["kinds"]), "evidence_lines": sorted(l for l in p["lines"] if l is not None)[:5],
                         "evidence_file": sorted(p["epaths"])[0], "category": cat, "detail": detail,
                         "callee_kind": tsym["kind"], "caller_kind": csym["kind"]})
 
