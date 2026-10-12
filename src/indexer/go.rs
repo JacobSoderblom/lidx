@@ -2,7 +2,7 @@ use crate::db::resolver::{LanguageProfile, VisibilityRule};
 use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
-use crate::indexer::extract::{CallShape, EdgeInput, ExtractedFile, SymbolInput};
+use crate::indexer::extract::{CallShape, EdgeInput, ExtractedFile, ReceiverType, SymbolInput};
 use crate::indexer::http;
 use crate::indexer::proto;
 use crate::indexer::string_consts::{LocalBinding, StringConsts};
@@ -252,7 +252,8 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         }
         // `Map[int](x)` with a single operand parses as a conversion to the
         // generic type `Map[int]`; it is a call of the generic function
-        // unless `Map` is a type, which the resolver refuses to bind.
+        // unless `Map` is a type (`List[int](x)` converts), which a later
+        // change makes the resolver refuse to bind.
         "type_conversion_expression" => {
             if let Some(type_node) = node
                 .child_by_field_name("type")
@@ -688,31 +689,54 @@ fn emit_calls_edge(
     if raw.is_empty() || is_builtin_callee(function_node, &raw, ctx) {
         return;
     }
-    let target = resolve_call_target(&raw, ctx);
-    // A callee that is not a plain name (`a.B().C`, `f()(x)`) stays
-    // unresolved but keeps its text, whitespace-collapsed, so the method
-    // name and its receiver expression are still on the row.
-    let detail = if target.is_some() {
-        None
-    } else {
+    let mut target = resolve_call_target(&raw, ctx);
+    let mut receiver_type = ReceiverType::NotTracked;
+    // A method called on a call result or other expression (`a.B().C()`,
+    // `f()[i].M()`) has no printable receiver. It keeps the method name as
+    // its target and an untyped receiver, so the resolver neither guesses a
+    // same-named symbol nor drops it: it is stored as an unresolved
+    // reference a receiver-typing pass can finish later.
+    if target.is_none()
+        && function_node.kind() == "selector_expression"
+        && let Some(field) = function_node.child_by_field_name("field")
+    {
+        target = Some(node_text(field, source));
+        receiver_type = ReceiverType::Unresolved;
+    }
+    // The callee text, whitespace-collapsed, shows the receiver expression
+    // of a call whose target is only a method name, or of one with no
+    // target (`f()(x)`).
+    let detail = if receiver_type == ReceiverType::Unresolved || target.is_none() {
         Some(collapse_call_target_whitespace(&raw))
+    } else {
+        None
     };
-    let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
-    let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     output.edges.push(EdgeInput {
-        kind: "CALLS".to_string(),
-        source_qualname: Some(ctx.current_scope.clone()),
         target_qualname: target,
         detail,
-        evidence_snippet: snippet,
-        evidence_start_line: Some(start_line),
-        evidence_end_line: Some(end_line),
+        receiver_type,
         // A bare identifier callee (`foo()`) vs. a selector expression
         // (`pkg.Func()`, `obj.Method()`) — see `EdgeInput::bare_call`'s
         // doc.
         bare_call: matches!(function_node.kind(), "identifier" | "type_identifier"),
-        ..Default::default()
+        ..site_edge("CALLS", node, ctx, source)
     });
+}
+
+/// An edge of `kind` sourced from the current scope, with the evidence
+/// snippet and lines of `node`: the part `CALLS` and `REFERENCES` edges share.
+fn site_edge(kind: &str, node: Node<'_>, ctx: &Context, source: &str) -> EdgeInput {
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+    EdgeInput {
+        kind: kind.to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        ..Default::default()
+    }
 }
 
 /// The callee of a generic instantiation call without its type arguments.
@@ -730,12 +754,18 @@ fn strip_type_arguments(node: Node<'_>) -> Node<'_> {
     node
 }
 
-/// Go's predeclared functions and types: calling one is never an edge to a
-/// declaration of this repository.
+/// Go's predeclared functions. `min`, `max` and `clear` are builtins only
+/// from Go 1.21; before that a package commonly declared its own `min` / `max`,
+/// which is why the check below yields to a local rebinding (`bound_names`).
+/// Kept apart from `GO_PREDECLARED_TYPES` because a builtin is called with
+/// arguments of any type, while a predeclared type is *converted to*
+/// (`string(b)`); both are "not a call to a declaration of this repository"
+/// and share `is_builtin_callee`.
 const GO_BUILTINS: &[&str] = &[
     "append", "len", "cap", "make", "new", "delete", "copy", "panic", "recover", "print",
     "println", "close", "min", "max", "clear", "complex", "real", "imag",
 ];
+/// Go's predeclared types: `T(x)` is a conversion, never a call.
 const GO_PREDECLARED_TYPES: &[&str] = &[
     "any",
     "bool",
@@ -762,7 +792,11 @@ const GO_PREDECLARED_TYPES: &[&str] = &[
 ];
 
 /// A bare builtin call or conversion to a predeclared type the function
-/// does not itself rebind.
+/// does not itself rebind. A name the function binds (a parameter, `:=`,
+/// `var`, `range` variable) shadows the builtin, so `len := f(); len(1)` is a
+/// call of that local, not of the builtin. A package-level `func min()` in
+/// another file is not seen (the extractor reads one file), so the builtin
+/// reading wins there.
 fn is_builtin_callee(function_node: Node<'_>, raw: &str, ctx: &Context) -> bool {
     function_node.kind() == "identifier"
         && !ctx.bound_names.contains(raw)
@@ -999,20 +1033,12 @@ fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<E
             )
         }
     };
-    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
     Some(EdgeInput {
-        kind: edge_views::REFERENCES.to_string(),
-        source_qualname: Some(ctx.current_scope.clone()),
         target_qualname: Some(target),
         import_candidates: vec![candidate],
-        evidence_snippet: util::edge_evidence_snippet(
-            source, start_byte, end_byte, start_line, end_line,
-        ),
-        evidence_start_line: Some(start_line),
-        evidence_end_line: Some(end_line),
         bare_call: bare,
         call_shape: Some(CallShape::value_reference()),
-        ..Default::default()
+        ..site_edge(edge_views::REFERENCES, node, ctx, source)
     })
 }
 
@@ -1856,8 +1882,8 @@ var (
         assert_eq!(
             targets("pkg/file.F"),
             [
+                "C",
                 "a.B",
-                "a.B().C",
                 "pkg/file.InDefer",
                 "pkg/file.InGo",
                 "pkg/file.InRun",
@@ -1869,6 +1895,12 @@ var (
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<_>>()
+        );
+        // The chain's method call keeps the method name and its receiver text.
+        assert!(
+            edges
+                .iter()
+                .any(|(_, t, d)| { t.as_deref() == Some("C") && d.as_deref() == Some("a.B().C") })
         );
         assert_eq!(
             targets("pkg/file"),
