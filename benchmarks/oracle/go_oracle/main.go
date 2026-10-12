@@ -40,13 +40,14 @@ type Edge struct {
 }
 
 type Output struct {
-	Repo    string   `json:"repo"`
-	Tests   bool     `json:"tests"`
-	Mode    string   `json:"mode"`
-	Roots   int      `json:"roots"`
-	Files   []string `json:"files"`   // in-repo files that type-checked into the program
-	Callers []Decl   `json:"callers"` // in-repo declarations reachable in the graph (can be judged)
-	Edges   []Edge   `json:"edges"`
+	Repo        string   `json:"repo"`
+	Tests       bool     `json:"tests"`
+	Mode        string   `json:"mode"`
+	Roots       int      `json:"roots"`
+	AutoLibrary bool     `json:"auto_library_roots"`
+	Files       []string `json:"files"`   // in-repo files that type-checked into the program
+	Callers     []Decl   `json:"callers"` // in-repo declarations reachable in the graph (can be judged)
+	Edges       []Edge   `json:"edges"`
 	// Edges the oracle drops, with a reason, so nothing disappears silently.
 	Dropped map[string]int `json:"dropped"`
 	Errors  []string       `json:"load_errors"`
@@ -119,59 +120,68 @@ func main() {
 			roots = append(roots, f)
 		}
 	}
-	for _, sp := range ssapkgs {
-		if sp == nil {
-			continue
-		}
-		pkg := sp.Pkg
-		isMain := pkg.Name() == "main"
-		if isMain {
-			addRoot(sp.Func("init"))
-			addRoot(sp.Func("main"))
-		}
-		for _, m := range sp.Members {
-			fn, ok := m.(*ssa.Function)
-			if !ok {
+	collect := func() {
+		for _, sp := range ssapkgs {
+			if sp == nil {
 				continue
 			}
-			if *tests && fn.Pos().IsValid() {
-				if rel, ok := inRepo(prog.Fset.Position(fn.Pos()).Filename); ok && strings.HasSuffix(rel, "_test.go") {
-					n := fn.Name()
-					if strings.HasPrefix(n, "Test") || strings.HasPrefix(n, "Benchmark") || strings.HasPrefix(n, "Fuzz") || strings.HasPrefix(n, "Example") {
+			pkg := sp.Pkg
+			isMain := pkg.Name() == "main"
+			if isMain {
+				addRoot(sp.Func("init"))
+				addRoot(sp.Func("main"))
+			}
+			for _, m := range sp.Members {
+				fn, ok := m.(*ssa.Function)
+				if !ok {
+					continue
+				}
+				if *tests && fn.Pos().IsValid() {
+					if rel, ok := inRepo(prog.Fset.Position(fn.Pos()).Filename); ok && strings.HasSuffix(rel, "_test.go") {
+						n := fn.Name()
+						if strings.HasPrefix(n, "Test") || strings.HasPrefix(n, "Benchmark") || strings.HasPrefix(n, "Fuzz") || strings.HasPrefix(n, "Example") {
+							addRoot(fn)
+							addRoot(sp.Func("init"))
+						}
+					}
+				}
+				if *libRoots && fn.Pos().IsValid() && token.IsExported(fn.Name()) {
+					if _, ok := inRepo(prog.Fset.Position(fn.Pos()).Filename); ok {
 						addRoot(fn)
 						addRoot(sp.Func("init"))
 					}
 				}
 			}
-			if *libRoots && fn.Pos().IsValid() && token.IsExported(fn.Name()) {
-				if _, ok := inRepo(prog.Fset.Position(fn.Pos()).Filename); ok {
-					addRoot(fn)
-					addRoot(sp.Func("init"))
-				}
-			}
-		}
-		if *libRoots {
-			for _, m := range sp.Members {
-				t, ok := m.(*ssa.Type)
-				if !ok || !token.IsExported(t.Name()) {
-					continue
-				}
-				for _, s := range []*types.MethodSet{prog.MethodSets.MethodSet(t.Type()), prog.MethodSets.MethodSet(types.NewPointer(t.Type()))} {
-					for i := 0; i < s.Len(); i++ {
-						sel := s.At(i)
-						if !token.IsExported(sel.Obj().Name()) {
-							continue
-						}
-						f := prog.MethodValue(sel)
-						if f != nil && f.Pos().IsValid() {
-							if _, ok := inRepo(prog.Fset.Position(f.Pos()).Filename); ok {
-								addRoot(f)
+			if *libRoots {
+				for _, m := range sp.Members {
+					t, ok := m.(*ssa.Type)
+					if !ok || !token.IsExported(t.Name()) {
+						continue
+					}
+					for _, s := range []*types.MethodSet{prog.MethodSets.MethodSet(t.Type()), prog.MethodSets.MethodSet(types.NewPointer(t.Type()))} {
+						for i := 0; i < s.Len(); i++ {
+							sel := s.At(i)
+							if !token.IsExported(sel.Obj().Name()) {
+								continue
+							}
+							f := prog.MethodValue(sel)
+							if f != nil && f.Pos().IsValid() {
+								if _, ok := inRepo(prog.Fset.Position(f.Pos()).Filename); ok {
+									addRoot(f)
+								}
 							}
 						}
 					}
 				}
 			}
 		}
+	}
+	collect()
+	if len(roots) == 0 && !*tests && !*libRoots {
+		// a library without a main package: fall back to its exported surface
+		*libRoots = true
+		out.AutoLibrary = true
+		collect()
 	}
 	out.Roots = len(roots)
 	switch {

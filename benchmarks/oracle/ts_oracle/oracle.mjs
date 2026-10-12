@@ -86,21 +86,19 @@ const mkDecl = (n) => {
 };
 const keyOf = (d) => `${d.file}:${d.line}`;
 
-// nearest named enclosing function-like and the outermost named one
+// every named function-like (or field initialiser) enclosing a node, innermost first
 function enclosing(node) {
-  let nearest, outer;
+  const chain = [];
   for (let p = node.parent; p; p = p.parent) {
     if (isFnLike(p)) {
       const d = mkDecl(p);
-      if (d) { nearest ??= d; outer = d; }
-    } else if (ts.isClassStaticBlockDeclaration?.(p)) { /* static block: attribute to class */ }
-    else if (ts.isPropertyDeclaration(p) && p.initializer && !isFnLike(p.initializer)) {
-      // field initialiser: attribute to the field
-      const d = p.name ? { file: rel(p.getSourceFile().fileName), line: lineOf(p.getSourceFile(), p.name.getStart()), name: p.name.getText() } : undefined;
-      if (d) { nearest ??= d; outer = d; }
+      if (d) chain.push(d);
+    } else if (ts.isPropertyDeclaration(p) && p.initializer && !isFnLike(p.initializer) && p.name) {
+      const sf = p.getSourceFile();
+      chain.push({ file: rel(sf.fileName), line: lineOf(sf, p.name.getStart(sf)), name: p.name.getText() });
     }
   }
-  return { nearest, outer };
+  return chain;
 }
 
 function calleeDecls(call) {
@@ -135,7 +133,15 @@ function declLoc(d) {
     const sf = d.getSourceFile();
     return { file: rel(sf.fileName), line: lineOf(sf, d.name.getStart(sf)), name: d.name.text };
   }
-  return mkDecl(d);
+  const f = mkDecl(d);
+  if (f) return f;
+  // a function type or signature carries no name: use the name of the declaration that owns it
+  const owner = d.parent;
+  if (owner && (ts.isVariableDeclaration(owner) || ts.isPropertySignature(owner) || ts.isPropertyDeclaration(owner)) && owner.name) {
+    const sf = owner.getSourceFile();
+    return { file: rel(sf.fileName), line: lineOf(sf, owner.name.getStart(sf)), name: owner.name.getText() };
+  }
+  return undefined;
 }
 
 for (const sf of program.getSourceFiles()) {
@@ -151,7 +157,8 @@ for (const sf of program.getSourceFiles()) {
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
       if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) { drop("dynamic_import"); }
       else {
-        const { nearest, outer } = enclosing(node);
+        const chain = enclosing(node);
+        const nearest = chain[0];
         const r = calleeDecls(node);
         if (r.err) { drop("callee_" + r.err); unresolvedSites.add(`${rel(sf.fileName)}:${lineOf(sf, node.getStart(sf))}`); if (process.env.ORACLE_DEBUG) console.error("UNRESOLVED", rel(sf.fileName) + ":" + lineOf(sf, node.getStart(sf)), node.getText().slice(0, 80).replace(/\n/g, " ")); }
         else {
@@ -173,7 +180,8 @@ for (const sf of program.getSourceFiles()) {
               if (!seenEdges.has(k)) {
                 const e = { caller: nearest2, callee, sites: [site] };
                 seenEdges.set(k, e);
-                if (outer && keyOf(outer) !== keyOf(nearest2)) e.caller_alts = [keyOf(outer)];
+                e.caller_chain = chain.slice(1).map(keyOf);
+                if (nearest) e.caller_chain.push(`${rel(sf.fileName)}:0`);
                 const ca = calleeAlts.filter((x) => x !== keyOf(callee));
                 if (ca.length) e.callee_alts = ca;
                 out.edges.push(e);
