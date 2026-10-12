@@ -86,26 +86,32 @@ const mkDecl = (n) => {
 };
 const keyOf = (d) => `${d.file}:${d.line}`;
 
-// every named function-like (or field initialiser) enclosing a node, innermost first
+// Declarations that can own a call, innermost first. `fns` are function-likes and field
+// initialisers (the caller of record); `containers` are the module-level const/class the call
+// sits in. lidx attributes calls to whichever symbol it finds, so containers are accepted as
+// the caller only when no function encloses the call (module-level code).
 function enclosing(node) {
-  const chain = [];
+  const fns = [], containers = [];
+  const push = (list, d) => { if (d && !fns.concat(containers).some((c) => keyOf(c) === keyOf(d))) list.push(d); };
   for (let p = node.parent; p; p = p.parent) {
-    if (isFnLike(p)) {
-      const d = mkDecl(p);
-      if (d) chain.push(d);
-    } else if (ts.isPropertyDeclaration(p) && p.initializer && !isFnLike(p.initializer) && p.name) {
-      const sf = p.getSourceFile();
-      chain.push({ file: rel(sf.fileName), line: lineOf(sf, p.name.getStart(sf)), name: p.name.getText() });
+    const sf = p.getSourceFile?.();
+    if (isFnLike(p)) push(fns, mkDecl(p));
+    else if (ts.isPropertyDeclaration(p) && p.initializer && !isFnLike(p.initializer) && p.name) {
+      push(fns, { file: rel(sf.fileName), line: lineOf(sf, p.name.getStart(sf)), name: p.name.getText() });
+    } else if (ts.isVariableDeclaration(p) && ts.isIdentifier(p.name) && ts.isSourceFile(p.parent?.parent?.parent)) {
+      push(containers, { file: rel(sf.fileName), line: lineOf(sf, p.name.getStart(sf)), name: p.name.text });
+    } else if ((ts.isClassDeclaration(p) || ts.isClassExpression(p)) && p.name) {
+      push(containers, { file: rel(sf.fileName), line: lineOf(sf, p.name.getStart(sf)), name: p.name.text });
     }
   }
-  return chain;
+  return { fns, containers };
 }
 
 function calleeDecls(call) {
   let sig;
   try { sig = checker.getResolvedSignature(call); } catch { return { err: "signature_throw" }; }
   let sym;
-  const target = call.expression;
+  const target = ts.isJsxOpeningElement(call) || ts.isJsxSelfClosingElement(call) ? call.tagName : ts.isTaggedTemplateExpression(call) ? call.tag : call.expression;
   try { sym = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(target) ? target.name : target); } catch { /* ignore */ }
   if (sym && sym.flags & ts.SymbolFlags.Alias) { try { sym = checker.getAliasedSymbol(sym); } catch { /* ignore */ } }
   let decl = sig && sig.declaration;
@@ -115,16 +121,16 @@ function calleeDecls(call) {
     // `new C()` with no explicit constructor, calls on `any`, etc.
     if (ts.isNewExpression(call) && sym && sym.declarations) {
       const cls = sym.declarations.find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
-      if (cls) return { decl: cls, alts, kind: "class" };
+      if (cls) return { decl: cls, alts, kind: "class", sym };
     }
     if (sym && sym.declarations && sym.declarations.length) {
       const d = sym.declarations.find(isFnLike) ?? sym.declarations[0];
-      if (ts.isVariableDeclaration(d) && d.initializer && isFnLike(d.initializer)) return { decl: d.initializer, alts };
-      if (isFnLike(d)) return { decl: d, alts };
+      if (ts.isVariableDeclaration(d) && d.initializer && isFnLike(d.initializer)) return { decl: d.initializer, alts, sym };
+      if (isFnLike(d)) return { decl: d, alts, sym };
     }
     return { err: "unresolved" };
   }
-  return { decl, alts };
+  return { decl, alts, sym };
 }
 
 function declLoc(d) {
@@ -154,22 +160,41 @@ for (const sf of program.getSourceFiles()) {
       const d = mkDecl(node);
       if (d) callerSeen.add(JSON.stringify(d));
     }
-    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+    if (ts.isCallExpression(node) || ts.isNewExpression(node) || ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node) || ts.isTaggedTemplateExpression(node)) {
       if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) { drop("dynamic_import"); }
+      else if ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) && /^[a-z]/.test(node.tagName.getText())) { /* intrinsic element */ }
       else {
-        const chain = enclosing(node);
-        const nearest = chain[0];
+        const { fns, containers } = enclosing(node);
+        const nearest = fns[0];
         const r = calleeDecls(node);
         if (r.err) { drop("callee_" + r.err); unresolvedSites.add(`${rel(sf.fileName)}:${lineOf(sf, node.getStart(sf))}`); if (process.env.ORACLE_DEBUG) console.error("UNRESOLVED", rel(sf.fileName) + ":" + lineOf(sf, node.getStart(sf)), node.getText().slice(0, 80).replace(/\n/g, " ")); }
         else {
           let target = r.decl;
-          const tf = target.getSourceFile();
+          const tf = target.getSourceFile?.() ?? (target.parent && target.parent.getSourceFile?.());
+          if (!tf) { drop("callee_synthetic"); ts.forEachChild(node, visit); return; }
           if (!inRepo(tf.fileName) || tf.isDeclarationFile) { drop("callee_external"); extSites.add(`${rel(sf.fileName)}:${lineOf(sf, node.getStart(sf))}`); }
           else {
             // overload signatures: judge against the implementation declaration
             let impl = target;
             if (r.alts.length > 1 && !target.body) { const b = r.alts.find((a) => isFnLike(a) && a.body); if (b) impl = b; }
-            const callee = declLoc(impl);
+            let callee = declLoc(impl);
+            // a call through an interface member, function type or abstract method may run any implementation
+            let disp = ts.isMethodSignature(target) || ts.isPropertySignature(target) || ts.isCallSignatureDeclaration(target) ||
+              ts.isConstructSignatureDeclaration(target) || ts.isFunctionTypeNode(target) ||
+              (ts.isMethodDeclaration(target) && (ts.getCombinedModifierFlags(target) & ts.ModifierFlags.Abstract) !== 0);
+            const vdecl = r.sym && r.sym.valueDeclaration;
+            if (!callee && vdecl && (ts.isParameter(vdecl) || ts.isBindingElement(vdecl))) {
+              // calling a parameter or destructured binding: there is no declaration to point at
+              drop("callee_parameter");
+              extSites.add(`${rel(sf.fileName)}:${lineOf(sf, node.getStart(sf))}`);
+              ts.forEachChild(node, visit);
+              return;
+            }
+            if (!callee && vdecl && vdecl.name) {
+              // callee typed through an interface or function type: the declaration is the variable/field that holds it
+              const vd = r.sym.valueDeclaration, vf = vd.getSourceFile();
+              if (inRepo(vf.fileName) && !vf.isDeclarationFile) callee = { file: rel(vf.fileName), line: lineOf(vf, vd.name.getStart(vf)), name: vd.name.getText() };
+            }
             const calleeAlts = [...new Set(r.alts.map(declLoc).filter(Boolean).concat(declLoc(target) ? [declLoc(target)] : []).map((d) => keyOf(d)))];
             if (!callee) drop("callee_anonymous");
             else {
@@ -179,13 +204,19 @@ for (const sf of program.getSourceFiles()) {
               const site = `${rel(sf.fileName)}:${lineOf(sf, node.getStart(sf))}`;
               if (!seenEdges.has(k)) {
                 const e = { caller: nearest2, callee, sites: [site] };
+                if (disp) e.dispatch = true;
                 seenEdges.set(k, e);
-                e.caller_chain = chain.slice(1).map(keyOf);
+                e.caller_chain = fns.slice(1).concat(containers).map(keyOf);
                 if (nearest) e.caller_chain.push(`${rel(sf.fileName)}:0`);
+                else if (containers.length) e.caller_alts = containers.map(keyOf);
                 const ca = calleeAlts.filter((x) => x !== keyOf(callee));
                 if (ca.length) e.callee_alts = ca;
                 out.edges.push(e);
-              } else if (seenEdges.get(k).sites.length < 20) seenEdges.get(k).sites.push(site);
+              } else {
+                const prev = seenEdges.get(k);
+                if (prev.sites.length < 20) prev.sites.push(site);
+                if (!disp) delete prev.dispatch;
+              }
             }
           }
         }

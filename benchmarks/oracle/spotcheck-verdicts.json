@@ -1,0 +1,242 @@
+{
+ "0096eac7": {
+  "note": "type conversion ID(...) recorded as a call to the type; the compiler graph has no call here",
+  "verdict": "lidx_error"
+ },
+ "051bc0c8": {
+  "note": "JSX attribute value (constant) recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "0e658300": {
+  "note": "filepath.Base resolved to ChrootContext.Base",
+  "verdict": "lidx_error"
+ },
+ "0f556af2": {
+  "note": "read of a constant (INVALID) recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "104ae609": {
+  "note": "Number.isFinite resolved to the ZodNumber.isFinite getter",
+  "verdict": "lidx_error"
+ },
+ "1149789e": {
+  "note": "errors.Join resolved to unknown.Join",
+  "verdict": "lidx_error"
+ },
+ "18fa045f": {
+  "note": "path.Join resolved to unknown.Join",
+  "verdict": "lidx_error"
+ },
+ "1adc2069": {
+  "note": "path.Join resolved to unknown.Join",
+  "verdict": "lidx_error"
+ },
+ "292bcc2c": {
+  "note": "log.Tracef on a package-level helper, no edge extracted at all",
+  "verdict": "lidx_error"
+ },
+ "2dbf8f88": {
+  "note": "time.Time.Format resolved to the options.Format struct",
+  "verdict": "lidx_error"
+ },
+ "2ddd35e5": {
+  "note": "function returned as a value recorded as a call; nothing is invoked here",
+  "verdict": "lidx_error"
+ },
+ "311897eb": {
+  "note": "Array.prototype.find resolved to util.find",
+  "verdict": "lidx_error"
+ },
+ "32b2bcb0": {
+  "note": "bytes.Buffer.String resolved to a test type's String method",
+  "verdict": "lidx_error"
+ },
+ "34b8de12": {
+  "note": "filepath.Join resolved to unknown.Join",
+  "verdict": "lidx_error"
+ },
+ "34edccdb": {
+  "note": "json.NewEncoder resolved to cyclonedxutil.NewEncoder",
+  "verdict": "lidx_error"
+ },
+ "3bb61b04": {
+  "note": "read of a module-level variable recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "4ab0d432": {
+  "note": "call nested as an argument of a func-value call",
+  "verdict": "lidx_error"
+ },
+ "4c301268": {
+  "note": "reflect.Append resolved to the in-repo Append (bare-name collision with a stdlib/third-party callee)",
+  "verdict": "lidx_error"
+ },
+ "4c6c63f1": {
+  "note": "returned object (memo) recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "4e6180d6": {
+  "note": "bufio.Scanner.Scan resolved to commands.Scan",
+  "verdict": "lidx_error"
+ },
+ "548713a0": {
+  "note": "multi-line method chain: WithExpression missed",
+  "verdict": "lidx_error"
+ },
+ "5590f2bf": {
+  "note": "call in a return statement, no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "5a37fa61": {
+  "note": "template-literal read of a constant recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "5b6b3309": {
+  "note": "path.Base resolved to ChrootContext.Base",
+  "verdict": "lidx_error"
+ },
+ "5f56fe86": {
+  "note": "return set.ToSlice(): method call on local in a return, missed",
+  "verdict": "lidx_error"
+ },
+ "6239a4c5": {
+  "note": "cfg = cfg.WithPlatform(...) on a local pointer, no edge",
+  "verdict": "lidx_error"
+ },
+ "6b169334": {
+  "note": "read of a numeric constant recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "7017fdf6": {
+  "note": "call nested as an argument of vendors.union(...)",
+  "verdict": "lidx_error"
+ },
+ "7be526dc": {
+  "note": "json.NewEncoder resolved to cyclonedxutil.NewEncoder",
+  "verdict": "lidx_error"
+ },
+ "7e918523": {
+  "note": "lipgloss Style.Render resolved to dockerPullStatusFormatter.Render",
+  "verdict": "lidx_error"
+ },
+ "84e21cd4": {
+  "note": "locations.Add(...) on a local variable, no edge",
+  "verdict": "lidx_error"
+ },
+ "8fe5236c": {
+  "note": "c.PersistentFlags().Bool(...): call at the head of a chain missed",
+  "verdict": "lidx_error"
+ },
+ "901bb223": {
+  "note": "call in a return statement, no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "94eb2c00": {
+  "note": "read of a constant object recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "95531033": {
+  "note": "filepath.Base resolved to ChrootContext.Base",
+  "verdict": "lidx_error"
+ },
+ "9863fa55": {
+  "note": "log.Debugf on a package-level helper, no edge extracted at all",
+  "verdict": "lidx_error"
+ },
+ "99ea058c": {
+  "note": "call in a return statement, no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "99fe9ba2": {
+  "note": "read of a module-level let (installing) recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "9d82e52c": {
+  "note": "read of a constant used as an index recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "9ff0d57e": {
+  "note": "strings.Join resolved to unknown.Join",
+  "verdict": "lidx_error"
+ },
+ "aa858ddf": {
+  "note": "iterated imported constant array recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "ab0e87c2": {
+  "note": "call nested inside append(...) arguments, no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "af2d4746": {
+  "note": "call inside a closure assigned to a struct field (RunE), attributed to nothing",
+  "verdict": "lidx_error"
+ },
+ "b643bc7e": {
+  "note": "bufio.Scanner.Scan resolved to commands.Scan",
+  "verdict": "lidx_error"
+ },
+ "b65d92d7": {
+  "note": "m, err := v.Merge(license): method call on a local, no edge",
+  "verdict": "lidx_error"
+ },
+ "bc0f652d": {
+  "note": "set.Add on a strset variable resolved to internal/task set.Add (two-segment guess)",
+  "verdict": "lidx_error"
+ },
+ "ce145d71": {
+  "note": "shorthand property value (constant) recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "cf567153": {
+  "note": "rootCmd.PersistentFlags().String(...): head of chain missed",
+  "verdict": "lidx_error"
+ },
+ "d0738594": {
+  "note": "bufio.Scanner.Scan resolved to the cobra command constructor Scan",
+  "verdict": "lidx_error"
+ },
+ "d2c1782d": {
+  "note": "call nested in string concatenation inside another call",
+  "verdict": "lidx_error"
+ },
+ "d8be5b3e": {
+  "note": "log.WithFields(...).Trace chain: package-qualified call at the head of a chain missed",
+  "verdict": "lidx_error"
+ },
+ "ddb24dd8": {
+  "note": "Set.has on a local resolved to $ZodRegistry.has (bare-name collision)",
+  "verdict": "lidx_error"
+ },
+ "de13b069": {
+  "note": "iterated local array recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "e202d261": {
+  "note": "filepath.Base resolved to ChrootContext.Base",
+  "verdict": "lidx_error"
+ },
+ "e8ced598": {
+  "note": "call nested as an argument of assertNoErr(...)",
+  "verdict": "lidx_error"
+ },
+ "eb7dfe06": {
+  "note": "child.Flags().Bool(...): call at the head of a chain missed",
+  "verdict": "lidx_error"
+ },
+ "ec92a396": {
+  "note": "iterated constant array recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "ed990850": {
+  "note": "assignment from a string constant recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "f1908a40": {
+  "note": "constant passed as an argument recorded as a call",
+  "verdict": "lidx_error"
+ },
+ "fb45b564": {
+  "note": "read of a string constant (_emoji) recorded as a call",
+  "verdict": "lidx_error"
+ }
+}

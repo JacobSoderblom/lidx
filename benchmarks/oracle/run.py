@@ -171,6 +171,12 @@ def git_info():
     return {"main_commit": base, "head_commit": g("rev-parse", "HEAD")}
 
 
+def dump_list(path, data):
+    """One compact JSON object per line: diff-friendly and about a third the size of indented JSON."""
+    with open(path, "w") as f:
+        f.write("[\n" + ",\n".join(json.dumps(x, separators=(",", ":"), sort_keys=True) for x in data) + "\n]\n")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--binary", default=os.path.join(REPO_ROOT, "target", "release", "lidx"))
@@ -218,14 +224,14 @@ def main():
                    "index_seconds": secs, "oracle_mode": oracle.get("mode"), "oracle_meta": oracle.get("_meta", {}),
                    "oracle_dropped": oracle.get("dropped", {})}
             summ, fn, fp, gap = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS",))
-            summ_r, fn_r, fp_r, _ = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS", "REFERENCES"))
+            summ_r, fn_r, fp_r, _ = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS", "REFERENCES", "USES"))
             res["calls"] = summ
             res["calls_plus_references"] = {k: summ_r[k] for k in ("graded", "tp", "fp", "precision", "precision_ci", "recall", "recall_ci",
                                                                    "matched_oracle_edges")}
-            res["lidx_edge_counts"] = {k: sum(1 for e in edges if e["kind"] == k) for k in ("CALLS", "REFERENCES")}
+            res["lidx_edge_counts"] = {k: sum(1 for e in edges if e["kind"] == k) for k in ("CALLS", "REFERENCES", "USES")}
             fid = cell["id"].replace("/", "__")
             for suffix, data in (("fn", fn), ("fp", fp), ("capture_gap", gap)):
-                json.dump(data, open(os.path.join(a.results, "lists", "%s.%s.json" % (fid, suffix)), "w"), indent=1)
+                dump_list(os.path.join(a.results, "lists", "%s.%s.json" % (fid, suffix)), data)
             out["cells"][cell["id"]] = res
             print("   %s: P=%s R=%s (graded=%d, oracle=%d)" % (cell["id"], summ["precision"], summ["recall"], summ["graded"],
                                                               summ["oracle_edges_caller_indexed"]), flush=True)

@@ -55,6 +55,8 @@ def sample(results, cache):
             for c in cells:
                 fid = c.replace("/", "__")
                 for it in json.load(open(os.path.join(results, "lists", "%s.%s.json" % (fid, kind)))):
+                    if it.get("category") == "dispatch":
+                        continue  # dispatch misses are a separate bucket, not part of the headline recall
                     pool.append((c, it))
             pool.sort(key=lambda x: ident(x[0], kind, x[1]))
             picks = rng.sample(pool, min(N, len(pool)))

@@ -92,8 +92,8 @@ def load_lidx(db_path, repo, lang):
     edges = []
     for r in con.execute(
         "select e.kind, e.source_symbol_id as s, e.target_symbol_id as t, e.target_qualname, e.resolution_kind, "
-        "e.evidence_start_line as line, f.path as epath from edges e join files f on f.id = e.file_id "
-        "where e.kind in ('CALLS','REFERENCES') and f.deleted_version is null"
+        "e.evidence_start_line as line, e.evidence_end_line as end_line, f.path as epath from edges e join files f on f.id = e.file_id "
+        "where e.kind in ('CALLS','REFERENCES','USES') and f.deleted_version is null"
     ):
         edges.append(dict(r))
     con.close()
@@ -118,8 +118,8 @@ def called_by_syntax(src, lang, path, lns, name):
     bare = re.escape(name.split(".")[-1]) if name else ""
     if not bare:
         return True
-    call = re.compile(r"(?<![\w$])" + bare + r"\s*(::<[^()]*>)?\s*(<[^()]*>)?\s*\(")
-    new = re.compile(r"\bnew\s+[\w$.]*" + bare + r"\b")
+    call = re.compile(r"(?<![\w$])" + bare + r"\s*(::<[^()]*>)?\s*(<[^()]*>)?\s*(\?\.|!)?\s*[(`]")
+    new = re.compile(r"\bnew\s+[\w$.]*" + bare + r"\b" if lang != "ts" else r"(\bnew\s+[\w$.]*|<[\w$.]*)" + bare + r"(?![\w$])")
     lines = src.lines(path)
     for ln in lns:
         if 0 < ln <= len(lines) and (call.search(lines[ln - 1]) or new.search(lines[ln - 1])):
@@ -137,9 +137,19 @@ def pick_res(kinds):
 def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
     """Compare lidx edges of the given kinds against the oracle. Returns (summary, fn_list, fp_list, extra)."""
     sym_keys = {s["key"] for s in syms.values() if "key" in s}
+    # Declaration merging (an interface and a const of the same name, overloads) is one declaration: compare
+    # declarations by (file, qualname) whenever lidx has a symbol at the position.
+    canon = {}
+    for s in syms.values():
+        if "key" in s:
+            c = "%s|%s" % (s["file"], s["qualname"])
+            if s["key"] not in canon or c < canon[s["key"]]:
+                canon[s["key"]] = c
+    cn = lambda k: canon.get(k, k)
     # ---- oracle side -------------------------------------------------
     ofiles = set(oracle["files"])
     ocallers = {"%s:%d" % (c["file"], c["line"]) for c in oracle["callers"]}
+    ocallers_c = {cn(k) for k in ocallers}
     unresolved = set(oracle.get("unresolved_sites", []))
     ext_sites = set(oracle.get("ext_sites", []))
     closure_sites = set(oracle.get("closure_sites", []))
@@ -163,40 +173,57 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
                     break
         tks = [tk] + list(e.get("callee_alts", []))
         rec = {"i": i, "caller": e["caller"], "callee": e["callee"], "ck": cks[0], "tk": tk, "cks": cks, "tks": tks,
-               "sites": e.get("sites", []), "matched": False, "lifted": lifted}
+               "sites": e.get("sites", []), "matched": False, "lifted": lifted,
+               "dispatch": bool(e.get("dispatch"))}
         oedges.append(rec)
         for a in cks:
             for b in tks:
-                by_pair[(a, b)].append(rec)
+                by_pair[(cn(a), cn(b))].append(rec)
         for s in rec["sites"]:
             site_idx[s].append(rec)
     for r in oedges:
         r["fanout"] = max((len(site_idx[s]) for s in r["sites"]), default=1)
 
     # ---- lidx side ---------------------------------------------------
+    def span(a, b):
+        a = a or 0
+        b = b if b and b >= a else a
+        return range(a, min(b, a + 11) + 1)
+
     pairs = {}
     lidx_by_caller_line = defaultdict(list)  # (caller_key, line) -> [(status, detail)]
+    uses_by_line = defaultdict(list)  # edges of kinds not graded here, for FN diagnostics
     for e in edges:
         if e["kind"] not in edge_kinds:
+            s0 = syms.get(e["s"])
+            t0 = syms.get(e["t"]) if e["t"] else None
+            if s0 and "key" in s0 and e["kind"] in ("USES", "REFERENCES"):
+                for ln in span(e["line"], e["end_line"]):
+                    uses_by_line[(cn(s0["key"]), ln)].append((e["kind"], (t0 or {}).get("key") or (t0 or {}).get("qualname") or e["target_qualname"]))
             continue
         s = syms.get(e["s"])
         if not s or "key" not in s:
             continue
         ck = s["key"]
+        cck = cn(ck)
         t = syms.get(e["t"]) if e["t"] else None
         res = e["resolution_kind"] or "none"
         line = e["line"]
         if t is None:
-            lidx_by_caller_line[(ck, line)].append(("unresolved", e["target_qualname"], res))
+            for ln in span(line, e["end_line"]):
+                lidx_by_caller_line[(cck, ln)].append(("unresolved", e["target_qualname"], res))
             continue
         if t.get("external"):
-            lidx_by_caller_line[(ck, line)].append(("external", t["qualname"], res))
+            for ln in span(line, e["end_line"]):
+                lidx_by_caller_line[(cck, ln)].append(("external", t["qualname"], res))
             continue
-        lidx_by_caller_line[(ck, line)].append(("resolved", t["key"], res))
-        p = pairs.setdefault((ck, t["key"]), {"caller": s, "callee": t, "kinds": Counter(), "lines": set(), "edge_kinds": set(),
+        for ln in span(line, e["end_line"]):
+            lidx_by_caller_line[(cck, ln)].append(("resolved", t["key"], res))
+        p = pairs.setdefault((cck, cn(t["key"])), {"caller": s, "callee": t, "kinds": Counter(), "lines": set(), "edge_kinds": set(),
                                               "epaths": set()})
         p["kinds"][res] += 1
         p["lines"].add(line)
+        p.setdefault("span", set()).update(span(line, e["end_line"]))
         p["edge_kinds"].add(e["kind"])
         p["epaths"].add(e["epath"])
 
@@ -208,7 +235,7 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
     for (ck, tk), p in pairs.items():
         csym, tsym = p["caller"], p["callee"]
         res = pick_res(set(p["kinds"]))
-        hits = by_pair.get((ck, tk))
+        hits = by_pair.get((cn(ck), cn(tk)))
         if hits:
             for h in hits:
                 h["matched"] = True
@@ -220,11 +247,11 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
         reason = None
         if csym["file"] not in ofiles:
             reason = "caller_file_not_covered"
-        elif ck not in ocallers:
+        elif cn(csym["key"]) not in ocallers_c:
             reason = "caller_not_judged"
         elif tsym["file"] not in ofiles:
             reason = "callee_file_not_covered"
-        elif any(("%s:%d" % (csym["file"], ln)) in unresolved for ln in p["lines"]):
+        elif any(("%s:%d" % (csym["file"], ln)) in unresolved for ln in p["span"]):
             reason = "oracle_unresolved_site"
         if reason:
             ungradable[reason] += 1
@@ -232,15 +259,15 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
         fp += 1
         by_kind[res][0] += 1
         # classify
-        sites = ["%s:%d" % (csym["file"], ln) for ln in sorted(p["lines"]) if ln]
+        sites = ["%s:%d" % (csym["file"], ln) for ln in sorted(p["span"]) if ln]
         cat = "no_call_at_site"
         detail = None
-        by_syntax = called_by_syntax(src, lang, p["epaths"] and sorted(p["epaths"])[0], p["lines"], tsym["name"])
+        by_syntax = called_by_syntax(src, lang, p["epaths"] and sorted(p["epaths"])[0], p["span"], tsym["name"])
         if not by_syntax:
             cat = "reference_as_call"
         for st in (sites if by_syntax else []):
             if st in site_idx:
-                same = [r for r in site_idx[st] if r["ck"] == ck or ck in r["cks"]]
+                same = [r for r in site_idx[st] if cn(ck) in [cn(x) for x in r["cks"]]]
                 if same:
                     cat = "wrong_target"
                     names = {r["callee"]["name"] for r in same}
@@ -266,6 +293,8 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
     fn_list = []
     judged = 0
     lifted = 0
+    both = 0
+    disp_total = disp_matched = 0
     matched = 0
     for r in oedges:
         caller_indexed = any(k in sym_keys for k in r["cks"])
@@ -273,13 +302,27 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
             capture_gap.append({"caller": r["caller"], "callee": r["callee"], "sites": r["sites"][:3],
                                 "reason": gap_reason(src, lang, r["caller"])})
             continue
+        callee_indexed = any(k in sym_keys for k in r["tks"])
+        if not callee_indexed:
+            # the callee is not a symbol lidx indexes (a nested function, an enum variant, ...): the edge cannot be
+            # expressed in lidx's graph, so it is a capture gap like an unindexed caller, not a missed call
+            capture_gap.append({"caller": r["caller"], "callee": r["callee"], "sites": r["sites"][:3], "reason": "callee_not_indexed"})
+            continue
         lifted += r["lifted"]
+        if r["dispatch"]:
+            # dynamic dispatch: the compiler lists every possible target, so a miss is not evidence of a wrong edge
+            disp_total += 1
+            disp_matched += r["matched"]
+            if not r["matched"]:
+                fn_list.append({"caller": r["caller"], "callee": r["callee"], "sites": r["sites"][:3], "category": "dispatch",
+                                "fanout": r["fanout"], "detail": None, "dispatch": True})
+            continue
         judged += 1
+        both += callee_indexed
         if r["matched"]:
             matched += 1
             continue
-        callee_indexed = any(k in sym_keys for k in r["tks"])
-        cat = "callee_not_indexed" if not callee_indexed else "no_edge_at_site"
+        cat = "no_edge_at_site"
         detail = None
         if callee_indexed:
             best = None
@@ -289,13 +332,23 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
             for st in r["sites"]:
                 _, _, ln = st.rpartition(":")
                 for ck in r["cks"]:
-                    for status, d, res in lidx_by_caller_line.get((ck, int(ln)), []):
-                        if status == "resolved" and by_pair.get((ck, d)):
+                    for status, d, res in lidx_by_caller_line.get((cn(ck), int(ln)), []):
+                        if status == "resolved" and by_pair.get((cn(ck), cn(d))):
                             sibling = True  # a different call on this line was matched
                             continue
                         c = names[status]
                         if best is None or prio[c] < best[0]:
                             best = (prio[c], c, d, res)
+            if best is None and not sibling:
+                for st in r["sites"]:
+                    _, _, ln = st.rpartition(":")
+                    for ck in r["cks"]:
+                        u = uses_by_line.get((cn(ck), int(ln)))
+                        if u:
+                            cat, detail = "recorded_as_uses", {"edge_kind": u[0][0], "lidx_target": u[0][1]}
+                            break
+                    if cat == "recorded_as_uses":
+                        break
             if best:
                 cat = best[1]
                 detail = {"lidx_target": best[2], "resolution_kind": best[3]}
@@ -313,15 +366,21 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
         "capture_gap_reasons": dict(Counter(g["reason"] for g in capture_gap)),
         "lifted_caller_edges": lifted,
         "matched_oracle_edges": matched,
+        "dispatch_edges": disp_total,
+        "dispatch_matched": disp_matched,
+        "recall_strict": ratio(matched + disp_matched, judged + disp_total),
+        "recall_strict_ci": wilson(matched + disp_matched, judged + disp_total),
         "lidx_pairs_total": len(pairs),
         "graded": graded, "tp": tp, "fp": fp,
         "precision": ratio(tp, graded), "precision_ci": wilson(tp, graded),
         "recall": ratio(matched, judged), "recall_ci": wilson(matched, judged),
+        "oracle_edges_both_ends_indexed": both,
+        "recall_both_ends_indexed": ratio(matched, both),
         "recall_incl_capture_gap": ratio(matched, len(oedges)),
         "ungradable": dict(ungradable),
         "by_resolution_kind": {k: {"graded": v[0], "tp": v[1], "precision": ratio(v[1], v[0]), "ci": wilson(v[1], v[0])}
                                for k, v in sorted(by_kind.items(), key=lambda kv: -kv[1][0])},
         "fp_categories": dict(Counter(f["category"] for f in fp_list).most_common()),
-        "fn_categories": dict(Counter(f["category"] for f in fn_list).most_common()),
+        "fn_categories": dict(Counter(f["category"] for f in fn_list if f["category"] != "dispatch").most_common()),
     }
     return summary, fn_list, fp_list, capture_gap

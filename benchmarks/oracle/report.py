@@ -48,8 +48,8 @@ def build(results_dir):
     w("")
     w("## Headline")
     w("")
-    w("| Cell | Oracle | Oracle edges (n) | Graded lidx edges (n) | lidx precision | 95% CI | lidx recall | 95% CI | repowise P / R |")
-    w("|---|---|---:|---:|---:|---|---:|---|---|")
+    w("| Cell | Oracle | Oracle edges (n, static) | Graded lidx edges (n) | lidx precision | 95% CI | lidx recall | 95% CI | recall incl. dispatch | repowise P / R |")
+    w("|---|---|---:|---:|---:|---|---:|---|---:|---|")
     for cid in ORDER:
         c = cells.get(cid)
         if not c:
@@ -57,9 +57,9 @@ def build(results_dir):
         s = c["calls"]
         rw = REPOWISE.get(cid)
         rws = "%.3f / %.3f" % (rw[0], rw[1]) if rw else "not published"
-        w("| %s | %s | %d | %d | %s | %s | %s | %s | %s |" % (
+        w("| %s | %s | %d | %d | %s | %s | %s | %s | %s | %s |" % (
             cid, {"go": "Go RTA", "ts": "tsc", "rust": "rust-analyzer SCIP"}[c["lang"]], s["oracle_edges_caller_indexed"], s["graded"],
-            pct(s["precision"]), ci(s["precision_ci"]), pct(s["recall"]), ci(s["recall_ci"]), rws))
+            pct(s["precision"]), ci(s["precision_ci"]), pct(s["recall"]), ci(s["recall_ci"]), pct(s.get("recall_strict")), rws))
     w("")
     w("`tests` = test files are part of the analysed program and test functions are roots; `no_tests` = production code only "
       "(roots: `main`, or for a library with no `main` package its exported surface). lidx indexes the whole repository once; "
@@ -69,25 +69,29 @@ def build(results_dir):
     w("")
     w("- Oracle edges are distinct (caller declaration, callee declaration) pairs; lidx edges are deduplicated the same way.")
     w("- Callee outside the repository: not judged on either side.")
+    w("- **Dispatch edges** (interface method invocation, call of a function value, trait method with implementations in the repo) "
+      "are reported by the compiler as *possible* targets. They are left out of the headline recall and shown as `recall incl. dispatch`; "
+      "the repowise recall figures include them (their method note says so for syft), so compare against that column.")
     w("- Oracle edge whose caller is not a symbol lidx indexes: reported as a **capture gap**, kept out of the recall denominator "
       "and shown in its own column below (`recall incl. gap` puts them back).")
     w("- lidx edge the compiler could not judge (caller file or function not in the analysed program, callee file not analysed, "
       "or a call site the compiler left unresolved): not counted for precision, listed under *ungradable*.")
     w("")
-    w("## Alongside REFERENCES")
+    w("## Alongside REFERENCES and USES")
     w("")
-    w("Same grading with lidx's REFERENCES edges added to CALLS (the compiler graph contains calls only, so extra reference "
-      "edges can only cost precision; they can win recall where lidx records a call as a reference).")
+    w("Same grading with lidx's REFERENCES and USES edges added to CALLS (the compiler graph contains calls only, so extra "
+      "edges can only cost precision; they win recall where lidx records a call as a use, e.g. TypeScript `new X()`). lidx "
+      "stores REFERENCES on demand, so the table counts USES, the persisted use-site edge.")
     w("")
-    w("| Cell | CALLS P | CALLS R | CALLS+REFERENCES P | CALLS+REFERENCES R | REFERENCES edges in db |")
-    w("|---|---:|---:|---:|---:|---:|")
+    w("| Cell | CALLS P | CALLS R | CALLS+REFERENCES+USES P | CALLS+REFERENCES+USES R | REFERENCES edges | USES edges |")
+    w("|---|---:|---:|---:|---:|---:|---:|")
     for cid in ORDER:
         c = cells.get(cid)
         if not c:
             continue
         r = c["calls_plus_references"]
-        w("| %s | %s | %s | %s | %s | %d |" % (cid, pct(c["calls"]["precision"]), pct(c["calls"]["recall"]), pct(r["precision"]),
-                                              pct(r["recall"]), c["lidx_edge_counts"]["REFERENCES"]))
+        w("| %s | %s | %s | %s | %s | %d | %d |" % (cid, pct(c["calls"]["precision"]), pct(c["calls"]["recall"]), pct(r["precision"]),
+                                                  pct(r["recall"]), c["lidx_edge_counts"]["REFERENCES"], c["lidx_edge_counts"].get("USES", 0)))
     w("")
     w("## Per cell")
     for cid in ORDER:
@@ -98,8 +102,11 @@ def build(results_dir):
         w("")
         w("### %s" % cid)
         w("")
-        w("- oracle: %s, %d edges; %d caller-indexed, %d capture gap; recall incl. gap %s" % (
-            c.get("oracle_mode"), s["oracle_edges"], s["oracle_edges_caller_indexed"], s["capture_gap_edges"], pct(s["recall_incl_capture_gap"])))
+        w("- oracle: %s, %d edges: %d static with an indexed caller, %d dispatch (%d of them found), %d capture gap" % (
+            c.get("oracle_mode"), s["oracle_edges"], s["oracle_edges_caller_indexed"], s.get("dispatch_edges", 0), s.get("dispatch_matched", 0),
+            s["capture_gap_edges"]))
+        w("- recall when both ends are indexed symbols: %s (%d oracle edges); caller lifted to an enclosing declaration for %d edges; capture gap reasons: %s" % (
+            pct(s.get("recall_both_ends_indexed")), s.get("oracle_edges_both_ends_indexed", 0), s.get("lifted_caller_edges", 0), s.get("capture_gap_reasons") or "none"))
         w("- lidx: %d resolved in-repo CALLS pairs; %d graded (%d correct, %d wrong); lidx indexed in %ss" % (
             s["lidx_pairs_total"], s["graded"], s["tp"], s["fp"], c["index_seconds"]))
         if s["ungradable"]:

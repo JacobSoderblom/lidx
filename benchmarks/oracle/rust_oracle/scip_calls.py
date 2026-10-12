@@ -113,6 +113,43 @@ def is_fn(sym):
     return sym.endswith("().")
 
 
+def is_ctor(sym):
+    """Tuple-struct (`Name#`) or enum-variant (`Enum#Variant.`) symbol: callable when followed by `(`."""
+    return sym.endswith("#") or is_variant(sym)
+
+
+def is_variant(sym):
+    last = sym.rsplit("/", 1)[-1]
+    return (sym.endswith(".") and "#" in last) or (sym.endswith("#") and "#" in last[:-1])
+
+
+def ctor_name(sym):
+    name = sym.rstrip("#.").rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+    if name.startswith("["):
+        name = name.split("]", 1)[-1]
+    return name.strip("`")
+
+
+def is_pattern(rest):
+    """`rest` starts at the `(` of `Variant(...)`: true when the closing paren is followed by `=>`, `|`, `=`, `if` (a pattern)."""
+    depth = 0
+    for k, ch in enumerate(rest):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                tail = rest[k + 1:].lstrip()
+                return tail.startswith(("=>", "|", "if ", "@")) or (tail.startswith("=") and not tail.startswith("=="))
+    return False
+
+
+def is_trait_method(sym):
+    """`.../Trait#method().` is declared on a trait; `.../impl#[Type][Trait]method().` is a concrete implementation."""
+    last = sym.rsplit("/", 1)[-1]
+    return "#" in last and not last.startswith("impl#")
+
+
 def short_name(sym):
     # ".../Type#method()." -> method
     body = sym[:-3]
@@ -137,6 +174,7 @@ def main():
             docs.append(parse_document(v))
 
     defs = {}  # symbol -> (file, line, name)
+    ctors = {}  # tuple-struct / variant symbol -> same
     impls_of = defaultdict(list)  # trait method symbol -> impl method symbols
     for d in docs:
         for s in d["sym"]:
@@ -146,6 +184,9 @@ def main():
             if o["roles"] & 1 and is_fn(o["symbol"]) and o["range"]:
                 l, c, _, _ = rng(o)
                 defs.setdefault(o["symbol"], (d["path"], l + 1, short_name(o["symbol"])))
+            elif o["roles"] & 1 and is_ctor(o["symbol"]) and o["range"]:
+                l, c, _, _ = rng(o)
+                ctors.setdefault(o["symbol"], (d["path"], l + 1, ctor_name(o["symbol"])))
 
     out = {"repo": repo, "files": [], "callers": [], "edges": [], "refs": [], "dropped": defaultdict(int), "unresolved_sites": [], "ext_sites": []}
     ext = set()
@@ -171,10 +212,11 @@ def main():
                 callers.add((dl[0], dl[1], dl[2]))
         for o in d["occ"]:
             sym = o["symbol"]
-            if o["roles"] & 1 or not is_fn(sym) or not o["range"]:
+            ctor = is_ctor(sym) and sym in ctors
+            if o["roles"] & 1 or not (is_fn(sym) or ctor) or not o["range"]:
                 continue
             l, c, el, ec = rng(o)
-            tgt = defs.get(sym)
+            tgt = defs.get(sym) or ctors.get(sym)
             if tgt is None:
                 out["dropped"]["callee_external"] += 1
                 ext.add("%s:%d" % (path, rng(o)[0] + 1))
@@ -201,6 +243,13 @@ def main():
                             break
                 rest = rest[k + 1:].lstrip()
             is_call = rest.startswith("(")
+            if ctor:
+                if not is_call or is_pattern(rest):
+                    continue  # a type mention or a pattern, not a call
+                if is_variant(sym):
+                    # enum variants are not declarations lidx models: the site is not judgeable either way
+                    out["unresolved_sites"].append("%s:%d" % (path, l + 1))
+                    continue
             kind_edges = out["edges"] if is_call else out["refs"]
             seen_set = seen if is_call else seen_ref
             key = (cdef[:2], tgt[:2])
@@ -216,6 +265,8 @@ def main():
             alts = sorted({"%s:%d" % defs[i][:2] for i in impls_of.get(sym, []) if i in defs})
             if alts:
                 e["callee_alts"] = alts
+            if is_trait_method(sym):
+                e["dispatch"] = True  # declared on a trait: the receiver decides which implementation runs
             kind_edges.append(e)
     out["callers"] = [{"file": f, "line": l, "name": n} for f, l, n in sorted(callers)]
     out["ext_sites"] = sorted(ext)

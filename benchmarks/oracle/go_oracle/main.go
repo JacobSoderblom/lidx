@@ -37,6 +37,11 @@ type Edge struct {
 	Caller Decl     `json:"caller"`
 	Callee Decl     `json:"callee"`
 	Sites  []string `json:"sites,omitempty"`
+	// Dispatch is true when every call site behind this edge is dynamic: an
+	// interface method invocation or a call of a function value. RTA reports the
+	// possible targets; the edge says "may call", not "calls".
+	Dispatch bool `json:"dispatch,omitempty"`
+	static   int
 }
 
 type Output struct {
@@ -275,15 +280,28 @@ func main() {
 				siteStr = fmt.Sprintf("%s:%d", rel, p.Line)
 			}
 		}
+		isStatic := true
+		if site != nil {
+			if c := site.Common(); c != nil && (c.IsInvoke() || c.StaticCallee() == nil) {
+				isStatic = false
+			}
+		}
 		if idx, ok := seen[k]; ok {
 			e := &out.Edges[idx]
+			if isStatic {
+				e.static++
+				e.Dispatch = false
+			}
 			if siteStr != "" && len(e.Sites) < 20 {
 				e.Sites = append(e.Sites, siteStr)
 			}
 			return
 		}
 		seen[k] = len(out.Edges)
-		e := Edge{Caller: cf, Callee: ct}
+		e := Edge{Caller: cf, Callee: ct, Dispatch: !isStatic}
+		if isStatic {
+			e.static = 1
+		}
 		if siteStr != "" {
 			e.Sites = []string{siteStr}
 		}
@@ -295,7 +313,7 @@ func main() {
 	memo := map[*ssa.Function][]*ssa.Function{}
 	var resolveTargets func(fn *ssa.Function, onPath map[*ssa.Function]bool) []*ssa.Function
 	resolveTargets = func(fn *ssa.Function, onPath map[*ssa.Function]bool) []*ssa.Function {
-		if fn.Synthetic == "" || strings.HasPrefix(fn.Synthetic, "package initializer") {
+		if fn.Synthetic == "" || fn.Origin() != nil || fn.Parent() != nil || strings.HasPrefix(fn.Synthetic, "package initializer") {
 			return []*ssa.Function{fn}
 		}
 		if r, ok := memo[fn]; ok {
@@ -328,7 +346,7 @@ func main() {
 		if from == nil || to == nil {
 			return nil
 		}
-		if from.Synthetic != "" && !strings.HasPrefix(from.Synthetic, "package initializer") {
+		if from.Synthetic != "" && from.Origin() == nil && from.Parent() == nil && !strings.HasPrefix(from.Synthetic, "package initializer") {
 			return nil // wrapper edges are collapsed through their callers below
 		}
 		if strings.HasPrefix(from.Synthetic, "package initializer") {
@@ -340,7 +358,9 @@ func main() {
 		}
 		return nil
 	})
-	for fn := range cg.Nodes {
+	// Only functions RTA proved reachable can be judged as callers; the call
+	// graph also holds nodes for functions it merely saw.
+	for fn := range res.Reachable {
 		if fn == nil {
 			continue
 		}
