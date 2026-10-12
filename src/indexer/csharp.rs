@@ -647,6 +647,11 @@ fn walk_node_inner(node: Node<'_>, ctx: &Context, source: &str, output: &mut Ext
     if node.kind() == "member_access_expression" {
         handle_member_read(node, ctx, source, output);
     }
+    if matches!(node.kind(), "identifier" | "member_access_expression")
+        && let Some(edge) = value_reference_edge(node, ctx, source)
+    {
+        output.edges.push(edge);
+    }
     // A local function's own parameters/locals shadow the enclosing member's
     // same-named bindings (the enclosing flat map collapses a doubly-bound
     // name to `Other`), so overlay them before the shared recursion below.
@@ -2126,6 +2131,95 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         }),
         ..Default::default()
     });
+}
+
+/// Whether `node` is a method-group position: a call or `new` argument, the
+/// right-hand side of an assignment (`handler = Method`, `Changed += Method`)
+/// or a declarator's initial value (`Func<string, int> f = Parse`).
+fn is_value_position(node: Node<'_>, source: &str) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        "argument" => {
+            // `nameof(Method)` names the method, it does not use it.
+            !parent
+                .parent()
+                .and_then(|list| list.parent())
+                .and_then(|call| call.child_by_field_name("function"))
+                .is_some_and(|f| f.kind() == "identifier" && node_text(f, source) == "nameof")
+        }
+        "assignment_expression" => parent
+            .child_by_field_name("right")
+            .is_some_and(|r| r.id() == node.id()),
+        "variable_declarator" => parent
+            .child_by_field_name("name")
+            .is_none_or(|n| n.id() != node.id()),
+        "equals_value_clause" => true,
+        _ => false,
+    }
+}
+
+/// `REFERENCES` edge for a method group: a method named, not called, as a
+/// delegate (`.Select(Parse)`, `.OrderByDescending(ParseSemVer, cmp)`,
+/// `x = Method`, `e += Handler`, `new Func<..>(Method)`). Built like the
+/// call to the same text -- an unqualified name inside a type body has an
+/// implicit receiver -- and resolved by the same tiers. A local, parameter
+/// or local function of that name is no method.
+fn value_reference_edge(node: Node<'_>, ctx: &Context, source: &str) -> Option<EdgeInput> {
+    if ctx.current_scope.is_empty() || !is_value_position(node, source) {
+        return None;
+    }
+    let raw = call_target_text(node, source);
+    if raw.is_empty() {
+        return None;
+    }
+    let bare_identifier = node.kind() == "identifier";
+    if bare_identifier
+        && (ctx.local_types.contains_key(raw.as_str()) || calls_local_function(node, &raw, source))
+    {
+        return None;
+    }
+    let implicit_this = !ctx.type_stack.is_empty()
+        && match node.kind() {
+            "identifier" => true,
+            _ => {
+                node.child_by_field_name("expression")
+                    .is_some_and(|e| e.kind() == "this")
+                    && node
+                        .child_by_field_name("name")
+                        .is_some_and(|n| n.kind() == "identifier")
+            }
+        };
+    let receiver_type = infer_receiver_type(node, source, ctx);
+    let import_candidates = if receiver_type == ReceiverType::NotTracked {
+        let collapsed = collapse_call_target_whitespace(&raw);
+        type_prefixed_receiver_and_suffix(&collapsed)
+            .map(|(receiver, suffix)| import_qualified_candidates(receiver, suffix, ctx))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let target = resolve_call_target(&raw, ctx)?;
+    let (start_line, _, end_line, _, start_byte, end_byte) = span(node);
+    Some(EdgeInput {
+        kind: "REFERENCES".to_string(),
+        source_qualname: Some(ctx.current_scope.clone()),
+        target_qualname: Some(target),
+        evidence_snippet: util::edge_evidence_snippet(
+            source, start_byte, end_byte, start_line, end_line,
+        ),
+        receiver_type,
+        import_candidates,
+        evidence_start_line: Some(start_line),
+        evidence_end_line: Some(end_line),
+        bare_call: bare_identifier && ctx.type_stack.is_empty(),
+        call_shape: Some(CallShape {
+            implicit_this,
+            ..CallShape::value_reference()
+        }),
+        ..Default::default()
+    })
 }
 
 /// Whether `name` is a local function declared in a block enclosing `node`

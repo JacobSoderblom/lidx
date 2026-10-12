@@ -471,7 +471,14 @@ impl CallShape {
     /// The `call_shape` column text: `"<n>"` or `"new:<n>"`.
     pub fn encode(self) -> String {
         if self.is_ref {
-            "ref".to_string()
+            // A value reference keeps its implicit receiver (C# `Select(Parse)`
+            // inside a type body) across a re-resolution from the stored row.
+            if self.implicit_this {
+                "ref:this"
+            } else {
+                "ref"
+            }
+            .to_string()
         } else if self.is_new {
             format!("new:{}", self.arg_count)
         } else if self.implicit_this {
@@ -483,11 +490,11 @@ impl CallShape {
 
     /// Inverse of `encode`; `None` for text that isn't a valid shape.
     pub fn decode(raw: &str) -> Option<Self> {
-        if raw == "ref" {
+        if raw == "ref" || raw == "ref:this" {
             return Some(Self {
                 arg_count: 0,
                 is_new: false,
-                implicit_this: false,
+                implicit_this: raw == "ref:this",
                 is_ref: true,
             });
         }

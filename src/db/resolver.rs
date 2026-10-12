@@ -146,7 +146,7 @@ pub(crate) fn drop_references_shadowed_by_calls(
 ) -> Result<usize> {
     Ok(conn.execute(
         "DELETE FROM edges
-         WHERE graph_version = ?1 AND kind = 'REFERENCES' AND call_shape = 'ref'
+         WHERE graph_version = ?1 AND kind = 'REFERENCES' AND call_shape LIKE 'ref%'
            AND target_symbol_id IS NOT NULL
            AND (?2 IS NULL OR file_id = ?2)
            AND EXISTS (
