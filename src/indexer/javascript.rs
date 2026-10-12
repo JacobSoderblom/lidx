@@ -9441,10 +9441,17 @@ setup();
             call_source(&file, "renderRows"),
             "components.tabs.ProductTabs"
         );
-        // A handler const nested inside the component stays the component's.
-        assert_eq!(call_source(&file, "track"), "components.tabs.ProductTabs");
+        // A handler const nested inside the component is a local function
+        // symbol qualified under it, and owns its calls.
+        assert_eq!(
+            call_source(&file, "track"),
+            "components.tabs.ProductTabs.onClick"
+        );
         // Nested named function: innermost wins.
-        assert_eq!(call_source(&file, "deep"), "components.tabs.inner");
+        assert_eq!(
+            call_source(&file, "deep"),
+            "components.tabs.ProductTabs.inner"
+        );
         // The HOC-style wrapper call itself is a module-level call ...
         assert_eq!(call_source(&file, "dynamic"), "components.tabs");
         // ... but the callback passed to it belongs to the const.

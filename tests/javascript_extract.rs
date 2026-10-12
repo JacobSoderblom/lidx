@@ -849,11 +849,13 @@ class Foo {
         .iter()
         .find(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("store.append"))
         .expect("store.append(1) call edge inside the arrow body");
-    assert_eq!(
-        call.receiver_type,
-        ReceiverType::Unresolved,
+    // The parameter is typed by the callee's declared parameter (a deferred
+    // marker the resolver finishes), never by the outer `store: EventStore`.
+    assert!(
+        matches!(call.receiver_type, ReceiverType::Deferred(_)),
         "the arrow function's own (untyped) parameter shadows the outer \
-         `store: EventStore` and must not be resolved via the outer type"
+         `store: EventStore` and must not be resolved via the outer type: {:?}",
+        call.receiver_type
     );
 }
 
@@ -1288,10 +1290,25 @@ class Foo {
         .filter(|e| e.detail.as_deref().is_some_and(|d| d.starts_with("this.")))
         .collect();
     assert_eq!(inner.len(), 4, "{calls:#?}");
+    // The nested `function inner` and `const f` are local function symbols
+    // and own their calls; every other one stays the method's.
+    let mut sources: Vec<_> = inner
+        .iter()
+        .map(|e| e.source_qualname.clone().unwrap_or_default())
+        .collect();
+    sources.sort();
+    assert_eq!(
+        sources,
+        [
+            "src/app.Foo.run",
+            "src/app.Foo.run",
+            "src/app.Foo.run.f",
+            "src/app.Foo.run.inner"
+        ]
+    );
     for e in inner {
         assert!(e.target_qualname.is_none(), "{e:#?}");
         assert_eq!(e.receiver_type, ReceiverType::Unresolved, "{e:#?}");
-        assert_eq!(e.source_qualname.as_deref(), Some("src/app.Foo.run"));
     }
 }
 
@@ -1437,6 +1454,11 @@ it('d', () => { const x = make(); x.go() })
         .filter(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("x.go"))
         .map(|e| e.receiver_type.clone())
         .collect();
+    // `c`'s untyped parameter is typed by context: a deferred marker for the
+    // resolver (`it`'s declared parameter), not a sibling's type.
+    assert!(matches!(types[2], ReceiverType::Deferred(_)), "{types:?}");
+    let mut types = types;
+    types[2] = ReceiverType::Unresolved;
     assert_eq!(
         types,
         [
