@@ -3,6 +3,7 @@
 
 use super::reading::is_markdown_path;
 use super::*;
+use crate::edge_views;
 use crate::indexer::test_detection::is_file_level_test;
 use crate::search::{
     RgSearchOptions, annotate_grep_hits, normalize_rg_context, resolve_rg_paths, search_rg,
@@ -73,7 +74,14 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     let max_refs = params.max_refs.unwrap_or(10);
 
     // Normalize sections: resolve aliases and warn on unknowns
-    let known_sections: &[&str] = &["source", "callers", "callees", "tests", "implements"];
+    let known_sections: &[&str] = &[
+        "source",
+        "callers",
+        "callees",
+        "tests",
+        "implements",
+        "other_edges",
+    ];
     let aliases: &[(&str, &str)] = &[
         ("dependencies", "callees"),
         ("dependents", "callers"),
@@ -297,7 +305,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
                 .iter()
                 .any(|e| e.kind == "CALLS" && e.target_symbol_id == Some(symbol.id)));
     let has_direct_implements = edges.iter().any(|e| {
-        matches!(e.kind.as_str(), "EXTENDS" | "IMPLEMENTS" | "INHERITS")
+        edge_views::contains(edge_views::TYPE_HIERARCHY, &e.kind)
             && e.target_symbol_id.is_some()
             && (e.source_symbol_id == Some(symbol.id)
                 || (e.kind == "IMPLEMENTS" && e.target_symbol_id == Some(symbol.id)))
@@ -860,7 +868,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         // interface: incoming IMPLEMENTS edges name the implementing type.
         let mut related: Vec<i64> = Vec::new();
         for edge in &edges {
-            if !matches!(edge.kind.as_str(), "EXTENDS" | "IMPLEMENTS" | "INHERITS") {
+            if !edge_views::contains(edge_views::TYPE_HIERARCHY, &edge.kind) {
                 continue;
             }
             let other = if edge.source_symbol_id == Some(symbol.id) {
@@ -919,6 +927,32 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         (Some(impl_syms), impl_total)
     } else {
         (None, 0)
+    };
+
+    // 8.5. Symbol-use edges that are not consumer edges (`USES`,
+    // `REFERENCES`, incoming type hierarchy): kept out of callers and
+    // callees, reported per kind with a per-kind total. `USES` only on an
+    // explicit `other_edges` section.
+    let wants_other_edges = wants("other_edges");
+    let mut other_edges = if wants_callers || wants_callees || wants_other_edges {
+        let other_edges = explain_other_edges(
+            indexer.db(),
+            &cross_seeds,
+            wants_callers || wants_other_edges,
+            wants_callees || wants_other_edges,
+            wants_other_edges,
+            ctx.languages.as_deref(),
+            ctx.graph_version,
+            &meets_min_resolution,
+        )?;
+        used_bytes += other_edges
+            .values()
+            .flat_map(|g| g.items.iter())
+            .map(|r| serde_json::to_string(r).map_or(0, |j| j.len()))
+            .sum::<usize>();
+        (!other_edges.is_empty()).then_some(other_edges)
+    } else {
+        None
     };
 
     // 9. FIX #4: Budget expansion - if >30% budget remaining, fetch source snippets for refs
@@ -991,15 +1025,18 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         .format
         .as_deref()
         .unwrap_or(super::validate::FORMAT_FULL);
+    let strip_symbol = |symbol: &mut Symbol| {
+        symbol.docstring = None;
+        symbol.commit_sha = None;
+        symbol.stable_id = None;
+        symbol.start_byte = 0;
+        symbol.end_byte = 0;
+        symbol.start_col = 0;
+        symbol.end_col = 0;
+    };
     let strip_to_compact = |refs: &mut Vec<ExplainRef>| {
         for r in refs.iter_mut() {
-            r.symbol.docstring = None;
-            r.symbol.commit_sha = None;
-            r.symbol.stable_id = None;
-            r.symbol.start_byte = 0;
-            r.symbol.end_byte = 0;
-            r.symbol.start_col = 0;
-            r.symbol.end_col = 0;
+            strip_symbol(&mut r.symbol);
         }
     };
     if format == super::validate::FORMAT_SIGNATURES {
@@ -1012,16 +1049,42 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         if let Some(ref mut t) = tests {
             strip_to_compact(t);
         }
+        for group in other_edges.iter_mut().flat_map(|r| r.values_mut()) {
+            for rel in group.items.iter_mut() {
+                strip_symbol(&mut rel.symbol);
+            }
+        }
     }
 
     // 11. Build next_hops
-    let next_hops = vec![
+    let mut next_hops = vec![
         json!({"method": "analyze_impact", "params": {"id": symbol.id, "direction": "both"}, "description": "Explore full graph neighborhood via impact analysis"}),
         json!({"method": "gather_context", "params": {"seeds": [{"type": "symbol", "qualname": symbol.qualname}], "max_bytes": 80000}, "description": "Assemble full context"}),
         // Issue #97: point at the exact source for the symbol this call just resolved,
         // so understanding (explain_symbol) leads straight to reading (read_symbol).
         json!({"method": "read_symbol", "params": {"qualname": symbol.qualname}, "description": format!("Read exact source of {}", symbol.name)}),
     ];
+    // A capped group is not the full list: point at the traversal that has it.
+    for (kind, group) in other_edges.iter().flatten() {
+        if group.items.len() < group.total {
+            let direction = if group.items.iter().all(|i| i.direction == "incoming") {
+                "upstream"
+            } else if group.items.iter().all(|i| i.direction == "outgoing") {
+                "downstream"
+            } else {
+                "both"
+            };
+            next_hops.push(json!({
+                "method": "analyze_impact",
+                "params": {"id": symbol.id, "direction": direction, "kinds": [kind]},
+                "description": format!(
+                    "List all {} {kind} edges (other_edges shows {})",
+                    group.total,
+                    group.items.len()
+                ),
+            }));
+        }
+    }
 
     // Honest truncation: true if the source snippet was cut, or if any
     // returned section holds fewer items than actually exist -- regardless of
@@ -1032,7 +1095,10 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         || tests.as_ref().is_some_and(|t| t.len() < tests_total)
         || implements
             .as_ref()
-            .is_some_and(|i| i.len() < implements_total);
+            .is_some_and(|i| i.len() < implements_total)
+        || other_edges
+            .as_ref()
+            .is_some_and(|r| r.values().any(|g| g.items.len() < g.total));
 
     // `commit_sha`/`graph_version` are constant for the whole response --
     // captured once here, before `symbol` moves into the struct below, so
@@ -1047,6 +1113,7 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
         callers,
         callees_total: callees.as_ref().map(|_| callees_total),
         callees,
+        other_edges,
         tests_total: tests.as_ref().map(|_| tests_total),
         tests,
         implements_total: implements.as_ref().map(|_| implements_total),
@@ -1080,16 +1147,119 @@ pub(super) fn handle_explain_symbol(indexer: &mut Indexer, params: Value) -> Res
     Ok(response)
 }
 
-/// Client side of each bridge pair (see `bridge_complement`): the kinds an
-/// explained symbol's *outgoing* cross-boundary edges carry.
-const CLIENT_BRIDGE_KINDS: &[&str] = &["RPC_CALL", "HTTP_CALL", "CHANNEL_PUBLISH", "CONFIG_READ"];
-/// Server side of each bridge pair: the kinds a callee-of-a-bridge carries.
-const SERVER_BRIDGE_KINDS: &[&str] = &[
-    "RPC_IMPL",
-    "HTTP_ROUTE",
-    "CHANNEL_SUBSCRIBE",
-    "CONFIG_SOURCE",
-];
+/// Symbol-use edges that are not consumer edges (`edge_views::is_other_edge`)
+/// touching `seeds`, grouped by edge kind. `incoming` collects edges whose
+/// target is a seed (the other end uses the explained symbol), `outgoing`
+/// those whose source is a seed. Outgoing type-hierarchy edges are left to
+/// the `implements` section, and `USES` is only reported when `with_uses`.
+/// Each group holds up to `OTHER_EDGES_PER_KIND` distinct related symbols
+/// (non-test first, then by file and line) and the true distinct total.
+/// Edges between two seeds (a class and its own members) are internal and
+/// skipped.
+#[allow(clippy::too_many_arguments)]
+fn explain_other_edges(
+    db: &crate::db::Db,
+    seeds: &[i64],
+    incoming: bool,
+    outgoing: bool,
+    with_uses: bool,
+    languages: Option<&[String]>,
+    graph_version: i64,
+    meets_min_resolution: &dyn Fn(&Option<String>) -> bool,
+) -> Result<std::collections::BTreeMap<String, crate::model::ExplainOtherEdgeGroup>> {
+    use crate::model::{ExplainOtherEdge, ExplainOtherEdgeGroup, OTHER_EDGES_PER_KIND};
+    use std::collections::{BTreeMap, HashSet};
+
+    // kind -> (other id, direction, evidence, resolution kind), deduped.
+    type Pending = (i64, &'static str, Option<String>, Option<String>);
+    let mut by_kind: BTreeMap<String, Vec<Pending>> = BTreeMap::new();
+    let mut seen: HashSet<(String, i64, &'static str)> = HashSet::new();
+    let mut seen_edges: HashSet<i64> = HashSet::new();
+    for &seed in seeds {
+        for edge in db.edges_for_symbol(seed, languages, graph_version)? {
+            if !edge_views::is_other_edge(&edge.kind)
+                || (edge.kind == edge_views::USES && !with_uses)
+                || edge.is_synthetic()
+                || !seen_edges.insert(edge.id)
+                || !meets_min_resolution(&edge.resolution_kind)
+            {
+                continue;
+            }
+            let (Some(source), Some(target)) = (edge.source_symbol_id, edge.target_symbol_id)
+            else {
+                continue;
+            };
+            if seeds.contains(&source) && seeds.contains(&target) {
+                continue;
+            }
+            let (other, direction) = if seeds.contains(&target) {
+                if !incoming {
+                    continue;
+                }
+                (source, "incoming")
+            } else if seeds.contains(&source) {
+                // `implements` already lists what the symbol extends.
+                if !outgoing || edge_views::contains(edge_views::TYPE_HIERARCHY, &edge.kind) {
+                    continue;
+                }
+                (target, "outgoing")
+            } else {
+                continue;
+            };
+            if seen.insert((edge.kind.clone(), other, direction)) {
+                by_kind.entry(edge.kind.clone()).or_default().push((
+                    other,
+                    direction,
+                    edge.evidence_snippet.clone(),
+                    edge.resolution_kind.clone(),
+                ));
+            }
+        }
+    }
+
+    let mut groups = BTreeMap::new();
+    for (kind, pending) in by_kind {
+        let mut resolved: Vec<ExplainOtherEdge> = Vec::new();
+        for (other, direction, evidence, resolution_kind) in pending {
+            if let Some(symbol) = db.get_symbol_by_id(other)? {
+                resolved.push(ExplainOtherEdge {
+                    is_test: is_test_symbol(&symbol),
+                    symbol,
+                    direction,
+                    evidence,
+                    resolution_kind,
+                });
+            }
+        }
+        // Production code first, then a stable file/line order.
+        resolved.sort_by(|a, b| {
+            (
+                a.is_test,
+                &a.symbol.file_path,
+                a.symbol.start_line,
+                a.symbol.id,
+            )
+                .cmp(&(
+                    b.is_test,
+                    &b.symbol.file_path,
+                    b.symbol.start_line,
+                    b.symbol.id,
+                ))
+        });
+        let total = resolved.len();
+        resolved.truncate(OTHER_EDGES_PER_KIND);
+        if !resolved.is_empty() {
+            groups.insert(
+                kind,
+                ExplainOtherEdgeGroup {
+                    total,
+                    items: resolved,
+                },
+            );
+        }
+    }
+    Ok(groups)
+}
 
 /// One-hop cross-boundary neighbours of `seeds` for explain_symbol, found by
 /// running trace_flow's own traversal (direct resolved edges + bridge
@@ -1099,7 +1269,9 @@ const SERVER_BRIDGE_KINDS: &[&str] = &[
 ///
 /// Every ref is labelled with the *client-side* kind (RPC_CALL, HTTP_CALL,
 /// CHANNEL_PUBLISH, CONFIG_READ) or CONFIG_BIND, so a test -> impl gRPC hop
-/// reads RPC_CALL from both ends.
+/// reads RPC_CALL from both ends. Only `edge_views::CONSUMER` kinds come
+/// back; the other symbol-use edges are reported separately by
+/// `explain_other_edges`.
 ///
 /// RPC_CALL fan-out: a C# client call emits one RPC_CALL per candidate
 /// (package, service) pair, all with a NULL target. Only candidates that
@@ -1119,9 +1291,9 @@ fn cross_boundary_refs(
     use crate::indexer::channel::bridge_hop_is_reversed;
     use crate::traversal::TraceDirection;
     let start_kinds = if outgoing {
-        CLIENT_BRIDGE_KINDS
+        edge_views::BRIDGE_CLIENT
     } else {
-        SERVER_BRIDGE_KINDS
+        edge_views::BRIDGE_SERVER
     };
     let mut passes: Vec<(TraceDirection, Vec<String>)> = Vec::new();
     for (direction, upstream) in [
@@ -1135,7 +1307,7 @@ fn cross_boundary_refs(
             .collect();
         if outgoing && !upstream {
             // Resolved method -> options-class binding; a direct edge, no bridge.
-            kinds.push("CONFIG_BIND".to_string());
+            kinds.push(edge_views::CONFIG_BIND.to_string());
         }
         if !kinds.is_empty() {
             passes.push((direction, kinds));
@@ -1169,7 +1341,7 @@ fn cross_boundary_refs(
             } else if outgoing {
                 // Bridged hop carries the far (server) side's kind.
                 crate::indexer::channel::bridge_complement(&hop.edge_kind)?[0].to_string()
-            } else if CLIENT_BRIDGE_KINDS.contains(&hop.edge_kind.as_str()) {
+            } else if edge_views::BRIDGE_CLIENT.contains(&hop.edge_kind.as_str()) {
                 hop.edge_kind
             } else {
                 // e.g. RPC_ROUTE: the .proto declaration, not a caller.
@@ -1193,7 +1365,7 @@ fn cross_boundary_refs(
         // walk never sees it arriving; read it straight off the seeds.
         for &seed in seeds {
             for edge in db.edges_for_symbol(seed, ctx.languages.as_deref(), ctx.graph_version)? {
-                if edge.kind == "CONFIG_BIND"
+                if edge.kind == edge_views::CONFIG_BIND
                     && edge.target_symbol_id == Some(seed)
                     && let Some(source_id) = edge.source_symbol_id
                     && let Some(sym) = db.get_symbol_by_id(source_id)?
@@ -1650,9 +1822,6 @@ fn validate_resolution_kinds(kinds: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Edge kinds for a "re-trace with CONFIG edges only" next_hop.
-const CONFIG_EDGE_KINDS: [&str; 3] = ["CONFIG_SOURCE", "CONFIG_READ", "CONFIG_BIND"];
-
 /// Start of a trace_flow next_hop's params: the originating request, so the
 /// hop preserves every parameter (query, direction, max_hops, ...) except
 /// those the caller then overrides. `raw_params` already parsed as a
@@ -1834,7 +2003,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         // #230: clone-and-override -- only `kinds` and `max_bytes` change.
         let mut narrow_params = trace_hop_params(&raw_params);
         narrow_params.insert("max_bytes".to_string(), json!((max_bytes * 2).min(200_000)));
-        narrow_params.insert("kinds".to_string(), json!(CONFIG_EDGE_KINDS));
+        narrow_params.insert("kinds".to_string(), json!(edge_views::CONFIG));
         next_hops.push(json!({
             "method": "trace_flow",
             "params": narrow_params,
@@ -1854,8 +2023,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         // so its params are built from scratch rather than cloned.
         let mut impact_params = json!({"id": start.id, "direction": "upstream"});
         if matches!(start.kind.as_str(), "class" | "property") {
-            impact_params["kinds"] =
-                json!(["CONFIG_BIND", "CONFIG_SOURCE", "CONFIG_READ", "CALLS"]);
+            impact_params["kinds"] = json!(edge_views::CONFIG_CONSUMER_RETRY);
         }
         next_hops.push(json!({
             "method": "analyze_impact",
@@ -1867,7 +2035,7 @@ pub(super) fn handle_trace_flow(indexer: &mut Indexer, params: Value) -> Result<
         // trace keeps its `query`, an upstream one keeps its `direction`).
         if params.kinds.is_none() {
             let mut retry_params = trace_hop_params(&raw_params);
-            retry_params.insert("kinds".to_string(), json!(CONFIG_EDGE_KINDS));
+            retry_params.insert("kinds".to_string(), json!(edge_views::CONFIG));
             next_hops.push(json!({
                 "method": "trace_flow",
                 "params": retry_params,
@@ -2044,7 +2212,7 @@ fn config_uri_seeds(
     use crate::impact::TraversalDirection;
     let kinds: &[&str] = match direction {
         TraversalDirection::Downstream => &["CONFIG_SOURCE"],
-        TraversalDirection::Upstream => &["CONFIG_READ", "CONFIG_BIND"],
+        TraversalDirection::Upstream => edge_views::CONFIG_CONSUMER,
         TraversalDirection::Both => &[],
     };
     if direction != TraversalDirection::Upstream {
@@ -2734,7 +2902,7 @@ fn analyze_impact_inner(
         // (the default: all edge kinds), a restricted retry cannot find more results and
         // would be a guaranteed dead-end — same reasoning as the direction-flip suppression
         // above for the "both" case.
-        let config_kind_set = ["CONFIG_BIND", "CONFIG_SOURCE", "CONFIG_READ", "CALLS"];
+        let config_kind_set = edge_views::CONFIG_CONSUMER_RETRY;
         let original_kinds_non_empty = original_kinds.as_ref().is_some_and(|k| !k.is_empty());
         let original_already_covers_config = original_kinds
             .as_ref()
@@ -2743,7 +2911,7 @@ fn analyze_impact_inner(
             let mut config_params = seed_params("both");
             config_params.insert(
                 "kinds".to_string(),
-                json!(["CONFIG_BIND", "CONFIG_SOURCE", "CONFIG_READ", "CALLS"]),
+                json!(edge_views::CONFIG_CONSUMER_RETRY),
             );
             next_hops.push(json!({
                 "method": "analyze_impact",

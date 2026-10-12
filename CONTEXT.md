@@ -9,9 +9,13 @@ The SQLite-backed store of symbols (functions, classes, modules) and typed edges
 _Avoid_: knowledge graph, code graph (too generic), index
 
 **Edge Kind**:
-A typed, directional relationship between two symbols — CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, RPC_IMPL, CHANNEL_PUBLISH, CONFIG_BIND, USES (type/fn-value reference, not a call; Rust only), etc. First-class concept; new edge kinds are how lidx learns new architectural patterns.
+A typed, directional relationship between two symbols — CALLS, IMPORTS, CONTAINS, EXTENDS, IMPLEMENTS, RPC_IMPL, CHANNEL_PUBLISH, CONFIG_BIND, USES (type/fn-value reference, not a call; Rust, C#, JS/TS), etc. First-class concept; new edge kinds are how lidx learns new architectural patterns.
 MODULE_EXPORT is an internal-only kind: a Python `__all__` export signal stored only as an unresolved reference for `unused_imports`, not advertised in the MCP edge-kind list.
 _Avoid_: link, reference, relation
+
+**Edge View**:
+A named set of **Edge Kinds** in `src/edge_views.rs` that every consumer reads instead of carrying its own list, so a new kind is placed once. The four that define "use": EXECUTION (control can flow: CALLS, the bridge kinds, XREF, CONFIG_SOURCE/READ; never REFERENCES), CONSUMER (EXECUTION plus CONFIG_BIND; what `trace_flow` walks by default and what `explain_symbol` lists as `callers`/`callees`/`tests`), SYMBOL_USE (CONSUMER plus EXTENDS/IMPLEMENTS/INHERITS, USES, REFERENCES) and REACHABILITY (what keeps a symbol alive for `dead_symbols`). Whatever SYMBOL_USE holds beyond CONSUMER is `explain_symbol`'s `other_edges`, grouped by kind and capped per kind with a total, so non-call uses never inflate `callers`.
+_Avoid_: edge group, edge category
 
 **Bridge Edge**:
 An **Edge Kind** that crosses process or language boundaries — RPC_CALL↔RPC_IMPL (plus RPC_ROUTE, the .proto definition side), CHANNEL_PUBLISH↔CHANNEL_SUBSCRIBE, HTTP_CALL↔HTTP_ROUTE. Traversal methods automatically cross these.

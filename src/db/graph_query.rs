@@ -1,4 +1,5 @@
 use super::{Db, RPC_NAME_ONLY_FILTER, edge_from_row, symbol_from_row};
+use crate::edge_views;
 use crate::model::{Edge, EdgeSnapshotRow, INTERFACE_DISPATCH_KIND, Symbol};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
@@ -131,8 +132,9 @@ pub(super) fn external_base_member_sql(m: &str, gv: i64) -> String {
            WHERE xc.target_symbol_id = {m}.id
              AND xc.kind = 'CONTAINS'
              AND xc.graph_version = {gv}
-             AND xr.edge_kind IN ('EXTENDS', 'IMPLEMENTS')
-             AND xr.graph_version = {gv})"
+             AND xr.edge_kind IN ({subtyping})
+             AND xr.graph_version = {gv})",
+        subtyping = edge_views::sql_list(edge_views::SUBTYPING)
     )
 }
 
@@ -159,10 +161,11 @@ pub(super) fn live_nested_member_sql(t: &str, gv: i64) -> String {
            WHERE EXISTS (
                    SELECT 1 FROM edges me
                    WHERE me.target_symbol_id = m.id
-                     AND me.kind NOT IN ('CONTAINS', 'MODULE_FILE')
+                     AND me.kind NOT IN ({structural})
                      AND me.graph_version = {gv})
               OR {is_override}
-              OR (m.kind = 'field' AND {is_static}))"
+              OR (m.kind = 'field' AND {is_static}))",
+        structural = edge_views::sql_list(edge_views::STRUCTURAL)
     )
 }
 
@@ -257,10 +260,11 @@ impl DispatchSeed {
                          UNION
                          SELECT e.source_symbol_id, rel.d + 1
                            FROM rel JOIN edges e ON e.target_symbol_id = rel.id
-                                                AND +e.kind IN ('EXTENDS', 'IMPLEMENTS')
+                                                AND +e.kind IN ({subtyping})
                                                 AND e.graph_version = {gv}
                           WHERE rel.d <= {MAX_IFACE_CHAIN_DEPTH}),",
-                    seeds = Self::containers(list, gv)
+                    seeds = Self::containers(list, gv),
+                    subtyping = edge_views::sql_list(edge_views::SUBTYPING)
                 ),
                 "AND source_symbol_id IN (SELECT id FROM rel)".to_string(),
             ),
@@ -288,6 +292,7 @@ fn id_list(ids: &[i64]) -> String {
 pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> String {
     let gv = graph_version;
     let (rel_cte, anc_filter) = seed.ctes(gv);
+    let subtyping = edge_views::sql_list(edge_views::SUBTYPING);
     // Every type a class reaches: its direct IMPLEMENTS/EXTENDS targets,
     // then interface -> interface and class -> base hops (issues #173,
     // #185), depth-bounded (cycle-safe: `UNION` dedups and `d` caps the
@@ -296,14 +301,14 @@ pub(super) fn dispatch_pairs_from(graph_version: i64, seed: &DispatchSeed) -> St
     let ancestors = format!(
         "WITH RECURSIVE {rel_cte} anc(cid, iid, d, ov) AS (
              SELECT source_symbol_id, target_symbol_id, 1, kind = 'EXTENDS' FROM edges
-              WHERE kind IN ('IMPLEMENTS', 'EXTENDS') AND graph_version = {gv}
+              WHERE kind IN ({subtyping}) AND graph_version = {gv}
                 AND target_symbol_id IS NOT NULL {anc_filter}
              UNION
              SELECT anc.cid, e.target_symbol_id, anc.d + 1, anc.ov
                FROM anc JOIN edges e ON e.source_symbol_id = anc.iid
                                     -- `+` keeps the planner on idx_edges_source: with
                                     -- `kind IN (..)` it scanned every IMPLEMENTS edge per row
-                                    AND +e.kind IN ('EXTENDS', 'IMPLEMENTS')
+                                    AND +e.kind IN ({subtyping})
                                     AND e.graph_version = {gv}
                                     AND e.target_symbol_id IS NOT NULL
               WHERE anc.d <= {MAX_IFACE_CHAIN_DEPTH})
@@ -905,7 +910,7 @@ impl Db {
     ) -> Result<Vec<Edge>> {
         let is_rpc = kinds
             .iter()
-            .any(|k| matches!(*k, "RPC_CALL" | "RPC_IMPL" | "RPC_ROUTE"));
+            .any(|k| edge_views::contains(edge_views::RPC_FAMILY, k));
         if !is_rpc || !target_qualname.starts_with('/') {
             return self.edges_by_exact_target(
                 target_qualname,
@@ -936,7 +941,7 @@ impl Db {
                    AND (target_qualname = '/' || ?3
                         OR substr(target_qualname, -length(?3) - 1) = '.' || ?3)",
             )?;
-            for kind in ["RPC_CALL", "RPC_IMPL"] {
+            for &kind in edge_views::RPC_BOUND {
                 if !kinds.contains(&kind) {
                     continue;
                 }
@@ -1055,13 +1060,14 @@ impl Db {
         }
         let rows: Vec<Row> = {
             let conn = self.read_conn()?;
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare(&format!(
                 "SELECT e.id, e.kind, e.file_id, e.source_symbol_id, e.target_qualname, e.detail
                  FROM edges e JOIN files f ON f.id = e.file_id
-                 WHERE e.graph_version = ?1 AND e.kind IN ('RPC_IMPL', 'RPC_CALL')
+                 WHERE e.graph_version = ?1 AND e.kind IN ({rpc_bound})
                    AND e.target_qualname LIKE '/%' AND e.detail IS NOT NULL
                    AND (f.deleted_version IS NULL OR f.deleted_version > ?1)",
-            )?;
+                rpc_bound = edge_views::sql_list(edge_views::RPC_BOUND)
+            ))?;
             stmt.query_map([graph_version], |r| {
                 Ok(Row {
                     id: r.get(0)?,
@@ -1216,12 +1222,13 @@ impl Db {
                AND e.source_symbol_id IS NOT NULL
                AND e.graph_version = ?
                AND (f.deleted_version IS NULL OR f.deleted_version > ?)
-               AND (e.kind NOT IN ('RPC_CALL', 'RPC_IMPL')
+               AND (e.kind NOT IN ({rpc_bound})
                     OR EXISTS (SELECT 1 FROM edges r
                                WHERE r.target_qualname = ?
                                  AND r.kind = 'RPC_ROUTE' AND r.graph_version = ?)
                     OR NOT EXISTS (SELECT 1 FROM edges r
-                                   WHERE r.kind = 'RPC_ROUTE' AND r.graph_version = ?))"
+                                   WHERE r.kind = 'RPC_ROUTE' AND r.graph_version = ?))",
+            rpc_bound = edge_views::sql_list(edge_views::RPC_BOUND)
         );
         // ponytail: RPC_CALL and RPC_IMPL both fan out one edge per
         // *guessed* proto package (bare `using`s), so two wrong guesses can
@@ -1273,7 +1280,7 @@ impl Db {
         kinds: &[&str],
         graph_version: i64,
     ) -> Result<Vec<i64>> {
-        let default_kinds: &[&str] = &["CONFIG_SOURCE", "CONFIG_READ", "CONFIG_BIND"];
+        let default_kinds: &[&str] = edge_views::CONFIG;
         let search_kinds = if kinds.is_empty() {
             default_kinds
         } else {
