@@ -41,6 +41,9 @@
     "start_col": 1,
     "start_line": 22
   },
+  "stop_summary": {
+    "no_callees": 4
+  },
   "trace": [
     {
       "cross_language": false,
@@ -49,6 +52,7 @@
       "language": "python",
       "resolution_kind": "exact",
       "snippet": "helper1()",
+      "stop": "no_callees",
       "symbol": {
         "end_byte": 27,
         "end_col": 13,
@@ -71,6 +75,7 @@
       "language": "python",
       "resolution_kind": "exact",
       "snippet": "helper2()",
+      "stop": "no_callees",
       "symbol": {
         "end_byte": 57,
         "end_col": 13,
@@ -115,6 +120,7 @@
       "language": "python",
       "resolution_kind": "exact",
       "snippet": "other_leaf()",
+      "stop": "no_callees",
       "symbol": {
         "end_byte": 90,
         "end_col": 13,
@@ -137,6 +143,7 @@
       "language": "python",
       "resolution_kind": "exact",
       "snippet": "target()",
+      "stop": "no_callees",
       "symbol": {
         "end_byte": 119,
         "end_col": 13,

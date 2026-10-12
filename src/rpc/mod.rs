@@ -302,7 +302,29 @@ struct ExplainSymbolParams {
 /// `max_hops` ceiling cut the trace (re-trace with a larger `max_hops`;
 /// `trace_offset` would return nothing); `budget.truncated` reflects byte
 /// truncation only, and a `trace_offset` past the end returns an empty trace
-/// with `no_more_results: true`.
+/// with `no_more_results: true`. Every leaf hop of a trace without an end
+/// target carries `stop` (plus `stop_detail` where noted), so a resolution gap
+/// is not read as "execution ends here". Downstream: `depth_limit` (cut at
+/// `max_hops`, successors exist), `already_visited` (every successor already in
+/// the trace: a cycle or a diamond), `filtered` (successors removed by `kinds`
+/// / `exclude_resolution_kinds` / scope; `stop_detail` = `{resolution kind or
+/// edge kind: declined count}`, plus `unresolved: N` if the hop also has
+/// unresolved references), `truncated` (byte budget cut it before its
+/// successors were seen), `unresolved_calls` (no resolved successors but
+/// pending unresolved references: a resolution gap, not a genuine leaf;
+/// `stop_detail` = `{count, top: [[name, reason], ..3]}`, or `{n, top: [name,
+/// ..]}` with format "compact"), `no_callees` (genuine leaf) and `external`
+/// (the hop is an external stub; downstream only). Upstream the last two
+/// become `no_callers` and `unresolved_callers`: other symbols' `ambiguous`
+/// unresolved references whose name tail and language match the hop (possible
+/// callers, matched by name only, counted per distinct source symbol and listed
+/// by qualname); with more than 5 such sources or more than 5 same-name
+/// function/method definitions it is reported as `no_callers` with
+/// `stop_detail` = `{fuzzy_candidates: N}`. `stop_summary` counts leaves per
+/// reason over the settled trace -- like `paths_found` it varies with
+/// `max_hops`, `kinds` and filters, and is not the page's leaves -- and
+/// `start_stop` explains an empty trace. `depth_limited` is true exactly when
+/// some leaf is `depth_limit`.
 #[derive(Deserialize, schemars::JsonSchema)]
 struct TraceFlowParams {
     start_id: Option<i64>,

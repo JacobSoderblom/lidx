@@ -33,6 +33,10 @@ _Avoid_: using XREF as a permanent home for patterns that recur across codebases
 A synthetic symbol (`kind = 'external'`, qualname `ext:<name>`) that a CALLS edge binds to when its target is known to resolve outside the repo — an import known not to resolve here (standard library, third-party package), or a Rust/Go fully-qualified path whose syntax never routes through import candidates at all. Not a real extracted symbol: one stub per distinct `ext:` qualname per graph version, shared by every call site, and excluded from repo-internal listings (`repo_overview`'s counts, XREF candidates, `dead_symbols`, `top_complexity`, `repo_map`).
 _Avoid_: stubbing every unresolved call — a local variable of builtin/unknown type (`cells.append(1)`) has no import behind it, so it stays unresolved instead of getting a stub named after that variable
 
+**Stop Reason**:
+Why a `trace_flow` branch ends at a leaf hop (issue #410): `depth_limit`, `already_visited` (a cycle or a diamond), `filtered`, `truncated`, `unresolved_calls`, `no_callees`, `external`. Upstream, `no_callees` and `unresolved_calls` are `no_callers` and `unresolved_callers`. `unresolved_*` means a resolution gap -- the write path recorded a reference it could not bind (`unresolved_references`), so the trace may be missing edges -- not a genuine leaf; only `no_callees` / `no_callers` say nothing was found. `unresolved_callers` is a possible-caller signal matched by name only (ambiguous references, distinct sources) and is replaced by `no_callers` with `fuzzy_candidates` when too noisy. Shown only on leaf hops; the trace carries per-reason counts as `stop_summary`.
+_Avoid_: treating a leaf with `unresolved_calls` as "execution ends here"; calling `already_visited` a cycle (it also covers diamonds)
+
 ## Example dialogue
 
 > **Dev:** "I added a C# method that calls a Python service over a message bus. What edge kind should I emit?"

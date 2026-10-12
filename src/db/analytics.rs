@@ -2,7 +2,9 @@ use super::overview::module_prefix;
 use super::resolver::qualname_trailing_name;
 use super::{Db, append_path_filters, edge_from_row, extract_target_name, symbol_from_row};
 use crate::edge_views;
-use crate::model::{DuplicateGroup, Edge, Symbol, SymbolComplexity, SymbolCoupling};
+use crate::model::{
+    DuplicateGroup, Edge, Symbol, SymbolComplexity, SymbolCoupling, UnresolvedSample,
+};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -23,6 +25,113 @@ use std::path::Path;
 const KEY_SYMBOLS_MODULE_DEPTH: usize = 1;
 
 impl Db {
+    /// Pending `unresolved_references` per source symbol (issue #410): the
+    /// outgoing references of each of `symbol_ids` (limited to `edge_kinds`)
+    /// the write path could not attribute a target to. This is what lets a
+    /// `trace_flow` leaf be told apart from a function that genuinely calls
+    /// nothing. Symbols with no pending row are absent from the map.
+    pub fn unresolved_references_by_source(
+        &self,
+        symbol_ids: &[i64],
+        edge_kinds: &[String],
+        graph_version: i64,
+    ) -> Result<HashMap<i64, UnresolvedSample>> {
+        let mut out: HashMap<i64, UnresolvedSample> = HashMap::new();
+        if symbol_ids.is_empty() || edge_kinds.is_empty() {
+            return Ok(out);
+        }
+        let conn = self.read_conn()?;
+        let kind_marks = vec!["?"; edge_kinds.len()].join(",");
+        for chunk in symbol_ids.chunks(400) {
+            let id_marks = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT source_symbol_id, COALESCE(reference_name, name_tail), reason \
+                 FROM unresolved_references \
+                 WHERE source_symbol_id IN ({id_marks}) AND graph_version = ? \
+                   AND edge_kind IN ({kind_marks}) \
+                 ORDER BY source_symbol_id, id"
+            );
+            let mut params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            params.push(&graph_version);
+            params.extend(edge_kinds.iter().map(|k| k as &dyn rusqlite::ToSql));
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(&*params, |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, name, reason) = row?;
+                out.entry(id).or_default().push(name, reason);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Upstream analogue of [`Self::unresolved_references_by_source`] (issue
+    /// #410): other symbols with an `ambiguous` unresolved reference whose
+    /// name tail is `symbol_name` in the same file language -- callers that
+    /// may exist but never bound because the name has several candidates.
+    /// Counted per DISTINCT source symbol (named by qualname), not per row,
+    /// and returned with the number of function/method definitions of that
+    /// name in the language so the caller can discard a match that is mostly
+    /// noise. Matched by name only, so these are *possible* callers.
+    /// `symbol_id` itself is excluded (recursion is not a caller gap).
+    pub fn unresolved_callers_of(
+        &self,
+        symbol_id: i64,
+        symbol_name: &str,
+        file_path: &str,
+        edge_kinds: &[String],
+        graph_version: i64,
+    ) -> Result<(UnresolvedSample, usize)> {
+        let mut sample = UnresolvedSample::default();
+        if edge_kinds.is_empty() || symbol_name.is_empty() {
+            return Ok((sample, 0));
+        }
+        let kind_marks = vec!["?"; edge_kinds.len()].join(",");
+        let sql = format!(
+            "SELECT s.qualname, MIN(ur.reason) \
+             FROM unresolved_references ur \
+             JOIN files f ON f.id = ur.file_id \
+             JOIN symbols s ON s.id = ur.source_symbol_id \
+             WHERE ur.name_tail = ? AND ur.graph_version = ? AND ur.reason = 'ambiguous' \
+               AND ur.source_symbol_id != ? \
+               AND ur.edge_kind IN ({kind_marks}) \
+               AND f.language = (SELECT language FROM files WHERE path = ?) \
+             GROUP BY ur.source_symbol_id \
+             ORDER BY MIN(ur.id)"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&symbol_name, &graph_version, &symbol_id];
+        params.extend(edge_kinds.iter().map(|k| k as &dyn rusqlite::ToSql));
+        params.push(&file_path);
+        let conn = self.read_conn()?;
+        {
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(&*params, |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (name, reason) = row?;
+                sample.push(name, reason);
+            }
+        }
+        if sample.count == 0 {
+            return Ok((sample, 0));
+        }
+        let definitions: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM symbols s JOIN files f ON f.id = s.file_id \
+             WHERE s.name = ? AND s.graph_version = ? AND s.kind IN ('function', 'method') \
+               AND f.language = (SELECT language FROM files WHERE path = ?)",
+            rusqlite::params![symbol_name, graph_version, file_path],
+            |r| r.get(0),
+        )?;
+        Ok((sample, definitions as usize))
+    }
+
     pub fn call_edge_count(
         &self,
         languages: Option<&[String]>,
