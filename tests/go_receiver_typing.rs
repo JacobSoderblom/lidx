@@ -270,3 +270,45 @@ fn a_generic_receivers_methods_are_methods_of_the_type_without_its_arguments() {
     assert_eq!(calls_from(&indexer, "caller.Run"), ["set.Set.Add"]);
     assert_eq!(calls_from(&indexer, "set.Set.AddAll"), ["set.Set.Add"]);
 }
+
+#[test]
+fn an_aliased_go_import_is_judged_by_its_alias() {
+    use lidx::rpc;
+    let used = "package app\n\nimport str \"strings\"\n\nfunc Run() string { return str.ToUpper(\"a\") }\n";
+    let unused = "package app\n\nimport s2 \"strings\"\n\nfunc Idle() {}\n";
+    let (_tmp, root, db_path) = common::index_repo(
+        "lidx-go-alias-",
+        &[("go.mod", GO_MOD), ("used.go", used), ("unused.go", unused)],
+    );
+    let mut indexer = Indexer::new(root, db_path).unwrap();
+    let result = rpc::handle_method(&mut indexer, "dead_symbols", serde_json::json!({})).unwrap();
+    let files: Vec<String> = result["unused_imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["file_path"].as_str().map(String::from))
+        .collect();
+    assert!(files.contains(&"unused.go".to_string()), "{result}");
+    assert!(!files.contains(&"used.go".to_string()), "{result}");
+}
+
+#[test]
+fn struct_and_variable_typing_data_is_not_shown_in_signatures() {
+    use lidx::rpc;
+    let src = "package app\n\nimport \"net\"\n\ntype Client struct {\n\tconn net.Conn\n\tBase\n}\n\ntype Base struct{}\n\nvar shared = New()\n\nvar conn net.Conn\n\nfunc New() *Client { return nil }\n";
+    let (_tmp, root, db_path) =
+        common::index_repo("lidx-go-sig-", &[("go.mod", GO_MOD), ("a.go", src)]);
+    let mut indexer = Indexer::new(root, db_path).unwrap();
+    let outline =
+        rpc::handle_method(&mut indexer, "outline", serde_json::json!({"path": "a.go"})).unwrap();
+    let text = outline.to_string();
+    assert!(!text.contains("go_type"), "{text}");
+    assert!(!text.contains("~Base"), "{text}");
+    let sym = rpc::handle_method(
+        &mut indexer,
+        "read_symbol",
+        serde_json::json!({"qualname": "a.Client"}),
+    )
+    .unwrap();
+    assert!(!sym.to_string().contains("go_type"), "{sym}");
+}

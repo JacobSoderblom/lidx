@@ -57,6 +57,10 @@
 //! order used to hardcode; a same scope/module tier and stricter guards
 //! are still open (#75).
 
+#[path = "resolver_go.rs"]
+mod resolver_go;
+pub(crate) use resolver_go::go_deferred_candidate;
+
 use super::Db;
 use crate::edge_views;
 use crate::indexer::channel::is_bridge_edge_kind;
@@ -476,6 +480,12 @@ pub(crate) struct LanguageProfile {
     /// `DeferredMarker` this language's extractor wrote) from the declarations it
     /// names. `None` for a language without one.
     pub deferred_receiver: Option<ResolveDeferred>,
+    /// Finishes a language's deferred receiver into the package candidate
+    /// and call target text its call binds through, for a language whose
+    /// types are read with the resolver itself (Go). `Ok(None)`: not this
+    /// language's marker; `Ok(Some(None))`: the receiver's type cannot be
+    /// told, so the call binds nothing.
+    pub deferred_candidate: Option<DeferredCandidateFn>,
     /// What two symbols of one kind sharing a qualname in one file are.
     pub same_file_twins: SameFileTwins,
     /// The package a file belongs to (Cargo crate directory), for a language
@@ -574,6 +584,13 @@ pub trait DeclarationIndex {
 pub type ResolveDeferred =
     fn(marker: &DeferredMarker, index: &dyn DeclarationIndex) -> Result<Option<Option<String>>>;
 
+/// See `LanguageProfile::deferred_candidate`: `(import candidate, target
+/// text)` of the call.
+pub type DeferredCandidateFn = fn(
+    resolver: &mut Resolver<'_>,
+    marker: &DeferredMarker,
+) -> Result<Option<Option<(String, String)>>>;
+
 /// One `RPC_CALL` edge `LanguageProfile::deferred_rpc` yields.
 pub struct RpcCallEdge {
     pub target_qualname: String,
@@ -602,6 +619,7 @@ impl LanguageProfile {
         deferred_rpc: None,
         untyped_receiver_is_external: true,
         deferred_receiver: None,
+        deferred_candidate: None,
         same_file_twins: SameFileTwins::Overloads,
         package_dir: None,
         two_segment: true,
@@ -1160,9 +1178,6 @@ impl DeclarationIndex for LanguageIndex<'_, '_> {
     }
 }
 
-#[path = "resolver_go.rs"]
-mod resolver_go;
-
 /// Resolves references against one graph version. Prepared statements
 /// borrow `conn`, so build one per transaction.
 pub(crate) struct Resolver<'c> {
@@ -1353,10 +1368,12 @@ impl<'c> Resolver<'c> {
                 None => Resolution::Unresolved(UnresolvedReason::NoCandidates),
             });
         }
-        // A Go receiver typed through other files' declarations becomes the
+        // A receiver typed through other files' declarations becomes the
         // package candidate of its type's method, or binds nothing.
-        if let Some(DeferredMarker::Go(call)) = r.deferred {
-            let candidate = self.go_deferred_candidate(call)?;
+        if let Some(marker) = r.deferred
+            && let Some(hook) = profile_for(r.source_lang).deferred_candidate
+            && let Some(candidate) = hook(self, marker)?
+        {
             let patched = match &candidate {
                 Some((candidate, target)) => Reference {
                     target_qualname: Some(target),
@@ -3200,21 +3217,23 @@ impl<'c> Resolver<'c> {
 /// see `Resolver::external_file_id`.
 pub(crate) const EXTERNAL_FILE_PATH: &str = "<external>";
 
+/// A Go call whose candidate is a bare import path (`<path>|Member`): the
+/// hook found no package of this repository for it. In-repo candidates start
+/// with a place marker, and `GO_UNKNOWN_QUALIFIER` marks a qualifier not yet
+/// resolved.
+fn go_foreign_import_call(r: &Reference<'_>) -> bool {
+    r.source_lang == "go"
+        && r.edge_kind == "CALLS"
+        && r.import_candidates.first().is_some_and(|c| {
+            !c.starts_with([GO_SAME_PACKAGE, GO_IMPORTED_PACKAGE, GO_UNKNOWN_QUALIFIER])
+                && c.contains('|')
+        })
+}
+
 /// C# `Type.Member` reads (the only C# `USES` edges, issue #247) are
 /// speculative: most hit framework members (`DateTime.UtcNow`), so binding
 /// them to `ext:` stubs is pure noise. They stay unresolved (and retryable)
 /// until an in-repo target appears.
-/// A Go call whose candidate is a bare import path (`<path>|Member`): the
-/// hook found no package of this repository for it. In-repo candidates start
-/// with a place marker, and `?` marks a qualifier not yet resolved.
-fn go_foreign_import_call(r: &Reference<'_>) -> bool {
-    r.source_lang == "go"
-        && r.edge_kind == "CALLS"
-        && r.import_candidates
-            .first()
-            .is_some_and(|c| !c.starts_with(['=', '>', '?']) && c.contains('|'))
-}
-
 fn never_external(r: &Reference<'_>) -> bool {
     (r.edge_kind == "USES" && r.source_lang == "csharp")
         // A function passed as a value is mostly a local or a framework
@@ -3228,6 +3247,12 @@ fn never_external(r: &Reference<'_>) -> bool {
 /// extractor, which writes them, and `Resolver::resolve_go_package_member`.
 pub(crate) const GO_SAME_PACKAGE: char = '=';
 pub(crate) const GO_IMPORTED_PACKAGE: char = '>';
+/// `?<qualifier>|Name`: a call `qualifier.Name()` whose qualifier is not an
+/// import alias the file's text names, not a local, and so is a package-level
+/// variable or an import whose package name differs from its path's last
+/// element. Only the Go import hook, which can read the imported package's own
+/// `package` clause, tells them apart.
+pub(crate) const GO_UNKNOWN_QUALIFIER: char = '?';
 
 /// The `ext:` marker every external stub qualname starts with.
 const EXTERNAL_STUB_PREFIX: &str = "ext:";

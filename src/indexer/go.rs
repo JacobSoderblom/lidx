@@ -1,4 +1,6 @@
-use crate::db::resolver::{GO_IMPORTED_PACKAGE, GO_SAME_PACKAGE, LanguageProfile, VisibilityRule};
+use crate::db::resolver::{
+    GO_IMPORTED_PACKAGE, GO_SAME_PACKAGE, GO_UNKNOWN_QUALIFIER, LanguageProfile, VisibilityRule,
+};
 use crate::edge_views;
 use crate::indexer::channel;
 use crate::indexer::config;
@@ -32,6 +34,7 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     visibility: VisibilityRule::GoCapitalization,
     two_segment: false,
     call_refused_kinds: &["class", "interface", "type", "variable"],
+    deferred_candidate: Some(crate::db::resolver::go_deferred_candidate),
     ..LanguageProfile::DEFAULT
 };
 
@@ -190,7 +193,7 @@ impl crate::indexer::extract::LanguageExtractor for GoExtractor {
                 edge.detail = Some(
                     json!({
                         "import_path": target,
-                        "alias": edge.detail,
+                        "bound_name": edge.detail,
                         "place": place,
                     })
                     .to_string(),
@@ -617,7 +620,9 @@ fn var_signature(spec: Node<'_>, name: &str, ctx: &Context, source: &str) -> Opt
     let dir = ctx.module.rsplit_once('/').map_or("", |(dir, _)| dir);
     let scope = LocalTypes::package_scope(dir, ctx.imports.clone());
     if let Some(ty) = spec.child_by_field_name("type") {
-        return scope.type_text(ty, source);
+        return scope
+            .type_text(ty, source)
+            .map(|t| crate::model::go_type_marker(&t));
     }
     let mut cursor = spec.walk();
     let names: Vec<Node<'_>> = spec.children_by_field_name("name", &mut cursor).collect();
@@ -632,7 +637,10 @@ fn var_signature(spec: Node<'_>, name: &str, ctx: &Context, source: &str) -> Opt
     } else {
         return None;
     };
-    Some(format!("= {}", serde_json::to_string(&value).ok()?))
+    Some(crate::model::go_type_marker(&format!(
+        "= {}",
+        serde_json::to_string(&value).ok()?
+    )))
 }
 
 fn walk_children(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
@@ -1012,13 +1020,6 @@ fn is_builtin_callee(function_node: Node<'_>, raw: &str, ctx: &Context) -> bool 
         && !ctx.bound_names.contains(raw)
         && (GO_BUILTINS.contains(&raw) || GO_PREDECLARED_TYPES.contains(&raw))
 }
-
-/// `?<qualifier>|Name`: a call `qualifier.Name()` whose qualifier is not an
-/// import alias the file's text names, not a local, and so is a package-level
-/// variable or an import whose package name differs from its path's last
-/// element. Only the hook, which can read the imported package's own
-/// `package` clause, tells them apart.
-const GO_UNKNOWN_QUALIFIER: char = '?';
 
 /// Binds the package-qualified references and calls of a file (candidate
 /// `<import path>|Name`) to the repository, with the hook's view of the
@@ -2179,7 +2180,7 @@ fn struct_signature(struct_node: Node<'_>, source: &str) -> Option<String> {
         out.push_str(field);
     }
     out.push('}');
-    Some(out)
+    Some(crate::model::go_type_marker(&out))
 }
 
 fn extract_function_signature(node: Node<'_>, source: &str) -> Option<String> {
@@ -2510,7 +2511,7 @@ func F(s *S) {
             .iter()
             .find(|s| s.qualname == "pkg/file.Set")
             .unwrap();
-        assert_eq!(set.signature.as_deref(), Some("{m map[T]bool}"));
+        assert_eq!(set.signature.as_deref(), Some("#[go_type({m map[T]bool})]"));
     }
 
     const IMPORTING: &str = r#"

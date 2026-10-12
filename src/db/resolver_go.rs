@@ -14,6 +14,7 @@
 
 use super::*;
 use crate::indexer::extract::{GoDeferred, GoValue};
+use crate::model::go_type_data;
 
 /// How deep embedded types are searched for a promoted member.
 const MAX_EMBEDDING_DEPTH: usize = 4;
@@ -42,6 +43,17 @@ impl GoSymbol {
     /// The package directory the symbol is declared in.
     fn dir(&self) -> &str {
         self.qualname.rsplit_once('/').map_or("", |(dir, _)| dir)
+    }
+}
+
+/// `LanguageProfile::deferred_candidate` for Go.
+pub(crate) fn go_deferred_candidate(
+    resolver: &mut Resolver<'_>,
+    marker: &DeferredMarker,
+) -> Result<Option<Option<(String, String)>>> {
+    match marker {
+        DeferredMarker::Go(call) => resolver.go_deferred_candidate(call).map(Some),
+        _ => Ok(None),
     }
 }
 
@@ -89,7 +101,7 @@ impl Resolver<'_> {
                 let [decl] = &found[..] else {
                     return Ok(None);
                 };
-                let Some(signature) = decl.signature.as_deref() else {
+                let Some(signature) = decl.signature.as_deref().and_then(go_type_data) else {
                     return Ok(None);
                 };
                 let imports = self.go_file_imports(decl.file_id)?;
@@ -337,7 +349,7 @@ impl Resolver<'_> {
             let Some(place) = json["place"].as_str() else {
                 continue;
             };
-            if let Some(alias) = json["alias"].as_str() {
+            if let Some(alias) = json["bound_name"].as_str() {
                 imports
                     .by_alias
                     .insert(alias.to_string(), place.to_string());
@@ -547,6 +559,7 @@ fn split_top_level(text: &str, sep: char) -> Vec<String> {
 /// `{name Type; ~Embedded}`; an embedded field has no name.
 fn struct_fields(signature: Option<&str>) -> Vec<(Option<String>, String)> {
     let Some(inner) = signature
+        .and_then(go_type_data)
         .and_then(|s| s.strip_prefix('{'))
         .and_then(|s| s.strip_suffix('}'))
     else {
@@ -655,7 +668,9 @@ mod tests {
     #[test]
     fn struct_fields_split_named_and_embedded() {
         assert_eq!(
-            struct_fields(Some("{conn net.Conn; ~Animal; m map[string]int}")),
+            struct_fields(Some(
+                "#[go_type({conn net.Conn; ~Animal; m map[string]int})]"
+            )),
             [
                 (Some("conn".to_string()), "net.Conn".to_string()),
                 (None, "Animal".to_string()),

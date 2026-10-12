@@ -932,6 +932,16 @@ impl Db {
             if import_alias_used(alias, edge.target_symbol_id, file_id, &usage) {
                 continue;
             }
+            // A Go call through an import is recorded under the import path
+            // (`path/filepath.Join`), whatever alias the file binds.
+            if language == "go"
+                && usage.get(&file_id).is_some_and(|u| {
+                    let prefix = format!("{target_qualname}.");
+                    u.names.iter().any(|name| name.starts_with(&prefix))
+                })
+            {
+                continue;
+            }
             // Issue #242: an unreadable file counts as used (safe direction).
             if language == "python"
                 && py_names
