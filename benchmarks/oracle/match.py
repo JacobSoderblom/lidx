@@ -47,8 +47,8 @@ class Sources:
 
 def name_line(src, lang, kind, name, start, end, path):
     """1-based line of the declaration's name identifier."""
-    if lang == "ts" and kind == "module":
-        return 0
+    if kind == "module":
+        return 0  # a module / file-level symbol has no name token; it is keyed at line 0 in every language
     lines = src.lines(path)
     if not lines:
         return start
@@ -98,6 +98,16 @@ def load_lidx(db_path, repo, lang):
         edges.append(dict(r))
     con.close()
     return syms, edges
+
+
+def is_test_file(lang, path):
+    if lang == "go":
+        return path.endswith("_test.go")
+    if lang == "ts":
+        return bool(re.search(r"(^|/)(__tests__|tests?|test-utils|e2e|runtime-tests)/", path) or re.search(r"\.(test|spec|bench)\.[cm]?[tj]sx?$", path))
+    parts = path.split("/")
+    name = parts[-1]
+    return "tests" in parts[:-1] or name in ("tests.rs", "test.rs") or name.endswith("_tests.rs")
 
 
 def gap_reason(src, lang, caller):
@@ -150,9 +160,25 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
     ofiles = set(oracle["files"])
     ocallers = {"%s:%d" % (c["file"], c["line"]) for c in oracle["callers"]}
     ocallers_c = {cn(k) for k in ocallers}
-    unresolved = set(oracle.get("unresolved_sites", []))
-    ext_sites = set(oracle.get("ext_sites", []))
-    closure_sites = set(oracle.get("closure_sites", []))
+    unresolved = set((oracle.get("unresolved_sites") or []))
+    # An unresolved call only withholds a lidx edge whose callee carries the unresolved call's name: another call on
+    # the same line is still graded. Oracles without call names fall back to excluding the whole line.
+    unresolved_names = defaultdict(set)
+    named = oracle.get("unresolved_calls")
+    for u in named or []:
+        unresolved_names[u["site"]].add(u["name"])
+
+    def unresolved_hit(path, lines, callee_name):
+        for ln in lines:
+            site = "%s:%d" % (path, ln)
+            if named is None:
+                if site in unresolved:
+                    return True
+            elif callee_name in unresolved_names.get(site, ()):
+                return True
+        return False
+    ext_sites = set((oracle.get("ext_sites") or []))
+    closure_sites = set((oracle.get("closure_sites") or []))
 
     def okey(d):
         return "%s:%d" % (d["file"], d["line"])
@@ -174,7 +200,7 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
         tks = [tk] + list(e.get("callee_alts", []))
         rec = {"i": i, "caller": e["caller"], "callee": e["callee"], "ck": cks[0], "tk": tk, "cks": cks, "tks": tks,
                "sites": e.get("sites", []), "matched": False, "lifted": lifted,
-               "dispatch": bool(e.get("dispatch"))}
+               "dispatch": bool(e.get("dispatch")), "closure": bool(e.get("closure"))}
         oedges.append(rec)
         for a in cks:
             for b in tks:
@@ -183,6 +209,9 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
             site_idx[s].append(rec)
     for r in oedges:
         r["fanout"] = max((len(site_idx[s]) for s in r["sites"]), default=1)
+    # a caller that carries an oracle edge (including an alt or lifted caller) is a judgeable caller, so lidx edges
+    # from e.g. a `const X = core.$constructor(...)` container are graded, not dropped as "not judged"
+    ocallers_c |= {cn(k) for r in oedges for k in r["cks"]}
 
     # ---- lidx side ---------------------------------------------------
     def span(a, b):
@@ -233,6 +262,7 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
 
     # ---- precision ---------------------------------------------------
     ungradable = Counter()
+    ungr_list = []
     tp = fp = 0
     by_kind = defaultdict(lambda: [0, 0])  # kind -> [graded, tp]
     fp_list = []
@@ -251,14 +281,21 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
         reason = None
         if csym["file"] not in ofiles:
             reason = "caller_file_not_covered"
-        elif cn(csym["key"]) not in ocallers_c:
+        elif not oracle.get("exhaustive_callers") and cn(csym["key"]) not in ocallers_c:
             reason = "caller_not_judged"
-        elif tsym["file"] not in ofiles:
+        elif (tsym["file"] not in ofiles and not (is_test_file(lang, tsym["file"]) and not is_test_file(lang, csym["file"]))
+              and not any("%s:%d" % (csym["file"], ln) in ext_sites for ln in p["span"])):
+            # a callee in a file the oracle did not analyse (build tags, other scope) cannot be judged ... unless the
+            # oracle knows this very site calls code outside the repository, which makes an in-repo target wrong
             reason = "callee_file_not_covered"
-        elif any(("%s:%d" % (csym["file"], ln)) in unresolved for ln in p["span"]):
+        elif unresolved_hit(csym["file"], p["span"], tsym["name"].split(".")[-1]):
             reason = "oracle_unresolved_site"
         if reason:
             ungradable[reason] += 1
+            ungr_list.append({"caller": {k: csym[k] for k in ("file", "line", "name", "qualname")},
+                              "callee": {k: tsym[k] for k in ("file", "line", "name", "qualname")}, "reason": reason,
+                              "resolution_kind": res, "evidence_lines": sorted(p["lines"])[:5],
+                              "evidence_file": sorted(p["epaths"])[0]})
             continue
         fp += 1
         by_kind[res][0] += 1
@@ -286,6 +323,8 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
             elif st in closure_sites:
                 cat = "closure_callee_at_site"
                 break
+        if is_test_file(lang, tsym["file"]) and not is_test_file(lang, csym["file"]):
+            cat = "calls_test_code"  # production code cannot call into a test file: certainly wrong
         fp_list.append({"caller": {k: csym[k] for k in ("file", "line", "name", "qualname")},
                         "callee": {k: tsym[k] for k in ("file", "line", "name", "qualname")},
                         "resolution_kind": res, "kinds": dict(p["kinds"]), "evidence_lines": sorted(p["lines"])[:5],
@@ -380,6 +419,12 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
         "matched_oracle_edges": matched,
         "dispatch_edges": disp_total,
         "dispatch_matched": disp_matched,
+        # repowise's denominator: every in-scope oracle edge, capture gaps and unindexed callees included
+        "recall_comparable": ratio(matched + disp_matched, len(oedges)),
+        "recall_comparable_ci": wilson(matched + disp_matched, len(oedges)),
+        "closure_edges": sum(1 for r in oedges if r["closure"]),
+        "unresolved_pairs_excluded": ungradable.get("oracle_unresolved_site", 0),
+        "precision_if_unresolved_counted_wrong": ratio(tp, graded + ungradable.get("oracle_unresolved_site", 0)),
         "recall_strict": ratio(matched + disp_matched, judged + disp_total),
         "recall_strict_ci": wilson(matched + disp_matched, judged + disp_total),
         "lidx_pairs_total": len(pairs),
@@ -395,4 +440,4 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",)):
         "fp_categories": dict(Counter(f["category"] for f in fp_list).most_common()),
         "fn_categories": dict(Counter(f["category"] for f in fn_list if f["category"] != "dispatch").most_common()),
     }
-    return summary, fn_list, fp_list, capture_gap
+    return summary, fn_list, fp_list, capture_gap, ungr_list

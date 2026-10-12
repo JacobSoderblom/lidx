@@ -11,6 +11,7 @@ a *call* when the identifier is followed by `(` (optionally through a turbofish
 definition whose enclosing range contains the occurrence.
 """
 import argparse
+import re
 import json
 import os
 import sys
@@ -109,6 +110,15 @@ def rng(o):
     return r[0], r[1], r[2], r[3]
 
 
+def desc(sym):
+    """The descriptor part of a SCIP symbol: `scheme manager package version <descriptors>`."""
+    return sym.split(" ", 4)[-1]
+
+
+def last_segment(sym):
+    return desc(sym).rsplit("/", 1)[-1]
+
+
 def is_fn(sym):
     return sym.endswith("().")
 
@@ -119,12 +129,12 @@ def is_ctor(sym):
 
 
 def is_variant(sym):
-    last = sym.rsplit("/", 1)[-1]
+    last = last_segment(sym)
     return (sym.endswith(".") and "#" in last) or (sym.endswith("#") and "#" in last[:-1])
 
 
 def ctor_name(sym):
-    name = sym.rstrip("#.").rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+    name = desc(sym).rstrip("#.").rsplit("#", 1)[-1].rsplit("/", 1)[-1]
     if name.startswith("["):
         name = name.split("]", 1)[-1]
     return name.strip("`")
@@ -145,14 +155,127 @@ def is_pattern(rest):
 
 
 def is_trait_method(sym):
-    """`.../Trait#method().` is declared on a trait; `.../impl#[Type][Trait]method().` is a concrete implementation."""
-    last = sym.rsplit("/", 1)[-1]
+    """A function symbol declared on a trait (`.../Trait#method().`), as opposed to an inherent method
+    (`impl#[Type]method().`), a trait implementation (`impl#[Type][Trait]method().`), a free function, or a
+    tuple-struct / variant constructor (those end in `#`, not `().`). A call to a trait-declared method is
+    resolved by the receiver, so the compiler names the declaration, not the implementation that runs."""
+    if not sym.endswith("()."):
+        return False
+    last = last_segment(sym)
     return "#" in last and not last.startswith("impl#")
+
+
+IMPL_RE = re.compile(r"^impl#\[(.+?)\]\[(.+?)\]([^\[\]#/]+)\(\)\.$")
+TRAIT_RE = re.compile(r"^(?:.*#)?([^#\[\]]+)#([^#\[\]]+)\(\)\.$")
+
+
+def trait_impl_index(symbols):
+    """Map (trait name, method) -> implementing method symbols, from `impl#[Type][Trait]method().` symbols.
+    rust-analyzer's SCIP carries no implementation relationships, so the impl blocks themselves are the source."""
+    idx = defaultdict(list)
+    for sym in symbols:
+        m = IMPL_RE.match(last_segment(sym))
+        if m:
+            trait = m.group(2).strip("`").split("<")[0].split("::")[-1]
+            idx[(trait, m.group(3).strip("`"))].append(sym)
+    return idx
+
+
+def trait_key(sym):
+    m = TRAIT_RE.match(last_segment(sym))
+    return (m.group(1).strip("`"), m.group(2).strip("`")) if m else None
+
+
+# --- test code ---------------------------------------------------------------
+CFG_TEST_RE = re.compile(r"#\[cfg\((?:all\()?\s*test\b")
+STRIP_RE = re.compile(r"//[^\n]*|/\*.*?\*/|r(#*)\".*?\"\1|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])'", re.S)
+
+
+def is_test_path(path):
+    parts = path.split("/")
+    name = parts[-1]
+    return "tests" in parts[:-1] or name in ("tests.rs", "test.rs") or name.endswith("_tests.rs")
+
+
+ITEM_RE = re.compile(r"^(?:pub\s*(?:\([^)]*\))?\s*)?(?:(?:unsafe|async|const|extern(?:\s+\"[^\"]*\")?)\s+)*(fn|mod|impl|trait|struct|enum|union|static|type|use|const)\b")
+
+
+def _skip_attrs(clean, i):
+    """Index after any further `#[...]` attributes starting at or after i."""
+    while True:
+        j = i
+        while j < len(clean) and clean[j].isspace():
+            j += 1
+        if clean.startswith("#[", j) or clean.startswith("#![", j):
+            depth, k = 0, clean.index("[", j)
+            while k < len(clean):
+                depth += clean[k] == "["
+                depth -= clean[k] == "]"
+                if depth == 0:
+                    break
+                k += 1
+            i = k + 1
+        else:
+            return j
+
+
+def _match_brace(clean, brace):
+    depth, j = 0, brace
+    while j < len(clean):
+        if clean[j] == "{":
+            depth += 1
+        elif clean[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return len(clean) - 1
+
+
+def _item_end(clean, i):
+    """Offset of the last character of the item / field / statement that starts at i."""
+    m = ITEM_RE.match(clean[i:i + 200])
+    block_kinds = {"fn", "mod", "impl", "trait", "struct", "enum", "union"}
+    depth, j = 0, i
+    while j < len(clean):
+        ch = clean[j]
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif depth == 0:
+            if ch == "{":
+                if m and m.group(1) in block_kinds or not m and j == i:
+                    return _match_brace(clean, j)
+                if m:  # const / static / type / use with a braced initialiser
+                    j = _match_brace(clean, j)
+            elif ch == ";":
+                return j
+            elif ch == "," and not (m and m.group(1) in block_kinds):
+                return j
+            elif ch == "}":
+                return j - 1  # the enclosing block ends: a trailing field / expression without a comma
+        j += 1
+    return len(clean) - 1
+
+
+def test_regions(text):
+    """0-based (first_line, last_line) ranges of the single item (module, fn, impl, struct field, statement) that
+    follows each `#[cfg(test)]`."""
+    clean = STRIP_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+    regions = []
+    for m in CFG_TEST_RE.finditer(clean):
+        close = clean.find("]", m.end())
+        start = _skip_attrs(clean, close + 1)
+        last = _item_end(clean, start)
+        regions.append((clean.count("\n", 0, m.start()), clean.count("\n", 0, last)))
+    return regions
+
 
 
 def short_name(sym):
     # ".../Type#method()." -> method
-    body = sym[:-3]
+    body = desc(sym)[:-3]
     name = body
     for sep in ("#", "/"):
         name = name.rsplit(sep, 1)[-1]
@@ -165,6 +288,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
     ap.add_argument("--scip", required=True)
+    ap.add_argument("--no-tests", action="store_true", help="drop tests/ directories, tests.rs files and #[cfg(test)] items")
     a = ap.parse_args()
     repo = os.path.realpath(a.repo)
     data = open(a.scip, "rb").read()
@@ -175,12 +299,27 @@ def main():
 
     defs = {}  # symbol -> (file, line, name)
     ctors = {}  # tuple-struct / variant symbol -> same
-    impls_of = defaultdict(list)  # trait method symbol -> impl method symbols
+    regions = {}  # path -> test regions (--no-tests)
+    texts = {}
+    if a.no_tests:
+        kept = []
+        for d in docs:
+            if d["path"].endswith(".rs") and is_test_path(d["path"]):
+                continue
+            kept.append(d)
+            try:
+                regions[d["path"]] = test_regions(open(os.path.join(repo, d["path"]), encoding="utf-8", errors="replace").read())
+            except OSError:
+                regions[d["path"]] = []
+        docs = kept
+
+    def in_test(path, line0):
+        return any(a0 <= line0 <= b0 for a0, b0 in regions.get(path, ()))
+
     for d in docs:
-        for s in d["sym"]:
-            for t in s["impls"]:
-                impls_of[t].append(s["symbol"])
         for o in d["occ"]:
+            if a.no_tests and o["range"] and in_test(d["path"], rng(o)[0]):
+                continue
             if o["roles"] & 1 and is_fn(o["symbol"]) and o["range"]:
                 l, c, _, _ = rng(o)
                 defs.setdefault(o["symbol"], (d["path"], l + 1, short_name(o["symbol"])))
@@ -188,7 +327,8 @@ def main():
                 l, c, _, _ = rng(o)
                 ctors.setdefault(o["symbol"], (d["path"], l + 1, ctor_name(o["symbol"])))
 
-    out = {"repo": repo, "files": [], "callers": [], "edges": [], "refs": [], "dropped": defaultdict(int), "unresolved_sites": [], "ext_sites": []}
+    impl_idx = trait_impl_index(defs)
+    out = {"repo": repo, "tests": not a.no_tests, "files": [], "callers": [], "edges": [], "refs": [], "dropped": defaultdict(int), "unresolved_sites": [], "ext_sites": []}
     ext = set()
     seen, seen_ref = {}, {}
     callers = set()
@@ -203,6 +343,8 @@ def main():
             continue
         fdefs = []  # (start, end, symbol)
         for o in d["occ"]:
+            if a.no_tests and o["range"] and in_test(path, rng(o)[0]):
+                continue
             if o["roles"] & 1 and is_fn(o["symbol"]) and o["range"]:
                 e = o["encl"] or list(rng(o))
                 if len(e) == 3:
@@ -214,6 +356,8 @@ def main():
             sym = o["symbol"]
             ctor = is_ctor(sym) and sym in ctors
             if o["roles"] & 1 or not (is_fn(sym) or ctor) or not o["range"]:
+                continue
+            if a.no_tests and in_test(path, rng(o)[0]):
                 continue
             l, c, el, ec = rng(o)
             tgt = defs.get(sym) or ctors.get(sym)
@@ -247,8 +391,10 @@ def main():
                 if not is_call or is_pattern(rest):
                     continue  # a type mention or a pattern, not a call
                 if is_variant(sym):
-                    # enum variants are not declarations lidx models: the site is not judgeable either way
-                    out["unresolved_sites"].append("%s:%d" % (path, l + 1))
+                    # an enum variant is not a declaration lidx models; the compiler says this site constructs a variant,
+                    # so a lidx edge to any in-repo symbol here is a wrong edge (reported as callee-not-a-declaration)
+                    out["dropped"]["callee_variant"] += 1
+                    ext.add("%s:%d" % (path, l + 1))
                     continue
             kind_edges = out["edges"] if is_call else out["refs"]
             seen_set = seen if is_call else seen_ref
@@ -262,11 +408,14 @@ def main():
                  "callee": {"file": tgt[0], "line": tgt[1], "name": tgt[2]},
                  "sites": [site]}
             seen_set[key] = e
-            alts = sorted({"%s:%d" % defs[i][:2] for i in impls_of.get(sym, []) if i in defs})
-            if alts:
-                e["callee_alts"] = alts
             if is_trait_method(sym):
-                e["dispatch"] = True  # declared on a trait: the receiver decides which implementation runs
+                # declared on a trait: the receiver decides which implementation runs; any implementation in the
+                # repository is an acceptable target for a graph that resolves the receiver
+                e["dispatch"] = True
+                tk = trait_key(sym)
+                alts = sorted({"%s:%d" % defs[i][:2] for i in impl_idx.get(tk, []) if i in defs})
+                if alts:
+                    e["callee_alts"] = alts
             kind_edges.append(e)
     out["callers"] = [{"file": f, "line": l, "name": n} for f, l, n in sorted(callers)]
     out["ext_sites"] = sorted(ext)

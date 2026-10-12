@@ -46,6 +46,9 @@ def cells_for(repo):
     if lang == "go":
         return [{"id": "go/%s/tests" % n, "repo": n, "lang": lang, "variant": "with_tests", "args": ["-tests"]},
                 {"id": "go/%s/no_tests" % n, "repo": n, "lang": lang, "variant": "no_tests", "args": []}]
+    if lang == "rust":
+        return [{"id": "rust/%s/no_tests" % n, "repo": n, "lang": lang, "variant": "no_tests", "args": ["--no-tests"]},
+                {"id": "rust/%s/tests" % n, "repo": n, "lang": lang, "variant": "with_tests", "args": []}]
     return [{"id": "%s/%s" % (lang, n), "repo": n, "lang": lang, "variant": "no_tests", "args": []}]
 
 
@@ -120,8 +123,10 @@ def run_ts_oracle(repo_dir, cell, cache, repo):
     src = os.path.join(HERE, "ts_oracle")
     if not os.path.isdir(os.path.join(src, "node_modules", "typescript")):
         sh(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=src)
-    r = sh(["node", os.path.join(src, "oracle.mjs"), "--repo", repo_dir, "--tsconfig", repo.get("tsconfig", "tsconfig.json")],
-           capture_output=True)
+    cmd = ["node", os.path.join(src, "oracle.mjs"), "--repo", repo_dir, "--tsconfig", repo.get("tsconfig", "tsconfig.json")]
+    if repo.get("subdirs"):
+        cmd += ["--subdir", ",".join(repo["subdirs"])]
+    r = sh(cmd, capture_output=True)
     return json.loads(r.stdout), {}
 
 
@@ -135,7 +140,7 @@ def run_rust_oracle(repo_dir, cell, cache, repo):
     env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(cache, "target-%s" % repo["name"]))
     sh(["rust-analyzer", "scip", repo_dir, "--output", scip, "--config-path", cfg, "--exclude-vendored-libraries"],
        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    r = sh([sys.executable, "-I", os.path.join(HERE, "rust_oracle", "scip_calls.py"), "--repo", repo_dir, "--scip", scip],
+    r = sh([sys.executable, "-I", os.path.join(HERE, "rust_oracle", "scip_calls.py"), "--repo", repo_dir, "--scip", scip] + cell["args"],
            capture_output=True)
     return json.loads(r.stdout), {}
 
@@ -143,7 +148,7 @@ def run_rust_oracle(repo_dir, cell, cache, repo):
 def get_oracle(cell, repo, repo_dir, cache, force):
     key_src = {"go": ["go_oracle/main.go"], "ts": ["ts_oracle/oracle.mjs", "ts_oracle/package-lock.json"],
                "rust": ["rust_oracle/scip_calls.py"]}[cell["lang"]]
-    st = stamp([os.path.join(HERE, p) for p in key_src], repo["sha"] + " ".join(cell["args"]))
+    st = stamp([os.path.join(HERE, p) for p in key_src], repo["sha"] + " ".join(cell["args"]) + ",".join(repo.get("subdirs", [])))
     path = os.path.join(cache, "oracle", "%s.json" % cell["id"].replace("/", "__"))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if not force and os.path.exists(path):
@@ -169,6 +174,18 @@ def git_info():
         return sh(["git", "-C", REPO_ROOT] + list(a), capture_output=True, check=False).stdout.strip()
     base = g("merge-base", "HEAD", "origin/main") or g("rev-parse", "HEAD")
     return {"main_commit": base, "head_commit": g("rev-parse", "HEAD")}
+
+
+def toolchain_versions():
+    def v(cmd):
+        try:
+            return sh(cmd, capture_output=True).stdout.strip().splitlines()[0]
+        except Exception as e:  # noqa: BLE001
+            return "unavailable: %s" % e
+    ts_dir = os.path.join(HERE, "ts_oracle", "node_modules", "typescript", "package.json")
+    return {"rust-analyzer": v(["rust-analyzer", "--version"]), "node": v(["node", "--version"]), "go": v(["go", "version"]),
+            "typescript": json.load(open(ts_dir))["version"] if os.path.exists(ts_dir) else "not installed yet",
+            "python": sys.version.split()[0]}
 
 
 def dump_list(path, data):
@@ -205,7 +222,7 @@ def main():
 
     meta_path = os.path.join(a.results, "cells.json")
     prev = json.load(open(meta_path)) if os.path.exists(meta_path) else {"cells": {}}
-    out = {"generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"), "lidx_version": version,
+    out = {"toolchains": toolchain_versions(), "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"), "lidx_version": version,
            **git_info(), "corpus": {r["name"]: {k: r[k] for k in ("lang", "url", "ref", "sha")} for r in lock["repos"]},
            "cells": prev.get("cells", {}) if rx else {}}
     for repo in lock["repos"]:
@@ -221,11 +238,12 @@ def main():
         for cell in cells:
             oracle, cached = get_oracle(cell, repo, repo_dir, cache, a.force)
             print("   %s: oracle %d edges%s" % (cell["id"], len(oracle["edges"]), " (cached)" if cached else ""), flush=True)
-            res = {"cell": cell["id"], "repo": repo["name"], "lang": repo["lang"], "variant": cell["variant"],
+            res = {"oracle_ts_version": oracle.get("ts_version"), "oracle_node_version": oracle.get("node_version"),
+                   "cell": cell["id"], "repo": repo["name"], "lang": repo["lang"], "variant": cell["variant"],
                    "index_seconds": secs, "oracle_mode": oracle.get("mode"), "oracle_meta": oracle.get("_meta", {}),
                    "oracle_dropped": oracle.get("dropped", {})}
-            summ, fn, fp, gap = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS",))
-            summ_r, fn_r, fp_r, _ = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS", "REFERENCES", "USES"))
+            summ, fn, fp, gap, ungr = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS",))
+            summ_r, fn_r, fp_r, _, _ = match.grade(oracle, syms, edges, repo["lang"], src, ("CALLS", "REFERENCES", "USES"))
             res["calls"] = summ
             res["calls_plus_references"] = {k: summ_r[k] for k in ("graded", "tp", "fp", "precision", "precision_ci", "recall", "recall_ci",
                                                                    "matched_oracle_edges")}
@@ -233,11 +251,12 @@ def main():
             fid = cell["id"].replace("/", "__")
             dispatch_fn = [x for x in fn if x["category"] == "dispatch"]
             fn = [x for x in fn if x["category"] != "dispatch"]
-            for suffix, data in (("fn", fn), ("fp", fp), ("capture_gap", gap), ("dispatch_fn", dispatch_fn)):
+            for suffix, data in (("fn", fn), ("fp", fp), ("capture_gap", gap), ("ungradable", ungr), ("dispatch_fn", dispatch_fn)):
                 dump_list(os.path.join(a.results, "lists", "%s.%s.json" % (fid, suffix)), data)
             out["cells"][cell["id"]] = res
             print("   %s: P=%s R=%s (graded=%d, oracle=%d)" % (cell["id"], summ["precision"], summ["recall"], summ["graded"],
                                                               summ["oracle_edges_caller_indexed"]), flush=True)
+    out["toolchains"] = toolchain_versions()  # after the oracles ran, so typescript is installed
     json.dump(out, open(meta_path, "w"), indent=1)
     report.build(a.results)
     return 0

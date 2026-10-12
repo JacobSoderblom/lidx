@@ -1,6 +1,7 @@
 // tsc-based call-graph oracle.
 //
-// Usage: node oracle.mjs --repo DIR [--tsconfig REL] [--tests] > out.json
+// Usage: node oracle.mjs --repo DIR [--tsconfig REL] [--subdir REL[,REL]] [--tests] > out.json
+// --subdir restricts the analysed source files (and so the judged declarations) to those directories.
 //
 // Walks every CallExpression / NewExpression in the repository's TypeScript
 // sources, resolves the callee with the type checker and emits
@@ -16,6 +17,8 @@ const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] :
 const repo = fs.realpathSync(path.resolve(opt("--repo")));
 const tsconfigRel = opt("--tsconfig", "tsconfig.json");
 const withTests = args.includes("--tests");
+const subdirs = (opt("--subdir", "") || "").split(",").filter(Boolean).map((d) => d.replace(/\/+$/, ""));
+const inScope = (r) => subdirs.length === 0 || subdirs.some((d) => r === d || r.startsWith(d + "/"));
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "coverage", ".next", "out", "lib-cjs"]);
 const isTestPath = (p) => /(^|\/)(__tests__|tests?|test-utils|e2e|runtime-tests)\//.test(p) || /\.(test|spec|bench)\.[cm]?[tj]sx?$/.test(p);
@@ -42,14 +45,16 @@ if (fs.existsSync(cfgPath)) {
   delete options.rootDirs; delete options.tsBuildInfoFile;
 }
 
-let files = walk(repo, []).filter((f) => withTests || !isTestPath(rel(f)));
+let files = walk(repo, []).filter((f) => (withTests || !isTestPath(rel(f))) && inScope(rel(f)));
 const program = ts.createProgram({ rootNames: files, options });
 const checker = program.getTypeChecker();
 
-const out = { repo, tests: withTests, tsconfig: tsconfigRel, ts_version: ts.version, files: [], callers: [], edges: [], dropped: {} };
+const out = { exhaustive_callers: true, repo, tests: withTests, tsconfig: tsconfigRel, subdirs, ts_version: ts.version, node_version: process.version, files: [], callers: [], edges: [], dropped: {} };
 const drop = (k) => { out.dropped[k] = (out.dropped[k] || 0) + 1; };
 const seenEdges = new Map();
 const unresolvedSites = new Set();
+const unresolvedCalls = [];
+const calleeName = (n) => { const e = ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n) ? n.tagName : ts.isTaggedTemplateExpression(n) ? n.tag : n.expression; let x = e; while (x && (ts.isParenthesizedExpression(x) || ts.isNonNullExpression(x) || ts.isAsExpression(x))) x = x.expression; if (!x) return ""; if (ts.isIdentifier(x)) return x.text; if (ts.isPropertyAccessExpression(x)) return x.name.text; return ""; };
 const extSites = new Set();
 const callerSeen = new Set();
 
@@ -61,6 +66,11 @@ const isFnLike = (n) => ts.isFunctionDeclaration(n) || ts.isMethodDeclaration(n)
 
 // name token (position) of a function-like declaration; undefined when anonymous
 function declName(n) {
+  if (!n.name && (ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n))) {
+    // `export default function () {}`: keyed at the `default` keyword, which is where lidx names the symbol
+    const m = n.modifiers?.find((x) => x.kind === ts.SyntaxKind.DefaultKeyword);
+    if (m) return { node: m, name: "default" };
+  }
   if (ts.isConstructorDeclaration(n)) {
     const kw = n.getChildren().find((c) => c.kind === ts.SyntaxKind.ConstructorKeyword);
     return kw ? { node: kw, name: "constructor" } : undefined;
@@ -100,8 +110,9 @@ function enclosing(node) {
       push(fns, { file: rel(sf.fileName), line: lineOf(sf, p.name.getStart(sf)), name: p.name.getText() });
     } else if (ts.isVariableDeclaration(p) && ts.isIdentifier(p.name) && ts.isSourceFile(p.parent?.parent?.parent)) {
       push(containers, { file: rel(sf.fileName), line: lineOf(sf, p.name.getStart(sf)), name: p.name.text });
-    } else if ((ts.isClassDeclaration(p) || ts.isClassExpression(p)) && p.name) {
-      push(containers, { file: rel(sf.fileName), line: lineOf(sf, p.name.getStart(sf)), name: p.name.text });
+    } else if (ts.isClassDeclaration(p) || ts.isClassExpression(p)) {
+      const nm = p.name ?? p.modifiers?.find((x) => x.kind === ts.SyntaxKind.DefaultKeyword);
+      if (nm) push(containers, { file: rel(sf.fileName), line: lineOf(sf, nm.getStart(sf)), name: p.name ? p.name.text : "default" });
     }
   }
   return { fns, containers };
@@ -117,6 +128,12 @@ function calleeDecls(call) {
   let decl = sig && sig.declaration;
   const alts = [];
   if (sym && sym.declarations) for (const d of sym.declarations) alts.push(d);
+  if (ts.isNewExpression(call) && sym && sym.declarations) {
+    // `new X()` constructs the class X, not whichever (possibly inherited) constructor signature type-checks the site;
+    // the constructor stays an acceptable alternative for a graph that points at it
+    const cls = sym.declarations.find((d) => ts.isClassDeclaration(d) || ts.isClassExpression(d));
+    if (cls) { if (decl) alts.push(decl); return { decl: cls, alts, kind: "class", sym }; }
+  }
   if (!decl || !isFnLike(decl)) {
     // `new C()` with no explicit constructor, calls on `any`, etc.
     if (ts.isNewExpression(call) && sym && sym.declarations) {
@@ -153,9 +170,19 @@ function declLoc(d) {
 for (const sf of program.getSourceFiles()) {
   if (!inRepo(sf.fileName) || sf.isDeclarationFile) continue;
   if (!withTests && isTestPath(rel(sf.fileName))) continue;
+  if (!inScope(rel(sf.fileName))) continue;
   out.files.push(rel(sf.fileName));
+  // tsc sees every call in an analysed file, so the module itself and every module-level const and class are
+  // judgeable callers even when they contain no call: a lidx edge from them is wrong, not "unjudged"
+  callerSeen.add(JSON.stringify({ file: rel(sf.fileName), line: 0, name: "<module>" }));
   // every named function-like declaration is a judgeable caller
   const visit = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && ts.isSourceFile(node.parent?.parent?.parent)) {
+      callerSeen.add(JSON.stringify({ file: rel(sf.fileName), line: lineOf(sf, node.name.getStart(sf)), name: node.name.text }));
+    }
+    if ((ts.isClassDeclaration(node) || ts.isClassExpression(node)) && node.name) {
+      callerSeen.add(JSON.stringify({ file: rel(sf.fileName), line: lineOf(sf, node.name.getStart(sf)), name: node.name.text }));
+    }
     if (isFnLike(node) && !ts.isMethodSignature(node) && !ts.isFunctionTypeNode(node) && (node.body || ts.isArrowFunction(node))) {
       const d = mkDecl(node);
       if (d) callerSeen.add(JSON.stringify(d));
@@ -166,22 +193,45 @@ for (const sf of program.getSourceFiles()) {
       else {
         const { fns, containers } = enclosing(node);
         const nearest = fns[0];
+        // module-level code and the module-level const/class it sits in are judgeable callers too
+        if (!nearest) { callerSeen.add(JSON.stringify({ file: rel(sf.fileName), line: 0, name: "<module>" })); for (const c of containers) callerSeen.add(JSON.stringify(c)); }
         const r = calleeDecls(node);
-        if (r.err) { drop("callee_" + r.err); unresolvedSites.add(`${rel(sf.fileName)}:${lineOf(sf, node.getStart(sf))}`); if (process.env.ORACLE_DEBUG) console.error("UNRESOLVED", rel(sf.fileName) + ":" + lineOf(sf, node.getStart(sf)), node.getText().slice(0, 80).replace(/\n/g, " ")); }
+        if (r.err) { drop("callee_" + r.err); unresolvedSites.add(`${rel(sf.fileName)}:${lineOf(sf, node.getStart(sf))}`); unresolvedCalls.push({ site: `${rel(sf.fileName)}:${lineOf(sf, node.getStart(sf))}`, name: calleeName(node) }); if (process.env.ORACLE_DEBUG) console.error("UNRESOLVED", rel(sf.fileName) + ":" + lineOf(sf, node.getStart(sf)), node.getText().slice(0, 80).replace(/\n/g, " ")); }
         else {
           let target = r.decl;
+          // A call whose symbol is a const / field with an initialiser calls that variable, whatever the type annotation
+          // says: `const objectKeys: ObjectConstructor["keys"] = ...` is repo code, not lib.d.ts `keys`; a local
+          // `const match = ... as Router["match"]` is that const, not the interface member.
+          const vdo = r.sym && r.sym.valueDeclaration;
+          let own = null;
+          const strip = (x) => { while (x && (ts.isParenthesizedExpression(x) || ts.isAsExpression(x) || ts.isNonNullExpression(x) || ts.isSatisfiesExpression?.(x))) x = x.expression; return x; };
+          // an initialiser that merely names another function (`const booleanType = ZodBoolean.create`) is an alias: the
+          // callee is the function it names, which the resolved signature already points at
+          const aliasOnly = vdo && vdo.initializer && (ts.isIdentifier(strip(vdo.initializer)) || ts.isPropertyAccessExpression(strip(vdo.initializer)));
+          if (r.kind !== "class" && vdo && (ts.isVariableDeclaration(vdo) || ts.isPropertyDeclaration(vdo) || ts.isPropertyAssignment(vdo)) &&
+              vdo.initializer && vdo.name && !aliasOnly && !vdo.getSourceFile().isDeclarationFile) { own = vdo; target = vdo; }
           const tf = target.getSourceFile?.() ?? (target.parent && target.parent.getSourceFile?.());
           if (!tf) { drop("callee_synthetic"); ts.forEachChild(node, visit); return; }
-          if (!inRepo(tf.fileName) || tf.isDeclarationFile) { drop("callee_external"); extSites.add(`${rel(sf.fileName)}:${lineOf(sf, node.getStart(sf))}`); }
+          if (inRepo(tf.fileName) && !tf.isDeclarationFile && !inScope(rel(tf.fileName))) { drop("callee_out_of_scope"); extSites.add(`${rel(sf.fileName)}:${lineOf(sf, node.getStart(sf))}`); }
+          else if (!inRepo(tf.fileName) || tf.isDeclarationFile) { drop("callee_external"); extSites.add(`${rel(sf.fileName)}:${lineOf(sf, node.getStart(sf))}`); }
           else {
             // overload signatures: judge against the implementation declaration
             let impl = target;
-            if (r.alts.length > 1 && !target.body) { const b = r.alts.find((a) => isFnLike(a) && a.body); if (b) impl = b; }
-            let callee = declLoc(impl);
-            // a call through an interface member, function type or abstract method may run any implementation
-            let disp = ts.isMethodSignature(target) || ts.isPropertySignature(target) || ts.isCallSignatureDeclaration(target) ||
-              ts.isConstructSignatureDeclaration(target) || ts.isFunctionTypeNode(target) ||
-              (ts.isMethodDeclaration(target) && (ts.getCombinedModifierFlags(target) & ts.ModifierFlags.Abstract) !== 0);
+            if (own) impl = own;
+            if (!own && r.alts.length > 1 && !target.body && !ts.isClassLike(target)) { const b = r.alts.find((a) => isFnLike(a) && a.body); if (b) impl = b; }
+            let callee = own ? (() => { const of = own.getSourceFile(); return { file: rel(of.fileName), line: lineOf(of, own.name.getStart(of)), name: own.name.getText() }; })() : declLoc(impl);
+            // Dispatch: the call goes through an interface or type-literal member, or an abstract method, so any
+            // implementation may run. A symbol with a concrete definition (a function, a method, a const or class
+            // property with an initialiser) is a static call even when its type is written as an interface.
+            const isSigMember = (n) => n && (ts.isMethodSignature(n) || ts.isPropertySignature(n) || ts.isCallSignatureDeclaration(n) || ts.isConstructSignatureDeclaration(n));
+            const isAbstract = (n) => n && ts.isMethodDeclaration(n) && (ts.getCombinedModifierFlags(n) & ts.ModifierFlags.Abstract) !== 0;
+            const vd0 = r.sym && r.sym.valueDeclaration;
+            let disp;
+            if (own) disp = false;
+            else if (vd0) {
+              disp = isSigMember(vd0) || isAbstract(vd0) ||
+                ((ts.isPropertyDeclaration(vd0) || ts.isVariableDeclaration(vd0)) && !vd0.initializer && !!vd0.type);
+            } else disp = isSigMember(target) || isAbstract(target);
             const vdecl = r.sym && r.sym.valueDeclaration;
             if (!callee && vdecl && (ts.isParameter(vdecl) || ts.isBindingElement(vdecl))) {
               // calling a parameter or destructured binding: there is no declaration to point at
@@ -215,6 +265,9 @@ for (const sf of program.getSourceFiles()) {
               } else {
                 const prev = seenEdges.get(k);
                 if (prev.sites.length < 20) prev.sites.push(site);
+                // module-level calls from different containers share one edge: keep every container as an acceptable caller
+                if (!nearest && containers.length) prev.caller_alts = [...new Set([...(prev.caller_alts ?? []), ...containers.map(keyOf)])];
+                else if (nearest) prev.caller_chain = [...new Set([...(prev.caller_chain ?? []), ...fns.slice(1).concat(containers).map(keyOf), `${rel(sf.fileName)}:0`])];
                 if (!disp) delete prev.dispatch;
               }
             }
@@ -227,6 +280,7 @@ for (const sf of program.getSourceFiles()) {
   visit(sf);
 }
 out.unresolved_sites = [...unresolvedSites].sort();
+out.unresolved_calls = unresolvedCalls;
 out.ext_sites = [...extSites].sort();
 out.callers = [...callerSeen].map((s) => JSON.parse(s)).sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
 out.edges.sort((a, b) => a.caller.file.localeCompare(b.caller.file) || a.caller.line - b.caller.line || a.callee.file.localeCompare(b.callee.file) || a.callee.line - b.callee.line);

@@ -41,7 +41,9 @@ type Edge struct {
 	// interface method invocation or a call of a function value. RTA reports the
 	// possible targets; the edge says "may call", not "calls".
 	Dispatch bool `json:"dispatch,omitempty"`
-	static   int
+	// Closure marks an edge whose callee is a function literal, keyed at its enclosing declaration.
+	Closure bool `json:"closure,omitempty"`
+	static  int
 }
 
 type Output struct {
@@ -255,13 +257,9 @@ func main() {
 			}
 			return ""
 		}
-		if isClosure(to) {
-			out.Dropped["callee_closure"]++
-			if s := siteOf(); s != "" {
-				closureSites[s] = true
-			}
-			return
-		}
+		// A closure callee is reported as its outermost enclosing declaration: that
+		// is the named function a graph can point at (repowise scores it the same way).
+		closure := isClosure(to)
 		ct, why := declOf(to)
 		if why != "" {
 			if why != "external" {
@@ -292,13 +290,16 @@ func main() {
 				e.static++
 				e.Dispatch = false
 			}
+			if !closure {
+				e.Closure = false
+			}
 			if siteStr != "" && len(e.Sites) < 20 {
 				e.Sites = append(e.Sites, siteStr)
 			}
 			return
 		}
 		seen[k] = len(out.Edges)
-		e := Edge{Caller: cf, Callee: ct, Dispatch: !isStatic}
+		e := Edge{Caller: cf, Callee: ct, Dispatch: !isStatic, Closure: closure}
 		if isStatic {
 			e.static = 1
 		}

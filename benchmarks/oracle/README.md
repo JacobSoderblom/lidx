@@ -8,14 +8,14 @@ number cannot be tuned by editing a key:
 - **recall**: of the compiler's call edges, how many does lidx have.
 
 Every figure carries a 95% Wilson interval and the count it is computed over. The code here is our own;
-nothing was copied from repowise-bench (which has no licence). repowise's *published numbers* are quoted
-below for orientation only.
+nothing was copied from repowise-bench (which has no licence); its cell definitions (commits, scope, which
+edges the denominator holds) were read for method only. repowise's *published numbers* are quoted below.
 
 ## Run it
 
 ```bash
 cargo build --release                       # the lidx binary under test
-python3 benchmarks/oracle/run.py            # all 7 repositories, 10 cells, writes benchmarks/oracle/results/
+python3 benchmarks/oracle/run.py            # all 7 repositories, 12 cells, writes benchmarks/oracle/results/
 python3 benchmarks/oracle/run.py --only '^ts/'        # a subset (regex over cell ids)
 python3 benchmarks/oracle/run.py --binary /path/to/lidx --cache /big/disk/lidx-oracle
 python3 benchmarks/oracle/run.py --report-only        # rebuild report.md from results/
@@ -25,101 +25,118 @@ python3 -m unittest discover -s benchmarks/oracle -p 'test_*.py'
 Needs `go` (1.24+; the right toolchain for each corpus module is fetched by Go itself), `node` + `npm`,
 `rust-analyzer` with the `scip` subcommand (1.94 used), `git` and Python 3 (stdlib only). The first run
 clones the corpus into the cache dir (default `~/.cache/lidx-oracle`, outside the repository) and runs
-`npm ci --ignore-scripts` once inside `ts_oracle/`. A full run takes about 15 minutes, dominated by Go's
-SSA build of syft, which needs roughly 9 GB of memory with tests included.
+`npm ci --ignore-scripts` once inside `ts_oracle/`. Every run indexes each repo into a fresh database. A full run
+takes about 10 minutes, dominated by Go's SSA build of syft, which needs roughly 9 GB of memory with tests included.
+`cells.json` records the toolchain versions (rust-analyzer, node, typescript, Go) and the lidx build.
 
-Outputs in `results/`: `report.md` (the report), `cells.json` (all numbers), `lists/<cell>.{fn,fp,capture_gap}.json`
-(every miss, wrong edge and capture-gap edge with the source locations and a category, for fixing),
-`spotcheck.json` / `spotcheck-sample.json` (the hand check, below).
+Outputs in `results/`: `report.md`, `cells.json` (all numbers), `lists/<cell>.{fn,fp,capture_gap,ungradable}.json`
+(every miss, wrong edge, capture-gap edge and excluded edge with source locations and a category, for fixing;
+`<cell>.dispatch_fn.json` too, except the very large `go__syft__tests` one), `spotcheck.json` / `spotcheck-sample.json`.
 
 ## Corpus
 
-Pinned in `corpus.lock.json` (url, ref, full commit sha). Never committed to this repository.
+Pinned in `corpus.lock.json` to the **commits repowise-bench pins for the same cells** (`sha` is always the commit sha,
+never an annotated-tag object, and `run.py` compares commit shas, so a cached clone is reused). Never committed here.
 
-| Language | Repositories | Compiler | Variants |
+| Language | Repositories | Compiler | Cells |
 |---|---|---|---|
-| Go | cobra v1.10.2, gitleaks v8.30.1, syft v1.54.1 | `golang.org/x/tools/go/callgraph/rta` over the type-checked program | with and without test files |
-| TypeScript | zod v4.6.6, hono (main, 2026-10-12) | `typescript` 5.9.3 checker API | production code (tests excluded) |
-| Rust | ripgrep (master, 2026-10-12), fd v10.5.0 | rust-analyzer 1.94 `scip` | whole workspace |
+| Go | cobra, gitleaks, syft | `golang.org/x/tools/go/callgraph/rta` over the type-checked program | with and without test files |
+| TypeScript | zod (`packages/zod/src`), hono (`src`) | `typescript` 5.9.3 checker API | production code in the scoped directory |
+| Rust | ripgrep 15.2.0, fd v10.5.0 | rust-analyzer 1.94 `scip` | `no_tests` (the repowise-comparable cell) and `tests` |
 
-Corpus repositories are treated as untrusted: nothing from them is built, tested or installed. Go is only
-type-checked (`go list` may download modules); TypeScript uses the compiler API without installing the
-repository's dependencies, so calls into packages that are not in the repository are simply out of scope;
-rust-analyzer runs with build scripts and proc-macro servers disabled.
+Corpus repositories are untrusted: nothing from them is built, tested or installed. Go is only type-checked (`go list`
+may download modules); TypeScript uses the compiler API without installing the repository's dependencies (calls into
+packages that are not in the repository are out of scope); rust-analyzer runs with build scripts and proc-macro servers
+disabled.
 
 ## Method
 
-**Oracle edges** are distinct (caller declaration, callee declaration) pairs, restricted to declarations
-inside the repository. A declaration is identified by file and the line of its *name identifier*, so
-decorators, attributes and doc comments above it do not matter.
+**Oracle edges** are distinct (caller declaration, callee declaration) pairs inside the repository, keyed by file and the
+line of the declaration's *name identifier*, so decorators, attributes and doc comments above it do not matter.
 
-- *Go* (`go_oracle/`): `packages.Load` + SSA + RTA. Roots are `main`/`init` of main packages; with tests also
-  every `Test*`/`Benchmark*`/`Fuzz*`/`Example*`; a library with no `main` package (cobra without tests) uses
-  its exported functions and methods. Closures resolve to their enclosing declaration, generic instances to
-  their origin, synthetic wrappers are collapsed, range-over-func bodies belong to the enclosing function.
-  Only functions RTA proved reachable can be judged as callers.
-- *TypeScript* (`ts_oracle/`): every `CallExpression`, `NewExpression`, JSX component element and tagged
-  template, resolved with `getResolvedSignature`. The callee is the implementation declaration for overloads;
-  when the signature comes from an interface or function type the declaration is the variable or field that
-  holds the function. The caller is the nearest named function-like; module-level code is a `<module>`
-  caller (line 0). Call sites the compiler cannot resolve are recorded and never held against lidx.
-- *Rust* (`rust_oracle/`): rust-analyzer's SCIP index, decoded with a small protobuf reader. A reference to a
-  function symbol counts as a call when the identifier is followed by `(` (optionally through a turbofish); a
-  function value used elsewhere is not a call. Tuple-struct constructors count; enum-variant constructors are
-  not declarations lidx models and their call sites are not judged.
+- *Go* (`go_oracle/`): `packages.Load` + SSA + RTA. Roots: `main`/`init` of main packages; with tests also every
+  `Test*`/`Benchmark*`/`Fuzz*`/`Example*`; a library with no `main` package (cobra without tests) uses its exported
+  surface. Closures resolve to their enclosing declaration, **including closures that are callees** (edge to the
+  enclosing declaration, as repowise scores them); generic instances to their origin; synthetic wrappers are collapsed;
+  range-over-func bodies belong to the enclosing function. Only functions RTA proved reachable can be judged as callers.
+- *TypeScript* (`ts_oracle/`): every call, `new`, JSX component element and tagged template, resolved with
+  `getResolvedSignature`; `--subdir` restricts the analysed files to the cell's directory (callees outside it are out of
+  scope on both sides). A call whose symbol is a const or field *with an initialiser* targets that variable, whatever its
+  type annotation says; `new X()` targets the class X, not an inherited constructor. Module-level code is a `<module>`
+  caller (line 0). tsc sees every call in an analysed file, so every caller in those files is judgeable.
+- *Rust* (`rust_oracle/`): rust-analyzer SCIP decoded with a small protobuf reader. A reference to a function symbol is a
+  call when followed by `(`; tuple-struct constructors count; enum-variant constructors are sites that call something
+  that is not a declaration lidx models. `--no-tests` drops `tests/` directories, `tests.rs` files and the single item
+  under each `#[cfg(test)]`.
 
-**lidx side** (`match.py`): each repo is indexed with a fresh database (`lidx reindex --repo R --db DB`). We take
-CALLS edges (and, separately, CALLS+REFERENCES+USES) whose source and target are in-repo symbols and
-deduplicate them to (caller, callee) pairs. lidx symbols are keyed by the same file + name-identifier line,
-recovered from the source. A lidx edge matches an oracle edge when both ends land on the same declaration.
-Declarations are compared by (file, qualname) so an interface and a const of the same name (TypeScript
-declaration merging) or a set of overloads count as one declaration.
+**Dispatch edges** are calls through a path the compiler resolves only to a *possible* target: Go interface calls and
+calls of function values; TypeScript interface and type-literal members and abstract methods (a const or field with one
+initialiser is a static call); Rust methods declared on a trait (`Trait#method()`, not `impl#[T][Trait]method()`),
+which also carry the trait's in-repo implementations as acceptable targets. They stay in the comparable recall.
 
-**Excluded, and reported rather than dropped:**
+**lidx side** (`match.py`): CALLS edges whose source and target are in-repo symbols, deduplicated to (caller, callee)
+pairs, keyed the same way (name line recovered from source; `module` symbols are line 0 in every language). A lidx edge
+matches an oracle edge when both ends land on the same declaration; declarations are compared by (file, qualname) so a
+merged interface and const or a set of overloads are one declaration.
 
-| Bucket | Definition | Where it goes |
-|---|---|---|
-| callee outside the repo | oracle cannot judge | excluded on both sides |
-| capture gap | oracle edge whose caller, or callee, is not a symbol lidx indexes (macro-generated Rust test functions, nested functions) | own count and list; kept out of recall; `recall incl. capture gap` puts them back |
-| dispatch | interface method call, function-value call, trait method call: the compiler lists *possible* targets | own count; headline recall excludes it, `recall incl. dispatch` includes it |
-| ungradable lidx edge | caller file or function not in the analysed program, callee file not analysed, or a call site the compiler left unresolved | counted per reason, not in precision |
-| lifted caller | oracle caller is not a symbol lidx indexes (e.g. an object-literal method) | matched against the nearest enclosing declaration lidx does index; counted |
+**What recall means.** The head-to-head recall is `(matched + dispatch matched) / all in-scope oracle edges`, with
+capture gaps and unindexed callees charged to lidx: the denominator repowise uses. The report also shows static-only
+recall, recall including dispatch, and recall over edges whose both ends lidx indexes, as diagnostics.
 
-**Classification** of every miss and every wrong edge (`lists/`): FP `external_callee_at_site` (the compiler says the
-site calls code outside the repo, so a name-based guess hit an in-repo symbol), `wrong_target`,
-`reference_as_call` (the name appears at the site but is not called), `no_call_at_site`, `caller_attribution`,
-`closure_callee_at_site`; FN `no_edge_at_site`, `other_call_on_line_missed` (a sibling call on the line was
-found), `wrong_target`, `marked_external`, `unresolved`, `recorded_as_uses`, `attributed_to_other_caller`, `dispatch`.
+**Exclusions, each a named bucket in the report and sampled by hand:**
 
-**Precision by `resolution_kind`**: each lidx pair is counted once under its most specific resolution kind
-(`exact`, `receiver_type`, `import`, `two_segment`, `inherited`, `bare_name`).
+| Bucket | Definition |
+|---|---|
+| callee outside the repo / scope | the oracle cannot judge; excluded on both sides |
+| capture gap | oracle edge whose caller or callee is not a symbol lidx indexes (macro-generated Rust tests, interface members, nested functions); kept in the comparable-recall denominator |
+| dispatch | see above; in the comparable recall, out of the static recall |
+| ungradable lidx edge | caller file or function not in the analysed program, callee file not analysed, or an unresolved call site |
 
-**Hand spot-check**: 20 random FPs and 20 random FNs per language (seeded, drawn from the committed lists)
-were read against the source and classified `lidx_error`, `oracle_artefact` or `matching_artefact`
-(`spotcheck.py sample` then `merge`; verdicts and a note per item are in `spotcheck-verdicts.json`). The rule above was
-changed until the artefact rate was under 10%; the history of that iteration is in the report.
+Two rules keep exclusions from flattering lidx. A production-code edge into a test file, and an edge to an in-repo symbol at
+a site the oracle knows calls code outside the repository, are **wrong edges**, not exclusions. An unresolved call
+(`oracle_unresolved_site`: tsc could not resolve the call, e.g. a package that is not installed) withholds only a lidx edge
+whose callee has the **same name** as that call, not every edge on the line; the report prints, per cell, how many pairs this
+withheld and what precision would be if they all counted as wrong.
+
+**Rust denominator.** repowise's Rust denominator is only the call sites their own parser captured, joined to SCIP
+declarations; their ripgrep cell holds 4,555 compiler edges against our 2,355 for the same scope, so we cannot reproduce it.
+Rust recall leads over repowise are **directional only**; the precision comparison is not affected.
+
+**TypeScript scope.** repowise's TypeScript oracle declines to judge calls resolved to abstract targets and withholds every
+function containing an unresolved call; ours keeps those as dispatch edges and per-site exclusions. Their tsconfig is null
+(defaults); ours reads the repository's own.
+
+**Classification** of every miss and wrong edge is in `results/lists/`. FP: `external_callee_at_site`, `wrong_target`,
+`reference_as_call` (the name appears but is not called), `calls_test_code`, `no_call_at_site`, `caller_attribution`. FN:
+`no_edge_at_site`, `other_call_on_line_missed`, `wrong_target`, `marked_external`, `recorded_as_uses`,
+`attributed_to_other_caller`, `unresolved`.
+
+**Hand spot-check** (`spotcheck.py sample`, then `merge`; verdicts and a note per item in `spotcheck-verdicts.json`): 20
+random FPs and 20 random FNs per language **plus up to 10 random items from every exclusion bucket per language**
+(dispatch, each ungradable reason, capture gaps), read against the source. Items are classified `lidx_error`,
+`oracle_artefact` or `matching_artefact` (FP/FN), or `correct_exclusion` / `misbucketed` (buckets). The rules above were
+changed until the artefact and mis-bucketing rates were under 10%; the history of that iteration, which found real
+problems in the first version, is in the report.
 
 ## Results next to repowise
 
-Ours: this repository's main at the time of the report (`results/report.md` has intervals, resolution-kind
-tables and categories). repowise: numbers they publish in `docs/BENCHMARKS.md` on repowise main (2026-10-03), "Call graph against a
-compiler, five tools" for Go and TypeScript and "Accuracy by language" (rust-analyzer key) for Rust.
-Precision / recall. **Do not read the columns as a like-for-like race**: corpus commits, dedup and scoping differ
-(for example our TypeScript cells analyse every non-test source file in the repository, benchmarks and docs included).
-For recall compare repowise against *recall incl. dispatch*; our headline recall leaves dispatch edges out.
+Ours: lidx 0.7.0 on main (`results/report.md` has the diagnostic columns, resolution-kind tables, categories and the
+spot-check). repowise: the numbers they publish in `docs/BENCHMARKS.md` on repowise main (2026-10-03) ("Call graph against a
+compiler, five tools" for Go and TypeScript, "Accuracy by language" for Rust). The repowise intervals are Wilson intervals we
+computed from their published point estimate and the edge counts of the same cells in repowise-bench (an earlier run of the
+same cells), not intervals they published. **ahead / tied / behind compares the two 95% intervals, never the point
+estimates.** Recall is the comparable recall. Both sides at the same commits and the same scope.
 
-| Cell | oracle n (static / incl. dispatch) | graded lidx n | lidx P [95% CI] | lidx R [95% CI] | lidx R incl. dispatch | repowise P / R |
-|---|---:|---:|---|---|---:|---|
-| go/cobra/tests | 1527 / 1595 | 1197 | 0.932 [0.917, 0.945] | 0.723 [0.700, 0.745] | 0.700 | 0.995 / 0.705 |
-| go/cobra/no_tests | 556 / 581 | 384 | 0.964 [0.940, 0.978] | 0.665 [0.625, 0.703] | 0.637 | not published |
-| go/gitleaks/no_tests | 1556 / 1572 | 764 | 0.988 [0.978, 0.994] | 0.485 [0.461, 0.510] | 0.480 | 0.991 / 0.971 |
-| go/gitleaks/tests | 1677 / 1705 | 808 | 0.986 [0.976, 0.992] | 0.475 [0.451, 0.499] | 0.467 | 0.989 / 0.939 |
-| go/syft/no_tests | 5229 / 7826 | 3741 | 0.891 [0.880, 0.900] | 0.632 [0.619, 0.645] | 0.426 | 0.979 / 0.539 |
-| go/syft/tests | 10762 / 23949 | 5815 | 0.885 [0.877, 0.893] | 0.474 [0.465, 0.484] | 0.215 | 0.982 / 0.341 |
-| ts/zod | 2532 / 2891 | 2624 | 0.853 [0.838, 0.866] | 0.888 [0.875, 0.900] | 0.819 | 0.995 / 0.796 |
-| ts/hono | 860 / 963 | 1145 | 0.715 [0.689, 0.741] | 0.892 [0.869, 0.911] | 0.866 | 0.976 / 0.806 |
-| rust/ripgrep | 4716 / 5401 | 4111 | 0.882 [0.872, 0.891] | 0.696 [0.682, 0.709] | 0.671 | 0.852 / 0.532 |
-| rust/fd | 513 / 516 | 524 | 0.943 [0.919, 0.960] | 0.957 [0.936, 0.972] | 0.957 | 0.899 / 0.619 |
+| Cell | lidx P [95% CI] | repowise P [95% CI] | P | lidx R [95% CI] | repowise R [95% CI] | R |
+|---|---|---|---|---|---|---|
+| go/cobra/tests | 0.933 [0.918, 0.946] | 0.995 [0.990, 0.998] | behind | 0.589 [0.567, 0.611] | 0.705 [0.685, 0.724] | behind |
+| go/gitleaks/no_tests | 0.984 [0.973, 0.991] | 0.991 [0.985, 0.995] | tied | 0.477 [0.452, 0.501] | 0.971 [0.961, 0.978] | behind |
+| go/gitleaks/tests | 0.985 [0.974, 0.992] | 0.989 [0.983, 0.993] | tied | 0.456 [0.433, 0.480] | 0.939 [0.927, 0.949] | behind |
+| go/syft/no_tests | 0.877 [0.866, 0.888] | 0.979 [0.974, 0.983] | behind | 0.367 [0.356, 0.377] | 0.539 [0.528, 0.550] | behind |
+| go/syft/tests | 0.880 [0.871, 0.889] | 0.982 [0.979, 0.985] | behind | 0.162 [0.158, 0.167] | 0.341 [0.335, 0.347] | behind |
+| ts/zod | 0.934 [0.920, 0.946] | 0.995 [0.989, 0.998] | behind | 0.691 [0.670, 0.711] | 0.796 [0.773, 0.817] | behind |
+| ts/hono | 0.653 [0.624, 0.681] | 0.976 [0.958, 0.986] | behind | 0.751 [0.722, 0.778] | 0.806 [0.775, 0.833] | tied |
+| rust/ripgrep/no_tests | 0.816 [0.799, 0.832] | 0.852 [0.838, 0.865] | behind | 0.724 [0.706, 0.742] | 0.532 [0.517, 0.546] | ahead |
+| rust/fd/no_tests | 0.860 [0.805, 0.901] | 0.899 [0.838, 0.939] | tied | 0.900 [0.850, 0.935] | 0.619 [0.555, 0.679] | ahead |
 
-Repowise rows: cobra without tests is not published; their TypeScript with-tests variants are void; ripgrep and fd come from their per-language table (4,555 and 231 compiler edges). Ours for the same cells are in the first six columns.
-
+Not published by repowise, so not compared: cobra without tests, the Rust with-tests variants, TypeScript with tests.
