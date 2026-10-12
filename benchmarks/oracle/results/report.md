@@ -6,7 +6,13 @@ Each cell is lidx's resolved CALLS edges graded against the answer a compiler gi
 
 ## Head-to-head with repowise
 
-Precision = lidx edges the compiler confirms / lidx edges the compiler can judge. Recall = compiler edges matched (dispatch edges included) / **all** in-scope compiler edges, capture gaps and unindexed callees charged to lidx: the denominator repowise uses. repowise columns are their published point estimates (`docs/BENCHMARKS.md`, repowise main, 2026-10-03) with Wilson intervals computed by us from the edge counts of the same cells in repowise-bench. ahead / tied / behind compares the two intervals, never the point estimates.
+Every row grades lidx the way repowise grades its own tool, so the verdicts are neither flattered nor penalised by scope. Precision = lidx edges the compiler confirms / lidx edges the compiler can judge. Recall = compiler edges matched (dispatch edges included) / **all** in-scope compiler edges, capture gaps and unindexed callees charged to lidx: the denominator repowise uses. The scope differences handled here:
+
+- **TypeScript**: repowise's `tsc` oracle emits no call made outside a function (module level) and withholds every call resolved to an abstract target (interface or type-literal member, abstract method, function-typed field), together with the function that makes it. The TypeScript rows drop the same edges from the denominator and leave those callers unjudged for precision. The stricter grading is in the diagnostic table below.
+- **Rust**: repowise excludes test files by path only (`tests/` or `test/` directories) and keeps `#[cfg(test)]` code. The `path_tests_excluded` cell does the same. The `#[cfg(test)]`-excluded cell is in the diagnostic table.
+- **Go**: unchanged; the cells already match (closure callees are keyed at the enclosing declaration here and at the literal in repowise, see the README).
+
+repowise columns are their published point estimates (`docs/BENCHMARKS.md`, repowise main, 2026-10-03) with Wilson intervals computed by us from the edge counts of the same cells in repowise-bench. **ahead / tied / behind compares the two 95% intervals** (ahead: lidx's lower bound is above repowise's upper bound; behind: lidx's upper bound is below repowise's lower bound; otherwise tied), never the point estimates.
 
 | Cell | lidx P [95% CI] | repowise P [95% CI] | P | lidx R [95% CI] | repowise R [95% CI] | R | oracle edges (lidx / repowise) |
 |---|---|---|---|---|---|---|---|
@@ -15,16 +21,31 @@ Precision = lidx edges the compiler confirms / lidx edges the compiler can judge
 | go/gitleaks/tests | 0.985 [0.974, 0.992] | 0.989 [0.983, 0.993] | **tied** | 0.456 [0.433, 0.480] | 0.939 [0.927, 0.949] | **behind** | 1747 / 1747 |
 | go/syft/no_tests | 0.877 [0.866, 0.888] | 0.979 [0.974, 0.983] | **behind** | 0.367 [0.356, 0.377] | 0.539 [0.528, 0.550] | **behind** | 7977 / 7898 |
 | go/syft/tests | 0.880 [0.871, 0.889] | 0.982 [0.979, 0.985] | **behind** | 0.162 [0.158, 0.167] | 0.341 [0.335, 0.347] | **behind** | 25902 / 22590 |
-| ts/zod | 0.934 [0.920, 0.946] | 0.995 [0.989, 0.998] | **behind** | 0.691 [0.670, 0.711] | 0.796 [0.773, 0.817] | **behind** | 1947 / 1269 |
-| ts/hono | 0.653 [0.624, 0.681] | 0.976 [0.958, 0.986] | **behind** | 0.751 [0.722, 0.778] | 0.806 [0.775, 0.833] | **tied** | 921 / 706 |
-| rust/ripgrep/no_tests | 0.816 [0.799, 0.832] | 0.852 [0.838, 0.865] | **behind** | 0.724 [0.706, 0.742] | 0.532 [0.517, 0.546] | **ahead** | 2355 / 4555 |
-| rust/fd/no_tests | 0.860 [0.805, 0.901] | 0.899 [0.838, 0.939] | **tied** | 0.900 [0.850, 0.935] | 0.619 [0.555, 0.679] | **ahead** | 191 / 231 |
+| ts/zod | 0.971 [0.961, 0.979] | 0.995 [0.989, 0.998] | **behind** | 0.791 [0.770, 0.810] | 0.796 [0.773, 0.817] | **tied** | 1626 / 1269 |
+| ts/hono | 0.666 [0.636, 0.695] | 0.976 [0.958, 0.986] | **behind** | 0.793 [0.765, 0.820] | 0.806 [0.775, 0.833] | **tied** | 833 / 706 |
+| rust/ripgrep/path_tests_excluded | 0.878 [0.867, 0.889] | 0.852 [0.838, 0.865] | **ahead** | 0.645 [0.632, 0.659] | 0.532 [0.517, 0.546] | **ahead** | 4796 / 4555 |
+| rust/fd/path_tests_excluded | 0.890 [0.847, 0.922] | 0.899 [0.838, 0.939] | **tied** | 0.914 [0.874, 0.943] | 0.619 [0.555, 0.679] | **ahead** | 257 / 231 |
 
-Not published by repowise, so not compared: cobra without tests, the Rust with-tests variants, TypeScript with tests.
+Not published by repowise, so not compared: cobra without tests, the Rust cells other than `path_tests_excluded`, TypeScript with tests.
+
+### Stricter variants (diagnostic, no verdict)
+
+The same repositories graded with our own, stricter scope. They answer "how good is lidx", not "how does it compare": the repowise value shown is the one for the cell it is comparable to, for reference only.
+
+| Cell | Scope | lidx P [95% CI] | lidx R [95% CI] | oracle edges | repowise-comparable cell P / R |
+|---|---|---|---|---:|---|
+| ts/zod | module-level callers and abstract targets kept (dispatch counted in recall) | 0.934 [0.920, 0.946] | 0.691 [0.670, 0.711] | 1947 | 0.971 / 0.791 |
+| ts/hono | module-level callers and abstract targets kept (dispatch counted in recall) | 0.653 [0.624, 0.681] | 0.751 [0.722, 0.778] | 921 | 0.666 / 0.793 |
+| rust/ripgrep/no_tests | `#[cfg(test)]` items and cfg-gated modules also excluded | 0.818 [0.800, 0.834] | 0.724 [0.705, 0.741] | 2315 | 0.878 / 0.645 |
+| rust/fd/no_tests | `#[cfg(test)]` items and cfg-gated modules also excluded | 0.860 [0.805, 0.901] | 0.900 [0.850, 0.935] | 191 | 0.890 / 0.914 |
+
+TypeScript scope effect: ts/zod removes 112 module-level and 215 abstract-target oracle edges (321 distinct, some are both) and withholds 149 lidx edges from precision (caller not judged by the oracle); ts/hono removes 24 module-level and 68 abstract-target oracle edges (88 distinct, some are both) and withholds 68 lidx edges from precision (caller not judged by the oracle).
+
+Rust denominators: rust/ripgrep/path_tests_excluded 4796 compiler edges here against 4555 in repowise-bench (+5.3%); rust/fd/path_tests_excluded 257 compiler edges here against 231 in repowise-bench (+11.3%).
 
 ## Diagnostic columns
 
-`recall (static)` is over static edges whose caller and callee lidx indexes (dispatch, capture gaps out); `recall incl. dispatch` adds dispatch back; `recall comparable` is the head-to-head figure above.
+`recall (static)` is over static edges whose caller and callee lidx indexes (dispatch, capture gaps out); `recall incl. dispatch` adds dispatch back; `recall comparable` is the head-to-head figure for cells graded the same way as repowise (for TypeScript the head-to-head table uses repowise's narrower scope, so its figure differs from this column).
 
 | Cell | Oracle | Oracle edges | static edges judged | dispatch edges | capture gap | graded lidx edges | P | recall (static) | recall incl. dispatch | recall comparable |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -36,12 +57,14 @@ Not published by repowise, so not compared: cobra without tests, the Rust with-t
 | go/syft/tests | Go RTA | 25902 | 8838 | 17064 | 0 | 4771 | 0.880 | 0.471 | 0.162 | 0.162 |
 | ts/zod | tsc | 1947 | 1687 | 15 | 245 | 1435 | 0.934 | 0.796 | 0.791 | 0.691 |
 | ts/hono | tsc | 921 | 780 | 13 | 128 | 1038 | 0.653 | 0.871 | 0.873 | 0.751 |
-| rust/ripgrep/no_tests | rust-analyzer SCIP | 2355 | 2215 | 140 | 0 | 2089 | 0.816 | 0.751 | 0.724 | 0.724 |
+| rust/ripgrep/path_tests_excluded | rust-analyzer SCIP | 4796 | 4567 | 167 | 62 | 3524 | 0.878 | 0.668 | 0.654 | 0.645 |
+| rust/ripgrep/no_tests | rust-analyzer SCIP | 2315 | 2176 | 139 | 0 | 2049 | 0.818 | 0.750 | 0.724 | 0.724 |
 | rust/ripgrep/tests | rust-analyzer SCIP | 6072 | 4662 | 181 | 1229 | 3630 | 0.875 | 0.671 | 0.656 | 0.523 |
+| rust/fd/path_tests_excluded | rust-analyzer SCIP | 257 | 257 | 0 | 0 | 264 | 0.890 | 0.914 | 0.914 | 0.914 |
 | rust/fd/no_tests | rust-analyzer SCIP | 191 | 191 | 0 | 0 | 200 | 0.860 | 0.900 | 0.900 | 0.900 |
 | rust/fd/tests | rust-analyzer SCIP | 516 | 516 | 0 | 0 | 525 | 0.941 | 0.957 | 0.957 | 0.957 |
 
-`tests` = test files are part of the analysed program and test functions are roots; `no_tests` = production code only (roots: `main`, or for a library with no `main` package its exported surface; Rust drops `tests/` directories and `#[cfg(test)]` items). lidx indexes the whole repository once; edges from files or functions the compiler did not analyse are excluded from precision and listed as ungradable.
+`tests` = test files are part of the analysed program and test functions are roots; `no_tests` = production code only (roots: `main`, or for a library with no `main` package its exported surface; Rust `path_tests_excluded` drops files under `tests/` or `test/` directories, Rust `no_tests` also drops `#[cfg(test)]` items and modules gated by it). lidx indexes the whole repository once; edges from files or functions the compiler did not analyse are excluded from precision and listed as ungradable.
 
 Toolchains: rust-analyzer rust-analyzer 1.94.0 (4a4ef493 2026-03-02); node v22.18.0; go go version go1.24.4 darwin/arm64; typescript 5.9.3; python 3.14.7.
 
@@ -67,8 +90,10 @@ Same grading with lidx's REFERENCES and USES edges added to CALLS (the compiler 
 | go/syft/tests | 0.880 | 0.471 | 0.880 | 0.471 | 0 | 20 |
 | ts/zod | 0.934 | 0.796 | 0.242 | 0.860 | 0 | 6549 |
 | ts/hono | 0.653 | 0.871 | 0.245 | 0.873 | 0 | 2572 |
-| rust/ripgrep/no_tests | 0.816 | 0.751 | 0.816 | 0.751 | 0 | 1225 |
+| rust/ripgrep/path_tests_excluded | 0.878 | 0.668 | 0.878 | 0.668 | 0 | 1225 |
+| rust/ripgrep/no_tests | 0.818 | 0.750 | 0.818 | 0.750 | 0 | 1225 |
 | rust/ripgrep/tests | 0.875 | 0.671 | 0.875 | 0.671 | 0 | 1225 |
+| rust/fd/path_tests_excluded | 0.890 | 0.914 | 0.890 | 0.914 | 0 | 196 |
 | rust/fd/no_tests | 0.860 | 0.900 | 0.860 | 0.900 | 0 | 196 |
 | rust/fd/tests | 0.941 | 0.957 | 0.941 | 0.957 | 0 | 196 |
 
@@ -187,16 +212,17 @@ Lists: `results/lists/go__syft__no_tests.fn.json`, `go__syft__no_tests.fp.json`,
 
 Wrong edges (FP) by category: external_callee_at_site 522, wrong_target 36, no_call_at_site 10, calls_test_code 2
 
-Missed edges (FN) by category: no_edge_at_site 2368, marked_external 1660, other_call_on_line_missed 622, wrong_target 28
+Missed edges (FN) by category: no_edge_at_site 2368, marked_external 1661, other_call_on_line_missed 621, wrong_target 28
 
 Lists: `results/lists/go__syft__tests.fn.json`, `go__syft__tests.fp.json`, `go__syft__tests.capture_gap.json`, `go__syft__tests.ungradable.json`, `go__syft__tests.dispatch_fn.json` (the last is not committed for go/syft/tests, regenerate with run.py).
 
 ### ts/zod
 
 - oracle: None, 1947 edges: 1687 static with an indexed caller, 15 dispatch (3 of them found), 245 capture gap
+- repowise-comparable scope: 1626 oracle edges (112 module-level and 215 abstract-target edges removed), P 0.971 [0.961, 0.979], R 0.791 [0.770, 0.810]; the figures in this section are the stricter grading
 - unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.934 if they were counted wrong
 - recall when both ends are indexed symbols: 0.796 (1687 oracle edges); caller lifted to an enclosing declaration for 278 edges; capture gap reasons: {'callee_not_indexed': 245}
-- lidx: 1969 resolved in-repo CALLS pairs; 1435 graded (1341 correct, 94 wrong); lidx indexed in 4.8s
+- lidx: 1969 resolved in-repo CALLS pairs; 1435 graded (1341 correct, 94 wrong); lidx indexed in 5.0s
 - ungradable lidx pairs: caller_file_not_covered 534
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -216,9 +242,10 @@ Lists: `results/lists/ts__zod.fn.json`, `ts__zod.fp.json`, `ts__zod.capture_gap.
 ### ts/hono
 
 - oracle: None, 921 edges: 780 static with an indexed caller, 13 dispatch (13 of them found), 128 capture gap
+- repowise-comparable scope: 833 oracle edges (24 module-level and 68 abstract-target edges removed), P 0.666 [0.636, 0.695], R 0.793 [0.765, 0.820]; the figures in this section are the stricter grading
 - unresolved-site exclusion: 2 lidx pairs left out; precision would be 0.652 if they were counted wrong
 - recall when both ends are indexed symbols: 0.871 (780 oracle edges); caller lifted to an enclosing declaration for 120 edges; capture gap reasons: {'callee_not_indexed': 128}
-- lidx: 1833 resolved in-repo CALLS pairs; 1038 graded (678 correct, 360 wrong); lidx indexed in 11.5s
+- lidx: 1833 resolved in-repo CALLS pairs; 1038 graded (678 correct, 360 wrong); lidx indexed in 11.6s
 - ungradable lidx pairs: caller_file_not_covered 793, oracle_unresolved_site 2
 
 | resolution_kind | graded | correct | precision | 95% CI |
@@ -235,25 +262,47 @@ Missed edges (FN) by category: no_edge_at_site 78, attributed_to_other_caller 8,
 
 Lists: `results/lists/ts__hono.fn.json`, `ts__hono.fp.json`, `ts__hono.capture_gap.json`, `ts__hono.ungradable.json`, `ts__hono.dispatch_fn.json` (the last is not committed for go/syft/tests, regenerate with run.py).
 
-### rust/ripgrep/no_tests
+### rust/ripgrep/path_tests_excluded
 
-- oracle: None, 2355 edges: 2215 static with an indexed caller, 140 dispatch (42 of them found), 0 capture gap
-- unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.816 if they were counted wrong
-- recall when both ends are indexed symbols: 0.751 (2215 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
-- lidx: 3650 resolved in-repo CALLS pairs; 2089 graded (1705 correct, 384 wrong); lidx indexed in 3.4s
-- ungradable lidx pairs: caller_file_not_covered 115, caller_not_judged 1446
+- oracle: None, 4796 edges: 4567 static with an indexed caller, 167 dispatch (42 of them found), 62 capture gap
+- unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.878 if they were counted wrong
+- recall when both ends are indexed symbols: 0.668 (4567 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: {'macro_generated': 62}
+- lidx: 3650 resolved in-repo CALLS pairs; 3524 graded (3095 correct, 429 wrong); lidx indexed in 3.4s
+- ungradable lidx pairs: caller_file_not_covered 115, caller_not_judged 11
 
 | resolution_kind | graded | correct | precision | 95% CI |
 |---|---:|---:|---:|---|
-| bare_name | 654 | 312 | 0.477 | [0.439, 0.515] |
-| exact | 560 | 550 | 0.982 | [0.967, 0.990] |
-| receiver_type | 531 | 518 | 0.976 | [0.959, 0.986] |
-| two_segment | 327 | 308 | 0.942 | [0.911, 0.963] |
+| bare_name | 1136 | 750 | 0.660 | [0.632, 0.687] |
+| exact | 919 | 907 | 0.987 | [0.977, 0.993] |
+| receiver_type | 735 | 723 | 0.984 | [0.972, 0.991] |
+| two_segment | 711 | 692 | 0.973 | [0.959, 0.983] |
+| import | 23 | 23 | 1.000 | [0.857, 1.000] |
+
+Wrong edges (FP) by category: external_callee_at_site 299, wrong_target 109, no_call_at_site 17, calls_test_code 4
+
+Missed edges (FN) by category: no_edge_at_site 693, other_call_on_line_missed 626, marked_external 135, wrong_target 59, attributed_to_other_caller 1
+
+Lists: `results/lists/rust__ripgrep__path_tests_excluded.fn.json`, `rust__ripgrep__path_tests_excluded.fp.json`, `rust__ripgrep__path_tests_excluded.capture_gap.json`, `rust__ripgrep__path_tests_excluded.ungradable.json`, `rust__ripgrep__path_tests_excluded.dispatch_fn.json` (the last is not committed for go/syft/tests, regenerate with run.py).
+
+### rust/ripgrep/no_tests
+
+- oracle: None, 2315 edges: 2176 static with an indexed caller, 139 dispatch (42 of them found), 0 capture gap
+- unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.818 if they were counted wrong
+- recall when both ends are indexed symbols: 0.750 (2176 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
+- lidx: 3650 resolved in-repo CALLS pairs; 2049 graded (1675 correct, 374 wrong); lidx indexed in 3.4s
+- ungradable lidx pairs: caller_file_not_covered 162, caller_not_judged 1439
+
+| resolution_kind | graded | correct | precision | 95% CI |
+|---|---:|---:|---:|---|
+| bare_name | 640 | 307 | 0.480 | [0.441, 0.518] |
+| exact | 557 | 547 | 0.982 | [0.967, 0.990] |
+| receiver_type | 515 | 503 | 0.977 | [0.960, 0.987] |
+| two_segment | 320 | 301 | 0.941 | [0.909, 0.962] |
 | import | 17 | 17 | 1.000 | [0.816, 1.000] |
 
-Wrong edges (FP) by category: external_callee_at_site 264, wrong_target 101, no_call_at_site 17, calls_test_code 2
+Wrong edges (FP) by category: external_callee_at_site 258, wrong_target 97, no_call_at_site 17, calls_test_code 2
 
-Missed edges (FN) by category: no_edge_at_site 316, other_call_on_line_missed 131, wrong_target 55, marked_external 49, attributed_to_other_caller 1
+Missed edges (FN) by category: no_edge_at_site 308, other_call_on_line_missed 131, wrong_target 54, marked_external 49, attributed_to_other_caller 1
 
 Lists: `results/lists/rust__ripgrep__no_tests.fn.json`, `rust__ripgrep__no_tests.fp.json`, `rust__ripgrep__no_tests.capture_gap.json`, `rust__ripgrep__no_tests.ungradable.json`, `rust__ripgrep__no_tests.dispatch_fn.json` (the last is not committed for go/syft/tests, regenerate with run.py).
 
@@ -279,6 +328,28 @@ Wrong edges (FP) by category: external_callee_at_site 316, wrong_target 116, no_
 Missed edges (FN) by category: no_edge_at_site 708, other_call_on_line_missed 628, marked_external 136, wrong_target 59, attributed_to_other_caller 1
 
 Lists: `results/lists/rust__ripgrep__tests.fn.json`, `rust__ripgrep__tests.fp.json`, `rust__ripgrep__tests.capture_gap.json`, `rust__ripgrep__tests.ungradable.json`, `rust__ripgrep__tests.dispatch_fn.json` (the last is not committed for go/syft/tests, regenerate with run.py).
+
+### rust/fd/path_tests_excluded
+
+- oracle: None, 257 edges: 257 static with an indexed caller, 0 dispatch (0 of them found), 0 capture gap
+- unresolved-site exclusion: 0 lidx pairs left out; precision would be 0.890 if they were counted wrong
+- recall when both ends are indexed symbols: 0.914 (257 oracle edges); caller lifted to an enclosing declaration for 0 edges; capture gap reasons: none
+- lidx: 537 resolved in-repo CALLS pairs; 264 graded (235 correct, 29 wrong); lidx indexed in 0.5s
+- ungradable lidx pairs: caller_file_not_covered 273
+
+| resolution_kind | graded | correct | precision | 95% CI |
+|---|---:|---:|---:|---|
+| bare_name | 86 | 57 | 0.663 | [0.558, 0.754] |
+| exact | 71 | 71 | 1.000 | [0.949, 1.000] |
+| two_segment | 53 | 53 | 1.000 | [0.932, 1.000] |
+| receiver_type | 35 | 35 | 1.000 | [0.901, 1.000] |
+| import | 19 | 19 | 1.000 | [0.832, 1.000] |
+
+Wrong edges (FP) by category: external_callee_at_site 26, wrong_target 2, reference_as_call 1
+
+Missed edges (FN) by category: no_edge_at_site 18, marked_external 2, other_call_on_line_missed 1, wrong_target 1
+
+Lists: `results/lists/rust__fd__path_tests_excluded.fn.json`, `rust__fd__path_tests_excluded.fp.json`, `rust__fd__path_tests_excluded.capture_gap.json`, `rust__fd__path_tests_excluded.ungradable.json`, `rust__fd__path_tests_excluded.dispatch_fn.json` (the last is not committed for go/syft/tests, regenerate with run.py).
 
 ### rust/fd/no_tests
 
@@ -314,8 +385,8 @@ Lists: `results/lists/rust__fd__no_tests.fn.json`, `rust__fd__no_tests.fp.json`,
 |---|---:|---:|---:|---|
 | receiver_type | 162 | 162 | 1.000 | [0.977, 1.000] |
 | two_segment | 142 | 142 | 1.000 | [0.974, 1.000] |
-| exact | 101 | 101 | 1.000 | [0.963, 1.000] |
 | bare_name | 101 | 70 | 0.693 | [0.597, 0.775] |
+| exact | 101 | 101 | 1.000 | [0.963, 1.000] |
 | import | 19 | 19 | 1.000 | [0.832, 1.000] |
 
 Wrong edges (FP) by category: external_callee_at_site 28, wrong_target 2, reference_as_call 1

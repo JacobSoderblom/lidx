@@ -131,7 +131,10 @@ random FPs and 20 random FNs per language **plus up to 10 random items from ever
 (dispatch, each ungradable reason, capture gaps), read against the source. Items are classified `lidx_error`,
 `oracle_artefact` or `matching_artefact` (FP/FN), or `correct_exclusion` / `misbucketed` (buckets). The rules above were
 changed until the artefact and mis-bucketing rates were under 10%; the history of that iteration, which found real
-problems in the first version, is in the report.
+problems in the first version, is in the report. The sample was drawn from the stricter gradings (TypeScript with every edge, Rust
+`no_tests`) before `no_tests` stopped leaking modules gated by `#[cfg(test)]` in their parent; the Go and TypeScript lists are
+unchanged by the scope work, and a few sampled Rust items in `crates/searcher/src/testutil.rs` are no longer in the regenerated
+Rust `no_tests` lists.
 
 ## Results next to repowise
 
@@ -140,18 +143,21 @@ spot-check). repowise: the numbers they publish in `docs/BENCHMARKS.md` on repow
 compiler, five tools" for Go and TypeScript, "Accuracy by language" for Rust). The repowise intervals are Wilson intervals we
 computed from their published point estimate and the edge counts of the same cells in repowise-bench (an earlier run of the
 same cells), not intervals they published. **ahead / tied / behind compares the two 95% intervals, never the point
-estimates.** Recall is the comparable recall. Both sides at the same commits and the same scope.
+estimates.** Recall is the comparable recall. Both sides at the same commits and the same scope: the TypeScript rows use
+repowise's `tsc` scope (no module-level callers, no abstract targets) and the Rust rows its path-only test rule; our stricter
+gradings of the same repositories (TypeScript with every edge, Rust without `#[cfg(test)]` code) are diagnostic rows in
+`results/report.md` and are never given a verdict.
 
-| Cell | lidx P [95% CI] | repowise P [95% CI] | P | lidx R [95% CI] | repowise R [95% CI] | R |
-|---|---|---|---|---|---|---|
-| go/cobra/tests | 0.933 [0.918, 0.946] | 0.995 [0.990, 0.998] | behind | 0.589 [0.567, 0.611] | 0.705 [0.685, 0.724] | behind |
-| go/gitleaks/no_tests | 0.984 [0.973, 0.991] | 0.991 [0.985, 0.995] | tied | 0.477 [0.452, 0.501] | 0.971 [0.961, 0.978] | behind |
-| go/gitleaks/tests | 0.985 [0.974, 0.992] | 0.989 [0.983, 0.993] | tied | 0.456 [0.433, 0.480] | 0.939 [0.927, 0.949] | behind |
-| go/syft/no_tests | 0.877 [0.866, 0.888] | 0.979 [0.974, 0.983] | behind | 0.367 [0.356, 0.377] | 0.539 [0.528, 0.550] | behind |
-| go/syft/tests | 0.880 [0.871, 0.889] | 0.982 [0.979, 0.985] | behind | 0.162 [0.158, 0.167] | 0.341 [0.335, 0.347] | behind |
-| ts/zod | 0.934 [0.920, 0.946] | 0.995 [0.989, 0.998] | behind | 0.691 [0.670, 0.711] | 0.796 [0.773, 0.817] | behind |
-| ts/hono | 0.653 [0.624, 0.681] | 0.976 [0.958, 0.986] | behind | 0.751 [0.722, 0.778] | 0.806 [0.775, 0.833] | tied |
-| rust/ripgrep/no_tests | 0.816 [0.799, 0.832] | 0.852 [0.838, 0.865] | behind | 0.724 [0.706, 0.742] | 0.532 [0.517, 0.546] | ahead |
-| rust/fd/no_tests | 0.860 [0.805, 0.901] | 0.899 [0.838, 0.939] | tied | 0.900 [0.850, 0.935] | 0.619 [0.555, 0.679] | ahead |
+| Cell | lidx P [95% CI] | repowise P [95% CI] | P | lidx R [95% CI] | repowise R [95% CI] | R | oracle edges (lidx / repowise) |
+|---|---|---|---|---|---|---|---|
+| go/cobra/tests | 0.933 [0.918, 0.946] | 0.995 [0.990, 0.998] | **behind** | 0.589 [0.567, 0.611] | 0.705 [0.685, 0.724] | **behind** | 1923 / 2059 |
+| go/gitleaks/no_tests | 0.984 [0.973, 0.991] | 0.991 [0.985, 0.995] | **tied** | 0.477 [0.452, 0.501] | 0.971 [0.961, 0.978] | **behind** | 1584 / 1584 |
+| go/gitleaks/tests | 0.985 [0.974, 0.992] | 0.989 [0.983, 0.993] | **tied** | 0.456 [0.433, 0.480] | 0.939 [0.927, 0.949] | **behind** | 1747 / 1747 |
+| go/syft/no_tests | 0.877 [0.866, 0.888] | 0.979 [0.974, 0.983] | **behind** | 0.367 [0.356, 0.377] | 0.539 [0.528, 0.550] | **behind** | 7977 / 7898 |
+| go/syft/tests | 0.880 [0.871, 0.889] | 0.982 [0.979, 0.985] | **behind** | 0.162 [0.158, 0.167] | 0.341 [0.335, 0.347] | **behind** | 25902 / 22590 |
+| ts/zod | 0.971 [0.961, 0.979] | 0.995 [0.989, 0.998] | **behind** | 0.791 [0.770, 0.810] | 0.796 [0.773, 0.817] | **tied** | 1626 / 1269 |
+| ts/hono | 0.666 [0.636, 0.695] | 0.976 [0.958, 0.986] | **behind** | 0.793 [0.765, 0.820] | 0.806 [0.775, 0.833] | **tied** | 833 / 706 |
+| rust/ripgrep/path_tests_excluded | 0.878 [0.867, 0.889] | 0.852 [0.838, 0.865] | **ahead** | 0.645 [0.632, 0.659] | 0.532 [0.517, 0.546] | **ahead** | 4796 / 4555 |
+| rust/fd/path_tests_excluded | 0.890 [0.847, 0.922] | 0.899 [0.838, 0.939] | **tied** | 0.914 [0.874, 0.943] | 0.619 [0.555, 0.679] | **ahead** | 257 / 231 |
 
-Not published by repowise, so not compared: cobra without tests, the Rust with-tests variants, TypeScript with tests.
+Not published by repowise, so not compared: cobra without tests, the Rust cells other than `path_tests_excluded`, TypeScript with tests.

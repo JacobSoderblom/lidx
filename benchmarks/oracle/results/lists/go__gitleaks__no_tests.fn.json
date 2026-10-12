@@ -654,7 +654,7 @@
 {"callee":{"file":"logging/log.go","line":26,"name":"Debug"},"caller":{"file":"sources/file.go","line":167,"name":"fileFragments"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["sources/file.go:201"]},
 {"callee":{"file":"logging/log.go","line":26,"name":"Debug"},"caller":{"file":"sources/file.go","line":90,"name":"extractorFragments"},"category":"no_edge_at_site","detail":null,"fanout":2,"sites":["sources/file.go:128"]},
 {"callee":{"file":"logging/log.go","line":26,"name":"Debug"},"caller":{"file":"sources/git.go","line":136,"name":"NewGitDiffCmdContext"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["sources/git.go:144"]},
-{"callee":{"file":"logging/log.go","line":26,"name":"Debug"},"caller":{"file":"sources/git.go","line":299,"name":"Fragments"},"category":"no_edge_at_site","detail":null,"fanout":2,"sites":["sources/git.go:302","sources/git.go:388"]},
+{"callee":{"file":"logging/log.go","line":26,"name":"Debug"},"caller":{"file":"sources/git.go","line":299,"name":"Fragments"},"category":"no_edge_at_site","detail":null,"fanout":2,"sites":["sources/git.go:388","sources/git.go:302"]},
 {"callee":{"file":"logging/log.go","line":26,"name":"Debug"},"caller":{"file":"sources/git.go","line":440,"name":"NewRemoteInfoContext"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["sources/git.go:448","sources/git.go:463"]},
 {"callee":{"file":"logging/log.go","line":26,"name":"Debug"},"caller":{"file":"sources/git.go","line":71,"name":"NewGitLogCmdContext"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["sources/git.go:97"]},
 {"callee":{"file":"logging/log.go","line":29,"name":"Info"},"caller":{"file":"cmd/diagnostics.go","line":136,"name":"StartHttpHandler"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["cmd/diagnostics.go:145"]},
@@ -805,7 +805,7 @@
 {"callee":{"file":"sources/git.go","line":180,"name":"ErrCh"},"caller":{"file":"sources/git.go","line":299,"name":"Fragments"},"category":"no_edge_at_site","detail":null,"fanout":1,"sites":["sources/git.go:308"]},
 {"callee":{"file":"sources/git.go","line":193,"name":"String"},"caller":{"file":"sources/git.go","line":299,"name":"Fragments"},"category":"no_edge_at_site","detail":null,"fanout":2,"sites":["sources/git.go:302"]},
 {"callee":{"file":"sources/git.go","line":207,"name":"NewBlobReaderContext"},"caller":{"file":"sources/git.go","line":299,"name":"Fragments"},"category":"marked_external","detail":{"lidx_target":"ext:s.Sema.Go","resolution_kind":"external"},"fanout":1,"sites":["sources/git.go:366"]},
-{"callee":{"file":"sources/git.go","line":299,"name":"Fragments"},"caller":{"file":"sources/git.go","line":299,"name":"Fragments"},"category":"no_edge_at_site","detail":null,"fanout":2,"sites":["sources/git.go:383","sources/git.go:300","sources/git.go:420"]},
+{"callee":{"file":"sources/git.go","line":299,"name":"Fragments"},"caller":{"file":"sources/git.go","line":299,"name":"Fragments"},"category":"no_edge_at_site","detail":null,"fanout":2,"sites":["sources/git.go:300","sources/git.go:383","sources/git.go:420"]},
 {"callee":{"file":"sources/git.go","line":440,"name":"NewRemoteInfoContext"},"caller":{"file":"cmd/detect.go","line":50,"name":"runDetect"},"category":"other_call_on_line_missed","detail":null,"fanout":1,"sites":["cmd/detect.go:123"]},
 {"callee":{"file":"sources/git.go","line":440,"name":"NewRemoteInfoContext"},"caller":{"file":"cmd/git.go","line":29,"name":"runGit"},"category":"other_call_on_line_missed","detail":null,"fanout":1,"sites":["cmd/git.go:84"]}
 ]

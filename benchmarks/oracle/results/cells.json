@@ -9,7 +9,7 @@
  "generated": "2026-10-12",
  "lidx_version": "lidx 0.7.0",
  "main_commit": "8e3206a0b0639ae8ad531c2a0a7eb47a7171d790",
- "head_commit": "7364b8589a30c34fc514c5d112c2d48aad510d3e",
+ "head_commit": "754db9683d159fb9dc0ae866c5877907e281d76a",
  "corpus": {
   "cobra": {
    "lang": "go",
@@ -66,7 +66,7 @@
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 0.9
+    "seconds": 2.4
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 28,
@@ -188,7 +188,7 @@
    "oracle_mode": "library",
    "oracle_meta": {
     "toolchain": "local",
-    "seconds": 0.6
+    "seconds": 0.7
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 10,
@@ -300,7 +300,7 @@
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "go1.24.11",
-    "seconds": 2.9
+    "seconds": 3.6
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 49,
@@ -526,7 +526,7 @@
    "oracle_mode": "tests",
    "oracle_meta": {
     "toolchain": "go1.26.3",
-    "seconds": 70.7
+    "seconds": 72.3
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 3416,
@@ -613,8 +613,8 @@
     },
     "fn_categories": {
      "no_edge_at_site": 2368,
-     "marked_external": 1660,
-     "other_call_on_line_missed": 622,
+     "marked_external": 1661,
+     "other_call_on_line_missed": 621,
      "wrong_target": 28
     }
    },
@@ -651,7 +651,7 @@
    "oracle_mode": "main",
    "oracle_meta": {
     "toolchain": "go1.26.3",
-    "seconds": 58.5
+    "seconds": 58.9
    },
    "oracle_dropped": {
     "callee_synthetic:package initializer": 832,
@@ -772,7 +772,7 @@
    "repo": "zod",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 4.8,
+   "index_seconds": 5.0,
    "oracle_mode": null,
    "oracle_meta": {
     "seconds": 2.8
@@ -888,6 +888,113 @@
      "other_call_on_line_missed": 11
     }
    },
+   "comparable": {
+    "oracle_edges": 1626,
+    "oracle_edges_caller_indexed": 1582,
+    "capture_gap_edges": 44,
+    "capture_gap_reasons": {
+     "callee_not_indexed": 44
+    },
+    "lifted_caller_edges": 278,
+    "matched_oracle_edges": 1286,
+    "dispatch_edges": 0,
+    "dispatch_matched": 0,
+    "recall_comparable": 0.7909,
+    "recall_comparable_ci": [
+     0.7705,
+     0.81
+    ],
+    "closure_edges": 0,
+    "unresolved_pairs_excluded": 0,
+    "precision_if_unresolved_counted_wrong": 0.9712,
+    "recall_strict": 0.8129,
+    "recall_strict_ci": [
+     0.7929,
+     0.8313
+    ],
+    "lidx_pairs_total": 1969,
+    "graded": 1286,
+    "tp": 1249,
+    "fp": 37,
+    "precision": 0.9712,
+    "precision_ci": [
+     0.9606,
+     0.9791
+    ],
+    "recall": 0.8129,
+    "recall_ci": [
+     0.7929,
+     0.8313
+    ],
+    "oracle_edges_both_ends_indexed": 1582,
+    "recall_both_ends_indexed": 0.8129,
+    "recall_incl_capture_gap": 0.7909,
+    "ungradable": {
+     "caller_file_not_covered": 534,
+     "caller_withheld": 149
+    },
+    "by_resolution_kind": {
+     "import": {
+      "graded": 776,
+      "tp": 770,
+      "precision": 0.9923,
+      "ci": [
+       0.9832,
+       0.9965
+      ]
+     },
+     "exact": {
+      "graded": 365,
+      "tp": 344,
+      "precision": 0.9425,
+      "ci": [
+       0.9136,
+       0.9621
+      ]
+     },
+     "bare_name": {
+      "graded": 127,
+      "tp": 117,
+      "precision": 0.9213,
+      "ci": [
+       0.8611,
+       0.9567
+      ]
+     },
+     "receiver_type": {
+      "graded": 16,
+      "tp": 16,
+      "precision": 1.0,
+      "ci": [
+       0.8064,
+       1.0
+      ]
+     },
+     "two_segment": {
+      "graded": 2,
+      "tp": 2,
+      "precision": 1.0,
+      "ci": [
+       0.3424,
+       1.0
+      ]
+     }
+    },
+    "fp_categories": {
+     "reference_as_call": 26,
+     "external_callee_at_site": 10,
+     "wrong_target": 1
+    },
+    "fn_categories": {
+     "no_edge_at_site": 208,
+     "recorded_as_uses": 73,
+     "other_call_on_line_missed": 11,
+     "wrong_target": 4
+    },
+    "oracle_edges_removed": 321,
+    "module_level_removed": 112,
+    "abstract_target_removed": 215
+   },
    "calls_plus_references": {
     "graded": 6001,
     "tp": 1451,
@@ -917,7 +1024,7 @@
    "repo": "hono",
    "lang": "ts",
    "variant": "no_tests",
-   "index_seconds": 11.5,
+   "index_seconds": 11.6,
    "oracle_mode": null,
    "oracle_meta": {
     "seconds": 1.9
@@ -1035,6 +1142,116 @@
      "recorded_as_uses": 1
     }
    },
+   "comparable": {
+    "oracle_edges": 833,
+    "oracle_edges_caller_indexed": 760,
+    "capture_gap_edges": 73,
+    "capture_gap_reasons": {
+     "callee_not_indexed": 73
+    },
+    "lifted_caller_edges": 120,
+    "matched_oracle_edges": 661,
+    "dispatch_edges": 0,
+    "dispatch_matched": 0,
+    "recall_comparable": 0.7935,
+    "recall_comparable_ci": [
+     0.7647,
+     0.8196
+    ],
+    "closure_edges": 0,
+    "unresolved_pairs_excluded": 2,
+    "precision_if_unresolved_counted_wrong": 0.6646,
+    "recall_strict": 0.8697,
+    "recall_strict_ci": [
+     0.8439,
+     0.8918
+    ],
+    "lidx_pairs_total": 1833,
+    "graded": 970,
+    "tp": 646,
+    "fp": 324,
+    "precision": 0.666,
+    "precision_ci": [
+     0.6357,
+     0.695
+    ],
+    "recall": 0.8697,
+    "recall_ci": [
+     0.8439,
+     0.8918
+    ],
+    "oracle_edges_both_ends_indexed": 760,
+    "recall_both_ends_indexed": 0.8697,
+    "recall_incl_capture_gap": 0.7935,
+    "ungradable": {
+     "caller_file_not_covered": 793,
+     "caller_withheld": 68,
+     "oracle_unresolved_site": 2
+    },
+    "by_resolution_kind": {
+     "exact": {
+      "graded": 505,
+      "tp": 341,
+      "precision": 0.6752,
+      "ci": [
+       0.6332,
+       0.7146
+      ]
+     },
+     "import": {
+      "graded": 408,
+      "tp": 259,
+      "precision": 0.6348,
+      "ci": [
+       0.587,
+       0.6801
+      ]
+     },
+     "bare_name": {
+      "graded": 33,
+      "tp": 22,
+      "precision": 0.6667,
+      "ci": [
+       0.4961,
+       0.8025
+      ]
+     },
+     "receiver_type": {
+      "graded": 22,
+      "tp": 22,
+      "precision": 1.0,
+      "ci": [
+       0.8513,
+       1.0
+      ]
+     },
+     "inherited": {
+      "graded": 2,
+      "tp": 2,
+      "precision": 1.0,
+      "ci": [
+       0.3424,
+       1.0
+      ]
+     }
+    },
+    "fp_categories": {
+     "reference_as_call": 307,
+     "external_callee_at_site": 8,
+     "wrong_target": 8,
+     "caller_attribution": 1
+    },
+    "fn_categories": {
+     "no_edge_at_site": 78,
+     "attributed_to_other_caller": 8,
+     "wrong_target": 8,
+     "other_call_on_line_missed": 4,
+     "recorded_as_uses": 1
+    },
+    "oracle_edges_removed": 88,
+    "module_level_removed": 24,
+    "abstract_target_removed": 68
+   },
    "calls_plus_references": {
     "graded": 2846,
     "tp": 696,
@@ -1057,6 +1274,151 @@
     "USES": 2572
    }
   },
+  "rust/ripgrep/path_tests_excluded": {
+   "oracle_ts_version": null,
+   "oracle_node_version": null,
+   "cell": "rust/ripgrep/path_tests_excluded",
+   "repo": "ripgrep",
+   "lang": "rust",
+   "variant": "path_tests_excluded",
+   "index_seconds": 3.4,
+   "oracle_mode": null,
+   "oracle_meta": {
+    "seconds": 6.7
+   },
+   "oracle_dropped": {
+    "caller_not_in_function": 1539,
+    "callee_external": 8728,
+    "callee_variant": 282
+   },
+   "calls": {
+    "oracle_edges": 4796,
+    "oracle_edges_caller_indexed": 4567,
+    "capture_gap_edges": 62,
+    "capture_gap_reasons": {
+     "macro_generated": 62
+    },
+    "lifted_caller_edges": 0,
+    "matched_oracle_edges": 3053,
+    "dispatch_edges": 167,
+    "dispatch_matched": 42,
+    "recall_comparable": 0.6453,
+    "recall_comparable_ci": [
+     0.6317,
+     0.6587
+    ],
+    "closure_edges": 0,
+    "unresolved_pairs_excluded": 0,
+    "precision_if_unresolved_counted_wrong": 0.8783,
+    "recall_strict": 0.6538,
+    "recall_strict_ci": [
+     0.6401,
+     0.6672
+    ],
+    "lidx_pairs_total": 3650,
+    "graded": 3524,
+    "tp": 3095,
+    "fp": 429,
+    "precision": 0.8783,
+    "precision_ci": [
+     0.8671,
+     0.8886
+    ],
+    "recall": 0.6685,
+    "recall_ci": [
+     0.6547,
+     0.682
+    ],
+    "oracle_edges_both_ends_indexed": 4567,
+    "recall_both_ends_indexed": 0.6685,
+    "recall_incl_capture_gap": 0.6366,
+    "ungradable": {
+     "caller_not_judged": 11,
+     "caller_file_not_covered": 115
+    },
+    "by_resolution_kind": {
+     "bare_name": {
+      "graded": 1136,
+      "tp": 750,
+      "precision": 0.6602,
+      "ci": [
+       0.6322,
+       0.6872
+      ]
+     },
+     "exact": {
+      "graded": 919,
+      "tp": 907,
+      "precision": 0.9869,
+      "ci": [
+       0.9773,
+       0.9925
+      ]
+     },
+     "receiver_type": {
+      "graded": 735,
+      "tp": 723,
+      "precision": 0.9837,
+      "ci": [
+       0.9717,
+       0.9906
+      ]
+     },
+     "two_segment": {
+      "graded": 711,
+      "tp": 692,
+      "precision": 0.9733,
+      "ci": [
+       0.9586,
+       0.9828
+      ]
+     },
+     "import": {
+      "graded": 23,
+      "tp": 23,
+      "precision": 1.0,
+      "ci": [
+       0.8569,
+       1.0
+      ]
+     }
+    },
+    "fp_categories": {
+     "external_callee_at_site": 299,
+     "wrong_target": 109,
+     "no_call_at_site": 17,
+     "calls_test_code": 4
+    },
+    "fn_categories": {
+     "no_edge_at_site": 693,
+     "other_call_on_line_missed": 626,
+     "marked_external": 135,
+     "wrong_target": 59,
+     "attributed_to_other_caller": 1
+    }
+   },
+   "calls_plus_references": {
+    "graded": 3524,
+    "tp": 3095,
+    "fp": 429,
+    "precision": 0.8783,
+    "precision_ci": [
+     0.8671,
+     0.8886
+    ],
+    "recall": 0.6685,
+    "recall_ci": [
+     0.6547,
+     0.682
+    ],
+    "matched_oracle_edges": 3053
+   },
+   "lidx_edge_counts": {
+    "CALLS": 6764,
+    "REFERENCES": 0,
+    "USES": 1225
+   }
+  },
   "rust/ripgrep/no_tests": {
    "oracle_ts_version": null,
    "oracle_node_version": null,
@@ -1067,91 +1429,91 @@
    "index_seconds": 3.4,
    "oracle_mode": null,
    "oracle_meta": {
-    "seconds": 6.7
+    "seconds": 6.8
    },
    "oracle_dropped": {
-    "caller_not_in_function": 1418,
-    "callee_external": 6176,
-    "callee_variant": 179
+    "caller_not_in_function": 1391,
+    "callee_external": 5978,
+    "callee_variant": 178
    },
    "calls": {
-    "oracle_edges": 2355,
-    "oracle_edges_caller_indexed": 2215,
+    "oracle_edges": 2315,
+    "oracle_edges_caller_indexed": 2176,
     "capture_gap_edges": 0,
     "capture_gap_reasons": {},
     "lifted_caller_edges": 0,
-    "matched_oracle_edges": 1663,
-    "dispatch_edges": 140,
+    "matched_oracle_edges": 1633,
+    "dispatch_edges": 139,
     "dispatch_matched": 42,
-    "recall_comparable": 0.724,
+    "recall_comparable": 0.7235,
     "recall_comparable_ci": [
-     0.7056,
-     0.7417
+     0.705,
+     0.7414
     ],
     "closure_edges": 0,
     "unresolved_pairs_excluded": 0,
-    "precision_if_unresolved_counted_wrong": 0.8162,
-    "recall_strict": 0.724,
+    "precision_if_unresolved_counted_wrong": 0.8175,
+    "recall_strict": 0.7235,
     "recall_strict_ci": [
-     0.7056,
-     0.7417
+     0.705,
+     0.7414
     ],
     "lidx_pairs_total": 3650,
-    "graded": 2089,
-    "tp": 1705,
-    "fp": 384,
-    "precision": 0.8162,
+    "graded": 2049,
+    "tp": 1675,
+    "fp": 374,
+    "precision": 0.8175,
     "precision_ci": [
-     0.799,
-     0.8322
+     0.8002,
+     0.8336
     ],
-    "recall": 0.7508,
+    "recall": 0.7505,
     "recall_ci": [
-     0.7324,
-     0.7684
+     0.7318,
+     0.7682
     ],
-    "oracle_edges_both_ends_indexed": 2215,
-    "recall_both_ends_indexed": 0.7508,
-    "recall_incl_capture_gap": 0.7062,
+    "oracle_edges_both_ends_indexed": 2176,
+    "recall_both_ends_indexed": 0.7505,
+    "recall_incl_capture_gap": 0.7054,
     "ungradable": {
-     "caller_not_judged": 1446,
-     "caller_file_not_covered": 115
+     "caller_not_judged": 1439,
+     "caller_file_not_covered": 162
     },
     "by_resolution_kind": {
      "bare_name": {
-      "graded": 654,
-      "tp": 312,
-      "precision": 0.4771,
+      "graded": 640,
+      "tp": 307,
+      "precision": 0.4797,
       "ci": [
-       0.439,
-       0.5154
+       0.4412,
+       0.5184
       ]
      },
      "exact": {
-      "graded": 560,
-      "tp": 550,
-      "precision": 0.9821,
+      "graded": 557,
+      "tp": 547,
+      "precision": 0.982,
       "ci": [
-       0.9674,
-       0.9903
+       0.9673,
+       0.9902
       ]
      },
      "receiver_type": {
-      "graded": 531,
-      "tp": 518,
-      "precision": 0.9755,
+      "graded": 515,
+      "tp": 503,
+      "precision": 0.9767,
       "ci": [
-       0.9586,
-       0.9856
+       0.9597,
+       0.9866
       ]
      },
      "two_segment": {
-      "graded": 327,
-      "tp": 308,
-      "precision": 0.9419,
+      "graded": 320,
+      "tp": 301,
+      "precision": 0.9406,
       "ci": [
-       0.911,
-       0.9625
+       0.9091,
+       0.9617
       ]
      },
      "import": {
@@ -1165,34 +1527,34 @@
      }
     },
     "fp_categories": {
-     "external_callee_at_site": 264,
-     "wrong_target": 101,
+     "external_callee_at_site": 258,
+     "wrong_target": 97,
      "no_call_at_site": 17,
      "calls_test_code": 2
     },
     "fn_categories": {
-     "no_edge_at_site": 316,
+     "no_edge_at_site": 308,
      "other_call_on_line_missed": 131,
-     "wrong_target": 55,
+     "wrong_target": 54,
      "marked_external": 49,
      "attributed_to_other_caller": 1
     }
    },
    "calls_plus_references": {
-    "graded": 2089,
-    "tp": 1705,
-    "fp": 384,
-    "precision": 0.8162,
+    "graded": 2049,
+    "tp": 1675,
+    "fp": 374,
+    "precision": 0.8175,
     "precision_ci": [
-     0.799,
-     0.8322
+     0.8002,
+     0.8336
     ],
-    "recall": 0.7508,
+    "recall": 0.7505,
     "recall_ci": [
-     0.7324,
-     0.7684
+     0.7318,
+     0.7682
     ],
-    "matched_oracle_edges": 1663
+    "matched_oracle_edges": 1633
    },
    "lidx_edge_counts": {
     "CALLS": 6764,
@@ -1352,6 +1714,146 @@
     "CALLS": 6764,
     "REFERENCES": 0,
     "USES": 1225
+   }
+  },
+  "rust/fd/path_tests_excluded": {
+   "oracle_ts_version": null,
+   "oracle_node_version": null,
+   "cell": "rust/fd/path_tests_excluded",
+   "repo": "fd",
+   "lang": "rust",
+   "variant": "path_tests_excluded",
+   "index_seconds": 0.5,
+   "oracle_mode": null,
+   "oracle_meta": {
+    "seconds": 4.3
+   },
+   "oracle_dropped": {
+    "caller_not_in_function": 153,
+    "callee_external": 1561,
+    "callee_variant": 124
+   },
+   "calls": {
+    "oracle_edges": 257,
+    "oracle_edges_caller_indexed": 257,
+    "capture_gap_edges": 0,
+    "capture_gap_reasons": {},
+    "lifted_caller_edges": 0,
+    "matched_oracle_edges": 235,
+    "dispatch_edges": 0,
+    "dispatch_matched": 0,
+    "recall_comparable": 0.9144,
+    "recall_comparable_ci": [
+     0.8738,
+     0.9428
+    ],
+    "closure_edges": 0,
+    "unresolved_pairs_excluded": 0,
+    "precision_if_unresolved_counted_wrong": 0.8902,
+    "recall_strict": 0.9144,
+    "recall_strict_ci": [
+     0.8738,
+     0.9428
+    ],
+    "lidx_pairs_total": 537,
+    "graded": 264,
+    "tp": 235,
+    "fp": 29,
+    "precision": 0.8902,
+    "precision_ci": [
+     0.8467,
+     0.9224
+    ],
+    "recall": 0.9144,
+    "recall_ci": [
+     0.8738,
+     0.9428
+    ],
+    "oracle_edges_both_ends_indexed": 257,
+    "recall_both_ends_indexed": 0.9144,
+    "recall_incl_capture_gap": 0.9144,
+    "ungradable": {
+     "caller_file_not_covered": 273
+    },
+    "by_resolution_kind": {
+     "bare_name": {
+      "graded": 86,
+      "tp": 57,
+      "precision": 0.6628,
+      "ci": [
+       0.5578,
+       0.7538
+      ]
+     },
+     "exact": {
+      "graded": 71,
+      "tp": 71,
+      "precision": 1.0,
+      "ci": [
+       0.9487,
+       1.0
+      ]
+     },
+     "two_segment": {
+      "graded": 53,
+      "tp": 53,
+      "precision": 1.0,
+      "ci": [
+       0.9324,
+       1.0
+      ]
+     },
+     "receiver_type": {
+      "graded": 35,
+      "tp": 35,
+      "precision": 1.0,
+      "ci": [
+       0.9011,
+       1.0
+      ]
+     },
+     "import": {
+      "graded": 19,
+      "tp": 19,
+      "precision": 1.0,
+      "ci": [
+       0.8318,
+       1.0
+      ]
+     }
+    },
+    "fp_categories": {
+     "external_callee_at_site": 26,
+     "wrong_target": 2,
+     "reference_as_call": 1
+    },
+    "fn_categories": {
+     "no_edge_at_site": 18,
+     "marked_external": 2,
+     "other_call_on_line_missed": 1,
+     "wrong_target": 1
+    }
+   },
+   "calls_plus_references": {
+    "graded": 264,
+    "tp": 235,
+    "fp": 29,
+    "precision": 0.8902,
+    "precision_ci": [
+     0.8467,
+     0.9224
+    ],
+    "recall": 0.9144,
+    "recall_ci": [
+     0.8738,
+     0.9428
+    ],
+    "matched_oracle_edges": 235
+   },
+   "lidx_edge_counts": {
+    "CALLS": 1158,
+    "REFERENCES": 0,
+    "USES": 196
    }
   },
   "rust/fd/no_tests": {
@@ -1573,15 +2075,6 @@
        1.0
       ]
      },
-     "exact": {
-      "graded": 101,
-      "tp": 101,
-      "precision": 1.0,
-      "ci": [
-       0.9634,
-       1.0
-      ]
-     },
      "bare_name": {
       "graded": 101,
       "tp": 70,
@@ -1589,6 +2082,15 @@
       "ci": [
        0.5974,
        0.7746
+      ]
+     },
+     "exact": {
+      "graded": 101,
+      "tp": 101,
+      "precision": 1.0,
+      "ci": [
+       0.9634,
+       1.0
       ]
      },
      "import": {
