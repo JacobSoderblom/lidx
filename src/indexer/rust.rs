@@ -4152,6 +4152,22 @@ fn tc() {}
             .collect()
     }
 
+    /// `declared_receiver_type` without a declaration index: std steps only.
+    fn declared_receiver_type(
+        deferred: &RustDeferred,
+        qualname: &str,
+        signature: &str,
+    ) -> Option<String> {
+        let mut ty = super::declared_source_ty(&deferred.source, qualname, signature)?;
+        for step in &deferred.steps {
+            ty = super::project(ty, step.clone());
+        }
+        match ty {
+            super::Ty::Named(n) => Some(n),
+            _ => None,
+        }
+    }
+
     fn call(steps: Vec<Step>) -> RustDeferred {
         RustDeferred {
             source: DeferredSource::Call {
@@ -4174,11 +4190,11 @@ fn tc() {}
             .unwrap();
         assert!(sig.starts_with("#[test]\nasync "), "{sig}");
         assert_eq!(
-            super::declared_receiver_type(&call(vec![]), "crate::a::t", &sig),
+            declared_receiver_type(&call(vec![]), "crate::a::t", &sig),
             None
         );
         assert_eq!(
-            super::declared_receiver_type(&call(vec![Step::Await]), "crate::a::t", &sig),
+            declared_receiver_type(&call(vec![Step::Await]), "crate::a::t", &sig),
             Some("Engine".to_string())
         );
     }
@@ -4199,7 +4215,7 @@ pub fn concrete() -> Item { todo!() }";
                 .unwrap()
         };
         let receiver = |name: &str, qualname: &str| {
-            super::declared_receiver_type(&call(vec![]), qualname, &sig(name))
+            declared_receiver_type(&call(vec![]), qualname, &sig(name))
         };
         assert_eq!(receiver("get", "crate::W::get"), None);
         assert_eq!(receiver("make", "crate::make"), None);

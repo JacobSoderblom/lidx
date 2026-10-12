@@ -1912,6 +1912,11 @@ impl<'c> Resolver<'c> {
         };
         let mut kind_eligible = 0usize;
         let mut visible: Vec<i64> = Vec::new();
+        // Rust has no overloading: a qualname declared twice in one file is
+        // a `#[cfg]` pair of one declaration, counted once.
+        let rust_twins = source_lang == "rust";
+        let mut seen_twins: std::collections::HashSet<(String, String, String)> =
+            std::collections::HashSet::new();
         let is_ambiguous = Self::check_case_sensitive_matches(&mut rows, name, 2, |row| {
             let id: i64 = row.get(0)?;
             let visibility: Option<String> = row.get(1)?;
@@ -1919,6 +1924,10 @@ impl<'c> Resolver<'c> {
             let file_path: String = row.get(3)?;
             let kind: String = row.get(4)?;
             let signature: Option<String> = row.get(5)?;
+            if rust_twins && !seen_twins.insert((qualname.clone(), file_path.clone(), kind.clone()))
+            {
+                return Ok(false);
+            }
             // Issue #123: an overload of the wrong arity was never a candidate.
             if !arity_admits(arity, &kind, signature.as_deref()) {
                 return Ok(false);
