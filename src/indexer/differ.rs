@@ -3,7 +3,7 @@ use crate::indexer::stable_id::{
     StableIdCollision, compute_stable_symbol_id, disambiguate_collisions,
 };
 use crate::model::Symbol;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Result of comparing old symbols (database) vs new symbols (just extracted)
 #[derive(Debug, Default, Clone)]
@@ -42,8 +42,8 @@ pub struct SymbolDiff {
 ///
 /// # Algorithm
 ///
-/// 1. Build hashmaps keyed by stable_id for fast lookup
-/// 2. For each new symbol:
+/// 1. Key old symbols by stable_id; keep new symbols in extraction order
+/// 2. For each new symbol, in extraction order:
 ///    - If stable_id not in old → added
 ///    - If stable_id in old but content changed → modified
 ///    - If stable_id in old and content same → unchanged
@@ -82,8 +82,7 @@ pub fn compute_symbol_diff(
         .into_iter()
         .map(|s| (compute_stable_symbol_id(&s), s))
         .collect();
-    let new_ids: std::collections::HashSet<&str> =
-        new_list.iter().map(|(id, _)| id.as_str()).collect();
+    let new_ids: HashSet<&str> = new_list.iter().map(|(id, _)| id.as_str()).collect();
 
     let mut diff = SymbolDiff {
         collisions,
