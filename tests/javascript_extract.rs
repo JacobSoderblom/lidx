@@ -1419,30 +1419,33 @@ describe('HTTPException', () => {
 }
 
 #[test]
-fn same_name_locals_that_disagree_or_include_a_param_stay_unresolved() {
-    let disagree = r#"
+fn same_name_locals_in_sibling_callbacks_are_typed_per_callback() {
+    // Each callback is its own scope (#426): a type is never merged with a
+    // sibling's, so disagreeing, untyped and parameter bindings in one
+    // callback leave the others' types intact.
+    let src = r#"
 it('a', () => { const x = new A(); x.go() })
 it('b', () => { const x = new B(); x.go() })
+it('c', (x) => { x.go() })
+it('d', () => { const x = make(); x.go() })
 "#;
-    let param = r#"
-it('a', () => { const x = new A(); x.go() })
-it('b', (x) => { x.go() })
-"#;
-    let untyped = r#"
-it('a', () => { const x = new A(); x.go() })
-it('b', () => { const x = make(); x.go() })
-"#;
-    for src in [disagree, param, untyped] {
-        let mut extractor = TypescriptExtractor::new().unwrap();
-        let extracted = extractor.extract(src, "src/e.test").unwrap();
-        for e in extracted
-            .edges
-            .iter()
-            .filter(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("x.go"))
-        {
-            assert_eq!(e.receiver_type, ReceiverType::Unresolved, "{src}");
-        }
-    }
+    let mut extractor = TypescriptExtractor::new().unwrap();
+    let extracted = extractor.extract(src, "src/e.test").unwrap();
+    let types: Vec<_> = extracted
+        .edges
+        .iter()
+        .filter(|e| e.kind == "CALLS" && e.target_qualname.as_deref() == Some("x.go"))
+        .map(|e| e.receiver_type.clone())
+        .collect();
+    assert_eq!(
+        types,
+        [
+            ReceiverType::Known("A".into()),
+            ReceiverType::Known("B".into()),
+            ReceiverType::Unresolved,
+            ReceiverType::Unresolved,
+        ]
+    );
 }
 
 fn call_edge<'a>(

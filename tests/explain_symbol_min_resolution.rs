@@ -193,11 +193,10 @@ fn min_resolution_filters_callees_at_import_tier_boundary() {
 }
 
 /// Filtering at the `inherited`/`two_segment` tier boundary, using
-/// `tests/fixtures/golden/typescript`: `SecretHelper.callLocally` CALLS
-/// `SecretHelper.doSecret` binds `two_segment` (pinned by that fixture's
-/// `expected_edges.txt` -- the call-site text keeps the literal
-/// `SecretHelper.doSecret` receiver rather than rewriting it to `this.
-/// doSecret`), one tier weaker than `inherited`. `min_resolution:
+/// `tests/fixtures/golden/typescript`: `useRegistry` CALLS
+/// `Registry.lookup` binds `two_segment` (pinned by that fixture's
+/// `expected_edges.txt` -- `Registry` is neither imported nor declared in
+/// the caller's file), one tier weaker than `inherited`. `min_resolution:
 /// "inherited"` must exclude it; `min_resolution: "two_segment"` must keep
 /// it.
 #[test]
@@ -210,11 +209,10 @@ fn min_resolution_filters_callees_at_two_segment_tier_boundary() {
         &repo_root,
         &db_path,
         "explain_symbol",
-        r#"{"qualname":"visibilityPrivateOwner.SecretHelper.callLocally","sections":["callees"],"min_resolution":"inherited"}"#,
+        r#"{"qualname":"twoSegmentCaller.useRegistry","sections":["callees"],"min_resolution":"inherited"}"#,
     );
     assert!(
-        !ref_qualnames(&strict["callees"])
-            .contains(&"visibilityPrivateOwner.SecretHelper.doSecret".to_string()),
+        !ref_qualnames(&strict["callees"]).contains(&"twoSegmentOwner.Registry.lookup".to_string()),
         "a two_segment-tier callee must be excluded once the floor is inherited: {strict}"
     );
     assert_eq!(strict["callees_total"], Value::from(0));
@@ -223,11 +221,10 @@ fn min_resolution_filters_callees_at_two_segment_tier_boundary() {
         &repo_root,
         &db_path,
         "explain_symbol",
-        r#"{"qualname":"visibilityPrivateOwner.SecretHelper.callLocally","sections":["callees"],"min_resolution":"two_segment"}"#,
+        r#"{"qualname":"twoSegmentCaller.useRegistry","sections":["callees"],"min_resolution":"two_segment"}"#,
     );
     assert!(
-        ref_qualnames(&lenient["callees"])
-            .contains(&"visibilityPrivateOwner.SecretHelper.doSecret".to_string())
+        ref_qualnames(&lenient["callees"]).contains(&"twoSegmentOwner.Registry.lookup".to_string())
     );
 }
 
