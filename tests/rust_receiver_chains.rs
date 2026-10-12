@@ -344,3 +344,11 @@ pub fn go(mut lx: L) {\n    lx.next().unwrap().weight();\n}\n";
     );
     assert_eq!(receivers(src, "weight"), ["-"]);
 }
+
+#[test]
+fn a_nested_fn_yields_to_the_module_level_fn_of_the_same_name() {
+    let src = "pub fn walk() {}\nfn host() {\n    fn walk() {}\n    walk();\n}\n\
+pub fn go() {\n    walk();\n}\n";
+    let got = resolved_to(&[("src/lib.rs", src)], "crate::go", "walk");
+    assert_eq!(got, ["crate::walk"]);
+}

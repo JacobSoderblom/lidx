@@ -39,13 +39,17 @@ pub(crate) const PROFILE: LanguageProfile = LanguageProfile {
     // Rust has no overloading; the extractor writes `#[cfg(..)]` lines at the
     // head of a gated fn's signature (`extract_signature`).
     same_file_twins: SameFileTwins::CfgVariants {
-        marker: CFG_SIGNATURE_MARKER,
+        cfg_marker: CFG_SIGNATURE_MARKER,
+        nested_marker: NESTED_SIGNATURE_MARKER,
     },
     package_dir: Some(cargo_package_dir),
 };
 
 /// What a cfg-gated declaration's signature starts with.
 const CFG_SIGNATURE_MARKER: &str = "#[cfg(";
+
+/// What a signature carries when its fn is declared inside another fn.
+const NESTED_SIGNATURE_MARKER: &str = "#[nested]";
 
 /// The Cargo package directory a Rust path belongs to: everything before the
 /// first `src/`, `tests/`, `benches/` or `examples/` component (`""` for a
@@ -158,6 +162,8 @@ struct Context {
     /// `local_types` was built with), so a call's receiver expression is typed
     /// the same way as a `let` initializer. Empty outside a function body.
     fn_self_ty: Option<String>,
+    /// Inside a fn body: an `fn` item declared here is visible only there.
+    in_fn_body: bool,
     fn_generics: Rc<HashSet<String>>,
     /// Same-file struct / enum-variant field types (`collect_adts`), used to
     /// type struct and tuple-struct patterns.
@@ -325,6 +331,7 @@ impl crate::indexer::extract::LanguageExtractor for RustExtractor {
             nested_fns: Rc::new(HashSet::new()),
             local_types: Rc::new(HashMap::new()),
             fn_self_ty: None,
+            in_fn_body: false,
             fn_generics: Rc::new(HashSet::new()),
             adts: Rc::new(collect_adts(root, source)),
             returns: Rc::new(collect_returns(root, source)),
@@ -701,6 +708,7 @@ fn handle_mod(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracte
     next_ctx.nested_fns = Rc::new(HashSet::new());
     next_ctx.local_types = Rc::new(HashMap::new());
     next_ctx.fn_self_ty = None;
+    next_ctx.in_fn_body = false;
     next_ctx.fn_generics = Rc::new(HashSet::new());
     walk_node(body, &next_ctx, source, output);
 }
@@ -808,7 +816,7 @@ fn handle_function(
         ),
     };
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = ctx.item_span(node);
-    let signature = extract_signature(node, source, attributes, &ctx.cfg_chain);
+    let signature = extract_signature(node, source, attributes, ctx);
     // A trait default method or trait-impl method has no `pub` to check —
     // it's exactly as visible as the trait itself (see
     // `Context::in_trait_scope`, issue #75 follow-up, finding B).
@@ -889,6 +897,7 @@ fn handle_function(
         next_ctx.local_types = Rc::new(local_types);
         next_ctx.fn_self_ty = self_ty;
         next_ctx.fn_generics = generics;
+        next_ctx.in_fn_body = true;
 
         walk_node(body, &next_ctx, source, output);
     }
@@ -928,7 +937,7 @@ fn handle_function_signature(
     };
     let qualname = format!("{container}::{name}");
     let (start_line, start_col, end_line, end_col, start_byte, end_byte) = ctx.item_span(node);
-    let signature = extract_signature(node, source, &[], &ctx.cfg_chain);
+    let signature = extract_signature(node, source, &[], ctx);
     output.symbols.push(SymbolInput {
         kind: "method".to_string(),
         name: name.clone(),
@@ -4249,7 +4258,7 @@ fn extract_signature(
     node: Node<'_>,
     source: &str,
     attributes: &[Node<'_>],
-    cfg: &[String],
+    ctx: &Context,
 ) -> Option<String> {
     let params = node
         .child_by_field_name("parameters")
@@ -4273,7 +4282,17 @@ fn extract_signature(
     let base = base.map(|b| if is_async { format!("async {b}") } else { b });
     // A `#[cfg(..)]` on the fn or an enclosing impl/mod leads the signature:
     // the resolver merges same-qualname twins only when both carry one.
-    let mut prefix: String = cfg.iter().map(|p| format!("#[cfg({p})]\n")).collect();
+    let mut prefix: String = ctx
+        .cfg_chain
+        .iter()
+        .map(|p| format!("#[cfg({p})]\n"))
+        .collect();
+    // A fn item declared in a fn body shares its qualname with a module-level
+    // twin but is visible only inside that body.
+    if ctx.in_fn_body {
+        prefix.push_str(NESTED_SIGNATURE_MARKER);
+        prefix.push('\n');
+    }
     prefix.extend(test_attribute_prefix(attributes, source));
     match (prefix.is_empty(), base) {
         (true, base) => base,

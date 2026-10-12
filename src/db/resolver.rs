@@ -492,11 +492,16 @@ pub(crate) enum SameFileTwins {
     Overloads,
     /// The language has no overloading, so a twin is a conditional-compilation
     /// variant of one declaration -- but only when its stored signature
-    /// starts with `marker` (the extractor records its `#[cfg(..)]` there).
-    /// Any other twin (nested fns of one name, `From` impls for two types,
-    /// `Debug` and `Display` `fmt`) is a distinct symbol: never merged, and
-    /// ambiguous when named.
-    CfgVariants { marker: &'static str },
+    /// starts with `cfg_marker` (the extractor records its `#[cfg(..)]`
+    /// there). Any other twin (`From` impls for two types, `Debug` and
+    /// `Display` `fmt`) is a distinct symbol: never merged, and ambiguous
+    /// when named. A twin whose signature has `nested_marker` (a fn declared
+    /// in a fn body) is out of sight of the rest of the file: it yields to a
+    /// non-nested twin, and several nested ones stay ambiguous.
+    CfgVariants {
+        cfg_marker: &'static str,
+        nested_marker: &'static str,
+    },
 }
 
 /// A symbol a deferred receiver's declaration query matched.
@@ -3355,9 +3360,9 @@ struct TwinView<'a> {
 
 /// Merges the `#[cfg]` variants of one declaration (`SameFileTwins::
 /// CfgVariants`): items of one file, qualname and kind, all recorded as
-/// cfg-gated, stand for the lowest id among them. Any other group of
-/// same-file twins, and every item of a language that overloads, is kept as
-/// it is. The one rule behind both the exact tier (`collapse_exact_candidates`)
+/// cfg-gated, stand for the lowest id among them; a nested twin yields to a
+/// non-nested one. Any other group of same-file twins, and every item of a
+/// language that overloads, is kept as it is. The one rule behind both the exact tier (`collapse_exact_candidates`)
 /// and the guarded name tier (`Resolver::same_lang_lookup`).
 fn collapse_cfg_twins<T>(items: Vec<T>, view: impl for<'a> Fn(&'a T) -> TwinView<'a>) -> Vec<T> {
     if items.len() < 2 {
@@ -3374,17 +3379,24 @@ fn collapse_cfg_twins<T>(items: Vec<T>, view: impl for<'a> Fn(&'a T) -> TwinView
                 .push(i);
         }
         for group in groups.values().filter(|g| g.len() > 1) {
-            let SameFileTwins::CfgVariants { marker } =
-                profile_for(views[group[0]].language).same_file_twins
+            let SameFileTwins::CfgVariants {
+                cfg_marker,
+                nested_marker,
+            } = profile_for(views[group[0]].language).same_file_twins
             else {
                 continue;
             };
-            if group
-                .iter()
-                .all(|&i| views[i].signature.is_some_and(|s| s.starts_with(marker)))
-            {
+            let has =
+                |i: usize, marker: &str| views[i].signature.is_some_and(|s| s.contains(marker));
+            if group.iter().all(|&i| {
+                views[i]
+                    .signature
+                    .is_some_and(|s| s.starts_with(cfg_marker))
+            }) {
                 let keep = group.iter().copied().min_by_key(|&i| views[i].id);
                 merged.extend(group.iter().copied().filter(|&i| Some(i) != keep));
+            } else if group.iter().any(|&i| !has(i, nested_marker)) {
+                merged.extend(group.iter().copied().filter(|&i| has(i, nested_marker)));
             }
         }
     }
