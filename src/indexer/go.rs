@@ -250,11 +250,25 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
         "import_declaration" => {
             handle_import(node, ctx, source, output);
         }
+        // `Map[int](x)` with a single operand parses as a conversion to the
+        // generic type `Map[int]`; it is a call of the generic function
+        // unless `Map` is a type, which the resolver refuses to bind.
+        "type_conversion_expression" => {
+            if let Some(type_node) = node
+                .child_by_field_name("type")
+                .filter(|t| t.kind() == "generic_type")
+            {
+                emit_calls_edge(node, type_node, ctx, source, output);
+            }
+            walk_children(node, ctx, source, output);
+        }
         "call_expression" => {
             handle_call(node, ctx, source, output);
-            // Calls nested in a call are not recorded, but a function passed
-            // anywhere in it (`register(map[string]F{"a": h})`) still is.
-            walk_value_references(node, ctx, source, output);
+            // Every named child can hold more calls: the callee (`a.B().C()`,
+            // `func(){..}()`, `f[T](x)`) and the arguments (`f(g(x))`,
+            // `t.Run("n", func(t *testing.T){..})`). Closure bodies keep the
+            // enclosing declaration as their scope.
+            walk_children(node, ctx, source, output);
         }
         _ => {
             let mut cursor = node.walk();
@@ -262,19 +276,6 @@ fn walk_node(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extracted
                 walk_node(child, ctx, source, output);
             }
         }
-    }
-}
-
-/// Emit value references for every node under `node` (not `node` itself).
-fn walk_value_references(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        if matches!(child.kind(), "identifier" | "selector_expression")
-            && let Some(edge) = value_reference_edge(child, ctx, source)
-        {
-            output.edges.push(edge);
-        }
-        walk_value_references(child, ctx, source, output);
     }
 }
 
@@ -500,16 +501,20 @@ fn handle_const_declaration(
 }
 
 fn handle_var_declaration(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
-    // A dispatch table (`var routes = map[string]F{"a": h}`) or a local `var`
-    // initializer holds functions as values.
-    walk_value_references(node, ctx, source, output);
-    // Only extract top-level vars (current_scope == module)
+    // Only top-level vars are symbols (current_scope == module); a local
+    // `var` is walked in the enclosing function's scope.
     if ctx.current_scope != ctx.module {
+        walk_children(node, ctx, source, output);
         return;
     }
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
+        // `var ( a = 1; b = 2 )` groups its specs in a list.
+        if child.kind() == "var_spec_list" {
+            handle_var_declaration(child, ctx, source, output);
+            continue;
+        }
         let name = if child.kind() == "var_spec" {
             extract_name_from_spec(child, source)
         } else {
@@ -535,12 +540,26 @@ fn handle_var_declaration(node: Node<'_>, ctx: &Context, source: &str, output: &
             output.edges.push(EdgeInput {
                 kind: "CONTAINS".to_string(),
                 source_qualname: Some(ctx.module.clone()),
-                target_qualname: Some(qualname),
+                target_qualname: Some(qualname.clone()),
                 detail: None,
                 evidence_snippet: None,
                 ..Default::default()
             });
+            // The initializer (`var hooks = []func(){ func(){ Helper() } }`,
+            // `var x = build()`) belongs to the variable.
+            let mut var_ctx = ctx.clone();
+            var_ctx.current_scope = qualname;
+            walk_children(child, &var_ctx, source, output);
+        } else {
+            walk_children(child, ctx, source, output);
         }
+    }
+}
+
+fn walk_children(node: Node<'_>, ctx: &Context, source: &str, output: &mut ExtractedFile) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_node(child, ctx, source, output);
     }
 }
 
@@ -649,12 +668,38 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
     let Some(function_node) = node.child_by_field_name("function") else {
         return;
     };
+    emit_calls_edge(node, function_node, ctx, source, output);
+}
+
+/// The `CALLS` edge of call `node` whose callee expression is `function_node`.
+fn emit_calls_edge(
+    node: Node<'_>,
+    function_node: Node<'_>,
+    ctx: &Context,
+    source: &str,
+    output: &mut ExtractedFile,
+) {
+    // `Map[int](x)` / `pkg.Map[int, string](x)` call `Map`; the type
+    // arguments are not part of the callee.
+    let function_node = strip_type_arguments(function_node);
+    // `func(){..}()` has no name to bind, and a conversion to a predeclared
+    // type or a builtin (`len(x)`, `string(b)`) is no call to a declaration.
+    if function_node.kind() == "func_literal" {
+        return;
+    }
     let raw = node_text(function_node, source);
-    if raw.is_empty() {
+    if raw.is_empty() || is_builtin_callee(function_node, &raw, ctx) {
         return;
     }
     let target = resolve_call_target(&raw, ctx);
-    let detail = if target.is_some() { None } else { Some(raw) };
+    // A callee that is not a plain name (`a.B().C`, `f()(x)`) stays
+    // unresolved but keeps its text, whitespace-collapsed, so the method
+    // name and its receiver expression are still on the row.
+    let detail = if target.is_some() {
+        None
+    } else {
+        Some(collapse_call_target_whitespace(&raw))
+    };
     let (start_line, _start_col, end_line, _end_col, start_byte, end_byte) = span(node);
     let snippet = util::edge_evidence_snippet(source, start_byte, end_byte, start_line, end_line);
     output.edges.push(EdgeInput {
@@ -668,9 +713,63 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
         // A bare identifier callee (`foo()`) vs. a selector expression
         // (`pkg.Func()`, `obj.Method()`) — see `EdgeInput::bare_call`'s
         // doc.
-        bare_call: function_node.kind() == "identifier",
+        bare_call: matches!(function_node.kind(), "identifier" | "type_identifier"),
         ..Default::default()
     });
+}
+
+/// The callee of a generic instantiation call without its type arguments.
+fn strip_type_arguments(node: Node<'_>) -> Node<'_> {
+    let mut node = node;
+    while matches!(node.kind(), "index_expression" | "generic_type") {
+        match node
+            .child_by_field_name("operand")
+            .or_else(|| node.child_by_field_name("type"))
+        {
+            Some(inner) => node = inner,
+            None => break,
+        }
+    }
+    node
+}
+
+/// Go's predeclared functions and types: calling one is never an edge to a
+/// declaration of this repository.
+const GO_BUILTINS: &[&str] = &[
+    "append", "len", "cap", "make", "new", "delete", "copy", "panic", "recover", "print",
+    "println", "close", "min", "max", "clear", "complex", "real", "imag",
+];
+const GO_PREDECLARED_TYPES: &[&str] = &[
+    "any",
+    "bool",
+    "byte",
+    "comparable",
+    "complex64",
+    "complex128",
+    "error",
+    "float32",
+    "float64",
+    "int",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "rune",
+    "string",
+    "uint",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "uintptr",
+];
+
+/// A bare builtin call or conversion to a predeclared type the function
+/// does not itself rebind.
+fn is_builtin_callee(function_node: Node<'_>, raw: &str, ctx: &Context) -> bool {
+    function_node.kind() == "identifier"
+        && !ctx.bound_names.contains(raw)
+        && (GO_BUILTINS.contains(&raw) || GO_PREDECLARED_TYPES.contains(&raw))
 }
 
 /// Maps each package-qualified value reference (`pkg.Handler`, candidate
@@ -1711,6 +1810,83 @@ mod tests {
     use crate::indexer::extract::LanguageExtractor;
     use crate::indexer::http;
     use crate::indexer::proto;
+
+    /// `(source scope, target qualname, detail)` of every CALLS edge.
+    fn call_edges(source: &str) -> Vec<(String, Option<String>, Option<String>)> {
+        let mut extractor = GoExtractor::new().unwrap();
+        let out = extractor.extract(source, "pkg/file").unwrap();
+        out.edges
+            .into_iter()
+            .filter(|e| e.kind == "CALLS")
+            .map(|e| (e.source_qualname.unwrap(), e.target_qualname, e.detail))
+            .collect()
+    }
+
+    #[test]
+    fn nested_chained_and_closure_calls_are_recorded() {
+        let source = r#"
+package pkg
+
+func F(t T) {
+    Outer(Inner(len(x)))
+    a.
+        B().
+        C()
+    go func() { InGo() }()
+    defer func() { InDefer() }()
+    t.Run("n", func(t T) { InRun() })
+    Map[int](1)
+    _ = string(b)
+    _ = append(xs, make([]int, 1))
+}
+
+var hooks = []func(){ func() { InVar() } }
+var built = Build()
+var (
+    grouped = Group()
+)
+"#;
+        let edges = call_edges(source);
+        let targets = |scope: &str| -> Vec<String> {
+            let mut v: Vec<String> = edges
+                .iter()
+                .filter(|(s, ..)| s == scope)
+                .filter_map(|(_, t, d)| t.clone().or_else(|| d.clone()))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            targets("pkg/file.F"),
+            [
+                "a.B",
+                "a.B().C",
+                "pkg/file.InDefer",
+                "pkg/file.InGo",
+                "pkg/file.InRun",
+                "pkg/file.Inner",
+                "pkg/file.Map",
+                "pkg/file.Outer",
+                "t.Run",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(targets("pkg/file.hooks"), ["pkg/file.InVar"]);
+        assert_eq!(targets("pkg/file.built"), ["pkg/file.Build"]);
+        assert_eq!(targets("pkg/file.grouped"), ["pkg/file.Group"]);
+    }
+
+    #[test]
+    fn rebound_builtin_name_is_a_call() {
+        let edges = call_edges("package pkg\nfunc F() {\n    len := g()\n    len(1)\n}\n");
+        assert!(
+            edges
+                .iter()
+                .any(|(_, t, _)| t.as_deref() == Some("pkg/file.len"))
+        );
+    }
 
     #[test]
     fn extracts_http_route_and_call() {

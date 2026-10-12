@@ -72,3 +72,22 @@ prober/prober.CallRemotely CALLS UNRESOLVED
 # it anyway -- wrong, since a receiver-less call can never dispatch to an
 # instance method. #75's bare-call guard must refuse it.
 bare_call_pkg/bare_call.BareCaller CALLS UNRESOLVED
+
+# --- Issue #421: nested, chained and closure calls ---
+
+# Calls nested in the arguments of another call; len() is a builtin.
+nested/nested.NestedArgs CALLS nested/nested.Outer exact
+nested/nested.NestedArgs CALLS nested/nested.Inner exact
+
+# The head of a chain is a call too; the method calls on its result have no
+# receiver type yet.
+nested/nested.Chain CALLS nested/nested.A exact
+
+# Calls in closures belong to the enclosing declaration.
+nested/nested.GoClosure CALLS nested/nested.Helper exact
+nested/nested.DeferClosure CALLS nested/nested.Helper exact
+nested/nested.TestRun CALLS nested/nested.Helper exact
+# t.Run is a method of a foreign type: nothing in the repo to bind.
+nested/nested.TestRun CALLS UNRESOLVED
+nested/nested.hooks CALLS nested/nested.Helper exact
+nested/nested.Builder.C CALLS nested/nested.Helper exact
