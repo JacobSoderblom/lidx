@@ -53,7 +53,16 @@ fn hop_keys(result: &Value) -> Vec<String> {
         .as_array()
         .unwrap_or_else(|| panic!("no .trace in {result}"))
         .iter()
-        .map(|h| h.to_string())
+        .map(|h| {
+            // A leaf's stop reason is page-dependent by design (a hop the
+            // byte budget cut is `truncated` on its page, a non-leaf in the
+            // full trace), so pages are compared without it (#410).
+            let mut h = h.clone();
+            h.as_object_mut()
+                .unwrap()
+                .retain(|k, _| !k.starts_with("stop"));
+            h.to_string()
+        })
         .collect()
 }
 

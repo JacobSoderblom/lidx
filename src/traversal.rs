@@ -231,7 +231,10 @@ struct Outcome {
     /// xref / config-scope / type-argument filters, keyed by resolution kind
     /// (or edge kind when it has none).
     filtered: BTreeMap<String, usize>,
-    /// Successors already in the trace when the node was looked at.
+    /// Successors that are in the trace -- reached through this node or, if
+    /// the node ends up a leaf, owned by another parent (a cycle or a
+    /// diamond). Counting every reached successor, not only the ones that
+    /// were already visited, keeps the stop independent of edge order.
     seen: usize,
     /// Successors not yet in the trace (dry runs of unexpanded nodes only).
     fresh: usize,
@@ -519,9 +522,9 @@ pub fn trace_flow(
                 continue;
             };
 
+            outcome.seen += 1;
             let widened = !is_upstream && entry_args.record(next_id, edge, db)?;
             let Some(admission) = scope.admit_plain(next_id) else {
-                outcome.seen += 1;
                 // Reached again through a call with other type arguments:
                 // expand it again so those closed impls are reached too.
                 if widened && let Ok(Some(sym)) = db.get_symbol_by_id(next_id) {
@@ -664,7 +667,10 @@ pub fn trace_flow(
                                 .unwrap_or_default()
                         }) {
                             BridgeOutcome::Skipped => continue,
-                            BridgeOutcome::Admitted(a) => a,
+                            BridgeOutcome::Admitted(a) => {
+                                outcome.seen += 1;
+                                a
+                            }
                             BridgeOutcome::Refused => {
                                 outcome.seen += 1;
                                 let pair = (
@@ -753,7 +759,11 @@ pub fn trace_flow(
     // what is returned (#355).
     let settled_any = !trace.is_empty();
     let leaf_count = count_leaves(&trace);
+    // Stops are attached after the byte budget is applied, so they never
+    // change which hops fit (their few bytes are not counted in
+    // `used_bytes`).
     let mut stop_summary = BTreeMap::new();
+    let mut hop_stops: Vec<Option<TraceStop>> = Vec::new();
     let mut start_stop = None;
     if end_id.is_none() {
         let ctx = StopContext {
@@ -766,7 +776,7 @@ pub fn trace_flow(
             outcomes: &outcomes,
             unexpanded: &unexpanded,
         };
-        stop_summary = annotate_stops(&ctx, &mut trace)?;
+        (stop_summary, hop_stops) = leaf_stops(&ctx, &trace)?;
         if trace.is_empty() {
             start_stop = start_stop_reason(&ctx, &start_sym)?;
         }
@@ -791,6 +801,12 @@ pub fn trace_flow(
     if keep < trace.len() {
         trace.truncate(keep);
         byte_limited = true;
+    }
+    for (hop, stop) in trace
+        .iter_mut()
+        .zip(hop_stops.into_iter().skip(config.trace_offset))
+    {
+        hop.stop = stop;
     }
     // An offset at/past the end has nothing left to return: report that
     // plainly instead of echoing the original truncation (#354).
@@ -1047,9 +1063,12 @@ fn finish_stops(ctx: &StopContext, leaves: &[(LeafRef, Decision)]) -> Result<Vec
     Ok(out)
 }
 
-/// Attach a stop reason to every leaf hop of the settled trace and return
-/// the per-reason leaf counts (issue #410).
-fn annotate_stops(ctx: &StopContext, trace: &mut [TraceHop]) -> Result<BTreeMap<String, usize>> {
+/// Stop reason for every leaf hop of the settled trace (`None` for non-leaf
+/// hops, aligned with `trace`) and the per-reason leaf counts (issue #410).
+fn leaf_stops(
+    ctx: &StopContext,
+    trace: &[TraceHop],
+) -> Result<(BTreeMap<String, usize>, Vec<Option<TraceStop>>)> {
     let parents: HashSet<(i64, usize)> = trace
         .iter()
         .filter_map(|h| Some((h.predecessor_id, h.distance.checked_sub(1)?)))
@@ -1067,13 +1086,13 @@ fn annotate_stops(ctx: &StopContext, trace: &mut [TraceHop]) -> Result<BTreeMap<
         leaves.push((leaf, decision));
     }
     let stops = finish_stops(ctx, &leaves)?;
-    drop(leaves);
     let mut summary = BTreeMap::new();
+    let mut per_hop: Vec<Option<TraceStop>> = vec![None; trace.len()];
     for (i, s) in leaf_idx.into_iter().zip(stops) {
         *summary.entry(s.stop.clone()).or_insert(0) += 1;
-        trace[i].stop = Some(s);
+        per_hop[i] = Some(s);
     }
-    Ok(summary)
+    Ok((summary, per_hop))
 }
 
 /// Stop reason of the start symbol itself, for a trace with no hops.
@@ -2290,6 +2309,7 @@ mod tests {
             protocol_context: None,
             resolution_kind: None,
             bridge_direction: None,
+            stop: None,
         };
 
         let full_size = estimate_hop_size(&hop, false);

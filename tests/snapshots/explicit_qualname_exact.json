@@ -426,6 +426,9 @@
       "start_col": 1,
       "start_line": 9
     },
+    "start_stop": {
+      "stop": "no_callees"
+    },
     "trace": [],
     "truncated": false
   }

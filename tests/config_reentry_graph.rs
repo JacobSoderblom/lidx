@@ -200,10 +200,17 @@ fn edge_order_does_not_change_hops_or_reached_nodes() {
     // cuts exactly at the last hop, behave the same in both edge orders.
     let g1 = graph(&tie_names, &tie_edges);
     let g2 = graph(&tie_names, &tie_reversed);
+    // Stop reasons (#410) are attached after budgeting and not counted in it.
     let total: usize = t1
         .hops
         .iter()
-        .map(|h| serde_json::to_string(h).unwrap().len())
+        .map(|h| {
+            let mut v = serde_json::to_value(h).unwrap();
+            v.as_object_mut()
+                .unwrap()
+                .retain(|k, _| !k.starts_with("stop"));
+            v.to_string().len()
+        })
         .sum();
     for (budget, expect_truncated) in [(total + 1, false), (total, true)] {
         let (a, b) = (
