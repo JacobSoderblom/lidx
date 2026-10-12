@@ -210,13 +210,26 @@ impl Indexer {
         Some(fresh)
     }
 
-    /// Record the checkout state a completed reindex/sync indexed.
-    fn record_indexed_head(&mut self, head: Option<String>) -> Result<()> {
+    /// Drop the cached freshness check so the next call recomputes it.
+    pub fn invalidate_freshness(&mut self) {
         self.freshness_cache = None;
-        self.db.set_meta_str(
-            crate::freshness::INDEXED_HEAD_KEY,
-            &head.unwrap_or_default(),
-        )
+    }
+
+    /// Record the checkout state a completed reindex/sync indexed: the HEAD
+    /// it started from (none outside git: the key is removed) and every
+    /// indexable directory then present, so a file later created in a
+    /// directory that holds no indexed files is still noticed.
+    fn record_indexed_state(&mut self, head: Option<String>) -> Result<()> {
+        self.freshness_cache = None;
+        match head {
+            Some(head) => self
+                .db
+                .set_meta_str(crate::freshness::INDEXED_HEAD_KEY, &head)?,
+            None => self.db.delete_meta(crate::freshness::INDEXED_HEAD_KEY)?,
+        }
+        let (_, dirs) = scan::list_dir(&self.repo_root, &self.repo_root, self.scan_options, false);
+        self.db
+            .set_meta_str(crate::freshness::INDEXED_DIRS_KEY, &dirs.join("\n"))
     }
 
     pub fn graph_version(&self) -> i64 {
@@ -294,6 +307,7 @@ impl Indexer {
     }
 
     fn sync_abs_paths_locked(&mut self, paths: &[PathBuf]) -> Result<SyncStats> {
+        let head_at_start = crate::freshness::current_head(&self.repo_root);
         let mut stats = SyncStats::default();
         let mut touched = false;
         let mut indexed_files = Vec::new();
@@ -470,8 +484,8 @@ impl Indexer {
                 .unwrap_or_default()
                 .as_secs() as i64;
             self.db.set_meta_i64("last_indexed", now)?;
+            self.record_indexed_state(head_at_start)?;
         }
-        self.record_indexed_head(crate::util::git_head_sha(&self.repo_root))?;
         Ok(stats)
     }
 
@@ -531,7 +545,8 @@ impl Indexer {
     ) -> Result<IndexStats> {
         let started = Instant::now();
         let previous_graph_version = self.graph_version;
-        let commit_sha = crate::util::git_head_sha(&self.repo_root);
+        let scan_started_at = crate::freshness::now_secs();
+        let commit_sha = crate::freshness::current_head(&self.repo_root);
         let scanned = scan::scan_repo_with_options(&self.repo_root, self.scan_options)?;
         let existing = self.db.list_files(previous_graph_version)?;
         if scanned.is_empty() && !allow_empty {
@@ -910,11 +925,13 @@ impl Indexer {
             .set_meta_i64(js_stale::CONFIG_FINGERPRINT_KEY, config_fingerprint)?;
         self.db.set_meta_i64("last_indexed", now)?;
         self.db
+            .set_meta_i64(crate::freshness::INDEXED_SCAN_AT_KEY, scan_started_at)?;
+        self.db
             .set_meta_i64(EXTRACTOR_VERSION_KEY, EXTRACTOR_VERSION)?;
 
         // The version is fully populated: only now does it become current.
         self.db.promote_graph_version(self.graph_version)?;
-        self.record_indexed_head(self.commit_sha.clone())?;
+        self.record_indexed_state(self.commit_sha.clone())?;
 
         // Reclaim rows from graph versions this reindex just aged out. Safe to
         // run now: this reindex's own carry-forward already read everything it

@@ -168,3 +168,51 @@ fn deleted_file_counts_as_changed() {
     std::fs::remove_file(tmp.path().join("app.py")).unwrap();
     assert_eq!(check(&indexer).stale.unwrap().changed_files, 1);
 }
+
+#[test]
+fn same_second_same_size_edit_is_detected() {
+    let (tmp, indexer) = indexed(true);
+    // Identical length, different bytes, written right after the index.
+    std::fs::write(tmp.path().join("app.py"), "def noodle():\n    pass\n").unwrap();
+    assert_eq!(check(&indexer).stale.unwrap().changed_files, 1);
+}
+
+#[test]
+fn new_file_in_directory_without_indexed_files_is_detected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    std::fs::write(root.join("app.py"), "def needle():\n    pass\n").unwrap();
+    std::fs::create_dir_all(root.join("assets")).unwrap();
+    std::fs::write(root.join("assets/logo.png"), [0u8, 1, 2]).unwrap();
+    std::fs::create_dir_all(root.join("empty")).unwrap();
+    git(&root, &["init", "-q"]);
+    let db = root.join(".lidx").join(".lidx.sqlite");
+    let mut indexer = Indexer::new(root.clone(), db).unwrap();
+    indexer.reindex().unwrap();
+    // Let the directories' mtimes fall behind the scan so only the new
+    // files can flag them.
+    std::thread::sleep(std::time::Duration::from_millis(2100));
+    assert!(check(&indexer).stale.is_none());
+    std::fs::write(root.join("assets/extra.py"), "x = 1\n").unwrap();
+    assert_eq!(check(&indexer).stale.unwrap().changed_files, 1);
+    std::fs::write(root.join("empty/more.py"), "y = 1\n").unwrap();
+    assert_eq!(check(&indexer).stale.unwrap().changed_files, 2);
+}
+
+#[test]
+fn indexed_head_matches_the_freshness_reader_and_is_absent_outside_git() {
+    let (_tmp, indexer) = indexed(true);
+    let recorded = indexer
+        .db()
+        .get_meta_str(freshness::INDEXED_HEAD_KEY)
+        .unwrap();
+    assert_eq!(recorded, freshness::current_head(indexer.repo_root()));
+    let (_tmp2, plain) = indexed(false);
+    assert_eq!(
+        plain
+            .db()
+            .get_meta_str(freshness::INDEXED_HEAD_KEY)
+            .unwrap(),
+        None
+    );
+}

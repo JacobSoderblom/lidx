@@ -845,8 +845,11 @@ mod tests {
         assert_eq!(fresh["result"]["content"].as_array().unwrap().len(), 1);
 
         std::fs::write(repo.join("app.py"), "def needle():\n    return 1\n").unwrap();
-        // Freshness is cached for a second; let the fresh result expire.
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        // Freshness is cached for a second; drop the cached fresh result.
+        state
+            .get_indexer(repo.clone(), default_db_path(&repo))
+            .unwrap()
+            .invalidate_freshness();
         let stale = full_response(&mut state, "search", json!({"query": "needle"}));
         let result = &stale["result"];
         assert_eq!(result["_meta"]["stale"]["changed_files"], 1, "{result}");

@@ -264,10 +264,6 @@ pub fn scan_repo(repo_root: &Path) -> Result<Vec<ScannedFile>> {
     scan_repo_with_options(repo_root, ScanOptions::default())
 }
 
-fn repo_walker(repo_root: &Path, options: ScanOptions) -> ignore::Walk {
-    walker_from(repo_root, options, None)
-}
-
 fn walker_from(dir: &Path, options: ScanOptions, max_depth: Option<usize>) -> ignore::Walk {
     let mut builder = WalkBuilder::new(dir);
     builder.max_depth(max_depth);
@@ -322,7 +318,7 @@ pub fn list_dir(
 
 pub fn scan_repo_with_options(repo_root: &Path, options: ScanOptions) -> Result<Vec<ScannedFile>> {
     let mut files = Vec::new();
-    let walker = repo_walker(repo_root, options);
+    let walker = walker_from(repo_root, options, None);
     for entry in walker {
         let entry = match entry {
             Ok(value) => value,
