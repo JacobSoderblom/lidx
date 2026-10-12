@@ -252,7 +252,7 @@ def grade(oracle, syms, edges, lang, src, edge_kinds=("CALLS",), withheld_caller
 
     dpairs = {(cn(a), cn(b)) for a, b in dispatch_pairs} if dispatch_pairs is not None else None
     # (caller, interface method) of every interface invocation the compiler saw in a reachable function
-    iface_calls = {(cn(okey(c["caller"])), cn(c["method"])) for c in oracle.get("iface_calls", [])}
+    iface_calls = {(cn(okey(c["caller"])), cn(c["method"])) for c in (oracle.get("iface_calls") or [])}
     oedges = []
     by_pair = defaultdict(list)
     by_alt = defaultdict(list)  # (caller, interface method) -> oracle edges invoking it through an interface
