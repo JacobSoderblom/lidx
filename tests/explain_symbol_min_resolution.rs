@@ -212,8 +212,7 @@ fn min_resolution_filters_callees_at_two_segment_tier_boundary() {
         r#"{"qualname":"twoSegmentCaller.useRegistry","sections":["callees"],"min_resolution":"inherited"}"#,
     );
     assert!(
-        !ref_qualnames(&strict["callees"])
-            .contains(&"twoSegmentOwner.Registry.lookup".to_string()),
+        !ref_qualnames(&strict["callees"]).contains(&"twoSegmentOwner.Registry.lookup".to_string()),
         "a two_segment-tier callee must be excluded once the floor is inherited: {strict}"
     );
     assert_eq!(strict["callees_total"], Value::from(0));
@@ -225,8 +224,7 @@ fn min_resolution_filters_callees_at_two_segment_tier_boundary() {
         r#"{"qualname":"twoSegmentCaller.useRegistry","sections":["callees"],"min_resolution":"two_segment"}"#,
     );
     assert!(
-        ref_qualnames(&lenient["callees"])
-            .contains(&"twoSegmentOwner.Registry.lookup".to_string())
+        ref_qualnames(&lenient["callees"]).contains(&"twoSegmentOwner.Registry.lookup".to_string())
     );
 }
 

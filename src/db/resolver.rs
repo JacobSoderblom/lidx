@@ -1727,8 +1727,11 @@ impl<'c> Resolver<'c> {
             }
             return Ok(exactly_one(admitted.into_iter()).map(|c| c.id));
         }
-        let resolved = collapse_exact_candidates(&candidates)
-            .or_else(|| (!types_only).then(|| merged_declaration_value(&candidates)).flatten());
+        let resolved = collapse_exact_candidates(&candidates).or_else(|| {
+            (!types_only)
+                .then(|| merged_declaration_value(&candidates))
+                .flatten()
+        });
         if resolved.is_none() && candidates.len() > 1 {
             self.saw_ambiguous = true;
             self.saw_repo_ambiguous = true;
@@ -3219,7 +3222,10 @@ fn merged_declaration_value(candidates: &[ExactCandidate]) -> Option<i64> {
         .iter()
         .filter(|c| VALUE_KINDS.contains(&c.kind.as_str()));
     let value = values.next()?;
-    if values.next().is_some() || !candidates.iter().any(|c| TYPE_KINDS.contains(&c.kind.as_str()))
+    if values.next().is_some()
+        || !candidates
+            .iter()
+            .any(|c| TYPE_KINDS.contains(&c.kind.as_str()))
     {
         return None;
     }

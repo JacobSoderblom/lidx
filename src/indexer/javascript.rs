@@ -2707,7 +2707,14 @@ fn handle_field(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extrac
     }
     let name = node_text(name_node, source);
     let qualname = build_qualname(&ctx.module, &ctx.class_stack, &name);
-    push_field(node, name, is_private_member(node, source), ctx, source, output);
+    push_field(
+        node,
+        name,
+        is_private_member(node, source),
+        ctx,
+        source,
+        output,
+    );
     // Calls in the initializer (`request = (..) => this.fetch(..)`,
     // `#root = new Node()`) belong to the field. An arrow value keeps the
     // lexical `this`; a `function` value rebinds it (`walk_node`).
@@ -2754,7 +2761,14 @@ fn handle_parameter_properties(
             continue;
         };
         if is_property && pattern.kind() == "identifier" {
-            push_field(param, node_text(pattern, source), private, ctx, source, output);
+            push_field(
+                param,
+                node_text(pattern, source),
+                private,
+                ctx,
+                source,
+                output,
+            );
         }
     }
 }
@@ -3351,8 +3365,7 @@ fn handle_call(node: Node<'_>, ctx: &Context, source: &str, output: &mut Extract
             None => {
                 // A bare callee bound by a parameter or local declaration is
                 // that local, never a module-level or imported symbol.
-                let target = if target_node.kind() == "identifier"
-                    && is_shadowing_local(ctx, &raw)
+                let target = if target_node.kind() == "identifier" && is_shadowing_local(ctx, &raw)
                 {
                     None
                 } else {
@@ -3663,10 +3676,9 @@ fn collect_return_types(root: Node<'_>, source: &str) -> HashMap<String, String>
                 // `const f = (): T => ..` / `field = (): T => ..` is typed
                 // by the arrow's own return annotation.
                 let function = match node.kind() {
-                    "variable_declarator" | "public_field_definition" | "field_definition" => {
-                        node.child_by_field_name("value")
-                            .filter(|v| is_function_value(*v))
-                    }
+                    "variable_declarator" | "public_field_definition" | "field_definition" => node
+                        .child_by_field_name("value")
+                        .filter(|v| is_function_value(*v)),
                     _ => Some(node),
                 };
                 let key = match (node.kind(), class) {
@@ -8597,7 +8609,10 @@ const cfg = buildConfig();
         let mut extractor = super::TypescriptExtractor::new().unwrap();
         let file = extractor.extract(source, "lib.api").unwrap();
         assert_eq!(call_source(&file, "fetchItem"), "lib.api.load");
-        assert_eq!(call_source(&file, "apiClientFetch"), "lib.api.apiClient.get");
+        assert_eq!(
+            call_source(&file, "apiClientFetch"),
+            "lib.api.apiClient.get"
+        );
         assert_eq!(call_source(&file, "apiPost"), "lib.api.apiClient.post");
         assert_eq!(call_source(&file, "buildConfig"), "lib.api");
     }

@@ -30,7 +30,10 @@ export function useMerged() {
 
 #[test]
 fn merged_type_and_value_declarations_bind_the_value() {
-    let t = sorted(call_targets(&[("src/merge.ts", MERGE)], "src/merge.useMerged"));
+    let t = sorted(call_targets(
+        &[("src/merge.ts", MERGE)],
+        "src/merge.useMerged",
+    ));
     assert_eq!(
         t,
         ["src/merge.Counter", "src/merge.DIRTY", "src/merge.ZodType"]
@@ -79,7 +82,10 @@ fn bare_new_and_static_member_calls_bind_same_file_declarations() {
     );
     assert_eq!(
         sorted(call_targets(&f, "src/statics.useStatics")),
-        ["src/statics.ZodNumber.create", "src/statics.ZodString.create"]
+        [
+            "src/statics.ZodNumber.create",
+            "src/statics.ZodString.create"
+        ]
     );
 }
 
@@ -210,6 +216,47 @@ fn generic_and_arrow_const_return_types_type_the_receiver() {
     }
 }
 
+const SUPER_BASE: &str = "export class HonoBase {\n  constructor(options?: number) {}\n  fetch(): number { return 1; }\n}\n";
+const SUPER_DERIVED: &str = r#"import { HonoBase as Base } from './base';
+class Local {
+  constructor(n: number) {}
+}
+export class Hono extends Base {
+  constructor(options?: number) {
+    super(options);
+  }
+}
+export class Child extends Local {
+  constructor() {
+    super(1);
+  }
+}
+export function run(app: Hono) {
+  return app.fetch();
+}
+"#;
+
+#[test]
+fn super_calls_construct_the_base_and_aliased_bases_resolve() {
+    let f = [
+        ("src/base.ts", SUPER_BASE),
+        ("src/derived.ts", SUPER_DERIVED),
+    ];
+    assert_eq!(
+        call_targets(&f, "src/derived.Hono.constructor"),
+        ["src/base.HonoBase.constructor"]
+    );
+    assert_eq!(
+        call_targets(&f, "src/derived.Child.constructor"),
+        ["src/derived.Local.constructor"]
+    );
+    // `Hono extends Base` (an aliased import) reaches HonoBase.fetch.
+    assert_eq!(
+        call_targets(&f, "src/derived.run"),
+        ["src/base.HonoBase.fetch"]
+    );
+}
+
 fn indexed(label: &str, files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Indexer) {
     let tmp = tempfile::Builder::new()
         .prefix(&format!("lidx-{label}-"))
@@ -261,7 +308,8 @@ fn incremental_merged_declaration_follows_target_edits() {
     }
 
     let edited = "export type Status = { a: number };\n";
-    let edited_local = "type Local = { a: number };\nexport function localRun() { return Local(); }\n";
+    let edited_local =
+        "type Local = { a: number };\nexport function localRun() { return Local(); }\n";
     std::fs::write(root.join("src/target.ts"), edited).unwrap();
     std::fs::write(root.join("src/local.ts"), edited_local).unwrap();
     indexer
@@ -295,7 +343,8 @@ fn incremental_merged_declaration_follows_target_edits() {
 #[test]
 fn incremental_static_member_follows_target_edits() {
     let shapes = "export class Shape {\n  static create(): Shape { return new Shape(); }\n}\n";
-    let caller = "import { Shape } from './shapes';\nexport function run() { return Shape.create(); }\n";
+    let caller =
+        "import { Shape } from './shapes';\nexport function run() { return Shape.create(); }\n";
     let own = "export class Own {\n  static make(): Own { return new Own(); }\n}\nexport function useOwn() { return Own.make(); }\n";
     let files = [
         ("src/shapes.ts", shapes),
