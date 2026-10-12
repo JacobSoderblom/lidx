@@ -2869,7 +2869,7 @@ fn incremental_ts_value_reference_follows_renamed_export_matches_fresh() {
     let graph_version = indexer.db().current_graph_version().unwrap();
     let snapshot = golden::snapshot_edges(indexer.db(), graph_version).unwrap();
     assert!(
-        snapshot.iter().any(|e| e.kind == "CALLS"
+        snapshot.iter().any(|e| e.kind == "REFERENCES"
             && e.source_qualname == "app.run"
             && e.target_qualname.as_deref() == Some("util.pick")),
         "{snapshot:#?}"
