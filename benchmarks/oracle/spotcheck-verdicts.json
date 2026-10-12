@@ -1,0 +1,891 @@
+{
+ "_notes": "**How the rules were iterated.** The first samples found artefacts and mis-bucketed exclusions well above 10%; every item below was read by hand and led to a rule change before the final samples were drawn:\n\n- Review of the first report (5 of 14 dispatch FNs mis-bucketed): TypeScript marked calls to a single-initialiser `const X = core.$constructor(...)` as dispatch (281 of 359 TypeScript dispatch edges), and Rust marked 449 inherent methods and 54 tuple-struct constructors as trait dispatch because the symbol was split on `/`. Both rules were rewritten and have unit tests.\n- Bucket sample, Go `callee_file_not_covered`: 10 of 10 were production code resolved to a symbol in a `_test.go` file, an edge that cannot exist; the exclusion hid wrong edges. They are now counted as wrong edges (category `calls_test_code`). The same rule covers Rust and TypeScript. One further item was hidden behind a build tag although the oracle knew the site calls the standard library; sites the oracle knows call code outside the repo are now graded.\n- Bucket sample, TypeScript `caller_not_judged`: 17 of 17 were mis-bucketed (export-list entries and shorthand properties at module level, class-field initialisers that only name a function, `export default function` callers). tsc analyses every call in a covered file, so the TypeScript oracle now judges every caller in the analysed files.\n- Bucket sample, `oracle_unresolved_site`: 5 of 6 TypeScript items and 10 of 10 Rust items withheld an edge for a different call on the same line, or for an enum-variant constructor whose in-repo lookalike is a wrong edge. An unresolved call now withholds only a lidx edge whose callee has the same name; Rust variant constructor sites count as sites that call outside the repository.\n- Bucket sample, Rust `callee_file_not_covered`: 2 of 2 were production code calling into `tests/`. Fixed with the `calls_test_code` rule.\n- FP/FN samples before the final round: 3 of 20 TypeScript FPs were matching artefacts (calls from several module-level containers merged into one oracle edge that kept only the first container as an acceptable caller; `const objectKeys: ObjectConstructor[\"keys\"]` resolved to lib.d.ts instead of the in-repo const; a local `const match = ... as Router[\"match\"]` resolved to the interface member). A Rust edge to `SinkContext::bytes` was missing from the oracle because `#[cfg(test)]` on a struct field made the region detector swallow the next function; regions are now computed per gated item.\n- Earlier rounds (first report): 9 of 20 Go FNs were dispatch fan-out and 5 of 20 TypeScript FNs had a nested callee lidx cannot index; Go range-over-func bodies, generic instances and unreachable \"judgeable\" callers, JSX, tagged templates, enum-variant constructors, merged declarations.\n\n**Rust re-sample on the comparison cells.** After the comparison moved to repowise's scope, the Rust sample was redrawn from the `path_tests_excluded` lists (20 FP + 20 FN + 10 per bucket) and read against the source. It found one defect in the SCIP reader: a caller was keyed by its symbol, so `build.rs` and `crates/core/main.rs`, which both define `main()` in one package, shared one caller and the edge `main -> run` of `crates/core/main.rs` was attributed to `build.rs` (a `caller_not_judged` item that should have been graded). Callers are now keyed by their own definition occurrence and the cells were regenerated. It also found one oracle artefact: an FP whose call sits under `#[cfg(feature = \"pcre2\")]`, which rust-analyzer did not enable. Linux-only tests (`#[cfg(target_os = \"linux\")]`) are correctly absent from an oracle that ran on macOS and are not judged. The TypeScript and Go samples were redrawn too (the regenerated lists differ slightly from run to run on merged declarations, so some sampled ids changed) and the new items were read.\n\nThe final samples were drawn after all of the above: 120 FP/FN items and the exclusion-bucket items, one an artefact and none mis-bucketed. A rate of 0 over n items has a 95% Wilson upper bound of 3.84/(n+3.84); the report prints the interval per row and pooled. Caveats: (1) verdicts are one reader's judgement, with a note per item; (2) rare categories are unlikely to appear in a random sample of 10 to 20; (3) correct exclusions are judged against the source, but \"unreachable from main\" rests on RTA, which is sound for what it keeps and silent about code it never reaches.\n\nCategories that dominate each language drive the next fixes: see the per-cell FN/FP category lines above and `results/lists/`.",
+ "49129eee": {
+  "note": "path.Join resolved to the in-repo unknown.Join",
+  "verdict": "lidx_error"
+ },
+ "e533d133": {
+  "note": "path.Join resolved to unknown.Join",
+  "verdict": "lidx_error"
+ },
+ "b80f7ba2": {
+  "note": "errors.Join resolved to unknown.Join",
+  "verdict": "lidx_error"
+ },
+ "ce6f2e73": {
+  "note": "testing.T.Error resolved to flagCompError.Error",
+  "verdict": "lidx_error"
+ },
+ "0f2fc975": {
+  "note": "bufio.NewScanner resolved to licenses/scanner.NewScanner",
+  "verdict": "lidx_error"
+ },
+ "19333457": {
+  "note": "m.handler.Wait() on an external handler resolved to the in-repo Handler.Wait",
+  "verdict": "lidx_error"
+ },
+ "33f9a989": {
+  "note": "testing.T.Error resolved to flagCompError.Error",
+  "verdict": "lidx_error"
+ },
+ "1aaccd3f": {
+  "note": "bufio.NewScanner resolved to licenses/scanner.NewScanner",
+  "verdict": "lidx_error"
+ },
+ "4bbf7f38": {
+  "note": "bytes.Buffer.String resolved to a test type's String method",
+  "verdict": "lidx_error"
+ },
+ "31e31434": {
+  "note": "image.Cleanup() on an external image resolved to TempDir.Cleanup",
+  "verdict": "lidx_error"
+ },
+ "966e5285": {
+  "note": "packageurl.FromString resolved to CatalogTester.FromString",
+  "verdict": "lidx_error"
+ },
+ "33459de7": {
+  "note": "bufio.NewScanner resolved to licenses/scanner.NewScanner",
+  "verdict": "lidx_error"
+ },
+ "7926d4de": {
+  "note": "bufio.NewScanner resolved to licenses/scanner.NewScanner",
+  "verdict": "lidx_error"
+ },
+ "7b52930b": {
+  "note": "bytes.Buffer.String resolved to a test type's String method",
+  "verdict": "lidx_error"
+ },
+ "00128625": {
+  "note": "bufio.NewScanner resolved to licenses/scanner.NewScanner",
+  "verdict": "lidx_error"
+ },
+ "11783d22": {
+  "note": "bufio.Scanner.Scan resolved to the cobra command constructor commands.Scan",
+  "verdict": "lidx_error"
+ },
+ "a07e3e5f": {
+  "note": "filepath.Join resolved to unknown.Join",
+  "verdict": "lidx_error"
+ },
+ "b46f05c6": {
+  "note": "strings.Join resolved to unknown.Join",
+  "verdict": "lidx_error"
+ },
+ "2dbf8f88": {
+  "note": "time.Time.Format resolved to the options.Format struct",
+  "verdict": "lidx_error"
+ },
+ "58af68fb": {
+  "note": "production code resolved to a mock type that exists only in a _test.go file",
+  "verdict": "lidx_error"
+ },
+ "b1cfa958": {
+  "note": "utils.AlphaNumeric(\"12\") nested as an argument of NewSecret(...) inside fmt.Sprintf: nested calls missed",
+  "verdict": "lidx_error"
+ },
+ "585c50b6": {
+  "note": "return c.process(...): method call in a return statement, no edge",
+  "verdict": "lidx_error"
+ },
+ "df2c1c28": {
+  "note": "logging.Error().Err(err).Msgf(...): package-qualified call at the head of a chain, missed",
+  "verdict": "lidx_error"
+ },
+ "56abf403": {
+  "note": "s.add(set.list()...): call nested as an argument, sibling found",
+  "verdict": "lidx_error"
+ },
+ "646b12c1": {
+  "note": "executable.NewCataloger(cfg).CatalogCtx(...): head of a chain missed",
+  "verdict": "lidx_error"
+ },
+ "62068c1a": {
+  "note": "utils.Numeric / AlphaNumeric nested in secrets.NewSecret inside fmt.Sprintf: nested calls missed",
+  "verdict": "lidx_error"
+ },
+ "b59f57f6": {
+  "note": "secrets.NewSecret(utils.AlphaNumeric(\"163\")) in a string concatenation: missed",
+  "verdict": "lidx_error"
+ },
+ "897912e2": {
+  "note": "!s.alias.IsEmpty() in an if condition: method call on a field, no edge",
+  "verdict": "lidx_error"
+ },
+ "96606f3e": {
+  "note": "secrets.NewSecret(...) nested as an argument of GenerateSampleSecrets: missed",
+  "verdict": "lidx_error"
+ },
+ "73c52824": {
+  "note": "utils.Hex8_4_4_4_12() nested twice as an argument: missed",
+  "verdict": "lidx_error"
+ },
+ "9ec828cb": {
+  "note": "MaximumNArgs(2) as an argument of getCommand: nested call missed",
+  "verdict": "lidx_error"
+ },
+ "d9520284": {
+  "note": "rpad(...) inside the closure passed to t.Run: only the external t.Run edge exists",
+  "verdict": "lidx_error"
+ },
+ "bc87fc7f": {
+  "note": "rootCmd.Flags().StringP(...): head of chain missed",
+  "verdict": "lidx_error"
+ },
+ "4c90159d": {
+  "note": "cfg := Config(cmd): plain function call in an assignment, no edge",
+  "verdict": "lidx_error"
+ },
+ "a046fef1": {
+  "note": "runCatalogerList(opts) inside the RunE closure of a struct literal: closure call missed",
+  "verdict": "lidx_error"
+ },
+ "2b1c4da7": {
+  "note": "logging.Debug().Msg(...): package-qualified call at the head of a chain, missed",
+  "verdict": "lidx_error"
+ },
+ "f4042119": {
+  "note": "products.addValue(candidateProductsForJava(p)...): nested call missed",
+  "verdict": "lidx_error"
+ },
+ "95f0daf9": {
+  "note": "WithSearchLocalModCacheLicenses in a multi-line method chain: missed",
+  "verdict": "lidx_error"
+ },
+ "d539a1ab": {
+  "note": "log.WithFields(...).Trace(...): head of a chain missed",
+  "verdict": "lidx_error"
+ },
+ "f17cc262": {
+  "note": "regexp.MustCompile resolved to nothing: gitleaks' own regexp wrapper package was not followed",
+  "verdict": "lidx_error"
+ },
+ "b1c1e316": {
+  "verdict": "lidx_error",
+  "note": "callback passed as an argument (initializer) recorded as a call"
+ },
+ "558fb17d": {
+  "verdict": "lidx_error",
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+ },
+ "03aaf82c": {
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked",
+  "verdict": "lidx_error"
+ },
+ "bfd02584": {
+  "verdict": "lidx_error",
+  "note": "computed key recorded as a call; nothing is invoked"
+ },
+ "c3906d7a": {
+  "verdict": "lidx_error",
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+ },
+ "f7871d1d": {
+  "verdict": "lidx_error",
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+ },
+ "4e4802f5": {
+  "verdict": "lidx_error",
+  "note": "computed key recorded as a call; nothing is invoked"
+ },
+ "cc8a8443": {
+  "note": "JSON.parse resolved to ZodType.parse",
+  "verdict": "lidx_error"
+ },
+ "fb931d1f": {
+  "verdict": "lidx_error",
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+ },
+ "1c44c479": {
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked",
+  "verdict": "lidx_error"
+ },
+ "500151e0": {
+  "verdict": "lidx_error",
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+ },
+ "64dc25ef": {
+  "verdict": "lidx_error",
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+ },
+ "ed0fa79a": {
+  "verdict": "lidx_error",
+  "note": "regular expression constant passed as an argument recorded as a call"
+ },
+ "f71a0a04": {
+  "verdict": "lidx_error",
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+ },
+ "6e85f2c8": {
+  "verdict": "lidx_error",
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+ },
+ "6dc85736": {
+  "verdict": "lidx_error",
+  "note": "export-list entry recorded as a call; nothing is invoked"
+ },
+ "876125d1": {
+  "verdict": "lidx_error",
+  "note": "shorthand property naming a const recorded as a call; nothing is invoked"
+ },
+ "e35339c7": {
+  "verdict": "lidx_error",
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+ },
+ "82b63231": {
+  "verdict": "lidx_error",
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked"
+ },
+ "024d97da": {
+  "note": "identifier read, shorthand property, export-list entry or computed key recorded as a call; nothing is invoked",
+  "verdict": "lidx_error"
+ },
+ "61f25532": {
+  "note": "new-expression of a class: no CALLS (or USES) edge extracted",
+  "verdict": "lidx_error"
+ },
+ "05defcaa": {
+  "note": "namespace-member or class call recorded as a USES edge only, no CALLS edge",
+  "verdict": "lidx_error"
+ },
+ "c265f908": {
+  "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "f7dcf2a2": {
+  "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "e3842df7": {
+  "note": "new-expression of a class: no CALLS (or USES) edge extracted",
+  "verdict": "lidx_error"
+ },
+ "625b6436": {
+  "note": "namespace-member or class call recorded as a USES edge only, no CALLS edge",
+  "verdict": "lidx_error"
+ },
+ "850aff0c": {
+  "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "e8284269": {
+  "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "13294a5d": {
+  "note": "new-expression of a class: no CALLS (or USES) edge extracted",
+  "verdict": "lidx_error"
+ },
+ "ba70f37b": {
+  "note": "chained or nested call missed while a sibling call on the line was found",
+  "verdict": "lidx_error"
+ },
+ "aad04ca0": {
+  "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "0b42f271": {
+  "note": "new-expression of a class: no CALLS (or USES) edge extracted",
+  "verdict": "lidx_error"
+ },
+ "a4cf62a5": {
+  "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "74b9ee2f": {
+  "note": "new-expression of a class: no CALLS (or USES) edge extracted",
+  "verdict": "lidx_error"
+ },
+ "e1426b12": {
+  "note": "new-expression of a class: no CALLS (or USES) edge extracted",
+  "verdict": "lidx_error"
+ },
+ "63f7adc8": {
+  "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "b64f23e4": {
+  "note": "new-expression of a class: no CALLS (or USES) edge extracted",
+  "verdict": "lidx_error"
+ },
+ "f76634a8": {
+  "note": "method or function call (return statement, chain, nested argument or member call on a local) with no edge extracted",
+  "verdict": "lidx_error"
+ },
+ "241fb43d": {
+  "note": "namespace-member or class call recorded as a USES edge only, no CALLS edge",
+  "verdict": "lidx_error"
+ },
+ "99d2a283": {
+  "note": "new-expression of a class: no CALLS (or USES) edge extracted",
+  "verdict": "lidx_error"
+ },
+ "7246198e": {
+  "verdict": "oracle_artefact",
+  "note": "builder.utf(true).ucp(true) is a real call to the pcre2 RegexMatcherBuilder; it sits under #[cfg(feature = \"pcre2\")], which rust-analyzer did not enable, so SCIP has no occurrence there and lidx is right"
+ },
+ "d0415ed7": {
+  "verdict": "lidx_error",
+  "note": "Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref"
+ },
+ "cacf5ccf": {
+  "verdict": "lidx_error",
+  "note": "Option::map resolved to Match::map"
+ },
+ "dace4558": {
+  "verdict": "lidx_error",
+  "note": "Option::map resolved to Match::map"
+ },
+ "797aba7e": {
+  "verdict": "lidx_error",
+  "note": "Option::map resolved to Match::map"
+ },
+ "4b9c4f37": {
+  "verdict": "lidx_error",
+  "note": "Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref"
+ },
+ "86af1968": {
+  "verdict": "lidx_error",
+  "note": "regex_syntax TranslatorBuilder builder method (external) resolved to RegexMatcherBuilder::dot_matches_new_line"
+ },
+ "0e3136f6": {
+  "verdict": "lidx_error",
+  "note": "Option::map resolved to Match::map"
+ },
+ "c5e9ade1": {
+  "verdict": "lidx_error",
+  "note": "Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref"
+ },
+ "b89b0d7f": {
+  "verdict": "lidx_error",
+  "note": "regex_syntax ParserBuilder::ignore_whitespace (external) resolved to RegexMatcherBuilder::ignore_whitespace"
+ },
+ "82c8a6f3": {
+  "verdict": "lidx_error",
+  "note": "m.start() on a pcre2 match (external) resolved to grep_matcher Match::start"
+ },
+ "3cb7e462": {
+  "verdict": "lidx_error",
+  "note": "self.seq.union(..) on a regex_syntax Seq (external) resolved to Extractor::union"
+ },
+ "94179f1c": {
+  "verdict": "lidx_error",
+  "note": ".clone() on an Option/Arc field resolved to Error::clone"
+ },
+ "07f346c2": {
+  "verdict": "lidx_error",
+  "note": "Option::as_ref / AsRef::as_ref on a std value resolved to Glob::as_ref"
+ },
+ "8f455f6a": {
+  "verdict": "lidx_error",
+  "note": "enum variant PatternMatcher::PCRE2(m) resolved to the unrelated struct PCRE2 in flags/defs.rs"
+ },
+ "447bd49a": {
+  "verdict": "lidx_error",
+  "note": "ChildStdout::read (external) resolved to DecompressionReader::read"
+ },
+ "855cfa69": {
+  "verdict": "lidx_error",
+  "note": "Option::map resolved to Match::map"
+ },
+ "30a0e6ad": {
+  "verdict": "lidx_error",
+  "note": "std::io::Error::new resolved to the regex crate Error::new"
+ },
+ "f1c5c82c": {
+  "verdict": "lidx_error",
+  "note": "std::io::Error::new resolved to the regex crate Error::new"
+ },
+ "8393ee2e": {
+  "verdict": "lidx_error",
+  "note": "Vec::is_empty on a field resolved to filesystem::is_empty"
+ },
+ "cc7d501e": {
+  "verdict": "lidx_error",
+  "note": "filesystem::osstr_to_bytes(..) inside a closure argument, no edge"
+ },
+ "63fcd0bf": {
+  "verdict": "lidx_error",
+  "note": "line_number(..) in a builder/method chain, missed"
+ },
+ "9f5596eb": {
+  "verdict": "lidx_error",
+  "note": "StandardBuilder::new().build(..): the call is a chained method with NoColor::new as argument, lidx recorded only the external argument call"
+ },
+ "a7303b5c": {
+  "verdict": "lidx_error",
+  "note": "line_terminator(..) in a builder/method chain, missed"
+ },
+ "0ec1fad7": {
+  "verdict": "lidx_error",
+  "note": "worker.run() inside a closure passed to spawn, no edge"
+ },
+ "b8d9f46e": {
+  "verdict": "lidx_error",
+  "note": "build(..) in a builder/method chain, missed"
+ },
+ "272ee393": {
+  "verdict": "lidx_error",
+  "note": "sink(..) in a builder/method chain, missed"
+ },
+ "ee62f630": {
+  "verdict": "lidx_error",
+  "note": ".with_depth(..) in a chain on Error resolved by bare name to another with_depth"
+ },
+ "dcbc8b9e": {
+  "verdict": "lidx_error",
+  "note": "line_number(..) in a builder/method chain, missed"
+ },
+ "685d74e8": {
+  "verdict": "lidx_error",
+  "note": "line_number(..) in a builder/method chain, missed"
+ },
+ "93e3ffac": {
+  "verdict": "lidx_error",
+  "note": "build_no_color(..) in a builder/method chain, missed"
+ },
+ "15b0c633": {
+  "verdict": "lidx_error",
+  "note": "matched(..) in a builder/method chain, missed"
+ },
+ "cc8d0e15": {
+  "verdict": "lidx_error",
+  "note": "line_number(..) in a builder/method chain, missed"
+ },
+ "a0fa9fb6": {
+  "verdict": "lidx_error",
+  "note": "self.dent.path() through a field, no edge"
+ },
+ "76dbaac2": {
+  "verdict": "lidx_error",
+  "note": "self.overrides.matched(..) through a field, no edge"
+ },
+ "fb4a7e28": {
+  "verdict": "lidx_error",
+  "note": "tuple-struct constructor ContextSeparator(None) is a call to a declaration lidx indexes, no edge"
+ },
+ "19ef53a8": {
+  "verdict": "lidx_error",
+  "note": "range.end() on a Match alias, no edge"
+ },
+ "8b30cbca": {
+  "verdict": "lidx_error",
+  "note": "build(..) in a builder/method chain, missed"
+ },
+ "cc57d1c3": {
+  "verdict": "lidx_error",
+  "note": "RegexMatcher::new(..) in a test body, no edge"
+ },
+ "3dad4ab9": {
+  "verdict": "lidx_error",
+  "note": "line_number(..) in a builder/method chain, missed"
+ },
+ "73dc3ca0": {
+  "note": "call through an interface method or a function value: dispatch",
+  "verdict": "correct_exclusion"
+ },
+ "74d92742": {
+  "note": "call through an interface method or a function value: dispatch",
+  "verdict": "correct_exclusion"
+ },
+ "133e4a6c": {
+  "note": "call through an interface method or a function value: dispatch",
+  "verdict": "correct_exclusion"
+ },
+ "cbc996ae": {
+  "note": "call through an interface method or a function value: dispatch",
+  "verdict": "correct_exclusion"
+ },
+ "de099482": {
+  "note": "call through an interface method or a function value: dispatch",
+  "verdict": "correct_exclusion"
+ },
+ "62f5dcc8": {
+  "note": "call through an interface method or a function value: dispatch",
+  "verdict": "correct_exclusion"
+ },
+ "497a9426": {
+  "note": "call through an interface method or a function value: dispatch",
+  "verdict": "correct_exclusion"
+ },
+ "e1919460": {
+  "note": "call through an interface method or a function value: dispatch",
+  "verdict": "correct_exclusion"
+ },
+ "bf8c9824": {
+  "note": "call through an interface method or a function value: dispatch",
+  "verdict": "correct_exclusion"
+ },
+ "e511a510": {
+  "note": "call through an interface method or a function value: dispatch",
+  "verdict": "correct_exclusion"
+ },
+ "bf04b3b3": {
+  "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+  "verdict": "correct_exclusion"
+ },
+ "4d21893a": {
+  "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+  "verdict": "correct_exclusion"
+ },
+ "e280bd7e": {
+  "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+  "verdict": "correct_exclusion"
+ },
+ "28dfe1f6": {
+  "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+  "verdict": "correct_exclusion"
+ },
+ "f71dee10": {
+  "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+  "verdict": "correct_exclusion"
+ },
+ "0f4097ba": {
+  "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+  "verdict": "correct_exclusion"
+ },
+ "d455ca96": {
+  "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+  "verdict": "correct_exclusion"
+ },
+ "2fbb04c9": {
+  "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+  "verdict": "correct_exclusion"
+ },
+ "bc5a9ad7": {
+  "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+  "verdict": "correct_exclusion"
+ },
+ "a918ca4f": {
+  "note": "caller is a function in a _test.go file or test/ directory, outside the no_tests program",
+  "verdict": "correct_exclusion"
+ },
+ "5e70e9fc": {
+  "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+  "verdict": "correct_exclusion"
+ },
+ "e828f728": {
+  "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+  "verdict": "correct_exclusion"
+ },
+ "ce2dc345": {
+  "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+  "verdict": "correct_exclusion"
+ },
+ "3e691856": {
+  "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+  "verdict": "correct_exclusion"
+ },
+ "9e8c6c7e": {
+  "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+  "verdict": "correct_exclusion"
+ },
+ "ec97cea5": {
+  "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+  "verdict": "correct_exclusion"
+ },
+ "e82cddac": {
+  "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+  "verdict": "correct_exclusion"
+ },
+ "b22aedaf": {
+  "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+  "verdict": "correct_exclusion"
+ },
+ "0248bd0a": {
+  "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+  "verdict": "correct_exclusion"
+ },
+ "1ce65a5a": {
+  "note": "caller is a test helper or dead code that nothing reachable from main calls (RTA does not reach it)",
+  "verdict": "correct_exclusion"
+ },
+ "cbed2b5e": {
+  "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+  "verdict": "correct_exclusion"
+ },
+ "46976674": {
+  "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+  "verdict": "correct_exclusion"
+ },
+ "d4a2738b": {
+  "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+  "verdict": "correct_exclusion"
+ },
+ "38dc235a": {
+  "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+  "verdict": "correct_exclusion"
+ },
+ "ef620338": {
+  "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+  "verdict": "correct_exclusion"
+ },
+ "2f87fdb0": {
+  "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+  "verdict": "correct_exclusion"
+ },
+ "87122668": {
+  "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+  "verdict": "correct_exclusion"
+ },
+ "a3476948": {
+  "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+  "verdict": "correct_exclusion"
+ },
+ "3a2c6d30": {
+  "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+  "verdict": "correct_exclusion"
+ },
+ "28b1e346": {
+  "note": "callee is an interface member or a local let/const/class nested in a function: lidx indexes no symbol for it",
+  "verdict": "correct_exclusion"
+ },
+ "2f855d74": {
+  "note": "keyType._parse / valueType._parse: abstract method",
+  "verdict": "correct_exclusion"
+ },
+ "a2039370": {
+  "note": "keyType._parse: abstract method",
+  "verdict": "correct_exclusion"
+ },
+ "5f101b39": {
+  "note": "innerType._parse: abstract method",
+  "verdict": "correct_exclusion"
+ },
+ "6bf8e341": {
+  "note": "innerType._parse: abstract method",
+  "verdict": "correct_exclusion"
+ },
+ "0f055867": {
+  "note": "keyValidator._parse: _parse is abstract on ZodType, so any subclass may run",
+  "verdict": "correct_exclusion"
+ },
+ "96ffa4d7": {
+  "note": "this._def.type._parse: abstract method",
+  "verdict": "correct_exclusion"
+ },
+ "3b760d82": {
+  "note": "schema._parse: abstract method",
+  "verdict": "correct_exclusion"
+ },
+ "099232c0": {
+  "note": "innerType._parse: abstract method",
+  "verdict": "correct_exclusion"
+ },
+ "fe6e5fb6": {
+  "note": "innerType._parse: abstract method",
+  "verdict": "correct_exclusion"
+ },
+ "0d0916ee": {
+  "note": "innerType._parse: abstract method",
+  "verdict": "correct_exclusion"
+ },
+ "db079bc9": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)"
+ },
+ "c43c83a2": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)"
+ },
+ "6328e317": {
+  "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+  "verdict": "correct_exclusion"
+ },
+ "26bd6b57": {
+  "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+  "verdict": "correct_exclusion"
+ },
+ "28c541cc": {
+  "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+  "verdict": "correct_exclusion"
+ },
+ "bd225121": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)"
+ },
+ "59c05582": {
+  "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+  "verdict": "correct_exclusion"
+ },
+ "a2237deb": {
+  "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+  "verdict": "correct_exclusion"
+ },
+ "fdd77f09": {
+  "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts)",
+  "verdict": "correct_exclusion"
+ },
+ "cfafc684": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test file or sits outside the analysed subdirectory (docs, benchmarks, scripts, runtime-tests)"
+ },
+ "60c7eba3": {
+  "note": "write(path, data): unresolved Bun global, same name as the lidx target",
+  "verdict": "correct_exclusion"
+ },
+ "b0dc7c48": {
+  "note": "open(path): the oracle could not resolve the call to open (Deno global), same name as the lidx target",
+  "verdict": "correct_exclusion"
+ },
+ "e87071db": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it"
+ },
+ "b0b1e990": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it"
+ },
+ "ce1ba5b6": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it"
+ },
+ "df12a935": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it"
+ },
+ "5f7904e4": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it"
+ },
+ "eedffa74": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it"
+ },
+ "0ad208f3": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it"
+ },
+ "fbc2b43b": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it"
+ },
+ "9c22b0c8": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it"
+ },
+ "cc693aa1": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test function generated by a macro invocation (syntax!/matched!/literal!/ext!); lidx has no symbol for it"
+ },
+ "d47cb0fd": {
+  "verdict": "correct_exclusion",
+  "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch"
+ },
+ "e9cb4a57": {
+  "verdict": "correct_exclusion",
+  "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch"
+ },
+ "979478d4": {
+  "verdict": "correct_exclusion",
+  "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch"
+ },
+ "ebab9513": {
+  "verdict": "correct_exclusion",
+  "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch"
+ },
+ "0f3ffceb": {
+  "verdict": "correct_exclusion",
+  "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch"
+ },
+ "2f69885a": {
+  "verdict": "correct_exclusion",
+  "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch"
+ },
+ "c6933d9c": {
+  "verdict": "correct_exclusion",
+  "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch"
+ },
+ "e69b310c": {
+  "verdict": "correct_exclusion",
+  "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch"
+ },
+ "882fa286": {
+  "verdict": "correct_exclusion",
+  "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch"
+ },
+ "52abd2d3": {
+  "verdict": "correct_exclusion",
+  "note": "call to a trait-declared method (dyn Flag / generic Matcher / Sink / delegating impl): trait dispatch"
+ },
+ "3fb0c7d6": {
+  "verdict": "correct_exclusion",
+  "note": "caller is in the tests/ directory, outside the path_tests_excluded cell"
+ },
+ "74dbbcc1": {
+  "verdict": "correct_exclusion",
+  "note": "caller is in the tests/ directory, outside the path_tests_excluded cell"
+ },
+ "1ef89168": {
+  "verdict": "correct_exclusion",
+  "note": "caller is in the tests/ directory, outside the path_tests_excluded cell"
+ },
+ "e1bd4286": {
+  "verdict": "correct_exclusion",
+  "note": "caller is in the tests/ directory, outside the path_tests_excluded cell"
+ },
+ "e06eb060": {
+  "verdict": "correct_exclusion",
+  "note": "caller is in the tests/ directory, outside the path_tests_excluded cell"
+ },
+ "fbda5fd0": {
+  "verdict": "correct_exclusion",
+  "note": "caller is in the tests/ directory, outside the path_tests_excluded cell"
+ },
+ "264ab3a4": {
+  "verdict": "correct_exclusion",
+  "note": "caller is in the tests/ directory, outside the path_tests_excluded cell"
+ },
+ "b804f8fd": {
+  "verdict": "correct_exclusion",
+  "note": "caller is in the tests/ directory, outside the path_tests_excluded cell"
+ },
+ "c1defa57": {
+  "verdict": "correct_exclusion",
+  "note": "caller is in the tests/ directory, outside the path_tests_excluded cell"
+ },
+ "34ade1f4": {
+  "verdict": "correct_exclusion",
+  "note": "caller is in the tests/ directory, outside the path_tests_excluded cell"
+ },
+ "e268005d": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition"
+ },
+ "d3627809": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition"
+ },
+ "550792fe": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition"
+ },
+ "5586b333": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition"
+ },
+ "b1126286": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition"
+ },
+ "e28b88be": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition"
+ },
+ "e9b06b11": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition"
+ },
+ "08627fa1": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition"
+ },
+ "af12e011": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition"
+ },
+ "e9f34c08": {
+  "verdict": "correct_exclusion",
+  "note": "caller is a test gated by #[cfg(target_os = \"linux\")]; rust-analyzer ran on macOS and did not analyse it, so SCIP has no definition"
+ }
+}

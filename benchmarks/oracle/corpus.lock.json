@@ -1,0 +1,68 @@
+{
+  "comment": "Pinned corpus for the oracle benchmark: the commits repowise-bench pins for the same cells, so numbers are head-to-head. sha is always the COMMIT sha (never an annotated-tag object). Clones live in the cache dir, never in this repository.",
+  "cache_default": "~/.cache/lidx-oracle",
+  "repos": [
+    {
+      "name": "cobra",
+      "lang": "go",
+      "url": "https://github.com/spf13/cobra",
+      "ref": "repowise pin (main, 2026-10)",
+      "sha": "adbc8813901bba65827259daa8e22ff94ec1f30e"
+    },
+    {
+      "name": "gitleaks",
+      "lang": "go",
+      "url": "https://github.com/gitleaks/gitleaks",
+      "ref": "repowise pin (main, 2026-10)",
+      "sha": "8ad8470035d31a209322c580153b45c18e21b980"
+    },
+    {
+      "name": "syft",
+      "lang": "go",
+      "url": "https://github.com/anchore/syft",
+      "ref": "repowise pin (main, 2026-10)",
+      "sha": "b15c5dbfe2bb21c9d73002c1056a829c8c411c75"
+    },
+    {
+      "name": "zod",
+      "lang": "ts",
+      "url": "https://github.com/colinhacks/zod",
+      "ref": "repowise pin (main, 2026-10)",
+      "sha": "bbc68f990c7e6a5e3f506c56fb04bd0279b9c9b5",
+      "tsconfig": "tsconfig.json",
+      "subdirs": [
+        "packages/zod/src"
+      ]
+    },
+    {
+      "name": "hono",
+      "lang": "ts",
+      "url": "https://github.com/honojs/hono",
+      "ref": "repowise pin (main, 2026-10)",
+      "sha": "97c6fe1f12298c715eb7b2da65b4b6e0d81682bb",
+      "tsconfig": "tsconfig.base.json",
+      "subdirs": [
+        "src"
+      ]
+    },
+    {
+      "name": "ripgrep",
+      "lang": "rust",
+      "url": "https://github.com/BurntSushi/ripgrep",
+      "ref": "15.2.0 (repowise g9 pin)",
+      "sha": "e89fff89ac9af12e8d4ce9d5fd07beb408ca730f"
+    },
+    {
+      "name": "fd",
+      "lang": "rust",
+      "url": "https://github.com/sharkdp/fd",
+      "ref": "v10.5.0 (repowise g9 pin)",
+      "sha": "4f81778774463bf414a184cbe6d5219ad2229646"
+    }
+  ],
+  "toolchains": {
+    "typescript": "5.9.3",
+    "golang.org/x/tools": "v0.38.0",
+    "rust-analyzer": "1.94.0 (any release with the scip subcommand)"
+  }
+}
